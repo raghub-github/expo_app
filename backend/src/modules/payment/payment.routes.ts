@@ -47,27 +47,53 @@ export async function paymentRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
+      // Full lifecycle observability: log start → signature → dedup → handler → result,
+      // each entry timestamped to `payment_events`. Lets ops trace a single webhook
+      // through every state transition without having to grep server logs.
+      const startedAtMs = Date.now();
       const signature = String(req.headers["x-razorpay-signature"] ?? "");
       const payloadObject = (req.body ?? {}) as Record<string, unknown>;
       const payload = JSON.stringify(payloadObject);
-      if (!signature) {
-        return reply.status(400).send({ error: "missing_signature" });
-      }
-      if (!verifyRazorpayWebhookSignature(payload, signature)) {
-        return reply.status(400).send({ error: "invalid_signature" });
-      }
-
       const event = String(payloadObject.event ?? "");
-      // Razorpay's event id lives in the `x-razorpay-event-id` header (v2+)
-      // or in the body's `id` field. Fall back to an order-id based key so
-      // we still get some dedup even on older accounts.
       const headerEventId = String(req.headers["x-razorpay-event-id"] ?? "");
       const bodyEventId = String(payloadObject.id ?? "");
       const eventId = headerEventId || bodyEventId;
-
       const db = getDb();
 
-      // Dedup: if we've already processed this exact event id, ack and move on.
+      // 1. WEBHOOK_RECEIVED — first sign of life, before any validation.
+      await logPaymentEvent(db, {
+        eventType: "WEBHOOK_RECEIVED",
+        source: "webhook",
+        payload: { event, eventId, signaturePresent: signature.length > 0, timestamp: startedAtMs },
+      });
+
+      if (!signature) {
+        await logPaymentEvent(db, {
+          eventType: "WEBHOOK_REJECTED_MISSING_SIGNATURE",
+          source: "webhook",
+          payload: { event, eventId, durationMs: Date.now() - startedAtMs },
+        });
+        return reply.status(400).send({ error: "missing_signature" });
+      }
+      if (!verifyRazorpayWebhookSignature(payload, signature)) {
+        await logPaymentEvent(db, {
+          eventType: "WEBHOOK_REJECTED_INVALID_SIGNATURE",
+          source: "webhook",
+          payload: { event, eventId, durationMs: Date.now() - startedAtMs },
+        });
+        return reply.status(400).send({ error: "invalid_signature" });
+      }
+
+      // 2. WEBHOOK_VERIFIED — HMAC passed. From here on the payload is trusted.
+      await logPaymentEvent(db, {
+        eventType: "WEBHOOK_VERIFIED",
+        source: "webhook",
+        payload: { event, eventId, durationMs: Date.now() - startedAtMs },
+      });
+
+      // 3. Dedup against payment_webhook_events.event_id (UNIQUE constraint).
+      // Razorpay re-delivers webhooks aggressively (every 5min for 24h) until 200,
+      // so this is critical to prevent double-finalization of orders.
       if (eventId) {
         try {
           await db.insert(paymentWebhookEvents).values({
@@ -81,11 +107,22 @@ export async function paymentRoutes(app: FastifyInstance) {
           // unique violation → duplicate delivery; ack with 200 so Razorpay stops retrying.
           const code = (err as { code?: string })?.code;
           if (code === "23505") {
+            await logPaymentEvent(db, {
+              eventType: "WEBHOOK_DUPLICATE",
+              source: "webhook",
+              payload: { event, eventId, durationMs: Date.now() - startedAtMs },
+            });
             return reply.send({ ok: true, duplicate: true });
           }
           // any other storage error → log and continue; don't block the business
           // logic just because audit insert failed.
           req.log.warn({ err }, "payment_webhook_events insert failed");
+          await logPaymentEvent(db, {
+            eventType: "WEBHOOK_DEDUP_INSERT_FAILED",
+            source: "webhook",
+            failureMessage: (err as Error)?.message ?? "unknown",
+            payload: { event, eventId, durationMs: Date.now() - startedAtMs },
+          });
         }
       }
 
@@ -96,12 +133,24 @@ export async function paymentRoutes(app: FastifyInstance) {
         return (node?.entity as Record<string, unknown> | undefined) ?? node;
       };
 
+      // 4. WEBHOOK_DISPATCH — about to invoke the type-specific handler.
+      await logPaymentEvent(db, {
+        eventType: "WEBHOOK_DISPATCH",
+        source: "webhook",
+        payload: { event, eventId, durationMs: Date.now() - startedAtMs },
+      });
+
       try {
         if (event === "payment.captured" || event === "order.paid") {
           const paymentEntity = extractEntity("payment");
           const razorpayOrderId = String(paymentEntity?.order_id ?? "");
           const razorpayPaymentId = String(paymentEntity?.id ?? "");
           if (!razorpayOrderId || !razorpayPaymentId) {
+            await logPaymentEvent(db, {
+              eventType: "WEBHOOK_REJECTED_INVALID_PAYLOAD",
+              source: "webhook",
+              payload: { event, eventId, reason: "missing order_id or payment id", durationMs: Date.now() - startedAtMs },
+            });
             return reply.status(400).send({ error: "invalid_payload" });
           }
           const result = await finalizePendingOrderFromWebhook(db, {
@@ -111,6 +160,13 @@ export async function paymentRoutes(app: FastifyInstance) {
             gatewayPayload: { verifiedBy: "razorpay_webhook", event, payload: payloadObject },
           });
           await markWebhookProcessed(db, eventId);
+          await logPaymentEvent(db, {
+            eventType: "WEBHOOK_HANDLED_OK",
+            source: "webhook",
+            razorpayOrderId,
+            razorpayPaymentId,
+            payload: { event, eventId, finalizedOk: result.ok, finalizeCode: result.code ?? null, durationMs: Date.now() - startedAtMs },
+          });
           return reply.send({ ok: result.ok });
         }
 
@@ -125,6 +181,11 @@ export async function paymentRoutes(app: FastifyInstance) {
               "Payment failed at gateway."
           );
           if (!razorpayOrderId) {
+            await logPaymentEvent(db, {
+              eventType: "WEBHOOK_REJECTED_INVALID_PAYLOAD",
+              source: "webhook",
+              payload: { event, eventId, reason: "missing order_id", durationMs: Date.now() - startedAtMs },
+            });
             return reply.status(400).send({ error: "invalid_payload" });
           }
           await markPendingOrderFailedFromWebhook(db, {
@@ -135,6 +196,15 @@ export async function paymentRoutes(app: FastifyInstance) {
             gatewayPayload: { verifiedBy: "razorpay_webhook", event, payload: payloadObject },
           });
           await markWebhookProcessed(db, eventId);
+          await logPaymentEvent(db, {
+            eventType: "WEBHOOK_HANDLED_OK",
+            source: "webhook",
+            razorpayOrderId,
+            razorpayPaymentId,
+            failureCode,
+            failureMessage,
+            payload: { event, eventId, durationMs: Date.now() - startedAtMs },
+          });
           return reply.send({ ok: true });
         }
 
@@ -144,6 +214,11 @@ export async function paymentRoutes(app: FastifyInstance) {
           const refundId = String(refundEntity?.id ?? "");
           const refundStatus = refundEntity?.status != null ? String(refundEntity.status) : null;
           if (!razorpayPaymentId || !refundId) {
+            await logPaymentEvent(db, {
+              eventType: "WEBHOOK_REJECTED_INVALID_PAYLOAD",
+              source: "webhook",
+              payload: { event, eventId, reason: "missing refund payment_id or id", durationMs: Date.now() - startedAtMs },
+            });
             return reply.status(400).send({ error: "invalid_payload" });
           }
           await applyRefundWebhook(db, {
@@ -154,6 +229,12 @@ export async function paymentRoutes(app: FastifyInstance) {
             gatewayPayload: { verifiedBy: "razorpay_webhook", event, payload: payloadObject },
           });
           await markWebhookProcessed(db, eventId);
+          await logPaymentEvent(db, {
+            eventType: "WEBHOOK_HANDLED_OK",
+            source: "webhook",
+            razorpayPaymentId,
+            payload: { event, eventId, refundId, refundStatus, durationMs: Date.now() - startedAtMs },
+          });
           return reply.send({ ok: true });
         }
 
@@ -161,7 +242,7 @@ export async function paymentRoutes(app: FastifyInstance) {
         await logPaymentEvent(db, {
           eventType: "WEBHOOK_UNHANDLED",
           source: "webhook",
-          payload: { event, payload: payloadObject },
+          payload: { event, eventId, payload: payloadObject, durationMs: Date.now() - startedAtMs },
         });
         await markWebhookProcessed(db, eventId);
         return reply.send({ ok: true, ignored: true });
@@ -178,6 +259,12 @@ export async function paymentRoutes(app: FastifyInstance) {
             // ignore; we already logged upstream
           }
         }
+        await logPaymentEvent(db, {
+          eventType: "WEBHOOK_HANDLER_ERROR",
+          source: "webhook",
+          failureMessage: message,
+          payload: { event, eventId, durationMs: Date.now() - startedAtMs },
+        });
         // Respond 500 so Razorpay retries (transient failures should recover).
         return reply.status(500).send({ ok: false, error: message });
       }
@@ -228,17 +315,37 @@ export async function paymentRoutes(app: FastifyInstance) {
         pendingId?: string;
       };
       const env = getEnv();
-      if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
-        if (env.NODE_ENV === "development") {
-          return {
-            orderId: `sim_${ulid()}`,
-            keyId: "dev_sim_key",
-            amount,
-            currency: currency ?? "INR",
-          };
+
+      // Dummy mode: bypass Razorpay entirely. Returns synthetic order/key IDs
+      // that the customer app recognizes (keyId starting with "dummy_") and
+      // renders the Simulate Success / Failure sheet. The pending row still
+      // gets razorpayOrderId set so the existing finalize flow + reconciler
+      // continue to work unchanged.
+      const dummyModeActive =
+        env.PAYMENT_DUMMY_MODE ||
+        !env.RAZORPAY_KEY_ID ||
+        !env.RAZORPAY_KEY_SECRET;
+
+      if (dummyModeActive) {
+        if (!env.PAYMENT_DUMMY_MODE && env.NODE_ENV !== "development") {
+          // In production without PAYMENT_DUMMY_MODE, missing Razorpay keys is fatal.
+          throw new Error("Razorpay is not configured");
         }
-        throw new Error("Razorpay is not configured");
+        const orderId = `dummy_${ulid()}`;
+        if (pendingId) {
+          await markPendingOrderPaymentStarted(getDb(), {
+            pendingId,
+            razorpayOrderId: orderId,
+          });
+        }
+        return {
+          orderId,
+          keyId: "dummy_key",
+          amount,
+          currency: currency ?? "INR",
+        };
       }
+
       const order = await createRazorpayOrder({
         amount,
         currency: currency ?? "INR",
@@ -257,6 +364,77 @@ export async function paymentRoutes(app: FastifyInstance) {
         amount: order.amount,
         currency: order.currency,
       };
+    }
+  );
+
+  /**
+   * Dummy-mode failure endpoint — the customer app calls this when the user
+   * taps "Simulate Failure" in the dummy payment sheet. Marks the pending
+   * order as FAILED via the same path used by the real payment.failed webhook,
+   * so the reconciler / refund flow / activeOrder unlock logic all behave
+   * identically to a real Razorpay failure.
+   *
+   * Guarded — only works when PAYMENT_DUMMY_MODE is enabled.
+   */
+  app.post(
+    "/dummy/fail",
+    {
+      schema: {
+        body: z.object({
+          pendingId: z.string().min(1),
+          razorpayOrderId: z.string().min(1),
+          reason: z.string().max(200).optional(),
+        }),
+        response: {
+          200: z.object({
+            ok: z.boolean(),
+            code: z.string().optional(),
+            message: z.string().optional(),
+          }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const env = getEnv();
+      if (!env.PAYMENT_DUMMY_MODE && env.NODE_ENV !== "development") {
+        return reply.send({
+          ok: false,
+          code: "DUMMY_MODE_DISABLED",
+          message: "Dummy payment failure is not enabled.",
+        });
+      }
+
+      const { pendingId, razorpayOrderId, reason } = req.body as {
+        pendingId: string;
+        razorpayOrderId: string;
+        reason?: string;
+      };
+
+      const db = getDb();
+      await markPendingOrderFailedFromWebhook(db, {
+        razorpayOrderId,
+        razorpayPaymentId: null,
+        failureCode: "DUMMY_USER_DECLINED",
+        failureMessage: reason || "User chose Simulate Failure in dummy payment.",
+        gatewayPayload: {
+          verifiedBy: "dummy_mode",
+          pendingId,
+          razorpayOrderId,
+          ts: new Date().toISOString(),
+        },
+      });
+
+      await logPaymentEvent(db, {
+        eventType: "DUMMY_PAYMENT_FAILED",
+        source: "client",
+        pendingId,
+        razorpayOrderId,
+        failureCode: "DUMMY_USER_DECLINED",
+        failureMessage: reason || "User chose Simulate Failure.",
+        payload: { ts: Date.now() },
+      });
+
+      return reply.send({ ok: true });
     }
   );
 

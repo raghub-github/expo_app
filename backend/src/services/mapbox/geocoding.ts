@@ -58,3 +58,57 @@ export async function forwardGeocodeAddress(address: string): Promise<ForwardGeo
   };
 }
 
+/**
+ * Reverse-geocode coordinates (lat/lng → state/city/pincode).
+ * Used as fallback when a saved address has placeholder ("—") values for those fields
+ * but valid lat/lng — lets us still resolve geo-bound platform offers.
+ */
+export type ReverseGeocodeBackendResult = {
+  city: string | null;
+  state: string | null;
+  pincode: string | null;
+  placeName: string | null;
+};
+
+export async function reverseGeocodeCoords(
+  latitude: number,
+  longitude: number,
+): Promise<ReverseGeocodeBackendResult | null> {
+  const env = getEnv();
+  const token = env.MAPBOX_ACCESS_TOKEN?.trim();
+  if (!token) return null;
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+
+  const url = new URL(
+    `https://api.mapbox.com/geocoding/v5/mapbox.places/${longitude},${latitude}.json`
+  );
+  url.searchParams.set("access_token", token);
+  url.searchParams.set("limit", "1");
+  url.searchParams.set("types", "address,place,postcode,region,locality");
+
+  try {
+    const res = await fetch(url.toString(), { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      features?: Array<{
+        place_name?: string;
+        context?: Array<{ id?: string; text?: string }>;
+        text?: string;
+      }>;
+    };
+    const f = data.features?.[0];
+    if (!f) return null;
+    const ctx = f.context ?? [];
+    const city = pickText(ctx, "place.") ?? pickText(ctx, "locality.") ?? null;
+    const state = pickText(ctx, "region.") ?? null;
+    const pincode = pickText(ctx, "postcode.") ?? null;
+    return {
+      city,
+      state,
+      pincode,
+      placeName: f.place_name ?? f.text ?? null,
+    };
+  } catch {
+    return null;
+  }
+}

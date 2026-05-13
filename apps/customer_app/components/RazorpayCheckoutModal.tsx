@@ -1,20 +1,30 @@
 /**
- * Razorpay checkout in a WebView. Uses inline HTML so the device only needs to load
- * checkout.razorpay.com (no backend URL). Shows UPI, cards, wallets etc.
+ * Razorpay checkout — browser-fallback only.
+ *
+ * The native `react-native-razorpay` dependency has been removed from the
+ * project (see package.json). When `PAYMENT_DUMMY_MODE=true` on the backend,
+ * the checkout screen renders the in-app dummy sheet and never instantiates
+ * this component. When real Razorpay is re-enabled later, this component
+ * still works — it opens the backend's hosted `/v1/razorpay-checkout` page in
+ * a Chrome Custom Tab via `expo-web-browser`, which supports UPI Intent on
+ * Android out of the box.
+ *
+ * Why the native module was removed:
+ *   1. We have a dummy bypass for testing — Razorpay isn't called at all.
+ *   2. `react-native-razorpay@2.3.1` is an old-bridge module that has been
+ *      a recurring cause of startup crashes under React Native's New
+ *      Architecture (TurboModules). Reanimated 4.x forces newArchEnabled=true,
+ *      so we can't disable it. Removing this dep eliminates a major suspect.
+ *   3. The browser fallback alone delivers a complete UPI / card / wallet UX
+ *      via Razorpay's hosted page, with no native SDK linkage.
+ *
+ * If you ever want the native bottom-sheet UX back, run:
+ *   npm install react-native-razorpay@^2.3.1
+ *   Then re-enable the native probe block at the bottom of this file.
  */
 
-import React, { useCallback, useMemo } from "react";
-import { Modal, View, StyleSheet, TouchableOpacity, Text, ActivityIndicator } from "react-native";
-import { WebView } from "react-native-webview";
-import { Ionicons } from "@expo/vector-icons";
-import { GatiMitraColors } from "@/constants/gatimitra";
-
-// Use an internal scheme so the OS does not open it as a deep link (which would reload the app).
-// The app scheme is "gatimitra" – loading gatimitra:// in the WebView was triggering a reload.
-const PAY_SUCCESS_PREFIX = "gm-internal://pay-success";
-const PAY_CANCEL_PREFIX = "gm-internal://pay-cancel";
-const SUCCESS_URL = "gm-internal://pay-success";
-const CANCEL_URL = "gm-internal://pay-cancel";
+import { useEffect, useRef, useState } from "react";
+import * as WebBrowser from "expo-web-browser";
 
 export type RazorpayPaymentResult = {
   razorpayPaymentId: string;
@@ -29,7 +39,7 @@ export type RazorpayOrderParams = {
 };
 
 export type RazorpayPrefill = {
-  /** Indian mobile (10 digits, with or without +91). Required for UPI Collect convenience. */
+  /** 10-digit Indian mobile (REQUIRED for UPI Collect to render). */
   contact?: string | null;
   email?: string | null;
   name?: string | null;
@@ -37,169 +47,168 @@ export type RazorpayPrefill = {
 
 type Props = {
   visible: boolean;
-  /** Order params from create-order API. When set, checkout is rendered as inline HTML (recommended). */
   orderParams: RazorpayOrderParams | null;
-  /** Prefill for contact/email/name; improves UPI Collect UX (auto-fills VPA sheet) and helps ensure UPI block renders. */
   prefill?: RazorpayPrefill;
-  /** Brand colour shown in the Razorpay modal. */
   themeColor?: string;
   onSuccess: (result: RazorpayPaymentResult) => void;
   onCancel: () => void;
 };
 
-/**
- * Build checkout HTML so WebView only loads Razorpay script from the internet.
- *
- * UPI visibility notes (from Razorpay Checkout docs):
- *  - Currency MUST be INR (we rely on the order currency).
- *  - The account must have UPI enabled in Razorpay Dashboard → Settings →
- *    Configuration → Payment methods. Test mode accounts often have it
- *    disabled by default.
- *  - Passing `prefill.contact` (10-digit Indian mobile) enables UPI Collect
- *    convenience and helps the UPI block render reliably on mobile WebViews.
- *  - `config.display.blocks.banks` with `"upi"` sequencing ensures UPI is
- *    shown as a primary method in the checkout modal.
- *  - `theme.color` is optional but improves brand consistency.
- */
-function buildCheckoutHtml(
-  orderId: string,
-  keyId: string,
-  amount: number,
-  prefill: RazorpayPrefill | undefined,
-  themeColor: string
-): string {
-  const orderIdJ = JSON.stringify(orderId);
-  const keyIdJ = JSON.stringify(keyId);
-  const amountJ = JSON.stringify(String(amount));
-  const successUrlJ = JSON.stringify(SUCCESS_URL);
-  const cancelUrlJ = JSON.stringify(CANCEL_URL);
-  const prefillJ = JSON.stringify({
-    contact: prefill?.contact ? String(prefill.contact).replace(/[^\d+]/g, "") : undefined,
-    email: prefill?.email || undefined,
-    name: prefill?.name || undefined,
-  });
-  const themeJ = JSON.stringify(themeColor);
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
-  <title>Complete payment</title>
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; background: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; box-sizing: border-box; }
-    .msg { color: #64748b; font-size: 15px; margin-top: 12px; }
-    .err { color: #dc2626; font-size: 14px; margin-top: 12px; text-align: center; }
-  </style>
-</head>
-<body>
-  <p class="msg" id="status">Opening Razorpay…</p>
-  <p class="err" id="err" style="display:none;"></p>
-  <script>
-(function() {
-  var order_id = ${orderIdJ};
-  var key_id = ${keyIdJ};
-  var amount = ${amountJ};
-  var success_url = ${successUrlJ};
-  var cancel_url = ${cancelUrlJ};
-  var prefill = ${prefillJ};
-  var themeColor = ${themeJ};
-  var statusEl = document.getElementById("status");
-  var errEl = document.getElementById("err");
-  function showErr(msg) {
-    if (statusEl) statusEl.style.display = "none";
-    if (errEl) { errEl.textContent = msg; errEl.style.display = "block"; }
-  }
-  if (!order_id || !key_id || amount === "0") {
-    showErr("Invalid payment parameters.");
-    return;
-  }
-  function openCheckout() {
-    if (typeof Razorpay === "undefined") {
-      showErr("Razorpay failed to load. Check your connection.");
-      return;
-    }
-    try {
-      var options = {
-        key: key_id,
-        amount: Number(amount),
-        currency: "INR",
-        order_id: order_id,
-        name: "GatiMitra",
-        description: "Order payment",
-        prefill: {
-          contact: prefill.contact || "",
-          email: prefill.email || "",
-          name: prefill.name || ""
-        },
-        theme: { color: themeColor || "#16a34a" },
-        // Tell Razorpay Checkout to show UPI / cards / netbanking / wallets as
-        // top-level blocks. If an account doesn't have UPI enabled server-side
-        // Razorpay will silently drop it — this config only controls ordering.
-        config: {
-          display: {
-            blocks: {
-              upi: { name: "Pay using UPI", instruments: [{ method: "upi" }] },
-              other: { name: "Other methods", instruments: [
-                { method: "card" }, { method: "netbanking" }, { method: "wallet" }
-              ] }
-            },
-            sequence: ["block.upi", "block.other"],
-            preferences: { show_default_blocks: true }
-          }
-        },
-        handler: function(r) {
-          var u = success_url + (success_url.indexOf("?") >= 0 ? "&" : "?") +
-            "razorpay_payment_id=" + encodeURIComponent(r.razorpay_payment_id) +
-            "&razorpay_order_id=" + encodeURIComponent(r.razorpay_order_id) +
-            "&razorpay_signature=" + encodeURIComponent(r.razorpay_signature);
-          window.location.href = u;
-        },
-        modal: {
-          confirm_close: true,
-          ondismiss: function() { window.location.href = cancel_url; }
-        }
-      };
-      var rzp = new Razorpay(options);
-      rzp.on("payment.failed", function(resp) {
-        // Surface the error briefly then navigate back so checkout can retry.
-        try {
-          var desc = (resp && resp.error && resp.error.description) ? resp.error.description : "";
-          if (desc && errEl) { errEl.textContent = desc; errEl.style.display = "block"; }
-        } catch (e) { /* noop */ }
-        setTimeout(function() { window.location.href = cancel_url; }, 400);
-      });
-      rzp.open();
-      if (statusEl) statusEl.textContent = "Choose payment method below…";
-    } catch (e) {
-      showErr("Could not open payment: " + (e && e.message ? e.message : "Try again."));
-    }
-  }
-  if (typeof Razorpay !== "undefined") { openCheckout(); return; }
-  var s = document.createElement("script");
-  s.src = "https://checkout.razorpay.com/v1/checkout.js";
-  s.async = true;
-  s.onload = function() { openCheckout(); };
-  s.onerror = function() { showErr("Could not load Razorpay. Check internet."); };
-  document.head.appendChild(s);
-})();
-  </script>
-</body>
-</html>`;
+/* ----------------------------------------------------------------------- */
+/* Helpers                                                                 */
+/* ----------------------------------------------------------------------- */
+
+const SUCCESS_PREFIX = "gatimitra://pay-success";
+const CANCEL_PREFIX = "gatimitra://pay-cancel";
+const REDIRECT_INTERCEPT = "gatimitra://";
+
+function normalizeContact(raw: string | null | undefined): string {
+  if (!raw) return "";
+  const digits = String(raw).replace(/\D/g, "");
+  return digits.length >= 10 ? digits.slice(-10) : digits;
 }
 
+function getApiBaseUrl(): string {
+  const explicit = (process.env.EXPO_PUBLIC_API_BASE_URL ?? "").trim();
+  if (explicit) return explicit.replace(/\/+$/, "");
+  const host = (process.env.EXPO_PUBLIC_DEV_HOST ?? "").trim();
+  const port = (process.env.EXPO_PUBLIC_API_PORT ?? "3000").trim();
+  if (host) return `http://${host}:${port}`;
+  return "http://localhost:3000";
+}
+
+function buildHostedCheckoutUrl(params: {
+  orderParams: RazorpayOrderParams;
+  prefill?: RazorpayPrefill;
+  themeColor?: string;
+}): string {
+  const base = getApiBaseUrl();
+  const qs = new URLSearchParams({
+    order_id: params.orderParams.orderId,
+    key_id: params.orderParams.keyId,
+    amount: String(params.orderParams.amount),
+    success_url: SUCCESS_PREFIX,
+    cancel_url: CANCEL_PREFIX,
+    prefill_contact: normalizeContact(params.prefill?.contact),
+    prefill_email: params.prefill?.email ?? "",
+    prefill_name: params.prefill?.name ?? "",
+    theme_color: params.themeColor ?? "#16a34a",
+  });
+  return `${base}/v1/razorpay-checkout?${qs.toString()}`;
+}
+
+function parseRazorpayTokensFromUrl(url: string): RazorpayPaymentResult {
+  let qs = "";
+  const idx = url.indexOf("?");
+  if (idx >= 0) qs = url.slice(idx + 1);
+  const params = new URLSearchParams(qs);
+  return {
+    razorpayPaymentId: params.get("razorpay_payment_id") ?? "",
+    razorpayOrderId: params.get("razorpay_order_id") ?? "",
+    razorpaySignature: params.get("razorpay_signature") ?? "",
+  };
+}
+
+/* ----------------------------------------------------------------------- */
+/* Browser fallback path                                                   */
+/* ----------------------------------------------------------------------- */
+
+async function openBrowserCheckout(args: {
+  orderParams: RazorpayOrderParams;
+  prefill?: RazorpayPrefill;
+  themeColor?: string;
+  onSuccess: (r: RazorpayPaymentResult) => void;
+  onCancel: () => void;
+}): Promise<void> {
+  const { orderParams, prefill, themeColor, onSuccess, onCancel } = args;
+  const url = buildHostedCheckoutUrl({ orderParams, prefill, themeColor });
+  // eslint-disable-next-line no-console
+  console.log("[razorpay] opening browser checkout", { orderId: orderParams.orderId });
+
+  try {
+    await WebBrowser.warmUpAsync();
+  } catch {
+    /* iOS does not support warmUp; ignore */
+  }
+
+  try {
+    const result = await WebBrowser.openAuthSessionAsync(url, REDIRECT_INTERCEPT, {
+      showInRecents: false,
+      toolbarColor: themeColor ?? "#16a34a",
+      enableDefaultShareMenuItem: false,
+      enableBarCollapsing: false,
+    });
+    WebBrowser.coolDownAsync().catch(() => undefined);
+
+    if (result.type !== "success" || !("url" in result) || !result.url) {
+      onCancel();
+      return;
+    }
+    const returnedUrl = String(result.url);
+    if (returnedUrl.startsWith(SUCCESS_PREFIX)) {
+      const tokens = parseRazorpayTokensFromUrl(returnedUrl);
+      if (tokens.razorpayPaymentId && tokens.razorpayOrderId && tokens.razorpaySignature) {
+        onSuccess(tokens);
+        return;
+      }
+      onCancel();
+      return;
+    }
+    onCancel();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn("[razorpay] openAuthSessionAsync threw", err);
+    onCancel();
+  }
+}
+
+/* ----------------------------------------------------------------------- */
+/* Component                                                               */
+/* ----------------------------------------------------------------------- */
+
 export function RazorpayCheckoutModal({ visible, orderParams, prefill, themeColor, onSuccess, onCancel }: Props) {
-  const webViewSource = useMemo(() => {
-    if (!orderParams) return null;
-    return {
-      html: buildCheckoutHtml(
-        orderParams.orderId,
-        orderParams.keyId,
-        orderParams.amount,
-        prefill,
-        themeColor ?? GatiMitraColors.emerald
-      ),
+  const inFlightRef = useRef(false);
+  const [, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!visible || !orderParams) {
+      inFlightRef.current = false;
+      return;
+    }
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+
+    let cancelledByEffect = false;
+    const wrappedOnSuccess = (r: RazorpayPaymentResult) => {
+      if (!cancelledByEffect) {
+        inFlightRef.current = false;
+        onSuccess(r);
+      }
+    };
+    const wrappedOnCancel = () => {
+      if (!cancelledByEffect) {
+        inFlightRef.current = false;
+        onCancel();
+      }
+    };
+
+    void openBrowserCheckout({
+      orderParams,
+      prefill,
+      themeColor,
+      onSuccess: wrappedOnSuccess,
+      onCancel: wrappedOnCancel,
+    });
+
+    return () => {
+      cancelledByEffect = true;
     };
   }, [
+    visible,
     orderParams?.orderId,
     orderParams?.keyId,
     orderParams?.amount,
@@ -207,97 +216,9 @@ export function RazorpayCheckoutModal({ visible, orderParams, prefill, themeColo
     prefill?.email,
     prefill?.name,
     themeColor,
+    onSuccess,
+    onCancel,
   ]);
 
-  const handleShouldStartLoadWithRequest = useCallback(
-    (request: { url: string }) => {
-      const url = request.url;
-      if (url.startsWith(PAY_SUCCESS_PREFIX)) {
-        try {
-          const parsed = new URL(url);
-          const paymentId = parsed.searchParams.get("razorpay_payment_id") ?? "";
-          const orderId = parsed.searchParams.get("razorpay_order_id") ?? "";
-          const signature = parsed.searchParams.get("razorpay_signature") ?? "";
-          if (paymentId && orderId && signature) {
-            onSuccess({ razorpayPaymentId: paymentId, razorpayOrderId: orderId, razorpaySignature: signature });
-          }
-        } catch {
-          onCancel();
-        }
-        return false;
-      }
-      if (url.startsWith(PAY_CANCEL_PREFIX)) {
-        onCancel();
-        return false;
-      }
-      return true;
-    },
-    [onSuccess, onCancel]
-  );
-
-  if (!visible || !webViewSource) return null;
-
-  return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      presentationStyle="pageSheet"
-      onRequestClose={onCancel}
-    >
-      <View style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={onCancel} style={styles.closeBtn} hitSlop={12}>
-            <Ionicons name="close" size={24} color={GatiMitraColors.textPrimary} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Complete payment</Text>
-          <View style={styles.headerSpacer} />
-        </View>
-        <WebView
-          source={webViewSource}
-          style={styles.webview}
-          onShouldStartLoadWithRequest={handleShouldStartLoadWithRequest}
-          originWhitelist={["*"]}
-          javaScriptEnabled
-          domStorageEnabled
-          allowFileAccess={false}
-          mixedContentMode="compatibility"
-          startInLoadingState
-          renderLoading={() => (
-            <View style={styles.loadingWrap}>
-              <ActivityIndicator size="large" color={GatiMitraColors.emerald} />
-              <Text style={styles.loadingText}>Opening Razorpay…</Text>
-            </View>
-          )}
-        />
-      </View>
-    </Modal>
-  );
+  return null;
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#fff" },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: GatiMitraColors.border,
-  },
-  closeBtn: { padding: 8 },
-  headerTitle: { fontSize: 17, fontWeight: "700", color: GatiMitraColors.textPrimary },
-  headerSpacer: { width: 40 },
-  webview: { flex: 1 },
-  loadingWrap: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "#fff",
-  },
-  loadingText: { marginTop: 12, fontSize: 15, color: GatiMitraColors.textSecondary },
-});

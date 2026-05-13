@@ -81,6 +81,24 @@ export type BillContext = {
    * When omitted, treated as 0 (quote may overstate eligibility until order commit validates).
    */
   couponRedemptionsByUser?: number;
+  /**
+   * Map of merchantOfferId → number of times this user has already used that offer.
+   * Used to enforce max_uses_per_user. Omit or leave empty to skip per-user cap check.
+   */
+  merchantOfferUsagesByUser?: Map<number, number>;
+  /**
+   * User explicitly selected this platform offer in the checkout UI.
+   * When set and the offer is eligible, it's applied INSTEAD of the auto-picked
+   * max-discount winner. Lets the customer override the default selection.
+   */
+  selectedPlatformOfferId?: number | null;
+  /** Same as above for merchant offers. */
+  selectedMerchantOfferId?: number | null;
+  /**
+   * When true, no platform/merchant offer is auto-applied. The customer explicitly
+   * removed the applied offer in the UI. Coupons (entered manually) are still applied.
+   */
+  forceNoAutoOffer?: boolean;
 };
 
 export type AppliedLine = {
@@ -296,14 +314,69 @@ export type PlatformOfferRow = {
 /** Row from `merchant_offers` for the current store (see merchantOffersApply). */
 export type MerchantOfferRow = {
   id: number;
+  offerId: string;
   title: string;
   offerType: string;
+  offerSubType: string | null;
   discountValue: number | null;
   discountPercentage: number | null;
   maxDiscountAmount: number | null;
   minOrderAmount: number | null;
+  maxOrderAmount: number | null;
+  buyQuantity: number | null;
+  getQuantity: number | null;
+  couponCode: string | null;
+  autoApply: boolean;
+  isStackable: boolean;
+  perOrderLimit: number;
+  firstOrderOnly: boolean;
+  newUserOnly: boolean;
+  maxUsesTotal: number | null;
+  maxUsesPerUser: number | null;
+  currentUses: number;
+  applicableOnDays: string[] | null;
+  applicableTimeStart: string | null;
+  applicableTimeEnd: string | null;
+  maxDiscountPerOrder: number | null;
   metadata: Record<string, unknown>;
   displayPriority: number;
+  priority: number;
+  createdSourcePlatform: string;
+  createdByRole: string;
+  approvalStatus: string;
+};
+
+/** Insert shape for offer_order_applications. */
+export type OfferOrderApplicationInsert = {
+  orderId: number;
+  offerSource: "MERCHANT" | "PLATFORM" | "COUPON";
+  merchantOfferId?: number | null;
+  platformOfferId?: number | null;
+  offerType: string;
+  offerTitle: string;
+  couponCode?: string | null;
+  discountAmount: number;
+  platformShare: number;
+  merchantShare: number;
+  fundingMode: string;
+  snapshotJson: Record<string, unknown>;
+};
+
+/** Insert shape for merchant_offer_usages. */
+export type MerchantOfferUsageInsert = {
+  offerId: number;
+  userId: number;
+  orderId?: number | null;
+  discountAmount: number;
+};
+
+/** Unified offer API response returned to customer app and checkout. */
+export type UnifiedOfferApiResponse = {
+  merchant_offers: MerchantOfferRow[];
+  platform_offers: PlatformOfferRow[];
+  coupon_offers: DiscountRow[];
+  applied_offers: AppliedLine[];
+  total_discount: number;
 };
 
 export type BillingDataset = {
@@ -318,6 +391,8 @@ export type BillingDataset = {
   taxConfigs: TaxConfigRow[];
   merchantOverrides: Record<string, unknown> | null;
   coupon: DiscountRow | null;
+  /** Per-user usage counts keyed by merchantOfferId. Undefined if userId not provided. */
+  merchantOfferUsagesByUser?: Map<number, number>;
 };
 
 /** Mutable fee + item buckets after discounts (mirrors pipeline `rem`). */

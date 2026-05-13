@@ -33,6 +33,13 @@ const checkoutOffersQuerySchema = z.object({
   cartSubtotal: z.coerce.number().nonnegative().optional().default(0),
   serviceType: z.enum(["FOOD", "PARCEL", "RIDE", "ALL"]).optional(),
   userSegment: z.enum(["NEW", "EXISTING", "ALL"]).optional(),
+  // Live location from the customer app's location store. Preferred over the saved
+  // address fields (which may carry "—" placeholders if reverse-geocoding failed
+  // when the address was created). Geo inheritance walks pincode→state, but state
+  // alone is enough to resolve state-bound offers when the pincode chain is broken.
+  pincode: z.string().optional(),
+  state: z.string().optional(),
+  city: z.string().optional(),
 });
 
 const calculateBodySchema = z.object({
@@ -434,6 +441,9 @@ export async function billingRoutes(app: FastifyInstance) {
         cartSubtotal: q.cartSubtotal,
         serviceType: q.serviceType,
         userSegment: q.userSegment,
+        livePincode: q.pincode,
+        liveState: q.state,
+        liveCity: q.city,
       });
 
       if (!result.ok) {

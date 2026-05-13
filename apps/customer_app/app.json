@@ -39,17 +39,12 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
+      "./plugins/withAndroidUpiQueries",
+      "./plugins/withGoogleMapsApiKey",
       [
         "expo-location",
         {
           "locationWhenInUsePermission": "GatiMitra uses your location to show nearby restaurants and delivery options."
-        }
-      ],
-      [
-        "expo-speech-recognition",
-        {
-          "microphonePermission": "GatiMitra uses the microphone for voice search.",
-          "speechRecognitionPermission": "GatiMitra uses speech recognition so you can search by voice."
         }
       ],
       [

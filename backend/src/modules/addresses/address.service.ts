@@ -8,7 +8,17 @@ import { randomUUID } from "crypto";
 import { getDb } from "../../db/client.js";
 import { customerAddresses, customerActiveLocation } from "../../db/schema.js";
 import { eq, and, desc, isNull, sql } from "drizzle-orm";
-import { forwardGeocodeAddress } from "../../services/mapbox/geocoding.js";
+import { forwardGeocodeAddress, reverseGeocodeCoords } from "../../services/mapbox/geocoding.js";
+
+/** Treat em-dash, dashes, and "no value" tokens as missing so they're not persisted as state/city/pincode. */
+function isPlaceholder(v: string | null | undefined): boolean {
+  if (v == null) return true;
+  const t = String(v).trim();
+  if (!t) return true;
+  if (t === "—" || t === "–" || t === "-" || t === "--" || t === "---") return true;
+  const lower = t.toLowerCase();
+  return lower === "n/a" || lower === "na" || lower === "null" || lower === "none" || lower === "unknown";
+}
 
 /** App-facing shape (id, fullAddress, pincode, etc.) for list/detail. */
 export type AddressRow = {
@@ -120,18 +130,34 @@ export async function addAddress(
     latitude = geo.latitude;
     longitude = geo.longitude;
     // Fill in missing locality fields when user didn't provide them.
-    if (!data.city && geo.city) data.city = geo.city;
-    if (!data.state && geo.state) data.state = geo.state;
-    if (!data.pincode && geo.pincode) data.pincode = geo.pincode;
+    if (isPlaceholder(data.city) && geo.city) data.city = geo.city;
+    if (isPlaceholder(data.state) && geo.state) data.state = geo.state;
+    if (isPlaceholder(data.pincode) && geo.pincode) data.pincode = geo.pincode;
   }
 
   if (!Number.isFinite(Number(latitude)) || !Number.isFinite(Number(longitude))) {
     throw new Error("Invalid address coordinates. Please select the location on map and try again.");
   }
 
-  const city = (data.city ?? "").trim() || "—";
-  const state = (data.state ?? "").trim() || "—";
-  const postalCode = (data.pincode ?? "").trim() || "—";
+  // If still missing after the above, reverse-geocode lat/lng to fill state/city/pincode.
+  // Without this, geo-bound platform offers and per-state delivery slabs won't resolve.
+  if (isPlaceholder(data.city) || isPlaceholder(data.state) || isPlaceholder(data.pincode)) {
+    try {
+      const rg = await reverseGeocodeCoords(Number(latitude), Number(longitude));
+      if (rg) {
+        if (isPlaceholder(data.city) && rg.city) data.city = rg.city;
+        if (isPlaceholder(data.state) && rg.state) data.state = rg.state;
+        if (isPlaceholder(data.pincode) && rg.pincode) data.pincode = rg.pincode;
+      }
+    } catch {
+      // best-effort
+    }
+  }
+
+  // Persist real values when available; em-dash placeholder is a last-resort to satisfy NOT NULL.
+  const city = isPlaceholder(data.city) ? "—" : String(data.city).trim();
+  const state = isPlaceholder(data.state) ? "—" : String(data.state).trim();
+  const postalCode = isPlaceholder(data.pincode) ? "—" : String(data.pincode).trim();
 
   // Home/Work uniqueness: only one active Home and one active Work per customer
   if (addressType === "HOME" || addressType === "WORK") {

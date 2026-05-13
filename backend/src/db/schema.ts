@@ -2659,20 +2659,19 @@ export const onboardingPayments = pgTable(
 );
 
 // ============================================================================
-// OFFERS & PARTICIPATION
+// RIDER INCENTIVES (formerly "offers" — renamed to avoid confusion with
+// customer-facing discount offers in merchant_offers / billing_platform_offers)
 // ============================================================================
 
-/**
- * Offers table
- */
-export const offers = pgTable(
-  "offers",
+/** Rider incentive programmes (e.g. complete N deliveries in M days). */
+export const riderIncentives = pgTable(
+  "rider_incentives",
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
     title: text("title").notNull(),
     description: text("description"),
     scope: offerScopeEnum("scope").notNull().default("global"),
-    condition: jsonb("condition").notNull(), // e.g., {orders_required: 30, time_limit: "10 days", city: "Mumbai"}
+    condition: jsonb("condition").notNull(),
     rewardType: rewardTypeEnum("reward_type").notNull().default("cash"),
     rewardAmount: numeric("reward_amount", { precision: 10, scale: 2 }),
     rewardMetadata: jsonb("reward_metadata").default({}),
@@ -2680,55 +2679,189 @@ export const offers = pgTable(
     endDate: timestamp("end_date", { withTimezone: true }),
     active: boolean("active").notNull().default(true),
     metadata: jsonb("metadata").default({}),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    scopeIdx: index("offers_scope_idx").on(table.scope),
-    activeIdx: index("offers_active_idx").on(table.active),
-    datesIdx: index("offers_dates_idx").on(table.startDate, table.endDate),
+    scopeIdx:  index("rider_incentives_scope_idx").on(table.scope),
+    activeIdx: index("rider_incentives_active_idx").on(table.active),
+    datesIdx:  index("rider_incentives_dates_idx").on(table.startDate, table.endDate),
   })
 );
 
-/**
- * Offer participation tracking
- */
-export const offerParticipation = pgTable(
-  "offer_participation",
+/** Tracks rider progress and reward-claimed state for rider_incentives. */
+export const riderIncentiveParticipation = pgTable(
+  "rider_incentive_participation",
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
     riderId: integer("rider_id")
       .notNull()
       .references(() => riders.id, { onDelete: "cascade" }),
-    offerId: integer("offer_id")
+    incentiveId: integer("offer_id")
       .notNull()
-      .references(() => offers.id, { onDelete: "cascade" }),
+      .references(() => riderIncentives.id, { onDelete: "cascade" }),
     completed: boolean("completed").notNull().default(false),
-    progress: jsonb("progress").default({}), // Track progress towards completion
+    progress: jsonb("progress").default({}),
     rewardClaimed: boolean("reward_claimed").notNull().default(false),
     rewardClaimedAt: timestamp("reward_claimed_at", { withTimezone: true }),
     metadata: jsonb("metadata").default({}),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    riderIdIdx: index("offer_participation_rider_id_idx").on(table.riderId),
-    offerIdIdx: index("offer_participation_offer_id_idx").on(table.offerId),
-    completedIdx: index("offer_participation_completed_idx").on(
-      table.completed
-    ),
-    riderOfferIdx: uniqueIndex("offer_participation_rider_offer_idx").on(
+    riderIdIdx:    index("rider_incentive_participation_rider_id_idx").on(table.riderId),
+    incentiveIdx:  index("rider_incentive_participation_offer_id_idx").on(table.incentiveId),
+    completedIdx:  index("rider_incentive_participation_completed_idx").on(table.completed),
+    riderOfferIdx: uniqueIndex("rider_incentive_participation_rider_offer_idx").on(
       table.riderId,
-      table.offerId
+      table.incentiveId
     ),
+  })
+);
+
+// ============================================================================
+// MERCHANT OFFERS — canonical store-level discount offers
+// ============================================================================
+
+/**
+ * Merchant store offers — created by merchant (MERCHANT_APP / MERCHANT_PORTAL),
+ * agent (AGENT_DASHBOARD), or admin (ADMIN_DASHBOARD).
+ * Canonical offer_type values: PERCENTAGE | FLAT | BUY_X_GET_Y | BUY_N_GET_M |
+ * FREE_ITEM | FREE_DELIVERY | CART_PERCENTAGE | CART_FLAT | TIERED | BOGO | BUNDLE | COUPON
+ */
+export const merchantOffers = pgTable(
+  "merchant_offers",
+  {
+    id:                  bigserial("id", { mode: "number" }).primaryKey(),
+    offerId:             text("offer_id").notNull().unique(),
+    storeId:             bigint("store_id", { mode: "number" }).notNull(),
+    offerTitle:          text("offer_title").notNull(),
+    offerDescription:    text("offer_description"),
+    offerImageUrl:       text("offer_image_url"),
+    offerTerms:          text("offer_terms"),
+    offerType:           text("offer_type").notNull(),
+    offerSubType:        text("offer_sub_type"),
+    discountValue:       numeric("discount_value",      { precision: 10, scale: 2 }),
+    discountPercentage:  numeric("discount_percentage", { precision: 5,  scale: 2 }),
+    maxDiscountAmount:   numeric("max_discount_amount", { precision: 10, scale: 2 }),
+    minOrderAmount:      numeric("min_order_amount",    { precision: 10, scale: 2 }),
+    maxOrderAmount:      numeric("max_order_amount",    { precision: 10, scale: 2 }),
+    minItems:            integer("min_items"),
+    applicableOnDays:    text("applicable_on_days").array(),
+    applicableTimeStart: text("applicable_time_start"),
+    applicableTimeEnd:   text("applicable_time_end"),
+    buyQuantity:         integer("buy_quantity"),
+    getQuantity:         integer("get_quantity"),
+    maxUsesTotal:        integer("max_uses_total"),
+    maxUsesPerUser:      integer("max_uses_per_user"),
+    currentUses:         integer("current_uses").default(0),
+    validFrom:           timestamp("valid_from", { withTimezone: true }).notNull(),
+    validTill:           timestamp("valid_till", { withTimezone: true }).notNull(),
+    isActive:            boolean("is_active").default(true),
+    isFeatured:          boolean("is_featured").default(false),
+    displayPriority:     integer("display_priority").default(0),
+    offerMetadata:       jsonb("offer_metadata").default({}),
+    couponCode:          text("coupon_code"),
+    autoApply:           boolean("auto_apply").default(true),
+    isStackable:         boolean("is_stackable").default(false),
+    priority:            integer("priority").default(0),
+    perOrderLimit:       integer("per_order_limit").default(1),
+    firstOrderOnly:      boolean("first_order_only").default(false),
+    newUserOnly:         boolean("new_user_only").default(false),
+    userSegment:         jsonb("user_segment").default({}),
+    maxDiscountPerOrder: numeric("max_discount_per_order", { precision: 10, scale: 2 }),
+    usageResetPeriod:    text("usage_reset_period"),
+    createdAt:           timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt:           timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdBy:           integer("created_by"),
+    updatedBy:           integer("updated_by"),
+    createdByName:       text("created_by_name"),
+    updatedByName:       text("updated_by_name"),
+    updatedByAt:         timestamp("updated_by_at", { withTimezone: true }),
+    // Ownership tracking (added in migration 0215)
+    createdSourcePlatform: text("created_source_platform").notNull().default("MERCHANT_APP"),
+    updatedSourcePlatform: text("updated_source_platform"),
+    createdByRole:         text("created_by_role").notNull().default("MERCHANT"),
+    updatedByRole:         text("updated_by_role"),
+    createdByUserId:       bigint("created_by_user_id", { mode: "number" }),
+    updatedByUserId:       bigint("updated_by_user_id", { mode: "number" }),
+    createdByOrgId:        bigint("created_by_org_id",  { mode: "number" }),
+    managedByAgent:        bigint("managed_by_agent",   { mode: "number" }),
+    approvedByAdmin:       bigint("approved_by_admin",  { mode: "number" }),
+    approvalStatus:        text("approval_status").notNull().default("AUTO_APPROVED"),
+    approvalNote:          text("approval_note"),
+  },
+  (table) => ({
+    storeIdIdx:      index("merchant_offers_store_id_idx").on(table.storeId),
+    offerIdIdx:      index("merchant_offers_offer_id_idx").on(table.offerId),
+    isActiveIdx:     index("merchant_offers_is_active_idx").on(table.isActive),
+    validityIdx:     index("merchant_offers_validity_idx").on(table.validFrom, table.validTill),
+    offerTypeIdx:    index("merchant_offers_offer_type_idx").on(table.offerType),
+    isFeaturedIdx:   index("merchant_offers_is_featured_idx").on(table.isFeatured),
+    activeLookupIdx: index("idx_active_offer_lookup").on(table.storeId, table.isActive, table.validFrom, table.validTill),
+    sourcePlatIdx:   index("merchant_offers_created_source_platform_idx").on(table.createdSourcePlatform),
+    createdRoleIdx:  index("merchant_offers_created_by_role_idx").on(table.createdByRole),
+    approvalIdx:     index("merchant_offers_approval_status_idx").on(table.approvalStatus),
+  })
+);
+
+// ============================================================================
+// MERCHANT OFFER USAGES — per-user redemption tracking
+// ============================================================================
+
+/** Per-user, per-order usage log. Enforces max_uses_per_user and supports refund reversal. */
+export const merchantOfferUsages = pgTable(
+  "merchant_offer_usages",
+  {
+    id:             bigserial("id", { mode: "number" }).primaryKey(),
+    offerId:        bigint("offer_id",  { mode: "number" }).notNull().references(() => merchantOffers.id, { onDelete: "cascade" }),
+    userId:         bigint("user_id",   { mode: "number" }).notNull(),
+    orderId:        bigint("order_id",  { mode: "number" }),
+    usedAt:         timestamp("used_at", { withTimezone: true }).notNull().defaultNow(),
+    discountAmount: numeric("discount_amount", { precision: 10, scale: 2 }).notNull().default("0"),
+    isReversed:     boolean("is_reversed").notNull().default(false),
+    reversedAt:     timestamp("reversed_at", { withTimezone: true }),
+  },
+  (table) => ({
+    offerIdIdx:    index("merchant_offer_usages_offer_id_idx").on(table.offerId),
+    userIdIdx:     index("merchant_offer_usages_user_id_idx").on(table.userId),
+    orderIdIdx:    index("merchant_offer_usages_order_id_idx").on(table.orderId),
+    offerUserIdx:  index("merchant_offer_usages_offer_user_idx").on(table.offerId, table.userId),
+  })
+);
+
+// ============================================================================
+// OFFER ORDER APPLICATIONS — immutable snapshot at order placement
+// ============================================================================
+
+/**
+ * Immutable record of every discount applied at order placement time.
+ * snapshot_json stores the full offer row so history is preserved even if offers change.
+ */
+export const offerOrderApplications = pgTable(
+  "offer_order_applications",
+  {
+    id:              bigserial("id", { mode: "number" }).primaryKey(),
+    orderId:         bigint("order_id",          { mode: "number" }).notNull(),
+    offerSource:     text("offer_source").notNull(),
+    merchantOfferId: bigint("merchant_offer_id", { mode: "number" }).references(() => merchantOffers.id, { onDelete: "set null" }),
+    platformOfferId: bigint("platform_offer_id", { mode: "number" }).references(() => billingPlatformOffers.id, { onDelete: "set null" }),
+    offerType:       text("offer_type").notNull(),
+    offerTitle:      text("offer_title").notNull(),
+    couponCode:      text("coupon_code"),
+    discountAmount:  numeric("discount_amount",  { precision: 10, scale: 2 }).notNull().default("0"),
+    platformShare:   numeric("platform_share",   { precision: 10, scale: 2 }).notNull().default("0"),
+    merchantShare:   numeric("merchant_share",   { precision: 10, scale: 2 }).notNull().default("0"),
+    fundingMode:     text("funding_mode").notNull().default("MERCHANT_ONLY"),
+    snapshotJson:    jsonb("snapshot_json").notNull().default({}),
+    createdAt:       timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    orderIdIdx:          index("offer_order_applications_order_id_idx").on(table.orderId),
+    merchantOfferIdIdx:  index("offer_order_applications_merchant_offer_id_idx").on(table.merchantOfferId),
+    platformOfferIdIdx:  index("offer_order_applications_platform_offer_id_idx").on(table.platformOfferId),
+    offerSourceIdx:      index("offer_order_applications_offer_source_idx").on(table.offerSource),
+    createdAtIdx:        index("offer_order_applications_created_at_idx").on(table.createdAt),
   })
 );
 
@@ -3493,7 +3626,7 @@ export const ridersRelations = relations(riders, ({ one, many }) => ({
   withdrawalRequests: many(withdrawalRequests),
   walletCreditRequests: many(walletCreditRequests),
   onboardingPayments: many(onboardingPayments),
-  offerParticipation: many(offerParticipation),
+  riderIncentiveParticipation: many(riderIncentiveParticipation),
   ratings: many(ratings),
   tickets: many(tickets),
   referralsAsReferrer: many(referrals, { relationName: "referrer" }),
@@ -4066,6 +4199,41 @@ export const expoPushTokens = pgTable(
     roleIdx: index("expo_push_tokens_role_idx").on(t.role),
   })
 );
+
+// ============================================================================
+// RIDER INCENTIVE RELATIONS
+// ============================================================================
+
+export const riderIncentivesRelations = relations(riderIncentives, ({ many }) => ({
+  participation: many(riderIncentiveParticipation),
+}));
+
+export const riderIncentiveParticipationRelations = relations(riderIncentiveParticipation, ({ one }) => ({
+  rider:     one(riders,          { fields: [riderIncentiveParticipation.riderId],    references: [riders.id] }),
+  incentive: one(riderIncentives, { fields: [riderIncentiveParticipation.incentiveId], references: [riderIncentives.id] }),
+}));
+
+// ============================================================================
+// MERCHANT OFFER RELATIONS
+// ============================================================================
+
+export const merchantOffersRelations = relations(merchantOffers, ({ many }) => ({
+  usages:            many(merchantOfferUsages),
+  orderApplications: many(offerOrderApplications),
+}));
+
+export const merchantOfferUsagesRelations = relations(merchantOfferUsages, ({ one }) => ({
+  offer: one(merchantOffers, { fields: [merchantOfferUsages.offerId], references: [merchantOffers.id] }),
+}));
+
+export const offerOrderApplicationsRelations = relations(offerOrderApplications, ({ one }) => ({
+  merchantOffer: one(merchantOffers,       { fields: [offerOrderApplications.merchantOfferId], references: [merchantOffers.id] }),
+  platformOffer: one(billingPlatformOffers, { fields: [offerOrderApplications.platformOfferId], references: [billingPlatformOffers.id] }),
+}));
+
+// ============================================================================
+// EXPO PUSH TOKENS
+// ============================================================================
 
 export const expoPushNotificationLogs = pgTable("expo_push_notification_logs", {
   id: bigserial("id", { mode: "number" }).primaryKey(),

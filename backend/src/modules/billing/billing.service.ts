@@ -4,13 +4,14 @@ import { customerAddresses } from "../../db/schema.js";
 import { getEnv } from "../../config/env.js";
 import { getStoreBillingRates, getStoreByIdForOrder, getStoreByStoreId } from "../merchants/merchant.service.js";
 import type { NormalizedOrderItem } from "../orders/orderNormalizer.js";
-import { loadBillingDatasetUncached, getRulesetVersion, listActiveCustomerCoupons } from "./billing.repository.js";
+import { loadBillingDatasetUncached, getRulesetVersion, listActiveCustomerCoupons, loadMerchantOfferUsagesByUser } from "./billing.repository.js";
 import { executeBillingPipeline } from "./executeBillingPipeline.js";
 import { listEligiblePlatformOffersForCheckout } from "./platformOffersApply.js";
 import {
   resolveDropGeoRefsFromPincode,
   resolvePlatformOfferGeoBindingEffectiveIds,
 } from "./geoRefFromPincode.js";
+import { getRoute } from "../distance/distance.service.js";
 import { computeItemPackagingTotal } from "./packagingFromItems.js";
 import {
   billingDatasetCacheKey,
@@ -20,6 +21,24 @@ import {
 import type { BillContext, BillingResult, PlatformOfferRow } from "./types.js";
 import { getSupabase } from "../../lib/supabase.js";
 import { resolveStoreDeliveryQuote } from "../distance/storeQuote.service.js";
+import { reverseGeocodeCoords } from "../../services/mapbox/geocoding.js";
+import { resolveGeoLocation } from "./geoLocationResolver.js";
+
+/**
+ * Treat em-dash, hyphen, and "no value" tokens as null. The customer app stores
+ * "—" in customer_addresses.{state,city,postal_code} when reverse-geocoding yields
+ * no value for those required-NOT-NULL columns. Without this, geo lookups would
+ * try to match "—" against real states/pincodes and fail silently.
+ */
+function sanitizePlaceholder(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  const t = String(v).trim();
+  if (!t) return null;
+  if (t === "—" || t === "–" || t === "-" || t === "--" || t === "---") return null;
+  const lower = t.toLowerCase();
+  if (lower === "n/a" || lower === "na" || lower === "null" || lower === "none" || lower === "unknown") return null;
+  return t;
+}
 
 export type ComputeBillInput = {
   /** Required with addressId for customer checkout; use 0 for simulator-only paths. */
@@ -180,6 +199,7 @@ export async function computeBillForOrder(
   let dropLat: number;
   let dropLon: number;
   let dropPostalCode: string | null = null;
+  let dropStateName: string | null = null;
   let cityName: string | null = normalizeCity(input.cityName) || null;
 
   if (input.addressId != null) {
@@ -191,6 +211,7 @@ export async function computeBillForOrder(
         latitude: customerAddresses.latitude,
         longitude: customerAddresses.longitude,
         city: customerAddresses.city,
+        state: customerAddresses.state,
         postalCode: customerAddresses.postalCode,
       })
       .from(customerAddresses)
@@ -210,8 +231,9 @@ export async function computeBillForOrder(
 
     dropLat = addrRow.latitude != null ? Number(addrRow.latitude) : 0;
     dropLon = addrRow.longitude != null ? Number(addrRow.longitude) : 0;
-    dropPostalCode = normalizePincode(addrRow.postalCode);
-    if (!cityName && addrRow.city) cityName = normalizeCity(addrRow.city);
+    dropPostalCode = normalizePincode(sanitizePlaceholder(addrRow.postalCode));
+    dropStateName = sanitizePlaceholder(addrRow.state);
+    if (!cityName && addrRow.city) cityName = normalizeCity(sanitizePlaceholder(addrRow.city) ?? "");
   } else if (input.dropLat != null && input.dropLon != null) {
     dropLat = input.dropLat;
     dropLon = input.dropLon;
@@ -235,9 +257,6 @@ export async function computeBillForOrder(
   }
   const quote = quoteRes.quote;
   const distanceKm = quote.distance_km;
-  // #region agent log
-  fetch('http://127.0.0.1:7918/ingest/1921e81c-618b-431e-b9b9-698313b67d38',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'584fd7'},body:JSON.stringify({sessionId:'584fd7',runId:'pre-fix',hypothesisId:'H1',location:'backend/src/modules/billing/billing.service.ts:quote',message:'computeBillForOrder using canonical store-quote',data:{distanceKm:quote.distance_km,durationMin:quote.duration_min,serviceable:quote.serviceable,pricingEngine:quote.pricing_engine,deliveryFee:quote.delivery_fee,source:quote.source,cached:quote.cached,approximate:quote.approximate,hasDropPostalCode:!!dropPostalCode,dropPostalCodeLen:dropPostalCode?String(dropPostalCode).length:0},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
 
   const rates = await getStoreBillingRates(resolved.merchantStoreId);
   const packagingChargeAmount = rates?.packagingChargeAmount ?? 0;
@@ -286,9 +305,16 @@ export async function computeBillForOrder(
     };
   });
 
-  const dropGeoRefByLevel = await resolveDropGeoRefsFromPincode(dropPostalCode);
-  const platformOfferGeoBindingEffectiveIds =
-    await resolvePlatformOfferGeoBindingEffectiveIds(dropGeoRefByLevel);
+  // Master geo resolver (cascade: live → saved → reverse-geocode → state-name fallback).
+  const calcGeo = await resolveGeoLocation({
+    savedPincode: dropPostalCode,
+    savedState: dropStateName,
+    savedCity: cityName,
+    latitude: dropLat,
+    longitude: dropLon,
+  });
+  const dropGeoRefByLevel = calcGeo.refs;
+  const platformOfferGeoBindingEffectiveIds = calcGeo.geoBoundOfferIds;
 
   const audRaw = String(input.checkoutAudience ?? "CUSTOMER").toUpperCase();
   const checkoutAudience: "CUSTOMER" | "MERCHANT" | "RIDER" =
@@ -298,9 +324,6 @@ export async function computeBillForOrder(
     env.DELIVERY_MIN_FEE_INR != null && env.DELIVERY_MIN_FEE_INR > 0 ? env.DELIVERY_MIN_FEE_INR : undefined;
   const deliveryDefaultBaseInr = env.DELIVERY_DEFAULT_BASE_INR ?? 25;
   const deliveryDefaultPerKmInr = env.DELIVERY_DEFAULT_PER_KM_INR ?? 5;
-  // #region agent log
-  fetch('http://127.0.0.1:7918/ingest/1921e81c-618b-431e-b9b9-698313b67d38',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'584fd7'},body:JSON.stringify({sessionId:'584fd7',runId:'pre-fix',hypothesisId:'H4',location:'backend/src/modules/billing/billing.service.ts:ctx',message:'BillContext delivery inputs (canonical quote)',data:{deliveryChargePerKm,deliveryMinimumInr:deliveryMinimumInr??null,deliveryDefaultBaseInr,deliveryDefaultPerKmInr,quoteDeliveryFee:quote.delivery_fee,quotePricingEngine:quote.pricing_engine},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
 
   const ctx: BillContext = {
     itemSubtotal,
@@ -338,7 +361,21 @@ export async function computeBillForOrder(
     subscriptionOptIn: input.subscriptionOptIn === true,
     checkoutAudience,
     couponRedemptionsByUser: input.couponRedemptionsByUser,
+    merchantOfferUsagesByUser: undefined,
   };
+
+  // Load per-user merchant offer usage counts outside the shared dataset cache.
+  // Only needed when at least one active offer has a per-user cap.
+  if (input.customerId > 0) {
+    const offersWithCap = dataset.merchantOffers.filter((o) => o.maxUsesPerUser != null && o.maxUsesPerUser > 0);
+    if (offersWithCap.length > 0) {
+      ctx.merchantOfferUsagesByUser = await loadMerchantOfferUsagesByUser(
+        db,
+        input.customerId,
+        offersWithCap.map((o) => o.id)
+      );
+    }
+  }
 
   const billing = executeBillingPipeline(ctx, dataset);
 
@@ -457,6 +494,10 @@ export async function listCheckoutBillOffers(
     cartSubtotal: number;
     serviceType?: string;
     userSegment?: "NEW" | "EXISTING" | "ALL";
+    /** Live location from customer app — overrides saved address fields when present. */
+    livePincode?: string | null;
+    liveState?: string | null;
+    liveCity?: string | null;
   }
 ): Promise<
   | {
@@ -479,6 +520,7 @@ export async function listCheckoutBillOffers(
       latitude: customerAddresses.latitude,
       longitude: customerAddresses.longitude,
       city: customerAddresses.city,
+      state: customerAddresses.state,
       postalCode: customerAddresses.postalCode,
     })
     .from(customerAddresses)
@@ -498,8 +540,43 @@ export async function listCheckoutBillOffers(
 
   const dropLat = addrRow.latitude != null ? Number(addrRow.latitude) : 0;
   const dropLon = addrRow.longitude != null ? Number(addrRow.longitude) : 0;
-  const dropPostalCode = addrRow.postalCode ? String(addrRow.postalCode).trim() : null;
-  const cityName = addrRow.city ? String(addrRow.city).trim() || null : null;
+
+  // Master geo resolver: tries live values → saved values → reverse-geocode lat/lng → state-name fallback.
+  const geo = await resolveGeoLocation({
+    livePincode: input.livePincode,
+    liveState: input.liveState,
+    liveCity: input.liveCity,
+    savedPincode: addrRow.postalCode,
+    savedState: addrRow.state,
+    savedCity: addrRow.city,
+    latitude: dropLat,
+    longitude: dropLon,
+  });
+  const dropPostalCode = geo.pincode;
+  const dropStateName = geo.stateName;
+  const cityName = geo.city;
+
+  // Self-heal: if reverse-geocode produced new values that the saved row doesn't have,
+  // persist them so future requests skip the network call.
+  if (geo.reverseGeocoded) {
+    const patch: Partial<{ postalCode: string; state: string; city: string }> = {};
+    if (geo.reverseGeocoded.pincode && !sanitizePlaceholder(addrRow.postalCode)) {
+      patch.postalCode = geo.reverseGeocoded.pincode;
+    }
+    if (geo.reverseGeocoded.state && !sanitizePlaceholder(addrRow.state)) {
+      patch.state = geo.reverseGeocoded.state;
+    }
+    if (geo.reverseGeocoded.city && !sanitizePlaceholder(addrRow.city)) {
+      patch.city = geo.reverseGeocoded.city;
+    }
+    if (Object.keys(patch).length > 0) {
+      await db
+        .update(customerAddresses)
+        .set({ ...patch, updatedAt: new Date() })
+        .where(eq(customerAddresses.id, input.addressId))
+        .catch(() => {});
+    }
+  }
 
   const pickupLat = resolved.pickupLat;
   const pickupLon = resolved.pickupLon;
@@ -518,18 +595,25 @@ export async function listCheckoutBillOffers(
   const userSegment: "NEW" | "EXISTING" | "ALL" =
     userSegRaw === "NEW" || userSegRaw === "EXISTING" ? userSegRaw : "ALL";
 
-  const dropGeoRefByLevel = await resolveDropGeoRefsFromPincode(dropPostalCode);
-  const platformOfferGeoBindingEffectiveIds =
-    await resolvePlatformOfferGeoBindingEffectiveIds(dropGeoRefByLevel);
+  const dropGeoRefByLevel = geo.refs;
+  const platformOfferGeoBindingEffectiveIds = geo.geoBoundOfferIds;
 
   const rates = await getStoreBillingRates(resolved.merchantStoreId);
-  const grossCart = Math.max(0, input.cartSubtotal);
+  const itemPlusAddon = Math.max(0, input.cartSubtotal);
 
   const deliveryDefaultBaseInr = env.DELIVERY_DEFAULT_BASE_INR ?? 25;
   const deliveryDefaultPerKmInr = env.DELIVERY_DEFAULT_PER_KM_INR ?? 5;
 
+  // Qualifying cart total for offer min_order_amount check.
+  // Mirrors the apply phase: items + addons + estimated delivery + estimated packaging.
+  // Without this, offers would only see item subtotal (e.g. ₹189) and reject themselves
+  // even when the full cart (₹274 incl. delivery + packaging) clearly qualifies.
+  const estimatedDelivery = Math.max(0, deliveryDefaultBaseInr + distanceKm * deliveryDefaultPerKmInr);
+  const estimatedPackaging = Math.max(0, rates?.packagingChargeAmount ?? 0);
+  const grossCart = itemPlusAddon + estimatedDelivery + estimatedPackaging;
+
   const ctx: BillContext = {
-    itemSubtotal: grossCart,
+    itemSubtotal: itemPlusAddon,
     addonSubtotal: 0,
     addonQtyTotal: 0,
     orderLines: [],
@@ -580,7 +664,8 @@ export async function listCheckoutBillOffers(
     summary: describeMerchantOfferRow(m),
   }));
 
-  const platformRows = listEligiblePlatformOffersForCheckout(ctx, dataset, grossCart);
+  const { eligible: platformRows, rejections: platformRejections } =
+    listEligiblePlatformOffersForCheckoutWithReasons(ctx, dataset, grossCart);
   const platformOffers: CheckoutOfferPlatformRow[] = platformRows.map((o) => ({
     id: o.id,
     name: o.name ?? null,
@@ -588,7 +673,90 @@ export async function listCheckoutBillOffers(
     summary: describePlatformOfferRow(o),
   }));
 
+  // Diagnostic logging — helps debug "no offers showing" issues by showing each filter step.
+  // Logs are tagged so they're easy to grep: `grep checkout-offers` in server output.
+  // eslint-disable-next-line no-console
+  console.log("[checkout-offers]", JSON.stringify({
+    customerId: input.customerId,
+    merchantStoreId: resolved.merchantStoreId,
+    addressId: input.addressId,
+    serviceType,
+    userSegment,
+    cartSubtotal: grossCart,
+    sources: {
+      live: { pincode: input.livePincode ?? null, state: input.liveState ?? null, city: input.liveCity ?? null },
+      saved: { pincode: addrRow.postalCode, state: addrRow.state, city: addrRow.city },
+      coords: { lat: dropLat, lon: dropLon },
+      reverseGeocoded: geo.reverseGeocoded,
+      used: geo.source,
+    },
+    address: { pincode: dropPostalCode, state: dropStateName, city: cityName },
+    geoResolved: {
+      pincode_uuid: dropGeoRefByLevel?.pincode ?? null,
+      state_uuid: dropGeoRefByLevel?.state ?? null,
+      district_uuid: dropGeoRefByLevel?.district ?? null,
+      region_uuid: dropGeoRefByLevel?.region ?? null,
+    },
+    geoBoundOfferIds: Array.from(platformOfferGeoBindingEffectiveIds),
+    counts: {
+      couponsLoaded: couponRows.length,
+      merchantOffersLoaded: dataset.merchantOffers.length,
+      platformOffersLoaded: dataset.platformOffers.length,
+      platformOffersEligible: platformRows.length,
+    },
+    platformRejections,
+  }));
+
   return { ok: true, coupons, merchantOffers, platformOffers };
+}
+
+/**
+ * Same as listEligiblePlatformOffersForCheckout but returns rejection reasons per offer.
+ * Used for diagnostic logging so production can see WHY offers are being filtered out.
+ */
+function listEligiblePlatformOffersForCheckoutWithReasons(
+  ctx: BillContext,
+  dataset: { platformOffers: PlatformOfferRow[] },
+  grossCart: number
+): { eligible: PlatformOfferRow[]; rejections: Array<{ id: number; name: string | null; reason: string }> } {
+  const eligible = listEligiblePlatformOffersForCheckout(ctx, dataset as any, grossCart);
+  const eligibleSet = new Set(eligible.map((o) => o.id));
+  const rejections: Array<{ id: number; name: string | null; reason: string }> = [];
+  const now = new Date();
+  for (const o of dataset.platformOffers) {
+    if (eligibleSet.has(o.id)) continue;
+    const reasons: string[] = [];
+    const audience = String(o.offerAudience ?? "CUSTOMER").toUpperCase().trim();
+    if (audience !== "CUSTOMER") reasons.push(`audience=${audience}`);
+    const st = ctx.serviceType || "FOOD";
+    if (o.serviceType !== st && o.serviceType !== "ALL") reasons.push(`serviceType=${o.serviceType}`);
+    if (o.startsAt && now < o.startsAt) reasons.push(`starts_at=${o.startsAt.toISOString()}`);
+    if (o.endsAt && now > o.endsAt) reasons.push(`ends_at=${o.endsAt.toISOString()}`);
+    const cohort = String(o.customerSegment ?? "ALL").toUpperCase();
+    if ((cohort === "NEW" && ctx.userSegment !== "NEW") || (cohort === "EXISTING" && ctx.userSegment === "NEW")) {
+      reasons.push(`segment=${cohort} vs user=${ctx.userSegment}`);
+    }
+    const scope = String(o.targetScope ?? "GLOBAL").toUpperCase();
+    if (scope === "MERCHANT" || scope === "GEO_MERCHANT") {
+      if (o.merchantIds.length === 0 || !o.merchantIds.includes(ctx.merchantStoreId)) {
+        reasons.push(`merchantScope=${scope} merchants=[${o.merchantIds.join(",")}] store=${ctx.merchantStoreId}`);
+      }
+    }
+    if (scope === "GEO" || scope === "GEO_MERCHANT") {
+      const bound = ctx.platformOfferGeoBindingEffectiveIds;
+      if (!bound.has(o.id)) reasons.push(`geo=GEO_NOT_BOUND (effectiveIds.size=${bound.size})`);
+    }
+    const minAmt = (() => {
+      const direct = Number(o.minOrderAmount ?? 0);
+      if (direct > 0) return direct;
+      const cond = (o.conditions ?? {}) as Record<string, unknown>;
+      const fallback = Number(cond.min_order_value ?? 0);
+      return Number.isFinite(fallback) ? fallback : 0;
+    })();
+    if (minAmt > 0 && grossCart < minAmt) reasons.push(`minCart=${minAmt} cart=${grossCart}`);
+    rejections.push({ id: o.id, name: o.name ?? null, reason: reasons.length > 0 ? reasons.join("|") : "unknown" });
+  }
+  return { eligible, rejections };
 }
 
 /** Legacy totals when billing rules flag is off (item + addon + tip + donation). */

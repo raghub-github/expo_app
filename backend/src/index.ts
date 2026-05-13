@@ -34,6 +34,7 @@ import { runStoreScheduleTick, runStoreScheduleTickForStore } from "./modules/me
 import { runOrderAcceptanceTimeoutTick } from "./services/order-acceptance-timeout.js";
 import { merchantMenuRoutes } from "./modules/merchant-menu/merchant-menu.routes.js";
 import { pushRoutes } from "./modules/push/push.routes.js";
+import { offersRoutes } from "./modules/offers/offers.routes.js";
 import { errorHandler } from "./plugins/errorHandler.js";
 import { requestLogger } from "./plugins/requestLogger.js";
 import { getDb } from "./db/client.js";
@@ -136,13 +137,34 @@ await app.register(attachmentsRoutes, { prefix: "/v1" });
 
 // Public Razorpay checkout page (no auth) – used by customer app WebView.
 // Load checkout.js first, then open payment so the Razorpay modal (UPI/cards/wallets) actually appears.
-app.get("/v1/razorpay-checkout", async (req, reply) => {
+// Helmet global CSP blocks external scripts by default — override it here to allow Razorpay's CDN.
+app.get("/v1/razorpay-checkout", {
+  config: {
+    helmet: {
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'", "'unsafe-inline'", "https://checkout.razorpay.com"],
+          frameSrc: ["https://checkout.razorpay.com", "https://api.razorpay.com"],
+          connectSrc: ["'self'", "https://*.razorpay.com", "https://lumberjack.razorpay.com"],
+          imgSrc: ["'self'", "data:", "https://checkout.razorpay.com"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+        },
+      },
+    },
+  },
+}, async (req, reply) => {
   const q = req.query as Record<string, string | undefined>;
   const orderId = q.order_id ?? "";
   const keyId = q.key_id ?? "";
   const amount = q.amount ?? "0";
   const successUrl = q.success_url ?? "gatimitra://pay-success";
   const cancelUrl = q.cancel_url ?? "gatimitra://pay-cancel";
+  // Prefill is required for UPI Collect to render. Phone must be 10-digit Indian mobile.
+  const prefillContact = (q.prefill_contact ?? "").replace(/\D/g, "").slice(-10);
+  const prefillEmail = q.prefill_email ?? "";
+  const prefillName = q.prefill_name ?? "";
+  const themeColor = q.theme_color ?? "#16a34a";
   const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -165,6 +187,10 @@ app.get("/v1/razorpay-checkout", async (req, reply) => {
   var amount = ${JSON.stringify(amount)};
   var success_url = ${JSON.stringify(successUrl)};
   var cancel_url = ${JSON.stringify(cancelUrl)};
+  var prefill_contact = ${JSON.stringify(prefillContact)};
+  var prefill_email = ${JSON.stringify(prefillEmail)};
+  var prefill_name = ${JSON.stringify(prefillName)};
+  var theme_color = ${JSON.stringify(themeColor)};
   var statusEl = document.getElementById("status");
   var errEl = document.getElementById("err");
 
@@ -184,12 +210,29 @@ app.get("/v1/razorpay-checkout", async (req, reply) => {
       return;
     }
     try {
+      // Pass NO method or config.display.blocks restrictions - let Razorpay show
+      // ALL payment methods enabled in the dashboard (UPI / UPI Intent / Cards / EMI /
+      // Netbanking / Wallets / Pay Later / QR). Restricting blocks here was hiding
+      // UPI / UPI Apps in the customer-app checkout earlier.
       var options = {
         key: key_id,
         amount: Number(amount),
+        currency: "INR",
         order_id: order_id,
         name: "GatiMitra",
         description: "Order payment",
+        // Prefill is REQUIRED for UPI Collect to render. Phone must be 10-digit Indian mobile.
+        // Without prefill.contact, Razorpay hides UPI Collect even on accounts that have UPI enabled.
+        prefill: {
+          contact: prefill_contact || "",
+          email: prefill_email || "",
+          name: prefill_name || ""
+        },
+        notes: { source: "gatimitra-system-browser-checkout" },
+        theme: { color: theme_color || "#16a34a" },
+        retry: { enabled: true, max_count: 3 },
+        send_sms_hash: true,
+        remember_customer: true,
         handler: function(r) {
           var u = success_url + (success_url.indexOf("?") >= 0 ? "&" : "?") +
             "razorpay_payment_id=" + encodeURIComponent(r.razorpay_payment_id) +
@@ -197,10 +240,16 @@ app.get("/v1/razorpay-checkout", async (req, reply) => {
             "&razorpay_signature=" + encodeURIComponent(r.razorpay_signature);
           window.location.href = u;
         },
-        modal: { ondismiss: function() { window.location.href = cancel_url; } }
+        modal: { confirm_close: true, ondismiss: function() { window.location.href = cancel_url; } }
       };
       var rzp = new Razorpay(options);
-      rzp.on("payment.failed", function() { window.location.href = cancel_url; });
+      rzp.on("payment.failed", function(resp) {
+        try {
+          var desc = (resp && resp.error && resp.error.description) ? resp.error.description : "";
+          if (desc && errEl) { errEl.textContent = desc; errEl.style.display = "block"; }
+        } catch (e) { /* noop */ }
+        setTimeout(function() { window.location.href = cancel_url; }, 400);
+      });
       rzp.open();
       if (statusEl) statusEl.textContent = "Choose payment method below…";
     } catch (e) {
@@ -270,6 +319,7 @@ await app.register((await import("./modules/rider-payout/riderPayout.routes.js")
 await app.register(geoRoutes, { prefix: "/v1" });
 await app.register(deliveryRateCardModule, { prefix: "/v1/delivery-fee" });
 await app.register(pushRoutes, { prefix: "/v1/push" });
+await app.register(offersRoutes, { prefix: "/v1/offers" });
 
 let storeScheduleInterval: ReturnType<typeof setInterval> | null = null;
 let pendingPaymentReconcilerInterval: ReturnType<typeof setInterval> | null = null;

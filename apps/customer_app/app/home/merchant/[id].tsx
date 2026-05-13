@@ -48,6 +48,7 @@ import Animated, {
 
 const AnimatedSectionList = createAnimatedComponent(SectionList<MenuItem>) as typeof SectionList;
 import { merchantService, type MenuItem, type MerchantSummary } from "@/services/merchant.service";
+import { offersService, type MerchantOfferItem, type PlatformOfferItem } from "@/services/offers.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { getRoute } from "@/services/distance.service";
 import { useStoreDeliveryQuote } from "@/hooks/useStoreDeliveryQuote";
@@ -556,6 +557,7 @@ export default function MerchantDetailScreen() {
 
   const coords = useLocationStore((s) => s.coords);
   const locationSource = useLocationStore((s) => s.locationSource);
+  const locationAddress = useLocationStore((s) => s.address);
   const { data: activeLocation } = useQuery({
     queryKey: ["active-location"],
     queryFn: () => addressService.getActiveLocation(),
@@ -635,6 +637,32 @@ export default function MerchantDetailScreen() {
         : null,
     enabled: !!merchantId && (!!resolvedDeliveryAddress || !!routingDropCoords),
   });
+
+  const pincode = locationAddress?.pincode ?? undefined;
+  const state = locationAddress?.state ?? undefined;
+  const city = locationAddress?.city ?? undefined;
+  const offerLat = coords?.latitude ?? undefined;
+  const offerLng = coords?.longitude ?? undefined;
+  const { data: storeOffersData } = useQuery({
+    queryKey: ["store-offers", merchantId, pincode, state, offerLat, offerLng],
+    queryFn: () =>
+      offersService.getStoreOffers({
+        storeId: merchantId,
+        pincode,
+        state,
+        city,
+        lat: offerLat,
+        lng: offerLng,
+        serviceType: "FOOD",
+      }),
+    enabled: !!merchantId,
+    staleTime: 3 * 60 * 1000,
+    retry: 1,
+  });
+  const liveOffers: (MerchantOfferItem | PlatformOfferItem)[] = [
+    ...(storeOffersData?.merchant_offers ?? []),
+    ...(storeOffersData?.platform_offers ?? []),
+  ];
 
   // Kept for legacy fields (polyline for map) while we migrate to canonical quote.
   void getRoute;
@@ -1194,13 +1222,19 @@ export default function MerchantDetailScreen() {
               </View>
             ) : null}
 
-            {hasOffers ? (
+            {liveOffers.length > 0 ? (
               <View style={styles.offersSection}>
+                <View style={styles.offersSectionHeader}>
+                  <Ionicons name="pricetag" size={15} color={GatiMitraColors.emerald} />
+                  <Text style={styles.offersSectionTitle}>Offers</Text>
+                </View>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.offersScroll}>
-                  {(merchant as { offers: Array<{ label?: string }> }).offers.map((offer, idx) => (
-                    <View key={idx} style={styles.offerCard}>
-                      <Ionicons name="pricetag" size={18} color={GatiMitraColors.emerald} />
-                      <Text style={styles.offerCardText}>{offer.label ?? "Offer"}</Text>
+                  {liveOffers.map((offer) => (
+                    <View key={offer.id} style={styles.offerCard}>
+                      <Text style={styles.offerCardLabel}>{offer.label}</Text>
+                      {offer.sub_label ? (
+                        <Text style={styles.offerCardSub} numberOfLines={1}>{offer.sub_label}</Text>
+                      ) : null}
                     </View>
                   ))}
                 </ScrollView>
@@ -1759,30 +1793,47 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   offersSection: {
-    paddingVertical: 12,
+    paddingTop: 12,
+    paddingBottom: 4,
     backgroundColor: GatiMitraColors.background,
+  },
+  offersSectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
+  offersSectionTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
   },
   offersScroll: {
     paddingHorizontal: 16,
+    paddingBottom: 12,
     gap: 10,
   },
   offerCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: GatiMitraColors.cardBg,
+    backgroundColor: "#f0fdf4",
     paddingVertical: 10,
     paddingHorizontal: 14,
     borderRadius: 12,
-    marginRight: 10,
-    borderWidth: 1,
-    borderColor: GatiMitraColors.border,
-    gap: 8,
+    borderWidth: 1.5,
+    borderColor: "#bbf7d0",
+    borderStyle: "dashed",
     minWidth: OFFER_CARD_WIDTH,
+    maxWidth: OFFER_CARD_WIDTH + 40,
   },
-  offerCardText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: GatiMitraColors.textPrimary,
+  offerCardLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#15803d",
+  },
+  offerCardSub: {
+    fontSize: 11,
+    color: "#166534",
+    marginTop: 2,
   },
   filterBar: {
     paddingVertical: 10,

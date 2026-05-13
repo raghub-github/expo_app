@@ -13,6 +13,25 @@ function num(v: unknown): number {
   return Number.isFinite(x) ? x : 0;
 }
 
+/**
+ * Compute the qualifying cart total against which offer.min_order_amount is checked.
+ * This is the FULL pre-discount payable amount — items + addons + packaging + delivery
+ * + all fees — so a cart with items=189 + delivery=45 + packaging=11 = 245 qualifies
+ * for an offer with min_order_amount=199. Item subtotal alone would be too strict.
+ */
+function qualifyingCartFromRem(itemPlusAddon: number, rem: FeeRem): number {
+  return (
+    Math.max(0, itemPlusAddon) +
+    Math.max(0, rem.delivery) +
+    Math.max(0, rem.platform) +
+    Math.max(0, rem.packaging) +
+    Math.max(0, rem.surge) +
+    Math.max(0, rem.smallOrder) +
+    Math.max(0, rem.convenience) +
+    Math.max(0, rem.misc)
+  );
+}
+
 function nowInWindow(now: Date, startsAt: Date | null, endsAt: Date | null): boolean {
   if (startsAt && now < startsAt) return false;
   if (endsAt && now > endsAt) return false;
@@ -125,6 +144,9 @@ export function platformOfferMerchantScopeMatches(ctx: BillContext, o: PlatformO
 
 function platformOfferMinCartMeetsThreshold(o: PlatformOfferRow, grossCart: number): boolean {
   const minAmt = effectiveMinOrderAmount(o);
+  // grossCart here is the full PRE-DISCOUNT payable cart total (items + addons +
+  // packaging + delivery + all fees) — this matches what the customer sees as
+  // their cart total in the bill summary. Item subtotal alone would be too strict.
   if (minAmt > 0 && grossCart < minAmt) return false;
   return true;
 }
@@ -202,17 +224,103 @@ function hasStandardCartDiscount(o: PlatformOfferRow): boolean {
   );
 }
 
+/**
+ * Estimate the discount (₹) an offer would produce in the current bill state.
+ * Used to pick the MAX-value offer when multiple are eligible.
+ * Falls back to priority-based 0 for kinds whose value is hard to estimate without
+ * the full apply pipeline (BUY_X_GET_Y, FREE_MENU_ITEM, BUNDLE_DISCOUNT, etc.).
+ */
+function estimateOfferDiscountValue(o: PlatformOfferRow, ctx: BillContext, rem: FeeRem): number {
+  const k = String(o.offerKind ?? "DISCOUNT").toUpperCase();
+  const value = num(o.valueNumeric);
+  const cap = num(o.maxDiscountAmount);
+
+  // FREE_DELIVERY: based on delivery_discount_type
+  if (k === "FREE_DELIVERY") {
+    const dd = (o.deliveryDiscountType ?? "").toUpperCase().trim();
+    if (dd === "FULL_WAIVE") return Math.max(0, rem.delivery);
+    if (dd === "PERCENT") {
+      const v = num(o.deliveryDiscountValue);
+      if (v <= 0) return 0;
+      let amt = (rem.delivery * v) / 100;
+      if (cap > 0) amt = Math.min(amt, cap);
+      return Math.max(0, Math.min(amt, rem.delivery));
+    }
+    if (dd === "FIXED") {
+      const v = num(o.deliveryDiscountValue);
+      if (v <= 0) return 0;
+      return Math.min(v, rem.delivery);
+    }
+    return 0;
+  }
+
+  // Fee-bucket offers: applied to a specific fee
+  if (FEE_KIND_TO_REM_KEY[k]) {
+    const remKey = FEE_KIND_TO_REM_KEY[k];
+    const base = Math.max(0, rem[remKey]);
+    if (base <= 0 || value <= 0) return 0;
+    let amt = o.discountType === "PERCENTAGE" ? (base * value) / 100 : value;
+    if (cap > 0) amt = Math.min(amt, cap);
+    return Math.max(0, Math.min(amt, base));
+  }
+
+  // Cart discounts (DISCOUNT, COUPON, FLAT_DISCOUNT, CASHBACK, etc.)
+  if (CART_LIKE_KINDS.has(k) || k === "DISCOUNT") {
+    const base = Math.max(0, rem.items);
+    if (base <= 0 || value <= 0) return 0;
+    let amt = o.discountType === "PERCENTAGE" ? (base * value) / 100 : value;
+    if (cap > 0) amt = Math.min(amt, cap);
+    return Math.max(0, Math.min(amt, base));
+  }
+
+  // Hard-to-simulate kinds (BUY_X_GET_Y, FREE_MENU_ITEM): fall back to value/cap as hint.
+  if (cap > 0) return cap;
+  if (value > 0) return value;
+  return 0;
+}
+
+/**
+ * Pick the offer that produces the LARGEST discount among eligible candidates.
+ * Customer-facing rule: only one platform offer is applied per order, and we apply
+ * the most valuable one for the customer. If a user selection (ctx.selectedPlatformOfferId)
+ * is set and is eligible + matches the kind filter, we honour that instead of auto-picking.
+ */
 function pickPlatformOfferWinner(
   ctx: BillContext,
   dataset: BillingDataset,
   grossCart: number,
-  kindFilter: (o: PlatformOfferRow) => boolean
+  kindFilter: (o: PlatformOfferRow) => boolean,
+  rem?: FeeRem,
 ): PlatformOfferRow | null {
-  for (const o of listEligiblePlatformOffersForCheckout(ctx, dataset, grossCart)) {
-    if (!kindFilter(o)) continue;
-    return o;
+  // User explicitly removed the applied offer — skip auto-pick.
+  if (ctx.forceNoAutoOffer === true && ctx.selectedPlatformOfferId == null) return null;
+
+  const eligible = listEligiblePlatformOffersForCheckout(ctx, dataset, grossCart).filter(kindFilter);
+  if (eligible.length === 0) return null;
+
+  // Honour user's explicit selection when present and eligible
+  const selectedId = ctx.selectedPlatformOfferId;
+  if (selectedId != null) {
+    const picked = eligible.find((o) => o.id === selectedId);
+    return picked ?? null; // if selection is no longer eligible, do not silently substitute
   }
-  return null;
+
+  // No user selection — pick the one that yields the highest discount value
+  if (rem) {
+    let best: PlatformOfferRow | null = null;
+    let bestAmt = -1;
+    for (const o of eligible) {
+      const amt = estimateOfferDiscountValue(o, ctx, rem);
+      if (amt > bestAmt) {
+        bestAmt = amt;
+        best = o;
+      }
+    }
+    if (best) return best;
+  }
+
+  // Fallback: priority order (rem unavailable, e.g. listing-only context)
+  return eligible[0] ?? null;
 }
 
 /** Platform promos that pass geo / merchant / min-cart gates (for checkout UI listing). */
@@ -288,7 +396,9 @@ export function applyPlatformCartOffers(
   itemPlusAddon: number,
   rem: FeeRem
 ): void {
-  const grossCart = itemPlusAddon;
+  // Use full pre-discount cart total for min order amount check, but the actual
+  // cart-side discount is still computed against rem.items (the line that gets discounted).
+  const grossCart = qualifyingCartFromRem(itemPlusAddon, rem);
 
   const winner = pickPlatformOfferWinner(ctx, dataset, grossCart, (o) => {
     const k = kindUpper(o);
@@ -323,7 +433,7 @@ export function applyPlatformCartOffers(
     if (CART_LIKE_KINDS.has(k)) return hasStandardCartDiscount(o);
 
     return hasStandardCartDiscount(o);
-  });
+  }, rem);
 
   if (!winner) return;
 
@@ -380,14 +490,14 @@ export function applyPlatformDeliveryOffers(
   itemPlusAddon: number,
   rem: FeeRem
 ): void {
-  const grossCart = itemPlusAddon;
+  const grossCart = qualifyingCartFromRem(itemPlusAddon, rem);
 
   const winner = pickPlatformOfferWinner(ctx, dataset, grossCart, (o) => {
     const k = kindUpper(o);
     const dd = (o.deliveryDiscountType ?? "").toUpperCase().trim();
     if (k === "FREE_DELIVERY") return Boolean(dd);
     return Boolean(dd);
-  });
+  }, rem);
 
   if (!winner) return;
   const dd = (winner.deliveryDiscountType ?? "").toUpperCase().trim();
@@ -424,14 +534,14 @@ export function applyPlatformFeeBucketOffers(
   itemPlusAddon: number,
   rem: FeeRem
 ): void {
-  const grossCart = itemPlusAddon;
+  const grossCart = qualifyingCartFromRem(itemPlusAddon, rem);
 
   const winner = pickPlatformOfferWinner(ctx, dataset, grossCart, (o) => {
     const k = kindUpper(o);
     const remKey = FEE_KIND_TO_REM_KEY[k];
     if (!remKey) return false;
     return hasStandardCartDiscount(o);
-  });
+  }, rem);
 
   if (!winner) return;
   const k = kindUpper(winner);

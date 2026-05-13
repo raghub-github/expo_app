@@ -139,6 +139,7 @@ export default function CheckoutScreen() {
   const sessionCoords = useLocationStore((s) => s.coords);
   const locationSource = useLocationStore((s) => s.locationSource);
   const setAddressAndCoords = useLocationStore((s) => s.setAddressAndCoords);
+  const liveLocationAddress = useLocationStore((s) => s.address);
 
   const { data: activeLocation } = useQuery({
     queryKey: ["active-location"],
@@ -465,14 +466,31 @@ export default function CheckoutScreen() {
     retry: 2,
   });
 
+  // Live location from the location store — geocoded by Mapbox in the app, fresh every session.
+  // Pass to backend so geo-bound platform offers resolve even when the saved address has
+  // placeholder values (e.g. "—" stored when reverse-geocoding failed at save time).
+  const livePincode = liveLocationAddress?.pincode ?? undefined;
+  const liveState = liveLocationAddress?.state ?? undefined;
+  const liveCity = liveLocationAddress?.city ?? undefined;
+
   const checkoutOffersQuery = useQuery({
-    queryKey: ["billing-checkout-offers", merchantId, selectedAddress?.id, cartSubtotalForOffers],
+    queryKey: [
+      "billing-checkout-offers",
+      merchantId,
+      selectedAddress?.id,
+      cartSubtotalForOffers,
+      livePincode,
+      liveState,
+    ],
     queryFn: () =>
       billingService.getCheckoutOffers({
         merchantId: merchantId!,
         addressId: String(selectedAddress!.id),
         cartSubtotal: cartSubtotalForOffers,
         serviceType: "FOOD",
+        pincode: livePincode,
+        state: liveState,
+        city: liveCity,
       }),
     enabled: couponSheetVisible && !!merchantId && !!selectedAddress && items.length > 0,
     staleTime: 60 * 1000,
@@ -635,8 +653,7 @@ export default function CheckoutScreen() {
         storeName: merchantName ?? null,
         placedAt: Date.now(),
       });
-      clearCart();
-      queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      // See comment in finalizeOrder.onSuccess — same React batching pitfall.
       router.replace({
         pathname: "/orders/payment-success",
         params: {
@@ -645,6 +662,10 @@ export default function CheckoutScreen() {
           etaMinutes: String(etaMins),
         },
       });
+      setTimeout(() => {
+        clearCart();
+        queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      }, 0);
     },
     onError: (err: Error & { response?: { data?: { message?: string } } }) => {
       setRazorpayModalVisible(false);
@@ -702,8 +723,14 @@ export default function CheckoutScreen() {
         storeName: merchantName ?? null,
         placedAt: Date.now(),
       });
-      clearCart();
-      queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      // CRITICAL: navigate FIRST and defer clearCart into a separate
+      // macrotask. React batches every state update inside this callback into
+      // ONE render. If clearCart fires in the same batch, the checkout's
+      // `items.length === 0` guard swaps the JSX to <CartEmptyView/> and
+      // tears down the navigator subtree BEFORE expo-router's passive-effect
+      // dispatch fires — resulting in "Do you have a route named 'orders'?"
+      // and the user stuck on the previous screen. setTimeout pushes the
+      // cart clear out of the current render batch.
       router.replace({
         pathname: "/orders/payment-success",
         params: {
@@ -712,6 +739,10 @@ export default function CheckoutScreen() {
           etaMinutes: String(etaMins),
         },
       });
+      setTimeout(() => {
+        clearCart();
+        queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      }, 0);
     },
     onError: (err: Error & { response?: { data?: { message?: string } }; code?: string }) => {
       setRazorpayModalVisible(false);
@@ -739,9 +770,12 @@ export default function CheckoutScreen() {
           },
         });
       } else {
+        // Pass the error code through to the failure screen so it can pick the
+        // right primary CTA ("Try a different payment method" vs "Retry payment"
+        // vs "Check connection & retry").
         router.replace({
           pathname: "/orders/payment-failure",
-          params: { message: msg + ORDER_FAILED_REFUND_NOTE },
+          params: { message: msg + ORDER_FAILED_REFUND_NOTE, code: apiCode ?? "" },
         });
       }
     },
@@ -773,7 +807,13 @@ export default function CheckoutScreen() {
           receipt: pending.pendingId,
           pendingId: pending.pendingId,
         });
-        if (razorpayOrder.keyId === "dev_sim_key") {
+        // Dummy / simulated payment: backend has PAYMENT_DUMMY_MODE=true or no
+        // Razorpay creds in dev. We render an in-app Success/Failed sheet
+        // instead of opening the Razorpay native SDK or browser fallback.
+        const isDummyKey =
+          razorpayOrder.keyId === "dummy_key" ||
+          razorpayOrder.keyId === "dev_sim_key";
+        if (isDummyKey) {
           setSimulatedPaymentOrder({
             orderId: razorpayOrder.orderId,
             amount: razorpayOrder.amount,
@@ -840,19 +880,75 @@ export default function CheckoutScreen() {
     return () => sub.remove();
   }, [razorpayModalVisible, simulatedPaymentOrder, handleRazorpayCancel]);
 
+  const [simulatedSubmitting, setSimulatedSubmitting] = useState(false);
+
   const handleSimulatedPaymentComplete = useCallback(() => {
-    if (!simulatedPaymentOrder) return;
+    if (!simulatedPaymentOrder || simulatedSubmitting) return;
+    // Re-use the existing finalize pipeline — same signature, same backend
+    // route. The backend recognises simulated_signature when PAYMENT_DUMMY_MODE
+    // is on and short-circuits the gateway verification step. Every downstream
+    // action (order row in orders_core, items, payments, ledger, push
+    // notification to customer, realtime events to merchant + rider apps) runs
+    // exactly as it would for a real Razorpay capture.
+    setSimulatedSubmitting(true);
     handleRazorpaySuccess({
       razorpayOrderId: simulatedPaymentOrder.orderId,
-      razorpayPaymentId: "sim_pay_1",
+      razorpayPaymentId: `sim_pay_${Date.now().toString(36)}`,
       razorpaySignature: "simulated_signature",
     });
     setSimulatedPaymentOrder(null);
-  }, [simulatedPaymentOrder, handleRazorpaySuccess]);
+    // setSimulatedSubmitting is reset when the finalize mutation settles below
+  }, [simulatedPaymentOrder, simulatedSubmitting, handleRazorpaySuccess]);
+
+  const handleSimulatedPaymentFail = useCallback(async () => {
+    if (!simulatedPaymentOrder || simulatedSubmitting) return;
+    setSimulatedSubmitting(true);
+    const { pendingId, orderId } = simulatedPaymentOrder;
+    setSimulatedPaymentOrder(null);
+    try {
+      if (pendingId) {
+        await paymentService.markDummyPaymentFailed({
+          pendingId,
+          razorpayOrderId: orderId,
+          reason: "User chose Simulate Failure in dummy payment sheet.",
+        });
+      }
+    } catch (e) {
+      // Best-effort: even if the failure call errors out, we still take the user
+      // to the failure screen so they don't get stuck on checkout.
+      console.warn("[checkout] dummy fail call errored", e);
+    } finally {
+      // Reset idempotency so the next "Place order" tap starts a fresh attempt.
+      idempotencyKeyRef.current = null;
+      setSimulatedSubmitting(false);
+      router.replace({
+        pathname: "/orders/payment-failure",
+        params: {
+          title: "Payment couldn't be completed",
+          message: "Your simulated payment was declined. You can try a different payment method.",
+          code: "DUMMY_USER_DECLINED",
+        },
+      });
+    }
+  }, [simulatedPaymentOrder, simulatedSubmitting, router]);
 
   const handleSimulatedPaymentCancel = useCallback(() => {
+    if (simulatedSubmitting) return;
     setSimulatedPaymentOrder(null);
-  }, []);
+  }, [simulatedSubmitting]);
+
+  // Reset the "submitting" flag once the overlay is closed AND the finalize
+  // mutation has settled. Without this, a finalize error would leave the flag
+  // stuck true and a second checkout attempt would render disabled buttons.
+  useEffect(() => {
+    if (
+      simulatedSubmitting &&
+      simulatedPaymentOrder == null &&
+      !finalizeOrder.isPending
+    ) {
+      setSimulatedSubmitting(false);
+    }
+  }, [simulatedSubmitting, simulatedPaymentOrder, finalizeOrder.isPending]);
 
   const handleShareLocation = useCallback(async () => {
     try {
@@ -1004,6 +1100,16 @@ export default function CheckoutScreen() {
         </Animated.View>
       )}
 
+      {/* "You saved ₹X on this order" — shown when discounts are applied (Zomato-style top banner) */}
+      {serverBill && serverBill.discountTotal > 0.005 && (
+        <Animated.View entering={FadeIn.duration(ANIM_DURATION)} style={styles.savedBanner}>
+          <Text style={styles.savedBannerEmoji}>🎉</Text>
+          <Text style={styles.savedBannerText}>
+            You saved ₹{serverBill.discountTotal.toFixed(0)} on this order
+          </Text>
+        </Animated.View>
+      )}
+
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
@@ -1073,28 +1179,90 @@ export default function CheckoutScreen() {
           </View>
         </Animated.View>
 
-        {/* Coupons */}
+        {/* Offers section — Zomato-style:
+              - One row per applied offer (green ✓ + label + amount)
+              - GatiMitra+ subscription pill (Zomato Gold equivalent)
+              - "View all coupons" link to open the coupons sheet */}
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(40)} style={styles.section}>
-          <TouchableOpacity
-            style={styles.couponRow}
-            activeOpacity={0.8}
-            onPress={() => setCouponSheetVisible(true)}
-          >
-            <Ionicons name="pricetag-outline" size={22} color={GatiMitraColors.emerald} />
-            {appliedCouponCode || (serverBill && serverBill.discountTotal > 0) ? (
-              <View style={styles.appliedCouponWrap}>
-                <Text style={styles.appliedCouponText}>
-                  {appliedCouponLabel ?? appliedCouponCode ?? "Coupon applied"}
-                  {serverBill && serverBill.discountTotal > 0
-                    ? ` • -₹${serverBill.discountTotal.toFixed(2)}`
-                    : ""}
+          <View style={styles.card}>
+            {/* Applied offers from server bill (one row per discount line) */}
+            {serverBill && visibleDiscounts.length > 0 ? (
+              visibleDiscounts.map((d, idx) => (
+                <View
+                  key={`applied-${idx}`}
+                  style={[
+                    styles.appliedOfferRow,
+                    idx < visibleDiscounts.length - 1 && styles.appliedOfferRowBorder,
+                  ]}
+                >
+                  <View style={styles.appliedOfferTick}>
+                    <Ionicons name="checkmark-circle" size={20} color={GatiMitraColors.emerald} />
+                  </View>
+                  <Text style={styles.appliedOfferLabel} numberOfLines={1}>
+                    {d.label} applied!
+                  </Text>
+                  <Text style={styles.appliedOfferAmount}>−₹{d.amount.toFixed(0)}</Text>
+                </View>
+              ))
+            ) : null}
+
+            {/* GatiMitra+ subscription pill — toggle the existing subscriptionOptIn switch */}
+            <View
+              style={[
+                styles.subscriptionPillRow,
+                (serverBill && visibleDiscounts.length > 0) && styles.appliedOfferRowBorderTop,
+              ]}
+            >
+              <Ionicons name="ribbon" size={22} color={GatiMitraColors.warmOrange} />
+              <View style={styles.subscriptionPillTextWrap}>
+                <Text style={styles.subscriptionPillTitle}>
+                  {subscriptionOptIn ? "GatiMitra+ added" : "Save more with GatiMitra+"}
+                </Text>
+                <Text style={styles.subscriptionPillSub} numberOfLines={1}>
+                  Unlock free delivery & member-only offers
                 </Text>
               </View>
-            ) : (
-              <Text style={styles.couponRowText}>View Available Coupons</Text>
-            )}
-            <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
-          </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.subscriptionPillCta, subscriptionOptIn && styles.subscriptionPillCtaActive]}
+                onPress={() => setSubscriptionOptIn(!subscriptionOptIn)}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.subscriptionPillCtaText, subscriptionOptIn && styles.subscriptionPillCtaTextActive]}>
+                  {subscriptionOptIn ? "ADDED" : "APPLY"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Manually applied coupon (if any) */}
+            {appliedCouponCode ? (
+              <View style={[styles.appliedOfferRow, styles.appliedOfferRowBorderTop]}>
+                <Ionicons name="checkmark-circle" size={20} color={GatiMitraColors.emerald} />
+                <Text style={styles.appliedOfferLabel} numberOfLines={1}>
+                  {appliedCouponLabel ?? appliedCouponCode} applied
+                </Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    setAppliedCouponCode(null);
+                    setAppliedCouponLabel(null);
+                  }}
+                  hitSlop={8}
+                >
+                  <Text style={styles.appliedOfferRemove}>REMOVE</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+
+            {/* View all coupons (Zomato-style chevron row) */}
+            <TouchableOpacity
+              style={[styles.viewAllCouponsRow, styles.appliedOfferRowBorderTop]}
+              activeOpacity={0.8}
+              onPress={() => setCouponSheetVisible(true)}
+            >
+              <Ionicons name="pricetag-outline" size={20} color={GatiMitraColors.textPrimary} />
+              <Text style={styles.viewAllCouponsText}>View all coupons</Text>
+              <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
+            </TouchableOpacity>
+          </View>
         </Animated.View>
 
         {/* Complete your meal with — only show when menu has items */}
@@ -1225,6 +1393,18 @@ export default function CheckoutScreen() {
                 thumbColor="#fff"
               />
             </View>
+            {/* Contact name + phone (Zomato-style: shown inline below address) */}
+            {(selectedAddress?.contactName || selectedAddress?.contactMobile) ? (
+              <View style={styles.contactRow}>
+                <Ionicons name="call-outline" size={18} color={GatiMitraColors.textSecondary} />
+                <Text style={styles.contactRowText} numberOfLines={1}>
+                  {selectedAddress?.contactName ?? ""}
+                  {selectedAddress?.contactName && selectedAddress?.contactMobile ? ", " : ""}
+                  {selectedAddress?.contactMobile ?? ""}
+                </Text>
+                <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
+              </View>
+            ) : null}
           </View>
         </Animated.View>
 
@@ -1759,30 +1939,64 @@ export default function CheckoutScreen() {
         onCancel={handleRazorpayCancel}
       />
 
-      {/* Simulated payment (when Razorpay not configured in dev) */}
+      {/* Dummy / simulated payment sheet (backend has PAYMENT_DUMMY_MODE=true
+          or no Razorpay creds in dev). Lets QA pick Success or Failure and
+          drive the exact same downstream flow as a real Razorpay payment. */}
       {simulatedPaymentOrder && (
         <View style={styles.simulatedPaymentOverlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={handleSimulatedPaymentCancel} />
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={simulatedSubmitting ? undefined : handleSimulatedPaymentCancel}
+          />
           <Pressable onPress={() => {}} style={styles.simulatedPaymentCardWrap}>
             <Animated.View entering={FadeIn.duration(220)} style={styles.simulatedPaymentCard}>
               <View style={styles.simulatedPaymentIconWrap}>
-                <Ionicons name="card-outline" size={28} color={GatiMitraColors.emerald} />
+                <Ionicons name="flask-outline" size={28} color={GatiMitraColors.emerald} />
               </View>
-              <Text style={styles.simulatedPaymentTitle}>Complete payment</Text>
+              <Text style={styles.simulatedPaymentTitle}>Test payment</Text>
               <View style={styles.simulatedPaymentDevBadge}>
-                <Text style={styles.simulatedPaymentDevBadgeText}>Dev mode</Text>
+                <Text style={styles.simulatedPaymentDevBadgeText}>Dummy mode</Text>
               </View>
               <Text style={styles.simulatedPaymentSubtitle}>
-                Razorpay is not configured. Simulate success to create order.
+                Razorpay is bypassed. Pick an outcome to drive the rest of the order flow end-to-end (merchant, rider, notifications all fire on success).
               </Text>
               <View style={styles.simulatedAmountRow}>
                 <Text style={styles.simulatedAmountLabel}>Amount to pay</Text>
                 <Text style={styles.simulatedAmountValue}>₹{(simulatedPaymentOrder.amount / 100).toFixed(2)}</Text>
               </View>
-              <TouchableOpacity style={styles.simulatedConfirmBtn} onPress={handleSimulatedPaymentComplete} activeOpacity={0.85}>
-                <Text style={styles.simulatedConfirmBtnText}>Confirm payment</Text>
+
+              <TouchableOpacity
+                style={[styles.simulatedConfirmBtn, simulatedSubmitting && styles.simulatedBtnDisabled]}
+                onPress={handleSimulatedPaymentComplete}
+                activeOpacity={0.85}
+                disabled={simulatedSubmitting}
+              >
+                {simulatedSubmitting ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <>
+                    <Ionicons name="checkmark-circle" size={18} color="#fff" style={{ marginRight: 8 }} />
+                    <Text style={styles.simulatedConfirmBtnText}>Simulate Success</Text>
+                  </>
+                )}
               </TouchableOpacity>
-              <TouchableOpacity style={styles.simulatedCancelBtn} onPress={handleSimulatedPaymentCancel} activeOpacity={0.85}>
+
+              <TouchableOpacity
+                style={[styles.simulatedFailBtn, simulatedSubmitting && styles.simulatedBtnDisabled]}
+                onPress={handleSimulatedPaymentFail}
+                activeOpacity={0.85}
+                disabled={simulatedSubmitting}
+              >
+                <Ionicons name="close-circle" size={18} color="#dc2626" style={{ marginRight: 8 }} />
+                <Text style={styles.simulatedFailBtnText}>Simulate Failure</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.simulatedCancelBtn}
+                onPress={handleSimulatedPaymentCancel}
+                activeOpacity={0.85}
+                disabled={simulatedSubmitting}
+              >
                 <Text style={styles.simulatedCancelBtnText}>Cancel</Text>
               </TouchableOpacity>
             </Animated.View>
@@ -1886,6 +2100,77 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   distanceBannerText: { flex: 1, fontSize: 14, fontWeight: "600", color: "#92400E" },
+  // Zomato-style "You saved ₹X on this order" blue strip
+  savedBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#EFF6FF",
+    paddingVertical: 12,
+    paddingHorizontal: SPACING,
+    gap: 10,
+  },
+  savedBannerEmoji: { fontSize: 20 },
+  savedBannerText: { flex: 1, fontSize: 15, fontWeight: "700", color: "#1D4ED8" },
+  // Applied-offer rows + subscription pill + view-all-coupons row
+  appliedOfferRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    gap: 10,
+  },
+  appliedOfferRowBorder: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: GatiMitraColors.border,
+  },
+  appliedOfferRowBorderTop: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: GatiMitraColors.border,
+  },
+  appliedOfferTick: { width: 22, alignItems: "center" },
+  appliedOfferLabel: { flex: 1, fontSize: 14, fontWeight: "600", color: GatiMitraColors.textPrimary },
+  appliedOfferAmount: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.emerald },
+  appliedOfferRemove: { fontSize: 13, fontWeight: "700", color: GatiMitraColors.warmOrange, letterSpacing: 0.5 },
+  subscriptionPillRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    gap: 10,
+  },
+  subscriptionPillTextWrap: { flex: 1 },
+  subscriptionPillTitle: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  subscriptionPillSub: { fontSize: 12, color: GatiMitraColors.textSecondary, marginTop: 2 },
+  subscriptionPillCta: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: GatiMitraColors.emerald,
+  },
+  subscriptionPillCtaActive: { backgroundColor: GatiMitraColors.emerald },
+  subscriptionPillCtaText: { fontSize: 12, fontWeight: "700", color: GatiMitraColors.emerald, letterSpacing: 0.5 },
+  subscriptionPillCtaTextActive: { color: "#fff" },
+  viewAllCouponsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    gap: 10,
+  },
+  viewAllCouponsText: { flex: 1, fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  // Contact (name + phone) row inside delivery card
+  contactRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    gap: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: GatiMitraColors.border,
+    marginTop: 6,
+  },
+  contactRowText: { flex: 1, fontSize: 14, fontWeight: "600", color: GatiMitraColors.textPrimary },
   scroll: { flex: 1 },
   scrollContent: { padding: SPACING, paddingTop: SPACING },
   section: { marginBottom: SPACING - 2 },
@@ -2403,13 +2688,28 @@ const styles = StyleSheet.create({
   simulatedAmountLabel: { fontSize: 14, color: GatiMitraColors.textSecondary, fontWeight: "500" },
   simulatedAmountValue: { fontSize: 20, fontWeight: "700", color: GatiMitraColors.textPrimary },
   simulatedConfirmBtn: {
+    flexDirection: "row",
     backgroundColor: GatiMitraColors.emerald,
-    paddingVertical: 16,
+    paddingVertical: 14,
     borderRadius: 14,
     alignItems: "center",
-    marginBottom: 4,
+    justifyContent: "center",
+    marginBottom: 8,
   },
   simulatedConfirmBtnText: { fontSize: 16, fontWeight: "700", color: "#fff" },
+  simulatedFailBtn: {
+    flexDirection: "row",
+    backgroundColor: "#FEF2F2",
+    borderWidth: 1.5,
+    borderColor: "#dc2626",
+    paddingVertical: 14,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
+  },
+  simulatedFailBtnText: { fontSize: 16, fontWeight: "700", color: "#dc2626" },
+  simulatedBtnDisabled: { opacity: 0.55 },
   simulatedCancelBtn: { paddingVertical: 12, alignItems: "center" },
   simulatedCancelBtnText: { fontSize: 15, color: GatiMitraColors.textSecondary, fontWeight: "500" },
   fixedBottom: {

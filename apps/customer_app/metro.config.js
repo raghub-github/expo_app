@@ -14,4 +14,23 @@ config.resolver.nodeModulesPaths = [
 ];
 config.resolver.disableHierarchicalLookup = true;
 
+const WEB_MOCKS = {
+  "react-native-maps": "mocks/react-native-maps.web.js",
+  "@react-native-async-storage/async-storage": "mocks/async-storage.web.js",
+};
+
+const originalResolveRequest = config.resolver.resolveRequest;
+config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (platform === "web" && WEB_MOCKS[moduleName]) {
+    return {
+      filePath: path.resolve(projectRoot, WEB_MOCKS[moduleName]),
+      type: "sourceFile",
+    };
+  }
+  if (originalResolveRequest) {
+    return originalResolveRequest(context, moduleName, platform);
+  }
+  return context.resolveRequest(context, moduleName, platform);
+};
+
 module.exports = config;

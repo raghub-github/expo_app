@@ -1,21 +1,27 @@
-# ============================================
-# Root .easignore - reduces EAS upload size
-# (EAS may upload from repo root in monorepos)
-# ============================================
+# ============================================================
+# Root .easignore - reduces EAS upload size for ALL app builds
+# ============================================================
 
-# Entire workspaces not needed for rider app build
+# Other apps - not needed for customer_app build
+apps/merchant_app/
+apps/gatimitra-riderApp/
+
+# Backend and dashboard - never needed for mobile builds
 backend/
 dashboard/
 merchant_db/
 dashboards/
 
-# Docs and schemas (not needed at build time)
+# Native build outputs - generated fresh on EAS
+apps/customer_app/android/
+apps/customer_app/ios/
+apps/customer_app/.expo/
+apps/customer_app/dist/
+apps/customer_app/build/
+
+# Docs, schemas, and markdown
 **/docs/
 **/documentation/
-**/*.md
-!apps/gatimitra-riderApp/README.md
-
-# Drizzle and DB (backend only)
 **/drizzle/meta/
 **/drizzle/*.sql
 **/drizzle/fixes/
@@ -30,7 +36,7 @@ dashboards/
 *.swo
 *~
 
-# Build outputs and caches
+# Build artifacts and caches
 **/dist/
 **/build/
 **/out/
@@ -38,13 +44,6 @@ dashboards/
 **/.expo/
 **/.gradle/
 **/.cache/
-# Exclude native folders from other workspaces (rider app uses prebuild)
-backend/android/
-backend/ios/
-dashboard/android/
-dashboard/ios/
-merchant_db/android/
-merchant_db/ios/
 **/tmp/
 **/temp/
 **/logs/
@@ -64,12 +63,14 @@ merchant_db/ios/
 **/coverage/
 **/.nyc_output/
 
-# Environment and secrets (use EAS env instead)
-.env
-.env.*
-!.env.example
-!apps/gatimitra-riderApp/env.example
+# Environment files (use EAS secrets instead)
+**/.env
+**/.env.*
+!**/.env.example
 
-# Misc
+# OS junk
 .DS_Store
 Thumbs.db
+
+# Large archive outputs from rider app
+apps/gatimitra-riderApp/archive-output/

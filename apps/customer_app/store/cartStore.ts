@@ -115,7 +115,18 @@ export const useCartStore = create<CartState>((set, get) => ({
   },
 
   clearCart: () => {
-    set({ ...defaultState, lastUpdatedAt: 0 });
+    // CRITICAL: keep `hydrated: true`. Spreading `defaultState` would reset
+    // hydrated → false, and the root layout's `!cartHydrated` guard would
+    // immediately swap the entire app to the teal splash screen — which is
+    // exactly what stranded the user after Simulate Success / order placement.
+    // The cart IS hydrated; we are clearing its CONTENTS, not unloading the store.
+    set({
+      merchantId: null,
+      merchantName: null,
+      items: [],
+      lastUpdatedAt: 0,
+      // hydrated intentionally NOT touched — stays true
+    });
     get().persist();
   },
 

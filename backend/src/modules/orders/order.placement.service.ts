@@ -7,8 +7,9 @@
  */
 
 import { randomBytes } from "crypto";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, lt, inArray } from "drizzle-orm";
 import { sql } from "drizzle-orm";
+// drizzleSql alias used to avoid name collision in offer snapshot helpers
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import {
   pendingOrders,
@@ -16,19 +17,14 @@ import {
   ordersCoreItems,
   ordersCoreItemAddons,
   ordersCorePayments,
-  ordersFood,
-  orderEvents,
   paymentEvents,
+  offerOrderApplications,
+  merchantOfferUsages,
+  merchantOffers as merchantOffersTable,
 } from "../../db/schema.js";
-import { enqueuePlacementNotifications } from "./orderNotifications.js";
 import { getEnv } from "../../config/env.js";
 import { getStoreByStoreId, getStoreByIdForOrder } from "../merchants/merchant.service.js";
-import {
-  verifyRazorpayPaymentDetails,
-  getPaymentDetails,
-  getOrderPayments,
-  createRazorpayRefund,
-} from "../../services/payment/razorpayService.js";
+import { verifyRazorpayPaymentDetails, verifyRazorpaySignature } from "../../services/payment/razorpayService.js";
 import { computeBillForOrder } from "../billing/billing.service.js";
 import { normalizeOrderItems } from "./orderNormalizer.js";
 import { getRoute } from "../distance/distance.service.js";
@@ -312,6 +308,81 @@ async function persistOmsLedgerArtifacts(
       ON CONFLICT (journal_id, reference_type, reference_id) DO NOTHING
     `);
   }
+
+  // Persist immutable offer snapshots and per-user usage records
+  await persistOfferSnapshots(tx, orderId, pending);
+}
+
+/**
+ * For every discount line in billingSnapshot, write an offer_order_applications row
+ * and (for merchant offers) a merchant_offer_usages row + increment current_uses.
+ */
+async function persistOfferSnapshots(
+  tx: PostgresJsDatabase<Record<string, unknown>>,
+  orderId: string,
+  pending: typeof pendingOrders.$inferSelect
+): Promise<void> {
+  const snap = (pending.billingSnapshot as Record<string, unknown> | null) ?? {};
+  const discounts: Record<string, unknown>[] = Array.isArray(snap.discounts)
+    ? (snap.discounts as Record<string, unknown>[])
+    : [];
+
+  const customerId = asNumber(pending.customerId ?? 0);
+
+  for (const d of discounts) {
+    const meta = (d.meta ?? {}) as Record<string, unknown>;
+    const amount = Math.abs(asNumber(d.amount ?? 0));
+    if (amount <= 0) continue;
+
+    const merchantOfferId = meta.merchantOfferId != null ? Number(meta.merchantOfferId) : null;
+    const platformOfferId = meta.platformOfferId != null ? Number(meta.platformOfferId) : null;
+
+    let offerSource: "MERCHANT" | "PLATFORM" | "COUPON" = "PLATFORM";
+    if (merchantOfferId != null) offerSource = "MERCHANT";
+    else if (meta.source === "coupon" || meta.couponCode) offerSource = "COUPON";
+
+    const offerTitle = String(d.label ?? d.step ?? "Discount").trim() || "Discount";
+    const offerType  = String(meta.offerType ?? (merchantOfferId ? "PERCENTAGE" : "DISCOUNT"));
+    const couponCode = meta.couponCode != null ? String(meta.couponCode) : null;
+
+    try {
+      await tx.insert(offerOrderApplications).values({
+        orderId:         BigInt(orderId.replace(/\D/g, "") || 0),
+        offerSource,
+        merchantOfferId: merchantOfferId != null ? BigInt(merchantOfferId) : null,
+        platformOfferId: platformOfferId != null ? BigInt(platformOfferId) : null,
+        offerType,
+        offerTitle,
+        couponCode,
+        discountAmount:  String(amount),
+        platformShare:   String(asNumber(meta.platformShare ?? (offerSource === "PLATFORM" ? amount : 0))),
+        merchantShare:   String(asNumber(meta.merchantShare ?? (offerSource === "MERCHANT" ? amount : 0))),
+        fundingMode:     String(meta.fundingMode ?? (offerSource === "MERCHANT" ? "MERCHANT_ONLY" : "PLATFORM_ONLY")),
+        snapshotJson:    d,
+      } as never).onConflictDoNothing();
+    } catch {
+      // Never let snapshot failures break order placement
+    }
+
+    if (merchantOfferId != null && customerId > 0) {
+      try {
+        await tx.insert(merchantOfferUsages).values({
+          offerId:        BigInt(merchantOfferId),
+          userId:         BigInt(customerId),
+          orderId:        BigInt(orderId.replace(/\D/g, "") || 0),
+          discountAmount: String(amount),
+        } as never).onConflictDoNothing();
+
+        // Increment current_uses counter on the offer
+        await tx
+          .update(merchantOffersTable)
+          .set({ currentUses: sql`COALESCE(current_uses, 0) + 1` })
+          .where(eq(merchantOffersTable.id, merchantOfferId));
+      } catch {
+        // Non-critical — snapshot already saved
+      }
+    }
+  }
 }
 
 const PAYMENT_METHOD_MAP = ["upi", "card", "wallet", "online", "cod", "netbanking"] as const;
@@ -323,96 +394,6 @@ export function paymentMethodToEnum(method: string): "upi" | "card" | "wallet" |
 
 /** Pending order TTL: 30 minutes */
 const PENDING_TTL_MS = 30 * 60 * 1000;
-/**
- * After payment starts we wait this long for a captured confirmation (either
- * synchronous finalize or asynchronous webhook). Past this point, the
- * reconciler auto-refunds any late-captured payment and fails the pending
- * order — the customer has almost certainly reordered elsewhere by then.
- *
- * Defaults to 10 minutes; configurable via PAYMENT_CONFIRM_WINDOW_MS.
- */
-function getPaymentConfirmWindowMs(): number {
-  try {
-    return getEnv().PAYMENT_CONFIRM_WINDOW_MS;
-  } catch {
-    // Env not loaded (tests): fall back to a deterministic value.
-    return 10 * 60_000;
-  }
-}
-
-/**
- * What do we do when a Razorpay payment captures AFTER the TTL already
- * expired? Two sane options:
- *   - "refund" (default): customer likely reordered elsewhere — return money
- *     and mark pending as refunded. This is the policy for food orders.
- *   - "finalize": place the order anyway (only safe if merchants can ingest
- *     late orders gracefully).
- */
-function getLateCapturePolicy(): "refund" | "finalize" {
-  try {
-    return getEnv().PAYMENT_LATE_CAPTURE_POLICY;
-  } catch {
-    return "refund";
-  }
-}
-
-const PENDING_PAYMENT_STATES = {
-  CREATED: "created",
-  PENDING_CONFIRMATION: "pending_confirmation",
-  PAID: "paid",
-  FINALIZED: "finalized",
-  FAILED: "failed",
-  REFUND_PENDING: "refund_pending",
-  REFUNDED: "refunded",
-} as const;
-export { PENDING_PAYMENT_STATES };
-
-/**
- * Append-only audit log helper. Every meaningful state transition on a
- * pending order (payment started, webhook received, reconciler swept, refund
- * issued, …) writes one row. Never throws — logging must not break the flow.
- */
-export async function logPaymentEvent(
-  db: PostgresJsDatabase<Record<string, unknown>>,
-  args: {
-    pendingId?: string | null;
-    razorpayOrderId?: string | null;
-    razorpayPaymentId?: string | null;
-    orderId?: string | null;
-    eventType: string;
-    source: "api" | "webhook" | "reconciler" | "refund";
-    prevState?: string | null;
-    newState?: string | null;
-    amountPaise?: number | null;
-    currency?: string | null;
-    failureCode?: string | null;
-    failureMessage?: string | null;
-    payload?: Record<string, unknown> | null;
-  }
-): Promise<void> {
-  try {
-    await db.insert(paymentEvents).values({
-      pendingId: args.pendingId ?? null,
-      razorpayOrderId: args.razorpayOrderId ?? null,
-      razorpayPaymentId: args.razorpayPaymentId ?? null,
-      orderId: args.orderId ?? null,
-      eventType: args.eventType,
-      source: args.source,
-      prevState: args.prevState ?? null,
-      newState: args.newState ?? null,
-      amountPaise: args.amountPaise ?? null,
-      currency: args.currency ?? null,
-      failureCode: args.failureCode ?? null,
-      failureMessage: args.failureMessage ?? null,
-      payload: (args.payload ?? {}) as Record<string, unknown>,
-    });
-  } catch (err) {
-    // Swallow — audit logging must never block the main flow. Log to console
-    // so ops can see storage-layer problems.
-    // eslint-disable-next-line no-console
-    console.error("[payment_events] insert failed:", err);
-  }
-}
 
 export type PendingOrderInput = {
   customerId: number;
@@ -437,13 +418,6 @@ export type PendingOrderInput = {
   pickupLon?: number;
   couponCode?: string | null;
   subscriptionOptIn?: boolean;
-  checkoutMetadata?: Record<string, unknown>;
-  /**
-   * Optional idempotency key. When provided, a second call from the same customer
-   * with the same key returns the existing pendingId (prevents duplicate pending
-   * orders on double-tap / retry). Generated client-side from the cart signature.
-   */
-  idempotencyKey?: string | null;
 };
 
 export type CreatePendingResult =
@@ -474,55 +448,6 @@ export async function createPendingOrder(
     donationAmount = 0,
     subscriptionOptIn = false,
   } = input;
-
-  const idempotencyKey = (input.idempotencyKey ?? "").trim() || null;
-
-  // Idempotency: if a live (non-finalized, non-failed) pending row already exists
-  // for this (customer, idempotency_key) pair, return it instead of creating a
-  // new one. A finalized row also short-circuits: the caller should use the same
-  // pending to hit /finalize.
-  if (idempotencyKey) {
-    const [existing] = await db
-      .select({
-        pendingId: pendingOrders.pendingId,
-        grandTotal: pendingOrders.grandTotal,
-        currency: pendingOrders.currency,
-        paymentState: pendingOrders.paymentState,
-        expiresAt: pendingOrders.expiresAt,
-        finalizedOrderId: pendingOrders.finalizedOrderId,
-      })
-      .from(pendingOrders)
-      .where(
-        and(
-          eq(pendingOrders.customerId, customerId),
-          eq(pendingOrders.idempotencyKey, idempotencyKey)
-        )
-      )
-      .limit(1);
-    if (existing?.pendingId) {
-      const expired = existing.expiresAt ? new Date() > new Date(existing.expiresAt) : false;
-      const dead =
-        existing.paymentState === PENDING_PAYMENT_STATES.FAILED ||
-        existing.paymentState === PENDING_PAYMENT_STATES.REFUNDED ||
-        existing.paymentState === PENDING_PAYMENT_STATES.REFUND_PENDING;
-      // Only reuse if the pending is still actionable. If it's dead or expired and
-      // not finalized, we fall through and create a new pending row (but the old
-      // key still exists -> we'll clear it by nulling the stale row's key first).
-      if (!dead && (!expired || existing.finalizedOrderId)) {
-        return {
-          ok: true,
-          pendingId: existing.pendingId,
-          amount: Math.round(Number(existing.grandTotal ?? 0) * 100),
-          currency: String(existing.currency ?? "INR"),
-        };
-      }
-      // Free the key so the new pending row can claim it.
-      await db
-        .update(pendingOrders)
-        .set({ idempotencyKey: null, updatedAt: new Date() })
-        .where(eq(pendingOrders.pendingId, existing.pendingId));
-    }
-  }
 
   const itemTotal = items.reduce((s, i) => s + i.basePrice * i.quantity, 0);
   const addonTotal = items.reduce((s, i) => {
@@ -608,14 +533,8 @@ export async function createPendingOrder(
     .join(", ");
   const dropLat = addrRow.latitude != null ? Number(addrRow.latitude) : 0;
   const dropLon = addrRow.longitude != null ? Number(addrRow.longitude) : 0;
-  if (!Number.isFinite(dropLat) || !Number.isFinite(dropLon) || dropLat === 0 || dropLon === 0) {
-    return { ok: false, code: "INVALID_ADDRESS_DATA", message: "Selected address has invalid coordinates. Please edit the address and select the pin location." };
-  }
   const pickupLat = input.pickupLat ?? storeForOrder?.latitude ?? dropLat;
   const pickupLon = input.pickupLon ?? storeForOrder?.longitude ?? dropLon;
-  if (!Number.isFinite(pickupLat) || !Number.isFinite(pickupLon) || pickupLat === 0 || pickupLon === 0) {
-    return { ok: false, code: "INVALID_MERCHANT", message: "Store location is missing or invalid. Please try another store." };
-  }
 
   // Canonical distance: route-based between pickup (store) and selected drop address.
   // Fallback to Haversine only if routing engine fails.
@@ -645,59 +564,32 @@ export async function createPendingOrder(
   const pendingId = `PEND-${Date.now()}-${randomBytes(4).toString("hex")}`;
   const expiresAt = new Date(Date.now() + PENDING_TTL_MS);
 
-  try {
-    await db.insert(pendingOrders).values({
-      pendingId,
-      customerId,
-      merchantStoreId,
-      merchantParentId: storeForOrder?.parentId ?? null,
-      itemsSnapshot: items as unknown as Record<string, unknown>,
-      addressIdUsed: addressId,
-      paymentMethod,
-      tipAmount: sanitizeNumeric(tipAmount),
-      donationAmount: sanitizeNumeric(donationAmount),
-      itemTotal: sanitizeNumeric(itemTotal),
-      addonTotal: sanitizeNumeric(addonTotal),
-      grandTotal: sanitizeNumeric(grandTotal),
-      currency: "INR",
-      deliveryAddress: sanitizeStringForDb(dropAddressRaw) ?? undefined,
-      dropLat: String(dropLat),
-      dropLon: String(dropLon),
-      pickupAddressNormalized: pickupAddressNormalized ?? undefined,
-      pickupLat: String(pickupLat),
-      pickupLon: String(pickupLon),
-      distanceKm: String(distanceKm),
-      billingSnapshot: billingSnapshot ?? undefined,
-      billingRulesetVersion: billingRulesetVersion ?? undefined,
-      couponCode: couponStored ?? undefined,
-      checkoutMetadata: input.checkoutMetadata ?? undefined,
-      paymentState: PENDING_PAYMENT_STATES.CREATED,
-      expiresAt,
-      idempotencyKey: idempotencyKey ?? undefined,
-    });
-  } catch (err: unknown) {
-    const e = err as { code?: string; constraint?: string; cause?: { code?: string; constraint?: string } };
-    const pgCode = e?.code ?? e?.cause?.code;
-    const constraint = e?.constraint ?? e?.cause?.constraint;
-    // Unique violation on (customer_id, idempotency_key) partial index: another
-    // concurrent request beat us. Return the winner.
-    if (pgCode === "23505" && idempotencyKey && constraint?.includes("idem")) {
-      const [winner] = await db
-        .select({ pendingId: pendingOrders.pendingId, grandTotal: pendingOrders.grandTotal, currency: pendingOrders.currency })
-        .from(pendingOrders)
-        .where(and(eq(pendingOrders.customerId, customerId), eq(pendingOrders.idempotencyKey, idempotencyKey)))
-        .limit(1);
-      if (winner?.pendingId) {
-        return {
-          ok: true,
-          pendingId: winner.pendingId,
-          amount: Math.round(Number(winner.grandTotal ?? 0) * 100),
-          currency: String(winner.currency ?? "INR"),
-        };
-      }
-    }
-    throw err;
-  }
+  await db.insert(pendingOrders).values({
+    pendingId,
+    customerId,
+    merchantStoreId,
+    merchantParentId: storeForOrder?.parentId ?? null,
+    itemsSnapshot: items as unknown as Record<string, unknown>, // already normalized
+    addressIdUsed: addressId,
+    paymentMethod,
+    tipAmount: sanitizeNumeric(tipAmount),
+    donationAmount: sanitizeNumeric(donationAmount),
+    itemTotal: sanitizeNumeric(itemTotal),
+    addonTotal: sanitizeNumeric(addonTotal),
+    grandTotal: sanitizeNumeric(grandTotal),
+    currency: "INR",
+    deliveryAddress: sanitizeStringForDb(dropAddressRaw) ?? undefined,
+    dropLat: String(dropLat),
+    dropLon: String(dropLon),
+    pickupAddressNormalized: pickupAddressNormalized ?? undefined,
+    pickupLat: String(pickupLat),
+    pickupLon: String(pickupLon),
+    distanceKm: String(distanceKm),
+    billingSnapshot: billingSnapshot ?? undefined,
+    billingRulesetVersion: billingRulesetVersion ?? undefined,
+    couponCode: couponStored ?? undefined,
+    expiresAt,
+  });
 
   return {
     ok: true,
@@ -719,150 +611,43 @@ export type FinalizeResult =
   | { ok: true; orderId: string; status: string; totalAmount: number; createdAt: string }
   | { ok: false; code: string; message: string };
 
-export type PendingOrderStatusResult =
-  | {
-      ok: true;
-      pendingId: string;
-      paymentState: string;
-      finalized: boolean;
-      orderId: string | null;
-      refundStatus: string | null;
-      paymentConfirmBy: string | null;
-      message?: string | null;
-    }
-  | { ok: false; code: string; message: string };
-
-function pendingFailureMessage(pending: typeof pendingOrders.$inferSelect): string | null {
-  return pending.paymentFailureMessage ?? null;
-}
-
-async function loadFinalizedOrderById(
+/** Idempotent: if this payment already finalized, returns existing order. */
+export async function finalizeOrder(
   db: PostgresJsDatabase<Record<string, unknown>>,
-  orderId: string
-): Promise<{ orderId: string; grandTotal: unknown; placedAt: Date | null } | null> {
-  const [existing] = await db
-    .select({ orderId: ordersCore.orderId, grandTotal: ordersCore.grandTotal, placedAt: ordersCore.placedAt })
-    .from(ordersCore)
-    .where(eq(ordersCore.orderId, orderId))
-    .limit(1);
-  if (!existing?.orderId) return null;
-  return { orderId: existing.orderId, grandTotal: existing.grandTotal, placedAt: existing.placedAt };
-}
-
-async function loadFinalizedOrderByPaymentTxn(
-  db: PostgresJsDatabase<Record<string, unknown>>,
-  razorpayPaymentId: string
-): Promise<{ orderId: string; grandTotal: number; placedAt: string } | null> {
-  const rows = await db
-    .select({
-      orderId: ordersCorePayments.orderId,
-      amount: ordersCorePayments.amount,
-      paidAt: ordersCorePayments.paidAt,
-    })
-    .from(ordersCorePayments)
-    .where(eq(ordersCorePayments.transactionId, razorpayPaymentId))
-    .limit(1);
-  const row = rows[0];
-  if (!row?.orderId) return null;
-  return {
-    orderId: row.orderId,
-    grandTotal: Number(row.amount ?? 0),
-    placedAt: (row.paidAt ?? new Date()).toISOString(),
-  };
-}
-
-export async function markPendingOrderPaymentStarted(
-  db: PostgresJsDatabase<Record<string, unknown>>,
-  args: { pendingId: string; razorpayOrderId: string }
-): Promise<void> {
-  const now = new Date();
-  const confirmBy = new Date(now.getTime() + getPaymentConfirmWindowMs());
-  // Capture prior state so the audit row records the transition accurately.
-  const [prev] = await db
-    .select({ state: pendingOrders.paymentState, grandTotal: pendingOrders.grandTotal, currency: pendingOrders.currency })
-    .from(pendingOrders)
-    .where(eq(pendingOrders.pendingId, args.pendingId))
-    .limit(1);
-  await db
-    .update(pendingOrders)
-    .set({
-      razorpayOrderId: args.razorpayOrderId,
-      paymentState: PENDING_PAYMENT_STATES.PENDING_CONFIRMATION,
-      paymentStartedAt: now,
-      paymentConfirmBy: confirmBy,
-      updatedAt: now,
-    })
-    .where(eq(pendingOrders.pendingId, args.pendingId));
-  await logPaymentEvent(db, {
-    pendingId: args.pendingId,
-    razorpayOrderId: args.razorpayOrderId,
-    eventType: "PAYMENT_STARTED",
-    source: "api",
-    prevState: prev?.state ?? null,
-    newState: PENDING_PAYMENT_STATES.PENDING_CONFIRMATION,
-    amountPaise: prev?.grandTotal != null ? Math.round(Number(prev.grandTotal) * 100) : null,
-    currency: prev?.currency ?? "INR",
-    payload: { confirmBy: confirmBy.toISOString() },
-  });
-}
-
-export async function getPendingOrderStatus(
-  db: PostgresJsDatabase<Record<string, unknown>>,
-  args: { pendingId: string; customerId: number }
-): Promise<PendingOrderStatusResult> {
-  const [pending] = await db
-    .select()
-    .from(pendingOrders)
-    .where(and(eq(pendingOrders.pendingId, args.pendingId), eq(pendingOrders.customerId, args.customerId)))
-    .limit(1);
-  if (!pending) {
-    return { ok: false, code: "PENDING_ORDER_NOT_FOUND", message: "Pending order not found." };
-  }
-  return {
-    ok: true,
-    pendingId: pending.pendingId,
-    paymentState: pending.paymentState ?? PENDING_PAYMENT_STATES.CREATED,
-    finalized: Boolean(pending.finalizedOrderId),
-    orderId: pending.finalizedOrderId ?? null,
-    refundStatus: pending.refundStatus ?? null,
-    paymentConfirmBy: pending.paymentConfirmBy?.toISOString?.() ?? null,
-    message: pendingFailureMessage(pending),
-  };
-}
-
-async function finalizeVerifiedPendingOrder(
-  db: PostgresJsDatabase<Record<string, unknown>>,
-  args: {
-    pendingId: string;
-    razorpayOrderId: string;
-    razorpayPaymentId: string;
-    paymentMethod: string;
-    gatewayPayload?: Record<string, unknown> | null;
-  }
+  input: FinalizeInput
 ): Promise<FinalizeResult> {
-  const existingByPayment = await loadFinalizedOrderByPaymentTxn(db, args.razorpayPaymentId);
-  if (existingByPayment?.orderId) {
-    return {
-      ok: true,
-      orderId: existingByPayment.orderId,
-      status: "PLACED",
-      totalAmount: existingByPayment.grandTotal,
-      createdAt: existingByPayment.placedAt,
-    };
-  }
+  const { pendingId, razorpayOrderId, razorpayPaymentId, razorpaySignature, customerId } = input;
 
   const [pending] = await db
     .select()
     .from(pendingOrders)
-    .where(eq(pendingOrders.pendingId, args.pendingId))
+    .where(and(eq(pendingOrders.pendingId, pendingId), eq(pendingOrders.customerId, customerId)))
     .limit(1);
 
   if (!pending) {
     return { ok: false, code: "PENDING_ORDER_NOT_FOUND", message: "Session expired or invalid. Please restart checkout." };
   }
 
+  const expectedAmountPaise = Math.round(Number(pending.grandTotal ?? 0) * 100);
+  const paymentCheck = await verifyRazorpayPaymentDetails(
+    razorpayOrderId,
+    razorpayPaymentId,
+    razorpaySignature,
+    expectedAmountPaise,
+    String(pending.currency ?? "INR")
+  );
+  if (!paymentCheck.ok) {
+    return paymentCheck;
+  }
+
+  const paymentMethodEnum = paymentMethodToEnum(paymentCheck.paymentMethod);
+
   if (pending.finalizedOrderId) {
-    const existing = await loadFinalizedOrderById(db, pending.finalizedOrderId);
+    const [existing] = await db
+      .select({ orderId: ordersCore.orderId, grandTotal: ordersCore.grandTotal, placedAt: ordersCore.placedAt })
+      .from(ordersCore)
+      .where(eq(ordersCore.orderId, pending.finalizedOrderId))
+      .limit(1);
     if (existing?.orderId) {
       return {
         ok: true,
@@ -883,14 +668,15 @@ async function finalizeVerifiedPendingOrder(
     return { ok: false, code: norm.code, message: norm.message };
   }
   const items = norm.items;
+
   const pickupRaw = sanitizeStringForDb(pending.pickupAddressNormalized ?? undefined) ?? "";
   const dropRaw = sanitizeStringForDb(pending.deliveryAddress ?? undefined) ?? "";
   const pickupLat = pending.pickupLat != null ? String(pending.pickupLat) : "0";
   const pickupLon = pending.pickupLon != null ? String(pending.pickupLon) : "0";
   const dropLat = pending.dropLat != null ? String(pending.dropLat) : "0";
   const dropLon = pending.dropLon != null ? String(pending.dropLon) : "0";
-  const paymentMethodEnum = paymentMethodToEnum(args.paymentMethod);
 
+  /** DB enum values for orders_core (must match PostgreSQL enums: lowercase) */
   const ORDER_TYPE_FOOD = "food" as const;
   const ORDER_SOURCE_INTERNAL = "internal" as const;
   const ORDER_STATUS_ASSIGNED = "assigned" as const;
@@ -905,16 +691,16 @@ async function finalizeVerifiedPendingOrder(
       const firstRow = Array.isArray(seqResult)
         ? seqResult[0]
         : (seqResult as { rows?: unknown[] })?.rows?.[0] ?? (seqResult as unknown[])?.[0];
-      const generatedOrderId =
+      const orderIdText =
         firstRow != null && typeof firstRow === "object" && "order_id" in firstRow
           ? String((firstRow as { order_id: unknown }).order_id)
           : null;
-      if (!generatedOrderId || !generatedOrderId.startsWith("GM")) {
+      if (!orderIdText || !orderIdText.startsWith("GM")) {
         throw new Error(`Failed to generate order_id: got ${JSON.stringify(seqResult)}`);
       }
 
       await tx.insert(ordersCore).values({
-        orderId: generatedOrderId,
+        orderId: orderIdText,
         orderType: ORDER_TYPE_FOOD,
         orderSource: ORDER_SOURCE_INTERNAL,
         customerId: pending.customerId,
@@ -926,22 +712,17 @@ async function finalizeVerifiedPendingOrder(
         addonTotal: pending.addonTotal ?? "0",
         grandTotal: pending.grandTotal,
         tipAmount: pending.tipAmount ?? "0",
-        donationAmount: pending.donationAmount ?? "0",
         placedAt: new Date(),
         pickupAddressRaw: pickupRaw || " ",
-        pickupAddressNormalized: pickupRaw || undefined,
         pickupLat,
         pickupLon,
         dropAddressRaw: dropRaw || " ",
-        dropAddressNormalized: dropRaw || undefined,
         dropLat,
         dropLon,
         deliveryAddress: sanitizeStringForDb(pending.deliveryAddress ?? undefined) ?? undefined,
         distanceKm: pending.distanceKm ?? undefined,
         paymentStatus: PAYMENT_STATUS_COMPLETED,
         paymentMethod: paymentMethodEnum,
-        items: items as unknown as Record<string, unknown>,
-        checkoutMetadata: pending.checkoutMetadata ?? undefined,
         billingSnapshot: pending.billingSnapshot ?? undefined,
         billingRulesetVersion: pending.billingRulesetVersion ?? undefined,
       });
@@ -950,7 +731,7 @@ async function finalizeVerifiedPendingOrder(
         const addonPerUnit = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity, 0);
         const lineTotal = i.basePrice * i.quantity + addonPerUnit * i.quantity;
         return {
-          orderId: generatedOrderId,
+          orderId: orderIdText,
           menuItemId: i.menuItemId,
           itemName: i.itemName,
           categoryName: null,
@@ -968,11 +749,12 @@ async function finalizeVerifiedPendingOrder(
       const insertedItems = await tx.insert(ordersCoreItems).values(itemInserts).returning({ id: ordersCoreItems.id });
       for (let idx = 0; idx < items.length; idx++) {
         const row = items[idx]!;
-        if (row.addons.length === 0) continue;
+        const addons = row.addons;
+        if (addons.length === 0) continue;
         const orderItemId = insertedItems[idx]?.id;
         if (orderItemId == null) continue;
         await tx.insert(ordersCoreItemAddons).values(
-          row.addons.map((ad) => ({
+          addons.map((ad) => ({
             orderItemId,
             addonId: ad.addonId > 0 ? ad.addonId : undefined,
             addonName: ad.addonName || undefined,
@@ -983,95 +765,61 @@ async function finalizeVerifiedPendingOrder(
       }
 
       await tx.insert(ordersCorePayments).values({
-        orderId: generatedOrderId,
+        orderId: orderIdText,
         paymentGateway: "razorpay",
         paymentMethod: paymentMethodEnum,
-        transactionId: args.razorpayPaymentId,
+        transactionId: razorpayPaymentId,
         amount: pending.grandTotal,
         currency: pending.currency ?? "INR",
         paymentStatus: "PAID",
-        gatewayResponse: args.gatewayPayload ?? { razorpayPaymentId: args.razorpayPaymentId, razorpayOrderId: args.razorpayOrderId },
+        gatewayResponse: { razorpayPaymentId, razorpayOrderId },
         paidAt: new Date(),
       });
 
       await tx
         .update(pendingOrders)
         .set({
-          finalizedOrderId: generatedOrderId,
+          finalizedOrderId: orderIdText,
           finalizedAt: new Date(),
           updatedAt: new Date(),
-          razorpayOrderId: args.razorpayOrderId,
-          razorpayPaymentId: args.razorpayPaymentId,
-          paymentState: PENDING_PAYMENT_STATES.FINALIZED,
-          paymentVerifiedAt: new Date(),
-          lastGatewayPayload: args.gatewayPayload ?? undefined,
+          razorpayOrderId,
         })
-        .where(eq(pendingOrders.pendingId, args.pendingId));
+        .where(eq(pendingOrders.pendingId, pendingId));
 
       if (getEnv().OMS_LEDGER_SHADOW_WRITE) {
         await persistOmsLedgerArtifacts(tx as unknown as PostgresJsDatabase<Record<string, unknown>>, {
-          orderId: generatedOrderId,
-          pendingId: args.pendingId,
+          orderId: orderIdText,
+          pendingId,
           pending,
-          razorpayOrderId: args.razorpayOrderId,
-          razorpayPaymentId: args.razorpayPaymentId,
+          razorpayOrderId,
+          razorpayPaymentId,
           paymentMethodEnum,
         });
       }
 
       await tx
-        .update(ordersFood)
+        .update(pendingOrders)
         .set({
-          coreOrderId: generatedOrderId,
-          merchantStoreId: pending.merchantStoreId ?? undefined,
-          merchantParentId: pending.merchantParentId ?? undefined,
-          customerId: pending.customerId ?? undefined,
-          foodItemsCount: items.reduce((sum, item) => sum + item.quantity, 0),
-          foodItemsTotalValue: pending.itemTotal ?? undefined,
-          deliveryInstructions:
-            pending.checkoutMetadata &&
-            typeof pending.checkoutMetadata === "object" &&
-            "deliveryInstructions" in (pending.checkoutMetadata as Record<string, unknown>)
-              ? String((pending.checkoutMetadata as Record<string, unknown>).deliveryInstructions ?? "")
-              : undefined,
+          finalizedOrderId: orderIdText,
+          finalizedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(ordersFood.coreOrderId, generatedOrderId));
+        .where(eq(pendingOrders.pendingId, pendingId));
 
-      // Explicit ORDER_FINALIZED event (DB trigger emits PLACED on insert; this
-      // complements it with payment-verified metadata so the timeline reads:
-      //   PLACED -> FINALIZED -> CONFIRMED -> PREPARING -> ...
-      await tx.insert(orderEvents).values({
-        orderId: generatedOrderId,
-        orderSource: "orders_core",
-        eventType: "ORDER_FINALIZED",
-        fromStatus: "PLACED",
-        toStatus: "PLACED",
-        payload: {
-          razorpayOrderId: args.razorpayOrderId,
-          razorpayPaymentId: args.razorpayPaymentId,
-          paymentMethod: paymentMethodEnum,
-          grandTotal: Number(pending.grandTotal ?? 0),
-          pendingId: args.pendingId,
-        },
-        actorType: "system",
-      });
-
-      // Outbox: notify merchant / rider dispatch / customer. Atomic with placement.
-      const itemCount = items.reduce((sum, item) => sum + item.quantity, 0);
-      await enqueuePlacementNotifications(tx as unknown as PostgresJsDatabase<Record<string, unknown>>, {
-        orderId: generatedOrderId,
-        customerId: pending.customerId ?? null,
-        merchantStoreId: pending.merchantStoreId ?? null,
-        merchantParentId: pending.merchantParentId ?? null,
-        grandTotal: Number(pending.grandTotal ?? 0),
-        itemCount,
-        orderCode: generatedOrderId,
-        summary: `${itemCount} item${itemCount === 1 ? "" : "s"} \u2022 \u20B9${Number(pending.grandTotal ?? 0).toFixed(2)}`,
-      });
-
-      return { orderIdText: generatedOrderId };
+      return { orderIdText };
     });
+
+    // NOTE: order_notifications outbox is intentionally NOT written here.
+    // The deployed `order_notifications` table belongs to a different (legacy)
+    // schema (extra required columns like `notification_type`) that doesn't
+    // match `backend/src/db/schema.ts`. Writing to it always errored, polluting
+    // logs without delivering anything since this app has no consumer for the
+    // outbox today.
+    //
+    // When merchant/rider realtime notifications get wired up, do it via a
+    // direct Supabase channel publish or a dedicated notifications table that
+    // matches the schema in code. See order GM-* placement audit in
+    // `payment_events` + `orders_core` itself for current observability.
     orderIdText = result.orderIdText;
   } catch (err: unknown) {
     const e = err as {
@@ -1084,10 +832,11 @@ async function finalizeVerifiedPendingOrder(
     const detail = e?.detail ?? e?.cause?.detail;
     const constraint = e?.constraint ?? e?.cause?.constraint;
     const pgCode = e?.code ?? (e?.cause as { code?: string })?.code;
-    console.error("[API] finalizeVerifiedPendingOrder failed:", e?.message ?? err);
-    if (pgCode) console.error("[API] finalizeVerifiedPendingOrder pgCode:", pgCode);
-    if (detail) console.error("[API] finalizeVerifiedPendingOrder detail:", detail);
-    if (constraint) console.error("[API] finalizeVerifiedPendingOrder constraint:", constraint);
+    console.error("[API] finalizeOrder failed:", e?.message ?? err);
+    if (pgCode) console.error("[API] finalizeOrder pgCode:", pgCode);
+    if (detail) console.error("[API] finalizeOrder detail:", detail);
+    if (constraint) console.error("[API] finalizeOrder constraint:", constraint);
+    if (e?.cause && !detail) console.error("[API] finalizeOrder cause:", e.cause);
     return {
       ok: false,
       code: "ORDER_CREATION_FAILED",
@@ -1096,6 +845,7 @@ async function finalizeVerifiedPendingOrder(
   }
 
   if (!orderIdText) {
+    console.error("[API] finalizeOrder: transaction succeeded but orderIdText missing");
     return {
       ok: false,
       code: "ORDER_CREATION_FAILED",
@@ -1112,531 +862,613 @@ async function finalizeVerifiedPendingOrder(
   };
 }
 
-/** Idempotent: if this payment already finalized, returns existing order. */
-export async function finalizeOrder(
+// ---------------------------------------------------------------------------
+// Payment lifecycle helpers (used by payment.routes.ts webhook ingress)
+// ---------------------------------------------------------------------------
+
+export const PENDING_PAYMENT_STATES = {
+  CREATED: "created",
+  PENDING_CONFIRMATION: "pending_confirmation",
+  PAID: "paid",
+  FINALIZED: "finalized",
+  FAILED: "failed",
+  REFUND_PENDING: "refund_pending",
+  REFUNDED: "refunded",
+  REFUND_FAILED: "refund_failed",
+} as const;
+
+/** Append a row to payment_events (audit log). Never throws — errors are swallowed. */
+export async function logPaymentEvent(
   db: PostgresJsDatabase<Record<string, unknown>>,
-  input: FinalizeInput
-): Promise<FinalizeResult> {
-  const { pendingId, razorpayOrderId, razorpayPaymentId, razorpaySignature, customerId } = input;
-  const [pending] = await db
-    .select()
-    .from(pendingOrders)
-    .where(and(eq(pendingOrders.pendingId, pendingId), eq(pendingOrders.customerId, customerId)))
-    .limit(1);
-  if (!pending) {
-    return { ok: false, code: "PENDING_ORDER_NOT_FOUND", message: "Session expired or invalid. Please restart checkout." };
+  args: {
+    eventType: string;
+    source: string;
+    pendingId?: string | null;
+    razorpayOrderId?: string | null;
+    razorpayPaymentId?: string | null;
+    orderId?: string | null;
+    prevState?: string | null;
+    newState?: string | null;
+    failureCode?: string | null;
+    failureMessage?: string | null;
+    payload?: Record<string, unknown>;
   }
-  const expectedAmountPaise = Math.round(Number(pending.grandTotal ?? 0) * 100);
-  const paymentCheck = await verifyRazorpayPaymentDetails(
-    razorpayOrderId,
-    razorpayPaymentId,
-    razorpaySignature,
-    expectedAmountPaise,
-    String(pending.currency ?? "INR")
-  );
-  if (!paymentCheck.ok) {
-    // If Razorpay hasn't marked the payment as captured yet OR we can't reach Razorpay to verify,
-    // do NOT fail the pending order. Keep it in pending_confirmation so webhook/reconciler can
-    // finalize it shortly once gateway state is visible again.
-    if (paymentCheck.code === "PAYMENT_PENDING_CONFIRMATION" || paymentCheck.code === "PAYMENT_VERIFICATION_FAILED") {
-      await db
-        .update(pendingOrders)
-        .set({
-          razorpayOrderId,
-          razorpayPaymentId,
-          paymentState: PENDING_PAYMENT_STATES.PENDING_CONFIRMATION,
-          paymentFailureCode: paymentCheck.code,
-          paymentFailureMessage: paymentCheck.message,
-          updatedAt: new Date(),
-        })
-        .where(eq(pendingOrders.pendingId, pendingId));
-      return paymentCheck;
-    }
+): Promise<void> {
+  try {
+    await db.insert(paymentEvents).values({
+      eventType: args.eventType,
+      source: args.source,
+      pendingId: args.pendingId ?? null,
+      razorpayOrderId: args.razorpayOrderId ?? null,
+      razorpayPaymentId: args.razorpayPaymentId ?? null,
+      orderId: args.orderId ?? null,
+      prevState: args.prevState ?? null,
+      newState: args.newState ?? null,
+      failureCode: args.failureCode ?? null,
+      failureMessage: args.failureMessage ?? null,
+      payload: args.payload ?? {},
+    });
+  } catch {
+    // audit log failures must never block payment processing
+  }
+}
+
+/**
+ * Called when Razorpay order is created for a pending checkout session.
+ * Stores razorpayOrderId on the pending_orders row and flips state to
+ * pending_confirmation so the customer's payment screen knows which gateway
+ * order to present.
+ */
+export async function markPendingOrderPaymentStarted(
+  db: PostgresJsDatabase<Record<string, unknown>>,
+  args: { pendingId: string; razorpayOrderId: string }
+): Promise<void> {
+  const { pendingId, razorpayOrderId } = args;
+  const env = getEnv();
+  const confirmBy = new Date(Date.now() + env.PAYMENT_CONFIRM_WINDOW_MS);
+  try {
     await db
       .update(pendingOrders)
       .set({
-        paymentState: PENDING_PAYMENT_STATES.FAILED,
-        paymentFailureCode: paymentCheck.code,
-        paymentFailureMessage: paymentCheck.message,
+        razorpayOrderId,
+        paymentState: PENDING_PAYMENT_STATES.PENDING_CONFIRMATION,
+        paymentStartedAt: new Date(),
+        paymentConfirmBy: confirmBy,
         updatedAt: new Date(),
       })
       .where(eq(pendingOrders.pendingId, pendingId));
-    return paymentCheck;
+  } catch {
+    // non-fatal: worst case razorpayOrderId isn't persisted, webhook will still match
   }
-  await db
-    .update(pendingOrders)
-    .set({
-      razorpayOrderId,
-      razorpayPaymentId,
-      paymentState: PENDING_PAYMENT_STATES.PAID,
-      paymentVerifiedAt: new Date(),
-      lastGatewayPayload: {
-        verifiedBy: "client_finalize",
-        razorpayOrderId,
-        razorpayPaymentId,
-      },
-      updatedAt: new Date(),
-    })
-    .where(eq(pendingOrders.pendingId, pendingId));
-  return finalizeVerifiedPendingOrder(db, {
-    pendingId,
-    razorpayOrderId,
-    razorpayPaymentId,
-    paymentMethod: paymentCheck.paymentMethod,
-    gatewayPayload: {
-      verifiedBy: "client_finalize",
-      razorpayOrderId,
-      razorpayPaymentId,
-    },
-  });
 }
 
+/**
+ * Webhook handler for payment.captured / order.paid.
+ * Idempotent: if the order was already finalized by the client callback, returns ok=true.
+ * If not yet finalized, runs the full order-creation transaction from the pending snapshot.
+ */
 export async function finalizePendingOrderFromWebhook(
   db: PostgresJsDatabase<Record<string, unknown>>,
   args: {
     razorpayOrderId: string;
     razorpayPaymentId: string;
-    paymentMethod?: string | null;
-    gatewayPayload?: Record<string, unknown> | null;
+    paymentMethod: string;
+    gatewayPayload?: Record<string, unknown>;
   }
-): Promise<FinalizeResult> {
-  const [pending] = await db
-    .select()
-    .from(pendingOrders)
-    .where(eq(pendingOrders.razorpayOrderId, args.razorpayOrderId))
-    .limit(1);
-  if (!pending) {
-    return { ok: false, code: "PENDING_ORDER_NOT_FOUND", message: "Pending order not found for payment." };
-  }
-  await db
-    .update(pendingOrders)
-    .set({
-      razorpayPaymentId: args.razorpayPaymentId,
-      paymentState: PENDING_PAYMENT_STATES.PAID,
-      paymentVerifiedAt: new Date(),
-      lastGatewayPayload: args.gatewayPayload ?? undefined,
-      updatedAt: new Date(),
-    })
-    .where(eq(pendingOrders.pendingId, pending.pendingId));
-  return finalizeVerifiedPendingOrder(db, {
-    pendingId: pending.pendingId,
-    razorpayOrderId: args.razorpayOrderId,
-    razorpayPaymentId: args.razorpayPaymentId,
-    paymentMethod: args.paymentMethod ?? pending.paymentMethod,
-    gatewayPayload: args.gatewayPayload,
-  });
-}
+): Promise<{ ok: boolean; code?: string }> {
+  const { razorpayOrderId, razorpayPaymentId, paymentMethod, gatewayPayload } = args;
 
-async function refundPendingPayment(
-  db: PostgresJsDatabase<Record<string, unknown>>,
-  pending: typeof pendingOrders.$inferSelect,
-  args: { paymentId: string; reason: string; notes?: Record<string, string>; failureMessage?: string; source?: "reconciler" | "refund" | "webhook" }
-): Promise<void> {
-  const amountPaise = Math.round(Number(pending.grandTotal ?? 0) * 100);
-  const failureMessage =
-    args.failureMessage ??
-    `Payment was not confirmed within ${Math.round(getPaymentConfirmWindowMs() / 60_000)} minutes. Refund initiated.`;
-  const source = args.source ?? "reconciler";
+  // Pre-flight read (no lock) — fast path for the very common already-finalized case
+  // and for missing-row errors. This avoids opening a tx in the easy paths.
+  const [preflight] = await db
+    .select({ pendingId: pendingOrders.pendingId, finalizedOrderId: pendingOrders.finalizedOrderId, paymentState: pendingOrders.paymentState })
+    .from(pendingOrders)
+    .where(eq(pendingOrders.razorpayOrderId, razorpayOrderId))
+    .limit(1);
+
+  if (!preflight) {
+    return { ok: false, code: "PENDING_ORDER_NOT_FOUND" };
+  }
+
+  if (preflight.finalizedOrderId) {
+    await logPaymentEvent(db, {
+      eventType: "WEBHOOK_CAPTURED_IGNORED_ALREADY_FINALIZED",
+      source: "webhook",
+      pendingId: preflight.pendingId,
+      razorpayOrderId,
+      razorpayPaymentId,
+      orderId: preflight.finalizedOrderId,
+      prevState: preflight.paymentState,
+      newState: preflight.paymentState,
+      payload: gatewayPayload ?? {},
+    });
+    return { ok: true };
+  }
+
+  const paymentMethodEnum = paymentMethodToEnum(paymentMethod);
+
   try {
-    const refund = await createRazorpayRefund({
-      paymentId: args.paymentId,
-      amountPaise,
-      notes: {
-        pendingId: pending.pendingId,
-        reason: args.reason,
-        ...(args.notes ?? {}),
-      },
+    // STRICT IDEMPOTENCY: take a row-level lock on the pending row inside the
+    // transaction so that if two webhooks (e.g. payment.captured + order.paid
+    // for the same payment) race here, only one wins. The loser sees the row
+    // already finalized after the winner commits and returns idempotent ok.
+    const result = await db.transaction(async (tx) => {
+      const lockedRows = await tx.execute<{
+        id: number;
+        pending_id: string;
+        customer_id: number;
+        merchant_store_id: number;
+        merchant_parent_id: number | null;
+        item_total: string;
+        addon_total: string | null;
+        grand_total: string;
+        tip_amount: string | null;
+        currency: string | null;
+        items_snapshot: unknown;
+        billing_snapshot: unknown;
+        billing_ruleset_version: number | null;
+        pickup_address_normalized: string | null;
+        delivery_address: string | null;
+        pickup_lat: string | null;
+        pickup_lon: string | null;
+        drop_lat: string | null;
+        drop_lon: string | null;
+        distance_km: string | null;
+        finalized_order_id: string | null;
+        payment_state: string | null;
+      }>(sql`
+        SELECT id, pending_id, customer_id, merchant_store_id, merchant_parent_id,
+               item_total, addon_total, grand_total, tip_amount, currency,
+               items_snapshot, billing_snapshot, billing_ruleset_version,
+               pickup_address_normalized, delivery_address,
+               pickup_lat, pickup_lon, drop_lat, drop_lon, distance_km,
+               finalized_order_id, payment_state
+        FROM pending_orders
+        WHERE razorpay_order_id = ${razorpayOrderId}
+        FOR UPDATE
+      `);
+      const rows: Array<Record<string, unknown>> = Array.isArray(lockedRows)
+        ? (lockedRows as Array<Record<string, unknown>>)
+        : ((lockedRows as { rows?: unknown[] })?.rows as Array<Record<string, unknown>>) ?? [];
+      const pending = rows[0] as
+        | {
+            pending_id: string;
+            customer_id: number;
+            merchant_store_id: number;
+            merchant_parent_id: number | null;
+            item_total: string;
+            addon_total: string | null;
+            grand_total: string;
+            tip_amount: string | null;
+            currency: string | null;
+            items_snapshot: unknown;
+            billing_snapshot: unknown;
+            billing_ruleset_version: number | null;
+            pickup_address_normalized: string | null;
+            delivery_address: string | null;
+            pickup_lat: string | null;
+            pickup_lon: string | null;
+            drop_lat: string | null;
+            drop_lon: string | null;
+            distance_km: string | null;
+            finalized_order_id: string | null;
+            payment_state: string | null;
+          }
+        | undefined;
+
+      if (!pending) {
+        return { ok: false as const, code: "PENDING_ORDER_NOT_FOUND" };
+      }
+
+      // Race-loser path: another concurrent webhook already finalized while we
+      // were waiting for the row lock. Return idempotent ok with the existing order.
+      if (pending.finalized_order_id) {
+        return { ok: true as const, alreadyFinalized: true, orderId: pending.finalized_order_id, prevState: pending.payment_state };
+      }
+
+      const norm = normalizeOrderItems(pending.items_snapshot);
+      if (!norm.ok) {
+        return { ok: false as const, code: norm.code };
+      }
+      const items = norm.items;
+
+      const pickupRaw = sanitizeStringForDb(pending.pickup_address_normalized ?? undefined) ?? "";
+      const dropRaw = sanitizeStringForDb(pending.delivery_address ?? undefined) ?? "";
+      const pickupLat = pending.pickup_lat != null ? String(pending.pickup_lat) : "0";
+      const pickupLon = pending.pickup_lon != null ? String(pending.pickup_lon) : "0";
+      const dropLat = pending.drop_lat != null ? String(pending.drop_lat) : "0";
+      const dropLon = pending.drop_lon != null ? String(pending.drop_lon) : "0";
+      const seqResult = await tx.execute(
+        sql`SELECT ('GM' || nextval('order_id_seq'))::text as order_id`
+      );
+      const firstRow = Array.isArray(seqResult)
+        ? seqResult[0]
+        : (seqResult as { rows?: unknown[] })?.rows?.[0] ?? (seqResult as unknown[])?.[0];
+      const orderIdText =
+        firstRow != null && typeof firstRow === "object" && "order_id" in firstRow
+          ? String((firstRow as { order_id: unknown }).order_id)
+          : null;
+      if (!orderIdText || !orderIdText.startsWith("GM")) {
+        throw new Error(`order_id generation failed: ${JSON.stringify(seqResult)}`);
+      }
+
+      await tx.insert(ordersCore).values({
+        orderId: orderIdText,
+        orderType: "food" as const,
+        orderSource: "internal" as const,
+        customerId: pending.customer_id,
+        merchantStoreId: pending.merchant_store_id,
+        merchantParentId: pending.merchant_parent_id ?? undefined,
+        status: "assigned" as const,
+        currentStatus: "PLACED",
+        itemTotal: pending.item_total,
+        addonTotal: pending.addon_total ?? "0",
+        grandTotal: pending.grand_total,
+        tipAmount: pending.tip_amount ?? "0",
+        placedAt: new Date(),
+        pickupAddressRaw: pickupRaw || " ",
+        pickupLat,
+        pickupLon,
+        dropAddressRaw: dropRaw || " ",
+        dropLat,
+        dropLon,
+        deliveryAddress: sanitizeStringForDb(pending.delivery_address ?? undefined) ?? undefined,
+        distanceKm: pending.distance_km ?? undefined,
+        paymentStatus: "completed" as const,
+        paymentMethod: paymentMethodEnum,
+        billingSnapshot: (pending.billing_snapshot as Record<string, unknown> | null) ?? undefined,
+        billingRulesetVersion: pending.billing_ruleset_version ?? undefined,
+      });
+
+      const itemInserts = items.map((i) => {
+        const addonPerUnit = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity, 0);
+        const lineTotal = i.basePrice * i.quantity + addonPerUnit * i.quantity;
+        return {
+          orderId: orderIdText,
+          menuItemId: i.menuItemId,
+          itemName: i.itemName,
+          categoryName: null as string | null,
+          vegNonveg: null as string | null,
+          variantId: i.variantId != null ? i.variantId : undefined,
+          variantName: sanitizeOptional(i.variantName ?? "") ?? undefined,
+          quantity: i.quantity,
+          basePrice: sanitizeNumeric(i.basePrice),
+          addonPrice: sanitizeNumeric(addonPerUnit),
+          totalPrice: sanitizeNumeric(lineTotal),
+          itemSnapshot: i.itemSnapshot ?? undefined,
+        };
+      });
+
+      const insertedItems = await tx.insert(ordersCoreItems).values(itemInserts).returning({ id: ordersCoreItems.id });
+      for (let idx = 0; idx < items.length; idx++) {
+        const addons = items[idx]!.addons;
+        if (addons.length === 0) continue;
+        const orderItemId = insertedItems[idx]?.id;
+        if (orderItemId == null) continue;
+        await tx.insert(ordersCoreItemAddons).values(
+          addons.map((ad) => ({
+            orderItemId,
+            addonId: ad.addonId > 0 ? ad.addonId : undefined,
+            addonName: ad.addonName || undefined,
+            addonPrice: sanitizeNumeric(ad.addonPrice),
+            quantity: ad.quantity,
+          }))
+        );
+      }
+
+      await tx.insert(ordersCorePayments).values({
+        orderId: orderIdText,
+        paymentGateway: "razorpay",
+        paymentMethod: paymentMethodEnum,
+        transactionId: razorpayPaymentId,
+        amount: pending.grand_total,
+        currency: pending.currency ?? "INR",
+        paymentStatus: "PAID",
+        gatewayResponse: { razorpayPaymentId, razorpayOrderId, via: "webhook" },
+        paidAt: new Date(),
+      });
+
+      await tx
+        .update(pendingOrders)
+        .set({
+          finalizedOrderId: orderIdText,
+          finalizedAt: new Date(),
+          razorpayPaymentId,
+          paymentState: PENDING_PAYMENT_STATES.FINALIZED,
+          paymentVerifiedAt: new Date(),
+          lastGatewayPayload: gatewayPayload ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(pendingOrders.pendingId, pending.pending_id));
+
+      return {
+        ok: true as const,
+        alreadyFinalized: false,
+        orderId: orderIdText,
+        prevState: pending.payment_state,
+        pendingIdValue: pending.pending_id,
+      };
     });
-    const refundId = String((refund as { id?: string }).id ?? "");
-    await db
-      .update(pendingOrders)
-      .set({
-        // Razorpay's `/refund` call returns immediately with status="processed"
-        // or "pending" depending on the speed. We pessimistically mark as
-        // refund_pending and let the `refund.processed` webhook flip it to
-        // refunded (belt and braces; the sync response often already says
-        // processed for normal speed refunds on live accounts).
-        paymentState: PENDING_PAYMENT_STATES.REFUND_PENDING,
-        refundStatus: String((refund as { status?: string }).status ?? "refund_pending"),
-        refundReference: refundId,
-        refundInitiatedAt: new Date(),
-        paymentFailureCode: "PAYMENT_CONFIRMATION_TIMEOUT",
-        paymentFailureMessage: failureMessage,
-        updatedAt: new Date(),
-      })
-      .where(eq(pendingOrders.pendingId, pending.pendingId));
+
+    if (!result.ok) {
+      return { ok: false, code: result.code };
+    }
+
+    // See note in finalizeOrder — outbox writes are disabled until the
+    // deployed schema matches `backend/src/db/schema.ts`.
+
+    if (result.alreadyFinalized) {
+      // Race-loser: another concurrent webhook finalized while we waited for the lock.
+      await logPaymentEvent(db, {
+        eventType: "WEBHOOK_CAPTURED_RACE_LOSER",
+        source: "webhook",
+        pendingId: preflight.pendingId,
+        razorpayOrderId,
+        razorpayPaymentId,
+        orderId: result.orderId ?? null,
+        prevState: result.prevState ?? null,
+        newState: result.prevState ?? null,
+        payload: gatewayPayload ?? {},
+      });
+      return { ok: true };
+    }
+
     await logPaymentEvent(db, {
-      pendingId: pending.pendingId,
-      razorpayOrderId: pending.razorpayOrderId,
-      razorpayPaymentId: args.paymentId,
-      eventType: "REFUND_INITIATED",
-      source,
-      prevState: pending.paymentState,
-      newState: PENDING_PAYMENT_STATES.REFUND_PENDING,
-      amountPaise,
-      currency: pending.currency ?? "INR",
-      failureCode: "PAYMENT_CONFIRMATION_TIMEOUT",
-      failureMessage,
-      payload: { refundId, reason: args.reason, refund },
+      eventType: "WEBHOOK_PAYMENT_CAPTURED",
+      source: "webhook",
+      pendingId: result.pendingIdValue ?? preflight.pendingId,
+      razorpayOrderId,
+      razorpayPaymentId,
+      orderId: result.orderId ?? null,
+      prevState: result.prevState ?? null,
+      newState: PENDING_PAYMENT_STATES.FINALIZED,
+      payload: gatewayPayload ?? {},
     });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : "Refund failed";
-    await db
-      .update(pendingOrders)
-      .set({
-        paymentState: PENDING_PAYMENT_STATES.REFUND_PENDING,
-        refundStatus: "refund_failed",
-        refundInitiatedAt: new Date(),
-        paymentFailureCode: "REFUND_FAILED",
-        paymentFailureMessage: msg,
-        updatedAt: new Date(),
-      })
-      .where(eq(pendingOrders.pendingId, pending.pendingId));
+
+    return { ok: true };
+  } catch (err) {
+    console.error("[webhook] finalizePendingOrderFromWebhook failed:", err);
     await logPaymentEvent(db, {
-      pendingId: pending.pendingId,
-      razorpayOrderId: pending.razorpayOrderId,
-      razorpayPaymentId: args.paymentId,
-      eventType: "REFUND_FAILED",
-      source,
-      prevState: pending.paymentState,
-      newState: PENDING_PAYMENT_STATES.REFUND_PENDING,
-      amountPaise,
-      currency: pending.currency ?? "INR",
-      failureCode: "REFUND_FAILED",
-      failureMessage: msg,
-      payload: { reason: args.reason },
+      eventType: "WEBHOOK_FINALIZATION_FAILED",
+      source: "webhook",
+      pendingId: preflight.pendingId,
+      razorpayOrderId,
+      razorpayPaymentId,
+      failureMessage: (err as Error)?.message ?? "unknown",
+      payload: gatewayPayload ?? {},
     });
+    return { ok: false, code: "ORDER_CREATION_FAILED" };
   }
 }
 
 /**
- * Webhook-driven helper: Razorpay fired `payment.failed`. We can mark the
- * pending order failed immediately without waiting for the reconciler TTL,
- * which lets the customer app flip to the "payment failed" screen within
- * seconds instead of minutes.
- *
- * Idempotent: if the pending is already in a terminal state (finalized /
- * refunded / failed) we just log and return.
+ * Webhook handler for payment.failed.
+ * Idempotent: does not regress an already-finalized row.
  */
 export async function markPendingOrderFailedFromWebhook(
   db: PostgresJsDatabase<Record<string, unknown>>,
   args: {
     razorpayOrderId: string;
     razorpayPaymentId?: string | null;
-    failureCode?: string | null;
-    failureMessage?: string | null;
-    gatewayPayload?: Record<string, unknown> | null;
+    failureCode: string;
+    failureMessage: string;
+    gatewayPayload?: Record<string, unknown>;
   }
-): Promise<{ ok: true; pendingId: string } | { ok: false; code: string }> {
+): Promise<{ ok: boolean; pendingId?: string; code?: string }> {
+  const { razorpayOrderId, razorpayPaymentId, failureCode, failureMessage, gatewayPayload } = args;
+
   const [pending] = await db
     .select()
     .from(pendingOrders)
-    .where(eq(pendingOrders.razorpayOrderId, args.razorpayOrderId))
+    .where(eq(pendingOrders.razorpayOrderId, razorpayOrderId))
     .limit(1);
-  if (!pending) return { ok: false, code: "PENDING_ORDER_NOT_FOUND" };
-  // Already finalized: don't regress the state — payment actually succeeded.
-  if (pending.finalizedOrderId || pending.paymentState === PENDING_PAYMENT_STATES.FINALIZED) {
+
+  if (!pending) {
+    return { ok: false, code: "PENDING_ORDER_NOT_FOUND" };
+  }
+
+  // Do not regress a finalized row — reordered webhook events happen.
+  if (pending.paymentState === PENDING_PAYMENT_STATES.FINALIZED || pending.finalizedOrderId) {
     await logPaymentEvent(db, {
-      pendingId: pending.pendingId,
-      razorpayOrderId: args.razorpayOrderId,
-      razorpayPaymentId: args.razorpayPaymentId ?? null,
-      orderId: pending.finalizedOrderId,
       eventType: "WEBHOOK_FAILED_IGNORED_ALREADY_FINALIZED",
       source: "webhook",
-      prevState: pending.paymentState,
-      payload: args.gatewayPayload ?? null,
-    });
-    return { ok: true, pendingId: pending.pendingId };
-  }
-  // Already terminal failed/refunded — just log for audit.
-  if (
-    pending.paymentState === PENDING_PAYMENT_STATES.FAILED ||
-    pending.paymentState === PENDING_PAYMENT_STATES.REFUNDED ||
-    pending.paymentState === PENDING_PAYMENT_STATES.REFUND_PENDING
-  ) {
-    await logPaymentEvent(db, {
       pendingId: pending.pendingId,
-      razorpayOrderId: args.razorpayOrderId,
-      razorpayPaymentId: args.razorpayPaymentId ?? null,
-      eventType: "WEBHOOK_FAILED_DUPLICATE",
-      source: "webhook",
+      razorpayOrderId,
+      razorpayPaymentId: razorpayPaymentId ?? null,
+      orderId: pending.finalizedOrderId ?? null,
       prevState: pending.paymentState,
       newState: pending.paymentState,
-      payload: args.gatewayPayload ?? null,
+      failureCode,
+      failureMessage,
+      payload: gatewayPayload ?? {},
     });
     return { ok: true, pendingId: pending.pendingId };
   }
+
   await db
     .update(pendingOrders)
     .set({
       paymentState: PENDING_PAYMENT_STATES.FAILED,
-      razorpayPaymentId: args.razorpayPaymentId ?? pending.razorpayPaymentId,
-      paymentFailureCode: args.failureCode ?? "PAYMENT_FAILED",
-      paymentFailureMessage: args.failureMessage ?? "Payment failed at gateway.",
-      lastGatewayPayload: args.gatewayPayload ?? pending.lastGatewayPayload ?? undefined,
+      paymentFailureCode: failureCode,
+      paymentFailureMessage: failureMessage,
+      razorpayPaymentId: razorpayPaymentId ?? pending.razorpayPaymentId,
+      lastGatewayPayload: gatewayPayload ?? null,
       updatedAt: new Date(),
     })
     .where(eq(pendingOrders.pendingId, pending.pendingId));
+
   await logPaymentEvent(db, {
-    pendingId: pending.pendingId,
-    razorpayOrderId: args.razorpayOrderId,
-    razorpayPaymentId: args.razorpayPaymentId ?? null,
     eventType: "WEBHOOK_PAYMENT_FAILED",
     source: "webhook",
+    pendingId: pending.pendingId,
+    razorpayOrderId,
+    razorpayPaymentId: razorpayPaymentId ?? null,
     prevState: pending.paymentState,
     newState: PENDING_PAYMENT_STATES.FAILED,
-    amountPaise: Math.round(Number(pending.grandTotal ?? 0) * 100),
-    currency: pending.currency ?? "INR",
-    failureCode: args.failureCode ?? "PAYMENT_FAILED",
-    failureMessage: args.failureMessage ?? "Payment failed at gateway.",
-    payload: args.gatewayPayload ?? null,
+    failureCode,
+    failureMessage,
+    payload: gatewayPayload ?? {},
   });
+
   return { ok: true, pendingId: pending.pendingId };
 }
 
 /**
- * Webhook-driven helper: Razorpay fired one of `refund.created` /
- * `refund.processed` / `refund.failed`. We sync the refund status on the
- * pending order so the customer app / support dashboard reflect reality.
- *
- * Looked up by `razorpay_payment_id` (unique per payment) or falls back to
- * `refund.notes.pendingId` that we stamp in `createRazorpayRefund`.
+ * Webhook handler for refund.created / refund.processed / refund.failed.
+ * Looks up the pending order by razorpayPaymentId.
  */
 export async function applyRefundWebhook(
   db: PostgresJsDatabase<Record<string, unknown>>,
   args: {
-    eventType: "refund.created" | "refund.processed" | "refund.failed";
+    eventType: "refund.created" | "refund.processed" | "refund.failed" | string;
     razorpayPaymentId: string;
     refundId: string;
     refundStatus?: string | null;
-    gatewayPayload?: Record<string, unknown> | null;
+    gatewayPayload?: Record<string, unknown>;
   }
-): Promise<{ ok: true; pendingId: string } | { ok: false; code: string }> {
+): Promise<{ ok: boolean; pendingId?: string; code?: string }> {
+  const { eventType, razorpayPaymentId, refundId, gatewayPayload } = args;
+
   const [pending] = await db
     .select()
     .from(pendingOrders)
-    .where(eq(pendingOrders.razorpayPaymentId, args.razorpayPaymentId))
+    .where(eq(pendingOrders.razorpayPaymentId, razorpayPaymentId))
     .limit(1);
-  if (!pending) return { ok: false, code: "PENDING_ORDER_NOT_FOUND" };
 
-  let nextState = pending.paymentState;
-  let nextRefundStatus = args.refundStatus ?? pending.refundStatus ?? null;
-  if (args.eventType === "refund.processed") {
-    nextState = PENDING_PAYMENT_STATES.REFUNDED;
-    nextRefundStatus = "refunded";
-  } else if (args.eventType === "refund.failed") {
-    nextState = PENDING_PAYMENT_STATES.REFUND_PENDING;
-    nextRefundStatus = "refund_failed";
-  } else if (args.eventType === "refund.created") {
-    nextState = PENDING_PAYMENT_STATES.REFUND_PENDING;
-    nextRefundStatus = nextRefundStatus ?? "refund_pending";
+  if (!pending) {
+    // Refund for a payment not in our pending_orders (e.g. manual refund) — log and ack.
+    await logPaymentEvent(db, {
+      eventType: eventType.toUpperCase().replace(".", "_"),
+      source: "webhook",
+      razorpayPaymentId,
+      payload: { refundId, ...gatewayPayload },
+    });
+    return { ok: true };
+  }
+
+  let newPaymentState: string = pending.paymentState;
+  let newRefundStatus: string = pending.refundStatus ?? "refund_pending";
+  let auditEventType: string;
+
+  if (eventType === "refund.processed") {
+    newPaymentState = PENDING_PAYMENT_STATES.REFUNDED;
+    newRefundStatus = "refunded";
+    auditEventType = "REFUND_PROCESSED";
+  } else if (eventType === "refund.failed") {
+    newPaymentState = PENDING_PAYMENT_STATES.REFUND_PENDING;
+    newRefundStatus = "refund_failed";
+    auditEventType = "REFUND_FAILED_WEBHOOK";
+  } else {
+    // refund.created
+    newPaymentState = PENDING_PAYMENT_STATES.REFUND_PENDING;
+    newRefundStatus = "refund_pending";
+    auditEventType = "REFUND_CREATED";
   }
 
   await db
     .update(pendingOrders)
     .set({
-      paymentState: nextState,
-      refundStatus: nextRefundStatus,
-      refundReference: args.refundId || pending.refundReference,
-      lastGatewayPayload: args.gatewayPayload ?? pending.lastGatewayPayload ?? undefined,
+      paymentState: newPaymentState,
+      refundStatus: newRefundStatus,
+      refundReference: refundId,
+      refundInitiatedAt: pending.refundInitiatedAt ?? new Date(),
+      lastGatewayPayload: gatewayPayload ?? null,
       updatedAt: new Date(),
     })
     .where(eq(pendingOrders.pendingId, pending.pendingId));
 
   await logPaymentEvent(db, {
-    pendingId: pending.pendingId,
-    razorpayOrderId: pending.razorpayOrderId,
-    razorpayPaymentId: args.razorpayPaymentId,
-    orderId: pending.finalizedOrderId,
-    eventType:
-      args.eventType === "refund.processed"
-        ? "REFUND_PROCESSED"
-        : args.eventType === "refund.failed"
-        ? "REFUND_FAILED_WEBHOOK"
-        : "REFUND_CREATED",
+    eventType: auditEventType,
     source: "webhook",
+    pendingId: pending.pendingId,
+    razorpayOrderId: pending.razorpayOrderId ?? null,
+    razorpayPaymentId,
+    orderId: pending.finalizedOrderId ?? null,
     prevState: pending.paymentState,
-    newState: nextState,
-    amountPaise: Math.round(Number(pending.grandTotal ?? 0) * 100),
-    currency: pending.currency ?? "INR",
-    payload: args.gatewayPayload ?? { refundId: args.refundId },
+    newState: newPaymentState,
+    payload: { refundId, ...gatewayPayload },
   });
 
   return { ok: true, pendingId: pending.pendingId };
 }
 
 /**
- * Reconciler sweep. Runs every ~30s. For each pending order currently in
- * `pending_confirmation`:
+ * Background reconciler: sweep pending_orders rows whose paymentConfirmBy has
+ * elapsed and are still in an unresolved state. Marks them FAILED so the
+ * customer cart unlocks and the app shows an appropriate error.
  *
- *   - If TTL (payment_confirm_by) hasn't elapsed yet → leave it alone; the
- *     customer is still on the payment screen or a webhook is about to land.
- *
- *   - If TTL elapsed, look up Razorpay's state:
- *       * if no payment exists → mark pending as FAILED.
- *       * if payment is captured/authorized:
- *           - policy = "refund" (default for food orders): initiate refund
- *             because the customer very likely reordered elsewhere.
- *           - policy = "finalize": late-finalize (only if the merchant flow
- *             can cope).
- *
- *   - If TTL hasn't elapsed BUT payment is already captured → proactively
- *     finalize so the customer doesn't sit on the "confirming" screen waiting
- *     for the webhook (which may be stuck in Razorpay's retry queue).
- *
- * Every branch writes a payment_events audit row so we can replay any
- * incident later. Errors are swallowed per-row so one bad row can't block
- * the whole sweep.
+ * When PAYMENT_LATE_CAPTURE_POLICY=finalize, rows whose razorpayPaymentId is
+ * already set (payment actually came through after the TTL) are finalized
+ * instead of failed.
  */
 export async function reconcilePendingPayments(
   db: PostgresJsDatabase<Record<string, unknown>>
-): Promise<{ checked: number; finalized: number; refunded: number; failed: number }> {
+): Promise<void> {
+  const env = getEnv();
   const now = new Date();
-  const rows = await db
-    .select()
-    .from(pendingOrders)
-    .where(eq(pendingOrders.paymentState, PENDING_PAYMENT_STATES.PENDING_CONFIRMATION));
 
-  const policy = getLateCapturePolicy();
-  const windowMinutes = Math.round(getPaymentConfirmWindowMs() / 60_000);
-  let finalized = 0;
-  let refunded = 0;
-  let failed = 0;
+  const staleStates = [
+    PENDING_PAYMENT_STATES.CREATED,
+    PENDING_PAYMENT_STATES.PENDING_CONFIRMATION,
+  ];
 
-  for (const pending of rows) {
-    if (pending.finalizedOrderId || !pending.razorpayOrderId) continue;
-    const confirmBy = pending.paymentConfirmBy ? new Date(pending.paymentConfirmBy) : null;
-    const ttlElapsed = confirmBy ? now >= confirmBy : false;
+  let stalePending: (typeof pendingOrders.$inferSelect)[] = [];
+  try {
+    stalePending = await db
+      .select()
+      .from(pendingOrders)
+      .where(
+        and(
+          inArray(pendingOrders.paymentState, staleStates),
+          lt(pendingOrders.paymentConfirmBy, now)
+        )
+      )
+      .limit(50);
+  } catch {
+    return; // DB unavailable; retry next tick
+  }
 
+  for (const row of stalePending) {
     try {
-      const payments = await getOrderPayments(pending.razorpayOrderId);
-      const captured = payments.find((p) => String(p.status ?? "").toLowerCase() === "captured");
-      const latest = payments[0];
+      if (row.finalizedOrderId) continue; // already finalized
 
-      // Fast path — captured before TTL: finalize now so the customer's
-      // "confirming" screen flips green even if the webhook is delayed.
-      if (captured?.id && !ttlElapsed) {
-        const result = await finalizePendingOrderFromWebhook(db, {
-          razorpayOrderId: pending.razorpayOrderId,
-          razorpayPaymentId: String(captured.id),
-          paymentMethod: String(captured.method ?? pending.paymentMethod),
-          gatewayPayload: { verifiedBy: "reconciler", reason: "early_capture_detected", payment: captured },
+      if (
+        env.PAYMENT_LATE_CAPTURE_POLICY === "finalize" &&
+        row.razorpayPaymentId
+      ) {
+        await finalizePendingOrderFromWebhook(db, {
+          razorpayOrderId: row.razorpayOrderId ?? "",
+          razorpayPaymentId: row.razorpayPaymentId,
+          paymentMethod: row.paymentMethod ?? "online",
+          gatewayPayload: { via: "reconciler", policy: "finalize" },
         });
-        if (result.ok) {
-          finalized += 1;
-          await logPaymentEvent(db, {
-            pendingId: pending.pendingId,
-            razorpayOrderId: pending.razorpayOrderId,
-            razorpayPaymentId: String(captured.id),
-            orderId: result.orderId,
-            eventType: "RECONCILE_FINALIZED",
-            source: "reconciler",
-            prevState: pending.paymentState,
-            newState: PENDING_PAYMENT_STATES.FINALIZED,
-            amountPaise: Math.round(Number(pending.grandTotal ?? 0) * 100),
-            currency: pending.currency ?? "INR",
-            payload: { payment: captured },
-          });
-        }
         continue;
       }
 
-      // Only act on TTL-elapsed rows from here on.
-      if (!ttlElapsed) continue;
-
-      // Captured after TTL: apply late-capture policy.
-      if (captured?.id) {
-        if (policy === "finalize") {
-          const result = await finalizePendingOrderFromWebhook(db, {
-            razorpayOrderId: pending.razorpayOrderId,
-            razorpayPaymentId: String(captured.id),
-            paymentMethod: String(captured.method ?? pending.paymentMethod),
-            gatewayPayload: { verifiedBy: "reconciler", reason: "late_capture_finalize", payment: captured },
-          });
-          if (result.ok) {
-            finalized += 1;
-            await logPaymentEvent(db, {
-              pendingId: pending.pendingId,
-              razorpayOrderId: pending.razorpayOrderId,
-              razorpayPaymentId: String(captured.id),
-              orderId: result.orderId,
-              eventType: "RECONCILE_LATE_FINALIZE",
-              source: "reconciler",
-              prevState: pending.paymentState,
-              newState: PENDING_PAYMENT_STATES.FINALIZED,
-              payload: { policy, payment: captured },
-            });
-          }
-        } else {
-          // Default: customer likely reordered — refund.
-          await refundPendingPayment(db, pending, {
-            paymentId: String(captured.id),
-            reason: "payment_confirmation_timeout",
-            failureMessage: `Payment captured after the ${windowMinutes}-minute confirmation window expired. Refund initiated.`,
-            source: "reconciler",
-          });
-          refunded += 1;
-        }
-        continue;
-      }
-
-      // Not captured but has an authorized payment: still refund — authorize-
-      // only flows should not happen on B2C because we force payment_capture=1,
-      // but handle gracefully if it occurs.
-      if (latest?.id && String(latest.status ?? "").toLowerCase() === "authorized") {
-        await refundPendingPayment(db, pending, {
-          paymentId: String(latest.id),
-          reason: "payment_authorized_but_not_captured",
-          failureMessage: `Payment was authorized but not captured within ${windowMinutes} minutes.`,
-          source: "reconciler",
-        });
-        refunded += 1;
-        continue;
-      }
-
-      // No captured/authorized payment at all within TTL → mark failed.
       await db
         .update(pendingOrders)
         .set({
           paymentState: PENDING_PAYMENT_STATES.FAILED,
-          paymentFailureCode: "PAYMENT_NOT_CONFIRMED",
-          paymentFailureMessage: `Payment was not confirmed within ${windowMinutes} minutes.`,
-          updatedAt: new Date(),
+          paymentFailureCode: "PAYMENT_TIMEOUT",
+          paymentFailureMessage: "Payment confirmation window expired.",
+          updatedAt: now,
         })
-        .where(eq(pendingOrders.pendingId, pending.pendingId));
-      failed += 1;
+        .where(eq(pendingOrders.pendingId, row.pendingId));
+
       await logPaymentEvent(db, {
-        pendingId: pending.pendingId,
-        razorpayOrderId: pending.razorpayOrderId,
-        eventType: "RECONCILE_FAILED",
+        eventType: "RECONCILER_TIMEOUT_FAILED",
         source: "reconciler",
-        prevState: pending.paymentState,
+        pendingId: row.pendingId,
+        razorpayOrderId: row.razorpayOrderId ?? null,
+        razorpayPaymentId: row.razorpayPaymentId ?? null,
+        prevState: row.paymentState,
         newState: PENDING_PAYMENT_STATES.FAILED,
-        amountPaise: Math.round(Number(pending.grandTotal ?? 0) * 100),
-        currency: pending.currency ?? "INR",
-        failureCode: "PAYMENT_NOT_CONFIRMED",
-        failureMessage: `Payment was not confirmed within ${windowMinutes} minutes.`,
-        payload: { razorpayPayments: payments },
+        failureCode: "PAYMENT_TIMEOUT",
+        failureMessage: "Payment confirmation window expired.",
+        payload: { policy: env.PAYMENT_LATE_CAPTURE_POLICY },
       });
-    } catch (error) {
-      await db
-        .update(pendingOrders)
-        .set({
-          paymentFailureCode: "PAYMENT_RECONCILIATION_FAILED",
-          paymentFailureMessage: error instanceof Error ? error.message : "Payment reconciliation failed",
-          updatedAt: new Date(),
-        })
-        .where(eq(pendingOrders.pendingId, pending.pendingId));
-      await logPaymentEvent(db, {
-        pendingId: pending.pendingId,
-        razorpayOrderId: pending.razorpayOrderId,
-        eventType: "RECONCILE_ERROR",
-        source: "reconciler",
-        prevState: pending.paymentState,
-        failureCode: "PAYMENT_RECONCILIATION_FAILED",
-        failureMessage: error instanceof Error ? error.message : "Payment reconciliation failed",
-      });
+    } catch {
+      // non-fatal: skip this row, retry next sweep
     }
   }
-  return { checked: rows.length, finalized, refunded, failed };
 }

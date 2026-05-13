@@ -63,12 +63,14 @@ export type StoreDeliveryQuote = {
   delivery_gst: number;
   final_delivery_fee: number;
   serviceable: boolean;
-  unserviceable_reason?: "out_of_range" | "store_inactive" | null;
+  unserviceable_reason?: "out_of_range" | "store_inactive" | "no_delivery_slab" | "no_geo_match" | null;
   service_radius_km: number;
   source: "mapbox" | "osrm" | "haversine";
   cached: boolean;
   approximate: boolean;
-  pricing_engine: "slab_geo" | "fallback_per_km";
+  pricing_engine: "slab_geo" | "fallback_per_km" | "no_slab_configured" | "no_geo_match";
+  /** Geo level at which slabs were resolved (pincode/post_office/district/region/state). */
+  applied_geo_level?: string | null;
   slab_quote?: unknown;
 };
 

@@ -34,6 +34,70 @@ function uniqueStrings(xs: string[]): string[] {
   return [...new Set(xs.filter((x) => x.trim() !== ""))];
 }
 
+/**
+ * Query delivery rate slabs at a SPECIFIC (geoLevel, geoRefId) pair — no chain walk.
+ * The caller is responsible for iterating ancestor levels; this function just checks one node.
+ * Use this when the ancestor UUIDs are already known (e.g. from resolveDropGeoRefsFromPincode).
+ */
+export async function loadDirectDeliveryRateSlabs(
+  db: PostgresJsDatabase<Record<string, unknown>>,
+  args: {
+    geoLevel: "state" | "region" | "district" | "division" | "post_office" | "pincode";
+    geoRefId: string;
+    serviceType: DeliveryServiceType;
+    actorType: DeliveryActorType;
+  }
+): Promise<DeliveryRateSlabRow[]> {
+  const geoCandidates = uniqueStrings([args.geoLevel, args.geoLevel.toUpperCase()]);
+  const actorCandidates = uniqueStrings([args.actorType, args.actorType.toUpperCase()]);
+  const serviceCandidates = uniqueStrings([
+    args.serviceType,
+    args.serviceType.toUpperCase(),
+    args.serviceType === "person_ride" ? "ride" : args.serviceType,
+    args.serviceType === "person_ride" ? "RIDE" : args.serviceType.toUpperCase(),
+  ]);
+
+  let firstEmptySuccess: DeliveryRateSlabRow[] | null = null;
+  for (const geoLevel of geoCandidates) {
+    for (const serviceType of serviceCandidates) {
+      for (const actorType of actorCandidates) {
+        try {
+          const rows = await db.execute(sql`
+            SELECT
+              s.id,
+              s.geo_level,
+              s.geo_ref_id,
+              s.service_type,
+              s.actor_type,
+              s.min_km,
+              s.max_km,
+              s.base_fare,
+              s.per_km_rate,
+              s.min_charge,
+              s.waiting_charge_per_min,
+              s.surge_multiplier,
+              s.priority,
+              s.is_active
+            FROM delivery_rate_slabs s
+            WHERE s.geo_level = ${geoLevel}::geo_pricing_level
+              AND s.geo_ref_id = ${args.geoRefId}::uuid
+              AND s.service_type = ${serviceType}::order_type
+              AND s.actor_type = ${actorType}::delivery_actor_type
+              AND s.is_active = true
+            ORDER BY s.min_km ASC, s.max_km ASC NULLS LAST, s.priority DESC, s.id ASC
+          `);
+          const mapped = mapRows(toRows(rows));
+          if (mapped.length > 0) return mapped;
+          if (firstEmptySuccess == null) firstEmptySuccess = mapped;
+        } catch {
+          // Try next alias.
+        }
+      }
+    }
+  }
+  return firstEmptySuccess ?? [];
+}
+
 export async function loadEffectiveDeliveryRateSlabs(
   db: PostgresJsDatabase<Record<string, unknown>>,
   args: {

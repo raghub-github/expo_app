@@ -4,7 +4,31 @@ import { Platform } from "react-native";
 /**
  * App config from env. EXPO_PUBLIC_* only in bundle.
  * On Android emulator, localhost is rewritten to 10.0.2.2 so the app can reach the host machine.
+ *
+ * Runtime override
+ * ----------------
+ * EXPO_PUBLIC_API_BASE_URL is compiled into the JS bundle at build time, which
+ * means a fresh EAS build is needed every time the dev machine's LAN IP
+ * changes. To avoid that, callers can set a runtime override (persisted in
+ * AsyncStorage from the login screen's "Configure API URL" sheet). When set,
+ * the override wins; otherwise we fall back to env.
  */
+
+let runtimeApiBaseUrlOverride: string | null = null;
+
+/** Set/clear the runtime override. Pass null to clear. No-op for empty strings. */
+export function setRuntimeApiBaseUrl(url: string | null): void {
+  if (url == null) {
+    runtimeApiBaseUrlOverride = null;
+    return;
+  }
+  const trimmed = url.trim().replace(/\/+$/, "");
+  runtimeApiBaseUrlOverride = trimmed.length > 0 ? trimmed : null;
+}
+
+export function getRuntimeApiBaseUrl(): string | null {
+  return runtimeApiBaseUrlOverride;
+}
 
 function asNonEmptyString(v: unknown): string | null {
   if (typeof v !== "string") return null;
@@ -52,7 +76,10 @@ export function getConfig(): {
       `http://localhost:${port}`;
   }
 
-  const apiBaseUrl = resolveApiBaseUrl(rawUrl);
+  // Runtime override (from AsyncStorage, set via the in-app "Configure API URL"
+  // sheet) ALWAYS wins. Lets the user point the installed APK at a new LAN IP
+  // or ngrok URL without a rebuild.
+  const apiBaseUrl = runtimeApiBaseUrlOverride ?? resolveApiBaseUrl(rawUrl);
 
   const googleMapsApiKey =
     asNonEmptyString(process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY) ??
