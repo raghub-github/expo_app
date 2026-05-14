@@ -777,7 +777,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         rawGalleryUrls && rawGalleryUrls.length > 0
           ? rawGalleryUrls
           : fromPreviews
-      ).filter((u): u is string => typeof u === 'string' && u.trim());
+      ).filter((u): u is string => typeof u === 'string' && u.trim() !== '');
       const cuisineTypes = Array.isArray(initialStoreSetup.cuisine_types) ? initialStoreSetup.cuisine_types : undefined;
       const foodCategories = Array.isArray(initialStoreSetup.food_categories) ? initialStoreSetup.food_categories : undefined;
       setStoreSetup((prev) => ({

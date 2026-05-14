@@ -4,7 +4,7 @@
  * Real data only. Spacing: 16px page, 18px cards, 24px section gap.
  */
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import {
   View,
   Text,
@@ -159,7 +159,7 @@ function computeCategoryRailMetrics(windowWidth: number, insetRight: number): Ca
 
 export default function FoodMerchantsScreen() {
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const router = useRouter();
   const {
     address,
@@ -385,14 +385,20 @@ export default function FoodMerchantsScreen() {
       prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]
     );
   };
-  const clearFilters = () => {
+  const clearFilters = useCallback(() => {
     setDeliveryFilter("any");
     setSelectedCuisines([]);
     setFilterHasOffers(false);
-    setFilterSheetVisible(false);
-  };
-  const applyFilters = () => setFilterSheetVisible(false);
+  }, []);
+  const applyFilters = useCallback(() => setFilterSheetVisible(false), []);
   const hasActiveFilters = deliveryFilter !== "any" || selectedCuisines.length > 0 || filterHasOffers;
+  const activeFilterCount = useMemo(() => {
+    let n = 0;
+    if (deliveryFilter !== "any") n += 1;
+    n += selectedCuisines.length;
+    if (filterHasOffers) n += 1;
+    return n;
+  }, [deliveryFilter, selectedCuisines, filterHasOffers]);
   const onRefresh = async () => {
     setRefreshing(true);
     try {
@@ -649,55 +655,152 @@ export default function FoodMerchantsScreen() {
         </AnimatedScrollView>
       </View>
 
-      {/* Filter sheet – delivery time, cuisine, has offers */}
-      <Modal visible={filterSheetVisible} transparent animationType="slide">
+      {/* Filter sheet — full-bleed bottom sheet, mint-forward */}
+      <Modal
+        visible={filterSheetVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setFilterSheetVisible(false)}
+        statusBarTranslucent
+      >
         <Pressable style={styles.filterOverlay} onPress={() => setFilterSheetVisible(false)}>
-          <Pressable style={styles.filterSheet} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.filterSheetHandle} />
-            <View style={styles.filterSheetHeader}>
-              <Text style={styles.filterSheetTitle}>Filters</Text>
-              <TouchableOpacity onPress={clearFilters} hitSlop={12}>
-                <Text style={styles.filterSheetClear}>Clear all</Text>
-              </TouchableOpacity>
-            </View>
-            <ScrollView style={styles.filterSheetScroll} showsVerticalScrollIndicator={false}>
-              <Text style={styles.filterSectionLabel}>Delivery time</Text>
-              <View style={styles.filterChipsRow}>
-                {DELIVERY_OPTIONS.map((opt) => (
-                  <TouchableOpacity
-                    key={opt.id}
-                    style={[styles.filterSheetChip, deliveryFilter === opt.id && styles.filterSheetChipActive]}
-                    onPress={() => setDeliveryFilter(opt.id)}
-                  >
-                    <Text style={[styles.filterSheetChipText, deliveryFilter === opt.id && styles.filterSheetChipTextActive]}>{opt.label}</Text>
-                  </TouchableOpacity>
-                ))}
+          <Pressable style={styles.filterSheetStack} onPress={() => {}}>
+            <View style={[styles.filterSheetCard, { maxHeight: windowHeight * 0.9 }]}>
+              <LinearGradient
+                colors={[GatiMitraColors.mintSoft, "#FFFFFF"]}
+                locations={[0, 0.35]}
+                style={StyleSheet.absoluteFillObject}
+                pointerEvents="none"
+              />
+              <View style={styles.filterSheetHandleWrap}>
+                <View style={styles.filterSheetHandle} />
               </View>
-              <Text style={styles.filterSectionLabel}>Cuisine</Text>
-              <View style={styles.filterChipsRow}>
-                {CUISINE_OPTIONS.map((c) => (
-                  <TouchableOpacity
-                    key={c}
-                    style={[styles.filterSheetChip, selectedCuisines.includes(c) && styles.filterSheetChipActive]}
-                    onPress={() => toggleCuisine(c)}
-                  >
-                    <Text style={[styles.filterSheetChipText, selectedCuisines.includes(c) && styles.filterSheetChipTextActive]}>{c}</Text>
-                  </TouchableOpacity>
-                ))}
+              <View style={styles.filterSheetHeader}>
+                <View style={styles.filterSheetTitleBlock}>
+                  <Text style={styles.filterSheetTitle}>Filters</Text>
+                  <Text style={styles.filterSheetSubtitle}>
+                    {activeFilterCount > 0
+                      ? `${activeFilterCount} active — tap Apply to update the list`
+                      : "Refine delivery time, cuisine, and offers"}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={clearFilters}
+                  hitSlop={12}
+                  disabled={!hasActiveFilters}
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear all filters"
+                  accessibilityState={{ disabled: !hasActiveFilters }}
+                >
+                  <Text style={[styles.filterSheetClear, !hasActiveFilters && styles.filterSheetClearDisabled]}>
+                    Clear all
+                  </Text>
+                </TouchableOpacity>
               </View>
-              <Text style={styles.filterSectionLabel}>Other</Text>
-              <TouchableOpacity
-                style={[styles.filterSheetRow, filterHasOffers && styles.filterSheetRowActive]}
-                onPress={() => setFilterHasOffers((v) => !v)}
+              <ScrollView
+                style={{ maxHeight: Math.min(440, windowHeight * 0.5) }}
+                contentContainerStyle={styles.filterSheetScrollContent}
+                showsVerticalScrollIndicator
+                keyboardShouldPersistTaps="handled"
+                bounces={false}
               >
-                <Ionicons name="pricetag-outline" size={20} color={filterHasOffers ? "#fff" : GatiMitraColors.textPrimaryNew} />
-                <Text style={[styles.filterSheetRowText, filterHasOffers && styles.filterSheetChipTextActive]}>Has offers</Text>
-              </TouchableOpacity>
-            </ScrollView>
-            <View style={[styles.filterSheetFooter, { paddingBottom: insets.bottom + 12 }]}>
-              <TouchableOpacity style={styles.filterApplyBtn} onPress={applyFilters} activeOpacity={0.9}>
-                <Text style={styles.filterApplyBtnText}>Apply</Text>
-              </TouchableOpacity>
+                <Text style={styles.filterSectionLabel}>Delivery time</Text>
+                <View style={styles.filterChipsRow}>
+                  {DELIVERY_OPTIONS.map((opt) => (
+                    <TouchableOpacity
+                      key={opt.id}
+                      style={[styles.filterSheetChip, deliveryFilter === opt.id && styles.filterSheetChipActive]}
+                      onPress={() => setDeliveryFilter(opt.id)}
+                      activeOpacity={0.85}
+                    >
+                      <Text
+                        style={[
+                          styles.filterSheetChipText,
+                          deliveryFilter === opt.id && styles.filterSheetChipTextActive,
+                        ]}
+                      >
+                        {opt.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <Text style={styles.filterSectionLabel}>Cuisine</Text>
+                <View style={styles.filterChipsRow}>
+                  {CUISINE_OPTIONS.map((c) => (
+                    <TouchableOpacity
+                      key={c}
+                      style={[
+                        styles.filterSheetChip,
+                        selectedCuisines.includes(c) && styles.filterSheetChipActive,
+                      ]}
+                      onPress={() => toggleCuisine(c)}
+                      activeOpacity={0.85}
+                    >
+                      <Text
+                        style={[
+                          styles.filterSheetChipText,
+                          selectedCuisines.includes(c) && styles.filterSheetChipTextActive,
+                        ]}
+                      >
+                        {c}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <Text style={styles.filterSectionLabel}>Other</Text>
+                <TouchableOpacity
+                  style={[styles.filterSheetRow, filterHasOffers && styles.filterSheetRowActive]}
+                  onPress={() => setFilterHasOffers((v) => !v)}
+                  activeOpacity={0.88}
+                >
+                  <View
+                    style={[
+                      styles.filterSheetRowIconWrap,
+                      filterHasOffers && styles.filterSheetRowIconWrapActive,
+                    ]}
+                  >
+                    <Ionicons
+                      name="pricetag-outline"
+                      size={20}
+                      color={filterHasOffers ? "#fff" : GatiMitraColors.primaryMint}
+                    />
+                  </View>
+                  <Text
+                    style={[
+                      styles.filterSheetRowText,
+                      filterHasOffers && styles.filterSheetRowTextOnMint,
+                    ]}
+                  >
+                    Has offers
+                  </Text>
+                  {filterHasOffers ? (
+                    <Ionicons name="checkmark-circle" size={22} color="#fff" style={styles.filterSheetRowTrailing} />
+                  ) : null}
+                </TouchableOpacity>
+              </ScrollView>
+              <View
+                style={[
+                  styles.filterSheetFooter,
+                  { paddingBottom: Math.max(insets.bottom, 14) },
+                ]}
+              >
+                <TouchableOpacity
+                  style={styles.filterApplyBtnOuter}
+                  onPress={applyFilters}
+                  activeOpacity={0.92}
+                  accessibilityRole="button"
+                  accessibilityLabel="Apply filters"
+                >
+                  <LinearGradient
+                    colors={GatiMitraColors.checkoutGradient}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.filterApplyBtnGradient}
+                  >
+                    <Text style={styles.filterApplyBtnText}>Apply</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+              </View>
             </View>
           </Pressable>
         </Pressable>
@@ -884,65 +987,103 @@ const styles = StyleSheet.create({
   },
   filterOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.4)",
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
     justifyContent: "flex-end",
   },
-  filterSheet: {
-    backgroundColor: "#fff",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingHorizontal: PAGE_PAD,
-    paddingTop: 12,
-    maxHeight: "80%",
+  /** Full-bleed bottom sheet — no horizontal inset on the card. */
+  filterSheetStack: {
+    width: "100%",
+    paddingHorizontal: 0,
     paddingBottom: 0,
   },
+  filterSheetCard: {
+    width: "100%",
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    overflow: "hidden",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: -4 },
+        shadowOpacity: 0.12,
+        shadowRadius: 18,
+      },
+      android: { elevation: 16 },
+    }),
+  },
+  filterSheetHandleWrap: {
+    paddingTop: 10,
+    paddingBottom: 6,
+    alignItems: "center",
+  },
   filterSheetHandle: {
-    width: 40,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: "#D1D5DB",
-    alignSelf: "center",
-    marginBottom: 16,
+    width: 44,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: "rgba(34, 197, 94, 0.35)",
   },
   filterSheetHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 20,
+    alignItems: "flex-start",
+    paddingHorizontal: PAGE_PAD,
+    paddingBottom: 16,
+    gap: 12,
+  },
+  filterSheetTitleBlock: {
+    flex: 1,
+    minWidth: 0,
   },
   filterSheetTitle: {
-    fontSize: 18,
-    fontWeight: "700",
+    fontSize: 22,
+    fontWeight: "800",
     color: GatiMitraColors.textPrimaryNew,
+    letterSpacing: -0.3,
+  },
+  filterSheetSubtitle: {
+    marginTop: 6,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "500",
+    color: GatiMitraColors.textSecondary,
   },
   filterSheetClear: {
     fontSize: 14,
-    fontWeight: "600",
+    fontWeight: "700",
     color: GatiMitraColors.primaryMint,
+    paddingTop: 4,
   },
-  filterSheetScroll: {
-    maxHeight: 320,
+  filterSheetClearDisabled: {
+    color: GatiMitraColors.textSecondary,
+    opacity: 0.5,
+  },
+  filterSheetScrollContent: {
+    paddingHorizontal: PAGE_PAD,
+    paddingBottom: 8,
   },
   filterSectionLabel: {
-    fontSize: 13,
-    fontWeight: "600",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1.1,
+    textTransform: "uppercase",
     color: GatiMitraColors.textSecondary,
-    marginBottom: 10,
-    marginTop: 4,
+    marginBottom: 12,
+    marginTop: 6,
   },
   filterChipsRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 10,
-    marginBottom: 16,
+    marginBottom: 8,
   },
   filterSheetChip: {
-    paddingVertical: 10,
+    paddingVertical: 11,
     paddingHorizontal: 16,
-    borderRadius: 12,
-    backgroundColor: GatiMitraColors.cardSurface,
+    borderRadius: 999,
+    backgroundColor: GatiMitraColors.mintSoft,
     borderWidth: 1,
-    borderColor: GatiMitraColors.border,
+    borderColor: "rgba(34, 197, 94, 0.22)",
   },
   filterSheetChipActive: {
     backgroundColor: GatiMitraColors.primaryMint,
@@ -962,41 +1103,78 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingVertical: 14,
     paddingHorizontal: 16,
-    borderRadius: 12,
-    backgroundColor: GatiMitraColors.cardSurface,
+    borderRadius: 16,
+    backgroundColor: GatiMitraColors.mintSoft,
     borderWidth: 1,
-    borderColor: GatiMitraColors.border,
-    marginBottom: 16,
+    borderColor: "rgba(34, 197, 94, 0.22)",
+    marginBottom: 4,
   },
   filterSheetRowActive: {
     backgroundColor: GatiMitraColors.primaryMint,
     borderColor: GatiMitraColors.primaryMint,
   },
-  filterSheetRowText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: GatiMitraColors.textPrimaryNew,
-  },
-  filterSheetFooter: {
-    paddingTop: 16,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#e5e7eb",
-    ...(Platform.OS === "android"
-      ? { elevation: 8 }
-      : { shadowColor: "#000", shadowOffset: { width: 0, height: -2 }, shadowOpacity: 0.08, shadowRadius: 8 }),
-  },
-  filterApplyBtn: {
-    backgroundColor: GatiMitraColors.primaryMint,
-    paddingVertical: 14,
-    borderRadius: 14,
+  filterSheetRowIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.85)",
     alignItems: "center",
-    ...(Platform.OS === "android"
-      ? { elevation: 4 }
-      : { shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4 }),
+    justifyContent: "center",
   },
-  filterApplyBtnText: {
+  filterSheetRowIconWrapActive: {
+    backgroundColor: "rgba(255,255,255,0.2)",
+  },
+  filterSheetRowText: {
+    flex: 1,
     fontSize: 16,
     fontWeight: "700",
+    color: GatiMitraColors.textPrimaryNew,
+  },
+  filterSheetRowTextOnMint: {
     color: "#fff",
+  },
+  filterSheetRowTrailing: {
+    marginLeft: 4,
+  },
+  filterSheetFooter: {
+    paddingTop: 12,
+    paddingHorizontal: PAGE_PAD,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: GatiMitraColors.border,
+    backgroundColor: "#FFFFFF",
+    ...Platform.select({
+      android: { elevation: 10 },
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: -3 },
+        shadowOpacity: 0.06,
+        shadowRadius: 10,
+      },
+    }),
+  },
+  filterApplyBtnOuter: {
+    borderRadius: 16,
+    overflow: "hidden",
+    width: "100%",
+    ...Platform.select({
+      android: { elevation: 3 },
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.12,
+        shadowRadius: 8,
+      },
+    }),
+  },
+  filterApplyBtnGradient: {
+    paddingVertical: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  filterApplyBtnText: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#fff",
+    letterSpacing: 0.2,
   },
 });

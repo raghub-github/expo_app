@@ -60,8 +60,18 @@ export type CreateOrderItem = {
 /** Mirrors backend checkout_metadata: leave-at-door, free-text notes, subscription opt-in, etc. */
 export type CheckoutMetadataPayload = {
   leaveAtDoor?: boolean;
+  /** Free-text for the delivery partner (gate, landmark, etc.). */
   deliveryInstructions?: string;
-  subscriptionOptIn?: boolean;
+  leaveWithGuard?: boolean;
+  avoidCalling?: boolean;
+  dontRingBell?: boolean;
+  petAtHome?: boolean;
+  /** Human-readable chosen slot, e.g. "15 May Tomorrow · 12:00 PM - 12:30 PM". */
+  scheduledDeliverySummary?: string;
+  /** Free-text instructions for the kitchen (customer checkout). */
+  restaurantNote?: string;
+  /** When true, customer opted out of disposable cutlery. */
+  skipCutlery?: boolean;
 } & Record<string, unknown>;
 
 export type CreateOrderPayload = {

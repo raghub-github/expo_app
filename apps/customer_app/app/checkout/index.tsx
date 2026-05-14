@@ -5,7 +5,7 @@
  * No COD. No duplicate headers. All data backend-driven.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -21,15 +21,20 @@ import {
   BackHandler,
   Platform,
   Alert,
+  StatusBar,
+  useWindowDimensions,
+  KeyboardAvoidingView,
+  PanResponder,
 } from "react-native";
 import * as Location from "expo-location";
+import * as Contacts from "expo-contacts";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useCartStore } from "@/store/cartStore";
+import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useCartStore, type CartItem } from "@/store/cartStore";
 import { useLocationStore } from "@/store/locationStore";
 import { useOrderStore } from "@/store/orderStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
@@ -38,13 +43,15 @@ import { orderService } from "@/services/order.service";
 import { billingService, type CalculateBillResponse, type GstComponentLine } from "@/services/billing.service";
 import { paymentService } from "@/services/payment.service";
 import { addressService, type Address } from "@/services/address.service";
+import { profileService } from "@/services/profile.service";
 import { RazorpayCheckoutModal, type RazorpayPaymentResult, type RazorpayOrderParams } from "@/components/RazorpayCheckoutModal";
-import { merchantService } from "@/services/merchant.service";
+import { merchantService, type MerchantSummary } from "@/services/merchant.service";
 import { ItemCustomizationSheet } from "@/components/ItemCustomizationSheet";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import { haversineKm, SERVICE_RADIUS_KM } from "@/lib/billSummary";
 import { matchSavedAddressIdNearCoords } from "@/lib/deliveryDropResolution";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { reverseGeocode } from "@/services/location.service";
 import { getRoute } from "@/services/distance.service";
 import { BrandingFooter } from "@/components/BrandingFooter";
@@ -71,8 +78,121 @@ function computeGstAndOtherChargesTotal(bill: CalculateBillResponse): number {
 
 const GRID = 6;
 const SPACING = GRID * 2;
-const CARD_RADIUS = 14;
+/** Checkout item / bill cards — reference uses ~16px radius */
+const CARD_RADIUS = 16;
 const ANIM_DURATION = 240;
+
+/** Checkout accents — mint green CTAs / links (replaces maroon & pink-red) */
+const CX = {
+  mint: "#2DB5A0",
+  mintDark: "#249682",
+  mintSoft: "#E8F8F5",
+  mintBorder: "#9FD9CD",
+  mintGradient: ["#3EC9A8", "#2DB5A0"] as const,
+  textSecondary: "#666666",
+} as const;
+
+const GMITRA_PLUS_NAME = "GMitra plus";
+
+const SCHEDULE_SLOT_OPTIONS = [
+  "11:00 AM - 11:30 AM",
+  "11:30 AM - 12:00 PM",
+  "12:00 PM - 12:30 PM",
+  "12:30 PM - 1:00 PM",
+  "1:00 PM - 1:30 PM",
+  "1:30 PM - 2:00 PM",
+  "2:00 PM - 2:30 PM",
+  "2:30 PM - 3:00 PM",
+  "3:00 PM - 3:30 PM",
+  "5:00 PM - 5:30 PM",
+  "6:00 PM - 6:30 PM",
+  "7:00 PM - 8:00 PM",
+  "8:00 PM - 8:30 PM",
+] as const;
+
+function checkoutAddressRowIcon(
+  label: string | null | undefined,
+  contactName: string | null | undefined
+): React.ComponentProps<typeof Ionicons>["name"] {
+  if (contactName?.trim()) return "person-outline";
+  if (!label?.trim()) return "location-outline";
+  const l = label.toLowerCase();
+  if (l === "home") return "home-outline";
+  if (l === "work") return "briefcase-outline";
+  return "location-outline";
+}
+
+function formatAddressToStoreDistance(
+  storeLat: number | null | undefined,
+  storeLng: number | null | undefined,
+  addr: Address
+): string {
+  if (storeLat == null || storeLng == null) return "—";
+  const km = haversineKm(Number(storeLat), Number(storeLng), addr.latitude, addr.longitude);
+  const m = km * 1000;
+  if (!Number.isFinite(m)) return "—";
+  if (m < 1000) return `${Math.round(m)} m`;
+  return `${km.toFixed(1)} km`;
+}
+
+/** One-line summary in the checkout card (Zomato-style). */
+function formatCheckoutReceiverLine(
+  name: string | null | undefined,
+  mobile: string | null | undefined
+): string {
+  const n = name?.trim() ?? "";
+  const m = mobile?.trim() ?? "";
+  if (!n && !m) return "Add receiver details";
+  let mDisp = m;
+  if (m && !m.startsWith("+")) {
+    const digits = m.replace(/\D/g, "");
+    if (digits.length === 10) mDisp = `+91-${digits}`;
+    else mDisp = m;
+  } else if (m.startsWith("+91")) {
+    const rest = m.slice(3).replace(/\D/g, "");
+    mDisp = rest.length >= 10 ? `+91-${rest.slice(0, 10)}` : m;
+  }
+  if (n && mDisp) return `${n}, ${mDisp}`;
+  return n || mDisp;
+}
+
+function cartItemSubline(item: CartItem): string {
+  const parts: string[] = [];
+  if (item.variantName?.trim()) parts.push(item.variantName.trim());
+  if (item.addons?.length) {
+    for (const a of item.addons) {
+      const q = a.quantity > 1 ? ` ×${a.quantity}` : "";
+      parts.push(`${a.addonName}${q}`);
+    }
+  }
+  return parts.join(" · ");
+}
+
+function DietIndicator({ isVeg }: { isVeg: boolean }) {
+  return (
+    <View style={[dietStyles.box, isVeg ? dietStyles.boxVeg : dietStyles.boxNonVeg]}>
+      <View style={[dietStyles.dot, isVeg ? dietStyles.dotVeg : dietStyles.dotNonVeg]} />
+    </View>
+  );
+}
+
+const dietStyles = StyleSheet.create({
+  box: {
+    width: 16,
+    height: 16,
+    borderRadius: 2,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    marginTop: 1,
+  },
+  boxVeg: { borderColor: "#22C55E" },
+  boxNonVeg: { borderColor: "#8D4A2B" },
+  dot: { width: 6, height: 6, borderRadius: 3 },
+  dotVeg: { backgroundColor: "#22C55E" },
+  dotNonVeg: { backgroundColor: "#8D4A2B" },
+});
 
 /** Shown in "Order failed" alert when payment may have been charged. */
 const ORDER_FAILED_REFUND_NOTE =
@@ -84,11 +204,39 @@ const PAYMENT_OPTIONS = [
   { id: "wallet", label: "Wallets (Paytm, Amazon Pay & more)", displayName: "Wallet" },
 ] as const;
 
-type TipPreset = 0 | 10 | 20 | 30 | 50 | "custom";
+/** Tip slider labels / ticks (0–₹60 on track; drag is continuous). Custom field allows any amount. */
+const TIP_SLIDER_LABELS = [0, 20, 40, 60] as const;
+const TIP_SLIDER_MAX = 60;
+const TIP_SLIDER_THUMB_R = 10;
+/** Half-width of each ₹ label (px) — centers text under tick at 0%, 33⅓%, 66⅔%, 100% of track. */
+const TIP_LABEL_HALF_WIDTH: readonly [number, number, number, number] = [12, 14, 14, 16];
+
+/** Footer delivery / takeaway — active segment + shell border (mint, matches checkout CTAs). */
+const DELIVERY_TOGGLE_ACTIVE = CX.mint;
+const DELIVERY_TOGGLE_BORDER = "rgba(45, 181, 160, 0.38)";
+
+/**
+ * Footer row layout — must match `fixedBottom.paddingHorizontal` (12 + 12).
+ * Toggle width is fixed; CTA width = screen − padding − gap − toggle (no overlap, no flex minWidth fight).
+ */
+const CHECKOUT_FOOTER_H_PAD = 24;
+const CHECKOUT_FOOTER_TOGGLE_WIDTH = 152;
+const CHECKOUT_FOOTER_GAP = 8;
+/** Same outer radius as `deliveryTypeToggle` (not a full pill). */
+const CHECKOUT_FOOTER_CTA_RADIUS = 14;
 
 export default function CheckoutScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const checkoutFooterCtaWidth = useMemo(
+    () =>
+      windowWidth -
+      CHECKOUT_FOOTER_H_PAD -
+      CHECKOUT_FOOTER_GAP -
+      CHECKOUT_FOOTER_TOGGLE_WIDTH,
+    [windowWidth],
+  );
   const queryClient = useQueryClient();
   const scrollRef = useRef<ScrollView>(null);
   const { items, merchantId, merchantName, updateQuantity, clearCart } = useCartStore();
@@ -101,7 +249,9 @@ export default function CheckoutScreen() {
   const [paymentMethod, setPaymentMethod] = useState<string>("upi");
   /** Delivery / Self pickup toggle. Self pickup waives the delivery fee server-side. */
   const [deliveryType, setDeliveryType] = useState<"delivery" | "self_pickup">("delivery");
-  const [tipAmount, setTipAmount] = useState<TipPreset>(0);
+  const [tipInputMode, setTipInputMode] = useState<"slider" | "custom">("slider");
+  const [tipSliderValue, setTipSliderValue] = useState(0);
+  const [tipSliderBlockW, setTipSliderBlockW] = useState(0);
   const [customTip, setCustomTip] = useState("");
   const [donationEnabled, setDonationEnabled] = useState(false);
   const [subscriptionOptIn, setSubscriptionOptIn] = useState(false);
@@ -109,16 +259,36 @@ export default function CheckoutScreen() {
   const [appliedCouponCode, setAppliedCouponCode] = useState<string | null>(null);
   const [appliedCouponLabel, setAppliedCouponLabel] = useState<string | null>(null);
   const [leaveAtDoor, setLeaveAtDoor] = useState(false);
+  const [restaurantNote, setRestaurantNote] = useState("");
+  const [restaurantNoteModalVisible, setRestaurantNoteModalVisible] = useState(false);
+  const [skipCutlery, setSkipCutlery] = useState(false);
+  const [scheduleSheetVisible, setScheduleSheetVisible] = useState(false);
+  const [scheduleDayIndex, setScheduleDayIndex] = useState(0);
+  const [scheduleSlotDraft, setScheduleSlotDraft] = useState<string | null>(null);
+  const [scheduledDeliverySummary, setScheduledDeliverySummary] = useState<string | null>(null);
+  const [instructionSheetVisible, setInstructionSheetVisible] = useState(false);
+  const [addressSheetVisible, setAddressSheetVisible] = useState(false);
+  const [addressSheetBusyId, setAddressSheetBusyId] = useState<number | null>(null);
+  const [receiverSheetVisible, setReceiverSheetVisible] = useState(false);
+  const [communityInitiativeSheetVisible, setCommunityInitiativeSheetVisible] = useState(false);
+  const [receiverDraftName, setReceiverDraftName] = useState("");
+  const [receiverDraftMobile, setReceiverDraftMobile] = useState("");
+  const [deliveryPartnerNote, setDeliveryPartnerNote] = useState("");
+  const [instrLeaveWithGuard, setInstrLeaveWithGuard] = useState(false);
+  const [instrAvoidCalling, setInstrAvoidCalling] = useState(false);
+  const [instrDontRingBell, setInstrDontRingBell] = useState(false);
+  const [instrPetAtHome, setInstrPetAtHome] = useState(false);
   const [editingCartItemId, setEditingCartItemId] = useState<string | null>(null);
   const [paymentSheetVisible, setPaymentSheetVisible] = useState(false);
-  const [billSummaryExpanded, setBillSummaryExpanded] = useState(false);
+  const [billSummarySheetVisible, setBillSummarySheetVisible] = useState(false);
   const [gstBreakdownModalVisible, setGstBreakdownModalVisible] = useState(false);
+  const [gmitraPlusSheetVisible, setGmitraPlusSheetVisible] = useState(false);
   const [couponSheetVisible, setCouponSheetVisible] = useState(false);
   const [couponCodeInput, setCouponCodeInput] = useState("");
   const [couponApplyError, setCouponApplyError] = useState<string | null>(null);
   const [currentLocationDisplay, setCurrentLocationDisplay] = useState<{ label: string; fullAddress: string } | null>(null);
   const [currentLocationCoords, setCurrentLocationCoords] = useState<{ latitude: number; longitude: number } | null>(null);
-  const [donationPreset, setDonationPreset] = useState<5 | 10 | 20 | "custom" | null>(null);
+  const [donationPreset, setDonationPreset] = useState<5 | 10 | 15 | 20 | "custom" | null>(null);
   const [razorpayOrderParams, setRazorpayOrderParams] = useState<(RazorpayOrderParams & { pendingId?: string }) | null>(null);
   const [razorpayModalVisible, setRazorpayModalVisible] = useState(false);
   const [razorpayCreating, setRazorpayCreating] = useState(false);
@@ -131,10 +301,17 @@ export default function CheckoutScreen() {
    * a new intent (e.g. after editing the cart) gets a fresh key.
    */
   const idempotencyKeyRef = useRef<string | null>(null);
+  const tipSliderTrackWRef = useRef(0);
 
   const { data: addresses = [], isLoading: addressesLoading } = useQuery({
     queryKey: ["addresses"],
     queryFn: () => addressService.getAddresses(),
+  });
+
+  const { data: userProfile } = useQuery({
+    queryKey: ["me", "profile"],
+    queryFn: () => profileService.getProfile(),
+    staleTime: 60_000,
   });
 
   const sessionCoords = useLocationStore((s) => s.coords);
@@ -152,8 +329,14 @@ export default function CheckoutScreen() {
     useCallback(() => {
       void queryClient.invalidateQueries({ queryKey: ["active-location"] });
       void queryClient.invalidateQueries({ queryKey: ["addresses"] });
+      void queryClient.invalidateQueries({ queryKey: ["me", "profile"] });
     }, [queryClient])
   );
+
+  useEffect(() => {
+    if (!scheduleSheetVisible) return;
+    setScheduleSlotDraft(SCHEDULE_SLOT_OPTIONS[0]);
+  }, [scheduleDayIndex, scheduleSheetVisible]);
 
   const selectedAddress = useMemo(
     () =>
@@ -163,6 +346,17 @@ export default function CheckoutScreen() {
       addresses[0],
     [addresses, selectedAddressId]
   );
+
+  const checkoutReceiverSummary = useMemo(() => {
+    const name = selectedAddress?.contactName?.trim() || userProfile?.full_name?.trim() || "";
+    const mobile = selectedAddress?.contactMobile?.trim() || userProfile?.mobile_number?.trim() || "";
+    return formatCheckoutReceiverLine(name, mobile);
+  }, [
+    selectedAddress?.contactName,
+    selectedAddress?.contactMobile,
+    userProfile?.full_name,
+    userProfile?.mobile_number,
+  ]);
 
   // Keep "active location" and global location pin in sync with the checkout delivery address.
   // This makes store distance consistent across Home, Merchant detail, and Checkout.
@@ -331,6 +525,13 @@ export default function CheckoutScreen() {
     enabled: !!merchantId,
   });
 
+  const checkoutCartBannerUrl = useMemo(() => {
+    if (!merchant) return null;
+    const m = merchant as MerchantSummary & { imageUrl?: string | null };
+    const raw = m.displayImage ?? m.banner_url ?? m.imageUrl ?? null;
+    return raw ? toAbsoluteImageUrl(raw) ?? raw : null;
+  }, [merchant]);
+
   const { data: merchantAbout } = useQuery({
     queryKey: ["merchant-about", merchantId],
     queryFn: () => merchantService.getMerchantAbout(merchantId!),
@@ -338,6 +539,169 @@ export default function CheckoutScreen() {
   });
 
   const storeFullAddress = merchantAbout?.full_address ?? merchant?.address ?? merchant?.city ?? merchantName;
+
+  const openCheckoutAddressSheet = useCallback(() => {
+    setAddressSheetVisible(true);
+  }, []);
+
+  const deleteCheckoutAddressMutation = useMutation({
+    mutationFn: (id: number) => addressService.deleteAddress(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["addresses"] });
+      void queryClient.invalidateQueries({ queryKey: ["active-location"] });
+    },
+  });
+
+  const selectAddressFromCheckoutSheet = useCallback(
+    async (addr: Address) => {
+      if (addressSheetBusyId != null) return;
+      setAddressSheetBusyId(addr.id);
+      try {
+        idempotencyKeyRef.current = null;
+        await addressService.setActiveLocation({
+          latitude: addr.latitude,
+          longitude: addr.longitude,
+          address: addr.fullAddress,
+        });
+        const primary = addr.label ?? "Other";
+        setAddressAndCoords(
+          {
+            primary,
+            secondary: addr.fullAddress.slice(0, 80),
+            fullAddress: addr.fullAddress,
+            city: addr.city ?? null,
+            state: addr.state ?? null,
+            pincode: addr.pincode ?? null,
+          },
+          { latitude: addr.latitude, longitude: addr.longitude },
+          { source: "selected" }
+        );
+        setSelectedAddressId(addr.id);
+        await queryClient.invalidateQueries({ queryKey: ["addresses"] });
+        await queryClient.invalidateQueries({ queryKey: ["active-location"] });
+        setAddressSheetVisible(false);
+      } catch {
+        Alert.alert("Could not update address", "Please try again.");
+      } finally {
+        setAddressSheetBusyId(null);
+      }
+    },
+    [addressSheetBusyId, queryClient, setAddressAndCoords]
+  );
+
+  const shareCheckoutAddress = useCallback(async (addr: Address) => {
+    const label = addr.label ?? "Address";
+    const name = addr.contactName ? ` – ${addr.contactName}` : "";
+    const parts: string[] = [`${label}${name}`, addr.fullAddress];
+    if (addr.contactMobile) parts.push(`Phone: ${addr.contactMobile}`);
+    parts.push(`Location: https://maps.google.com/?q=${addr.latitude},${addr.longitude}`, "", "GatiMitra");
+    try {
+      await Share.share({ message: parts.join("\n") });
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const confirmDeleteCheckoutAddress = useCallback(
+    (addr: Address) => {
+      Alert.alert("Delete address?", "Remove this saved address?", [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              try {
+                idempotencyKeyRef.current = null;
+                await deleteCheckoutAddressMutation.mutateAsync(addr.id);
+                if (selectedAddressId === addr.id) {
+                  setSelectedAddressId(null);
+                }
+              } catch {
+                Alert.alert("Could not delete", "Please try again.");
+              }
+            })();
+          },
+        },
+      ]);
+    },
+    [deleteCheckoutAddressMutation, selectedAddressId]
+  );
+
+  const openCheckoutAddressEditMap = useCallback(
+    (addr: Address) => {
+      setAddressSheetVisible(false);
+      router.push({
+        pathname: "/location-address",
+        params: {
+          latitude: String(addr.latitude),
+          longitude: String(addr.longitude),
+          addressId: String(addr.id),
+          primary: addr.label ?? addr.fullAddress.slice(0, 40),
+          afterSaveReturn: "checkout",
+        },
+      });
+    },
+    [router]
+  );
+
+  const updateReceiverContactMutation = useMutation({
+    mutationFn: (args: {
+      id: number;
+      contactName: string | null;
+      contactMobile: string | null;
+    }) => addressService.updateAddress(args.id, { contactName: args.contactName, contactMobile: args.contactMobile }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["addresses"] });
+    },
+  });
+
+  const openReceiverSheet = useCallback(() => {
+    if (!selectedAddress) return;
+    setReceiverDraftName(
+      selectedAddress.contactName?.trim() || userProfile?.full_name?.trim() || ""
+    );
+    setReceiverDraftMobile(
+      selectedAddress.contactMobile?.trim() || userProfile?.mobile_number?.trim() || ""
+    );
+    setReceiverSheetVisible(true);
+  }, [selectedAddress, userProfile?.full_name, userProfile?.mobile_number]);
+
+  const pickReceiverFromContacts = useCallback(async () => {
+    try {
+      const { status } = await Contacts.requestPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert("Contacts", "Please allow access to pick someone from your contacts.");
+        return;
+      }
+      const c = await Contacts.presentContactPickerAsync();
+      if (!c) return;
+      const composed = [c.firstName, c.lastName].filter(Boolean).join(" ").trim();
+      const dn = (typeof c.name === "string" ? c.name : composed).trim();
+      const raw = c.phoneNumbers?.[0]?.number?.replace(/[\s-]/g, "") ?? "";
+      if (dn) setReceiverDraftName(dn);
+      if (raw) setReceiverDraftMobile(raw);
+    } catch {
+      Alert.alert("Contacts", "Contact picker is not available on this device.");
+    }
+  }, []);
+
+  const saveReceiverDetails = useCallback(async () => {
+    if (!selectedAddress) return;
+    const contactName = receiverDraftName.trim() || null;
+    const contactMobile = receiverDraftMobile.trim().replace(/\s+/g, "") || null;
+    try {
+      idempotencyKeyRef.current = null;
+      await updateReceiverContactMutation.mutateAsync({
+        id: selectedAddress.id,
+        contactName,
+        contactMobile,
+      });
+      setReceiverSheetVisible(false);
+    } catch {
+      Alert.alert("Could not save", "Please try again.");
+    }
+  }, [selectedAddress, receiverDraftName, receiverDraftMobile, updateReceiverContactMutation]);
 
   const routeDistanceQuery = useQuery({
     queryKey: [
@@ -390,10 +754,70 @@ export default function CheckoutScreen() {
     [items]
   );
 
-  const tipValue = tipAmount === "custom" ? parseFloat(customTip) || 0 : (tipAmount as number);
+  const tipValue = useMemo(() => {
+    if (tipInputMode === "custom") return Math.max(0, parseFloat(customTip) || 0);
+    return Math.max(0, Math.min(TIP_SLIDER_MAX, tipSliderValue));
+  }, [tipInputMode, customTip, tipSliderValue]);
+
+  const tipSliderThumbPercent = useMemo(() => {
+    if (tipInputMode === "custom") {
+      const v = tipValue;
+      if (v <= TIP_SLIDER_MAX) return (v / TIP_SLIDER_MAX) * 100;
+      return 100;
+    }
+    return (tipSliderValue / TIP_SLIDER_MAX) * 100;
+  }, [tipInputMode, tipValue, tipSliderValue]);
+
+  const tipNearestLabel = useMemo(() => {
+    if (tipInputMode !== "slider") return null;
+    let best: (typeof TIP_SLIDER_LABELS)[number] = TIP_SLIDER_LABELS[0];
+    let d = Infinity;
+    for (const s of TIP_SLIDER_LABELS) {
+      const dd = Math.abs(tipSliderValue - s);
+      if (dd < d) {
+        d = dd;
+        best = s;
+      }
+    }
+    return best;
+  }, [tipInputMode, tipSliderValue]);
+
+  const setTipFromLocalX = useCallback((localX: number) => {
+    const w = tipSliderTrackWRef.current;
+    if (w < 8) return;
+    setTipInputMode("slider");
+    setCustomTip("");
+    const r = Math.max(0, Math.min(1, localX / w));
+    setTipSliderValue(Math.round(r * TIP_SLIDER_MAX));
+  }, []);
+
+  const tipTrackPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: (e) => setTipFromLocalX(e.nativeEvent.locationX),
+        onPanResponderMove: (e) => setTipFromLocalX(e.nativeEvent.locationX),
+      }),
+    [setTipFromLocalX]
+  );
+
+  const clearCheckoutTip = useCallback(() => {
+    setTipSliderValue(0);
+    setCustomTip("");
+    setTipInputMode("slider");
+  }, []);
+
   const donationValue = donationEnabled
     ? (donationPreset !== "custom" && donationPreset != null ? Number(donationPreset) : parseFloat(donationAmount) || 0)
     : 0;
+
+  const clearCheckoutDonation = useCallback(() => {
+    setDonationEnabled(false);
+    setDonationPreset(null);
+    setDonationAmount("");
+  }, []);
 
   const itemsWithSnapshots = useMemo(() => {
     const baseId = (menuItemId: string) =>
@@ -466,6 +890,8 @@ export default function CheckoutScreen() {
           }),
       }),
     enabled: !!merchantId && !!selectedAddress && items.length > 0 && !merchantLoading,
+    /** Keeps last bill on screen while cart/tip/donation refetch — avoids skeleton layout jump. */
+    placeholderData: keepPreviousData,
     retry: 2,
   });
 
@@ -495,7 +921,7 @@ export default function CheckoutScreen() {
         state: liveState,
         city: liveCity,
       }),
-    enabled: couponSheetVisible && !!merchantId && !!selectedAddress && items.length > 0,
+    enabled: !!merchantId && !!selectedAddress && items.length > 0 && !merchantLoading,
     staleTime: 60 * 1000,
   });
 
@@ -518,6 +944,18 @@ export default function CheckoutScreen() {
     () => (serverBill?.discounts ?? []).filter((c) => !c.hidden),
     [serverBill?.discounts]
   );
+
+  const featuredCoupon = useMemo(() => {
+    const list = checkoutOffersQuery.data?.coupons?.filter((c) => c.code !== appliedCouponCode) ?? [];
+    return list[0] ?? null;
+  }, [checkoutOffersQuery.data?.coupons, appliedCouponCode]);
+
+  const hasAppliedDiscountRows = visibleDiscounts.length > 0 || !!appliedCouponCode;
+
+  const showItemTotalStrike = useMemo(() => {
+    if (!serverBill || serverBill.discountTotal <= 0.005) return false;
+    return serverBill.itemTotal > serverBill.itemsNetAfterDiscounts + 0.005;
+  }, [serverBill]);
 
   const deliveryFeeLabel = useMemo(() => {
     if (!serverBill || serverBill.deliveryFee <= 0) return "Delivery fee";
@@ -581,6 +1019,11 @@ export default function CheckoutScreen() {
     return { total: roundBillAmount(total), lines };
   }, [serverBill]);
   const toPayAmount = serverBill?.finalAmount;
+  /** Zomato-style strikethrough total when discounts apply (list ≈ payable + discounts). */
+  const zomatoStrikethroughTotal = useMemo(() => {
+    if (!serverBill || serverBill.discountTotal <= 0.005) return null;
+    return serverBill.finalAmount + serverBill.discountTotal;
+  }, [serverBill]);
   const hasValidPayment = paymentMethod !== "cod" && ["upi", "card", "wallet"].includes(paymentMethod);
   const canPlaceOrder =
     !isStoreClosed &&
@@ -589,7 +1032,8 @@ export default function CheckoutScreen() {
     !!merchantId &&
     hasValidPayment &&
     billingQuery.isSuccess &&
-    serverBill != null;
+    serverBill != null &&
+    !billingQuery.isPlaceholderData;
 
   const baseOrderPayload = useMemo(() => {
     if (!merchantId || !selectedAddress) return null;
@@ -614,7 +1058,17 @@ export default function CheckoutScreen() {
       ...(donationValue > 0 && { donationAmount: donationValue }),
       ...(appliedCouponCode && { couponCode: appliedCouponCode }),
       ...(subscriptionOptIn && { subscriptionOptIn: true }),
-      checkoutMetadata: { leaveAtDoor },
+      checkoutMetadata: {
+        leaveAtDoor,
+        ...(deliveryPartnerNote.trim() ? { deliveryInstructions: deliveryPartnerNote.trim() } : {}),
+        ...(instrLeaveWithGuard ? { leaveWithGuard: true } : {}),
+        ...(instrAvoidCalling ? { avoidCalling: true } : {}),
+        ...(instrDontRingBell ? { dontRingBell: true } : {}),
+        ...(instrPetAtHome ? { petAtHome: true } : {}),
+        ...(scheduledDeliverySummary ? { scheduledDeliverySummary } : {}),
+        ...(restaurantNote.trim() ? { restaurantNote: restaurantNote.trim() } : {}),
+        ...(skipCutlery ? { skipCutlery: true } : {}),
+      },
       ...pickup,
     };
   }, [
@@ -628,6 +1082,14 @@ export default function CheckoutScreen() {
     appliedCouponCode,
     subscriptionOptIn,
     leaveAtDoor,
+    deliveryPartnerNote,
+    instrLeaveWithGuard,
+    instrAvoidCalling,
+    instrDontRingBell,
+    instrPetAtHome,
+    scheduledDeliverySummary,
+    restaurantNote,
+    skipCutlery,
     merchant,
     storeFullAddress,
     merchantName,
@@ -978,11 +1440,26 @@ export default function CheckoutScreen() {
   }, []);
 
   const itemsWithImage = useMemo(() => {
-    if (!merchant?.menu) return items.map((i) => ({ ...i, imageUrl: null as string | null }));
+    const lineFor = (cartItem: (typeof items)[0], menuItem: import("@/services/merchant.service").MenuItem | undefined) => {
+      const fromCart = cartItemSubline(cartItem);
+      const fromMenu = menuItem?.description?.trim();
+      return fromCart || fromMenu || null;
+    };
+    if (!merchant?.menu) {
+      return items.map((i) => ({
+        ...i,
+        imageUrl: null as string | null,
+        checkoutSubtext: cartItemSubline(i) || null,
+      }));
+    }
     return items.map((cartItem) => {
       const baseId = cartItem.menuItemId.includes("_") ? cartItem.menuItemId.split("_")[0] : cartItem.menuItemId;
       const menuItem = merchant.menu.find((m) => m.id === baseId);
-      return { ...cartItem, imageUrl: menuItem?.imageUrl ?? null };
+      return {
+        ...cartItem,
+        imageUrl: menuItem?.imageUrl ?? null,
+        checkoutSubtext: lineFor(cartItem, menuItem),
+      };
     });
   }, [items, merchant?.menu]);
 
@@ -991,6 +1468,39 @@ export default function CheckoutScreen() {
     const base = Math.round(Number(merchant.avgPreparationTimeMinutes));
     return `${base + 15}-${base + 25} mins`;
   }, [merchant?.avgPreparationTimeMinutes]);
+
+  const scheduleDayTabs = useMemo(() => {
+    const out: { id: string; line1: string; line2: string }[] = [];
+    const base = new Date();
+    for (let i = 0; i < 5; i++) {
+      const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + i);
+      const line1 = d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+      const line2 =
+        i === 0 ? "Today" : i === 1 ? "Tomorrow" : d.toLocaleDateString("en-IN", { weekday: "long" });
+      const id = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      out.push({ id, line1, line2 });
+    }
+    return out;
+  }, []);
+
+  const partnerInstructionSummary = useMemo(() => {
+    const bits: string[] = [];
+    if (leaveAtDoor) bits.push("Leave at door");
+    if (instrLeaveWithGuard) bits.push("Leave with guard");
+    if (instrAvoidCalling) bits.push("Avoid calling");
+    if (instrDontRingBell) bits.push("Don't ring bell");
+    if (instrPetAtHome) bits.push("Pet at home");
+    const t = deliveryPartnerNote.trim();
+    if (t) bits.push(t.length > 36 ? `${t.slice(0, 36)}…` : t);
+    return bits.join(" · ");
+  }, [
+    leaveAtDoor,
+    instrLeaveWithGuard,
+    instrAvoidCalling,
+    instrDontRingBell,
+    instrPetAtHome,
+    deliveryPartnerNote,
+  ]);
 
   const editingItem = useMemo((): import("@/services/merchant.service").MenuItem | null => {
     if (!editingCartItemId) return null;
@@ -1027,14 +1537,38 @@ export default function CheckoutScreen() {
         isRecommended: (m as { isRecommended?: boolean }).isRecommended ?? (m as { is_recommended?: boolean }).is_recommended,
         isPopular: (m as { isPopular?: boolean }).isPopular ?? (m as { is_popular?: boolean }).is_popular,
       }));
+    const isAlreadyInCart = (m: (typeof normalized)[number]) => {
+      const numId = m.menuItemId != null ? String(m.menuItemId) : null;
+      return items.some(
+        (i) =>
+          i.menuItemId === m.id ||
+          i.menuItemId?.startsWith?.(m.id + "_") ||
+          (numId != null && (i.menuItemId === numId || i.menuItemId?.startsWith?.(numId + "_")))
+      );
+    };
     return [...normalized]
       .sort((a, b) => {
         const aScore = (a.isRecommended ? 2 : 0) + (a.isPopular ? 1 : 0);
         const bScore = (b.isRecommended ? 2 : 0) + (b.isPopular ? 1 : 0);
         return bScore - aScore;
       })
+      .filter((m) => !isAlreadyInCart(m))
       .slice(0, 10);
-  }, [merchant]);
+  }, [merchant, items]);
+
+  /**
+   * Exactly ~3.5 cards visible: 3.5·chipW + 3·gaps ≤ track.
+   * Floor chip width so the strip never clips early; gap slightly tight for small phones.
+   */
+  const upsellChipLayout = useMemo(() => {
+    const scrollHPad = 12 * 2;
+    const outerHPad = 14 * 2;
+    const track = Math.max(220, windowWidth - scrollHPad - outerHPad);
+    const gap = 8;
+    const chipW = Math.max(64, Math.floor((track - 3 * gap) / 3.5));
+    const radius = Math.max(8, Math.min(11, Math.round(chipW * 0.09)));
+    return { chipW, gap, radius };
+  }, [windowWidth]);
 
   if (!merchantId || items.length === 0) {
     return (
@@ -1050,13 +1584,25 @@ export default function CheckoutScreen() {
   const showBillSkeleton =
     merchantLoading || (addressesLoading && addresses.length === 0) || billingQuery.isLoading;
 
+  const showDistanceBanner =
+    isDeliveryOutOfRange ||
+    (currentVsSelectedDistanceKm != null && currentVsSelectedDistanceKm > 1.5);
+
+  /** Match reference: sit just under status bar without extra air */
+  const headerPaddingTop = useMemo(() => {
+    const statusBarH = Platform.OS === "android" ? StatusBar.currentHeight ?? 0 : 0;
+    const base = Math.max(insets.top, statusBarH);
+    const relax = Platform.OS === "ios" ? 12 : 8;
+    return Math.max(base - relax, 0);
+  }, [insets.top]);
+
   return (
     <View style={styles.container}>
       {/* Zomato-style header: back · merchant name (top, small) + eta + address (with chevron) · share icon */}
-      <View style={[styles.header, { paddingTop: insets.top + 4 }]}>
+      <View style={[styles.header, { paddingTop: headerPaddingTop }]}>
         <View style={styles.headerRow}>
           <TouchableOpacity onPress={() => router.back()} style={styles.headerBack} hitSlop={12}>
-            <Ionicons name="chevron-back" size={26} color={GatiMitraColors.textPrimary} />
+            <Ionicons name="chevron-back" size={22} color="#1A1A1A" />
           </TouchableOpacity>
           <View style={styles.headerCenter}>
             <Text style={styles.headerStoreName} numberOfLines={1}>
@@ -1064,9 +1610,7 @@ export default function CheckoutScreen() {
             </Text>
             <TouchableOpacity
               style={styles.headerAddressRow}
-              onPress={() =>
-                router.push({ pathname: "/profile/addresses", params: { forCheckout: "1" } })
-              }
+              onPress={openCheckoutAddressSheet}
               activeOpacity={0.7}
               hitSlop={6}
             >
@@ -1082,8 +1626,8 @@ export default function CheckoutScreen() {
               </Text>
               <Ionicons
                 name="chevron-down"
-                size={16}
-                color={GatiMitraColors.textSecondary}
+                size={14}
+                color="#888888"
                 style={styles.headerChevron}
               />
             </TouchableOpacity>
@@ -1094,564 +1638,820 @@ export default function CheckoutScreen() {
             hitSlop={10}
             accessibilityLabel="Share location"
           >
-            <Ionicons name="share-social-outline" size={22} color={GatiMitraColors.textPrimary} />
+            <Ionicons name="share-social-outline" size={20} color="#1A1A1A" />
           </TouchableOpacity>
         </View>
       </View>
 
       {/* One-line distance banner — Zomato style ("Selected address is N km away from your location") */}
-      {(isDeliveryOutOfRange ||
-        (currentVsSelectedDistanceKm != null && currentVsSelectedDistanceKm > 1.5)) && (
-        <Animated.View entering={FadeIn.duration(ANIM_DURATION)} style={styles.distanceBannerCompact}>
-          <Text style={styles.distanceBannerCompactText} numberOfLines={1}>
-            Selected address is{" "}
-            {(isDeliveryOutOfRange ? uiDistanceKm : currentVsSelectedDistanceKm)?.toFixed(
-              (isDeliveryOutOfRange ? uiDistanceKm ?? 0 : currentVsSelectedDistanceKm ?? 0) >= 10 ? 0 : 1
-            )}{" "}
-            km away from your location
-          </Text>
-        </Animated.View>
-      )}
-
-      {/* "You saved ₹X on this order" — shown when discounts are applied (Zomato-style top banner) */}
-      {serverBill && serverBill.discountTotal > 0.005 && (
-        <Animated.View entering={FadeIn.duration(ANIM_DURATION)} style={styles.savedBanner}>
-          <Text style={styles.savedBannerEmoji}>🎉</Text>
-          <Text style={styles.savedBannerText}>
-            You saved ₹{serverBill.discountTotal.toFixed(0)} on this order
-          </Text>
+      {showDistanceBanner && (
+        <Animated.View entering={FadeIn.duration(ANIM_DURATION)} style={styles.distanceBannerOuter}>
+          <View style={styles.distanceBannerNotch} />
+          <View style={styles.distanceBannerCompact}>
+            <Text style={styles.distanceBannerCompactText} numberOfLines={2}>
+              Selected address is{" "}
+              {(isDeliveryOutOfRange ? uiDistanceKm : currentVsSelectedDistanceKm)?.toFixed(
+                (isDeliveryOutOfRange ? uiDistanceKm ?? 0 : currentVsSelectedDistanceKm ?? 0) >= 10 ? 0 : 1
+              )}{" "}
+              km away from your location
+            </Text>
+          </View>
         </Animated.View>
       )}
 
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 140 }]}
+        contentContainerStyle={[
+          styles.scrollContent,
+          {
+            paddingTop: showDistanceBanner ? 16 : 12,
+            paddingBottom: insets.bottom + 128,
+          },
+        ]}
         showsVerticalScrollIndicator={false}
       >
-        {/* Order summary card — top */}
+        {/* Order summary card — diet icon + lines + mint stepper, utility pills */}
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION)} style={styles.section}>
           <View style={styles.card}>
-            <View style={styles.orderSummaryHeader}>
-              <Text style={styles.cardTitle}>{merchantName}</Text>
-              <Text style={styles.etaBadge}>{deliveryEta}</Text>
-            </View>
             <View style={styles.orderItemsPreview}>
-              {itemsWithImage.map((item) => (
-                <View key={item.menuItemId} style={styles.orderItemRow}>
-                  <View style={styles.orderItemThumbWrap}>
-                    {item.imageUrl ? (
-                      <Image source={{ uri: item.imageUrl }} style={styles.orderItemThumb} />
-                    ) : (
-                      <View style={[styles.orderItemThumbPlaceholder, !item.isVeg && styles.nonVegBg]}>
-                        <Ionicons name="restaurant" size={20} color={GatiMitraColors.textSecondary} />
-                      </View>
-                    )}
-                    {item.quantity > 1 && (
-                      <View style={styles.qtyBadge}>
-                        <Text style={styles.qtyBadgeText}>{item.quantity}</Text>
-                      </View>
-                    )}
-                  </View>
-                  <TouchableOpacity
-                    style={styles.orderItemInfo}
-                    onPress={() => setEditingCartItemId(item.menuItemId)}
-                    activeOpacity={0.8}
+              {itemsWithImage.map((item, index) => {
+                const sub = item.checkoutSubtext;
+                const lineTotal = item.price * item.quantity;
+                const priceLabel =
+                  Math.abs(lineTotal - Math.round(lineTotal)) < 0.01
+                    ? `₹${Math.round(lineTotal)}`
+                    : `₹${lineTotal.toFixed(2)}`;
+                return (
+                  <View
+                    key={item.menuItemId}
+                    style={[
+                      styles.orderItemRow,
+                      index < itemsWithImage.length - 1 && styles.orderItemRowSpacer,
+                    ]}
                   >
-                    <Text style={styles.orderItemName} numberOfLines={1}>{item.name}</Text>
-                    <Text style={styles.orderItemPrice}>₹{(item.price * item.quantity).toFixed(2)}</Text>
-                  </TouchableOpacity>
-                  <View style={styles.orderItemStepperPill}>
-                    <TouchableOpacity
-                      onPress={() => updateQuantity(item.menuItemId, -1)}
-                      style={styles.qtyBtnSmall}
-                      hitSlop={6}
-                    >
-                      <Ionicons name="remove" size={16} color={GatiMitraColors.emerald} />
-                    </TouchableOpacity>
-                    <Text style={styles.qtyValueSmall}>{item.quantity}</Text>
-                    <TouchableOpacity
-                      onPress={() => updateQuantity(item.menuItemId, 1)}
-                      style={styles.qtyBtnSmall}
-                      hitSlop={6}
-                    >
-                      <Ionicons name="add" size={16} color={GatiMitraColors.emerald} />
-                    </TouchableOpacity>
+                    <DietIndicator isVeg={item.isVeg} />
+                    <View style={styles.orderItemMid}>
+                      <Text style={styles.orderItemName} numberOfLines={2}>
+                        {item.name}
+                      </Text>
+                      {sub ? (
+                        <Text style={styles.orderItemSub} numberOfLines={2}>
+                          {sub}
+                        </Text>
+                      ) : null}
+                      <TouchableOpacity
+                        style={styles.orderItemEditRow}
+                        onPress={() => setEditingCartItemId(item.menuItemId)}
+                        activeOpacity={0.7}
+                        hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+                      >
+                        <Text style={styles.orderItemEditText}>Edit</Text>
+                        <Ionicons name="caret-forward" size={12} color={CX.mint} />
+                      </TouchableOpacity>
+                    </View>
+                    <View style={styles.orderItemRightCol}>
+                      <View style={styles.orderItemStepperPill}>
+                        <TouchableOpacity
+                          onPress={() => updateQuantity(item.menuItemId, -1)}
+                          style={styles.qtyBtnSmall}
+                          hitSlop={6}
+                          accessibilityLabel="Decrease quantity"
+                        >
+                          <Text style={styles.qtyGlyph}>−</Text>
+                        </TouchableOpacity>
+                        <Text style={styles.qtyValueSmall}>{item.quantity}</Text>
+                        <TouchableOpacity
+                          onPress={() => updateQuantity(item.menuItemId, 1)}
+                          style={styles.qtyBtnSmall}
+                          hitSlop={6}
+                          accessibilityLabel="Increase quantity"
+                        >
+                          <Text style={styles.qtyGlyph}>+</Text>
+                        </TouchableOpacity>
+                      </View>
+                      <Text style={styles.orderItemLinePrice}>{priceLabel}</Text>
+                    </View>
                   </View>
-                </View>
-              ))}
+                );
+              })}
             </View>
             <TouchableOpacity
               onPress={() => router.push({ pathname: "/home/merchant/[id]", params: { id: merchantId } })}
               style={styles.addMoreRow}
+              activeOpacity={0.75}
             >
-              <View style={styles.addMoreIconWrap}>
-                <Ionicons name="add" size={20} color={GatiMitraColors.emerald} />
-              </View>
+              <Text style={styles.addMorePlus}>+</Text>
               <Text style={styles.addMoreText}>Add more items</Text>
-              <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
             </TouchableOpacity>
+            <View style={styles.checkoutUtilityPillRow}>
+              <TouchableOpacity
+                style={[
+                  styles.checkoutUtilityPill,
+                  restaurantNote.trim().length > 0 && styles.checkoutUtilityPillActive,
+                ]}
+                onPress={() => setRestaurantNoteModalVisible(true)}
+                activeOpacity={0.8}
+              >
+                <View style={styles.checkoutUtilityPillInner}>
+                  <Ionicons name="document-text-outline" size={13} color={CX.textSecondary} />
+                  <Text style={styles.checkoutUtilityPillText} numberOfLines={1} ellipsizeMode="tail">
+                    Add a note for the restaurant
+                  </Text>
+                </View>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.checkoutUtilityPill, skipCutlery && styles.checkoutUtilityPillActive]}
+                onPress={() => setSkipCutlery((v) => !v)}
+                activeOpacity={0.8}
+              >
+                <View style={styles.checkoutUtilityPillInner}>
+                  <Ionicons name="restaurant-outline" size={13} color={CX.textSecondary} />
+                  <Text style={styles.checkoutUtilityPillText} numberOfLines={1} ellipsizeMode="tail">
+                    {"Don't send cutlery"}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            </View>
           </View>
         </Animated.View>
 
-        {/* Offers section — Zomato-style:
-              - One row per applied offer (green ✓ + label + amount)
-              - GatiMitra+ subscription pill (Zomato Gold equivalent)
-              - "View all coupons" link to open the coupons sheet */}
-        <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(40)} style={styles.section}>
-          <View style={styles.card}>
-            {/* Applied offers from server bill (one row per discount line) */}
-            {serverBill && visibleDiscounts.length > 0 ? (
-              visibleDiscounts.map((d, idx) => (
-                <View
-                  key={`applied-${idx}`}
-                  style={[
-                    styles.appliedOfferRow,
-                    idx < visibleDiscounts.length - 1 && styles.appliedOfferRowBorder,
-                  ]}
-                >
-                  <View style={styles.appliedOfferTick}>
-                    <Ionicons name="checkmark-circle" size={20} color={GatiMitraColors.emerald} />
+        {/* Complete your meal with — above coupons/subscription; ~3.5 cards visible; names wrap */}
+        {completeYourMealItems.length > 0 ? (
+          <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(40)} style={styles.section}>
+            <View style={styles.upsellOuterCard}>
+              <View style={styles.upsellSectionHeader}>
+                <View style={styles.upsellSectionIcon}>
+                  <Ionicons name="grid-outline" size={14} color="#9CA3AF" />
+                  <View style={styles.upsellSectionIconPlus}>
+                    <Ionicons name="add" size={8} color="#9CA3AF" />
                   </View>
-                  <Text style={styles.appliedOfferLabel} numberOfLines={1}>
-                    {d.label} applied!
-                  </Text>
-                  <Text style={styles.appliedOfferAmount}>−₹{d.amount.toFixed(0)}</Text>
                 </View>
-              ))
-            ) : null}
+                <Text style={styles.upsellSectionTitle}>Complete your meal with</Text>
+              </View>
+              <View style={styles.upsellScrollWrap}>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={[
+                    styles.upsellScrollContent,
+                    { gap: upsellChipLayout.gap, paddingRight: upsellChipLayout.gap },
+                  ]}
+                  style={styles.upsellScrollInner}
+                >
+                  {completeYourMealItems.map((m) => {
+                    const { chipW, radius } = upsellChipLayout;
+                    const imgRadius = { borderTopLeftRadius: radius, borderTopRightRadius: radius };
+                    return (
+                      <Pressable
+                        key={m.id}
+                        onPress={() => {
+                          useCartStore.getState().addItem(merchantId!, merchantName!, {
+                            menuItemId: String(m.menuItemId ?? m.id),
+                            name: m.name,
+                            price: m.price,
+                            isVeg: m.isVeg,
+                            imageUrl: m.imageUrl ?? null,
+                          }, 1, checkoutCartBannerUrl);
+                        }}
+                        style={({ pressed }) => [
+                          styles.upsellCard,
+                          {
+                            width: chipW,
+                            borderRadius: radius,
+                          },
+                          pressed && styles.upsellCardPressed,
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.upsellImageWrap,
+                            { width: chipW, height: chipW },
+                            imgRadius,
+                          ]}
+                        >
+                          {m.imageUrl ? (
+                            <Image source={{ uri: m.imageUrl }} style={styles.upsellImage} />
+                          ) : (
+                            <View style={[styles.upsellImagePlaceholder, !m.isVeg && styles.nonVegBg, imgRadius]}>
+                              <Ionicons name="restaurant" size={20} color={GatiMitraColors.textSecondary} />
+                            </View>
+                          )}
+                          <View style={[styles.upsellVegBadge, !m.isVeg && styles.upsellNonVegBadge]}>
+                            {m.isVeg ? (
+                              <View style={styles.upsellVegDot} />
+                            ) : (
+                              <View style={styles.upsellNonVegDot} />
+                            )}
+                          </View>
+                          <View style={styles.upsellAddBtnOnImage} pointerEvents="none">
+                            <Ionicons name="add" size={18} color={CX.mint} />
+                          </View>
+                        </View>
+                        <Text style={[styles.upsellName, { width: chipW - 16 }]}>{m.name}</Text>
+                        <Text style={styles.upsellPrice}>₹{m.price}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            </View>
+          </Animated.View>
+        ) : null}
 
-            {/* GatiMitra+ subscription pill — toggle the existing subscriptionOptIn switch */}
-            <View
-              style={[
-                styles.subscriptionPillRow,
-                (serverBill && visibleDiscounts.length > 0) && styles.appliedOfferRowBorderTop,
-              ]}
+        {/* Offers — blue banner, GMitra plus, applied savings, coupons */}
+        <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(50)} style={styles.section}>
+          <View style={styles.offersCard}>
+            <LinearGradient
+              colors={["#C8DCF2", "#EAF4FC", "#F5FAFF"]}
+              start={{ x: 0.5, y: 0 }}
+              end={{ x: 0.5, y: 1 }}
+              style={styles.offersCardBanner}
             >
-              <Ionicons name="ribbon" size={22} color={GatiMitraColors.warmOrange} />
-              <View style={styles.subscriptionPillTextWrap}>
-                <Text style={styles.subscriptionPillTitle}>
-                  {subscriptionOptIn ? "GatiMitra+ added" : "Save more with GatiMitra+"}
+              <Text style={styles.offersCardBannerTitle}>
+                Save extra by applying coupons on every order
+              </Text>
+              <View style={styles.offersCardBannerIconGlow}>
+                <View style={styles.offersCardBannerIconOuter}>
+                  <View style={styles.offersCardBannerIconBox}>
+                    <Text style={styles.offersCardBannerPct}>%</Text>
+                  </View>
+                </View>
+              </View>
+            </LinearGradient>
+
+            <View style={styles.offersDottedSep} />
+
+            <View style={styles.offersBodyRow}>
+              <MaterialCommunityIcons name="crown-outline" size={22} color="#CA8A04" style={styles.offersSubIcon} />
+              <View style={styles.offersBodyTextCol}>
+                <Text style={styles.offersSubLineBold}>
+                  {subscriptionOptIn
+                    ? `${GMITRA_PLUS_NAME} savings on this order`
+                    : "Save extra with free delivery & offers"}
                 </Text>
-                <Text style={styles.subscriptionPillSub} numberOfLines={1}>
-                  Unlock free delivery & member-only offers
+                <Text style={styles.offersSubLineMuted} numberOfLines={2}>
+                  {subscriptionOptIn
+                    ? `${GMITRA_PLUS_NAME} benefits are applied to your bill.`
+                    : `Add ${GMITRA_PLUS_NAME} at ₹1 for 3 months`}
                 </Text>
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  hitSlop={8}
+                  onPress={() => setGmitraPlusSheetVisible(true)}
+                >
+                  <Text style={styles.offersLearnMore}>Learn more {'>'}</Text>
+                </TouchableOpacity>
               </View>
               <TouchableOpacity
-                style={[styles.subscriptionPillCta, subscriptionOptIn && styles.subscriptionPillCtaActive]}
+                style={[styles.offersApplyOutline, subscriptionOptIn && styles.offersApplyFilled]}
                 onPress={() => setSubscriptionOptIn(!subscriptionOptIn)}
-                activeOpacity={0.8}
+                activeOpacity={0.85}
               >
-                <Text style={[styles.subscriptionPillCtaText, subscriptionOptIn && styles.subscriptionPillCtaTextActive]}>
+                <Text style={[styles.offersApplyOutlineText, subscriptionOptIn && styles.offersApplyFilledText]}>
                   {subscriptionOptIn ? "ADDED" : "APPLY"}
                 </Text>
               </TouchableOpacity>
             </View>
 
-            {/* Manually applied coupon (if any) */}
-            {appliedCouponCode ? (
-              <View style={[styles.appliedOfferRow, styles.appliedOfferRowBorderTop]}>
-                <Ionicons name="checkmark-circle" size={20} color={GatiMitraColors.emerald} />
-                <Text style={styles.appliedOfferLabel} numberOfLines={1}>
-                  {appliedCouponLabel ?? appliedCouponCode} applied
+            {hasAppliedDiscountRows ? (
+              <>
+                <View style={styles.offersDottedSep} />
+                {visibleDiscounts.map((d, idx) => (
+                  <Fragment key={`applied-disc-${idx}`}>
+                    {idx > 0 ? <View style={styles.offersDottedSep} /> : null}
+                    <View style={styles.offersBodyRow}>
+                      <View style={styles.offersGreenTick}>
+                        <Ionicons name="checkmark" size={14} color="#fff" />
+                      </View>
+                      <Text style={styles.offersAppliedLabel} numberOfLines={2}>
+                        {d.label} applied!
+                      </Text>
+                      <Text style={styles.offersSavingsBlue}>−₹{d.amount.toFixed(0)}</Text>
+                    </View>
+                  </Fragment>
+                ))}
+                {appliedCouponCode ? (
+                  <>
+                    {visibleDiscounts.length > 0 ? <View style={styles.offersDottedSep} /> : null}
+                    <View style={styles.offersBodyRow}>
+                      <View style={styles.offersGreenTick}>
+                        <Ionicons name="checkmark" size={14} color="#fff" />
+                      </View>
+                      <Text style={styles.offersAppliedLabel} numberOfLines={2}>
+                        {appliedCouponLabel ?? appliedCouponCode} applied
+                      </Text>
+                      <TouchableOpacity
+                        onPress={() => {
+                          setAppliedCouponCode(null);
+                          setAppliedCouponLabel(null);
+                        }}
+                        hitSlop={8}
+                      >
+                        <Text style={styles.offersRemovePink}>REMOVE</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                ) : null}
+              </>
+            ) : null}
+
+            <View style={styles.offersDottedSep} />
+
+            <View style={styles.offersBodyRow}>
+              <View style={styles.offersCouponIconCircle}>
+                <Text style={styles.offersCouponIconPct}>%</Text>
+              </View>
+              <View style={styles.offersBodyTextCol}>
+                <Text style={styles.offersCouponHeadline} numberOfLines={2}>
+                  {featuredCoupon
+                    ? featuredCoupon.description ||
+                      `Save more with '${featuredCoupon.code}'`
+                    : "Apply a coupon to save on this order"}
                 </Text>
-                <TouchableOpacity
-                  onPress={() => {
-                    setAppliedCouponCode(null);
-                    setAppliedCouponLabel(null);
-                  }}
-                  hitSlop={8}
-                >
-                  <Text style={styles.appliedOfferRemove}>REMOVE</Text>
+                <TouchableOpacity onPress={() => setCouponSheetVisible(true)} activeOpacity={0.7} hitSlop={6}>
+                  <Text style={styles.offersLearnMore}>View all coupons ›</Text>
                 </TouchableOpacity>
               </View>
-            ) : null}
-
-            {/* View all coupons (Zomato-style chevron row) */}
-            <TouchableOpacity
-              style={[styles.viewAllCouponsRow, styles.appliedOfferRowBorderTop]}
-              activeOpacity={0.8}
-              onPress={() => setCouponSheetVisible(true)}
-            >
-              <Ionicons name="pricetag-outline" size={20} color={GatiMitraColors.textPrimary} />
-              <Text style={styles.viewAllCouponsText}>View all coupons</Text>
-              <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.offersApplyOutline}
+                onPress={() => {
+                  if (featuredCoupon) setCouponCodeInput(featuredCoupon.code);
+                  setCouponSheetVisible(true);
+                }}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.offersApplyOutlineText}>APPLY</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </Animated.View>
 
-        {/* Complete your meal with — only show when menu has items */}
-        {completeYourMealItems.length > 0 ? (
-          <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(50)} style={styles.section}>
-          <View style={styles.upsellSectionHeader}>
-            <View style={styles.upsellSectionIcon}>
-              <Ionicons name="grid-outline" size={16} color={GatiMitraColors.textSecondary} />
-              <View style={styles.upsellSectionIconPlus}>
-                <Ionicons name="add" size={10} color={GatiMitraColors.textSecondary} />
-              </View>
-            </View>
-            <Text style={styles.sectionTitle}>Complete your meal with</Text>
-          </View>
-          <View style={styles.upsellScrollWrap}>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.upsellScrollContent}
-              style={styles.upsellScrollInner}
-            >
-              {completeYourMealItems.map((m) => {
-              const numId = m.menuItemId != null ? String(m.menuItemId) : null;
-              const inCart = items.some(
-                (i) =>
-                  i.menuItemId === m.id ||
-                  i.menuItemId?.startsWith?.(m.id + "_") ||
-                  (numId != null && (i.menuItemId === numId || i.menuItemId?.startsWith?.(numId + "_")))
-              );
-              return (
-                <Pressable
-                  key={m.id}
-                  onPress={() => {
-                    if (!inCart) {
-                      useCartStore.getState().addItem(merchantId!, merchantName!, {
-                        menuItemId: String(m.menuItemId ?? m.id),
-                        name: m.name,
-                        price: m.price,
-                        isVeg: m.isVeg,
-                      }, 1);
-                    }
-                  }}
-                  style={({ pressed }) => [
-                    styles.upsellCard,
-                    inCart && styles.upsellCardAdded,
-                    !inCart && pressed && styles.upsellCardPressed,
-                  ]}
-                >
-                  <View style={styles.upsellImageWrap}>
-                    {m.imageUrl ? (
-                      <Image source={{ uri: m.imageUrl }} style={styles.upsellImage} />
-                    ) : (
-                      <View style={[styles.upsellImagePlaceholder, !m.isVeg && styles.nonVegBg]}>
-                        <Ionicons name="restaurant" size={22} color={GatiMitraColors.textSecondary} />
-                      </View>
-                    )}
-                    <View style={[styles.upsellVegBadge, !m.isVeg && styles.upsellNonVegBadge]}>
-                      {m.isVeg ? <View style={styles.upsellVegDot} /> : null}
-                    </View>
-                    {inCart ? (
-                      <View style={[styles.upsellAddBtnOnImage, styles.upsellAddBtnAdded]}>
-                        <Text style={styles.upsellAddBtnTextAdded}>ADDED</Text>
-                      </View>
-                    ) : (
-                      <View style={styles.upsellAddBtnOnImage}>
-                        <Text style={styles.upsellAddBtnText}>ADD</Text>
-                      </View>
-                    )}
-                  </View>
-                  <Text style={styles.upsellName} numberOfLines={3}>
-                    {m.name}
-                  </Text>
-                  <Text style={styles.upsellPrice}>₹{m.price}</Text>
-                </Pressable>
-              );
-              })}
-            </ScrollView>
-          </View>
-          </Animated.View>
-        ) : null}
-
-        {/* Delivery address card */}
+        {/* Delivery + bill — Zomato-style single card: savings banner, dashed rules, ETA, address, bill, GMitra bubble */}
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(60)} style={styles.section}>
-          <View style={styles.card}>
-            <View style={styles.deliveryEtaRow}>
-              <Ionicons name="flash" size={18} color={GatiMitraColors.emerald} />
-              <Text style={styles.deliveryEtaText}>Delivery in {deliveryEta}</Text>
-            </View>
-            <TouchableOpacity style={styles.scheduleRow} activeOpacity={0.8}>
-              <Text style={styles.scheduleText}>Want this later? Schedule it</Text>
-              <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
-            </TouchableOpacity>
-            <View style={styles.deliveryDivider} />
-            <Pressable
-              style={({ pressed }) => [styles.deliveryAddrRow, pressed && styles.deliveryAddrRowPressed]}
-              onPress={() =>
-                router.push({ pathname: "/profile/addresses", params: { forCheckout: "1" } })
-              }
-              hitSlop={12}
-              android_ripple={{ color: "rgba(20, 184, 166, 0.12)" }}
-            >
-              <Ionicons name="location-outline" size={20} color={GatiMitraColors.emerald} />
-              <View style={styles.deliveryAddrTextWrap}>
-                <Text style={styles.deliveryAddrLabel}>
-                  Delivery at {selectedAddress?.label ?? currentLocationDisplay?.label ?? "—"}
+          <View style={styles.zomatoCheckoutCard}>
+            {serverBill && serverBill.discountTotal > 0.005 ? (
+              <View style={styles.zomatoSavingsBanner}>
+                <Text style={styles.zomatoSavingsBannerEmoji}>🎉</Text>
+                <Text style={styles.zomatoSavingsBannerText}>
+                  You saved ₹{serverBill.discountTotal.toFixed(0)} on this order
                 </Text>
-                <Text style={styles.deliveryAddrSub} numberOfLines={1}>
-                  {selectedAddress
-                    ? selectedAddress.fullAddress
-                    : currentLocationDisplay?.fullAddress ?? "Tap to choose delivery address"}
-                </Text>
-                {leaveAtDoor && (
-                  <View style={styles.leaveAtDoorChip}>
-                    <Ionicons name="checkmark-circle" size={14} color={GatiMitraColors.emerald} />
-                    <Text style={styles.leaveAtDoorChipText}>Leave at door</Text>
-                  </View>
-                )}
-              </View>
-              <Text style={styles.editAddressCta}>Change</Text>
-              <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
-            </Pressable>
-            {/* "Leave at door" — compact toggle chip (Zomato-style "Add instructions" inline link) */}
-            <TouchableOpacity
-              style={styles.leaveAtDoorChipRow}
-              onPress={() => setLeaveAtDoor(!leaveAtDoor)}
-              activeOpacity={0.7}
-            >
-              <Ionicons
-                name={leaveAtDoor ? "checkbox" : "square-outline"}
-                size={20}
-                color={leaveAtDoor ? GatiMitraColors.emerald : GatiMitraColors.textSecondary}
-              />
-              <Text style={styles.leaveAtDoorChipRowText}>
-                Add instructions for delivery partner
-              </Text>
-            </TouchableOpacity>
-            {/* Contact name + phone (Zomato-style: shown inline below address) */}
-            {(selectedAddress?.contactName || selectedAddress?.contactMobile) ? (
-              <View style={styles.contactRow}>
-                <Ionicons name="call-outline" size={18} color={GatiMitraColors.textSecondary} />
-                <Text style={styles.contactRowText} numberOfLines={1}>
-                  {selectedAddress?.contactName ?? ""}
-                  {selectedAddress?.contactName && selectedAddress?.contactMobile ? ", " : ""}
-                  {selectedAddress?.contactMobile ?? ""}
-                </Text>
-                <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
               </View>
             ) : null}
-          </View>
-        </Animated.View>
 
-        {/* Bill summary — collapsible: total only by default, dropdown to expand */}
-        <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(80)} style={styles.section}>
-          <View style={styles.card}>
+            <View style={styles.zomatoCardPad}>
+              <View style={styles.deliveryEtaRow}>
+                <Ionicons name="timer-outline" size={20} color={GatiMitraColors.textSecondary} />
+                <View style={styles.zomatoEtaTextCol}>
+                  <Text style={styles.zomatoEtaLine}>
+                    Delivery in <Text style={styles.zomatoEtaBold}>{deliveryEta}</Text>
+                  </Text>
+                  {scheduledDeliverySummary ? (
+                    <Text style={styles.scheduledSummaryLine} numberOfLines={2}>
+                      {scheduledDeliverySummary}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+              <View style={styles.zomatoScheduleRow}>
+                <Text style={styles.zomatoScheduleLine}>
+                  Want this later?{" "}
+                </Text>
+                <Pressable
+                  onPress={() => setScheduleSheetVisible(true)}
+                  hitSlop={10}
+                  accessibilityRole="button"
+                  accessibilityLabel="Schedule delivery"
+                >
+                  <Text style={styles.zomatoScheduleLink}>Schedule it</Text>
+                </Pressable>
+              </View>
+            </View>
+
+            <View style={styles.zomatoCardDash} />
+
+            <View style={styles.zomatoAddrBlock}>
+              <View style={styles.zomatoAddrRowInner}>
+                <Ionicons name="location-outline" size={20} color={GatiMitraColors.textSecondary} />
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.deliveryAddrTextWrap,
+                    pressed && styles.deliveryAddrRowPressed,
+                  ]}
+                  onPress={openCheckoutAddressSheet}
+                  android_ripple={{ color: "rgba(45, 181, 160, 0.08)" }}
+                >
+                  <View style={styles.deliveryAddrTitleRow}>
+                    <View style={styles.deliveryAddrTitleTextWrap}>
+                      <Text style={styles.deliveryAddrLabel} numberOfLines={1}>
+                        <Text style={styles.deliveryAddrPre}>Delivery at </Text>
+                        <Text style={styles.deliveryAddrName}>
+                          {selectedAddress?.label ?? currentLocationDisplay?.label ?? "—"}
+                        </Text>
+                      </Text>
+                    </View>
+                  </View>
+                  <Text style={styles.deliveryAddrSub} numberOfLines={2} ellipsizeMode="tail">
+                    {selectedAddress
+                      ? selectedAddress.fullAddress
+                      : currentLocationDisplay?.fullAddress ?? "Tap to choose delivery address"}
+                  </Text>
+                  {leaveAtDoor ? (
+                    <View style={[styles.leaveAtDoorChip, styles.leaveAtDoorChipBelowAddr]}>
+                      <Ionicons name="checkmark-circle" size={14} color={GatiMitraColors.emerald} />
+                      <Text style={styles.leaveAtDoorChipText}>Leave at door</Text>
+                    </View>
+                  ) : null}
+                </Pressable>
+                <Pressable
+                  style={styles.zomatoAddrChevronHit}
+                  onPress={openCheckoutAddressSheet}
+                  hitSlop={8}
+                >
+                  <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
+                </Pressable>
+              </View>
+            </View>
+
+            <View style={styles.zomatoCardDash} />
+
             <TouchableOpacity
-              style={styles.billSummaryHeader}
-              onPress={() => setBillSummaryExpanded((e) => !e)}
+              style={[styles.zomatoCardPad, styles.instructionPartnerRow]}
+              onPress={() => setInstructionSheetVisible(true)}
+              activeOpacity={0.75}
+            >
+              <Ionicons name="chatbox-ellipses-outline" size={20} color={GatiMitraColors.textSecondary} />
+              <View style={styles.instructionPartnerTextCol}>
+                <Text style={styles.instructionPartnerTitle}>Add instructions for delivery partner</Text>
+                {partnerInstructionSummary ? (
+                  <Text style={styles.instructionPartnerSummary} numberOfLines={2}>
+                    {partnerInstructionSummary}
+                  </Text>
+                ) : null}
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
+            </TouchableOpacity>
+
+            {selectedAddress ? (
+              <>
+                <View style={styles.zomatoCardDash} />
+                <TouchableOpacity
+                  style={[styles.zomatoCardPad, styles.checkoutReceiverRow]}
+                  onPress={openReceiverSheet}
+                  activeOpacity={0.75}
+                  disabled={!selectedAddress}
+                >
+                  <Ionicons name="call-outline" size={20} color={GatiMitraColors.textSecondary} />
+                  <Text style={styles.checkoutReceiverText} numberOfLines={1}>
+                    {checkoutReceiverSummary}
+                  </Text>
+                  <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
+                </TouchableOpacity>
+              </>
+            ) : null}
+
+            <View style={styles.zomatoCardDash} />
+
+            <TouchableOpacity
+              style={styles.zomatoBillHeader}
+              onPress={() => setBillSummarySheetVisible(true)}
               activeOpacity={0.8}
             >
-              <Text style={styles.sectionTitleSmall}>Bill summary</Text>
-              {!showBillSkeleton && (
+              <Ionicons name="receipt-outline" size={22} color={GatiMitraColors.textSecondary} />
+              <View style={styles.zomatoBillHeaderMid}>
+                <Text style={styles.zomatoBillTitle}>Total Bill</Text>
+                <Text style={styles.zomatoBillSub}>Incl. taxes and charges</Text>
+              </View>
+              {!showBillSkeleton ? (
+                <View style={styles.zomatoBillHeaderRight}>
+                  <View style={styles.zomatoBillPriceCluster}>
+                    {zomatoStrikethroughTotal != null ? (
+                      <Text style={styles.zomatoBillStrike}>
+                        ₹{zomatoStrikethroughTotal.toFixed(2)}
+                      </Text>
+                    ) : null}
+                    <Text style={styles.zomatoBillFinal}>
+                      {toPayAmount != null ? `₹${toPayAmount.toFixed(2)}` : "—"}
+                    </Text>
+                    {serverBill && serverBill.discountTotal > 0.005 ? (
+                      <View style={styles.zomatoSavedPill}>
+                        <Text style={styles.zomatoSavedPillText}>
+                          You saved ₹{serverBill.discountTotal.toFixed(0)}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  <Ionicons name="chevron-forward" size={22} color={GatiMitraColors.textSecondary} />
+                </View>
+              ) : (
                 <View style={styles.billSummaryHeaderRight}>
-                  <Text style={styles.billSummaryTotal}>
-                    {toPayAmount != null ? `₹${toPayAmount.toFixed(2)}` : "—"}
-                  </Text>
-                  <Ionicons
-                    name={billSummaryExpanded ? "chevron-up" : "chevron-down"}
-                    size={22}
-                    color={GatiMitraColors.textSecondary}
-                  />
+                  <GMSkeleton style={{ width: 72, height: 18, borderRadius: 4 }} />
                 </View>
               )}
             </TouchableOpacity>
+
             {showBillSkeleton ? (
-              <View style={styles.billSkeletonWrap}>
+              <View style={[styles.billSkeletonWrap, styles.zomatoCardPadH]}>
                 <GMSkeleton style={styles.billSkeletonLine} />
                 <GMSkeleton style={styles.billSkeletonLastLine} />
               </View>
-            ) : billSummaryExpanded ? (
-              <View style={styles.billSummaryExpanded}>
-                {serverBill ? (
-                  <>
-                    <BillRow label="Item total" value={`₹${serverBill.itemTotal.toFixed(2)}`} />
-                    {serverBill.addonTotal > 0 && (
-                      <BillRow label="Add-ons" value={`₹${serverBill.addonTotal.toFixed(2)}`} />
-                    )}
-                    {serverBill.packagingFee > 0.005 && (
-                      <BillRow label="Packaging charges" value={`₹${serverBill.packagingFee.toFixed(2)}`} />
-                    )}
-                    {visibleDiscounts.map((c, idx) => (
-                      <BillRow key={`dsc-${idx}`} label={c.label} value={`-₹${c.amount.toFixed(2)}`} green />
-                    ))}
-                    {serverBill.deliveryFee > 0.005 && (
-                      <BillRow label={deliveryFeeLabel} value={`₹${serverBill.deliveryFee.toFixed(2)}`} />
-                    )}
-                    {gstAndOtherBreakdown != null && gstAndOtherBreakdown.total > 0.005 && (
-                      <GstOtherChargesRow
-                        label="GST & other charges"
-                        value={`₹${gstAndOtherBreakdown.total.toFixed(2)}`}
-                        onInfoPress={() => setGstBreakdownModalVisible(true)}
-                      />
-                    )}
-                    <View style={styles.billDivider} />
-                    <BillRow
-                      label="Subtotal"
-                      value={`₹${(serverBill.finalAmount - serverBill.tipAmount - serverBill.donationAmount).toFixed(2)}`}
-                    />
-                    {serverBill.tipAmount > 0 && (
-                      <BillRow label="Delivery partner tip" value={`₹${serverBill.tipAmount.toFixed(2)}`} />
-                    )}
-                    {serverBill.donationAmount > 0 && (
-                      <BillRow label="Feeding India donation" value={`₹${serverBill.donationAmount.toFixed(2)}`} />
-                    )}
-                    <View style={styles.billDivider} />
-                    <BillRow label="Total payable" value={`₹${serverBill.finalAmount.toFixed(2)}`} bold />
-                  </>
-                ) : (
-                  <Text style={{ fontSize: 13, color: GatiMitraColors.textSecondary, lineHeight: 20 }}>
-                    {billingQuery.isError
-                      ? "Could not load bill from server. Check your connection and try again."
-                      : "Calculating bill on server…"}
-                  </Text>
-                )}
-              </View>
             ) : null}
+
+            <View style={styles.zomatoCardDash} />
+
+            <View style={styles.zomatoGoldWrap}>
+              <View style={styles.zomatoGoldPointer} />
+              <View style={styles.zomatoGoldBubble}>
+                <View style={styles.zomatoGoldCrownRing}>
+                  <MaterialCommunityIcons name="crown" size={18} color="#FDE68A" />
+                </View>
+                <View style={styles.zomatoGoldTextCol}>
+                  <Text style={styles.zomatoGoldTitle}>
+                    {subscriptionOptIn
+                      ? `${GMITRA_PLUS_NAME} on this order`
+                      : "Save extra with free delivery & offers"}
+                  </Text>
+                  <Text style={styles.zomatoGoldSub} numberOfLines={2}>
+                    {subscriptionOptIn
+                      ? "Member benefits are applied to your bill."
+                      : `Add ${GMITRA_PLUS_NAME} at ₹1 for 3 months`}
+                  </Text>
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    hitSlop={8}
+                    onPress={() => setGmitraPlusSheetVisible(true)}
+                  >
+                    <Text style={styles.offersLearnMore}>Learn more {'>'}</Text>
+                  </TouchableOpacity>
+                </View>
+                <TouchableOpacity
+                  style={[styles.zomatoGoldAddBtn, subscriptionOptIn && styles.offersApplyFilled]}
+                  onPress={() => setSubscriptionOptIn(!subscriptionOptIn)}
+                  activeOpacity={0.85}
+                >
+                  <Text
+                    style={[
+                      styles.zomatoGoldAddBtnText,
+                      subscriptionOptIn && styles.offersApplyFilledText,
+                    ]}
+                  >
+                    {subscriptionOptIn ? "Added" : `Add ${GMITRA_PLUS_NAME}`}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
           </View>
         </Animated.View>
 
-        {/* Feeding India Donation — Zomato-style compact pill row.
-            No switch: tapping a pill enables donation AND sets the amount.
-            Tapping the active pill again clears the donation. */}
+        {/* Feeding India — reference-style hero + white donation row */}
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(100)} style={styles.sectionContrib}>
-          <View style={styles.donationCompactCard}>
-            <View style={styles.donationCompactBanner}>
-              <View style={styles.donationCompactBannerTextWrap}>
-                <Text style={styles.donationCompactTitle}>Serve a brighter future with</Text>
-                <Text style={styles.donationCompactBrand}>Feeding India</Text>
+          <View style={styles.feedingIndiaCard}>
+            <LinearGradient
+              colors={["#DBEAFE", "#E0F2FE", "#BFDBFE"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.feedingIndiaHero}
+            >
+              <View style={styles.feedingIndiaHeroDecor} pointerEvents="none">
+                <View style={styles.feedingWaveBlob} />
+                <View style={styles.feedingWaveBlobB} />
               </View>
-              <View style={styles.donationCompactIllustration}>
-                <Ionicons name="restaurant" size={32} color={GatiMitraColors.warmOrange} />
-              </View>
-            </View>
-            <Text style={styles.donationCompactSubtitle}>Donate with every order ›</Text>
-            <View style={styles.donationCompactPillRow}>
-              {([5, 10, 15] as const).map((amt) => {
-                const isActive = donationEnabled && donationPreset === amt;
-                const isMealBadge = amt === 15;
-                return (
-                  <Pressable
-                    key={amt}
-                    onPress={() => {
-                      if (isActive) {
-                        setDonationEnabled(false);
-                        setDonationPreset(null);
-                        setDonationAmount("");
-                      } else {
-                        setDonationEnabled(true);
-                        setDonationPreset(amt as 5 | 10 | 20);
-                        setDonationAmount(String(amt));
-                      }
-                    }}
-                    style={({ pressed }) => [
-                      styles.donationCompactPill,
-                      isActive && styles.donationCompactPillActive,
-                      pressed && styles.tipChipPressed,
-                    ]}
-                  >
-                    {isMealBadge && <Text style={styles.donationMealBadge}>1 MEAL</Text>}
-                    <Text style={[styles.donationCompactPillText, isActive && styles.donationCompactPillTextActive]}>
-                      ₹{amt}
+              <View style={styles.feedingIndiaHeroTextWrap}>
+                <View style={styles.feedingIndiaTitleRow}>
+                  <View style={styles.feedingIndiaTitleTextBlock}>
+                    <Text style={styles.feedingIndiaHeadline} numberOfLines={2}>
+                      <Text style={styles.feedingIndiaJoin}>Join us at </Text>
+                      <Text style={styles.feedingIndiaBrand}>feeding</Text>
+                      <Text style={styles.feedingIndiaHeart}> ❤️</Text>
+                      <Text style={styles.feedingIndiaBrand}> india</Text>
                     </Text>
+                  </View>
+                  <Pressable
+                    onPress={() => setCommunityInitiativeSheetVisible(true)}
+                    hitSlop={10}
+                    style={styles.feedingIndiaInfoHit}
+                  >
+                    <Ionicons name="information-circle-outline" size={22} color="#1E3A8A" />
                   </Pressable>
-                );
-              })}
-              <Pressable
-                onPress={() => {
-                  if (donationEnabled && donationPreset === "custom") {
-                    setDonationEnabled(false);
-                    setDonationPreset(null);
-                    setDonationAmount("");
-                  } else {
-                    setDonationEnabled(true);
-                    setDonationPreset("custom");
-                    setDonationAmount("");
-                  }
-                }}
-                style={({ pressed }) => [
-                  styles.donationCompactPill,
-                  donationEnabled && donationPreset === "custom" && styles.donationCompactPillActive,
-                  pressed && styles.tipChipPressed,
-                ]}
-              >
-                <Text style={[
-                  styles.donationCompactPillText,
-                  donationEnabled && donationPreset === "custom" && styles.donationCompactPillTextActive,
-                ]}>
-                  Custom
+                </View>
+                <Text style={styles.feedingIndiaTagline}>
+                  Making everyday orders more meaningful.
                 </Text>
-              </Pressable>
-            </View>
-            {donationEnabled && donationPreset === "custom" && (
-              <View style={styles.donationInputRow}>
-                <TextInput
-                  style={styles.donationInput}
-                  placeholder="Enter amount (₹)"
-                  placeholderTextColor={GatiMitraColors.textSecondary}
-                  keyboardType="numeric"
-                  value={donationAmount}
-                  onChangeText={setDonationAmount}
-                  autoFocus
-                />
               </View>
-            )}
+              <View style={styles.feedingIndiaArt}>
+                <LinearGradient
+                  colors={["#BFDBFE", "#E0F2FE", "#F8FAFC"]}
+                  style={styles.feedingIndiaArtGradient}
+                />
+                <View style={styles.feedingIndiaArtIconsRow}>
+                  <View style={styles.feedingArtIconRing}>
+                    <Ionicons name="restaurant-outline" size={16} color={CX.mintDark} />
+                  </View>
+                  <View style={styles.feedingArtIconRing}>
+                    <Ionicons name="heart-outline" size={16} color={CX.mintDark} />
+                  </View>
+                  <View style={styles.feedingArtIconRing}>
+                    <Ionicons name="people-outline" size={16} color={CX.mintDark} />
+                  </View>
+                </View>
+              </View>
+            </LinearGradient>
+
+            <View style={styles.feedingIndiaWhite}>
+              <View style={styles.feedingIndiaDonateLineRow}>
+                <Text style={styles.feedingIndiaDonateLine}>
+                  Donate with <Text style={styles.feedingIndiaDonateBold}>every order</Text>
+                </Text>
+                <Ionicons name="chevron-forward" size={14} color="#111827" />
+              </View>
+              <View style={styles.feedingInrRowOuter}>
+                <View style={styles.feedingInrPresetsGroup}>
+                  {([5, 10, 15] as const).map((amt) => {
+                    const isActive = donationEnabled && donationPreset === amt;
+                    return (
+                      <Pressable
+                        key={amt}
+                        onPress={() => {
+                          if (isActive) {
+                            clearCheckoutDonation();
+                          } else {
+                            setDonationEnabled(true);
+                            setDonationPreset(amt);
+                            setDonationAmount(String(amt));
+                          }
+                        }}
+                        style={({ pressed }) => [
+                          styles.feedingInrPresetBox,
+                          isActive && styles.feedingInrPresetBoxActive,
+                          pressed && styles.tipChipPressed,
+                        ]}
+                      >
+                        <Text style={[styles.feedingInrPresetAmt, isActive && styles.feedingInrAmtActive]}>
+                          ₹{amt}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <View style={styles.feedingInrCustomSlot}>
+                  {donationEnabled && donationPreset === "custom" ? (
+                    <View style={[styles.feedingInrCustomCompact, styles.feedingInrCustomCompactActive]}>
+                      <View style={styles.feedingInrCustomInnerCompact}>
+                        <Text style={[styles.feedingInrRupeeCompact, styles.feedingInrAmtActive]}>₹</Text>
+                        <View style={styles.feedingInrInputUnderlineWrapCompact}>
+                          <TextInput
+                            style={styles.feedingInrCustomInputCompact}
+                            placeholder="0"
+                            placeholderTextColor="#9CA3AF"
+                            keyboardType="numeric"
+                            value={donationAmount}
+                            onChangeText={setDonationAmount}
+                            selectTextOnFocus
+                          />
+                          <View style={styles.feedingInrCustomUnderline} />
+                        </View>
+                      </View>
+                    </View>
+                  ) : (
+                    <Pressable
+                      onPress={() => {
+                        setDonationEnabled(true);
+                        setDonationPreset("custom");
+                        setDonationAmount("");
+                      }}
+                      style={({ pressed }) => [styles.feedingInrCustomTrigger, pressed && styles.tipChipPressed]}
+                    >
+                      <Text style={styles.feedingInrPresetAmt}>Custom</Text>
+                    </Pressable>
+                  )}
+                </View>
+              </View>
+              {donationEnabled && donationValue > 0 ? (
+                <View style={styles.feedingDonationConfirmRow}>
+                  <Ionicons name="checkmark-circle" size={18} color={CX.mintDark} />
+                  <Text style={styles.feedingDonationConfirmText} numberOfLines={1}>
+                    Amount added to your order
+                  </Text>
+                  <TouchableOpacity onPress={clearCheckoutDonation} hitSlop={10} activeOpacity={0.7}>
+                    <Text style={styles.feedingDonationClearText}>Clear</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+            </View>
           </View>
         </Animated.View>
 
-        {/* Delivery Partner Tip — Zomato-style compact pill row */}
+        {/* Delivery partner tip — slider card (reference-style) */}
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(110)} style={styles.sectionContrib}>
-          <View style={styles.donationCompactCard}>
-            <View style={styles.tipCompactHeader}>
-              <Ionicons name="heart" size={18} color={GatiMitraColors.warmOrange} />
-              <View style={styles.tipCompactHeaderTextWrap}>
-                <Text style={styles.tipCompactTitle}>Tip your delivery partner</Text>
-                <Text style={styles.tipCompactSub}>100% goes to them. Tap a pill to add.</Text>
+          <View style={[styles.donationCompactCard, styles.tipSliderCard]}>
+            <Text style={styles.tipSliderHeading}>{tipValue > 0 ? "Added a tip" : "Add a tip"}</Text>
+            <Text style={styles.tipSliderLead}>
+              Drag for up to ₹60 on the slider, or enter any amount below. Your partner keeps 100% of what you add.
+            </Text>
+
+            <View
+              style={styles.tipSliderBlock}
+              onLayout={(e) => {
+                const w = e.nativeEvent.layout.width;
+                tipSliderTrackWRef.current = w;
+                setTipSliderBlockW(w);
+              }}
+            >
+              <View style={styles.tipSliderTrackMeasure} {...tipTrackPanResponder.panHandlers}>
+                <View style={styles.tipSliderTrackPressable}>
+                  <View style={styles.tipSliderTrackBg}>
+                    <View style={[styles.tipSliderFill, { width: `${tipSliderThumbPercent}%` }]} />
+                  </View>
+                  <View style={styles.tipSliderTicksRow} pointerEvents="none">
+                    {TIP_SLIDER_LABELS.map((_, tickIdx) => (
+                      <View
+                        key={`tick-${tickIdx}`}
+                        style={[
+                          styles.tipSliderTick,
+                          {
+                            left: `${(tickIdx / 3) * 100}%`,
+                            transform: [{ translateX: tickIdx === 3 ? -2 : -1 }],
+                          },
+                        ]}
+                      />
+                    ))}
+                  </View>
+                  <View
+                    pointerEvents="none"
+                    style={[
+                      styles.tipSliderThumb,
+                      {
+                        left: `${tipSliderThumbPercent}%`,
+                        transform: [{ translateX: -TIP_SLIDER_THUMB_R }],
+                      },
+                    ]}
+                  />
+                </View>
+              </View>
+              <View style={styles.tipSliderLabelsRow}>
+                {TIP_SLIDER_LABELS.map((v, i) => {
+                  const atStop = tipNearestLabel === v;
+                  const w = tipSliderBlockW;
+                  const half = TIP_LABEL_HALF_WIDTH[i];
+                  const cx = w > 0 ? (i / 3) * w : 0;
+                  let leftPx = w > 0 ? cx - half : 0;
+                  if (i === 0) leftPx = Math.max(0, leftPx);
+                  if (i === 3 && w > 0) leftPx = Math.min(w - half * 2, leftPx);
+                  return (
+                    <Pressable
+                      key={`tip-lbl-${v}`}
+                      onPress={() => {
+                        setTipSliderValue(v);
+                        setTipInputMode("slider");
+                        setCustomTip("");
+                      }}
+                      hitSlop={8}
+                      style={[styles.tipSliderLabelHitAbs, { left: leftPx }]}
+                    >
+                      <Text style={[styles.tipSliderLabel, atStop && styles.tipSliderLabelActive]}>₹{v}</Text>
+                    </Pressable>
+                  );
+                })}
               </View>
             </View>
-            <View style={styles.donationCompactPillRow}>
-              {([20, 30, 50] as const).map((amt) => {
-                const isActive = tipAmount === amt;
-                return (
-                  <Pressable
-                    key={amt}
-                    onPress={() => setTipAmount(isActive ? 0 : amt)}
-                    style={({ pressed }) => [
-                      styles.donationCompactPill,
-                      isActive && styles.donationCompactPillActive,
-                      pressed && styles.tipChipPressed,
-                    ]}
-                  >
-                    <Text style={[styles.donationCompactPillText, isActive && styles.donationCompactPillTextActive]}>
-                      ₹{amt}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-              <Pressable
-                onPress={() => setTipAmount(tipAmount === "custom" ? 0 : "custom")}
-                style={({ pressed }) => [
-                  styles.donationCompactPill,
-                  tipAmount === "custom" && styles.donationCompactPillActive,
-                  pressed && styles.tipChipPressed,
-                ]}
-              >
-                <Text style={[
-                  styles.donationCompactPillText,
-                  tipAmount === "custom" && styles.donationCompactPillTextActive,
-                ]}>
-                  Custom
-                </Text>
-              </Pressable>
-            </View>
-            {tipAmount === "custom" && (
-              <View style={styles.donationInputRow}>
+
+            <Pressable
+              onPress={() => {
+                if (tipInputMode === "custom") {
+                  clearCheckoutTip();
+                } else {
+                  setTipInputMode("custom");
+                  setCustomTip(tipSliderValue > 0 ? String(tipSliderValue) : "");
+                }
+              }}
+              hitSlop={6}
+              style={styles.tipCardOtherRow}
+            >
+              <Text style={styles.tipCardOtherText}>
+                {tipInputMode === "custom" ? "Use slider amounts" : "Enter a different amount"}
+              </Text>
+            </Pressable>
+
+            {tipInputMode === "custom" ? (
+              <View style={styles.tipCustomInputRow}>
+                <Text style={styles.tipCustomRupee}>₹</Text>
                 <TextInput
-                  style={styles.donationInput}
-                  placeholder="Enter tip amount (₹)"
+                  style={styles.tipCustomInput}
+                  placeholder="Amount"
                   placeholderTextColor={GatiMitraColors.textSecondary}
                   keyboardType="numeric"
                   value={customTip}
                   onChangeText={setCustomTip}
-                  autoFocus
                 />
               </View>
-            )}
+            ) : null}
+
+            {tipValue > 0 ? (
+              <View style={styles.tipCardFooterBar}>
+                <Text style={styles.tipCardFooterLabel}>Tip added</Text>
+                <Text style={styles.tipCardFooterValue}>+₹{tipValue.toFixed(0)}</Text>
+              </View>
+            ) : null}
           </View>
         </Animated.View>
 
@@ -1804,31 +2604,27 @@ export default function CheckoutScreen() {
         </View>
       )}
 
-      {/* Footer: Delivery / Self Pickup chip + pill-shaped Place Order button.
-          We dropped the "Pay using …" payment-method dropdown because the
-          dummy-payment bypass owns the payment UX, and the only meaningful
-          per-order choice the customer makes here is delivery vs self-pickup
-          (which directly drives whether the delivery fee is charged). */}
-      <View style={[styles.fixedBottom, { paddingBottom: insets.bottom + GRID * 2 }]}>
+      {/* Footer: fixed-width delivery / takeaway toggle + Place Order CTA (width = screen − padding − gap − toggle; same corner radius as toggle shell). */}
+      <View style={[styles.fixedBottom, { paddingBottom: insets.bottom + 12 }]}>
         <View style={styles.footerRow}>
           <View style={styles.deliveryTypeToggle}>
             <TouchableOpacity
               style={[
-                styles.deliveryTypeChip,
-                deliveryType === "delivery" && styles.deliveryTypeChipActive,
+                styles.deliveryTypeSeg,
+                deliveryType === "delivery" && styles.deliveryTypeSegActive,
               ]}
               onPress={() => setDeliveryType("delivery")}
-              activeOpacity={0.85}
+              activeOpacity={0.88}
             >
-              <Ionicons
-                name="bicycle"
-                size={16}
-                color={deliveryType === "delivery" ? "#fff" : GatiMitraColors.textSecondary}
+              <MaterialCommunityIcons
+                name="motorbike"
+                size={20}
+                color={deliveryType === "delivery" ? "#FFFFFF" : "#111111"}
               />
               <Text
                 style={[
-                  styles.deliveryTypeChipText,
-                  deliveryType === "delivery" && styles.deliveryTypeChipTextActive,
+                  styles.deliveryTypeSegText,
+                  deliveryType === "delivery" && styles.deliveryTypeSegTextActive,
                 ]}
               >
                 Delivery
@@ -1836,37 +2632,37 @@ export default function CheckoutScreen() {
             </TouchableOpacity>
             <TouchableOpacity
               style={[
-                styles.deliveryTypeChip,
-                deliveryType === "self_pickup" && styles.deliveryTypeChipActive,
+                styles.deliveryTypeSeg,
+                deliveryType === "self_pickup" && styles.deliveryTypeSegActive,
               ]}
               onPress={() => setDeliveryType("self_pickup")}
-              activeOpacity={0.85}
+              activeOpacity={0.88}
             >
-              <Ionicons
-                name="walk"
-                size={16}
-                color={deliveryType === "self_pickup" ? "#fff" : GatiMitraColors.textSecondary}
+              <MaterialCommunityIcons
+                name="shopping-outline"
+                size={20}
+                color={deliveryType === "self_pickup" ? "#FFFFFF" : "#111111"}
               />
               <Text
                 style={[
-                  styles.deliveryTypeChipText,
-                  deliveryType === "self_pickup" && styles.deliveryTypeChipTextActive,
+                  styles.deliveryTypeSegText,
+                  deliveryType === "self_pickup" && styles.deliveryTypeSegTextActive,
                 ]}
               >
-                Self pickup
+                Takeaway
               </Text>
             </TouchableOpacity>
           </View>
           {isStoreClosed ? (
-            <View style={styles.footerCtaSlotDisabled}>
+            <View style={[styles.footerCtaSlotDisabled, { width: checkoutFooterCtaWidth }]}>
               <Text style={styles.ctaDisabledText}>Store closed</Text>
             </View>
           ) : items.length === 0 ? (
-            <View style={styles.footerCtaSlotDisabled}>
+            <View style={[styles.footerCtaSlotDisabled, { width: checkoutFooterCtaWidth }]}>
               <Text style={styles.ctaDisabledText}>Add items</Text>
             </View>
           ) : !canPlaceOrder ? (
-            <View style={styles.footerCtaSlotDisabled}>
+            <View style={[styles.footerCtaSlotDisabled, { width: checkoutFooterCtaWidth }]}>
               <Text style={styles.ctaDisabledLabel}>
                 Place Order
                 {toPayAmount != null ? ` • ₹${toPayAmount.toFixed(2)}` : ""}
@@ -1878,19 +2674,25 @@ export default function CheckoutScreen() {
                       ? "Could not load bill — retry"
                       : billingQuery.isLoading
                         ? "Loading bill…"
-                        : !serverBill
-                          ? "Waiting for bill"
-                          : "Select payment"}
+                        : billingQuery.isPlaceholderData && billingQuery.isFetching
+                          ? "Updating bill…"
+                          : !serverBill
+                            ? "Waiting for bill"
+                            : "Select payment"}
               </Text>
             </View>
           ) : (
             <Pressable
-              style={({ pressed }) => [styles.footerCtaSlot, pressed && styles.ctaTouchPressed]}
+              style={({ pressed }) => [
+                styles.footerCtaSlot,
+                { width: checkoutFooterCtaWidth },
+                pressed && styles.ctaTouchPressed,
+              ]}
               onPress={handlePlaceOrderPress}
               disabled={placeOrder.isPending || finalizeOrder.isPending || razorpayCreating}
             >
               <LinearGradient
-                colors={GatiMitraColors.primaryGradientShort as unknown as [string, string]}
+                colors={[CX.mintGradient[0], CX.mintGradient[1]]}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 0 }}
                 style={styles.ctaGradient}
@@ -1935,11 +2737,747 @@ export default function CheckoutScreen() {
               name: params.name,
               price: params.price,
               isVeg: params.isVeg,
-            }, params.quantity);
+              basePrice: params.basePrice,
+              variantId: params.variantId,
+              variantName: params.variantName,
+              addons: params.addons,
+              imageUrl: params.imageUrl ?? editingItem?.imageUrl ?? null,
+            }, params.quantity, checkoutCartBannerUrl);
             setEditingCartItemId(null);
           }}
         />
       )}
+
+      <Modal
+        visible={restaurantNoteModalVisible}
+        transparent
+        animationType="slide"
+        presentationStyle="overFullScreen"
+        onRequestClose={() => setRestaurantNoteModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.noteSheetRoot}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          keyboardVerticalOffset={0}
+        >
+          <Pressable
+            style={styles.noteSheetDim}
+            onPress={() => setRestaurantNoteModalVisible(false)}
+          />
+          <View style={[styles.noteSheetCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+            <View style={styles.noteSheetTitleRow}>
+              <Text style={styles.noteSheetTitle}>Add a note for the restaurant</Text>
+              <TouchableOpacity
+                onPress={() => setRestaurantNoteModalVisible(false)}
+                hitSlop={12}
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={26} color="#111827" />
+              </TouchableOpacity>
+            </View>
+            <TextInput
+              style={styles.noteSheetInput}
+              value={restaurantNote}
+              onChangeText={setRestaurantNote}
+              placeholder="e.g. Note for the entire order"
+              placeholderTextColor="#9CA3AF"
+              multiline
+              maxLength={280}
+              textAlignVertical="top"
+            />
+            <Text style={styles.noteSheetDisclaimer}>
+              {`The restaurant will try its best to follow your requests. However, refunds or cancellations in this regard won't be possible.`}
+            </Text>
+            <View style={styles.noteSheetFooter}>
+              <TouchableOpacity
+                onPress={() => setRestaurantNote("")}
+                style={styles.noteSheetClearBtn}
+                hitSlop={8}
+              >
+                <Text style={styles.noteSheetClearText}>Clear</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.noteSheetSaveBtn}
+                onPress={() => setRestaurantNoteModalVisible(false)}
+                activeOpacity={0.9}
+              >
+                <Text style={styles.noteSheetSaveBtnText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={scheduleSheetVisible}
+        transparent
+        animationType="slide"
+        presentationStyle="overFullScreen"
+        onRequestClose={() => setScheduleSheetVisible(false)}
+      >
+        <View style={styles.noteSheetRoot}>
+          <Pressable style={styles.noteSheetDim} onPress={() => setScheduleSheetVisible(false)} />
+          <View style={[styles.noteSheetCard, { paddingBottom: Math.max(insets.bottom, 20) + 10 }]}>
+            <Text style={styles.scheduleSheetTitle}>Select your delivery time</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.scheduleTabRow}
+              keyboardShouldPersistTaps="handled"
+            >
+              {scheduleDayTabs.map((tab, idx) => {
+                const on = idx === scheduleDayIndex;
+                return (
+                  <Pressable
+                    key={tab.id}
+                    onPress={() => setScheduleDayIndex(idx)}
+                    style={styles.scheduleTabHit}
+                    hitSlop={4}
+                  >
+                    <Text style={[styles.scheduleTabLine1, on && styles.scheduleTabLine1On]}>{tab.line1}</Text>
+                    <Text style={[styles.scheduleTabLine2, on && styles.scheduleTabLine2On]}>{tab.line2}</Text>
+                    <View style={[styles.scheduleTabUnderline, on ? styles.scheduleTabUnderlineOn : styles.scheduleTabUnderlineOff]} />
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            <ScrollView
+              style={styles.scheduleSlotScroll}
+              contentContainerStyle={styles.scheduleSlotScrollContent}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
+              {SCHEDULE_SLOT_OPTIONS.map((slot) => {
+                const picked = scheduleSlotDraft === slot;
+                return (
+                  <Pressable
+                    key={slot}
+                    onPress={() => setScheduleSlotDraft(slot)}
+                    style={[styles.scheduleSlotRow, picked && styles.scheduleSlotRowOn]}
+                  >
+                    <Text style={[styles.scheduleSlotText, picked && styles.scheduleSlotTextOn]}>{slot}</Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            <TouchableOpacity
+              activeOpacity={0.92}
+              onPress={() => {
+                const tab = scheduleDayTabs[scheduleDayIndex];
+                const slot = scheduleSlotDraft ?? SCHEDULE_SLOT_OPTIONS[0];
+                if (tab && slot) {
+                  setScheduledDeliverySummary(`${tab.line1} (${tab.line2}), ${slot}`);
+                }
+                setScheduleSheetVisible(false);
+              }}
+            >
+              <LinearGradient
+                colors={[CX.mintGradient[0], CX.mintGradient[1]]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.scheduleConfirmBtn}
+              >
+                <Text style={styles.scheduleConfirmBtnText}>Confirm</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={instructionSheetVisible}
+        transparent
+        animationType="slide"
+        presentationStyle="overFullScreen"
+        onRequestClose={() => setInstructionSheetVisible(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.noteSheetRoot}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          keyboardVerticalOffset={0}
+        >
+          <Pressable style={styles.noteSheetDim} onPress={() => setInstructionSheetVisible(false)} />
+          <View
+            style={[
+              styles.noteSheetCard,
+              styles.instructionSheetCard,
+              { paddingBottom: Math.max(insets.bottom, 16) + 12 },
+            ]}
+          >
+            <View style={styles.instructionSheetCloseWrap}>
+              <Pressable
+                style={styles.instructionSheetCloseRing}
+                onPress={() => setInstructionSheetVisible(false)}
+                hitSlop={12}
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={18} color="#FFFFFF" />
+              </Pressable>
+            </View>
+            <Text style={styles.instructionSheetTitle}>Instruction for Delivery partner</Text>
+            <Text style={styles.instructionSheetAddr} numberOfLines={4}>
+              {selectedAddress
+                ? `${selectedAddress.label ? `${selectedAddress.label} — ` : ""}${selectedAddress.fullAddress}`
+                : currentLocationDisplay?.fullAddress ?? "Add a delivery address to continue"}
+            </Text>
+            <TextInput
+              style={styles.instructionNoteInput}
+              value={deliveryPartnerNote}
+              onChangeText={setDeliveryPartnerNote}
+              placeholder="Add a short note for your delivery partner (optional)"
+              placeholderTextColor="#9CA3AF"
+              multiline
+              maxLength={240}
+              textAlignVertical="top"
+            />
+            <ScrollView
+              style={styles.instructionSheetScroll}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={styles.instructionVoiceRow}>
+                <Ionicons name="mic-outline" size={20} color={GatiMitraColors.textSecondary} />
+                <Text style={styles.instructionVoiceHint}>Tap and hold to record instruction</Text>
+              </View>
+              <Text style={styles.instructionImageLabel}>Door/building image (optional)</Text>
+              <Pressable style={styles.instructionImageDashed} onPress={() => undefined}>
+                <Ionicons name="camera-outline" size={22} color={CX.mint} />
+                <Text style={styles.instructionImageCta}>Add an image</Text>
+              </Pressable>
+              <Text style={styles.instructionImageHelp}>
+                This helps our delivery partners find your exact location faster
+              </Text>
+
+              <View style={styles.instrCheckLine}>
+                <View style={styles.instrCheckLeft}>
+                  <MaterialCommunityIcons name="door-open" size={22} color={GatiMitraColors.textPrimary} />
+                  <Text style={styles.instrCheckLabel}>Leave at door</Text>
+                </View>
+                <Pressable
+                  onPress={() => setLeaveAtDoor((v) => !v)}
+                  style={[styles.instrCheckBox, leaveAtDoor && styles.instrCheckBoxOn]}
+                  hitSlop={8}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: leaveAtDoor }}
+                >
+                  {leaveAtDoor ? <Ionicons name="checkmark" size={16} color="#FFFFFF" /> : null}
+                </Pressable>
+              </View>
+              <View style={styles.instrCheckLine}>
+                <View style={styles.instrCheckLeft}>
+                  <Ionicons name="shield-checkmark-outline" size={22} color={GatiMitraColors.textPrimary} />
+                  <Text style={styles.instrCheckLabel}>Leave with guard</Text>
+                </View>
+                <Pressable
+                  onPress={() => setInstrLeaveWithGuard((v) => !v)}
+                  style={[styles.instrCheckBox, instrLeaveWithGuard && styles.instrCheckBoxOn]}
+                  hitSlop={8}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: instrLeaveWithGuard }}
+                >
+                  {instrLeaveWithGuard ? <Ionicons name="checkmark" size={16} color="#FFFFFF" /> : null}
+                </Pressable>
+              </View>
+              <View style={styles.instrCheckLine}>
+                <View style={styles.instrCheckLeft}>
+                  <MaterialCommunityIcons name="phone-off-outline" size={22} color={GatiMitraColors.textPrimary} />
+                  <Text style={styles.instrCheckLabel}>Avoid calling</Text>
+                </View>
+                <Pressable
+                  onPress={() => setInstrAvoidCalling((v) => !v)}
+                  style={[styles.instrCheckBox, instrAvoidCalling && styles.instrCheckBoxOn]}
+                  hitSlop={8}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: instrAvoidCalling }}
+                >
+                  {instrAvoidCalling ? <Ionicons name="checkmark" size={16} color="#FFFFFF" /> : null}
+                </Pressable>
+              </View>
+              <View style={styles.instrCheckLine}>
+                <View style={styles.instrCheckLeft}>
+                  <Ionicons name="notifications-off-outline" size={22} color={GatiMitraColors.textPrimary} />
+                  <Text style={styles.instrCheckLabel}>Don't ring the bell</Text>
+                </View>
+                <Pressable
+                  onPress={() => setInstrDontRingBell((v) => !v)}
+                  style={[styles.instrCheckBox, instrDontRingBell && styles.instrCheckBoxOn]}
+                  hitSlop={8}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: instrDontRingBell }}
+                >
+                  {instrDontRingBell ? <Ionicons name="checkmark" size={16} color="#FFFFFF" /> : null}
+                </Pressable>
+              </View>
+              <View style={[styles.instrCheckLine, styles.instrCheckLineLast]}>
+                <View style={styles.instrCheckLeft}>
+                  <Ionicons name="paw-outline" size={22} color={GatiMitraColors.textPrimary} />
+                  <Text style={styles.instrCheckLabel}>Pet at home</Text>
+                </View>
+                <Pressable
+                  onPress={() => setInstrPetAtHome((v) => !v)}
+                  style={[styles.instrCheckBox, instrPetAtHome && styles.instrCheckBoxOn]}
+                  hitSlop={8}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: instrPetAtHome }}
+                >
+                  {instrPetAtHome ? <Ionicons name="checkmark" size={16} color="#FFFFFF" /> : null}
+                </Pressable>
+              </View>
+            </ScrollView>
+
+            <TouchableOpacity
+              style={styles.instructionSaveBtnFull}
+              onPress={() => setInstructionSheetVisible(false)}
+              activeOpacity={0.9}
+            >
+              <Text style={styles.instructionSaveBtnFullText}>Save</Text>
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={addressSheetVisible}
+        transparent
+        animationType="slide"
+        presentationStyle="overFullScreen"
+        onRequestClose={() => setAddressSheetVisible(false)}
+      >
+        <View style={styles.noteSheetRoot}>
+          <Pressable style={styles.noteSheetDim} onPress={() => setAddressSheetVisible(false)} />
+          <View
+            style={[
+              styles.noteSheetCard,
+              styles.addressSelectSheetCard,
+              {
+                paddingBottom: Math.max(insets.bottom, 20) + 12,
+                maxHeight: Math.min(640, windowHeight * 0.92),
+              },
+            ]}
+          >
+            <View style={styles.addressSelectCloseWrap}>
+              <Pressable
+                style={styles.addressSelectCloseRing}
+                onPress={() => setAddressSheetVisible(false)}
+                hitSlop={14}
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={22} color="#FFFFFF" />
+              </Pressable>
+            </View>
+            <Text style={styles.addressSelectSheetTitle}>Select an address</Text>
+
+            <Pressable
+              style={styles.addressSelectAddPressable}
+              onPress={() => {
+                setAddressSheetVisible(false);
+                router.push({ pathname: "/location", params: { afterSaveReturn: "checkout" } });
+              }}
+              android_ripple={{ color: "rgba(45, 181, 160, 0.18)" }}
+            >
+              <LinearGradient
+                colors={["#F0FDFA", "#E6FAF5", "#DCF5EF"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.addressSelectAddGradient}
+              >
+                <View style={styles.addressSelectAddIconCircle}>
+                  <Ionicons name="add" size={28} color="#FFFFFF" />
+                </View>
+                <View style={styles.addressSelectAddTextCol}>
+                  <Text style={styles.addressSelectAddTitle}>Add Address</Text>
+                  <Text style={styles.addressSelectAddSub} numberOfLines={2}>
+                    Search area or drop a pin on the map
+                  </Text>
+                </View>
+                <View style={styles.addressSelectAddChevronWrap}>
+                  <Ionicons name="chevron-forward" size={20} color={CX.mint} />
+                </View>
+              </LinearGradient>
+            </Pressable>
+
+            <View style={styles.addressSelectSectionRule} />
+
+            <Text style={styles.addressSelectSectionLabel}>SAVED ADDRESSES</Text>
+
+            {addressesLoading ? (
+              <View style={styles.addressSelectLoading}>
+                <ActivityIndicator size="small" color={CX.mint} />
+              </View>
+            ) : addresses.length === 0 ? (
+              <Text style={styles.addressSelectEmpty}>
+                No saved addresses yet. Tap Add Address to save a delivery location.
+              </Text>
+            ) : (
+              <ScrollView
+                style={[styles.addressSelectScroll, { maxHeight: Math.min(460, windowHeight * 0.58) }]}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+              >
+                {addresses.map((addr) => {
+                  const isSelected = selectedAddress?.id === addr.id;
+                  const busy = addressSheetBusyId === addr.id;
+                  const dist = formatAddressToStoreDistance(merchant?.latitude, merchant?.longitude, addr);
+                  const title = addr.contactName?.trim() || addr.label || "Saved address";
+                  return (
+                    <View
+                      key={addr.id}
+                      style={[styles.addressSelectCard, isSelected && styles.addressSelectCardSelected]}
+                    >
+                      {isSelected ? (
+                        <Text style={styles.addressSelectDeliversTo}>DELIVERS TO</Text>
+                      ) : null}
+                      <Pressable
+                        onPress={() => void selectAddressFromCheckoutSheet(addr)}
+                        disabled={addressSheetBusyId != null}
+                        style={({ pressed }) => [
+                          styles.addressSelectTapBlock,
+                          pressed && { opacity: 0.94 },
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.addressSelectCardInnerRow,
+                            !isSelected && styles.addressSelectCardInnerRowPadTop,
+                          ]}
+                        >
+                          <View style={styles.addressSelectIconCol}>
+                            {busy ? (
+                              <ActivityIndicator size="small" color={CX.mint} />
+                            ) : (
+                              <Ionicons
+                                name={checkoutAddressRowIcon(addr.label, addr.contactName)}
+                                size={24}
+                                color="#374151"
+                              />
+                            )}
+                            <Text style={styles.addressSelectDist}>{dist}</Text>
+                          </View>
+                          <View style={styles.addressSelectBody}>
+                            <Text style={styles.addressSelectCardTitle} numberOfLines={1}>
+                              {title}
+                            </Text>
+                            {addr.contactName && addr.label ? (
+                              <Text style={styles.addressSelectSub} numberOfLines={1}>
+                                {addr.label}
+                              </Text>
+                            ) : null}
+                            <Text style={styles.addressSelectAddr} numberOfLines={4}>
+                              {addr.fullAddress}
+                            </Text>
+                            {addr.contactMobile ? (
+                              <Text style={styles.addressSelectPhone} numberOfLines={1}>
+                                Phone number: {addr.contactMobile}
+                              </Text>
+                            ) : null}
+                          </View>
+                        </View>
+                      </Pressable>
+                      <View style={styles.addressSelectActionsRow}>
+                        <Pressable
+                          style={styles.addressSelectActionBtn}
+                          hitSlop={8}
+                          android_ripple={{ color: "rgba(255,255,255,0.25)", borderless: true }}
+                          onPress={() => {
+                            Alert.alert("Address", undefined, [
+                              {
+                                text: "Edit on map",
+                                onPress: () => openCheckoutAddressEditMap(addr),
+                              },
+                              {
+                                text: "Delete",
+                                style: "destructive",
+                                onPress: () => confirmDeleteCheckoutAddress(addr),
+                              },
+                              { text: "Cancel", style: "cancel" },
+                            ]);
+                          }}
+                        >
+                          <Ionicons name="ellipsis-horizontal" size={17} color="#FFFFFF" />
+                        </Pressable>
+                        <Pressable
+                          style={styles.addressSelectActionBtn}
+                          hitSlop={8}
+                          android_ripple={{ color: "rgba(255,255,255,0.25)", borderless: true }}
+                          onPress={() => void shareCheckoutAddress(addr)}
+                        >
+                          <Ionicons name="share-outline" size={17} color="#FFFFFF" />
+                        </Pressable>
+                        <Pressable
+                          style={styles.addressSelectActionBtn}
+                          hitSlop={8}
+                          android_ripple={{ color: "rgba(255,255,255,0.25)", borderless: true }}
+                          onPress={() => confirmDeleteCheckoutAddress(addr)}
+                          disabled={deleteCheckoutAddressMutation.isPending}
+                        >
+                          <Ionicons name="trash-outline" size={17} color="#FFFFFF" />
+                        </Pressable>
+                      </View>
+                    </View>
+                  );
+                })}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={receiverSheetVisible}
+        transparent
+        animationType="slide"
+        presentationStyle="overFullScreen"
+        onRequestClose={() => setReceiverSheetVisible(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.noteSheetRoot}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          keyboardVerticalOffset={0}
+        >
+          <Pressable style={styles.noteSheetDim} onPress={() => setReceiverSheetVisible(false)} />
+          <View style={[styles.noteSheetCard, styles.receiverSheetCard, { paddingBottom: Math.max(insets.bottom, 16) + 12 }]}>
+            <View style={styles.noteSheetTitleRow}>
+              <Text style={styles.noteSheetTitle}>Update receiver details</Text>
+              <TouchableOpacity
+                onPress={() => setReceiverSheetVisible(false)}
+                hitSlop={12}
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={26} color="#111827" />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.receiverSheetAddr} numberOfLines={3}>
+              {selectedAddress
+                ? `${selectedAddress.label ? `${selectedAddress.label} — ` : ""}${selectedAddress.fullAddress}`
+                : ""}
+            </Text>
+            <Text style={styles.receiverFieldLabel}>Receiver&apos;s name</Text>
+            <View style={styles.receiverInputRow}>
+              <TextInput
+                style={styles.receiverTextInput}
+                value={receiverDraftName}
+                onChangeText={setReceiverDraftName}
+                placeholder="Name on the order"
+                placeholderTextColor="#9CA3AF"
+                autoCapitalize="words"
+              />
+              {receiverDraftName.length > 0 ? (
+                <Pressable onPress={() => setReceiverDraftName("")} hitSlop={8} style={styles.receiverInputIconBtn}>
+                  <Ionicons name="close-circle" size={22} color="#9CA3AF" />
+                </Pressable>
+              ) : null}
+              <Pressable onPress={() => void pickReceiverFromContacts()} style={styles.receiverInputIconBtn} hitSlop={8}>
+                <Ionicons name="book-outline" size={22} color={CX.mint} />
+              </Pressable>
+            </View>
+            <Text style={styles.receiverFieldLabel}>Receiver&apos;s mobile number</Text>
+            <View style={styles.receiverInputRow}>
+              <TextInput
+                style={styles.receiverTextInput}
+                value={receiverDraftMobile}
+                onChangeText={setReceiverDraftMobile}
+                placeholder="+91 9876543210"
+                placeholderTextColor="#9CA3AF"
+                keyboardType="phone-pad"
+              />
+              {receiverDraftMobile.length > 0 ? (
+                <Pressable onPress={() => setReceiverDraftMobile("")} hitSlop={8} style={styles.receiverInputIconBtn}>
+                  <Ionicons name="close-circle" size={22} color="#9CA3AF" />
+                </Pressable>
+              ) : null}
+            </View>
+            <TouchableOpacity
+              activeOpacity={0.92}
+              disabled={updateReceiverContactMutation.isPending}
+              onPress={() => void saveReceiverDetails()}
+            >
+              <LinearGradient
+                colors={[CX.mintGradient[0], CX.mintGradient[1]]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.receiverSubmitBtn}
+              >
+                {updateReceiverContactMutation.isPending ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.receiverSubmitBtnText}>Submit</Text>
+                )}
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={communityInitiativeSheetVisible}
+        transparent
+        animationType="slide"
+        presentationStyle="overFullScreen"
+        onRequestClose={() => setCommunityInitiativeSheetVisible(false)}
+      >
+        <View style={styles.noteSheetRoot}>
+          <Pressable style={styles.noteSheetDim} onPress={() => setCommunityInitiativeSheetVisible(false)} />
+          <View
+            style={[
+              styles.noteSheetCard,
+              styles.addressSelectSheetCard,
+              {
+                paddingBottom: Math.max(insets.bottom, 16) + 12,
+                maxHeight: Math.min(620, windowHeight * 0.88),
+              },
+            ]}
+          >
+            <View style={styles.addressSelectCloseWrap}>
+              <Pressable
+                style={styles.addressSelectCloseRing}
+                onPress={() => setCommunityInitiativeSheetVisible(false)}
+                hitSlop={14}
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={22} color="#FFFFFF" />
+              </Pressable>
+            </View>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.communitySheetScrollContent}
+            >
+              <LinearGradient
+                colors={["#DBEAFE", "#EFF6FF", "#FFFFFF"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.communitySheetHero}
+              >
+                <View style={styles.communitySheetHeroRow}>
+                  <View style={styles.communitySheetHeroText}>
+                    <Text style={styles.communitySheetTitle}>GatiMitra Community Initiative</Text>
+                    <Text style={styles.communitySheetSub}>
+                      {"We're building a platform that not only delivers orders faster but also aims to create opportunities and support communities in the future."}
+                    </Text>
+                  </View>
+                  <View style={styles.communitySheetHeroIcons}>
+                    <View style={styles.communitySheetIconBubble}>
+                      <Ionicons name="rocket-outline" size={22} color={CX.mintDark} />
+                    </View>
+                    <View style={styles.communitySheetIconBubble}>
+                      <Ionicons name="people-outline" size={22} color={CX.mintDark} />
+                    </View>
+                    <View style={styles.communitySheetIconBubble}>
+                      <Ionicons name="leaf-outline" size={22} color={CX.mintDark} />
+                    </View>
+                  </View>
+                </View>
+              </LinearGradient>
+              <View style={styles.communityImpactDividerRow}>
+                <View style={styles.communityImpactRule} />
+                <Text style={styles.communityImpactDividerLabel}>OUR JOURNEY</Text>
+                <View style={styles.communityImpactRule} />
+              </View>
+              <View style={styles.communityImpactRow}>
+                <View style={styles.communityImpactCol}>
+                  <Text style={styles.communityImpactEmoji}>🚀</Text>
+                  <Text style={styles.communityImpactLabel}>Startup Phase</Text>
+                </View>
+                <View style={styles.communityImpactCol}>
+                  <Text style={styles.communityImpactEmoji}>🤝</Text>
+                  <Text style={styles.communityImpactLabel}>Community Driven</Text>
+                </View>
+                <View style={styles.communityImpactCol}>
+                  <Text style={styles.communityImpactEmoji}>🌱</Text>
+                  <Text style={styles.communityImpactLabel}>Growing Together</Text>
+                </View>
+              </View>
+              <Text style={styles.communitySheetFinePrint}>
+                {
+                  "Optional donations at checkout support verified NGO meal programmes. We'll share more community programmes here as GatiMitra grows."
+                }
+              </Text>
+            </ScrollView>
+            <TouchableOpacity
+              activeOpacity={0.92}
+              onPress={() => setCommunityInitiativeSheetVisible(false)}
+              style={styles.communitySheetCtaWrap}
+            >
+              <LinearGradient
+                colors={[CX.mintGradient[0], CX.mintGradient[1]]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.communitySheetCta}
+              >
+                <Text style={styles.communitySheetCtaText}>Continue Supporting</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={gmitraPlusSheetVisible}
+        transparent
+        animationType="slide"
+        presentationStyle="overFullScreen"
+        onRequestClose={() => setGmitraPlusSheetVisible(false)}
+      >
+        <View style={styles.noteSheetRoot}>
+          <Pressable style={styles.noteSheetDim} onPress={() => setGmitraPlusSheetVisible(false)} />
+          <View style={[styles.noteSheetCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+            <View style={styles.noteSheetTitleRow}>
+              <Text style={styles.noteSheetTitle}>{GMITRA_PLUS_NAME}</Text>
+              <TouchableOpacity
+                onPress={() => setGmitraPlusSheetVisible(false)}
+                hitSlop={12}
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={26} color="#111827" />
+              </TouchableOpacity>
+            </View>
+            <ScrollView
+              style={styles.gmitraSheetScroll}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
+              <Text style={styles.gmitraSheetLead}>
+                {GMITRA_PLUS_NAME} is a membership that helps you save on every order with better delivery pricing and
+                exclusive restaurant offers.
+              </Text>
+              <Text style={styles.gmitraSheetSectionTitle}>What you get</Text>
+              <Text style={styles.gmitraSheetBullet}>• Lower or zero delivery fees on eligible orders</Text>
+              <Text style={styles.gmitraSheetBullet}>• Member-only discounts and coupons at checkout</Text>
+              <Text style={styles.gmitraSheetBullet}>• Priority access to new offers and partner deals</Text>
+              <Text style={styles.gmitraSheetDisclaimer}>
+                Benefits may vary by city, restaurant, and order value. Add {GMITRA_PLUS_NAME} to this order with the
+                button below, or tap APPLY next to Learn more on checkout.
+              </Text>
+            </ScrollView>
+            <View style={styles.gmitraSheetFooterRow}>
+              <TouchableOpacity
+                style={styles.gmitraSheetSecondaryBtn}
+                onPress={() => setGmitraPlusSheetVisible(false)}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.gmitraSheetSecondaryBtnText}>Got it</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.noteSheetSaveBtn,
+                  styles.gmitraSheetPrimaryCta,
+                  subscriptionOptIn && styles.gmitraSheetPrimaryCtaDisabled,
+                ]}
+                onPress={() => {
+                  setSubscriptionOptIn(true);
+                  setGmitraPlusSheetVisible(false);
+                }}
+                disabled={subscriptionOptIn}
+                activeOpacity={0.9}
+              >
+                <Text style={styles.noteSheetSaveBtnText}>
+                  {subscriptionOptIn ? "Already added" : `Add ${GMITRA_PLUS_NAME}`}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         visible={gstBreakdownModalVisible}
@@ -1976,6 +3514,125 @@ export default function CheckoutScreen() {
                   ₹{(gstAndOtherBreakdown?.total ?? 0).toFixed(2)}
                 </Text>
               </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={billSummarySheetVisible}
+        transparent
+        animationType="slide"
+        presentationStyle="overFullScreen"
+        onRequestClose={() => setBillSummarySheetVisible(false)}
+      >
+        <View style={styles.noteSheetRoot}>
+          <Pressable style={styles.noteSheetDim} onPress={() => setBillSummarySheetVisible(false)} />
+          <View
+            style={[
+              styles.noteSheetCard,
+              styles.addressSelectSheetCard,
+              {
+                paddingBottom: Math.max(insets.bottom, 16) + 12,
+                maxHeight: Math.min(720, windowHeight * 0.92),
+              },
+            ]}
+          >
+            <View style={styles.addressSelectCloseWrap}>
+              <Pressable
+                style={styles.addressSelectCloseRing}
+                onPress={() => setBillSummarySheetVisible(false)}
+                hitSlop={14}
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={22} color="#FFFFFF" />
+              </Pressable>
+            </View>
+            <Text style={styles.addressSelectSheetTitle}>Bill Summary</Text>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.billSummarySheetScroll}
+            >
+              {serverBill ? (
+                <>
+                  <View style={styles.billSheetSectionLabelWrap}>
+                    <Text style={styles.billSheetSectionLabel}>PRICE BREAKDOWN</Text>
+                  </View>
+                  <View style={styles.billRow}>
+                    <Text style={styles.billLabel}>Item total</Text>
+                    <View style={styles.billSheetItemTotalRight}>
+                      {showItemTotalStrike ? (
+                        <Text style={styles.billValueStrike}>₹{serverBill.itemTotal.toFixed(2)}</Text>
+                      ) : null}
+                      <Text
+                        style={[
+                          styles.billValue,
+                          showItemTotalStrike && styles.billValueBold,
+                          showItemTotalStrike && styles.billSheetNetAfterDiscount,
+                        ]}
+                      >
+                        ₹{(showItemTotalStrike ? serverBill.itemsNetAfterDiscounts : serverBill.itemTotal).toFixed(2)}
+                      </Text>
+                    </View>
+                  </View>
+                  {serverBill.addonTotal > 0 && (
+                    <BillRow label="Add-ons" value={`₹${serverBill.addonTotal.toFixed(2)}`} />
+                  )}
+                  {serverBill.packagingFee > 0.005 && (
+                    <BillRow label="Packaging charges" value={`₹${serverBill.packagingFee.toFixed(2)}`} />
+                  )}
+                  {serverBill.platformFee > 0.005 && (
+                    <BillRow label="Platform fee" value={`₹${serverBill.platformFee.toFixed(2)}`} />
+                  )}
+                  {visibleDiscounts.map((c, idx) => (
+                    <BillRow key={`sheet-dsc-${idx}`} label={c.label} value={`-₹${c.amount.toFixed(2)}`} green />
+                  ))}
+                  {serverBill.deliveryFee > 0.005 && (
+                    <BillRow label={deliveryFeeLabel} value={`₹${serverBill.deliveryFee.toFixed(2)}`} />
+                  )}
+                  {gstAndOtherBreakdown != null && gstAndOtherBreakdown.total > 0.005 && (
+                    <GstOtherChargesRow
+                      label="GST & other charges"
+                      value={`₹${gstAndOtherBreakdown.total.toFixed(2)}`}
+                      onInfoPress={() => {
+                        setBillSummarySheetVisible(false);
+                        setGstBreakdownModalVisible(true);
+                      }}
+                    />
+                  )}
+                  <View style={styles.billDivider} />
+                  <BillRow
+                    label="Subtotal"
+                    value={`₹${(serverBill.finalAmount - serverBill.tipAmount - serverBill.donationAmount).toFixed(2)}`}
+                  />
+                  {serverBill.tipAmount > 0 && (
+                    <BillRow label="Delivery partner tip" value={`₹${serverBill.tipAmount.toFixed(2)}`} />
+                  )}
+                  {serverBill.donationAmount > 0 && (
+                    <BillRow label="Feeding India donation" value={`₹${serverBill.donationAmount.toFixed(2)}`} />
+                  )}
+                  <View style={styles.billDivider} />
+                  <View style={styles.billSheetToPayRow}>
+                    <Text style={styles.billSheetToPayLabel}>To pay</Text>
+                    <Text style={styles.billSheetToPayValue}>₹{serverBill.finalAmount.toFixed(2)}</Text>
+                  </View>
+                  {serverBill.discountTotal > 0.005 ? (
+                    <View style={styles.billSheetSavingsBanner}>
+                      <Text style={styles.billSheetSavingsEmoji}>🎉</Text>
+                      <Text style={styles.billSheetSavingsText}>
+                        You saved ₹{serverBill.discountTotal.toFixed(0)} on this order
+                      </Text>
+                    </View>
+                  ) : null}
+                </>
+              ) : (
+                <Text style={styles.billSheetEmpty}>
+                  {billingQuery.isError
+                    ? "Could not load bill from server. Check your connection and try again."
+                    : "Calculating bill on server…"}
+                </Text>
+              )}
             </ScrollView>
           </View>
         </View>
@@ -2103,127 +3760,279 @@ function BillRow({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: GatiMitraColors.background },
+  container: { flex: 1, backgroundColor: "#F5F6F8" },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
   emptyText: { fontSize: 16, color: GatiMitraColors.textSecondary },
   ctaSecondary: { marginTop: SPACING, paddingVertical: 12, paddingHorizontal: 24 },
-  ctaSecondaryText: { fontSize: 16, fontWeight: "600", color: GatiMitraColors.emerald },
+  ctaSecondaryText: { fontSize: 16, fontWeight: "600", color: CX.mint },
   header: {
-    backgroundColor: GatiMitraColors.background,
+    backgroundColor: "#F8F8F8",
     zIndex: 20,
-    paddingHorizontal: SPACING,
-    paddingBottom: GRID,
-    borderBottomWidth: 1,
-    borderBottomColor: GatiMitraColors.border,
+    paddingHorizontal: 12,
+    paddingBottom: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E8E8E8",
     ...GatiMitraColors.elevationShadow,
   },
-  headerRow: { flexDirection: "row", alignItems: "center" },
-  headerBack: { padding: GRID / 2, marginRight: 4 },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  headerBack: {
+    alignSelf: "center",
+    paddingVertical: 2,
+    paddingHorizontal: 2,
+    marginRight: 4,
+    justifyContent: "center",
+  },
   headerCenter: { flex: 1, minWidth: 0 },
   headerStoreName: {
     fontSize: 13,
     fontWeight: "500",
-    color: GatiMitraColors.textSecondary,
+    color: "#4B5563",
     marginBottom: 2,
+    lineHeight: 16,
+    paddingBottom: 0,
+    ...Platform.select({ android: { includeFontPadding: false } }),
   },
   headerAddressRow: {
     flexDirection: "row",
     alignItems: "center",
     minWidth: 0,
+    marginTop: -1,
   },
   headerEtaText: {
     flex: 1,
-    fontSize: 14,
-    color: GatiMitraColors.textPrimary,
+    fontSize: 12,
+    lineHeight: 14,
+    color: "#111111",
+    ...Platform.select({ android: { includeFontPadding: false } }),
   },
-  headerEtaStrong: { fontWeight: "700", color: GatiMitraColors.textPrimary },
-  headerEtaSecondary: { fontWeight: "700", color: GatiMitraColors.textPrimary },
-  headerAddressSep: { color: GatiMitraColors.textSecondary, fontWeight: "400" },
+  headerEtaStrong: { fontSize: 12, fontWeight: "700", color: "#278048", lineHeight: 14 },
+  headerEtaSecondary: { fontSize: 12, fontWeight: "700", color: "#111111", lineHeight: 14 },
+  headerAddressSep: { fontSize: 12, color: "#9CA3AF", fontWeight: "400", lineHeight: 14 },
   headerFullAddressInline: {
-    fontSize: 13,
-    color: GatiMitraColors.textSecondary,
+    fontSize: 12,
+    color: "#6B7280",
     fontWeight: "400",
+    lineHeight: 14,
   },
-  headerChevron: { marginLeft: 4 },
+  headerChevron: { marginLeft: 2 },
   headerShareIconBtn: {
-    padding: 8,
-    marginLeft: 4,
+    alignSelf: "center",
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    marginLeft: 2,
+    justifyContent: "center",
   },
-  // One-line, Zomato-style distance banner
+  distanceBannerOuter: {
+    width: "100%",
+    alignItems: "center",
+    backgroundColor: "#F5F6F8",
+  },
+  distanceBannerNotch: {
+    width: 0,
+    height: 0,
+    backgroundColor: "transparent",
+    borderStyle: "solid",
+    borderLeftWidth: 7,
+    borderRightWidth: 7,
+    borderBottomWidth: 8,
+    borderLeftColor: "transparent",
+    borderRightColor: "transparent",
+    borderBottomColor: "#FFF9E1",
+    marginBottom: -1,
+  },
   distanceBannerCompact: {
-    backgroundColor: "#FEF3C7",
+    width: "100%",
+    backgroundColor: "#FFF9E1",
     paddingVertical: 8,
-    paddingHorizontal: SPACING,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#FCD34D",
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#FCD34D",
+    paddingHorizontal: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#E8D48B",
+    borderBottomWidth: 1,
+    borderBottomColor: "#E8D48B",
   },
   distanceBannerCompactText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "500",
-    color: "#92400E",
-    textAlign: "left",
+    lineHeight: 15,
+    color: "#6B4F1D",
+    textAlign: "center",
   },
-  // Zomato-style "You saved ₹X on this order" blue strip
   savedBanner: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#EFF6FF",
-    paddingVertical: 12,
-    paddingHorizontal: SPACING,
-    gap: 10,
+    backgroundColor: "#FFF9E1",
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#E8D48B",
+    borderBottomWidth: 1,
+    borderBottomColor: "#E8D48B",
+    gap: 8,
   },
-  savedBannerEmoji: { fontSize: 20 },
-  savedBannerText: { flex: 1, fontSize: 15, fontWeight: "700", color: "#1D4ED8" },
-  // Applied-offer rows + subscription pill + view-all-coupons row
-  appliedOfferRow: {
+  savedBannerEmoji: { fontSize: 16 },
+  savedBannerText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 15,
+    color: "#6B4F1D",
+  },
+  // Offers card — vertical blue banner, white-rim % tile, GMitra plus, coupons
+  offersCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    overflow: "hidden",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#EFEFEF",
+    ...GatiMitraColors.elevationShadow,
+  },
+  offersCardBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  offersCardBannerTitle: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#2563EB",
+    lineHeight: 19,
+  },
+  offersCardBannerIconGlow: {
+    padding: 0,
+    borderRadius: 0,
+    backgroundColor: "transparent",
+    shadowColor: "transparent",
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  offersCardBannerIconOuter: {
+    padding: 4,
+    borderRadius: 12,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.95)",
+    shadowColor: "#93C5FD",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  offersCardBannerIconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: "#3B82F6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  offersCardBannerPct: {
+    color: "#FFFFFF",
+    fontSize: 20,
+    fontWeight: "800",
+  },
+  offersDottedSep: {
+    marginHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#D1D5DB",
+    borderStyle: Platform.OS === "ios" ? "dotted" : "dashed",
+  },
+  offersBodyRow: {
     flexDirection: "row",
     alignItems: "center",
     paddingVertical: 14,
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  offersSubIcon: {},
+  offersBodyTextCol: { flex: 1, minWidth: 0 },
+  offersSubLineBold: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  offersSubLineMuted: {
+    fontSize: 12,
+    fontWeight: "400",
+    color: "#6B7280",
+    marginTop: 3,
+  },
+  offersLearnMore: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: CX.mint,
+    marginTop: 8,
+  },
+  offersApplyOutline: {
     paddingHorizontal: 14,
-    gap: 10,
-  },
-  appliedOfferRowBorder: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: GatiMitraColors.border,
-  },
-  appliedOfferRowBorderTop: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: GatiMitraColors.border,
-  },
-  appliedOfferTick: { width: 22, alignItems: "center" },
-  appliedOfferLabel: { flex: 1, fontSize: 14, fontWeight: "600", color: GatiMitraColors.textPrimary },
-  appliedOfferAmount: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.emerald },
-  appliedOfferRemove: { fontSize: 13, fontWeight: "700", color: GatiMitraColors.warmOrange, letterSpacing: 0.5 },
-  subscriptionPillRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    gap: 10,
-  },
-  subscriptionPillTextWrap: { flex: 1 },
-  subscriptionPillTitle: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary },
-  subscriptionPillSub: { fontSize: 12, color: GatiMitraColors.textSecondary, marginTop: 2 },
-  subscriptionPillCta: {
-    paddingHorizontal: 14,
-    paddingVertical: 6,
+    paddingVertical: 7,
     borderRadius: 6,
     borderWidth: 1,
-    borderColor: GatiMitraColors.emerald,
+    borderColor: CX.mint,
+    backgroundColor: "#FFFFFF",
   },
-  subscriptionPillCtaActive: { backgroundColor: GatiMitraColors.emerald },
-  subscriptionPillCtaText: { fontSize: 12, fontWeight: "700", color: GatiMitraColors.emerald, letterSpacing: 0.5 },
-  subscriptionPillCtaTextActive: { color: "#fff" },
-  viewAllCouponsRow: {
-    flexDirection: "row",
+  offersApplyOutlineText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: CX.mint,
+    letterSpacing: 0.6,
+  },
+  offersApplyFilled: {
+    backgroundColor: CX.mint,
+    borderColor: CX.mint,
+  },
+  offersApplyFilledText: {
+    color: "#FFFFFF",
+  },
+  offersGreenTick: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: "#22C55E",
     alignItems: "center",
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    gap: 10,
+    justifyContent: "center",
   },
-  viewAllCouponsText: { flex: 1, fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  offersAppliedLabel: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "400",
+    color: "#111827",
+  },
+  offersSavingsBlue: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#4A90E2",
+  },
+  offersRemovePink: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: CX.mintDark,
+    letterSpacing: 0.4,
+  },
+  offersCouponHeadline: {
+    fontSize: 14,
+    fontWeight: "400",
+    color: "#111827",
+  },
+  offersCouponIconCircle: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: "#9CA3AF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  offersCouponIconPct: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#9CA3AF",
+  },
   // Contact (name + phone) row inside delivery card
   contactRow: {
     flexDirection: "row",
@@ -2235,173 +4044,372 @@ const styles = StyleSheet.create({
     borderTopColor: GatiMitraColors.border,
     marginTop: 6,
   },
-  contactRowText: { flex: 1, fontSize: 14, fontWeight: "600", color: GatiMitraColors.textPrimary },
-  scroll: { flex: 1 },
-  scrollContent: { padding: SPACING, paddingTop: SPACING },
-  section: { marginBottom: SPACING - 2 },
-  sectionContrib: { marginBottom: SPACING + 4 },
-  sectionTitle: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary, marginBottom: GRID },
+  contactRowText: { flex: 1, fontSize: 13, fontWeight: "600", color: GatiMitraColors.textPrimary },
+  scroll: { flex: 1, backgroundColor: "#F5F6F8" },
+  scrollContent: { paddingHorizontal: 12 },
+  section: { marginTop: 0, marginBottom: 10 },
+  sectionContrib: { marginBottom: 18 },
+  sectionTitle: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary, marginBottom: 8 },
   sectionTitleSmall: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "700",
     color: GatiMitraColors.textSecondary,
-    marginBottom: GRID,
+    marginBottom: 8,
     textTransform: "uppercase",
-    letterSpacing: 0.5,
+    letterSpacing: 0.4,
   },
   card: {
-    backgroundColor: GatiMitraColors.cardSurface,
-    borderRadius: CARD_RADIUS,
-    padding: 12,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#EFEFEF",
     ...GatiMitraColors.elevationShadow,
   },
-  orderSummaryHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: GRID * 2 },
-  cardTitle: { fontSize: 16, fontWeight: "700", color: GatiMitraColors.textPrimary, flex: 1 },
-  etaBadge: { fontSize: 13, fontWeight: "600", color: GatiMitraColors.emerald },
-  orderItemsPreview: { gap: GRID },
-  // Zomato-style item row: larger thumb (56), veg dot on top-left, qty badge top-right, name+price stacked, stepper as a bordered pill on the right
+  orderItemsPreview: { gap: 0 },
   orderItemRow: {
     flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: GatiMitraColors.border,
+    alignItems: "flex-start",
+    paddingTop: 0,
+    paddingBottom: 0,
+    gap: 8,
   },
-  orderItemThumbWrap: { position: "relative", marginRight: 14 },
-  orderItemThumb: { width: 56, height: 56, borderRadius: 12 },
-  orderItemThumbPlaceholder: {
-    width: 56,
-    height: 56,
-    borderRadius: 12,
-    backgroundColor: GatiMitraColors.mintSoft,
-    alignItems: "center",
-    justifyContent: "center",
+  orderItemRowSpacer: {
+    marginBottom: 12,
   },
-  nonVegBg: { backgroundColor: "#FED7AA" },
-  // Quantity badge on the thumbnail (top-right, dark pill — Zomato style)
-  qtyBadge: {
-    position: "absolute",
-    top: -4,
-    right: -4,
-    minWidth: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: GatiMitraColors.textPrimary,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 6,
-    borderWidth: 2,
-    borderColor: "#fff",
+  orderItemMid: { flex: 1, minWidth: 0, paddingRight: 4 },
+  orderItemName: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#222222",
+    lineHeight: 18,
   },
-  qtyBadgeText: { fontSize: 11, fontWeight: "800", color: "#fff" },
-  orderItemInfo: { flex: 1, minWidth: 0, paddingRight: 8 },
-  orderItemName: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary, lineHeight: 20 },
-  orderItemPrice: { fontSize: 14, fontWeight: "600", color: GatiMitraColors.emerald, marginTop: 4 },
-  // Bordered pill stepper — Zomato uses a rounded outlined container, not loose icons
-  orderItemActions: {
+  orderItemSub: {
+    fontSize: 12,
+    fontWeight: "400",
+    color: "#666666",
+    marginTop: 1,
+    lineHeight: 15,
+  },
+  orderItemEditRow: {
     flexDirection: "row",
     alignItems: "center",
-    minWidth: 88,
-    justifyContent: "space-between",
-    paddingHorizontal: 4,
+    gap: 2,
+    marginTop: 2,
+    alignSelf: "flex-start",
+  },
+  orderItemEditText: { fontSize: 12, fontWeight: "600", color: CX.mint },
+  orderItemRightCol: {
+    alignItems: "flex-end",
+    flexShrink: 0,
+    minWidth: 72,
   },
   orderItemStepperPill: {
     flexDirection: "row",
     alignItems: "center",
-    minWidth: 92,
+    minWidth: 72,
     justifyContent: "space-between",
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-    borderRadius: 10,
+    paddingHorizontal: 2,
+    paddingVertical: 2,
+    borderRadius: 5,
     borderWidth: 1,
-    borderColor: GatiMitraColors.emerald,
-    backgroundColor: "#F0FDF4",
+    borderColor: CX.mint,
+    backgroundColor: CX.mintSoft,
   },
   qtyBtnSmall: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    minWidth: 22,
+    height: 22,
     alignItems: "center",
     justifyContent: "center",
   },
-  qtyValueSmall: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: GatiMitraColors.emerald,
-    minWidth: 20,
+  qtyGlyph: {
+    fontSize: 14,
+    fontWeight: "500",
+    color: CX.mint,
+    lineHeight: 16,
     textAlign: "center",
+  },
+  qtyValueSmall: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: CX.mint,
+    minWidth: 18,
+    textAlign: "center",
+  },
+  orderItemLinePrice: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#222222",
+    marginTop: 6,
+    textAlign: "right",
   },
   addMoreRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: GRID,
-    paddingTop: GRID,
-    borderTopWidth: 1,
-    borderTopColor: GatiMitraColors.border,
-    gap: GRID,
+    marginTop: 0,
+    paddingTop: 8,
+    paddingBottom: 0,
+    gap: 5,
   },
-  addMoreIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: GatiMitraColors.mintSoft,
+  addMorePlus: { fontSize: 17, fontWeight: "700", color: CX.mint, lineHeight: 20 },
+  addMoreText: { fontSize: 14, fontWeight: "700", color: CX.mint, flexShrink: 1 },
+  checkoutUtilityPillRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
+  },
+  checkoutUtilityPill: {
+    flex: 1,
+    minWidth: 0,
     alignItems: "center",
     justifyContent: "center",
-  },
-  addMoreText: { flex: 1, fontSize: 15, fontWeight: "600", color: GatiMitraColors.emerald },
-  upsellSectionHeader: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12 },
-  upsellSectionIcon: {
-    width: 36,
-    height: 36,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
     borderRadius: 18,
-    backgroundColor: GatiMitraColors.surfaceWarm,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  upsellSectionIconPlus: { position: "absolute", right: 4, bottom: 4 },
-  // Zomato-style horizontal upsell cards: 132 wide, larger image, white Add pill with red text on image
-  upsellScrollWrap: { height: 230 },
-  upsellScrollInner: { flex: 1, minHeight: 0 },
-  upsellScrollContent: { paddingVertical: 4, paddingRight: SPACING, gap: 12, flexGrow: 0 },
-  upsellCard: {
-    width: 132,
-    flexShrink: 0,
-    marginRight: 0,
-    backgroundColor: GatiMitraColors.cardSurface,
-    borderRadius: 14,
-    padding: 0,
     borderWidth: 1,
-    borderColor: GatiMitraColors.border,
-    overflow: "hidden",
+    borderColor: "#E5E7EB",
+    backgroundColor: "#FFFFFF",
+  },
+  checkoutUtilityPillInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    maxWidth: "100%",
+    paddingHorizontal: 2,
+  },
+  checkoutUtilityPillActive: {
+    borderColor: CX.mint,
+    backgroundColor: CX.mintSoft,
+  },
+  checkoutUtilityPillText: {
+    flexShrink: 1,
+    fontSize: 10,
+    fontWeight: "500",
+    color: "#666666",
+    textAlign: "left",
+    lineHeight: 14,
+  },
+  noteSheetRoot: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: "transparent",
+  },
+  noteSheetDim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
+  },
+  noteSheetCard: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 16,
+  },
+  noteSheetTitleRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+    marginBottom: 14,
+  },
+  noteSheetTitle: {
+    flex: 1,
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#111827",
+    lineHeight: 22,
+  },
+  noteSheetInput: {
+    minHeight: 120,
+    maxHeight: 180,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    color: "#111827",
+    backgroundColor: "#FAFAFA",
+  },
+  noteSheetDisclaimer: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: "#6B7280",
+    marginTop: 12,
+  },
+  noteSheetFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 20,
+    paddingTop: 4,
+  },
+  noteSheetClearBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+  },
+  noteSheetClearText: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#374151",
+  },
+  noteSheetSaveBtn: {
+    minWidth: 120,
+    paddingVertical: 12,
+    paddingHorizontal: 28,
+    borderRadius: 8,
+    backgroundColor: CX.mint,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  noteSheetSaveBtnText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  gmitraSheetScroll: {
+    maxHeight: 340,
+    marginBottom: 16,
+  },
+  gmitraSheetLead: {
+    fontSize: 14,
+    lineHeight: 21,
+    color: "#374151",
+    marginBottom: 14,
+  },
+  gmitraSheetSectionTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#111827",
+    marginBottom: 8,
+  },
+  gmitraSheetBullet: {
+    fontSize: 14,
+    lineHeight: 22,
+    color: "#4B5563",
+    marginBottom: 6,
+  },
+  gmitraSheetDisclaimer: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: "#9CA3AF",
+    marginTop: 14,
+  },
+  gmitraSheetFooterRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 10,
+    marginTop: 4,
+  },
+  gmitraSheetSecondaryBtn: {
+    flex: 1,
+    minWidth: 0,
+    paddingVertical: 13,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: CX.mint,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  gmitraSheetSecondaryBtnText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: CX.mint,
+  },
+  gmitraSheetPrimaryCta: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 48,
+  },
+  gmitraSheetPrimaryCtaDisabled: {
+    opacity: 0.55,
+  },
+  nonVegBg: { backgroundColor: "#FED7AA" },
+  upsellOuterCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#EFEFEF",
     ...GatiMitraColors.elevationShadow,
   },
-  upsellCardAdded: { borderColor: GatiMitraColors.emerald, backgroundColor: GatiMitraColors.mintSoft },
-  upsellCardPressed: { backgroundColor: GatiMitraColors.mintSoft, opacity: 0.9 },
+  upsellSectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 10,
+  },
+  upsellSectionIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  upsellSectionIconPlus: { position: "absolute", right: 3, bottom: 3 },
+  upsellSectionTitle: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#374151",
+    letterSpacing: -0.1,
+  },
+  upsellScrollWrap: {},
+  upsellScrollInner: { flex: 1, minHeight: 0 },
+  upsellScrollContent: {
+    paddingVertical: 0,
+    paddingLeft: 0,
+    flexGrow: 0,
+    alignItems: "flex-start",
+  },
+  upsellCard: {
+    flexShrink: 0,
+    marginRight: 0,
+    alignItems: "stretch",
+    backgroundColor: "#FFFFFF",
+    padding: 0,
+    paddingBottom: 8,
+    borderWidth: 1,
+    borderColor: "#E8E8E8",
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  upsellCardPressed: { opacity: 0.92 },
   upsellImageWrap: {
-    width: 132,
-    height: 132,
     position: "relative",
-    backgroundColor: GatiMitraColors.mintSoft,
-    borderTopLeftRadius: 14,
-    borderTopRightRadius: 14,
+    backgroundColor: "#F3F4F6",
     overflow: "hidden",
   },
   upsellImage: { width: "100%", height: "100%", resizeMode: "cover", borderRadius: 0 },
   upsellImagePlaceholder: {
     width: "100%",
     height: "100%",
-    backgroundColor: GatiMitraColors.mintSoft,
+    backgroundColor: "#F3F4F6",
     alignItems: "center",
     justifyContent: "center",
-    borderTopLeftRadius: 14,
-    borderTopRightRadius: 14,
   },
   upsellVegBadge: {
     position: "absolute",
-    left: 8,
-    top: 8,
-    width: 16,
-    height: 16,
+    left: 6,
+    bottom: 6,
+    width: 15,
+    height: 15,
     borderRadius: 3,
     backgroundColor: "#fff",
     borderWidth: 1.5,
@@ -2409,58 +4417,240 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  upsellNonVegBadge: { borderColor: "#DC2626" },
-  upsellVegDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#22C55E" },
-  // Zomato's signature: white "ADD" pill at bottom-right of the image with red text
+  upsellNonVegBadge: { borderColor: "#8D4A2B" },
+  upsellVegDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: "#22C55E" },
+  upsellNonVegDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: "#8D4A2B" },
   upsellAddBtnOnImage: {
     position: "absolute",
-    right: 10,
-    bottom: -14,
-    minWidth: 64,
-    height: 32,
-    borderRadius: 8,
+    right: 6,
+    bottom: 6,
+    width: 28,
+    height: 28,
+    borderRadius: 5,
     backgroundColor: "#fff",
     borderWidth: 1,
-    borderColor: "#E5E7EB",
+    borderColor: CX.mintBorder,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 12,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
+    elevation: 2,
   },
-  upsellAddBtnAdded: { borderColor: GatiMitraColors.emerald, backgroundColor: GatiMitraColors.emerald },
-  upsellAddBtnText: { fontSize: 13, fontWeight: "800", color: "#DC2626", letterSpacing: 0.5 },
-  upsellAddBtnTextAdded: { fontSize: 13, fontWeight: "800", color: "#fff", letterSpacing: 0.5 },
   upsellName: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: GatiMitraColors.textPrimary,
-    marginTop: 24,
-    marginHorizontal: 10,
-    minHeight: 36,
-    lineHeight: 18,
+    alignSelf: "stretch",
+    fontSize: 11,
+    fontWeight: "500",
+    color: "#1F2937",
+    marginTop: 6,
+    marginHorizontal: 8,
+    marginBottom: 0,
+    lineHeight: 15,
+    textAlign: "left",
   },
   upsellPrice: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: GatiMitraColors.textPrimary,
+    alignSelf: "stretch",
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#6B7280",
     marginTop: 4,
-    marginBottom: 10,
-    marginHorizontal: 10,
+    marginHorizontal: 8,
+    marginBottom: 0,
+    textAlign: "left",
   },
-  deliveryEtaRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 },
-  deliveryEtaText: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.emerald },
-  scheduleRow: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
-  scheduleText: { flex: 1, fontSize: 13, color: GatiMitraColors.textSecondary },
+  zomatoCheckoutCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    overflow: "hidden",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#EFEFEF",
+    ...GatiMitraColors.elevationShadow,
+  },
+  zomatoSavingsBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#EFF6FF",
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    gap: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#DBEAFE",
+  },
+  zomatoSavingsBannerEmoji: { fontSize: 16 },
+  zomatoSavingsBannerText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#2563EB",
+    lineHeight: 18,
+  },
+  zomatoCardPad: { paddingHorizontal: 14, paddingTop: 14, paddingBottom: 12 },
+  zomatoCardPadH: { paddingHorizontal: 14 },
+  zomatoCardDash: {
+    marginHorizontal: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "#D1D5DB",
+    borderStyle: Platform.OS === "ios" ? "dotted" : "dashed",
+  },
+  zomatoEtaLine: {
+    flex: 1,
+    fontSize: 14,
+    color: GatiMitraColors.textPrimary,
+    fontWeight: "500",
+  },
+  zomatoEtaTextCol: { flex: 1, minWidth: 0 },
+  zomatoEtaBold: { fontWeight: "800", color: GatiMitraColors.textPrimary },
+  scheduledSummaryLine: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: CX.mintDark,
+    marginTop: 5,
+    lineHeight: 16,
+  },
+  zomatoScheduleRow: {
+    marginTop: 8,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+  },
+  zomatoScheduleLine: { fontSize: 12, color: GatiMitraColors.textSecondary },
+  zomatoScheduleLink: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: CX.mint,
+    textDecorationLine: "underline",
+    textDecorationStyle: "dashed",
+    textDecorationColor: CX.mint,
+  },
+  zomatoAddrBlock: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  deliveryAddrTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  deliveryAddrTitleTextWrap: { flex: 1, minWidth: 0 },
+  leaveAtDoorChipBelowAddr: { marginTop: 6, alignSelf: "flex-start" },
+  zomatoAddrChevronHit: {
+    justifyContent: "center",
+    alignItems: "center",
+    alignSelf: "center",
+    paddingLeft: 4,
+  },
+  zomatoAddrRowInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  deliveryAddrPre: { fontWeight: "500", color: GatiMitraColors.textPrimary },
+  deliveryAddrName: { fontWeight: "800", color: GatiMitraColors.textPrimary },
+  zomatoContactRow: {
+    borderTopWidth: 0,
+    marginTop: 0,
+    marginBottom: 0,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+  },
+  zomatoBillHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  zomatoBillHeaderMid: { flex: 1, minWidth: 0 },
+  zomatoBillTitle: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  zomatoBillSub: { fontSize: 11, color: GatiMitraColors.textSecondary, marginTop: 2 },
+  zomatoBillHeaderRight: { flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 },
+  zomatoBillPriceCluster: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 6,
+    justifyContent: "flex-end",
+    maxWidth: 210,
+  },
+  zomatoBillStrike: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#9CA3AF",
+    textDecorationLine: "line-through",
+  },
+  zomatoBillFinal: { fontSize: 16, fontWeight: "800", color: GatiMitraColors.textPrimary },
+  zomatoSavedPill: {
+    backgroundColor: "#DBEAFE",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  zomatoSavedPillText: { fontSize: 10, fontWeight: "700", color: "#1D4ED8" },
+  zomatoGoldWrap: {
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+    paddingTop: 2,
+  },
+  zomatoGoldPointer: {
+    width: 0,
+    height: 0,
+    marginLeft: 28,
+    borderLeftWidth: 7,
+    borderRightWidth: 7,
+    borderBottomWidth: 8,
+    borderLeftColor: "transparent",
+    borderRightColor: "transparent",
+    borderBottomColor: "#FAF0D7",
+    marginBottom: -0.5,
+  },
+  zomatoGoldBubble: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#FEF9E8",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E8D48B",
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+  },
+  zomatoGoldCrownRing: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: "#92400E",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  zomatoGoldTextCol: { flex: 1, minWidth: 0 },
+  zomatoGoldTitle: { fontSize: 13, fontWeight: "800", color: "#713F12" },
+  zomatoGoldSub: { fontSize: 11, color: "#854D0E", marginTop: 3, lineHeight: 15 },
+  zomatoGoldAddBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: CX.mint,
+    backgroundColor: "#FFFFFF",
+    maxWidth: 118,
+  },
+  zomatoGoldAddBtnText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: CX.mint,
+    textAlign: "center",
+  },
+  deliveryEtaRow: { flexDirection: "row", alignItems: "flex-start", gap: 6, marginBottom: 8 },
+  deliveryEtaText: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.emerald },
+  scheduleRow: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
+  scheduleText: { flex: 1, fontSize: 12, color: GatiMitraColors.textSecondary },
   deliveryDivider: { height: 1, backgroundColor: GatiMitraColors.border, marginVertical: 8 },
   deliveryAddrRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: GRID * 2,
-    marginBottom: 10,
+    gap: 10,
+    marginBottom: 8,
     borderRadius: 12,
     marginHorizontal: -4,
     paddingVertical: 4,
@@ -2471,41 +4661,96 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(20, 184, 166, 0.06)",
   },
   deliveryAddrTextWrap: { flex: 1, minWidth: 0 },
-  deliveryAddrLabel: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary },
-  deliveryAddrSub: { fontSize: 13, color: GatiMitraColors.textSecondary, marginTop: 2 },
+  deliveryAddrLabel: { fontSize: 14, fontWeight: "400", color: GatiMitraColors.textPrimary },
+  deliveryAddrSub: { fontSize: 12, color: GatiMitraColors.textSecondary, marginTop: 2 },
   leaveAtDoorChip: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 4 },
-  leaveAtDoorChipText: { fontSize: 12, color: GatiMitraColors.emerald, fontWeight: "600" },
-  editAddressCta: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.warmOrange },
-  changeAddressCta: { fontSize: 13, color: GatiMitraColors.emerald, marginTop: 2, fontWeight: "600" },
+  leaveAtDoorChipText: { fontSize: 11, color: GatiMitraColors.emerald, fontWeight: "600" },
+  changeAddressCta: { fontSize: 12, color: CX.mint, marginTop: 2, fontWeight: "600" },
   leaveAtDoorRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
-  leaveAtDoorLabel: { fontSize: 15, color: GatiMitraColors.textPrimary },
+  leaveAtDoorLabel: { fontSize: 14, color: GatiMitraColors.textPrimary },
   couponRow: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: GatiMitraColors.cardSurface,
     borderRadius: CARD_RADIUS,
     padding: SPACING,
-    gap: GRID * 2,
+    gap: 12,
     ...GatiMitraColors.elevationShadow,
   },
-  couponRowText: { flex: 1, fontSize: 15, fontWeight: "600", color: GatiMitraColors.textPrimary },
+  couponRowText: { flex: 1, fontSize: 14, fontWeight: "600", color: GatiMitraColors.textPrimary },
   appliedCouponWrap: { flex: 1 },
-  appliedCouponText: { fontSize: 15, fontWeight: "600", color: GatiMitraColors.emerald },
+  appliedCouponText: { fontSize: 14, fontWeight: "600", color: GatiMitraColors.emerald },
   billSummaryHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   billSummaryHeaderRight: { flexDirection: "row", alignItems: "center", gap: 8 },
-  billSummaryTotal: { fontSize: 17, fontWeight: "800", color: GatiMitraColors.textPrimary },
-  billSummaryExpanded: { marginTop: GRID },
-  billSkeletonWrap: { gap: GRID * 2 },
-  billSkeletonLine: { height: 20, borderRadius: 8 },
+  billSummaryTotal: { fontSize: 16, fontWeight: "800", color: GatiMitraColors.textPrimary },
+  billSummarySheetScroll: { paddingBottom: 24, paddingTop: 2 },
+  billSheetSectionLabelWrap: { marginBottom: 10 },
+  billSheetSectionLabel: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#64748B",
+    letterSpacing: 1.2,
+  },
+  billSheetItemTotalRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flexShrink: 0,
+  },
+  billValueStrike: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: "#94A3B8",
+    textDecorationLine: "line-through",
+  },
+  billSheetNetAfterDiscount: { fontSize: 15, fontWeight: "800", color: GatiMitraColors.textPrimary },
+  billSheetToPayRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 14,
+    marginTop: 2,
+  },
+  billSheetToPayLabel: { fontSize: 17, fontWeight: "800", color: "#0F172A" },
+  billSheetToPayValue: { fontSize: 21, fontWeight: "800", color: "#0F172A" },
+  billSheetSavingsBanner: {
+    marginTop: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#E0F2FE",
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#BAE6FD",
+  },
+  billSheetSavingsEmoji: { fontSize: 18 },
+  billSheetSavingsText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#0369A1",
+    lineHeight: 20,
+  },
+  billSheetEmpty: {
+    fontSize: 14,
+    color: GatiMitraColors.textSecondary,
+    lineHeight: 21,
+    paddingVertical: 24,
+    textAlign: "center",
+  },
+  billSkeletonWrap: { gap: 12 },
+  billSkeletonLine: { height: 18, borderRadius: 8 },
   billSkeletonLast: { width: "60%" },
-  billSkeletonLastLine: { height: 20, borderRadius: 8, width: "60%" },
+  billSkeletonLastLine: { height: 18, borderRadius: 8, width: "60%" },
   billRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 6 },
   billRowLabelWithInfo: { flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 },
-  billLabel: { fontSize: 14, color: GatiMitraColors.textSecondary },
+  billLabel: { fontSize: 13, color: GatiMitraColors.textSecondary },
   gstModalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.45)",
@@ -2532,24 +4777,24 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   gstModalLineLeft: { flex: 1, minWidth: 0 },
-  gstModalLineLabel: { fontSize: 14, fontWeight: "600", color: GatiMitraColors.textPrimary },
-  gstModalLineSub: { fontSize: 12, color: GatiMitraColors.textSecondary, marginTop: 4, lineHeight: 16 },
-  gstModalLineValue: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  gstModalLineLabel: { fontSize: 13, fontWeight: "600", color: GatiMitraColors.textPrimary },
+  gstModalLineSub: { fontSize: 11, color: GatiMitraColors.textSecondary, marginTop: 4, lineHeight: 16 },
+  gstModalLineValue: { fontSize: 13, fontWeight: "700", color: GatiMitraColors.textPrimary },
   gstModalDivider: { height: 1, backgroundColor: GatiMitraColors.border, marginVertical: 4 },
-  gstModalTotalLabel: { fontSize: 15, fontWeight: "800", color: GatiMitraColors.textPrimary },
-  gstModalTotalValue: { fontSize: 15, fontWeight: "800", color: GatiMitraColors.textPrimary },
-  billValue: { fontSize: 14, color: GatiMitraColors.textPrimary },
-  billValueBold: { fontWeight: "800", fontSize: 16 },
+  gstModalTotalLabel: { fontSize: 14, fontWeight: "800", color: GatiMitraColors.textPrimary },
+  gstModalTotalValue: { fontSize: 14, fontWeight: "800", color: GatiMitraColors.textPrimary },
+  billValue: { fontSize: 13, color: GatiMitraColors.textPrimary },
+  billValueBold: { fontWeight: "800", fontSize: 15 },
   billValueGreen: { color: GatiMitraColors.emerald, fontWeight: "600" },
-  billDivider: { height: 1, backgroundColor: GatiMitraColors.border, marginVertical: GRID },
-  contributionTitle: { fontSize: 16, fontWeight: "700", color: GatiMitraColors.textPrimary },
-  contributionSub: { fontSize: 13, color: GatiMitraColors.textSecondary, marginTop: 4 },
+  billDivider: { height: 1, backgroundColor: GatiMitraColors.border, marginVertical: 8 },
+  contributionTitle: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  contributionSub: { fontSize: 12, color: GatiMitraColors.textSecondary, marginTop: 4 },
   donationRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   // Zomato-style compact donation / tip card (banner + horizontal pill row)
   donationCompactCard: {
     backgroundColor: "#fff",
     borderRadius: CARD_RADIUS,
-    padding: 14,
+    padding: 12,
     borderWidth: 1,
     borderColor: GatiMitraColors.border,
     overflow: "hidden",
@@ -2559,36 +4804,36 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: "#E0F2FE",
     borderRadius: 12,
-    padding: 12,
-    marginBottom: 12,
-    marginHorizontal: -14,
-    marginTop: -14,
-    paddingHorizontal: 16,
+    padding: 10,
+    marginBottom: 10,
+    marginHorizontal: -12,
+    marginTop: -12,
+    paddingHorizontal: 14,
   },
   donationCompactBannerTextWrap: { flex: 1, minWidth: 0 },
-  donationCompactTitle: { fontSize: 14, fontWeight: "600", color: GatiMitraColors.textPrimary },
-  donationCompactBrand: { fontSize: 16, fontWeight: "800", color: GatiMitraColors.textPrimary, marginTop: 2 },
+  donationCompactTitle: { fontSize: 13, fontWeight: "600", color: GatiMitraColors.textPrimary },
+  donationCompactBrand: { fontSize: 15, fontWeight: "800", color: GatiMitraColors.textPrimary, marginTop: 2 },
   donationCompactIllustration: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     backgroundColor: "#fff",
     alignItems: "center",
     justifyContent: "center",
   },
   donationCompactSubtitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "600",
     color: GatiMitraColors.textPrimary,
-    marginBottom: 10,
+    marginBottom: 8,
   },
-  donationCompactPillRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
+  donationCompactPillRow: { flexDirection: "row", gap: 7, flexWrap: "wrap" },
   donationCompactPill: {
     flex: 1,
-    minWidth: 64,
-    paddingVertical: 10,
-    paddingHorizontal: 8,
-    borderRadius: 10,
+    minWidth: 60,
+    paddingVertical: 9,
+    paddingHorizontal: 7,
+    borderRadius: 9,
     borderWidth: 1,
     borderColor: GatiMitraColors.border,
     alignItems: "center",
@@ -2597,52 +4842,892 @@ const styles = StyleSheet.create({
     position: "relative",
   },
   donationCompactPillActive: {
-    borderColor: GatiMitraColors.emerald,
-    backgroundColor: "#ECFDF5",
+    borderColor: CX.mint,
+    backgroundColor: CX.mintSoft,
     borderWidth: 2,
   },
   donationCompactPillText: {
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: "700",
     color: GatiMitraColors.textPrimary,
   },
-  donationCompactPillTextActive: { color: GatiMitraColors.emerald },
+  donationCompactPillTextActive: { color: CX.mint },
+  tipSliderCard: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E8E8E8",
+  },
+  tipSliderHeading: { fontSize: 16, fontWeight: "800", color: "#111827" },
+  tipSliderLead: { fontSize: 12, color: "#6B7280", marginTop: 4, lineHeight: 17 },
+  tipSliderBlock: { marginTop: 10 },
+  tipSliderTrackMeasure: {
+    width: "100%",
+    minHeight: 36,
+    justifyContent: "center",
+    paddingVertical: 2,
+  },
+  tipSliderTrackPressable: {
+    height: 32,
+    width: "100%",
+    justifyContent: "center",
+    position: "relative",
+  },
+  tipSliderTrackBg: {
+    height: 7,
+    width: "100%",
+    borderRadius: 4,
+    backgroundColor: "#DCFCE7",
+    overflow: "hidden",
+    position: "relative",
+  },
+  tipSliderFill: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    borderRadius: 4,
+    backgroundColor: CX.mint,
+  },
+  tipSliderTicksRow: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: 0,
+    height: 32,
+  },
+  tipSliderTick: {
+    position: "absolute",
+    bottom: 9,
+    width: 2,
+    height: 9,
+    backgroundColor: "rgba(45, 181, 160, 0.45)",
+    borderRadius: 1,
+  },
+  tipSliderThumb: {
+    position: "absolute",
+    top: 6,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 2,
+    borderColor: CX.mint,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 1,
+    elevation: 2,
+  },
+  tipSliderLabelsRow: {
+    position: "relative",
+    width: "100%",
+    height: 22,
+    marginTop: 6,
+  },
+  tipSliderLabelHitAbs: {
+    position: "absolute",
+    top: 0,
+    paddingVertical: 2,
+    minWidth: 28,
+    alignItems: "center",
+  },
+  tipSliderLabel: { fontSize: 11, fontWeight: "600", color: "#64748B", textAlign: "center" },
+  tipSliderLabelActive: { color: CX.mintDark, fontWeight: "800" },
+  tipCardOtherRow: { marginTop: 6, alignSelf: "flex-start", paddingVertical: 0 },
+  tipCardOtherText: { fontSize: 12, fontWeight: "700", color: CX.mint },
+  tipCustomInputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: "#FAFAFA",
+  },
+  tipCustomRupee: { fontSize: 15, fontWeight: "800", marginRight: 4, color: "#111827" },
+  tipCustomInput: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#111827",
+    paddingVertical: 0,
+    ...Platform.select({ android: { paddingVertical: 0 } }),
+  },
+  tipCardFooterBar: {
+    marginTop: 8,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: "#EDE9FE",
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+  },
+  tipCardFooterLabel: { fontSize: 13, fontWeight: "700", color: "#374151" },
+  tipCardFooterValue: { fontSize: 15, fontWeight: "800", color: CX.mintDark },
   donationMealBadge: {
     position: "absolute",
-    top: -8,
-    fontSize: 9,
+    top: -6,
+    fontSize: 8,
     fontWeight: "800",
     color: "#fff",
-    backgroundColor: GatiMitraColors.warmOrange,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
+    backgroundColor: CX.mint,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 5,
     overflow: "hidden",
-    letterSpacing: 0.4,
+    letterSpacing: 0.3,
   },
+  feedingIndiaCard: {
+    borderRadius: 16,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#FFFFFF",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  feedingIndiaHero: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 18,
+    overflow: "hidden",
+  },
+  feedingIndiaHeroDecor: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  feedingWaveBlob: {
+    position: "absolute",
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+    backgroundColor: "rgba(255,255,255,0.38)",
+    top: -36,
+    left: -48,
+  },
+  feedingWaveBlobB: {
+    position: "absolute",
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: "rgba(255,255,255,0.22)",
+    top: 8,
+    right: -28,
+  },
+  feedingIndiaHeroTextWrap: { flex: 1, minWidth: 0, zIndex: 1, paddingRight: 6 },
+  feedingIndiaTitleRow: { flexDirection: "row", alignItems: "flex-start", gap: 4 },
+  feedingIndiaTitleTextBlock: { flex: 1, minWidth: 0 },
+  feedingIndiaHeadline: { lineHeight: 24 },
+  feedingIndiaJoin: { fontSize: 15, fontWeight: "600", color: "#1E293B" },
+  feedingIndiaBrand: { fontSize: 16, fontWeight: "800", color: "#0F172A" },
+  feedingIndiaHeart: { fontSize: 14, color: "#EF4444" },
+  feedingIndiaInfoHit: { padding: 2, marginTop: -2 },
+  feedingIndiaTagline: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#475569",
+    marginTop: 8,
+    lineHeight: 17,
+  },
+  feedingIndiaArt: {
+    width: 96,
+    height: 76,
+    marginLeft: 4,
+    borderRadius: 14,
+    overflow: "hidden",
+    position: "relative",
+    zIndex: 1,
+  },
+  feedingIndiaArtGradient: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  feedingIndiaArtIconsRow: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 6,
+  },
+  feedingArtIconRing: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.94)",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.07,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  feedingIndiaWhite: {
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 10,
+  },
+  feedingIndiaDonateLineRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginBottom: 12,
+  },
+  feedingIndiaDonateLine: { fontSize: 14, fontWeight: "500", color: "#334155", flex: 1 },
+  feedingIndiaDonateBold: { fontWeight: "800", color: "#0F172A" },
+  feedingInrRowOuter: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+  feedingInrPresetsGroup: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flexShrink: 0,
+  },
+  feedingInrPresetBox: {
+    width: 54,
+    height: 46,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  feedingInrPresetBoxActive: {
+    borderColor: CX.mint,
+    borderWidth: 2,
+    backgroundColor: "#FFFFFF",
+  },
+  feedingInrPresetAmt: { fontSize: 14, fontWeight: "700", color: "#111827" },
+  feedingInrCustomSlot: {
+    flexShrink: 0,
+    marginLeft: "auto",
+  },
+  feedingInrCustomTrigger: {
+    minWidth: 76,
+    height: 46,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  feedingInrCustomCompact: {
+    height: 46,
+    minWidth: 88,
+    maxWidth: 104,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+    backgroundColor: "#FFFFFF",
+    justifyContent: "center",
+  },
+  feedingInrCustomCompactActive: {
+    borderColor: CX.mint,
+    borderWidth: 2,
+  },
+  feedingInrCustomInnerCompact: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "center",
+    gap: 2,
+  },
+  feedingInrRupeeCompact: { fontSize: 14, fontWeight: "800", color: "#111827", paddingBottom: 2 },
+  feedingInrInputUnderlineWrapCompact: {
+    minWidth: 32,
+    maxWidth: 52,
+  },
+  feedingInrCustomInputCompact: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#111827",
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+    margin: 0,
+    textAlign: "center",
+    minHeight: 20,
+    ...Platform.select({ android: { paddingVertical: 0 } }),
+  },
+  feedingInrAmtActive: { color: CX.mintDark, fontWeight: "800" },
+  feedingInrCustomUnderline: {
+    height: 2,
+    backgroundColor: CX.mint,
+    borderRadius: 1,
+    marginTop: 1,
+  },
+  feedingDonationConfirmRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#E5E7EB",
+  },
+  feedingDonationConfirmText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "500",
+    color: "#111827",
+  },
+  feedingDonationClearText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: CX.mint,
+  },
+  communitySheetScrollContent: {
+    paddingBottom: 12,
+  },
+  communitySheetHero: {
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    marginBottom: 16,
+  },
+  communitySheetHeroRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  communitySheetHeroText: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: 4,
+  },
+  communitySheetTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#0F172A",
+    lineHeight: 24,
+  },
+  communitySheetSub: {
+    marginTop: 8,
+    fontSize: 13,
+    fontWeight: "500",
+    color: "#475569",
+    lineHeight: 19,
+  },
+  communitySheetHeroIcons: {
+    gap: 8,
+    paddingTop: 2,
+  },
+  communitySheetIconBubble: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "rgba(255,255,255,0.95)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(45, 181, 160, 0.22)",
+  },
+  communityImpactDividerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 14,
+  },
+  communityImpactRule: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#CBD5E1",
+  },
+  communityImpactDividerLabel: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#64748B",
+    letterSpacing: 1.2,
+  },
+  communityImpactRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 8,
+    marginBottom: 16,
+  },
+  communityImpactCol: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    borderRadius: 12,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  communityImpactEmoji: { fontSize: 22, marginBottom: 6 },
+  communityImpactLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#334155",
+    textAlign: "center",
+    lineHeight: 15,
+  },
+  communitySheetFinePrint: {
+    fontSize: 11,
+    fontWeight: "500",
+    color: "#94A3B8",
+    lineHeight: 16,
+  },
+  communitySheetCtaWrap: {
+    marginTop: 4,
+  },
+  communitySheetCta: {
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  communitySheetCtaText: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#FFFFFF",
+  },
+  checkoutReceiverRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+  },
+  checkoutReceiverText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "600",
+    color: GatiMitraColors.textPrimary,
+  },
+  receiverSheetCard: { paddingTop: 8 },
+  receiverSheetAddr: {
+    fontSize: 12,
+    color: "#6B7280",
+    lineHeight: 17,
+    marginBottom: 16,
+  },
+  receiverFieldLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#64748B",
+    marginBottom: 6,
+  },
+  receiverInputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    marginBottom: 14,
+    backgroundColor: "#FAFAFA",
+  },
+  receiverTextInput: {
+    flex: 1,
+    fontSize: 15,
+    color: "#111827",
+    paddingVertical: 12,
+    minHeight: 48,
+  },
+  receiverInputIconBtn: { padding: 4 },
+  receiverSubmitBtn: {
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 4,
+  },
+  receiverSubmitBtnText: { fontSize: 16, fontWeight: "800", color: "#FFFFFF" },
   // Compact tip header (small icon + 2-line text — no big icon wrap, no "Choose amount" line)
-  tipCompactHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
+  tipCompactHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },
   tipCompactHeaderTextWrap: { flex: 1, minWidth: 0 },
-  tipCompactTitle: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary },
-  tipCompactSub: { fontSize: 12, color: GatiMitraColors.textSecondary, marginTop: 1 },
+  tipCompactTitle: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  tipCompactSub: { fontSize: 11, color: GatiMitraColors.textSecondary, marginTop: 1 },
   // "Add instructions for delivery partner" - underlined link chip (Zomato style)
   leaveAtDoorChipRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingVertical: 10,
+    paddingVertical: 9,
   },
   leaveAtDoorChipRowText: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 13,
     color: GatiMitraColors.textPrimary,
     textDecorationLine: "underline",
     textDecorationStyle: "dotted",
   },
+  instructionPartnerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingTop: 10,
+    paddingBottom: 12,
+  },
+  instructionPartnerTextCol: { flex: 1, minWidth: 0 },
+  instructionPartnerTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: GatiMitraColors.textPrimary,
+  },
+  instructionPartnerSummary: {
+    fontSize: 12,
+    color: GatiMitraColors.textSecondary,
+    marginTop: 3,
+    lineHeight: 16,
+  },
+  scheduleSheetTitle: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#111827",
+    marginBottom: 14,
+  },
+  scheduleTabRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    paddingBottom: 2,
+    gap: 4,
+  },
+  scheduleTabHit: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    minWidth: 76,
+    alignItems: "center",
+  },
+  scheduleTabLine1: { fontSize: 13, fontWeight: "600", color: "#9CA3AF" },
+  scheduleTabLine1On: { fontSize: 13, fontWeight: "800", color: "#111827" },
+  scheduleTabLine2: { fontSize: 11, fontWeight: "500", color: "#9CA3AF", marginTop: 2 },
+  scheduleTabLine2On: { fontSize: 11, fontWeight: "600", color: "#4B5563" },
+  scheduleTabUnderline: {
+    alignSelf: "stretch",
+    height: 3,
+    borderRadius: 2,
+    marginTop: 8,
+  },
+  scheduleTabUnderlineOn: { backgroundColor: CX.mint },
+  scheduleTabUnderlineOff: { backgroundColor: "transparent" },
+  scheduleSlotScroll: { maxHeight: 260, marginTop: 4 },
+  scheduleSlotScrollContent: { paddingBottom: 12 },
+  scheduleSlotRow: {
+    paddingVertical: 13,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    marginBottom: 8,
+    alignItems: "center",
+  },
+  scheduleSlotRowOn: { backgroundColor: "#F3F4F6" },
+  scheduleSlotText: { fontSize: 15, fontWeight: "500", color: "#9CA3AF", textAlign: "center" },
+  scheduleSlotTextOn: { fontSize: 15, fontWeight: "800", color: "#111827" },
+  scheduleConfirmBtn: {
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 6,
+  },
+  scheduleConfirmBtnText: { fontSize: 16, fontWeight: "800", color: "#FFFFFF" },
+  instructionSheetCard: {
+    maxHeight: 560,
+  },
+  instructionSheetCloseWrap: { alignItems: "center", marginBottom: 10 },
+  instructionSheetCloseRing: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#111827",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  instructionSheetTitle: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#111827",
+    marginBottom: 8,
+  },
+  instructionSheetAddr: {
+    fontSize: 12,
+    color: "#6B7280",
+    lineHeight: 17,
+    marginBottom: 12,
+  },
+  instructionNoteInput: {
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 12,
+    minHeight: 72,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: "#111827",
+    marginBottom: 12,
+  },
+  instructionSheetScroll: { maxHeight: 320 },
+  instructionVoiceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    marginBottom: 14,
+    backgroundColor: "#FAFAFA",
+  },
+  instructionVoiceHint: {
+    flex: 1,
+    fontSize: 13,
+    color: "#6B7280",
+  },
+  instructionImageLabel: { fontSize: 11, color: "#9CA3AF", marginBottom: 6 },
+  instructionImageDashed: {
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: "#D1D5DB",
+    borderRadius: 12,
+    paddingVertical: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    marginBottom: 6,
+  },
+  instructionImageCta: { fontSize: 14, fontWeight: "700", color: CX.mint },
+  instructionImageHelp: { fontSize: 11, color: "#9CA3AF", marginBottom: 4, lineHeight: 15 },
+  instrCheckLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E5E7EB",
+  },
+  instrCheckLineLast: { borderBottomWidth: 0 },
+  instrCheckLeft: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1, minWidth: 0 },
+  instrCheckLabel: { fontSize: 14, fontWeight: "500", color: "#111827", flex: 1 },
+  instrCheckBox: {
+    width: 24,
+    height: 24,
+    borderRadius: 4,
+    borderWidth: 2,
+    borderColor: CX.mint,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  instrCheckBoxOn: { backgroundColor: CX.mint, borderColor: CX.mint },
+  instructionSaveBtnFull: {
+    marginTop: 12,
+    backgroundColor: CX.mint,
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  instructionSaveBtnFullText: { fontSize: 16, fontWeight: "800", color: "#FFFFFF" },
+  addressSelectSheetCard: {
+    paddingHorizontal: 18,
+    paddingTop: 4,
+  },
+  addressSelectCloseWrap: {
+    alignItems: "center",
+    marginTop: -18,
+    marginBottom: 14,
+    zIndex: 4,
+  },
+  addressSelectCloseRing: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#111111",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 6,
+  },
+  addressSelectSheetTitle: {
+    fontSize: 19,
+    fontWeight: "800",
+    color: "#111827",
+    marginBottom: 14,
+    letterSpacing: -0.3,
+  },
+  addressSelectAddPressable: {
+    borderRadius: 16,
+    overflow: "hidden",
+    marginBottom: 2,
+    shadowColor: "#2DB5A0",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.14,
+    shadowRadius: 14,
+    elevation: 5,
+  },
+  addressSelectAddGradient: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 16,
+    paddingHorizontal: 14,
+    gap: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(45, 181, 160, 0.22)",
+  },
+  addressSelectAddIconCircle: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: CX.mint,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: CX.mintDark,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  addressSelectAddTextCol: { flex: 1, minWidth: 0, justifyContent: "center" },
+  addressSelectAddTitle: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#0f172a",
+    letterSpacing: -0.2,
+  },
+  addressSelectAddSub: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#64748B",
+    marginTop: 4,
+    lineHeight: 16,
+  },
+  addressSelectAddChevronWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "rgba(255, 255, 255, 0.85)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(45, 181, 160, 0.2)",
+  },
+  addressSelectSectionRule: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#E5E7EB",
+    marginTop: 14,
+    marginBottom: 4,
+  },
+  addressSelectSectionLabel: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#8CA3C4",
+    letterSpacing: 1.1,
+    marginTop: 10,
+    marginBottom: 8,
+  },
+  addressSelectLoading: { paddingVertical: 28, alignItems: "center" },
+  addressSelectEmpty: {
+    fontSize: 13,
+    color: "#6B7280",
+    lineHeight: 20,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  addressSelectScroll: { flexGrow: 0 },
+  addressSelectCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#ECEEF1",
+    marginBottom: 10,
+    overflow: "hidden",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  addressSelectCardSelected: {
+    backgroundColor: "#FFFFFF",
+    borderColor: CX.mint,
+    borderWidth: 2,
+    shadowColor: CX.mint,
+    shadowOpacity: 0.12,
+  },
+  addressSelectDeliversTo: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#2563EB",
+    letterSpacing: 0.85,
+    marginLeft: 14,
+    marginRight: 14,
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  addressSelectTapBlock: {
+    width: "100%",
+  },
+  addressSelectCardInnerRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingTop: 4,
+    paddingBottom: 12,
+  },
+  addressSelectCardInnerRowPadTop: { paddingTop: 12 },
+  addressSelectIconCol: { width: 44, alignItems: "center", paddingTop: 2 },
+  addressSelectDist: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#6B7280",
+    marginTop: 6,
+    textAlign: "center",
+  },
+  addressSelectBody: { flex: 1, minWidth: 0 },
+  addressSelectCardTitle: { fontSize: 16, fontWeight: "800", color: "#111827" },
+  addressSelectSub: { fontSize: 12, fontWeight: "600", color: "#64748B", marginTop: 2 },
+  addressSelectAddr: { fontSize: 14, fontWeight: "400", color: "#4B5563", marginTop: 6, lineHeight: 20 },
+  addressSelectPhone: { fontSize: 13, fontWeight: "400", color: "#6B7280", marginTop: 8 },
+  addressSelectActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#EEF1F5",
+  },
+  addressSelectActionBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: CX.mint,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 0,
+  },
   donationCard: {
     backgroundColor: GatiMitraColors.cardSurface,
     borderRadius: CARD_RADIUS,
-    padding: 14,
+    padding: 12,
     borderWidth: 1,
     borderColor: GatiMitraColors.border,
     borderLeftWidth: 4,
@@ -2652,138 +5737,138 @@ const styles = StyleSheet.create({
   },
   donationCardHeader: { flexDirection: "row", alignItems: "flex-start", marginBottom: 0 },
   donationIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: GatiMitraColors.mintSoft,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: GRID * 2,
+    marginRight: 12,
   },
   donationCardTitleWrap: { flex: 1, minWidth: 0 },
-  donationCardTitle: { fontSize: 16, fontWeight: "700", color: GatiMitraColors.textPrimary },
-  donationCardSub: { fontSize: 13, color: GatiMitraColors.textSecondary, marginTop: 4 },
+  donationCardTitle: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  donationCardSub: { fontSize: 12, color: GatiMitraColors.textSecondary, marginTop: 3 },
   donationBoxLabel: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "600",
     color: GatiMitraColors.textSecondary,
     textTransform: "uppercase",
-    letterSpacing: 0.5,
-    marginTop: 14,
-    marginBottom: 8,
+    letterSpacing: 0.4,
+    marginTop: 12,
+    marginBottom: 7,
   },
-  donationSuggestRow: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 0 },
+  donationSuggestRow: { flexDirection: "row", flexWrap: "wrap", gap: 9, marginTop: 0 },
   donationAmountBox: {
-    minWidth: 58,
-    paddingVertical: 14,
-    paddingHorizontal: 18,
-    borderRadius: 12,
+    minWidth: 54,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 10,
     backgroundColor: "#F3F4F6",
     borderWidth: 2,
     borderColor: "#D1D5DB",
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 3,
+    elevation: 2,
   },
   donationAmountBoxActive: {
     backgroundColor: GatiMitraColors.mintSoft,
-    borderColor: GatiMitraColors.emerald,
+    borderColor: CX.mint,
     borderWidth: 2,
   },
-  donationAmountBoxText: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary },
-  donationAmountBoxTextActive: { color: GatiMitraColors.emerald, fontWeight: "800" },
+  donationAmountBoxText: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  donationAmountBoxTextActive: { color: CX.mint, fontWeight: "800" },
   donationChip: {
-    minWidth: 52,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 12,
+    minWidth: 48,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
     backgroundColor: GatiMitraColors.softBackground,
     borderWidth: 1.5,
     borderColor: GatiMitraColors.border,
     alignItems: "center",
     justifyContent: "center",
   },
-  donationChipActive: { backgroundColor: GatiMitraColors.mintSoft, borderColor: GatiMitraColors.emerald },
-  donationChipText: { fontSize: 14, fontWeight: "600", color: GatiMitraColors.textPrimary },
-  donationChipTextActive: { color: GatiMitraColors.emerald, fontWeight: "700" },
-  donationInputRow: { marginTop: 12 },
+  donationChipActive: { backgroundColor: GatiMitraColors.mintSoft, borderColor: CX.mint },
+  donationChipText: { fontSize: 13, fontWeight: "600", color: GatiMitraColors.textPrimary },
+  donationChipTextActive: { color: CX.mint, fontWeight: "700" },
+  donationInputRow: { marginTop: 10 },
   donationInput: {
     borderWidth: 2,
     borderColor: GatiMitraColors.border,
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    fontSize: 15,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    fontSize: 14,
     color: GatiMitraColors.textPrimary,
     backgroundColor: "#fff",
   },
   tipCard: {
     backgroundColor: GatiMitraColors.cardSurface,
     borderRadius: CARD_RADIUS,
-    padding: 14,
+    padding: 12,
     borderWidth: 1,
     borderColor: GatiMitraColors.border,
     borderLeftWidth: 4,
-    borderLeftColor: GatiMitraColors.warmOrange,
+    borderLeftColor: GatiMitraColors.emerald,
     overflow: "hidden",
     ...GatiMitraColors.elevationShadow,
   },
   tipCardHeader: { flexDirection: "row", alignItems: "flex-start" },
   tipIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: GatiMitraColors.warningAmberBg,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: GRID * 2,
+    marginRight: 12,
   },
   tipCardTitleWrap: { flex: 1, minWidth: 0 },
-  tipCardTitle: { fontSize: 16, fontWeight: "700", color: GatiMitraColors.textPrimary },
-  tipCardSub: { fontSize: 13, color: GatiMitraColors.textSecondary, marginTop: 4 },
+  tipCardTitle: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  tipCardSub: { fontSize: 12, color: GatiMitraColors.textSecondary, marginTop: 3 },
   tipBoxLabel: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "600",
     color: GatiMitraColors.textSecondary,
     textTransform: "uppercase",
-    letterSpacing: 0.5,
-    marginTop: 14,
-    marginBottom: 8,
+    letterSpacing: 0.4,
+    marginTop: 12,
+    marginBottom: 7,
   },
-  tipAmountBoxRow: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  tipAmountBoxRow: { flexDirection: "row", flexWrap: "wrap", gap: 9 },
   tipAmountBox: {
-    minWidth: 56,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    borderRadius: 12,
+    minWidth: 52,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 10,
     backgroundColor: "#F3F4F6",
     borderWidth: 2,
     borderColor: "#D1D5DB",
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 3,
+    elevation: 2,
   },
   tipAmountBoxActive: {
     backgroundColor: GatiMitraColors.warningAmberBg,
     borderColor: GatiMitraColors.warmOrange,
     borderWidth: 2,
   },
-  tipAmountBoxText: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  tipAmountBoxText: { fontSize: 13, fontWeight: "700", color: GatiMitraColors.textPrimary },
   tipAmountBoxTextActive: { color: GatiMitraColors.warmOrange, fontWeight: "800" },
-  tipChips: { flexDirection: "row", flexWrap: "wrap", gap: GRID, marginTop: GRID },
+  tipChips: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
   tipChip: {
-    minWidth: 52,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 12,
+    minWidth: 48,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
     backgroundColor: GatiMitraColors.softBackground,
     borderWidth: 1.5,
     borderColor: GatiMitraColors.border,
@@ -2791,17 +5876,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   tipChipPressed: { opacity: 0.9 },
-  tipChipActive: { backgroundColor: GatiMitraColors.emerald, borderColor: GatiMitraColors.emerald },
-  tipChipText: { fontSize: 14, fontWeight: "600", color: GatiMitraColors.textPrimary },
+  tipChipActive: { backgroundColor: CX.mint, borderColor: CX.mint },
+  tipChipText: { fontSize: 13, fontWeight: "600", color: GatiMitraColors.textPrimary },
   tipChipTextActive: { color: "#fff" },
   customTipInput: {
-    marginTop: GRID * 2,
+    marginTop: 8,
     borderWidth: 1,
     borderColor: GatiMitraColors.border,
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    fontSize: 15,
+    borderRadius: 10,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    fontSize: 14,
     color: GatiMitraColors.textPrimary,
   },
   paymentSheetOverlay: {
@@ -2815,39 +5900,39 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: CARD_RADIUS,
     borderTopRightRadius: CARD_RADIUS,
     padding: SPACING,
-    paddingTop: GRID * 3,
+    paddingTop: 18,
   },
-  paymentSheetTitle: { fontSize: 18, fontWeight: "700", color: GatiMitraColors.textPrimary, marginBottom: 6 },
-  paymentSheetSubtitle: { fontSize: 13, color: GatiMitraColors.textSecondary, marginBottom: SPACING },
+  paymentSheetTitle: { fontSize: 17, fontWeight: "700", color: GatiMitraColors.textPrimary, marginBottom: 5 },
+  paymentSheetSubtitle: { fontSize: 12, color: GatiMitraColors.textSecondary, marginBottom: SPACING },
   paymentOptionRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: SPACING,
+    paddingVertical: 14,
     borderBottomWidth: 1,
     borderBottomColor: GatiMitraColors.border,
   },
   paymentOptionActive: { backgroundColor: GatiMitraColors.mintSoft },
-  paymentOptionText: { fontSize: 16, fontWeight: "600", color: GatiMitraColors.textPrimary },
-  simulatedPaymentSheet: { maxWidth: 340 },
+  paymentOptionText: { fontSize: 15, fontWeight: "600", color: GatiMitraColors.textPrimary },
+  simulatedPaymentSheet: { maxWidth: 320 },
   simulatedPaymentOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "center",
     alignItems: "center",
     zIndex: 100,
-    paddingHorizontal: 24,
+    paddingHorizontal: 20,
   },
-  simulatedPaymentCardWrap: { width: "100%", maxWidth: 340 },
+  simulatedPaymentCardWrap: { width: "100%", maxWidth: 320 },
   simulatedPaymentCard: {
     backgroundColor: GatiMitraColors.cardSurface,
-    borderRadius: 20,
-    paddingHorizontal: SPACING * 2,
-    paddingTop: SPACING * 2.5,
-    paddingBottom: SPACING * 2,
+    borderRadius: 18,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 16,
     ...GatiMitraColors.elevationShadow,
-    shadowRadius: 16,
-    elevation: 6,
+    shadowRadius: 14,
+    elevation: 5,
   },
   simulatedPaymentIconWrap: {
     width: 52,
@@ -2903,7 +5988,7 @@ const styles = StyleSheet.create({
   simulatedAmountValue: { fontSize: 20, fontWeight: "700", color: GatiMitraColors.textPrimary },
   simulatedConfirmBtn: {
     flexDirection: "row",
-    backgroundColor: GatiMitraColors.emerald,
+    backgroundColor: CX.mint,
     paddingVertical: 14,
     borderRadius: 14,
     alignItems: "center",
@@ -2931,43 +6016,49 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    paddingHorizontal: SPACING,
-    paddingTop: GRID * 2,
-    backgroundColor: GatiMitraColors.cardSurface,
-    borderTopWidth: 1,
-    borderTopColor: GatiMitraColors.border,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    backgroundColor: "#F5F6F8",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#E5E7EB",
     zIndex: 50,
     ...GatiMitraColors.elevationShadow,
   },
-  footerRow: { flexDirection: "row", alignItems: "stretch", gap: 10 },
-  // Delivery / Self pickup toggle — left side of the footer (replaces payment method card)
+  footerRow: { flexDirection: "row", alignItems: "stretch", gap: 8 },
+  // Delivery / Takeaway segmented control (reference: white shell, light pink border, magenta active half)
   deliveryTypeToggle: {
-    flexDirection: "column",
-    justifyContent: "center",
-    gap: 6,
-    paddingVertical: 4,
-  },
-  deliveryTypeChip: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 18,
-    backgroundColor: "#F3F4F6",
+    alignItems: "stretch",
+    flexShrink: 0,
+    width: CHECKOUT_FOOTER_TOGGLE_WIDTH,
+    backgroundColor: "#FFFFFF",
+    borderRadius: CHECKOUT_FOOTER_CTA_RADIUS,
     borderWidth: 1,
-    borderColor: "transparent",
+    borderColor: DELIVERY_TOGGLE_BORDER,
+    padding: 4,
+    gap: 0,
   },
-  deliveryTypeChipActive: {
-    backgroundColor: GatiMitraColors.emerald,
-    borderColor: GatiMitraColors.emerald,
+  deliveryTypeSeg: {
+    flex: 1,
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    borderRadius: 10,
+    gap: 4,
+    backgroundColor: "transparent",
   },
-  deliveryTypeChipText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: GatiMitraColors.textPrimary,
+  deliveryTypeSegActive: {
+    backgroundColor: DELIVERY_TOGGLE_ACTIVE,
   },
-  deliveryTypeChipTextActive: { color: "#fff" },
+  deliveryTypeSegText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#111111",
+    letterSpacing: 0.2,
+  },
+  deliveryTypeSegTextActive: { color: "#FFFFFF" },
   footerPaymentCard: {
     width: 100,
     minWidth: 100,
@@ -2998,10 +6089,16 @@ const styles = StyleSheet.create({
   },
   footerPayLabel: { fontSize: 11, fontWeight: "600", color: GatiMitraColors.textPrimary, flexShrink: 1 },
   footerPayChevron: { flexShrink: 0 },
-  footerCtaSlot: { flex: 1, minWidth: 280, borderRadius: 28, overflow: "hidden", minHeight: 54, ...GatiMitraColors.cardShadowSoft },
+  footerCtaSlot: {
+    flexShrink: 0,
+    borderRadius: CHECKOUT_FOOTER_CTA_RADIUS,
+    overflow: "hidden",
+    minHeight: 54,
+    ...GatiMitraColors.cardShadowSoft,
+  },
   footerCtaSlotDisabled: {
-    flex: 1,
-    borderRadius: 28,
+    flexShrink: 0,
+    borderRadius: CHECKOUT_FOOTER_CTA_RADIUS,
     backgroundColor: "#9ca3af",
     justifyContent: "center",
     alignItems: "center",
@@ -3033,9 +6130,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#9ca3af",
     alignItems: "center",
   },
-  ctaDisabledText: { fontSize: 16, fontWeight: "700", color: "#fff" },
-  ctaDisabledLabel: { fontSize: 15, fontWeight: "700", color: "#fff" },
-  ctaDisabledHint: { fontSize: 12, color: "rgba(255,255,255,0.9)", marginTop: 2 },
+  ctaDisabledText: { fontSize: 15, fontWeight: "700", color: "#fff" },
+  ctaDisabledLabel: { fontSize: 14, fontWeight: "700", color: "#fff" },
+  ctaDisabledHint: { fontSize: 11, color: "rgba(255,255,255,0.9)", marginTop: 1 },
   ctaTouch: { borderRadius: CARD_RADIUS, overflow: "hidden", ...GatiMitraColors.cardShadowSoft },
   ctaTouchPressed: { opacity: 0.96 },
   ctaGradient: {
@@ -3043,19 +6140,19 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 28,
+    paddingVertical: 11,
+    paddingHorizontal: 14,
+    borderRadius: CHECKOUT_FOOTER_CTA_RADIUS,
     overflow: "hidden",
     minWidth: 0,
-    gap: 12,
+    gap: 10,
   },
-  ctaLeftPart: { alignItems: "flex-start", flexShrink: 0, minWidth: 72 },
-  ctaTotalAmount: { fontSize: 16, fontWeight: "800", color: "#fff" },
-  ctaTotalLabel: { fontSize: 10, color: "rgba(255,255,255,0.9)", marginTop: 1 },
-  ctaRightPart: { flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 0, minWidth: 100 },
-  ctaLabel: { fontSize: 15, fontWeight: "700", color: "#fff" },
-  ctaAmount: { fontSize: 16, fontWeight: "800", color: "#fff" },
+  ctaLeftPart: { alignItems: "flex-start", flexShrink: 0, minWidth: 68 },
+  ctaTotalAmount: { fontSize: 15, fontWeight: "800", color: "#fff" },
+  ctaTotalLabel: { fontSize: 9, color: "rgba(255,255,255,0.9)", marginTop: 1 },
+  ctaRightPart: { flexDirection: "row", alignItems: "center", gap: 5, flexShrink: 0, minWidth: 90 },
+  ctaLabel: { fontSize: 14, fontWeight: "700", color: "#fff" },
+  ctaAmount: { fontSize: 15, fontWeight: "800", color: "#fff" },
   couponModalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.4)",
@@ -3068,36 +6165,36 @@ const styles = StyleSheet.create({
     padding: SPACING,
     maxHeight: "70%",
   },
-  couponModalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: SPACING },
-  couponModalTitle: { fontSize: 18, fontWeight: "700", color: GatiMitraColors.textPrimary },
-  couponApplyRow: { flexDirection: "row", gap: GRID, marginBottom: GRID },
+  couponModalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
+  couponModalTitle: { fontSize: 17, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  couponApplyRow: { flexDirection: "row", gap: 8, marginBottom: 8 },
   couponCodeInput: {
     flex: 1,
     borderWidth: 1,
     borderColor: GatiMitraColors.border,
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    fontSize: 15,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    fontSize: 14,
     color: GatiMitraColors.textPrimary,
   },
   couponApplyBtn: {
-    backgroundColor: GatiMitraColors.emerald,
-    paddingHorizontal: 20,
-    borderRadius: 12,
+    backgroundColor: CX.mint,
+    paddingHorizontal: 18,
+    borderRadius: 10,
     justifyContent: "center",
   },
-  couponApplyBtnText: { fontSize: 15, fontWeight: "700", color: "#fff" },
-  couponError: { fontSize: 13, color: GatiMitraColors.errorRed, marginBottom: GRID },
+  couponApplyBtnText: { fontSize: 14, fontWeight: "700", color: "#fff" },
+  couponError: { fontSize: 12, color: GatiMitraColors.errorRed, marginBottom: 8 },
   couponSectionTitle: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "700",
     color: GatiMitraColors.textSecondary,
     textTransform: "uppercase",
-    letterSpacing: 0.6,
-    marginBottom: 4,
+    letterSpacing: 0.5,
+    marginBottom: 3,
   },
-  couponSectionHint: { fontSize: 12, color: GatiMitraColors.textSecondary, marginBottom: 8, lineHeight: 16 },
+  couponSectionHint: { fontSize: 11, color: GatiMitraColors.textSecondary, marginBottom: 7, lineHeight: 15 },
   couponLoadingWrap: { paddingVertical: 24, alignItems: "center", gap: 10 },
   couponLoadingText: { fontSize: 13, color: GatiMitraColors.textSecondary },
   couponEmptyText: { fontSize: 14, color: GatiMitraColors.textSecondary, paddingVertical: 16, textAlign: "center" },

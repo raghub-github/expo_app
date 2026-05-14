@@ -1,24 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
+import { normalizeWallTimeToHHMM } from '@/lib/wallTimeHHMM';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
-
-function normalizeTime(value: unknown): string | null {
-  if (value == null || value === '' || value === false) return null;
-  const s = String(value).trim();
-  if (!s || s === 'null' || s === 'undefined') return null;
-  const match = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
-  if (!match) return null;
-  const h = parseInt(match[1], 10);
-  const m = parseInt(match[2], 10);
-  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-}
 
 function toMinutes(t: string): number {
   const [h, m] = t.split(':').map(Number);
@@ -72,7 +61,7 @@ export async function POST(req: NextRequest) {
   for (const day of DAYS) {
     for (const field of [`${day}_slot1_start`, `${day}_slot1_end`, `${day}_slot2_start`, `${day}_slot2_end`]) {
       if (field in timings) {
-        timings[field] = normalizeTime(timings[field]);
+        timings[field] = normalizeWallTimeToHHMM(timings[field]);
       }
     }
   }
@@ -82,10 +71,10 @@ export async function POST(req: NextRequest) {
   if (existingRecord) {
     for (const day of DAYS) {
       mergedData[`${day}_open`] = existingRecord[`${day}_open`] ?? false;
-      mergedData[`${day}_slot1_start`] = normalizeTime(existingRecord[`${day}_slot1_start`]);
-      mergedData[`${day}_slot1_end`] = normalizeTime(existingRecord[`${day}_slot1_end`]);
-      mergedData[`${day}_slot2_start`] = normalizeTime(existingRecord[`${day}_slot2_start`]);
-      mergedData[`${day}_slot2_end`] = normalizeTime(existingRecord[`${day}_slot2_end`]);
+      mergedData[`${day}_slot1_start`] = normalizeWallTimeToHHMM(existingRecord[`${day}_slot1_start`]);
+      mergedData[`${day}_slot1_end`] = normalizeWallTimeToHHMM(existingRecord[`${day}_slot1_end`]);
+      mergedData[`${day}_slot2_start`] = normalizeWallTimeToHHMM(existingRecord[`${day}_slot2_start`]);
+      mergedData[`${day}_slot2_end`] = normalizeWallTimeToHHMM(existingRecord[`${day}_slot2_end`]);
       mergedData[`${day}_total_duration_minutes`] = existingRecord[`${day}_total_duration_minutes`] ?? 0;
     }
     mergedData.is_24_hours = existingRecord.is_24_hours ?? false;
@@ -108,10 +97,10 @@ export async function POST(req: NextRequest) {
   for (const day of DAYS) {
     const dayOpen = mergedData[`${day}_open`];
 
-    let s1s = normalizeTime(mergedData[`${day}_slot1_start`]);
-    let s1e = normalizeTime(mergedData[`${day}_slot1_end`]);
-    let s2s = normalizeTime(mergedData[`${day}_slot2_start`]);
-    let s2e = normalizeTime(mergedData[`${day}_slot2_end`]);
+    let s1s = normalizeWallTimeToHHMM(mergedData[`${day}_slot1_start`]);
+    let s1e = normalizeWallTimeToHHMM(mergedData[`${day}_slot1_end`]);
+    let s2s = normalizeWallTimeToHHMM(mergedData[`${day}_slot2_start`]);
+    let s2e = normalizeWallTimeToHHMM(mergedData[`${day}_slot2_end`]);
 
     if (!dayOpen) {
       mergedData[`${day}_slot1_start`] = s1s;
@@ -205,14 +194,34 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  const store_id = searchParams.get('store_id');
-  if (!store_id) {
+  const store_id_param = searchParams.get('store_id');
+  if (!store_id_param) {
     return NextResponse.json({ error: 'store_id is required' }, { status: 400 });
   }
+
+  let internalStoreId: number | null = null;
+  const trimmed = store_id_param.trim();
+  if (/^\d+$/.test(trimmed)) {
+    const n = parseInt(trimmed, 10);
+    const { data: byInternal } = await supabase.from('merchant_stores').select('id').eq('id', n).maybeSingle();
+    if (byInternal?.id != null) internalStoreId = byInternal.id as number;
+  }
+  if (internalStoreId == null) {
+    const { data: byPublic, error: pubErr } = await supabase
+      .from('merchant_stores')
+      .select('id')
+      .eq('store_id', trimmed)
+      .maybeSingle();
+    if (pubErr || !byPublic?.id) {
+      return NextResponse.json({ error: 'Store not found' }, { status: 404 });
+    }
+    internalStoreId = byPublic.id as number;
+  }
+
   const { data, error } = await supabase
     .from('merchant_store_operating_hours')
     .select('*')
-    .eq('store_id', store_id)
+    .eq('store_id', internalStoreId)
     .maybeSingle();
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -223,9 +232,9 @@ export async function GET(req: NextRequest) {
   for (const day of DAYS) {
     for (const suffix of ['_slot1_start', '_slot1_end', '_slot2_start', '_slot2_end']) {
       const field = `${day}${suffix}`;
-      if (data[field]) {
-        data[field] = normalizeTime(data[field]);
-      }
+      if (data[field] == null || data[field] === '') continue;
+      const n = normalizeWallTimeToHHMM(data[field]);
+      if (n != null) data[field] = n;
     }
   }
   return NextResponse.json(data);

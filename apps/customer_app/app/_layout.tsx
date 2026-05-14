@@ -4,13 +4,12 @@
  */
 
 import "../global.css";
-import { useFonts } from "expo-font";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import * as Location from "expo-location";
 import { StatusBar } from "expo-status-bar";
-import { useEffect, useCallback, useRef } from "react";
-import { View, ActivityIndicator, Text, Image, LogBox, Alert, AppState, type AppStateStatus } from "react-native";
+import { useEffect, useCallback, useRef, useState } from "react";
+import { View, LogBox, Alert, AppState, type AppStateStatus } from "react-native";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useAuthStore } from "@/store/authStore";
@@ -22,9 +21,11 @@ import { useStoreStatusRealtime } from "@/hooks/useStoreStatusRealtime";
 import { useOrderRealtime } from "@/hooks/useOrderRealtime";
 import { LocationPermissionModal } from "@/components/LocationPermissionModal";
 import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
+import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
 import { setOnSessionRevoked } from "@/services/api";
 import { PushNotificationBootstrap } from "@/components/PushNotificationBootstrap";
 import { profileService } from "@/services/profile.service";
+import { GatiMitraColors } from "@/constants/gatimitra";
 import { colors } from "@/theme";
 import { DEFAULT_STATUS_BAR_HEIGHT } from "@/constants/layout";
 import "@/lib/i18n";
@@ -69,9 +70,13 @@ const queryClient = new QueryClient({
 });
 
 export default function RootLayout() {
-  const [fontsLoaded, fontError] = useFonts({
-    // Add custom fonts if needed; SpaceMono optional
-  });
+  /**
+   * Do not call `useFonts({})` with an empty map — on some Expo/RN builds `fontsLoaded`
+   * never flips true, so the app stays on the bootstrap screen forever.
+   * When you add real fonts, use `useFonts({ MyFont: require('...') })` and gate on that.
+   */
+  const fontsLoaded = true;
+  const [splashExited, setSplashExited] = useState(false);
 
   const hydrated = useAuthStore((s) => s.hydrated);
   const cartHydrated = useCartStore((s) => s.hydrated);
@@ -80,6 +85,13 @@ export default function RootLayout() {
   const hydrateLanguage = useLanguageStore((s) => s.hydrate);
   const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
   const hydrateLocation = useLocationStore((s) => s.hydrate);
+
+  const ready = fontsLoaded && hydrated && cartHydrated;
+
+  const handleSplashExitComplete = useCallback(() => {
+    setSplashExited(true);
+    void SplashScreen.hideAsync().catch(() => {});
+  }, []);
 
   useEffect(() => {
     hydrateAuth();
@@ -99,39 +111,42 @@ export default function RootLayout() {
   }, [hydrated, cartHydrated, hydrateLocation, requestPermissionAndFetch]);
 
   const onLayoutRootView = useCallback(() => {
-    if (fontsLoaded && hydrated && cartHydrated) {
+    if (ready && splashExited) {
       SplashScreen.hideAsync().catch(() => {
         // Ignore keep-awake related failures when hiding splash
       });
     }
-  }, [fontsLoaded, hydrated, cartHydrated]);
-
-  if (!fontsLoaded || !hydrated || !cartHydrated) {
-    return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: colors.primary[500] }}>
-        <Image
-          source={require("../public/img/fav.png")}
-          style={{ width: 120, height: 120, marginBottom: 24 }}
-          resizeMode="contain"
-          accessibilityLabel="GatiMitra"
-        />
-        <ActivityIndicator size="large" color="#fff" />
-        <Text style={{ marginTop: 16, color: "#fff", fontSize: 16 }}>GatiMitra</Text>
-      </View>
-    );
-  }
+  }, [ready, splashExited]);
 
   return (
     <QueryClientProvider client={queryClient}>
       <SafeAreaProvider>
-        <StoreStatusRealtimeSync />
-        <SessionRevokedHandler />
-        <LocationPermissionRealtimeSync />
-        <LanguageSync />
-        <RootStack onLayoutRootView={onLayoutRootView} />
-        <GlobalFloatingCart />
-        <LocationModalWrapper />
-        <PushNotificationBootstrap />
+        <View
+          style={{
+            flex: 1,
+            backgroundColor: splashExited ? colors.background.light : GatiMitraColors.splashMint,
+          }}
+        >
+          {ready ? (
+            <>
+              <StoreStatusRealtimeSync />
+              <SessionRevokedHandler />
+              <LocationPermissionRealtimeSync />
+              <LanguageSync />
+              <RootStack onLayoutRootView={onLayoutRootView} />
+              <GlobalFloatingCart />
+              <LocationModalWrapper />
+              <PushNotificationBootstrap />
+            </>
+          ) : null}
+          {!splashExited ? (
+            <GatiMitraBootstrapScreen
+              variant="root"
+              appReady={ready}
+              onExitComplete={handleSplashExitComplete}
+            />
+          ) : null}
+        </View>
       </SafeAreaProvider>
     </QueryClientProvider>
   );

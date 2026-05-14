@@ -10,6 +10,7 @@ import { fetchRestaurantById as fetchStoreById, fetchRestaurantByName as fetchSt
 import { MerchantStore } from '@/lib/merchantStore'
 import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants'
 import { clientStoreOpsDebugLog } from '@/lib/store-ops-client-debug'
+import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback'
 import {
   Power,
   Loader2,
@@ -657,10 +658,12 @@ function DashboardContent() {
         toast.success('Store is now OPEN. Orders are being accepted!')
         await fetchStoreOperations()
       } else {
-        toast.error((data as { error?: string }).error || 'Failed to open store')
+        toastStoreOperationsPostFailure(res, data, 'Failed to open store')
+        await fetchStoreOperations()
       }
     } catch {
       toast.error('Failed to open store')
+      await fetchStoreOperations()
     } finally {
       setToggleOnLoading(false)
     }

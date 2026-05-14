@@ -6,6 +6,7 @@ import { Dialog } from '@headlessui/react';
 import { Loader2, Power } from 'lucide-react';
 import { toast } from 'sonner';
 import { clientStoreOpsDebugLog } from '@/lib/store-ops-client-debug';
+import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback';
 
 export type StoreOperationalTarget = { storeId: string; storeName: string };
 
@@ -207,10 +208,12 @@ export function StoreOperationalFlowModals({
         toast.success('Store is now OPEN. Orders are being accepted!');
         await onSuccess();
       } else {
-        toast.error((data as { error?: string }).error || 'Failed to open store');
+        toastStoreOperationsPostFailure(res, data, 'Failed to open store');
+        await onSuccess();
       }
     } catch {
       toast.error('Failed to open store');
+      await onSuccess();
     } finally {
       setToggleOnLoading(false);
     }

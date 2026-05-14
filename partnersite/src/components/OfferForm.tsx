@@ -5,13 +5,19 @@ import { offerSchema, OfferInput } from '@/lib/validation/offerSchema';
 
 const initial: OfferInput = {
   store_id: '',
-  offer_type: 'ALL_ORDERS',
-  item_id: '',
-  discount_type: 'PERCENTAGE',
+  offer_title: 'New offer',
+  offer_type: 'PERCENTAGE',
+  offer_sub_type: 'ALL_ORDERS',
   discount_value: 0,
   min_order_amount: undefined,
   valid_from: '',
   valid_till: '',
+  is_active: true,
+  auto_apply: true,
+  is_stackable: false,
+  priority: 0,
+  first_order_only: false,
+  new_user_only: false,
 };
 
 export default function OfferForm({ storeId, onSuccess }: { storeId: string; onSuccess: (data: any) => void }) {
@@ -32,7 +38,7 @@ export default function OfferForm({ storeId, onSuccess }: { storeId: string; onS
       setError(parsed.error.issues[0].message);
       return;
     }
-    if (form.offer_type === 'SPECIFIC_ITEM' && !form.item_id) {
+    if (form.offer_sub_type === 'SPECIFIC_ITEM' && (!form.menu_item_ids || form.menu_item_ids.length === 0)) {
       setError('Menu item required for SPECIFIC_ITEM offer');
       return;
     }

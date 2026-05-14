@@ -47,6 +47,7 @@ export type ItemCustomizationSheetProps = {
     variantId?: string;
     variantName?: string;
     addons?: Array<{ addonId: string; addonName: string; addonPrice: number; quantity: number }>;
+    imageUrl?: string | null;
   }) => void;
 };
 
@@ -153,7 +154,7 @@ export function ItemCustomizationSheet({
     const variant = config?.variants?.length && selectedVariantId
       ? config.variants.find((v) => v.id === selectedVariantId)
       : null;
-    const baseMenuItemId = String(item.menuItemId ?? item.id);
+    const baseMenuItemId = String(item.menuItemId != null ? item.menuItemId : item.id);
     onAdd({
       menuItemId: config?.variants?.length
         ? `${baseMenuItemId}_${selectedVariantId ?? ""}_${addonIds.sort().join(",")}`
@@ -166,6 +167,7 @@ export function ItemCustomizationSheet({
       variantId: selectedVariantId ?? undefined,
       variantName: variant?.name,
       addons: addonsList.length ? addonsList : undefined,
+      imageUrl: config?.item?.imageUrl ?? item.imageUrl ?? null,
     });
     onClose();
   }, [canAdd, config, item, selectedVariantId, selectedAddons, quantity, totalPrice, onAdd, onClose]);

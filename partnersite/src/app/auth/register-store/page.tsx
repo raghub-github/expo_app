@@ -593,7 +593,7 @@ const StoreRegistrationForm = () => {
       const rawGallery = saved.step5.gallery_image_urls;
       const hasGalleryKey = Array.isArray(rawGallery);
       const galleryUrls = hasGalleryKey
-        ? rawGallery.filter((u): u is string => typeof u === 'string' && u.trim())
+        ? rawGallery.filter((u): u is string => typeof u === 'string' && u.trim() !== '')
         : [];
       setStoreSetup((prev) => ({
         ...prev,

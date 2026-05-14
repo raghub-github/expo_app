@@ -45,8 +45,6 @@ import Animated, {
   FadeInDown,
   createAnimatedComponent,
 } from "react-native-reanimated";
-
-const AnimatedSectionList = createAnimatedComponent(SectionList<MenuItem>) as typeof SectionList;
 import { merchantService, type MenuItem, type MerchantSummary } from "@/services/merchant.service";
 import { offersService, type MerchantOfferItem, type PlatformOfferItem } from "@/services/offers.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
@@ -63,6 +61,11 @@ import { GroupOrderStartSheet } from "@/components/GroupOrderStartSheet";
 import { ItemCustomizationSheet } from "@/components/ItemCustomizationSheet";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
+/** Stable SectionList row id when the same dish appears in more than one section (RN keyExtractor is only (item, index)). */
+type MenuListRow = MenuItem & { listRowKey: string };
+
+const AnimatedSectionList = createAnimatedComponent(SectionList<MenuListRow>) as typeof SectionList;
+
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const HEADER_IMAGE_HEIGHT = 220;
 const HEADER_COLLAPSED_THRESHOLD = 120;
@@ -70,14 +73,27 @@ const CARD_RADIUS = 18;
 const FILTER_PILL_HEIGHT = 40;
 const OFFER_CARD_WIDTH = 160;
 
-const DEFAULT_IMAGE = require("../../../public/img/ndf.png");
 const BANNER_SLIDE_INTERVAL_MS = 3500;
 const BANNER_CROSSFADE_MS = 600;
 const BANNER_ZOOM_DURATION_MS = 6000;
 const BANNER_RESUME_AFTER_MS = 3000;
-const FILTER_BAR_HEIGHT = 56;
+const FILTER_BAR_HEIGHT = 62;
+/** Collapse filter chip row once user scrolls up (content offset past this). */
+const FILTER_STRIP_SCROLL_HIDE_END = 72;
+const FILTER_STRIP_SCROLL_HIDE_START = 24;
 const CART_BAR_HEIGHT = 64;
 const MENU_FAB_HEIGHT = 48;
+
+/**
+ * Root `app/_layout.tsx` already draws the status bar strip above the stack — do not add
+ * `insets.top` again. Hero + sticky rows use `MERCHANT_HEADER_TOP_GUTTER` only (0 = flush).
+ */
+const MERCHANT_HEADER_TOP_GUTTER = 0;
+/** Sticky search row (controls + search pill) approximate height; keep in sync with styles. */
+const MERCHANT_STICKY_HEADER_ROW_APPROX = 48;
+/** `stickyHeaderBar` paddingBottom (10) + row + top gutter. */
+const MERCHANT_STICKY_FILTER_TOP =
+  MERCHANT_HEADER_TOP_GUTTER + MERCHANT_STICKY_HEADER_ROW_APPROX + 10;
 
 type FilterId = "all" | "veg" | "nonveg" | "bestseller" | "quickprep";
 
@@ -111,14 +127,16 @@ function buildMenuSections(menu: MenuItem[]): { title: string; data: MenuItem[];
   return out;
 }
 
-/** Cinematic banner: crossfade 600ms + slow zoom 6s, no frame jump. Lazy-loads next image before switch. */
+/** Cinematic banner: single hero when no gallery; crossfade loop when gallery + hero. */
 function BannerCarousel({
-  images,
-  fallbackUri,
+  bannerUri,
+  galleryUris,
   height,
 }: {
-  images: string[];
-  fallbackUri: string | null;
+  /** Primary store banner (hero). */
+  bannerUri: string | null;
+  /** Extra photos only — must not repeat `bannerUri`; when non-empty, carousel loops banner + gallery. */
+  galleryUris: string[];
   height: number;
 }) {
   const [index, setIndex] = useState(0);
@@ -135,8 +153,7 @@ function BannerCarousel({
     [setIndex]
   );
 
-  /** Same source as store card: `banner_url` hero first, then gallery — old order used gallery-only and ignored working fallbackUri. */
-  const data = (() => {
+  const data = useMemo(() => {
     const seen = new Set<string>();
     const out: string[] = [];
     const add = (s: string | null | undefined) => {
@@ -145,17 +162,22 @@ function BannerCarousel({
       seen.add(t);
       out.push(t);
     };
-    add(fallbackUri);
-    for (const u of images ?? []) add(u);
+    if (bannerUri?.trim()) add(bannerUri);
+    for (const u of galleryUris ?? []) add(u);
     return out;
-  })();
+  }, [bannerUri, galleryUris]);
+
   const dataKey = data.join("|");
   const [remoteFailed, setRemoteFailed] = useState(false);
   useEffect(() => {
     setRemoteFailed(false);
+    setIndex(0);
+    indexRef.current = 0;
   }, [dataKey]);
 
-  const showCarousel = data.length > 1;
+  /** Loop only when there is at least one gallery image in addition to the distinct banner set. */
+  const hasGallery = (galleryUris ?? []).length > 0;
+  const showCarousel = hasGallery && data.length > 1;
   indexRef.current = index;
 
   const runZoom = useCallback(() => {
@@ -204,7 +226,16 @@ function BannerCarousel({
   if (data.length === 0 || remoteFailed) {
     return (
       <View style={[styles.headerImageWrap, { height }]}>
-        <Image source={DEFAULT_IMAGE} style={[styles.headerImage, { height }]} resizeMode="cover" />
+        <LinearGradient
+          colors={[GatiMitraColors.mintSoft, "#ecfdf5", GatiMitraColors.surfaceWarm]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={[styles.headerImage, { height }]}
+        >
+          <View style={styles.headerBannerPlaceholderInner}>
+            <Ionicons name="restaurant" size={52} color={GatiMitraColors.primaryMint} />
+          </View>
+        </LinearGradient>
       </View>
     );
   }
@@ -246,6 +277,21 @@ function BannerCarousel({
       {nextUri !== currentUri && (
         <Image source={{ uri: nextUri }} style={styles.bannerPreload} resizeMode="cover" />
       )}
+    </View>
+  );
+}
+
+/** Menu row fallback when there is no image or the URL fails to load — cutlery / restaurant icon, not a “not found” graphic. */
+function MenuImagePlaceholder({ size = 36 }: { size?: number }) {
+  return (
+    <View style={styles.menuImagePlaceholder} pointerEvents="none">
+      <LinearGradient
+        colors={[GatiMitraColors.mintSoft, "#ecfdf5"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+      <Ionicons name="restaurant" size={size} color={GatiMitraColors.primaryMint} style={{ opacity: 0.88 }} />
     </View>
   );
 }
@@ -293,13 +339,21 @@ const MemoizedMenuItemCard = React.memo(function MenuItemCard({
 }) {
   const [pressing, setPressing] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
+  const [imageFailed, setImageFailed] = useState(false);
   const addScale = useSharedValue(1);
   const imageOpacity = useSharedValue(0);
   const shimmerOpacity = useSharedValue(0.4);
   const discountShimmer = useSharedValue(0.94);
 
   useEffect(() => {
-    if (imageLoaded || !item.imageUrl) return;
+    setImageFailed(false);
+    setImageLoaded(false);
+    imageOpacity.value = 0;
+    shimmerOpacity.value = 0.4;
+  }, [item.imageUrl, imageOpacity, shimmerOpacity]);
+
+  useEffect(() => {
+    if (imageLoaded || imageFailed || !item.imageUrl) return;
     shimmerOpacity.value = withRepeat(
       withTiming(0.8, { duration: 600 }),
       -1,
@@ -309,7 +363,7 @@ const MemoizedMenuItemCard = React.memo(function MenuItemCard({
       cancelAnimation(shimmerOpacity);
       shimmerOpacity.value = 0.4;
     };
-  }, [item.imageUrl, imageLoaded, shimmerOpacity]);
+  }, [item.imageUrl, imageLoaded, imageFailed, shimmerOpacity]);
 
   const hasDiscount = item.discountPercentage != null && item.discountPercentage > 0;
   useEffect(() => {
@@ -358,6 +412,8 @@ const MemoizedMenuItemCard = React.memo(function MenuItemCard({
     ? `${item.prepTimeMinutes} mins`
     : null;
 
+  const showRemoteImage = !!item.imageUrl && !imageFailed;
+
   return (
     <Animated.View entering={FadeInDown.duration(280).delay(0)} style={styles.itemCard}>
       <View style={styles.itemCardInner}>
@@ -400,38 +456,46 @@ const MemoizedMenuItemCard = React.memo(function MenuItemCard({
           </View>
         </View>
         <View style={styles.itemCardRight}>
-          <Animated.View style={[styles.itemImageWrap, addStyle]}>
-            {item.imageUrl ? (
-              <>
-                <View style={[StyleSheet.absoluteFill, { backgroundColor: "#e5e7eb" }]} />
-                <Animated.View style={[StyleSheet.absoluteFill, shimmerStyle]} pointerEvents="none">
-                  <View style={[StyleSheet.absoluteFill, { backgroundColor: "#d1d5db" }]} />
-                </Animated.View>
-                <Animated.View style={[StyleSheet.absoluteFill, imageStyle]}>
-                  <Image
-                    source={{ uri: item.imageUrl }}
-                    style={styles.itemImage}
-                    resizeMode="cover"
-                    onLoad={() => {
-                      setImageLoaded(true);
-                      cancelAnimation(shimmerOpacity);
-                      shimmerOpacity.value = withTiming(0, { duration: 200 });
-                      imageOpacity.value = withTiming(1, { duration: 280 });
-                    }}
-                  />
-                </Animated.View>
-                {isStoreClosed && (
-                  <View style={styles.itemImageClosedOverlay} pointerEvents="none" />
-                )}
-              </>
-            ) : (
-              <>
-                <Image source={DEFAULT_IMAGE} style={styles.itemImage} resizeMode="cover" />
-                {isStoreClosed && (
-                  <View style={styles.itemImageClosedOverlay} pointerEvents="none" />
-                )}
-              </>
-            )}
+          <Animated.View style={[styles.itemCardRightCol, addStyle]}>
+            <View style={styles.itemImageWrap}>
+              {showRemoteImage ? (
+                <>
+                  <View style={[StyleSheet.absoluteFill, { backgroundColor: "#e5e7eb" }]} />
+                  <Animated.View style={[StyleSheet.absoluteFill, shimmerStyle]} pointerEvents="none">
+                    <View style={[StyleSheet.absoluteFill, { backgroundColor: "#d1d5db" }]} />
+                  </Animated.View>
+                  <Animated.View style={[StyleSheet.absoluteFill, imageStyle]}>
+                    <Image
+                      source={{ uri: item.imageUrl! }}
+                      style={styles.itemImage}
+                      resizeMode="cover"
+                      onLoad={() => {
+                        setImageLoaded(true);
+                        cancelAnimation(shimmerOpacity);
+                        shimmerOpacity.value = withTiming(0, { duration: 200 });
+                        imageOpacity.value = withTiming(1, { duration: 280 });
+                      }}
+                      onError={() => {
+                        setImageFailed(true);
+                        cancelAnimation(shimmerOpacity);
+                        shimmerOpacity.value = 0;
+                        imageOpacity.value = 0;
+                      }}
+                    />
+                  </Animated.View>
+                  {isStoreClosed && (
+                    <View style={styles.itemImageClosedOverlay} pointerEvents="none" />
+                  )}
+                </>
+              ) : (
+                <>
+                  <MenuImagePlaceholder size={38} />
+                  {isStoreClosed && (
+                    <View style={styles.itemImageClosedOverlay} pointerEvents="none" />
+                  )}
+                </>
+              )}
+            </View>
             {quantity === 0 ? (
               <Pressable
                 onPress={handleAdd}
@@ -446,54 +510,75 @@ const MemoizedMenuItemCard = React.memo(function MenuItemCard({
               >
                 {isStoreClosed ? (
                   <View style={[styles.addBtn, styles.addBtnClosed]}>
-                    <Text style={styles.addBtnTextDisabled}>Currently Closed</Text>
+                    <Text style={styles.addBtnTextDisabled} numberOfLines={1}>
+                      Closed
+                    </Text>
                   </View>
                 ) : (
                   <LinearGradient
-                    colors={GatiMitraColors.mintGradient}
+                    colors={GatiMitraColors.checkoutGradient}
                     start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
+                    end={{ x: 1, y: 1 }}
                     style={styles.addBtn}
                   >
                     <Text style={styles.addBtnText}>ADD</Text>
-                    <Ionicons name="add" size={18} color="#fff" />
+                    <Ionicons name="add" size={17} color="#fff" />
                   </LinearGradient>
                 )}
               </Pressable>
+            ) : isStoreClosed ? (
+              <View style={[styles.quantityWrap, styles.quantityWrapDisabled]}>
+                <TouchableOpacity
+                  onPress={() => {}}
+                  style={styles.qtyBtn}
+                  disabled
+                >
+                  <Ionicons name="remove" size={18} color="#fff" />
+                </TouchableOpacity>
+                <Text style={styles.qtyText}>{quantity}</Text>
+                <TouchableOpacity
+                  onPress={() => {}}
+                  style={styles.qtyBtn}
+                  disabled
+                >
+                  <Ionicons name="add" size={18} color="#fff" />
+                </TouchableOpacity>
+              </View>
             ) : (
-              <View style={[styles.quantityWrap, isStoreClosed && styles.quantityWrapDisabled]}>
+              <LinearGradient
+                colors={GatiMitraColors.checkoutGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.quantityWrap}
+              >
                 <TouchableOpacity
                   onPress={() => {
-                    if (isStoreClosed) return;
                     if (Platform.OS === "android") Vibration.vibrate(10);
                     onDecrement(item.id, item.menuItemId);
                   }}
                   style={styles.qtyBtn}
-                  disabled={isStoreClosed}
                 >
                   <Ionicons name="remove" size={18} color="#fff" />
                 </TouchableOpacity>
                 <Text style={styles.qtyText}>{quantity}</Text>
                 <TouchableOpacity
                   onPress={() => {
-                    if (isStoreClosed) return;
                     if (Platform.OS === "android") Vibration.vibrate(10);
                     onIncrement(item.id, item.menuItemId);
                   }}
                   style={styles.qtyBtn}
-                  disabled={isStoreClosed}
                 >
                   <Ionicons name="add" size={18} color="#fff" />
                 </TouchableOpacity>
-              </View>
+              </LinearGradient>
             )}
+            {(item.hasVariants || item.hasAddons || item.hasCustomizations) ? (
+              <View style={styles.customiseDropdown}>
+                <Text style={styles.customisableText}>Customise</Text>
+                <Ionicons name="chevron-down" size={14} color={GatiMitraColors.primaryMint} />
+              </View>
+            ) : null}
           </Animated.View>
-          {(item.hasVariants || item.hasAddons || item.hasCustomizations) ? (
-            <View style={styles.customiseDropdown}>
-              <Text style={styles.customisableText}>Customise</Text>
-              <Ionicons name="chevron-down" size={14} color={GatiMitraColors.emerald} />
-            </View>
-          ) : null}
         </View>
       </View>
     </Animated.View>
@@ -517,6 +602,15 @@ export default function MerchantDetailScreen() {
   const [customizationItem, setCustomizationItem] = useState<MenuItem | null>(null);
   const [headerSearchExpanded, setHeaderSearchExpanded] = useState(false);
   const headerSearchInputRef = useRef<TextInput>(null);
+  const openMerchantSearch = useCallback(() => {
+    const y = useMerchantScrollStore.getState().scrollY;
+    if (y > 48) {
+      sectionListRef.current?.scrollToOffset({ offset: 0, animated: true });
+    }
+    setHeaderSearchExpanded(true);
+    const delay = y > 48 ? 340 : 120;
+    setTimeout(() => headerSearchInputRef.current?.focus(), delay);
+  }, []);
   const { width: winWidth, height: winHeight } = useWindowDimensions();
   const menuSheetWidth = Math.round(winWidth * 0.8);
   const menuSheetHeight = Math.round(winHeight * 0.6);
@@ -542,6 +636,43 @@ export default function MerchantDetailScreen() {
     }
     return null;
   }, [merchantId, queryClient]);
+
+  /** Persisted on cart for floating / sheet hero (banner > list cache). */
+  const cartMerchantBannerUrl = useMemo(() => {
+    if (!merchant) return listCachedBanner;
+    const m = merchant as MerchantSummary & { imageUrl?: string | null };
+    const raw = m.displayImage ?? m.banner_url ?? m.imageUrl ?? null;
+    if (raw) return toAbsoluteImageUrl(raw) ?? raw;
+    return listCachedBanner;
+  }, [merchant, listCachedBanner]);
+
+  /** Header hero: primary banner only (never treated as “gallery” for looping). */
+  const merchantBannerHeroUri = useMemo(() => {
+    if (!merchant) return null;
+    const raw =
+      merchant.imageUrl ?? merchant.displayImage ?? merchant.banner_url ?? listCachedBanner ?? null;
+    if (raw == null || typeof raw !== "string") return null;
+    const t = raw.trim();
+    if (!t) return null;
+    return (toAbsoluteImageUrl(t) ?? t).trim();
+  }, [merchant, listCachedBanner]);
+
+  /** Gallery URLs excluding the hero so “banner only” stays static; when non-empty, carousel loops. */
+  const merchantGalleryBannerUris = useMemo(() => {
+    if (!merchant) return [];
+    const list = merchant.bannerImages ?? [];
+    const hero = (merchantBannerHeroUri ?? "").trim();
+    const trimmed = list
+      .map((u) => {
+        if (typeof u !== "string") return "";
+        const x = u.trim();
+        if (!x) return "";
+        return (toAbsoluteImageUrl(x) ?? x).trim();
+      })
+      .filter(Boolean);
+    if (!hero) return trimmed;
+    return trimmed.filter((u) => u !== hero);
+  }, [merchant?.id, merchant?.bannerImages, merchantBannerHeroUri]);
 
   /** Distance from the list API (already backend-computed). Used as a fast fallback while route loads. */
   const listCachedDistanceKm = useMemo(() => {
@@ -686,31 +817,6 @@ export default function MerchantDetailScreen() {
   const updateQuantity = useCartStore((s) => s.updateQuantity);
   const cartItems = useCartStore((s) => s.items) ?? [];
   const cartMerchantId = useCartStore((s) => s.merchantId);
-  const clearCart = useCartStore((s) => s.clearCart);
-
-  const hasOtherRestaurantCart =
-    cartMerchantId != null &&
-    cartMerchantId !== merchantId &&
-    cartItems.length > 0;
-
-  const hasShownOtherRestaurantAlert = useRef(false);
-  useFocusEffect(
-    useCallback(() => {
-      if (hasOtherRestaurantCart && !hasShownOtherRestaurantAlert.current) {
-        hasShownOtherRestaurantAlert.current = true;
-        Alert.alert(
-          "Different restaurant",
-          "Your cart contains items from another restaurant. Clear cart to continue?",
-          [
-            { text: "Cancel", style: "cancel", onPress: () => router.back() },
-            { text: "Clear cart", style: "destructive", onPress: () => { clearCart(); } },
-          ]
-        );
-      }
-      if (!hasOtherRestaurantCart) hasShownOtherRestaurantAlert.current = false;
-      return () => {};
-    }, [hasOtherRestaurantCart, clearCart, router])
-  );
 
   useEffect(() => {
     const sec = Array.isArray(sections) ? sections : [];
@@ -750,14 +856,15 @@ export default function MerchantDetailScreen() {
         setCustomizationSheetVisible(true);
       } else {
         addItem(merchantId, merchant.name, {
-          menuItemId: String(item.menuItemId ?? item.id),
+          menuItemId: String(item.menuItemId != null ? item.menuItemId : item.id),
           name: item.name,
           price: item.price,
           isVeg: item.isVeg,
-        });
+          imageUrl: item.imageUrl ?? null,
+        }, 1, cartMerchantBannerUrl);
       }
     },
-    [merchantId, merchant?.name, merchant, addItem]
+    [merchantId, merchant?.name, merchant, addItem, cartMerchantBannerUrl]
   );
 
   const handleCustomizationAdd = useCallback(
@@ -771,6 +878,7 @@ export default function MerchantDetailScreen() {
       variantId?: string;
       variantName?: string;
       addons?: Array<{ addonId: string; addonName: string; addonPrice: number; quantity: number }>;
+      imageUrl?: string | null;
     }) => {
       if (!merchant) return;
       addItem(merchantId, merchant.name, {
@@ -782,11 +890,12 @@ export default function MerchantDetailScreen() {
         variantId: params.variantId,
         variantName: params.variantName,
         addons: params.addons,
-      }, params.quantity);
+        imageUrl: params.imageUrl ?? customizationItem?.imageUrl ?? null,
+      }, params.quantity, cartMerchantBannerUrl);
       setCustomizationSheetVisible(false);
       setCustomizationItem(null);
     },
-    [merchantId, merchant, addItem]
+    [merchantId, merchant, addItem, customizationItem, cartMerchantBannerUrl]
   );
   const getCartLineIdForItem = useCallback(
     (itemId: string, menuItemId?: number): string | null => {
@@ -828,8 +937,22 @@ export default function MerchantDetailScreen() {
     else if (filter === "nonveg") list = list.filter((m) => !m.isVeg);
     else if (filter === "bestseller") list = list.filter((m) => m.isPopular || m.isRecommended);
     else if (filter === "quickprep") list = list.filter((m) => (m.prepTimeMinutes ?? 99) <= 15);
-    return buildMenuSections(list);
+    const raw = buildMenuSections(list);
+    return raw.map((sec, sIdx) => ({
+      ...sec,
+      data: sec.data.map(
+        (item, iIdx): MenuListRow => ({
+          ...item,
+          listRowKey: `${sIdx}-${String(item.menuItemId != null ? item.menuItemId : item.id)}-${iIdx}`,
+        })
+      ),
+    }));
   }, [merchant?.menu, filter, menuSearchQuery]);
+
+  const stickySearchHint = useMemo(() => {
+    const n = (merchant?.name ?? "menu").trim();
+    return n.length > 0 ? `Search in ${n}` : "Search menu";
+  }, [merchant?.name]);
 
   const setMerchantScrollY = useMerchantScrollStore((s) => s.setScrollY);
   useEffect(() => () => setMerchantScrollY(0), [setMerchantScrollY]);
@@ -858,16 +981,6 @@ export default function MerchantDetailScreen() {
     return { transform: [{ translateY }] };
   });
 
-  const stickyTitleOpacity = useAnimatedStyle(() => {
-    const opacity = interpolate(
-      scrollY.value,
-      [HEADER_COLLAPSED_THRESHOLD, HEADER_COLLAPSED_THRESHOLD + 40],
-      [0, 1],
-      Extrapolation.CLAMP
-    );
-    return { opacity };
-  });
-
   const stickyHeaderVisible = useAnimatedStyle(() => {
     const opacity = interpolate(
       scrollY.value,
@@ -886,6 +999,20 @@ export default function MerchantDetailScreen() {
       Extrapolation.CLAMP
     );
     return { opacity };
+  });
+
+  /** Hide All / Veg / … chip row when user scrolls up (menu moves). */
+  const filterStripAnimatedStyle = useAnimatedStyle(() => {
+    const maxH = interpolate(
+      scrollY.value,
+      [0, FILTER_STRIP_SCROLL_HIDE_START, FILTER_STRIP_SCROLL_HIDE_END],
+      [FILTER_BAR_HEIGHT, FILTER_BAR_HEIGHT, 0],
+      Extrapolation.CLAMP
+    );
+    return {
+      maxHeight: maxH,
+      overflow: "hidden" as const,
+    };
   });
 
   const totalInCart = (cartItems ?? []).reduce((n, i) => n + i.quantity, 0);
@@ -1016,7 +1143,7 @@ export default function MerchantDetailScreen() {
   return (
     <View style={styles.container}>
       {headerSearchExpanded ? (
-        <View style={[styles.fixedSearchBar, { paddingTop: insets.top + 8, paddingBottom: 10 }]}>
+        <View style={[styles.fixedSearchBar, { paddingTop: Math.max(insets.top, 8) + 4, paddingBottom: 12 }]}>
           <View style={styles.fixedSearchInputWrap}>
             <Ionicons name="search" size={20} color={GatiMitraColors.textSecondary} />
             <TextInput
@@ -1029,6 +1156,15 @@ export default function MerchantDetailScreen() {
               returnKeyType="search"
               autoFocus
               selectionColor={GatiMitraColors.emerald}
+              multiline={false}
+              scrollEnabled={false}
+              {...Platform.select({
+                android: {
+                  includeFontPadding: false,
+                  textAlignVertical: "center" as const,
+                },
+                ios: {},
+              })}
             />
           </View>
           <TouchableOpacity
@@ -1043,7 +1179,7 @@ export default function MerchantDetailScreen() {
 
       <Animated.View style={[styles.stickyHeaderBarWrap, stickyHeaderVisible]} pointerEvents="box-none">
         <Animated.View
-          style={[styles.stickyHeaderBar, styles.stickyHeaderBarCompact, { paddingTop: insets.top + 8 }]}
+          style={[styles.stickyHeaderBar, { paddingTop: MERCHANT_HEADER_TOP_GUTTER }]}
           pointerEvents="box-none"
         >
           <Animated.View style={[StyleSheet.absoluteFill, styles.stickyHeaderBarBg, stickyHeaderBgOpacity]} />
@@ -1052,17 +1188,25 @@ export default function MerchantDetailScreen() {
             <TouchableOpacity onPress={() => router.back()} style={styles.stickyBackBtn} hitSlop={8}>
               <Ionicons name="arrow-back" size={24} color={GatiMitraColors.textPrimary} />
             </TouchableOpacity>
-            <Animated.View style={[styles.stickySearchWrap, { flex: 1 }, stickyTitleOpacity]}>
+            <TouchableOpacity
+              style={[styles.stickySearchWrap, { flex: 1 }]}
+              onPress={openMerchantSearch}
+              activeOpacity={0.88}
+              accessibilityRole="search"
+              accessibilityLabel={stickySearchHint}
+            >
               <Ionicons name="search" size={18} color={GatiMitraColors.textSecondary} />
-              <TextInput
-                style={styles.stickySearchInput}
-                placeholder={`Search in ${merchant.name}`}
-                placeholderTextColor={GatiMitraColors.textSecondary}
-                value={menuSearchQuery}
-                onChangeText={setMenuSearchQuery}
-                returnKeyType="search"
-              />
-            </Animated.View>
+              <Text
+                style={[
+                  styles.stickySearchHintText,
+                  menuSearchQuery.trim().length > 0 && styles.stickySearchHintTextFilled,
+                ]}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+              >
+                {menuSearchQuery.trim().length > 0 ? menuSearchQuery : stickySearchHint}
+              </Text>
+            </TouchableOpacity>
             <TouchableOpacity onPress={openOptionsSheet} style={styles.stickyMenuBtn} hitSlop={8}>
               <Ionicons name="ellipsis-vertical" size={22} color={GatiMitraColors.textPrimary} />
             </TouchableOpacity>
@@ -1074,8 +1218,9 @@ export default function MerchantDetailScreen() {
       <Animated.View
         style={[
           styles.stickyFilterBar,
-          { top: insets.top + 62, paddingHorizontal: 16 },
+          { top: MERCHANT_STICKY_FILTER_TOP, paddingHorizontal: 16 },
           stickyHeaderVisible,
+          filterStripAnimatedStyle,
         ]}
         pointerEvents="box-none"
       >
@@ -1110,9 +1255,12 @@ export default function MerchantDetailScreen() {
         ref={sectionListRef}
         style={styles.sectionList}
         sections={safeSections}
-        keyExtractor={(item) => item.id}
-        extraData={{ cartMerchantId, cartCount: (cartItems ?? []).length }}
+        keyExtractor={(item, index) =>
+          item?.listRowKey ?? `row-${String(item?.menuItemId != null ? item.menuItemId : item?.id ?? "x")}-${index}`
+        }
+        extraData={{ cartMerchantId, totalInCart }}
         stickySectionHeadersEnabled
+        contentInsetAdjustmentBehavior="never"
         onScroll={scrollHandler}
         scrollEventThrottle={16}
         scrollEnabled={true}
@@ -1137,14 +1285,8 @@ export default function MerchantDetailScreen() {
           <>
             <Animated.View style={[styles.headerImageWrap, headerImageStyle]}>
               <BannerCarousel
-                images={merchant.bannerImages ?? []}
-                fallbackUri={
-                  merchant.imageUrl ??
-                  merchant.displayImage ??
-                  merchant.banner_url ??
-                  listCachedBanner ??
-                  null
-                }
+                bannerUri={merchantBannerHeroUri}
+                galleryUris={merchantGalleryBannerUris}
                 height={HEADER_IMAGE_HEIGHT}
               />
               <LinearGradient
@@ -1153,14 +1295,14 @@ export default function MerchantDetailScreen() {
                 style={StyleSheet.absoluteFill}
                 pointerEvents="none"
               />
-              <View style={[styles.headerIcons, { top: insets.top + 8 }]} pointerEvents="box-none">
+              <View style={styles.headerIcons} pointerEvents="box-none">
                 <TouchableOpacity onPress={() => router.back()} style={styles.headerIconBtn} hitSlop={8}>
                   <Ionicons name="arrow-back" size={24} color="#fff" />
                 </TouchableOpacity>
                 <View style={styles.headerIconsRight}>
                   <TouchableOpacity
                     style={styles.headerIconBtn}
-                    onPress={() => { setHeaderSearchExpanded(true); setTimeout(() => headerSearchInputRef.current?.focus(), 150); }}
+                    onPress={openMerchantSearch}
                     hitSlop={8}
                   >
                     <Ionicons name="search" size={20} color="#fff" />
@@ -1247,7 +1389,7 @@ export default function MerchantDetailScreen() {
               </View>
             ) : null}
 
-            <View style={styles.filterBar}>
+            <Animated.View style={[styles.filterBar, filterStripAnimatedStyle]}>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
@@ -1273,7 +1415,7 @@ export default function MerchantDetailScreen() {
                   </TouchableOpacity>
                 ))}
               </ScrollView>
-            </View>
+            </Animated.View>
 
             {safeSections.length > 0 && (
               <View style={styles.recommendSection}>
@@ -1497,7 +1639,7 @@ export default function MerchantDetailScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: GatiMitraColors.background,
+    backgroundColor: GatiMitraColors.softBackground,
   },
   sectionList: {
     flex: 1,
@@ -1529,9 +1671,6 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     ...GatiMitraColors.elevationShadow,
   },
-  stickyHeaderBarCompact: {
-    minHeight: 64,
-  },
   stickyHeaderBarBg: {
     backgroundColor: "#fff",
     borderRadius: 0,
@@ -1554,12 +1693,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     gap: 8,
+    minHeight: 44,
   },
-  stickySearchInput: {
+  stickySearchHintText: {
     flex: 1,
+    minWidth: 0,
     fontSize: 15,
+    lineHeight: 20,
+    color: GatiMitraColors.textSecondary,
+    fontWeight: "500",
+  },
+  stickySearchHintTextFilled: {
     color: GatiMitraColors.textPrimary,
-    paddingVertical: 0,
+    fontWeight: "600",
   },
   stickyMenuBtn: { padding: 6 },
   optionsSheet: {
@@ -1645,11 +1791,13 @@ const styles = StyleSheet.create({
   },
   headerIcons: {
     position: "absolute",
+    top: 0,
     left: 0,
     right: 0,
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
+    paddingTop: 0,
     zIndex: 2,
   },
   headerIconBtn: {
@@ -1671,8 +1819,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     gap: 10,
     backgroundColor: "#fff",
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(0,0,0,0.08)",
     ...Platform.select({
       ios: { shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4 },
       android: { elevation: 4 },
@@ -1685,15 +1831,18 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraColors.surfaceWarm,
     borderRadius: 12,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: Platform.OS === "android" ? 4 : 8,
     gap: 8,
+    minHeight: 48,
   },
   fixedSearchInput: {
     flex: 1,
     fontSize: 16,
+    lineHeight: Platform.OS === "ios" ? 22 : undefined,
     color: GatiMitraColors.textPrimaryNew,
-    paddingVertical: 0,
+    paddingVertical: Platform.OS === "android" ? 8 : 10,
     minWidth: 0,
+    minHeight: Platform.OS === "android" ? 40 : 36,
   },
   fixedSearchCloseBtn: {
     padding: 6,
@@ -1801,7 +1950,7 @@ const styles = StyleSheet.create({
   offersSection: {
     paddingTop: 12,
     paddingBottom: 4,
-    backgroundColor: GatiMitraColors.background,
+    backgroundColor: GatiMitraColors.softBackground,
   },
   offersSectionHeader: {
     flexDirection: "row",
@@ -1843,19 +1992,19 @@ const styles = StyleSheet.create({
   },
   filterBar: {
     paddingVertical: 10,
-    backgroundColor: GatiMitraColors.background,
-    borderBottomWidth: 1,
+    marginBottom: 10,
+    backgroundColor: GatiMitraColors.softBackground,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: GatiMitraColors.border,
   },
   stickyFilterBar: {
     position: "absolute",
     left: 0,
     right: 0,
-    height: FILTER_PILL_HEIGHT + 16,
+    minHeight: 0,
+    maxHeight: FILTER_BAR_HEIGHT,
     justifyContent: "center",
     backgroundColor: GatiMitraColors.background,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: GatiMitraColors.border,
     zIndex: 9,
     ...GatiMitraColors.elevationShadow,
   },
@@ -1872,12 +2021,12 @@ const styles = StyleSheet.create({
     marginRight: 8,
     backgroundColor: GatiMitraColors.cardBg,
     borderWidth: 1,
-    borderColor: GatiMitraColors.border,
+    borderColor: "rgba(34, 197, 94, 0.18)",
     gap: 6,
   },
   filterPillActive: {
-    backgroundColor: GatiMitraColors.emerald,
-    borderColor: GatiMitraColors.emerald,
+    backgroundColor: GatiMitraColors.primaryMint,
+    borderColor: GatiMitraColors.primaryMint,
   },
   filterPillText: {
     fontSize: 14,
@@ -1903,30 +2052,39 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   sectionHeader: {
-    backgroundColor: GatiMitraColors.background,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
+    backgroundColor: GatiMitraColors.softBackground,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: GatiMitraColors.border,
+    borderLeftWidth: 3,
+    borderLeftColor: GatiMitraColors.primaryMint,
+    marginHorizontal: 12,
+    marginTop: 4,
+    marginBottom: 10,
+    borderRadius: 10,
+    overflow: "hidden",
   },
   sectionHeaderText: {
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: "800",
-    color: GatiMitraColors.textPrimary,
+    color: GatiMitraColors.textPrimaryNew,
+    letterSpacing: 0.2,
   },
   itemCard: {
     backgroundColor: GatiMitraColors.cardBg,
-    marginHorizontal: 16,
+    marginHorizontal: 12,
     marginBottom: 16,
     borderRadius: CARD_RADIUS,
     overflow: "hidden",
-    ...GatiMitraColors.elevationShadow,
-    shadowRadius: 12,
-    shadowOpacity: 0.08,
+    borderWidth: 1,
+    borderColor: "rgba(34, 197, 94, 0.18)",
   },
   itemCardInner: {
     flexDirection: "row",
-    padding: 14,
+    padding: 16,
+    alignItems: "flex-start",
+    gap: 4,
   },
   itemCardLeft: {
     flex: 1,
@@ -1939,11 +2097,11 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   vegDot: {
-    width: 14,
-    height: 14,
+    width: 15,
+    height: 15,
     borderRadius: 4,
     borderWidth: 2,
-    borderColor: GatiMitraColors.emerald,
+    borderColor: GatiMitraColors.primaryMint,
     backgroundColor: "transparent",
   },
   nonVegDot: {
@@ -1952,15 +2110,18 @@ const styles = StyleSheet.create({
   },
   itemName: {
     flex: 1,
-    fontSize: 16,
-    fontWeight: "700",
-    color: GatiMitraColors.textPrimary,
+    fontSize: 16.5,
+    fontWeight: "800",
+    color: GatiMitraColors.textPrimaryNew,
+    letterSpacing: -0.2,
+    lineHeight: 22,
   },
   itemDesc: {
     fontSize: 13,
     color: GatiMitraColors.textSecondary,
-    marginTop: 4,
-    lineHeight: 18,
+    marginTop: 5,
+    lineHeight: 19,
+    letterSpacing: 0.1,
   },
   itemTagsRow: {
     flexDirection: "row",
@@ -1970,14 +2131,17 @@ const styles = StyleSheet.create({
   },
   itemTag: {
     backgroundColor: GatiMitraColors.mintSoft,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(34, 197, 94, 0.2)",
   },
   itemTagText: {
     fontSize: 11,
-    fontWeight: "700",
-    color: GatiMitraColors.emerald,
+    fontWeight: "800",
+    color: GatiMitraColors.primaryMint,
+    letterSpacing: 0.2,
   },
   discountTag: {
     backgroundColor: "#fef9c3",
@@ -2014,56 +2178,81 @@ const styles = StyleSheet.create({
     color: GatiMitraColors.textPrimary,
   },
   itemPriceEmphasis: {
-    fontSize: 18,
+    fontSize: 19,
     fontWeight: "800",
-    color: GatiMitraColors.textPrimary,
+    color: GatiMitraColors.textPrimaryNew,
+    letterSpacing: -0.4,
   },
   itemImageClosedOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.35)",
-    borderRadius: 14,
+    borderRadius: 16,
   },
   itemActions: {
     flexDirection: "row",
     gap: 4,
   },
   iconBtn: {
-    padding: 4,
+    padding: 6,
+    borderRadius: 10,
+    backgroundColor: GatiMitraColors.surfaceWarm,
   },
   itemCardRight: {
     alignItems: "flex-end",
+    justifyContent: "flex-start",
+  },
+  itemCardRightCol: {
+    width: 108,
+    alignItems: "stretch",
   },
   itemImageWrap: {
-    width: 100,
-    height: 100,
-    borderRadius: 14,
+    width: 108,
+    height: 108,
+    borderRadius: 16,
     overflow: "hidden",
-    backgroundColor: "#f3f4f6",
+    backgroundColor: GatiMitraColors.mintSoft,
+    borderWidth: 1,
+    borderColor: "rgba(34, 197, 94, 0.12)",
   },
   itemImage: {
     width: "100%",
     height: "100%",
   },
+  menuImagePlaceholder: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerBannerPlaceholderInner: {
+    flex: 1,
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   addBtnWrap: {
-    position: "absolute",
-    bottom: 6,
-    left: 6,
-    right: 6,
-    borderRadius: 16,
+    marginTop: 10,
+    width: "100%",
+    borderRadius: 14,
     overflow: "hidden",
-    shadowColor: GatiMitraColors.emerald,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 4,
+    alignSelf: "stretch",
+    ...(Platform.OS === "ios"
+      ? {
+          shadowColor: "#16a34a",
+          shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.22,
+          shadowRadius: 8,
+        }
+      : { elevation: 4 }),
   },
   addBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 16,
-    paddingVertical: 8,
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
     gap: 4,
+    minHeight: 40,
   },
   addBtnPressed: {
     opacity: 0.9,
@@ -2075,31 +2264,40 @@ const styles = StyleSheet.create({
     backgroundColor: "#9ca3af",
   },
   addBtnTextDisabled: {
-    fontSize: 13,
-    fontWeight: "700",
+    fontSize: 11,
+    fontWeight: "800",
     color: "#fff",
+    textAlign: "center",
   },
   addBtnText: {
-    fontSize: 13,
-    fontWeight: "700",
+    fontSize: 14,
+    fontWeight: "800",
     color: "#fff",
+    letterSpacing: 0.6,
   },
   quantityWrap: {
-    position: "absolute",
-    bottom: 6,
-    left: 6,
-    right: 6,
+    marginTop: 10,
+    width: "100%",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    backgroundColor: GatiMitraColors.emerald,
-    borderRadius: 10,
-    paddingVertical: 4,
+    borderRadius: 14,
+    paddingVertical: 6,
     paddingHorizontal: 6,
+    minHeight: 40,
+    alignSelf: "stretch",
+    ...(Platform.OS === "ios"
+      ? {
+          shadowColor: "#16a34a",
+          shadowOffset: { width: 0, height: 3 },
+          shadowOpacity: 0.2,
+          shadowRadius: 6,
+        }
+      : { elevation: 3 }),
   },
   quantityWrapDisabled: {
     backgroundColor: "#9ca3af",
-    opacity: 0.9,
+    opacity: 0.95,
   },
   qtyBtn: {
     padding: 2,
@@ -2111,13 +2309,17 @@ const styles = StyleSheet.create({
   },
   customisableText: {
     fontSize: 11,
-    color: GatiMitraColors.emerald,
+    fontWeight: "700",
+    color: GatiMitraColors.primaryMint,
     marginRight: 2,
+    letterSpacing: 0.2,
   },
   customiseDropdown: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 4,
+    justifyContent: "center",
+    marginTop: 8,
+    paddingTop: 2,
   },
   emptyMenu: {
     padding: 32,

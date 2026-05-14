@@ -1,5 +1,5 @@
 /**
- * Next scheduled open time (IST) — logic aligned with `backend/.../store-schedule-engine.ts`
+ * Next scheduled open time — logic aligned with `backend/.../store-schedule-engine.ts`
  * (`getNextOpenIso`, `getNextOpenClose`, `isWithinOperatingHours`, `nowInStoreTz`).
  * Duplicated from dashboard for Partner Site store-operations countdown parity with backend.
  */
@@ -43,10 +43,66 @@ function minutesToTimeStr(min: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
-/** Current time in IST: day of week (0–6 Sun–Sat) and minutes since midnight (aligned with backend schedule engine). */
-export function nowInStoreTz(): { dayOfWeek: number; minutesSinceMidnight: number } {
+function formatCalendarDateInTz(ref: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(ref);
+  const y = parts.find((p) => p.type === "year")?.value ?? "0";
+  const mo = parts.find((p) => p.type === "month")?.value ?? "01";
+  const day = parts.find((p) => p.type === "day")?.value ?? "01";
+  return `${y}-${String(mo).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/** Map a wall-clock moment in `timeZone` to the corresponding UTC `Date` (iterative, DST-safe enough for partner scheduling). */
+export function utcInstantFromWallClock(ymd: string, hm: string, timeZone: string): Date | null {
+  const [Y, Mo, D] = ymd.split("-").map((s) => parseInt(s.trim(), 10));
+  const segs = hm.split(":");
+  const hh = parseInt(segs[0] ?? "0", 10);
+  const mm = parseInt(segs[1] ?? "0", 10);
+  const ss = segs[2] != null ? parseInt(segs[2], 10) : 0;
+  if (![Y, Mo, D, hh, mm, ss].every((n) => Number.isFinite(n))) return null;
+  let t = Date.UTC(Y, Mo - 1, D, hh, mm, ss, 0);
+  for (let i = 0; i < 16; i++) {
+    const d = new Date(t);
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).formatToParts(d);
+    const py = parseInt(parts.find((p) => p.type === "year")?.value ?? "0", 10);
+    const pmo = parseInt(parts.find((p) => p.type === "month")?.value ?? "0", 10);
+    const pd = parseInt(parts.find((p) => p.type === "day")?.value ?? "0", 10);
+    const ph = parseInt(parts.find((p) => p.type === "hour")?.value ?? "0", 10);
+    const pmi = parseInt(parts.find((p) => p.type === "minute")?.value ?? "0", 10);
+    const psec = parseInt(parts.find((p) => p.type === "second")?.value ?? "0", 10);
+    if (py === Y && pmo === Mo && pd === D && ph === hh && pmi === mm && psec === ss) return d;
+    const want = Date.UTC(Y, Mo - 1, D, hh, mm, ss, 0);
+    const got = Date.UTC(py, pmo - 1, pd, ph, pmi, psec, 0);
+    t += want - got;
+  }
+  return new Date(t);
+}
+
+function addCalendarDaysInZone(ymd: string, days: number, timeZone: string): string {
+  const anchor = utcInstantFromWallClock(ymd, "12:00:00", timeZone);
+  if (!anchor) return ymd;
+  const next = new Date(anchor.getTime() + days * 86400000);
+  return formatCalendarDateInTz(next, timeZone);
+}
+
+/** Current time in `timeZone`: day of week (0–6 Sun–Sat) and minutes since midnight. */
+export function nowInStoreTz(timeZone: string = DEFAULT_STORE_TIMEZONE): { dayOfWeek: number; minutesSinceMidnight: number } {
+  const tz = timeZone || DEFAULT_STORE_TIMEZONE;
   const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: DEFAULT_STORE_TIMEZONE,
+    timeZone: tz,
     hour: "numeric",
     minute: "numeric",
     second: "numeric",
@@ -58,7 +114,7 @@ export function nowInStoreTz(): { dayOfWeek: number; minutesSinceMidnight: numbe
   const second = Number(parts.find((p) => p.type === "second")?.value ?? 0);
   const minutesSinceMidnight = hour * 60 + minute + second / 60;
 
-  const dayFormatter = new Intl.DateTimeFormat("en-US", { timeZone: DEFAULT_STORE_TIMEZONE, weekday: "short" });
+  const dayFormatter = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" });
   const dayShort = dayFormatter.format(new Date()).toLowerCase();
   const dayMap: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
   const dayOfWeek = dayMap[dayShort.slice(0, 3)] ?? 0;
@@ -74,7 +130,7 @@ export function isWithinOperatingHours(
   if (is24) return true;
   const closedDays = (row.closed_days as string[] | null) ?? [];
   const dayKey = DAY_NAMES[dayOfWeek];
-  if (closedDays.some((d) => String(d).toLowerCase() === dayKey)) return false;
+  if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) return false;
   const sameForAll = row.same_for_all_days === true;
   const slots = getSlotsForDay(row, dayKey, sameForAll);
   const endGrace = GRACE_BUFFER_SECONDS / 60;
@@ -98,7 +154,7 @@ export function getNextOpenClose(
   if (row.is_24_hours === true) return out;
   const closedDays = (row.closed_days as string[] | null) ?? [];
   const dayKey = DAY_NAMES[dayOfWeek];
-  if (closedDays.some((d) => String(d).toLowerCase() === dayKey)) {
+  if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) {
     const sameForAll = row.same_for_all_days === true;
     const slots = getSlotsForDay(row, sameForAll ? "monday" : dayKey, sameForAll);
     const first = slots.sort((a, b) => a.startMin - b.startMin)[0];
@@ -129,108 +185,74 @@ export function getNextOpenClose(
   return out;
 }
 
-/** Next open moment as ISO (IST wall time), skipping closed days. Returns null if 24h or no slots. */
+/** Next open moment as ISO (wall time in `timeZone`), skipping closed days. Returns null if 24h or no slots. */
 export function getNextOpenIso(
   row: Record<string, unknown>,
   dayOfWeek: number,
   minutesSinceMidnight: number,
-  refDate: Date
+  refDate: Date,
+  timeZone: string = DEFAULT_STORE_TIMEZONE
 ): string | null {
+  const tz = timeZone || DEFAULT_STORE_TIMEZONE;
   if (row.is_24_hours === true) return null;
   const closedDays = (row.closed_days as string[] | null) ?? [];
   const sameForAll = row.same_for_all_days === true;
-  const formatIstDate = (d: Date) => {
-    const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: DEFAULT_STORE_TIMEZONE,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).formatToParts(d);
-    const y = parts.find((p) => p.type === "year")?.value ?? "0";
-    const mo = parts.find((p) => p.type === "month")?.value ?? "01";
-    const day = parts.find((p) => p.type === "day")?.value ?? "01";
-    return { y, m: mo.padStart(2, "0"), d: day.padStart(2, "0") };
-  };
-  const addDaysInIst = (dateStr: string, days: number): string => {
-    const d = new Date(`${dateStr}T00:00:00+05:30`);
-    d.setTime(d.getTime() + days * 86400 * 1000);
-    const p = formatIstDate(d);
-    return `${p.y}-${p.m}-${p.d}`;
-  };
-  const refIst = formatIstDate(refDate);
-  const todayStr = `${refIst.y}-${refIst.m}-${refIst.d}`;
+  const formatWallDate = (d: Date) => formatCalendarDateInTz(d, tz);
+
+  const refWall = formatWallDate(refDate);
+  const todayStr = refWall;
 
   for (let dayOffset = 0; dayOffset <= 7; dayOffset++) {
     const checkDay = (dayOfWeek + dayOffset) % 7;
     const dayKey = DAY_NAMES[checkDay];
-    if (closedDays.some((d) => String(d).toLowerCase() === dayKey)) continue;
+    if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) continue;
     const slots = getSlotsForDay(row, dayKey, sameForAll).sort((a, b) => a.startMin - b.startMin);
     if (slots.length === 0) continue;
-    const firstStart = slots[0].startMin;
 
     if (dayOffset === 0) {
       const hasLaterSlotToday = slots.some((s) => s.startMin > minutesSinceMidnight);
       if (hasLaterSlotToday) {
         const slot = slots.find((s) => s.startMin > minutesSinceMidnight)!;
         const timeStr = minutesToTimeStr(slot.startMin);
-        const isoInIst = `${todayStr}T${timeStr}:00+05:30`;
-        const dt = new Date(isoInIst);
-        return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
+        const dt = utcInstantFromWallClock(todayStr, `${timeStr}:00`, tz);
+        return dt && !Number.isNaN(dt.getTime()) ? dt.toISOString() : null;
       }
       continue;
     }
 
-    const dateStr = addDaysInIst(todayStr, dayOffset);
-    const timeStr = minutesToTimeStr(firstStart);
-    const isoInIst = `${dateStr}T${timeStr}:00+05:30`;
-    const dt = new Date(isoInIst);
-    return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
+    const dateStr = addCalendarDaysInZone(todayStr, dayOffset, tz);
+    const timeStr = minutesToTimeStr(slots[0].startMin);
+    const dt = utcInstantFromWallClock(dateStr, `${timeStr}:00`, tz);
+    return dt && !Number.isNaN(dt.getTime()) ? dt.toISOString() : null;
   }
   return null;
 }
 
-/** First opening on a future IST calendar day only — for "Close for today" (skip slots later today). */
+/** First opening on a future calendar day in `timeZone` only — for "Close for today". */
 export function getNextOpenIsoAfterIstCalendarDay(
   row: Record<string, unknown>,
   dayOfWeek: number,
-  refDate: Date
+  refDate: Date,
+  timeZone: string = DEFAULT_STORE_TIMEZONE
 ): string | null {
+  const tz = timeZone || DEFAULT_STORE_TIMEZONE;
   if (row.is_24_hours === true) return null;
   const closedDays = (row.closed_days as string[] | null) ?? [];
   const sameForAll = row.same_for_all_days === true;
-  const formatIstDate = (d: Date) => {
-    const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: DEFAULT_STORE_TIMEZONE,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).formatToParts(d);
-    const y = parts.find((p) => p.type === "year")?.value ?? "0";
-    const mo = parts.find((p) => p.type === "month")?.value ?? "01";
-    const day = parts.find((p) => p.type === "day")?.value ?? "01";
-    return { y, m: mo.padStart(2, "0"), d: day.padStart(2, "0") };
-  };
-  const addDaysInIst = (dateStr: string, days: number): string => {
-    const d = new Date(`${dateStr}T00:00:00+05:30`);
-    d.setTime(d.getTime() + days * 86400 * 1000);
-    const p = formatIstDate(d);
-    return `${p.y}-${p.m}-${p.d}`;
-  };
-  const refIst = formatIstDate(refDate);
-  const todayStr = `${refIst.y}-${refIst.m}-${refIst.d}`;
+  const formatWallDate = (d: Date) => formatCalendarDateInTz(d, tz);
+  const todayStr = formatWallDate(refDate);
 
   for (let dayOffset = 1; dayOffset <= 7; dayOffset++) {
     const checkDay = (dayOfWeek + dayOffset) % 7;
     const dayKey = DAY_NAMES[checkDay];
-    if (closedDays.some((d) => String(d).toLowerCase() === dayKey)) continue;
+    if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) continue;
     const slots = getSlotsForDay(row, dayKey, sameForAll).sort((a, b) => a.startMin - b.startMin);
     if (slots.length === 0) continue;
     const firstStart = slots[0].startMin;
-    const dateStr = addDaysInIst(todayStr, dayOffset);
+    const dateStr = addCalendarDaysInZone(todayStr, dayOffset, tz);
     const timeStr = minutesToTimeStr(firstStart);
-    const isoInIst = `${dateStr}T${timeStr}:00+05:30`;
-    const dt = new Date(isoInIst);
-    return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
+    const dt = utcInstantFromWallClock(dateStr, `${timeStr}:00`, tz);
+    return dt && !Number.isNaN(dt.getTime()) ? dt.toISOString() : null;
   }
   return null;
 }
@@ -238,54 +260,37 @@ export function getNextOpenIsoAfterIstCalendarDay(
 export function getNextOpenDayStartIso(
   row: Record<string, unknown>,
   dayOfWeek: number,
-  refDate: Date
+  refDate: Date,
+  timeZone: string = DEFAULT_STORE_TIMEZONE
 ): string | null {
+  const tz = timeZone || DEFAULT_STORE_TIMEZONE;
   if (row.is_24_hours === true) return null;
   const closedDays = (row.closed_days as string[] | null) ?? [];
-  const formatIstDate = (d: Date) => {
-    const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: DEFAULT_STORE_TIMEZONE,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).formatToParts(d);
-    const y = parts.find((p) => p.type === "year")?.value ?? "0";
-    const mo = parts.find((p) => p.type === "month")?.value ?? "01";
-    const day = parts.find((p) => p.type === "day")?.value ?? "01";
-    return { y, m: mo.padStart(2, "0"), d: day.padStart(2, "0") };
-  };
-  const refIst = formatIstDate(refDate);
-  const todayStr = `${refIst.y}-${refIst.m}-${refIst.d}`;
-  const addDays = (dateStr: string, days: number): string => {
-    const d = new Date(`${dateStr}T00:00:00+05:30`);
-    d.setTime(d.getTime() + days * 86400 * 1000);
-    const p = formatIstDate(d);
-    return `${p.y}-${p.m}-${p.d}`;
-  };
+  const todayStr = formatCalendarDateInTz(refDate, tz);
   for (let dayOffset = 1; dayOffset <= 7; dayOffset++) {
     const checkDay = (dayOfWeek + dayOffset) % 7;
     const dayKey = DAY_NAMES[checkDay];
-    if (closedDays.some((d) => String(d).toLowerCase() === dayKey)) continue;
-    const dateStr = addDays(todayStr, dayOffset);
-    const isoInIst = `${dateStr}T00:00:00+05:30`;
-    const dt = new Date(isoInIst);
-    return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
+    if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) continue;
+    const dateStr = addCalendarDaysInZone(todayStr, dayOffset, tz);
+    const dt = utcInstantFromWallClock(dateStr, "00:00:00", tz);
+    return dt && !Number.isNaN(dt.getTime()) ? dt.toISOString() : null;
   }
   return null;
 }
 
-/** True if `untilIso` is the same IST calendar day as `ref` and at/after 23:59 (legacy “close for today” EOD). */
-export function isLikelyLegacyEndOfDayIstClose(untilIso: string, ref: Date): boolean {
+/** True if `untilIso` is the same calendar day as `ref` in `timeZone` and at/after 23:59 (legacy “close for today” EOD). */
+export function isLikelyLegacyEndOfDayIstClose(untilIso: string, ref: Date, timeZone: string = DEFAULT_STORE_TIMEZONE): boolean {
+  const tz = timeZone || DEFAULT_STORE_TIMEZONE;
   const until = new Date(untilIso);
   if (Number.isNaN(until.getTime())) return false;
   const dFmt = new Intl.DateTimeFormat("en-CA", {
-    timeZone: DEFAULT_STORE_TIMEZONE,
+    timeZone: tz,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
   });
   const tFmt = new Intl.DateTimeFormat("en-GB", {
-    timeZone: DEFAULT_STORE_TIMEZONE,
+    timeZone: tz,
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,

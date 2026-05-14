@@ -444,7 +444,8 @@ export async function upsertStoreDraft(
   };
 }
 
-type Step5Supabase = {
+/** Narrow shape passed to step-5 sync; export for call-site assertion (avoids Supabase generic depth). */
+export type Step5Supabase = {
   from: (table: string) => {
     select: (columns: string) => {
       eq: (col: string, val: unknown) => { maybeSingle: () => Promise<{ data: unknown; error: unknown }> };

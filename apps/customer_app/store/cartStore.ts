@@ -20,6 +20,8 @@ export type CartItem = {
   price: number;
   quantity: number;
   isVeg: boolean;
+  /** First-line image for floating cart / UI (optional). */
+  imageUrl?: string | null;
   /** Base/variant price per unit (when item has variants); used for order payload. */
   basePrice?: number;
   variantId?: string;
@@ -36,13 +38,31 @@ export type ActiveCartContext = {
   last_updated_at: number;
 };
 
+/** Snapshot of another restaurant's cart (when user switches store without checking out). */
+export type StashedMerchantCart = {
+  merchantName: string | null;
+  merchantBannerUrl: string | null;
+  items: CartItem[];
+  lastUpdatedAt: number;
+};
+
 type CartState = {
   merchantId: string | null;
   merchantName: string | null;
+  /** Hero banner / card image for cart UI when available. */
+  merchantBannerUrl: string | null;
   items: CartItem[];
+  /** Other merchants' carts kept when switching restaurant (multi-cart UI). */
+  stashedCarts: Record<string, StashedMerchantCart>;
   lastUpdatedAt: number;
   hydrated: boolean;
-  addItem: (merchantId: string, merchantName: string, item: Omit<CartItem, "quantity">, quantity?: number) => void;
+  addItem: (
+    merchantId: string,
+    merchantName: string,
+    item: Omit<CartItem, "quantity">,
+    quantity?: number,
+    merchantBannerUrl?: string | null,
+  ) => void;
   updateQuantity: (menuItemId: string, delta: number) => void;
   removeItem: (menuItemId: string) => void;
   clearCart: () => void;
@@ -54,31 +74,90 @@ type CartState = {
 const defaultState = {
   merchantId: null,
   merchantName: null,
-  items: [],
+  merchantBannerUrl: null as string | null,
+  items: [] as CartItem[],
+  stashedCarts: {} as Record<string, StashedMerchantCart>,
   lastUpdatedAt: 0,
   hydrated: false,
 };
 
+function mergeCartLine(items: CartItem[], line: CartItem): CartItem[] {
+  const existing = items.find((i) => i.menuItemId === line.menuItemId);
+  if (!existing) return [...items, line];
+  return items.map((i) =>
+    i.menuItemId === line.menuItemId
+      ? {
+          ...i,
+          quantity: i.quantity + line.quantity,
+          imageUrl: i.imageUrl ?? line.imageUrl ?? null,
+        }
+      : i,
+  );
+}
+
 export const useCartStore = create<CartState>((set, get) => ({
   ...defaultState,
 
-  addItem: (merchantId, merchantName, item, quantity = 1) => {
-    const { items, merchantId: currentMerchant } = get();
+  addItem: (merchantId, merchantName, item, quantity = 1, merchantBannerUrl) => {
+    const {
+      items,
+      merchantId: currentMerchant,
+      merchantBannerUrl: prevBanner,
+      merchantName: curName,
+      stashedCarts,
+    } = get();
     const now = Date.now();
+
     if (currentMerchant && currentMerchant !== merchantId) {
-      set({ merchantId, merchantName, items: [{ ...item, quantity }], lastUpdatedAt: now });
+      const stash: Record<string, StashedMerchantCart> = { ...stashedCarts };
+      if (items.length > 0) {
+        stash[currentMerchant] = {
+          merchantName: curName,
+          merchantBannerUrl: prevBanner,
+          items: items.map((i) => ({ ...i })),
+          lastUpdatedAt: now,
+        };
+      }
+      const restored = stash[merchantId];
+      const restStash = { ...stash };
+      delete restStash[merchantId];
+      const line: CartItem = { ...item, quantity };
+      const nextItems =
+        restored && restored.items.length > 0
+          ? mergeCartLine(
+              restored.items.map((i) => ({ ...i })),
+              line,
+            )
+          : [line];
+      set({
+        merchantId,
+        merchantName,
+        merchantBannerUrl: merchantBannerUrl ?? restored?.merchantBannerUrl ?? null,
+        items: nextItems,
+        stashedCarts: restStash,
+        lastUpdatedAt: now,
+      });
       get().persist();
       return;
     }
+
+    const nextBanner = merchantBannerUrl ?? (currentMerchant === merchantId ? prevBanner : null) ?? null;
     const existing = items.find((i) => i.menuItemId === item.menuItemId);
     const next = existing
       ? items.map((i) =>
-          i.menuItemId === item.menuItemId ? { ...i, quantity: i.quantity + quantity } : i
+          i.menuItemId === item.menuItemId
+            ? {
+                ...i,
+                quantity: i.quantity + quantity,
+                imageUrl: i.imageUrl ?? item.imageUrl ?? null,
+              }
+            : i
         )
       : [...items, { ...item, quantity }];
     set({
       merchantId,
       merchantName,
+      merchantBannerUrl: nextBanner,
       items: next,
       lastUpdatedAt: now,
     });
@@ -93,7 +172,8 @@ export const useCartStore = create<CartState>((set, get) => ({
       .filter((i) => i.quantity > 0);
     const merchantId = next.length ? get().merchantId : null;
     const merchantName = next.length ? get().merchantName : null;
-    set({ items: next, merchantId, merchantName, lastUpdatedAt: now });
+    const merchantBannerUrl = next.length ? get().merchantBannerUrl : null;
+    set({ items: next, merchantId, merchantName, merchantBannerUrl, lastUpdatedAt: now });
     get().persist();
   },
 
@@ -123,7 +203,9 @@ export const useCartStore = create<CartState>((set, get) => ({
     set({
       merchantId: null,
       merchantName: null,
+      merchantBannerUrl: null,
       items: [],
+      stashedCarts: {},
       lastUpdatedAt: 0,
       // hydrated intentionally NOT touched — stays true
     });
@@ -138,12 +220,18 @@ export const useCartStore = create<CartState>((set, get) => ({
         const parsed = JSON.parse(raw) as {
           merchantId: string | null;
           merchantName: string | null;
+          merchantBannerUrl?: string | null;
           items: CartItem[];
+          stashedCarts?: Record<string, StashedMerchantCart>;
+          lastUpdatedAt?: number;
         };
         set({
           merchantId: parsed.merchantId ?? null,
           merchantName: parsed.merchantName ?? null,
+          merchantBannerUrl: parsed.merchantBannerUrl ?? null,
           items: Array.isArray(parsed.items) ? parsed.items : [],
+          stashedCarts:
+            parsed.stashedCarts && typeof parsed.stashedCarts === "object" ? parsed.stashedCarts : {},
           lastUpdatedAt: parsed.lastUpdatedAt ?? 0,
           hydrated: true,
         });
@@ -156,10 +244,10 @@ export const useCartStore = create<CartState>((set, get) => ({
   },
 
   persist: async () => {
-    const { merchantId, merchantName, items, lastUpdatedAt } = get();
+    const { merchantId, merchantName, merchantBannerUrl, items, stashedCarts, lastUpdatedAt } = get();
     await setItem(
       STORAGE_KEYS.CART,
-      JSON.stringify({ merchantId, merchantName, items, lastUpdatedAt })
+      JSON.stringify({ merchantId, merchantName, merchantBannerUrl, items, stashedCarts, lastUpdatedAt }),
     );
   },
 }));

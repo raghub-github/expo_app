@@ -25,6 +25,7 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { merchantService, type MerchantSummary } from "@/services/merchant.service";
 import { fetchUserAppCategories, type UserAppCategoryItem } from "@/services/userAppCategory.service";
@@ -34,6 +35,9 @@ import { useDebouncedCoords } from "@/hooks/useDebouncedCoords";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { RestaurantListSkeleton } from "@/components/ShimmerSkeleton";
 import { EmptyRestaurantsNearby } from "@/components/EmptyRestaurantsNearby";
+import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
+import { GatiMitraColors } from "@/constants/gatimitra";
+import { useStoreStatusStore } from "@/store/storeStatusStore";
 
 const { width, height: WINDOW_HEIGHT } = Dimensions.get("window");
 /** Cuisines bottom sheet height (~72% screen): taller drawer, still leaves header/chips visible. */
@@ -116,6 +120,15 @@ const OFFER_PILLS = [
   { id: "flat50", label: "Flat 50% OFF" },
   { id: "hyderabadi", label: "Hyderabadi" },
 ];
+
+type DeliveryFilter = "any" | "30" | "45" | "60";
+const DELIVERY_OPTIONS: { id: DeliveryFilter; label: string }[] = [
+  { id: "any", label: "Any" },
+  { id: "30", label: "Under 30 min" },
+  { id: "45", label: "Under 45 min" },
+  { id: "60", label: "Under 60 min" },
+];
+const CUISINE_OPTIONS = ["North Indian", "South Indian", "Chinese", "Fast Food", "Bakery", "Desserts"];
 
 const DEFAULT_MERCHANT_IMAGE = require("../../../public/img/ndf.png");
 
@@ -222,7 +235,7 @@ const SHEET_IMG_SIZE = Math.round(SHEET_TILE - 6);
 export default function CategoryBrowseScreen() {
   const { slug: slugParam } = useLocalSearchParams<{ slug?: string | string[] }>();
   const router = useRouter();
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const activeCategory = useMemo(() => normalizeCategorySlugParam(slugParam), [slugParam]);
   const railMetrics = useMemo(
@@ -231,6 +244,11 @@ export default function CategoryBrowseScreen() {
   );
   const [searchQuery, setSearchQuery] = useState("");
   const [cuisinesSheetOpen, setCuisinesSheetOpen] = useState(false);
+  const [filterSheetVisible, setFilterSheetVisible] = useState(false);
+  const [deliveryFilter, setDeliveryFilter] = useState<DeliveryFilter>("any");
+  const [selectedCuisines, setSelectedCuisines] = useState<string[]>([]);
+  const [filterHasOffers, setFilterHasOffers] = useState(false);
+  const [openNow, setOpenNow] = useState(true);
 
   const setCategoryRoute = useCallback(
     (slug: string) => {
@@ -259,7 +277,7 @@ export default function CategoryBrowseScreen() {
     queryKey: ["merchants", activeCategory, debouncedCoords?.latitude, debouncedCoords?.longitude],
     queryFn: () =>
       merchantService.getMerchants({
-        limit: 20,
+        limit: activeCategory !== "all" ? 50 : 20,
         ...(debouncedCoords?.latitude != null && debouncedCoords?.longitude != null
           ? { lat: debouncedCoords.latitude, lng: debouncedCoords.longitude }
           : {}),
@@ -336,8 +354,90 @@ export default function CategoryBrowseScreen() {
       return false;
     });
   }, [merchants, searchQ]);
-  const recommended = filteredMerchants.slice(0, 6);
-  const allRestaurants = filteredMerchants;
+
+  const setStatusFromApi = useStoreStatusStore((s) => s.setStatusFromApi);
+  const statusMap = useStoreStatusStore((s) => s.statusMap);
+
+  useEffect(() => {
+    merchants.forEach((m) => {
+      const raw = ((m as { liveStatus?: string }).liveStatus ?? "").toString().trim().toUpperCase();
+      const liveStatus = raw === "OPEN" || raw === "CLOSED" ? (raw as "OPEN" | "CLOSED") : undefined;
+      if (liveStatus) setStatusFromApi(m.id, liveStatus === "OPEN", liveStatus);
+    });
+  }, [merchants, setStatusFromApi]);
+
+  const selectedCategoryLabel = useMemo(() => {
+    if (activeCategory === "all") return null;
+    const deduped = dedupeUserAppCategories(apiSheetCategories ?? []);
+    return deduped.find((r) => String(r.id) === activeCategory)?.name?.trim() ?? null;
+  }, [activeCategory, apiSheetCategories]);
+
+  const categoryScopedMerchants = useMemo(() => {
+    let list = filteredMerchants;
+    if (activeCategory !== "all" && selectedCategoryLabel) {
+      const needle = selectedCategoryLabel.toLowerCase();
+      list = list.filter((m) => {
+        if (m.cuisines?.some((c) => c.toLowerCase().includes(needle) || needle.includes(c.toLowerCase())))
+          return true;
+        if (m.name.toLowerCase().includes(needle)) return true;
+        return false;
+      });
+    }
+    return list;
+  }, [filteredMerchants, activeCategory, selectedCategoryLabel]);
+
+  const displayMerchants = useMemo(() => {
+    return categoryScopedMerchants.filter((m) => {
+      const rawApi = ((m as { liveStatus?: string }).liveStatus ?? "").toString().trim().toUpperCase();
+      const apiStatus = rawApi === "OPEN" || rawApi === "CLOSED" ? rawApi : null;
+      const liveStatus = statusMap[m.id] ?? apiStatus ?? "CLOSED";
+      if (openNow && liveStatus !== "OPEN") return false;
+      if (filterHasOffers && !m.offerText) return false;
+      if (deliveryFilter !== "any" && m.deliveryTime) {
+        const mins = parseInt(m.deliveryTime.replace(/\D/g, ""), 10);
+        if (!Number.isNaN(mins)) {
+          const max = parseInt(deliveryFilter, 10);
+          if (mins > max) return false;
+        }
+      }
+      if (selectedCuisines.length > 0 && m.cuisines?.length) {
+        const hasMatch = selectedCuisines.some((c) =>
+          m.cuisines!.some((mc) => mc.toLowerCase().includes(c.toLowerCase()))
+        );
+        if (!hasMatch) return false;
+      } else if (selectedCuisines.length > 0) return false;
+      return true;
+    });
+  }, [categoryScopedMerchants, statusMap, openNow, deliveryFilter, selectedCuisines, filterHasOffers]);
+
+  const isCategoryFocus = activeCategory !== "all";
+  const recommended = displayMerchants.slice(0, 6);
+  const allRestaurants = displayMerchants;
+
+  const toggleCuisine = useCallback((c: string) => {
+    setSelectedCuisines((prev) =>
+      prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]
+    );
+  }, []);
+
+  const hasActiveFilters =
+    deliveryFilter !== "any" || selectedCuisines.length > 0 || filterHasOffers;
+
+  const activeFilterCount = useMemo(() => {
+    let n = 0;
+    if (deliveryFilter !== "any") n += 1;
+    n += selectedCuisines.length;
+    if (filterHasOffers) n += 1;
+    return n;
+  }, [deliveryFilter, selectedCuisines, filterHasOffers]);
+
+  const clearFilters = useCallback(() => {
+    setDeliveryFilter("any");
+    setSelectedCuisines([]);
+    setFilterHasOffers(false);
+  }, []);
+
+  const applyFilters = useCallback(() => setFilterSheetVisible(false), []);
 
   const openFullSearch = useCallback(() => {
     const q = searchQuery.trim();
@@ -603,10 +703,14 @@ export default function CategoryBrowseScreen() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.pillsWrap}
         >
-          <TouchableOpacity style={styles.filterBtn} activeOpacity={0.8}>
-            <Ionicons name="options-outline" size={18} color={TITLE_DARK} />
-            <Text style={styles.filterBtnText}>Filters</Text>
-            <Ionicons name="chevron-down" size={14} color={TEXT_GRAY} />
+          <TouchableOpacity
+            style={[styles.filterBtn, hasActiveFilters && styles.filterBtnActive]}
+            activeOpacity={0.8}
+            onPress={() => setFilterSheetVisible(true)}
+          >
+            <Ionicons name="options-outline" size={18} color={hasActiveFilters ? "#fff" : TITLE_DARK} />
+            <Text style={[styles.filterBtnText, hasActiveFilters && styles.filterBtnTextActive]}>Filters</Text>
+            <Ionicons name="chevron-down" size={14} color={hasActiveFilters ? "#fff" : TEXT_GRAY} />
           </TouchableOpacity>
           {OFFER_PILLS.map((p) => (
             <TouchableOpacity
@@ -627,71 +731,253 @@ export default function CategoryBrowseScreen() {
           ))}
         </ScrollView>
 
-        {/* Recommended For You */}
-        <Text style={styles.sectionHeading}>RECOMMENDED FOR YOU</Text>
-        {isLoading ? (
-          <View style={styles.skeletonListWrap}>
-            <RestaurantListSkeleton count={3} />
-          </View>
-        ) : (
-          <View style={styles.dishGrid}>
-            {recommended.map((m) => (
-              <DishCard
-                key={m.id}
-                id={m.id}
-                name={m.name}
-                rating={m.avgRating ?? undefined}
-                deliveryTime={m.deliveryTime}
-                offerBadge="FLAT 50% OFF"
-                imageUrl={merchantCardImageUri(m)}
-                onPress={() => router.push({ pathname: "/home/merchant/[id]", params: { id: m.id } })}
-              />
-            ))}
-          </View>
-        )}
-
-        {/* All Restaurants */}
-        <Text style={styles.sectionHeading}>ALL RESTAURANTS</Text>
-        <Text style={styles.sectionSub}>Featured</Text>
-        {isLoading ? (
-          <View style={styles.skeletonListWrap}>
-            <RestaurantListSkeleton count={4} />
-          </View>
-        ) : allRestaurants.length === 0 ? (
-          <EmptyRestaurantsNearby />
-        ) : (
-          allRestaurants.map((m) => {
-            const featuredHero = merchantCardImageUri(m);
-            return (
-            <TouchableOpacity
-              key={m.id}
-              style={styles.featuredCard}
-              onPress={() => router.push({ pathname: "/home/merchant/[id]", params: { id: m.id } })}
-              activeOpacity={0.9}
-            >
-              <View style={styles.featuredImageWrap}>
-                {featuredHero ? (
-                  <Image source={{ uri: featuredHero }} style={styles.featuredImage} resizeMode="cover" />
-                ) : (
-                  <Image source={DEFAULT_MERCHANT_IMAGE} style={styles.featuredImage} resizeMode="cover" />
-                )}
-                <View style={styles.featuredOfferTag}>
-                  <Text style={styles.featuredOfferText}>Flat 50% OFF</Text>
-                </View>
-                <View style={styles.featuredOverlay}>
-                  <Text style={styles.featuredTitle} numberOfLines={1}>{m.name}</Text>
-                  <Text style={styles.featuredPrice}>
-                    ₹{(m as MerchantSummary & { costForTwo?: number }).costForTwo ?? 299} for two
-                  </Text>
-                </View>
+        {isCategoryFocus ? (
+          <>
+            <Text style={styles.sectionHeading}>ALL RESTAURANTS</Text>
+            {selectedCategoryLabel ? (
+              <Text style={[styles.sectionSub, styles.sectionSubAccent]}>{selectedCategoryLabel}</Text>
+            ) : null}
+            {isLoading ? (
+              <View style={styles.skeletonListWrap}>
+                <RestaurantListSkeleton count={5} />
               </View>
-            </TouchableOpacity>
-            );
-          })
+            ) : allRestaurants.length === 0 ? (
+              <EmptyRestaurantsNearby />
+            ) : (
+              <View style={styles.fullBleedList}>
+                {allRestaurants.map((m) => (
+                  <GMRestaurantCardV2 key={m.id} merchant={m} />
+                ))}
+              </View>
+            )}
+          </>
+        ) : (
+          <>
+            <Text style={styles.sectionHeading}>RECOMMENDED FOR YOU</Text>
+            {isLoading ? (
+              <View style={styles.skeletonListWrap}>
+                <RestaurantListSkeleton count={3} />
+              </View>
+            ) : (
+              <View style={styles.dishGrid}>
+                {recommended.map((m) => (
+                  <DishCard
+                    key={m.id}
+                    id={m.id}
+                    name={m.name}
+                    rating={m.avgRating ?? undefined}
+                    deliveryTime={m.deliveryTime}
+                    offerBadge="FLAT 50% OFF"
+                    imageUrl={merchantCardImageUri(m)}
+                    onPress={() => router.push({ pathname: "/home/merchant/[id]", params: { id: m.id } })}
+                  />
+                ))}
+              </View>
+            )}
+
+            <Text style={styles.sectionHeading}>ALL RESTAURANTS</Text>
+            <Text style={styles.sectionSub}>Featured</Text>
+            {isLoading ? (
+              <View style={styles.skeletonListWrap}>
+                <RestaurantListSkeleton count={4} />
+              </View>
+            ) : allRestaurants.length === 0 ? (
+              <EmptyRestaurantsNearby />
+            ) : (
+              allRestaurants.map((m) => {
+                const featuredHero = merchantCardImageUri(m);
+                return (
+                  <TouchableOpacity
+                    key={m.id}
+                    style={styles.featuredCard}
+                    onPress={() => router.push({ pathname: "/home/merchant/[id]", params: { id: m.id } })}
+                    activeOpacity={0.9}
+                  >
+                    <View style={styles.featuredImageWrap}>
+                      {featuredHero ? (
+                        <Image source={{ uri: featuredHero }} style={styles.featuredImage} resizeMode="cover" />
+                      ) : (
+                        <Image source={DEFAULT_MERCHANT_IMAGE} style={styles.featuredImage} resizeMode="cover" />
+                      )}
+                      <View style={styles.featuredOfferTag}>
+                        <Text style={styles.featuredOfferText}>Flat 50% OFF</Text>
+                      </View>
+                      <View style={styles.featuredOverlay}>
+                        <Text style={styles.featuredTitle} numberOfLines={1}>
+                          {m.name}
+                        </Text>
+                        <Text style={styles.featuredPrice}>
+                          ₹{(m as MerchantSummary & { costForTwo?: number }).costForTwo ?? 299} for two
+                        </Text>
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })
+            )}
+          </>
         )}
 
         <BrandingFooter />
       </ScrollView>
+
+      <Modal
+        visible={filterSheetVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setFilterSheetVisible(false)}
+        statusBarTranslucent
+      >
+        <Pressable style={styles.filterOverlay} onPress={() => setFilterSheetVisible(false)}>
+          <Pressable style={styles.filterSheetStack} onPress={() => {}}>
+            <View style={[styles.filterSheetCard, { maxHeight: windowHeight * 0.9 }]}>
+              <LinearGradient
+                colors={[GatiMitraColors.mintSoft, "#FFFFFF"]}
+                locations={[0, 0.35]}
+                style={StyleSheet.absoluteFillObject}
+                pointerEvents="none"
+              />
+              <View style={styles.filterSheetHandleWrap}>
+                <View style={styles.filterSheetHandle} />
+              </View>
+              <View style={styles.filterSheetHeader}>
+                <View style={styles.filterSheetTitleBlock}>
+                  <Text style={styles.filterSheetTitle}>Filters</Text>
+                  <Text style={styles.filterSheetSubtitle}>
+                    {activeFilterCount > 0
+                      ? `${activeFilterCount} active — tap Apply to update the list`
+                      : "Refine delivery time, cuisine, and offers"}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={clearFilters}
+                  hitSlop={12}
+                  disabled={!hasActiveFilters}
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear all filters"
+                  accessibilityState={{ disabled: !hasActiveFilters }}
+                >
+                  <Text style={[styles.filterSheetClear, !hasActiveFilters && styles.filterSheetClearDisabled]}>
+                    Clear all
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView
+                style={{ maxHeight: Math.min(440, windowHeight * 0.5) }}
+                contentContainerStyle={styles.filterSheetScrollContent}
+                showsVerticalScrollIndicator
+                keyboardShouldPersistTaps="handled"
+                bounces={false}
+              >
+                <Text style={styles.filterSectionLabel}>Delivery time</Text>
+                <View style={styles.filterChipsRow}>
+                  {DELIVERY_OPTIONS.map((opt) => (
+                    <TouchableOpacity
+                      key={opt.id}
+                      style={[styles.filterSheetChip, deliveryFilter === opt.id && styles.filterSheetChipActive]}
+                      onPress={() => setDeliveryFilter(opt.id)}
+                      activeOpacity={0.85}
+                    >
+                      <Text
+                        style={[
+                          styles.filterSheetChipText,
+                          deliveryFilter === opt.id && styles.filterSheetChipTextActive,
+                        ]}
+                      >
+                        {opt.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <Text style={styles.filterSectionLabel}>Cuisine</Text>
+                <View style={styles.filterChipsRow}>
+                  {CUISINE_OPTIONS.map((c) => (
+                    <TouchableOpacity
+                      key={c}
+                      style={[
+                        styles.filterSheetChip,
+                        selectedCuisines.includes(c) && styles.filterSheetChipActive,
+                      ]}
+                      onPress={() => toggleCuisine(c)}
+                      activeOpacity={0.85}
+                    >
+                      <Text
+                        style={[
+                          styles.filterSheetChipText,
+                          selectedCuisines.includes(c) && styles.filterSheetChipTextActive,
+                        ]}
+                      >
+                        {c}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <Text style={styles.filterSectionLabel}>Other</Text>
+                <TouchableOpacity
+                  style={[styles.filterSheetRow, openNow && styles.filterSheetRowActive]}
+                  onPress={() => setOpenNow((v) => !v)}
+                  activeOpacity={0.88}
+                >
+                  <View
+                    style={[
+                      styles.filterSheetRowIconWrap,
+                      openNow && styles.filterSheetRowIconWrapActive,
+                    ]}
+                  >
+                    <Ionicons
+                      name="storefront-outline"
+                      size={20}
+                      color={openNow ? "#fff" : GatiMitraColors.primaryMint}
+                    />
+                  </View>
+                  <Text style={[styles.filterSheetRowText, openNow && styles.filterSheetRowTextOnMint]}>
+                    Open restaurants only
+                  </Text>
+                  {openNow ? (
+                    <Ionicons name="checkmark-circle" size={22} color="#fff" style={styles.filterSheetRowTrailing} />
+                  ) : null}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.filterSheetRow, filterHasOffers && styles.filterSheetRowActive]}
+                  onPress={() => setFilterHasOffers((v) => !v)}
+                  activeOpacity={0.88}
+                >
+                  <View
+                    style={[
+                      styles.filterSheetRowIconWrap,
+                      filterHasOffers && styles.filterSheetRowIconWrapActive,
+                    ]}
+                  >
+                    <Ionicons
+                      name="pricetag-outline"
+                      size={20}
+                      color={filterHasOffers ? "#fff" : GatiMitraColors.primaryMint}
+                    />
+                  </View>
+                  <Text style={[styles.filterSheetRowText, filterHasOffers && styles.filterSheetRowTextOnMint]}>
+                    Has offers
+                  </Text>
+                  {filterHasOffers ? (
+                    <Ionicons name="checkmark-circle" size={22} color="#fff" style={styles.filterSheetRowTrailing} />
+                  ) : null}
+                </TouchableOpacity>
+              </ScrollView>
+              <View style={[styles.filterSheetFooter, { paddingBottom: Math.max(insets.bottom, 14) }]}>
+                <TouchableOpacity style={styles.filterApplyBtnOuter} onPress={applyFilters} activeOpacity={0.92}>
+                  <LinearGradient
+                    colors={GatiMitraColors.checkoutGradient}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.filterApplyBtnGradient}
+                  >
+                    <Text style={styles.filterApplyBtnText}>Apply</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -899,7 +1185,8 @@ const styles = StyleSheet.create({
   },
   pillsWrap: {
     paddingHorizontal: PAD,
-    paddingBottom: 16,
+    paddingBottom: 8,
+    marginBottom: 12,
     gap: 10,
   },
   filterBtn: {
@@ -913,7 +1200,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER,
   },
+  filterBtnActive: {
+    backgroundColor: GatiMitraColors.primaryMint,
+    borderColor: GatiMitraColors.primaryMint,
+  },
   filterBtnText: { fontSize: 14, fontWeight: "600", color: TITLE_DARK },
+  filterBtnTextActive: { color: "#fff" },
   pill: {
     flexDirection: "row",
     alignItems: "center",
@@ -950,6 +1242,13 @@ const styles = StyleSheet.create({
     marginHorizontal: PAD,
     marginBottom: 12,
   },
+  sectionSubAccent: {
+    color: GatiMitraColors.primaryMint,
+    fontWeight: "700",
+  },
+  fullBleedList: {
+    paddingBottom: 8,
+  },
   dishGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -961,7 +1260,8 @@ const styles = StyleSheet.create({
     backgroundColor: CARD_BG,
     borderRadius: 16,
     overflow: "hidden",
-    ...SHADOW,
+    borderWidth: 1,
+    borderColor: BORDER,
   },
   dishCardSkeleton: { height: 180, backgroundColor: BORDER },
   dishImageWrap: {
@@ -1023,8 +1323,9 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     borderRadius: 16,
     overflow: "hidden",
-    ...SHADOW,
     backgroundColor: CARD_BG,
+    borderWidth: 1,
+    borderColor: BORDER,
   },
   featuredImageWrap: {
     height: 160,
@@ -1052,4 +1353,195 @@ const styles = StyleSheet.create({
   },
   featuredTitle: { fontSize: 16, fontWeight: "700", color: "#fff" },
   featuredPrice: { fontSize: 13, color: "rgba(255,255,255,0.9)", marginTop: 2 },
+  filterOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
+    justifyContent: "flex-end",
+  },
+  filterSheetStack: {
+    width: "100%",
+    paddingHorizontal: 0,
+    paddingBottom: 0,
+  },
+  filterSheetCard: {
+    width: "100%",
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    overflow: "hidden",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: -4 },
+        shadowOpacity: 0.12,
+        shadowRadius: 18,
+      },
+      android: { elevation: 16 },
+    }),
+  },
+  filterSheetHandleWrap: {
+    paddingTop: 10,
+    paddingBottom: 6,
+    alignItems: "center",
+  },
+  filterSheetHandle: {
+    width: 44,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: "rgba(34, 197, 94, 0.35)",
+  },
+  filterSheetHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    paddingHorizontal: PAD,
+    paddingBottom: 16,
+    gap: 12,
+  },
+  filterSheetTitleBlock: {
+    flex: 1,
+    minWidth: 0,
+  },
+  filterSheetTitle: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: GatiMitraColors.textPrimaryNew,
+    letterSpacing: -0.3,
+  },
+  filterSheetSubtitle: {
+    marginTop: 6,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "500",
+    color: GatiMitraColors.textSecondary,
+  },
+  filterSheetClear: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: GatiMitraColors.primaryMint,
+    paddingTop: 4,
+  },
+  filterSheetClearDisabled: {
+    color: GatiMitraColors.textSecondary,
+    opacity: 0.5,
+  },
+  filterSheetScrollContent: {
+    paddingHorizontal: PAD,
+    paddingBottom: 8,
+  },
+  filterSectionLabel: {
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1.1,
+    textTransform: "uppercase",
+    color: GatiMitraColors.textSecondary,
+    marginBottom: 12,
+    marginTop: 6,
+  },
+  filterChipsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginBottom: 8,
+  },
+  filterSheetChip: {
+    paddingVertical: 11,
+    paddingHorizontal: 16,
+    borderRadius: 999,
+    backgroundColor: GatiMitraColors.mintSoft,
+    borderWidth: 1,
+    borderColor: "rgba(34, 197, 94, 0.22)",
+  },
+  filterSheetChipActive: {
+    backgroundColor: GatiMitraColors.primaryMint,
+    borderColor: GatiMitraColors.primaryMint,
+  },
+  filterSheetChipText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: GatiMitraColors.textPrimaryNew,
+  },
+  filterSheetChipTextActive: {
+    color: "#fff",
+  },
+  filterSheetRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    backgroundColor: GatiMitraColors.mintSoft,
+    borderWidth: 1,
+    borderColor: "rgba(34, 197, 94, 0.22)",
+    marginBottom: 8,
+  },
+  filterSheetRowActive: {
+    backgroundColor: GatiMitraColors.primaryMint,
+    borderColor: GatiMitraColors.primaryMint,
+  },
+  filterSheetRowIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.85)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  filterSheetRowIconWrapActive: {
+    backgroundColor: "rgba(255,255,255,0.2)",
+  },
+  filterSheetRowText: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimaryNew,
+  },
+  filterSheetRowTextOnMint: {
+    color: "#fff",
+  },
+  filterSheetRowTrailing: {
+    marginLeft: 4,
+  },
+  filterSheetFooter: {
+    paddingTop: 12,
+    paddingHorizontal: PAD,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: GatiMitraColors.border,
+    backgroundColor: "#FFFFFF",
+    ...Platform.select({
+      android: { elevation: 10 },
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: -3 },
+        shadowOpacity: 0.06,
+        shadowRadius: 10,
+      },
+    }),
+  },
+  filterApplyBtnOuter: {
+    borderRadius: 16,
+    overflow: "hidden",
+    width: "100%",
+    ...Platform.select({
+      android: { elevation: 3 },
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.12,
+        shadowRadius: 8,
+      },
+    }),
+  },
+  filterApplyBtnGradient: {
+    paddingVertical: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  filterApplyBtnText: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#fff",
+    letterSpacing: 0.2,
+  },
 });

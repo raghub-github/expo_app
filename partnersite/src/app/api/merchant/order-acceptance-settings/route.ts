@@ -8,7 +8,7 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
 /** Stored under merchant_store_settings.settings_metadata */
-export const PLATFORM_FOOD_ALERT_SOUND_SLOT_META_KEY = 'platform_food_alert_sound_slot';
+const PLATFORM_FOOD_ALERT_SOUND_SLOT_META_KEY = 'platform_food_alert_sound_slot';
 
 function getSupabase() {
   return createClient(supabaseUrl, supabaseServiceKey, {
@@ -16,7 +16,7 @@ function getSupabase() {
   });
 }
 
-export type OrderAcceptanceSettings = {
+type OrderAcceptanceSettings = {
   store_type: string;
   acceptance_window_minutes: number;
   alert_sound_enabled: boolean;

@@ -55,6 +55,9 @@ const SHADOW_CARD = {
   elevation: 2,
 };
 
+/** Food-only launch: only these service tiles navigate; others are faded + disabled. */
+const ACTIVE_SERVICE_IDS = new Set<string>(["food"]);
+
 const CATEGORIES = [
   {
     id: "food",
@@ -106,6 +109,8 @@ const CATEGORIES = [
   },
 ] as const;
 
+type HomeServiceCategory = (typeof CATEGORIES)[number];
+
 function CategoryCard({
   title,
   pill,
@@ -114,6 +119,7 @@ function CategoryCard({
   imageSource,
   onPress,
   cardWidth,
+  disabled,
 }: {
   title: string;
   pill: string;
@@ -122,12 +128,18 @@ function CategoryCard({
   imageSource?: ReturnType<typeof require>;
   onPress: () => void;
   cardWidth: number;
+  disabled?: boolean;
 }) {
   return (
     <TouchableOpacity
       onPress={onPress}
-      activeOpacity={0.85}
-      style={[styles.categoryCard, { width: cardWidth }]}
+      disabled={disabled}
+      activeOpacity={disabled ? 1 : 0.85}
+      style={[
+        styles.categoryCard,
+        { width: cardWidth },
+        disabled && styles.categoryCardDisabled,
+      ]}
     >
       {pill ? (
         <View style={[styles.pill, { backgroundColor: pillColor }]}>
@@ -276,18 +288,25 @@ export default function HomeScreen() {
         {/* Category grid – compact cards */}
         {CATEGORIES.length <= MAX_ITEMS_NO_SCROLL ? (
           <View style={styles.gridWrap}>
-            {CATEGORIES.map((c) => (
-              <CategoryCard
-                key={c.id}
-                title={c.title}
-                pill={c.pill}
-                pillColor={c.pillColor}
-                icon={c.icon}
-                imageSource={CATEGORY_IMAGES[c.id]}
-                onPress={() => router.push(c.route as any)}
-                cardWidth={(width - PAD * 2 - GAP) / COLS_DEFAULT}
-              />
-            ))}
+            {CATEGORIES.map((c) => {
+              const active = ACTIVE_SERVICE_IDS.has(c.id);
+              return (
+                <CategoryCard
+                  key={c.id}
+                  title={c.title}
+                  pill={c.pill}
+                  pillColor={c.pillColor}
+                  icon={c.icon}
+                  imageSource={CATEGORY_IMAGES[c.id]}
+                  onPress={() => {
+                    if (!active) return;
+                    router.push(c.route as any);
+                  }}
+                  cardWidth={(width - PAD * 2 - GAP) / COLS_DEFAULT}
+                  disabled={!active}
+                />
+              );
+            })}
           </View>
         ) : (
           (() => {
@@ -297,20 +316,27 @@ export default function HomeScreen() {
             const contentWidth = cols * cardWidth + (cols - 1) * GAP;
             const row0 = CATEGORIES.slice(0, cols);
             const row1 = CATEGORIES.slice(cols, cols * 2);
-            const renderRow = (items: typeof CATEGORIES) => (
+            const renderRow = (items: readonly HomeServiceCategory[]) => (
               <View style={[styles.categoryRow, { marginBottom: items.length ? GAP : 0 }]}>
-                {items.map((c) => (
-                  <CategoryCard
-                    key={c.id}
-                    title={c.title}
-                    pill={c.pill}
-                    pillColor={c.pillColor}
-                    icon={c.icon}
-                    imageSource={CATEGORY_IMAGES[c.id]}
-                    onPress={() => router.push(c.route as any)}
-                    cardWidth={cardWidth}
-                  />
-                ))}
+                {items.map((c) => {
+                  const active = ACTIVE_SERVICE_IDS.has(c.id);
+                  return (
+                    <CategoryCard
+                      key={c.id}
+                      title={c.title}
+                      pill={c.pill}
+                      pillColor={c.pillColor}
+                      icon={c.icon}
+                      imageSource={CATEGORY_IMAGES[c.id]}
+                      onPress={() => {
+                        if (!active) return;
+                        router.push(c.route as any);
+                      }}
+                      cardWidth={cardWidth}
+                      disabled={!active}
+                    />
+                  );
+                })}
               </View>
             );
             return (
@@ -448,6 +474,9 @@ const styles = StyleSheet.create({
     padding: 12,
     minHeight: 118,
     ...SHADOW_CARD,
+  },
+  categoryCardDisabled: {
+    opacity: 0.48,
   },
   pill: {
     alignSelf: "flex-start",

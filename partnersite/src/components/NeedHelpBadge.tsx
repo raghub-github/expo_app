@@ -3,7 +3,17 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { X, Loader2, ChevronRight, ChevronLeft, CheckCircle2, Headphones } from "lucide-react";
-import { useMerchantSession } from "@/context/MerchantSessionContext";
+import { useMerchantSession, type MerchantSessionContextValue } from "@/context/MerchantSessionContext";
+
+const SESSION_OUTSIDE_PROVIDER: MerchantSessionContextValue = {
+  user: null,
+  sessionStatus: null,
+  parent: null,
+  isLoading: true,
+  isAuthenticated: false,
+  logout: async () => {},
+  refetch: () => {},
+};
 
 const badgeColor = "#2ecc9b";
 const HELP_SECTIONS_CACHE_KEY = "mx_help_sections_cache_v1";
@@ -35,7 +45,7 @@ const NeedHelpBadge: React.FC<{
   className?: string;
 }> = ({ inline = false, variant = "pill", className }) => {
   const router = useRouter();
-  const session = useMerchantSession();
+  const session = useMerchantSession() ?? SESSION_OUTSIDE_PROVIDER;
   const [open, setOpen] = useState(false);
   const [sections, setSections] = useState<HelpSection[]>([]);
   const [loadingSections, setLoadingSections] = useState(false);

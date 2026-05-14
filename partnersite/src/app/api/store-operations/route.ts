@@ -7,7 +7,9 @@ import {
   getNextOpenIsoAfterIstCalendarDay,
   isLikelyLegacyEndOfDayIstClose,
   nowInStoreTz,
+  utcInstantFromWallClock,
 } from '@/lib/merchantStoreNextOpenIso';
+import { normalizeWallTimeToHHMM } from '@/lib/wallTimeHHMM';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -83,25 +85,37 @@ function getTodaySlots(
   const today_date = dateFormatter.format(now);
 
   const slots: { start: string; end: string }[] = [];
-  
-  // Check if day is in closed_days array
+
   const closedDays = oh?.closed_days as string[] | null;
-  if (closedDays && Array.isArray(closedDays) && closedDays.includes(dayStr)) {
-    return { today_date, today_slots: slots }; // Day is explicitly closed
+  if (
+    closedDays &&
+    Array.isArray(closedDays) &&
+    closedDays.some((d) => String(d).trim().toLowerCase() === dayStr)
+  ) {
+    return { today_date, today_slots: slots };
   }
-  
+
   if (!oh || oh[`${dayStr}_open`] !== true) {
     return { today_date, today_slots: slots };
   }
   if (oh.is_24_hours === true) {
     return { today_date, today_slots: [{ start: '00:00', end: '23:59' }] };
   }
-  const s1Start = oh[`${dayStr}_slot1_start`] as string | null;
-  const s1End = oh[`${dayStr}_slot1_end`] as string | null;
-  const s2Start = oh[`${dayStr}_slot2_start`] as string | null;
-  const s2End = oh[`${dayStr}_slot2_end`] as string | null;
-  if (s1Start && s1End) slots.push({ start: s1Start, end: s1End });
-  if (s2Start && s2End) slots.push({ start: s2Start, end: s2End });
+  const s1Start = normalizeWallTimeToHHMM(oh[`${dayStr}_slot1_start`]);
+  const s1End = normalizeWallTimeToHHMM(oh[`${dayStr}_slot1_end`]);
+  const s2Start = normalizeWallTimeToHHMM(oh[`${dayStr}_slot2_start`]);
+  const s2End = normalizeWallTimeToHHMM(oh[`${dayStr}_slot2_end`]);
+  const validPair = (a: string | null, b: string | null) =>
+    a != null &&
+    b != null &&
+    !(a === '00:00' && b === '00:00') &&
+    (() => {
+      const [ha, ma] = a.split(':').map(Number);
+      const [hb, mb] = b.split(':').map(Number);
+      return hb * 60 + mb > ha * 60 + ma;
+    })();
+  if (validPair(s1Start, s1End) && s1Start != null && s1End != null) slots.push({ start: s1Start, end: s1End });
+  if (validPair(s2Start, s2End) && s2Start != null && s2End != null) slots.push({ start: s2Start, end: s2End });
   return { today_date, today_slots: slots };
 }
 
@@ -134,6 +148,42 @@ function getStoreLocalTime(now: Date, timezone: string): { dayIndex: number; now
   return { dayIndex, nowMinutes };
 }
 
+function wallClockMinutes(hhmm: string | null): number | null {
+  if (!hhmm) return null;
+  const [h, m] = hhmm.split(':').map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  return (h ?? 0) * 60 + (m ?? 0);
+}
+
+/** True when the day is configured to actually run (24h, or at least one valid non-placeholder slot). */
+function hasValidOperatingSlotsForDay(oh: Record<string, unknown>, day: string): boolean {
+  if (oh.is_24_hours === true) return oh[`${day}_open`] === true;
+  const closedDays = (oh.closed_days as string[] | null) ?? [];
+  if (closedDays.some((d) => String(d).trim().toLowerCase() === day)) return false;
+  if (oh[`${day}_open`] !== true) return false;
+  const g = (k: string) => normalizeWallTimeToHHMM(oh[k]);
+  const s1s = g(`${day}_slot1_start`);
+  const s1e = g(`${day}_slot1_end`);
+  const s2s = g(`${day}_slot2_start`);
+  const s2e = g(`${day}_slot2_end`);
+  const pairOk = (a: string | null, b: string | null) => {
+    if (a == null || b == null) return false;
+    if (a === '00:00' && b === '00:00') return false;
+    const sa = wallClockMinutes(a);
+    const eb = wallClockMinutes(b);
+    return sa != null && eb != null && eb > sa;
+  };
+  const slot1 = pairOk(s1s, s1e);
+  const slot2 = pairOk(s2s, s2e);
+  if (!slot1 && !slot2) return false;
+  if (slot1 && slot2 && s1e && s2s) {
+    const e1 = wallClockMinutes(s1e);
+    const s2 = wallClockMinutes(s2s);
+    if (e1 != null && s2 != null && s2 <= e1) return false;
+  }
+  return true;
+}
+
 function isWithinOperatingHours(
   oh: Record<string, unknown>,
   now: Date,
@@ -147,28 +197,32 @@ function isWithinOperatingHours(
   
   // Check if day is in closed_days array
   const closedDays = oh.closed_days as string[] | null;
-  if (closedDays && Array.isArray(closedDays) && closedDays.includes(day)) {
-    return false; // Day is explicitly closed
+  if (closedDays && Array.isArray(closedDays) && closedDays.some((d) => String(d).trim().toLowerCase() === day)) {
+    return false;
   }
-  
+
   const isOpen = oh[`${day}_open`] === true;
   if (!isOpen) return false;
   if (oh.is_24_hours === true) return true;
 
-  const slot1Start = oh[`${day}_slot1_start`] as string | null;
-  const slot1End = oh[`${day}_slot1_end`] as string | null;
-  const slot2Start = oh[`${day}_slot2_start`] as string | null;
-  const slot2End = oh[`${day}_slot2_end`] as string | null;
+  const slot1Start = normalizeWallTimeToHHMM(oh[`${day}_slot1_start`]);
+  const slot1End = normalizeWallTimeToHHMM(oh[`${day}_slot1_end`]);
+  const slot2Start = normalizeWallTimeToHHMM(oh[`${day}_slot2_start`]);
+  const slot2End = normalizeWallTimeToHHMM(oh[`${day}_slot2_end`]);
 
   const timeToMinutes = (t: string) => {
     const [h, m] = t.split(':').map(Number);
     return (h ?? 0) * 60 + (m ?? 0);
   };
   const inSlot = (start: string, end: string) => {
-    let s = timeToMinutes(start);
+    const s = timeToMinutes(start);
     let e = timeToMinutes(end);
-    if (e <= s) e += 24 * 60;
-    return nowMinutes >= s && nowMinutes < e;
+    if (e <= s) {
+      e += 24 * 60;
+      const nm = nowMinutes < s ? nowMinutes + 24 * 60 : nowMinutes;
+      return nm >= s && nm <= e;
+    }
+    return nowMinutes >= s && nowMinutes <= e;
   };
 
   if (slot1Start && slot1End && inSlot(slot1Start, slot1End)) return true;
@@ -200,6 +254,23 @@ function endOfTodayIst(): Date {
   const d = parts.find((p) => p.type === 'day')?.value ?? '';
   const end = new Date(`${y}-${m}-${d}T23:59:59+05:30`);
   return Number.isNaN(end.getTime()) ? new Date() : end;
+}
+
+/** End of the store’s local calendar day as UTC (for “close for today” when no next slot exists). */
+function endOfCalendarDayInStoreTimeZone(now: Date, timeZone: string): string {
+  const tz = timeZone || 'Asia/Kolkata';
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(now);
+  const y = parts.find((p) => p.type === 'year')?.value ?? '';
+  const mo = (parts.find((p) => p.type === 'month')?.value ?? '1').padStart(2, '0');
+  const da = (parts.find((p) => p.type === 'day')?.value ?? '1').padStart(2, '0');
+  const ymd = `${y}-${mo}-${da}`;
+  const inst = utcInstantFromWallClock(ymd, '23:59:59', tz);
+  return (inst ?? endOfTodayIst()).toISOString();
 }
 
 /**
@@ -296,7 +367,9 @@ export async function GET(req: NextRequest) {
     const dayOpenFlag = !!oh && (oh as any)[`${currentDay}_open`] === true;
     const isTodayScheduledClosed =
       !!oh &&
-      (closedDaysNorm.includes(String(currentDay).toLowerCase()) || !dayOpenFlag);
+      (closedDaysNorm.includes(String(currentDay).toLowerCase()) ||
+        !dayOpenFlag ||
+        (dayOpenFlag && !hasValidOperatingSlotsForDay(oh as Record<string, unknown>, currentDay)));
 
     trace('initial_read', {
       db_operational_status: store?.operational_status ?? null,
@@ -401,68 +474,15 @@ export async function GET(req: NextRequest) {
 
     const availForSchedule = availFinal ?? avail;
 
-    /**
-     * Same guard as backend `store-schedule-engine.ts`: do not auto-close for “outside hours”
-     * immediately after a manual open (merchant explicitly turned the store ON).
-     */
-    let skipOutsideHoursAutoClose = false;
-    const outsideHoursGuardCandidate =
-      effectiveStatus === 'OPEN' &&
-      !manualCloseUntil &&
-      !!oh &&
-      !withinHours &&
-      (availForSchedule?.auto_open_from_schedule !== false);
-
-    if (outsideHoursGuardCandidate) {
-      const sinceIso = new Date(now.getTime() - 2 * 60 * 1000).toISOString();
-      const { data: recentManualOpen, error: recentLogErr } = await db
-        .from('merchant_store_status_log')
-        .select('id')
-        .eq('store_id', storeInternalId)
-        .eq('action', 'manual_open')
-        .gte('created_at', sinceIso)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      const lastAt = availForSchedule?.last_toggled_at
-        ? new Date(String(availForSchedule.last_toggled_at).trim().replace(' ', 'T')).getTime()
-        : NaN;
-      const msSinceManualToggle = Number.isFinite(lastAt) ? now.getTime() - lastAt : null;
-      const recentByAvailabilityRow =
-        availForSchedule?.last_toggle_type === 'MANUAL_OPEN' &&
-        Number.isFinite(lastAt) &&
-        now.getTime() - lastAt < 2 * 60 * 1000;
-      skipOutsideHoursAutoClose = recentManualOpen != null || recentByAvailabilityRow;
-      trace('outside_hours_auto_close_guard', {
-        sinceIso,
-        recent_manual_open_log_row: recentManualOpen ?? null,
-        status_log_query_error: recentLogErr?.message ?? null,
-        avail_last_toggle_type: availForSchedule?.last_toggle_type ?? null,
-        avail_last_toggled_at: availForSchedule?.last_toggled_at ?? null,
-        ms_since_last_toggle: msSinceManualToggle,
-        recent_by_availability_row: recentByAvailabilityRow,
-        skip_outside_hours_auto_close: skipOutsideHoursAutoClose,
-      });
-    } else {
-      trace('outside_hours_auto_close_guard', {
-        evaluated: false,
-        effective_status: effectiveStatus,
-        has_manual_close_until: !!manualCloseUntil,
-        has_operating_hours_row: !!oh,
-        within_hours: withinHours,
-        auto_open_from_schedule: availForSchedule?.auto_open_from_schedule ?? null,
-      });
-    }
-
-    // Auto-close when store is OPEN but outside operating hours (respects schedule)
+    // Auto-close when store is OPEN but outside operating hours (respects schedule).
+    // No "recent manual open" bypass — manual open is rejected unless already within hours.
     let outsideHoursAutoCloseApplied = false;
     if (
       !manualCloseUntil &&
       effectiveStatus === 'OPEN' &&
       (availForSchedule?.auto_open_from_schedule !== false) &&
       oh &&
-      !withinHours &&
-      !skipOutsideHoursAutoClose
+      !withinHours
     ) {
       await db
         .from('merchant_stores')
@@ -484,7 +504,6 @@ export async function GET(req: NextRequest) {
     trace('after_outside_hours_auto_close', {
       applied: outsideHoursAutoCloseApplied,
       effective_status: effectiveStatus,
-      skipped_due_to_recent_manual_open: skipOutsideHoursAutoClose && outsideHoursGuardCandidate,
     });
 
     // Hard rule: if today is scheduled closed, force store CLOSED (even if DB still says OPEN).
@@ -514,16 +533,16 @@ export async function GET(req: NextRequest) {
 
     const nowAfterLogic = new Date();
     const ohRecord = (oh ?? null) as Record<string, unknown> | null;
-    const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz();
+    const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz(storeTz);
     const nextOpenIso =
       ohRecord && Object.keys(ohRecord).length > 0
-        ? getNextOpenIso(ohRecord, dayOfWeek, minutesSinceMidnight, nowAfterLogic) ??
-          getNextOpenDayStartIso(ohRecord, dayOfWeek, nowAfterLogic)
+        ? getNextOpenIso(ohRecord, dayOfWeek, minutesSinceMidnight, nowAfterLogic, storeTz) ??
+          getNextOpenDayStartIso(ohRecord, dayOfWeek, nowAfterLogic, storeTz)
         : null;
     const nextOpenIsoAfterToday =
       ohRecord && Object.keys(ohRecord).length > 0
-        ? getNextOpenIsoAfterIstCalendarDay(ohRecord, dayOfWeek, nowAfterLogic) ??
-          getNextOpenDayStartIso(ohRecord, dayOfWeek, nowAfterLogic)
+        ? getNextOpenIsoAfterIstCalendarDay(ohRecord, dayOfWeek, nowAfterLogic, storeTz) ??
+          getNextOpenDayStartIso(ohRecord, dayOfWeek, nowAfterLogic, storeTz)
         : null;
 
     const { data: storeGated } = await db
@@ -543,7 +562,7 @@ export async function GET(req: NextRequest) {
     let opens_at: string | null =
       displayOperational === 'CLOSED'
         ? manualIso
-          ? isLikelyLegacyEndOfDayIstClose(manualIso, nowAfterLogic)
+          ? isLikelyLegacyEndOfDayIstClose(manualIso, nowAfterLogic, storeTz)
             ? (nextOpenIsoAfterToday ?? nextOpenIso ?? manualIso)
             : manualIso
           : nextOpenIso
@@ -581,7 +600,9 @@ export async function GET(req: NextRequest) {
       restriction_type: displayRestriction,
       today_date,
       today_slots,
-      is_today_scheduled_closed: isTodayClosedBySchedule, // New field: indicates if today is a scheduled closed day
+      is_today_scheduled_closed: isTodayClosedBySchedule,
+      /** True when current time in the store's timezone falls inside a configured slot (or 24h). */
+      within_operating_hours: withinHours,
       last_toggled_by_email: availFinal?.last_toggled_by_email ?? null,
       last_toggled_by_name: availFinal?.last_toggled_by_name ?? null,
       last_toggled_by_id: availFinal?.last_toggled_by_id ?? null,
@@ -709,6 +730,31 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === 'manual_open') {
+      const { data: storeForOpen } = await db
+        .from('merchant_stores')
+        .select('timezone')
+        .eq('id', storeInternalId)
+        .single();
+      const openStoreTz = (storeForOpen as { timezone?: string } | null)?.timezone || 'Asia/Kolkata';
+      const { data: ohOpen } = await db
+        .from('merchant_store_operating_hours')
+        .select('*')
+        .eq('store_id', storeInternalId)
+        .maybeSingle();
+      if (ohOpen) {
+        const withinForOpen = isWithinOperatingHours(ohOpen as Record<string, unknown>, now, openStoreTz);
+        if (!withinForOpen) {
+          return NextResponse.json(
+            {
+              error:
+                'Cannot open: you are outside today’s operating slots, or today is scheduled closed. Adjust Outlet Timings or wait until an active slot.',
+              code: 'OUTSIDE_OPERATING_HOURS',
+            },
+            { status: 400 }
+          );
+        }
+      }
+
       const hadScheduledClosure =
         avail?.manual_close_until != null && String(avail.manual_close_until).trim() !== '';
 
@@ -850,19 +896,25 @@ export async function POST(req: NextRequest) {
       } else if (type === 'manual_hold') {
         mergedManualCloseUntil = null;
       } else if (type === 'today') {
+        const { data: storeCloseTzRow } = await db
+          .from('merchant_stores')
+          .select('timezone')
+          .eq('id', storeInternalId)
+          .single();
+        const closeTz = (storeCloseTzRow as { timezone?: string } | null)?.timezone || 'Asia/Kolkata';
         const { data: ohToday } = await db
           .from('merchant_store_operating_hours')
           .select('*')
           .eq('store_id', storeInternalId)
           .single();
         const ohRec = (ohToday ?? null) as Record<string, unknown> | null;
-        const { dayOfWeek } = nowInStoreTz();
+        const { dayOfWeek } = nowInStoreTz(closeTz);
         const next =
           ohRec && Object.keys(ohRec).length > 0
-            ? getNextOpenIsoAfterIstCalendarDay(ohRec, dayOfWeek, now) ??
-              getNextOpenDayStartIso(ohRec, dayOfWeek, now)
+            ? getNextOpenIsoAfterIstCalendarDay(ohRec, dayOfWeek, now, closeTz) ??
+              getNextOpenDayStartIso(ohRec, dayOfWeek, now, closeTz)
             : null;
-        mergedManualCloseUntil = next ?? endOfTodayIst().toISOString();
+        mergedManualCloseUntil = next ?? endOfCalendarDayInStoreTimeZone(now, closeTz);
       } else {
         const mins = typeof durationMinutes === 'number' ? durationMinutes : parseInt(String(durationMinutes || 30), 10);
         if (mins < 1 || mins > 10080) {

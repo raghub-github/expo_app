@@ -70,6 +70,8 @@ export const addressService = {
       latitude: number;
       longitude: number;
       isDefault: boolean;
+      contactName: string | null;
+      contactMobile: string | null;
     }>
   ): Promise<void> {
     await api.patch(`/v1/me/addresses/${id}`, body);

@@ -713,6 +713,9 @@ export default function ProfilePage() {
       parent = getOnboardingAssetsGalleryPath(parentPk, storeId);
       const ts = galleryBatchTs ?? Date.now();
       filename = `gallery_${ts}_${gallerySlot ?? 0}.${ext}`;
+    } else {
+      const _exhaustive: never = kind;
+      throw new Error(`Unsupported media kind: ${String(_exhaustive)}`);
     }
     const formData = new FormData();
     formData.append("file", file);
