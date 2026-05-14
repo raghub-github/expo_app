@@ -122,6 +122,8 @@ export type CalculateBillPayload = {
   userSegment?: "NEW" | "EXISTING" | "ALL";
   /** Opt-in platform subscription add-on (matches backend SUBSCRIPTION pricing rules). */
   subscriptionOptIn?: boolean;
+  /** 'delivery' (default) or 'self_pickup'. Self-pickup zeroes the delivery fee in billing. */
+  deliveryType?: "delivery" | "self_pickup";
 };
 
 export type CheckoutOffersResponse = {

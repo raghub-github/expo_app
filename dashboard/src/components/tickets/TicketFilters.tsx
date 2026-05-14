@@ -50,9 +50,20 @@ function orderSelectedValues(
   options: Array<{ value: string; label: string }>,
   pinFirstValues: string[]
 ): string[] {
+  // Preserve values that aren't in `options` yet — the options list may still
+  // be loading (agents / groups async fetch) and silently dropping unknown
+  // values would lose URL-derived filters between renders. Known values get
+  // ordered; unknown values are appended at the end in their original order.
   const byValue = new Map(options.map((o) => [o.value, o]));
-  const objs = values.map((v) => byValue.get(v)).filter(Boolean) as Array<{ value: string; label: string }>;
-  return sortMultiSelectPills(objs, pinFirstValues).map((o) => o.value);
+  const known: Array<{ value: string; label: string }> = [];
+  const unknown: string[] = [];
+  for (const v of values) {
+    const hit = byValue.get(v);
+    if (hit) known.push(hit);
+    else unknown.push(v);
+  }
+  const orderedKnown = sortMultiSelectPills(known, pinFirstValues).map((o) => o.value);
+  return [...orderedKnown, ...unknown];
 }
 
 type TicketFiltersProps = {

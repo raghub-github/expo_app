@@ -16,7 +16,6 @@ import {
   Share,
   TextInput,
   Image,
-  Switch,
   Pressable,
   Modal,
   BackHandler,
@@ -100,6 +99,8 @@ export default function CheckoutScreen() {
 
   const [selectedAddressId, setSelectedAddressId] = useState<number | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<string>("upi");
+  /** Delivery / Self pickup toggle. Self pickup waives the delivery fee server-side. */
+  const [deliveryType, setDeliveryType] = useState<"delivery" | "self_pickup">("delivery");
   const [tipAmount, setTipAmount] = useState<TipPreset>(0);
   const [customTip, setCustomTip] = useState("");
   const [donationEnabled, setDonationEnabled] = useState(false);
@@ -442,6 +443,7 @@ export default function CheckoutScreen() {
       donationValue,
       appliedCouponCode,
       subscriptionOptIn,
+      deliveryType,
     ],
     queryFn: () =>
       billingService.calculateBill({
@@ -453,6 +455,7 @@ export default function CheckoutScreen() {
         couponCode: appliedCouponCode ?? undefined,
         serviceType: "FOOD",
         subscriptionOptIn,
+        deliveryType,
         ...(selectedAddress?.city != null && String(selectedAddress.city).trim() !== ""
           ? { cityName: String(selectedAddress.city).trim() }
           : {}),
@@ -606,6 +609,7 @@ export default function CheckoutScreen() {
       items: itemsWithSnapshots,
       addressId: String(selectedAddress.id),
       paymentMethod,
+      deliveryType,
       ...(tipValue > 0 && { tipAmount: tipValue }),
       ...(donationValue > 0 && { donationAmount: donationValue }),
       ...(appliedCouponCode && { couponCode: appliedCouponCode }),
@@ -618,6 +622,7 @@ export default function CheckoutScreen() {
     itemsWithSnapshots,
     selectedAddress,
     paymentMethod,
+    deliveryType,
     tipValue,
     donationValue,
     appliedCouponCode,
@@ -1047,55 +1052,63 @@ export default function CheckoutScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Compact header: back, store address, distance tag */}
+      {/* Zomato-style header: back · merchant name (top, small) + eta + address (with chevron) · share icon */}
       <View style={[styles.header, { paddingTop: insets.top + 4 }]}>
         <View style={styles.headerRow}>
           <TouchableOpacity onPress={() => router.back()} style={styles.headerBack} hitSlop={12}>
-            <Ionicons name="arrow-back" size={24} color={GatiMitraColors.textPrimary} />
+            <Ionicons name="chevron-back" size={26} color={GatiMitraColors.textPrimary} />
           </TouchableOpacity>
           <View style={styles.headerCenter}>
-            <Text style={styles.headerTitle} numberOfLines={2}>
-              {storeFullAddress}
+            <Text style={styles.headerStoreName} numberOfLines={1}>
+              {merchantName ?? storeFullAddress}
             </Text>
-            {uiDistanceKm != null && (
-              <View style={[styles.headerDistanceTag, isDeliveryOutOfRange && styles.headerDistanceTagFar]}>
-                <Ionicons
-                  name="navigate"
-                  size={12}
-                  color={isDeliveryOutOfRange ? GatiMitraColors.warningAmber : GatiMitraColors.emerald}
-                  style={styles.headerDistanceTagIcon}
-                />
-                <Text style={[styles.headerDistanceTagText, isDeliveryOutOfRange && styles.headerDistanceTagTextFar]}>
-                  {uiDistanceKm.toFixed(1)} km away
+            <TouchableOpacity
+              style={styles.headerAddressRow}
+              onPress={() =>
+                router.push({ pathname: "/profile/addresses", params: { forCheckout: "1" } })
+              }
+              activeOpacity={0.7}
+              hitSlop={6}
+            >
+              <Text style={styles.headerEtaText} numberOfLines={1}>
+                <Text style={styles.headerEtaStrong}>{deliveryEta}</Text>
+                <Text style={styles.headerEtaSecondary}>
+                  {" "}to {selectedAddress?.label?.toLowerCase() ?? "address"}
                 </Text>
-              </View>
-            )}
+                <Text style={styles.headerAddressSep}>{"  |  "}</Text>
+                <Text style={styles.headerFullAddressInline} numberOfLines={1}>
+                  {selectedAddress?.fullAddress ?? "Tap to choose address"}
+                </Text>
+              </Text>
+              <Ionicons
+                name="chevron-down"
+                size={16}
+                color={GatiMitraColors.textSecondary}
+                style={styles.headerChevron}
+              />
+            </TouchableOpacity>
           </View>
           <TouchableOpacity
             onPress={handleShareLocation}
-            style={styles.headerShareLocationBtn}
-            hitSlop={8}
+            style={styles.headerShareIconBtn}
+            hitSlop={10}
+            accessibilityLabel="Share location"
           >
-            <Ionicons name="location" size={20} color={GatiMitraColors.emerald} />
-            <Text style={styles.headerShareLocationText}>Share location</Text>
+            <Ionicons name="share-social-outline" size={22} color={GatiMitraColors.textPrimary} />
           </TouchableOpacity>
         </View>
       </View>
 
-      {isDeliveryOutOfRange && (
-        <Animated.View entering={FadeIn.duration(ANIM_DURATION)} style={styles.distanceBanner}>
-          <Ionicons name="warning" size={20} color={GatiMitraColors.warningAmber} />
-          <Text style={styles.distanceBannerText}>
-            Selected address is {uiDistanceKm?.toFixed(1)} km away. Delivery charges may be higher.
-          </Text>
-        </Animated.View>
-      )}
-      {currentVsSelectedDistanceKm != null && currentVsSelectedDistanceKm > 1.5 && (
-        <Animated.View entering={FadeIn.duration(ANIM_DURATION)} style={styles.distanceBanner}>
-          <Ionicons name="information-circle" size={20} color={GatiMitraColors.warningAmber} />
-          <Text style={styles.distanceBannerText}>
-            You are currently {currentVsSelectedDistanceKm.toFixed(1)} km away from the selected delivery address.
-            Order will be delivered to the selected address.
+      {/* One-line distance banner — Zomato style ("Selected address is N km away from your location") */}
+      {(isDeliveryOutOfRange ||
+        (currentVsSelectedDistanceKm != null && currentVsSelectedDistanceKm > 1.5)) && (
+        <Animated.View entering={FadeIn.duration(ANIM_DURATION)} style={styles.distanceBannerCompact}>
+          <Text style={styles.distanceBannerCompactText} numberOfLines={1}>
+            Selected address is{" "}
+            {(isDeliveryOutOfRange ? uiDistanceKm : currentVsSelectedDistanceKm)?.toFixed(
+              (isDeliveryOutOfRange ? uiDistanceKm ?? 0 : currentVsSelectedDistanceKm ?? 0) >= 10 ? 0 : 1
+            )}{" "}
+            km away from your location
           </Text>
         </Animated.View>
       )}
@@ -1148,19 +1161,21 @@ export default function CheckoutScreen() {
                     <Text style={styles.orderItemName} numberOfLines={1}>{item.name}</Text>
                     <Text style={styles.orderItemPrice}>₹{(item.price * item.quantity).toFixed(2)}</Text>
                   </TouchableOpacity>
-                  <View style={styles.orderItemActions}>
+                  <View style={styles.orderItemStepperPill}>
                     <TouchableOpacity
                       onPress={() => updateQuantity(item.menuItemId, -1)}
                       style={styles.qtyBtnSmall}
+                      hitSlop={6}
                     >
-                      <Ionicons name="remove" size={16} color={GatiMitraColors.textPrimary} />
+                      <Ionicons name="remove" size={16} color={GatiMitraColors.emerald} />
                     </TouchableOpacity>
                     <Text style={styles.qtyValueSmall}>{item.quantity}</Text>
                     <TouchableOpacity
                       onPress={() => updateQuantity(item.menuItemId, 1)}
                       style={styles.qtyBtnSmall}
+                      hitSlop={6}
                     >
-                      <Ionicons name="add" size={16} color={GatiMitraColors.textPrimary} />
+                      <Ionicons name="add" size={16} color={GatiMitraColors.emerald} />
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -1324,11 +1339,11 @@ export default function CheckoutScreen() {
                     </View>
                     {inCart ? (
                       <View style={[styles.upsellAddBtnOnImage, styles.upsellAddBtnAdded]}>
-                        <Ionicons name="checkmark" size={14} color="#fff" />
+                        <Text style={styles.upsellAddBtnTextAdded}>ADDED</Text>
                       </View>
                     ) : (
                       <View style={styles.upsellAddBtnOnImage}>
-                        <Ionicons name="add" size={16} color="#fff" />
+                        <Text style={styles.upsellAddBtnText}>ADD</Text>
                       </View>
                     )}
                   </View>
@@ -1384,15 +1399,21 @@ export default function CheckoutScreen() {
               <Text style={styles.editAddressCta}>Change</Text>
               <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
             </Pressable>
-            <View style={styles.leaveAtDoorRow}>
-              <Text style={styles.leaveAtDoorLabel}>Leave at door</Text>
-              <Switch
-                value={leaveAtDoor}
-                onValueChange={setLeaveAtDoor}
-                trackColor={{ false: GatiMitraColors.border, true: GatiMitraColors.mintHighlight }}
-                thumbColor="#fff"
+            {/* "Leave at door" — compact toggle chip (Zomato-style "Add instructions" inline link) */}
+            <TouchableOpacity
+              style={styles.leaveAtDoorChipRow}
+              onPress={() => setLeaveAtDoor(!leaveAtDoor)}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name={leaveAtDoor ? "checkbox" : "square-outline"}
+                size={20}
+                color={leaveAtDoor ? GatiMitraColors.emerald : GatiMitraColors.textSecondary}
               />
-            </View>
+              <Text style={styles.leaveAtDoorChipRowText}>
+                Add instructions for delivery partner
+              </Text>
+            </TouchableOpacity>
             {/* Contact name + phone (Zomato-style: shown inline below address) */}
             {(selectedAddress?.contactName || selectedAddress?.contactMobile) ? (
               <View style={styles.contactRow}>
@@ -1485,151 +1506,149 @@ export default function CheckoutScreen() {
           </View>
         </Animated.View>
 
-        {/* Optional platform subscription (SUBSCRIPTION billing rule) */}
-        <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(95)} style={styles.sectionContrib}>
-          <View style={styles.donationCard}>
-            <View style={styles.donationCardHeader}>
-              <View style={styles.donationIconWrap}>
-                <Ionicons name="shield-checkmark" size={22} color={GatiMitraColors.emerald} />
-              </View>
-              <View style={styles.donationCardTitleWrap}>
-                <Text style={styles.donationCardTitle}>GatiMitra+ add-on</Text>
-                <Text style={styles.donationCardSub}>Optional subscription charge if enabled in billing rules.</Text>
-              </View>
-              <Switch
-                value={subscriptionOptIn}
-                onValueChange={setSubscriptionOptIn}
-                trackColor={{ false: GatiMitraColors.border, true: GatiMitraColors.mintHighlight }}
-                thumbColor="#fff"
-              />
-            </View>
-          </View>
-        </Animated.View>
-
-        {/* Feeding India Donation — attractive card with distinct amount boxes */}
+        {/* Feeding India Donation — Zomato-style compact pill row.
+            No switch: tapping a pill enables donation AND sets the amount.
+            Tapping the active pill again clears the donation. */}
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(100)} style={styles.sectionContrib}>
-          <View style={styles.donationCard}>
-            <View style={styles.donationCardHeader}>
-              <View style={styles.donationIconWrap}>
-                <Ionicons name="restaurant" size={22} color={GatiMitraColors.emerald} />
+          <View style={styles.donationCompactCard}>
+            <View style={styles.donationCompactBanner}>
+              <View style={styles.donationCompactBannerTextWrap}>
+                <Text style={styles.donationCompactTitle}>Serve a brighter future with</Text>
+                <Text style={styles.donationCompactBrand}>Feeding India</Text>
               </View>
-              <View style={styles.donationCardTitleWrap}>
-                <Text style={styles.donationCardTitle}>Support Feeding India !</Text>
-                <Text style={styles.donationCardSub}>Nutritious meals for those in need.</Text>
+              <View style={styles.donationCompactIllustration}>
+                <Ionicons name="restaurant" size={32} color={GatiMitraColors.warmOrange} />
               </View>
-              <Switch
-                value={donationEnabled}
-                onValueChange={(v) => {
-                  setDonationEnabled(v);
-                  if (!v) { setDonationPreset(null); setDonationAmount(""); }
-                }}
-                trackColor={{ false: GatiMitraColors.border, true: GatiMitraColors.mintHighlight }}
-                thumbColor="#fff"
-              />
             </View>
-            {donationEnabled && (
-              <>
-                <Text style={styles.donationBoxLabel}>Choose amount</Text>
-                <View style={styles.donationSuggestRow}>
-                  {([5, 10, 20] as const).map((amt) => (
-                    <Pressable
-                      key={amt}
-                      onPress={() => { setDonationPreset(amt); setDonationAmount(String(amt)); }}
-                      style={({ pressed }) => [
-                        styles.donationAmountBox,
-                        donationPreset === amt && styles.donationAmountBoxActive,
-                        pressed && styles.tipChipPressed,
-                      ]}
-                    >
-                      <Text style={[styles.donationAmountBoxText, donationPreset === amt && styles.donationAmountBoxTextActive]}>₹{amt}</Text>
-                    </Pressable>
-                  ))}
+            <Text style={styles.donationCompactSubtitle}>Donate with every order ›</Text>
+            <View style={styles.donationCompactPillRow}>
+              {([5, 10, 15] as const).map((amt) => {
+                const isActive = donationEnabled && donationPreset === amt;
+                const isMealBadge = amt === 15;
+                return (
                   <Pressable
-                    onPress={() => { setDonationPreset("custom"); setDonationAmount(""); }}
+                    key={amt}
+                    onPress={() => {
+                      if (isActive) {
+                        setDonationEnabled(false);
+                        setDonationPreset(null);
+                        setDonationAmount("");
+                      } else {
+                        setDonationEnabled(true);
+                        setDonationPreset(amt as 5 | 10 | 20);
+                        setDonationAmount(String(amt));
+                      }
+                    }}
                     style={({ pressed }) => [
-                      styles.donationAmountBox,
-                      donationPreset === "custom" && styles.donationAmountBoxActive,
+                      styles.donationCompactPill,
+                      isActive && styles.donationCompactPillActive,
                       pressed && styles.tipChipPressed,
                     ]}
                   >
-                    <Text style={[styles.donationAmountBoxText, donationPreset === "custom" && styles.donationAmountBoxTextActive]}>Custom</Text>
+                    {isMealBadge && <Text style={styles.donationMealBadge}>1 MEAL</Text>}
+                    <Text style={[styles.donationCompactPillText, isActive && styles.donationCompactPillTextActive]}>
+                      ₹{amt}
+                    </Text>
                   </Pressable>
-                </View>
-                <View style={styles.donationInputRow}>
-                  <TextInput
-                    style={styles.donationInput}
-                    placeholder="Or enter amount (₹)"
-                    placeholderTextColor={GatiMitraColors.textSecondary}
-                    keyboardType="numeric"
-                    value={donationAmount}
-                    onChangeText={(t) => {
-                      setDonationAmount(t);
-                      if (t && !["5", "10", "20"].includes(t)) setDonationPreset("custom");
-                    }}
-                  />
-                </View>
-              </>
+                );
+              })}
+              <Pressable
+                onPress={() => {
+                  if (donationEnabled && donationPreset === "custom") {
+                    setDonationEnabled(false);
+                    setDonationPreset(null);
+                    setDonationAmount("");
+                  } else {
+                    setDonationEnabled(true);
+                    setDonationPreset("custom");
+                    setDonationAmount("");
+                  }
+                }}
+                style={({ pressed }) => [
+                  styles.donationCompactPill,
+                  donationEnabled && donationPreset === "custom" && styles.donationCompactPillActive,
+                  pressed && styles.tipChipPressed,
+                ]}
+              >
+                <Text style={[
+                  styles.donationCompactPillText,
+                  donationEnabled && donationPreset === "custom" && styles.donationCompactPillTextActive,
+                ]}>
+                  Custom
+                </Text>
+              </Pressable>
+            </View>
+            {donationEnabled && donationPreset === "custom" && (
+              <View style={styles.donationInputRow}>
+                <TextInput
+                  style={styles.donationInput}
+                  placeholder="Enter amount (₹)"
+                  placeholderTextColor={GatiMitraColors.textSecondary}
+                  keyboardType="numeric"
+                  value={donationAmount}
+                  onChangeText={setDonationAmount}
+                  autoFocus
+                />
+              </View>
             )}
           </View>
         </Animated.View>
 
-        {/* Delivery Partner Tip — attractive card, default 0; user can cancel by selecting No tip */}
+        {/* Delivery Partner Tip — Zomato-style compact pill row */}
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(110)} style={styles.sectionContrib}>
-          <View style={styles.tipCard}>
-            <View style={styles.tipCardHeader}>
-              <View style={styles.tipIconWrap}>
-                <Ionicons name="heart" size={22} color={GatiMitraColors.warmOrange} />
-              </View>
-              <View style={styles.tipCardTitleWrap}>
-                <Text style={styles.tipCardTitle}>Delivery Partner Tip</Text>
-                <Text style={styles.tipCardSub}>100% goes to your delivery partner. Optional.</Text>
+          <View style={styles.donationCompactCard}>
+            <View style={styles.tipCompactHeader}>
+              <Ionicons name="heart" size={18} color={GatiMitraColors.warmOrange} />
+              <View style={styles.tipCompactHeaderTextWrap}>
+                <Text style={styles.tipCompactTitle}>Tip your delivery partner</Text>
+                <Text style={styles.tipCompactSub}>100% goes to them. Tap a pill to add.</Text>
               </View>
             </View>
-            <Text style={styles.tipBoxLabel}>Choose amount</Text>
-            <View style={styles.tipAmountBoxRow}>
+            <View style={styles.donationCompactPillRow}>
+              {([20, 30, 50] as const).map((amt) => {
+                const isActive = tipAmount === amt;
+                return (
+                  <Pressable
+                    key={amt}
+                    onPress={() => setTipAmount(isActive ? 0 : amt)}
+                    style={({ pressed }) => [
+                      styles.donationCompactPill,
+                      isActive && styles.donationCompactPillActive,
+                      pressed && styles.tipChipPressed,
+                    ]}
+                  >
+                    <Text style={[styles.donationCompactPillText, isActive && styles.donationCompactPillTextActive]}>
+                      ₹{amt}
+                    </Text>
+                  </Pressable>
+                );
+              })}
               <Pressable
-                onPress={() => { setTipAmount(0); setCustomTip(""); }}
+                onPress={() => setTipAmount(tipAmount === "custom" ? 0 : "custom")}
                 style={({ pressed }) => [
-                  styles.tipAmountBox,
-                  tipAmount === 0 && styles.tipAmountBoxActive,
+                  styles.donationCompactPill,
+                  tipAmount === "custom" && styles.donationCompactPillActive,
                   pressed && styles.tipChipPressed,
                 ]}
               >
-                <Text style={[styles.tipAmountBoxText, tipAmount === 0 && styles.tipAmountBoxTextActive]}>No tip</Text>
-              </Pressable>
-              {([10, 20, 30, 50] as const).map((amt) => (
-                <Pressable
-                  key={amt}
-                  onPress={() => setTipAmount(amt)}
-                  style={({ pressed }) => [
-                    styles.tipAmountBox,
-                    tipAmount === amt && styles.tipAmountBoxActive,
-                    pressed && styles.tipChipPressed,
-                  ]}
-                >
-                  <Text style={[styles.tipAmountBoxText, tipAmount === amt && styles.tipAmountBoxTextActive]}>₹{amt}</Text>
-                </Pressable>
-              ))}
-              <Pressable
-                onPress={() => setTipAmount("custom")}
-                style={({ pressed }) => [
-                  styles.tipAmountBox,
-                  tipAmount === "custom" && styles.tipAmountBoxActive,
-                  pressed && styles.tipChipPressed,
-                ]}
-              >
-                <Text style={[styles.tipAmountBoxText, tipAmount === "custom" && styles.tipAmountBoxTextActive]}>Custom</Text>
+                <Text style={[
+                  styles.donationCompactPillText,
+                  tipAmount === "custom" && styles.donationCompactPillTextActive,
+                ]}>
+                  Custom
+                </Text>
               </Pressable>
             </View>
             {tipAmount === "custom" && (
               <View style={styles.donationInputRow}>
                 <TextInput
-                  style={styles.customTipInput}
-                  placeholder="Enter amount (₹)"
+                  style={styles.donationInput}
+                  placeholder="Enter tip amount (₹)"
                   placeholderTextColor={GatiMitraColors.textSecondary}
                   keyboardType="numeric"
                   value={customTip}
                   onChangeText={setCustomTip}
+                  autoFocus
                 />
               </View>
             )}
@@ -1785,24 +1804,59 @@ export default function CheckoutScreen() {
         </View>
       )}
 
-      {/* Footer: attractive payment card + pill-shaped Place Order button */}
+      {/* Footer: Delivery / Self Pickup chip + pill-shaped Place Order button.
+          We dropped the "Pay using …" payment-method dropdown because the
+          dummy-payment bypass owns the payment UX, and the only meaningful
+          per-order choice the customer makes here is delivery vs self-pickup
+          (which directly drives whether the delivery fee is charged). */}
       <View style={[styles.fixedBottom, { paddingBottom: insets.bottom + GRID * 2 }]}>
         <View style={styles.footerRow}>
-          <TouchableOpacity
-            style={styles.footerPaymentCard}
-            onPress={() => setPaymentSheetVisible(true)}
-            activeOpacity={0.85}
-          >
-            <View style={styles.footerPaymentIconWrap}>
-              <Ionicons name="card-outline" size={18} color={GatiMitraColors.emerald} />
-            </View>
-            <View style={styles.footerPaymentTextWrap}>
-              <View style={styles.footerPaySingleRow}>
-                <Text style={styles.footerPayLabel} numberOfLines={1}>Pay using {paymentLabel}</Text>
-                <Ionicons name="chevron-up" size={14} color={GatiMitraColors.textSecondary} style={styles.footerPayChevron} />
-              </View>
-            </View>
-          </TouchableOpacity>
+          <View style={styles.deliveryTypeToggle}>
+            <TouchableOpacity
+              style={[
+                styles.deliveryTypeChip,
+                deliveryType === "delivery" && styles.deliveryTypeChipActive,
+              ]}
+              onPress={() => setDeliveryType("delivery")}
+              activeOpacity={0.85}
+            >
+              <Ionicons
+                name="bicycle"
+                size={16}
+                color={deliveryType === "delivery" ? "#fff" : GatiMitraColors.textSecondary}
+              />
+              <Text
+                style={[
+                  styles.deliveryTypeChipText,
+                  deliveryType === "delivery" && styles.deliveryTypeChipTextActive,
+                ]}
+              >
+                Delivery
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.deliveryTypeChip,
+                deliveryType === "self_pickup" && styles.deliveryTypeChipActive,
+              ]}
+              onPress={() => setDeliveryType("self_pickup")}
+              activeOpacity={0.85}
+            >
+              <Ionicons
+                name="walk"
+                size={16}
+                color={deliveryType === "self_pickup" ? "#fff" : GatiMitraColors.textSecondary}
+              />
+              <Text
+                style={[
+                  styles.deliveryTypeChipText,
+                  deliveryType === "self_pickup" && styles.deliveryTypeChipTextActive,
+                ]}
+              >
+                Self pickup
+              </Text>
+            </TouchableOpacity>
+          </View>
           {isStoreClosed ? (
             <View style={styles.footerCtaSlotDisabled}>
               <Text style={styles.ctaDisabledText}>Store closed</Text>
@@ -2064,42 +2118,53 @@ const styles = StyleSheet.create({
     ...GatiMitraColors.elevationShadow,
   },
   headerRow: { flexDirection: "row", alignItems: "center" },
-  headerBack: { padding: GRID, marginRight: GRID },
+  headerBack: { padding: GRID / 2, marginRight: 4 },
   headerCenter: { flex: 1, minWidth: 0 },
-  headerTitle: { fontSize: 17, fontWeight: "700", color: GatiMitraColors.textPrimary },
-  headerDistanceTag: {
-    flexDirection: "row",
-    alignItems: "center",
-    alignSelf: "flex-start",
-    marginTop: 6,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 12,
-    backgroundColor: GatiMitraColors.mintSoft,
+  headerStoreName: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: GatiMitraColors.textSecondary,
+    marginBottom: 2,
   },
-  headerDistanceTagFar: { backgroundColor: GatiMitraColors.warningAmberBg },
-  headerDistanceTagIcon: { marginRight: 4 },
-  headerDistanceTagText: { fontSize: 12, fontWeight: "600", color: GatiMitraColors.emerald },
-  headerDistanceTagTextFar: { color: GatiMitraColors.warningAmber },
-  headerShareLocationBtn: {
+  headerAddressRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 20,
-    backgroundColor: GatiMitraColors.mintSoft,
+    minWidth: 0,
   },
-  headerShareLocationText: { fontSize: 13, fontWeight: "600", color: GatiMitraColors.emerald },
-  distanceBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: GatiMitraColors.warningAmberBg,
-    paddingVertical: 12,
+  headerEtaText: {
+    flex: 1,
+    fontSize: 14,
+    color: GatiMitraColors.textPrimary,
+  },
+  headerEtaStrong: { fontWeight: "700", color: GatiMitraColors.textPrimary },
+  headerEtaSecondary: { fontWeight: "700", color: GatiMitraColors.textPrimary },
+  headerAddressSep: { color: GatiMitraColors.textSecondary, fontWeight: "400" },
+  headerFullAddressInline: {
+    fontSize: 13,
+    color: GatiMitraColors.textSecondary,
+    fontWeight: "400",
+  },
+  headerChevron: { marginLeft: 4 },
+  headerShareIconBtn: {
+    padding: 8,
+    marginLeft: 4,
+  },
+  // One-line, Zomato-style distance banner
+  distanceBannerCompact: {
+    backgroundColor: "#FEF3C7",
+    paddingVertical: 8,
     paddingHorizontal: SPACING,
-    gap: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#FCD34D",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#FCD34D",
   },
-  distanceBannerText: { flex: 1, fontSize: 14, fontWeight: "600", color: "#92400E" },
+  distanceBannerCompactText: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: "#92400E",
+    textAlign: "left",
+  },
   // Zomato-style "You saved ₹X on this order" blue strip
   savedBanner: {
     flexDirection: "row",
@@ -2194,43 +2259,78 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 16, fontWeight: "700", color: GatiMitraColors.textPrimary, flex: 1 },
   etaBadge: { fontSize: 13, fontWeight: "600", color: GatiMitraColors.emerald },
   orderItemsPreview: { gap: GRID },
+  // Zomato-style item row: larger thumb (56), veg dot on top-left, qty badge top-right, name+price stacked, stepper as a bordered pill on the right
   orderItemRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: GRID,
-    borderBottomWidth: 1,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: GatiMitraColors.border,
   },
-  orderItemThumbWrap: { position: "relative", marginRight: GRID * 2 },
-  orderItemThumb: { width: 48, height: 48, borderRadius: 10 },
+  orderItemThumbWrap: { position: "relative", marginRight: 14 },
+  orderItemThumb: { width: 56, height: 56, borderRadius: 12 },
   orderItemThumbPlaceholder: {
-    width: 48,
-    height: 48,
-    borderRadius: 10,
+    width: 56,
+    height: 56,
+    borderRadius: 12,
     backgroundColor: GatiMitraColors.mintSoft,
     alignItems: "center",
     justifyContent: "center",
   },
   nonVegBg: { backgroundColor: "#FED7AA" },
+  // Quantity badge on the thumbnail (top-right, dark pill — Zomato style)
   qtyBadge: {
     position: "absolute",
-    top: -6,
-    right: -6,
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: GatiMitraColors.emerald,
+    top: -4,
+    right: -4,
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: GatiMitraColors.textPrimary,
     alignItems: "center",
     justifyContent: "center",
+    paddingHorizontal: 6,
+    borderWidth: 2,
+    borderColor: "#fff",
+  },
+  qtyBadgeText: { fontSize: 11, fontWeight: "800", color: "#fff" },
+  orderItemInfo: { flex: 1, minWidth: 0, paddingRight: 8 },
+  orderItemName: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary, lineHeight: 20 },
+  orderItemPrice: { fontSize: 14, fontWeight: "600", color: GatiMitraColors.emerald, marginTop: 4 },
+  // Bordered pill stepper — Zomato uses a rounded outlined container, not loose icons
+  orderItemActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    minWidth: 88,
+    justifyContent: "space-between",
     paddingHorizontal: 4,
   },
-  qtyBadgeText: { fontSize: 11, fontWeight: "700", color: "#fff" },
-  orderItemInfo: { flex: 1, minWidth: 0 },
-  orderItemName: { fontSize: 15, fontWeight: "600", color: GatiMitraColors.textPrimary },
-  orderItemPrice: { fontSize: 14, color: GatiMitraColors.emerald, marginTop: 2 },
-  orderItemActions: { flexDirection: "row", alignItems: "center", gap: 4 },
-  qtyBtnSmall: { padding: 4 },
-  qtyValueSmall: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary, minWidth: 20, textAlign: "center" },
+  orderItemStepperPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    minWidth: 92,
+    justifyContent: "space-between",
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: GatiMitraColors.emerald,
+    backgroundColor: "#F0FDF4",
+  },
+  qtyBtnSmall: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  qtyValueSmall: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: GatiMitraColors.emerald,
+    minWidth: 20,
+    textAlign: "center",
+  },
   addMoreRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -2259,15 +2359,16 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   upsellSectionIconPlus: { position: "absolute", right: 4, bottom: 4 },
-  upsellScrollWrap: { height: 158 },
+  // Zomato-style horizontal upsell cards: 132 wide, larger image, white Add pill with red text on image
+  upsellScrollWrap: { height: 230 },
   upsellScrollInner: { flex: 1, minHeight: 0 },
-  upsellScrollContent: { paddingVertical: 4, paddingRight: SPACING, gap: 10, flexGrow: 0 },
+  upsellScrollContent: { paddingVertical: 4, paddingRight: SPACING, gap: 12, flexGrow: 0 },
   upsellCard: {
-    width: 88,
+    width: 132,
     flexShrink: 0,
     marginRight: 0,
     backgroundColor: GatiMitraColors.cardSurface,
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 0,
     borderWidth: 1,
     borderColor: GatiMitraColors.border,
@@ -2277,12 +2378,12 @@ const styles = StyleSheet.create({
   upsellCardAdded: { borderColor: GatiMitraColors.emerald, backgroundColor: GatiMitraColors.mintSoft },
   upsellCardPressed: { backgroundColor: GatiMitraColors.mintSoft, opacity: 0.9 },
   upsellImageWrap: {
-    width: 88,
-    height: 88,
+    width: 132,
+    height: 132,
     position: "relative",
     backgroundColor: GatiMitraColors.mintSoft,
-    borderTopLeftRadius: 12,
-    borderTopRightRadius: 12,
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
     overflow: "hidden",
   },
   upsellImage: { width: "100%", height: "100%", resizeMode: "cover", borderRadius: 0 },
@@ -2292,45 +2393,64 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraColors.mintSoft,
     alignItems: "center",
     justifyContent: "center",
-    borderTopLeftRadius: 12,
-    borderTopRightRadius: 12,
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
   },
   upsellVegBadge: {
     position: "absolute",
-    left: 6,
-    bottom: 6,
-    width: 14,
-    height: 14,
+    left: 8,
+    top: 8,
+    width: 16,
+    height: 16,
     borderRadius: 3,
     backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.1)",
+    borderWidth: 1.5,
+    borderColor: "#22C55E",
     alignItems: "center",
     justifyContent: "center",
   },
-  upsellNonVegBadge: { backgroundColor: "#8B4513" },
+  upsellNonVegBadge: { borderColor: "#DC2626" },
   upsellVegDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#22C55E" },
+  // Zomato's signature: white "ADD" pill at bottom-right of the image with red text
   upsellAddBtnOnImage: {
     position: "absolute",
-    right: 4,
-    bottom: 4,
-    width: 24,
-    height: 24,
-    borderRadius: 6,
-    backgroundColor: "#DC2626",
+    right: 10,
+    bottom: -14,
+    minWidth: 64,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
     alignItems: "center",
     justifyContent: "center",
+    paddingHorizontal: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 3,
   },
-  upsellAddBtnAdded: { backgroundColor: GatiMitraColors.emerald },
+  upsellAddBtnAdded: { borderColor: GatiMitraColors.emerald, backgroundColor: GatiMitraColors.emerald },
+  upsellAddBtnText: { fontSize: 13, fontWeight: "800", color: "#DC2626", letterSpacing: 0.5 },
+  upsellAddBtnTextAdded: { fontSize: 13, fontWeight: "800", color: "#fff", letterSpacing: 0.5 },
   upsellName: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: "600",
     color: GatiMitraColors.textPrimary,
-    marginTop: 6,
-    marginHorizontal: 6,
-    width: 76,
+    marginTop: 24,
+    marginHorizontal: 10,
+    minHeight: 36,
+    lineHeight: 18,
   },
-  upsellPrice: { fontSize: 12, fontWeight: "700", color: GatiMitraColors.emerald, marginTop: 2, marginBottom: 6, marginHorizontal: 6 },
+  upsellPrice: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+    marginTop: 4,
+    marginBottom: 10,
+    marginHorizontal: 10,
+  },
   deliveryEtaRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 },
   deliveryEtaText: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.emerald },
   scheduleRow: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
@@ -2425,6 +2545,100 @@ const styles = StyleSheet.create({
   contributionTitle: { fontSize: 16, fontWeight: "700", color: GatiMitraColors.textPrimary },
   contributionSub: { fontSize: 13, color: GatiMitraColors.textSecondary, marginTop: 4 },
   donationRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  // Zomato-style compact donation / tip card (banner + horizontal pill row)
+  donationCompactCard: {
+    backgroundColor: "#fff",
+    borderRadius: CARD_RADIUS,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: GatiMitraColors.border,
+    overflow: "hidden",
+  },
+  donationCompactBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#E0F2FE",
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+    marginHorizontal: -14,
+    marginTop: -14,
+    paddingHorizontal: 16,
+  },
+  donationCompactBannerTextWrap: { flex: 1, minWidth: 0 },
+  donationCompactTitle: { fontSize: 14, fontWeight: "600", color: GatiMitraColors.textPrimary },
+  donationCompactBrand: { fontSize: 16, fontWeight: "800", color: GatiMitraColors.textPrimary, marginTop: 2 },
+  donationCompactIllustration: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  donationCompactSubtitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: GatiMitraColors.textPrimary,
+    marginBottom: 10,
+  },
+  donationCompactPillRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
+  donationCompactPill: {
+    flex: 1,
+    minWidth: 64,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: GatiMitraColors.border,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#fff",
+    position: "relative",
+  },
+  donationCompactPillActive: {
+    borderColor: GatiMitraColors.emerald,
+    backgroundColor: "#ECFDF5",
+    borderWidth: 2,
+  },
+  donationCompactPillText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+  },
+  donationCompactPillTextActive: { color: GatiMitraColors.emerald },
+  donationMealBadge: {
+    position: "absolute",
+    top: -8,
+    fontSize: 9,
+    fontWeight: "800",
+    color: "#fff",
+    backgroundColor: GatiMitraColors.warmOrange,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    overflow: "hidden",
+    letterSpacing: 0.4,
+  },
+  // Compact tip header (small icon + 2-line text — no big icon wrap, no "Choose amount" line)
+  tipCompactHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
+  tipCompactHeaderTextWrap: { flex: 1, minWidth: 0 },
+  tipCompactTitle: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  tipCompactSub: { fontSize: 12, color: GatiMitraColors.textSecondary, marginTop: 1 },
+  // "Add instructions for delivery partner" - underlined link chip (Zomato style)
+  leaveAtDoorChipRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 10,
+  },
+  leaveAtDoorChipRowText: {
+    flex: 1,
+    fontSize: 14,
+    color: GatiMitraColors.textPrimary,
+    textDecorationLine: "underline",
+    textDecorationStyle: "dotted",
+  },
   donationCard: {
     backgroundColor: GatiMitraColors.cardSurface,
     borderRadius: CARD_RADIUS,
@@ -2726,6 +2940,34 @@ const styles = StyleSheet.create({
     ...GatiMitraColors.elevationShadow,
   },
   footerRow: { flexDirection: "row", alignItems: "stretch", gap: 10 },
+  // Delivery / Self pickup toggle — left side of the footer (replaces payment method card)
+  deliveryTypeToggle: {
+    flexDirection: "column",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 4,
+  },
+  deliveryTypeChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 18,
+    backgroundColor: "#F3F4F6",
+    borderWidth: 1,
+    borderColor: "transparent",
+  },
+  deliveryTypeChipActive: {
+    backgroundColor: GatiMitraColors.emerald,
+    borderColor: GatiMitraColors.emerald,
+  },
+  deliveryTypeChipText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+  },
+  deliveryTypeChipTextActive: { color: "#fff" },
   footerPaymentCard: {
     width: 100,
     minWidth: 100,

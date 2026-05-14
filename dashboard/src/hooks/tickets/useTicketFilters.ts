@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { startTransition } from "react";
 
 export interface TicketFilterState {
@@ -358,20 +358,15 @@ export function buildSearchParams(filters: TicketFilterState) {
 
 export function useTicketFilters() {
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const [filters, dispatch] = useReducer(reducer, searchParams, initFilters);
-  const filtersRef = useRef(filters);
 
   /** Applied filters (from URL) - use for the ticket list so it only updates on Apply */
   const appliedFilters = useMemo(
     () => initFilters(searchParams),
     [searchParams.toString()]
   );
-
-  // Keep filters ref in sync
-  useEffect(() => {
-    filtersRef.current = filters;
-  }, [filters]);
 
   // Always sync draft panel from URL when the query string changes (Apply, Clear, back/forward).
   // Depend on `toString()` so unstable `searchParams` identity does not wipe in-progress draft edits.
@@ -383,21 +378,37 @@ export function useTicketFilters() {
     dispatch({ type: "setMany", values: initFilters(searchParams) });
   }, [urlQueryString, searchParams]);
 
-  // Apply filters on submit only (no auto-sync)
+  // Apply filters on submit only. We close over `filters` directly instead of
+  // going through a ref — using a ref left a window where the ref was stale
+  // relative to the current render (between state commit and the post-commit
+  // effect that synced the ref). With `filters` in the dep array the callback
+  // always sees the latest draft, including chips that were just removed.
+  // We also preserve the current pathname so applying filters from a sub-route
+  // (e.g. opening filters while focused on a ticket detail) keeps the URL.
+  const ticketsBasePath = useMemo(() => {
+    if (!pathname) return "/dashboard/tickets";
+    if (pathname.startsWith("/dashboard/tickets")) return pathname;
+    return "/dashboard/tickets";
+  }, [pathname]);
+
   const applyFilters = useCallback(() => {
-    const filtersParams = buildSearchParams(filtersRef.current).toString();
+    const filtersParams = buildSearchParams(filters).toString();
     const query = filtersParams ? `?${filtersParams}` : "";
     startTransition(() => {
-      router.replace(`/dashboard/tickets${query}`, { scroll: false });
+      router.replace(`${ticketsBasePath}${query}`, { scroll: false });
     });
-  }, [router]);
+  }, [filters, router, ticketsBasePath]);
 
-  /** Clear all filters in the URL and reset the sidebar to defaults (full ticket list). */
+  /** Clear all filters: reset the draft immediately AND blow away URL params.
+   *  Resetting the draft locally is the critical bit — without it the UI lags
+   *  one URL-sync cycle behind, which read as "click Clear, filter still
+   *  shows" especially when React batches the navigation. */
   const clearFilters = useCallback(() => {
+    dispatch({ type: "reset" });
     startTransition(() => {
-      router.replace("/dashboard/tickets", { scroll: false });
+      router.replace(ticketsBasePath, { scroll: false });
     });
-  }, [router]);
+  }, [router, ticketsBasePath]);
 
   /** Apply sort immediately to URL so ticket list/cards auto-shift. Use for toolbar Sort dropdown. */
   const applySort = useCallback(
@@ -407,10 +418,10 @@ export function useTicketFilters() {
       params.set("sortOrder", sortOrder);
       const query = params.toString();
       startTransition(() => {
-        router.replace(`/dashboard/tickets${query ? `?${query}` : ""}`, { scroll: false });
+        router.replace(`${ticketsBasePath}${query ? `?${query}` : ""}`, { scroll: false });
       });
     },
-    [router, searchParams]
+    [router, searchParams, ticketsBasePath]
   );
 
   const updateFilter = useCallback((key: keyof TicketFilterState, value: string) => {
