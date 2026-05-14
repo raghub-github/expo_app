@@ -65,6 +65,12 @@ export type ComputeBillInput = {
   userSegment?: "NEW" | "EXISTING" | "ALL";
   /** Platform subscription add-on at checkout (applies SUBSCRIPTION pricing rules). */
   subscriptionOptIn?: boolean;
+  /**
+   * Delivery type chosen at checkout. When 'self_pickup' the customer collects
+   * from the store and the engine waives the delivery fee (and any
+   * delivery-fee GST line) entirely. Default: 'delivery'.
+   */
+  deliveryType?: "delivery" | "self_pickup";
   /** Must match coupon.offer_audience for promo codes (default CUSTOMER). */
   checkoutAudience?: "CUSTOMER" | "MERCHANT" | "RIDER";
   /** Prior redemptions of this coupon by the current actor (per-user cap). Omitted = 0 for quotes. */
@@ -348,14 +354,17 @@ export async function computeBillForOrder(
     platformOfferGeoBindingEffectiveIds,
     // Canonical delivery fee: always use store-quote output as the single source of truth.
     // Billing should not re-resolve delivery pricing using rate cards / geo rules.
+    // Self-pickup: the customer collects from the store, so every delivery cost
+    // input is forced to zero (and floors are unset so the engine can't
+    // re-introduce a fee via the deliveryMinimumInr fallback).
     deliveryFeeFromRateCard: 0,
-    deliveryFeeFromSlabsGeoV2: quote.delivery_fee,
-    deliverySlabsGeoV2Quote: (quote.slab_quote as any) ?? null,
+    deliveryFeeFromSlabsGeoV2: input.deliveryType === "self_pickup" ? 0 : quote.delivery_fee,
+    deliverySlabsGeoV2Quote: input.deliveryType === "self_pickup" ? null : ((quote.slab_quote as any) ?? null),
     deliverySlabsGeoV2AppliedGeo: null,
     deliveryFeeFromGeo: null,
-    deliveryMinimumInr,
-    deliveryDefaultBaseInr,
-    deliveryDefaultPerKmInr,
+    deliveryMinimumInr: input.deliveryType === "self_pickup" ? 0 : deliveryMinimumInr,
+    deliveryDefaultBaseInr: input.deliveryType === "self_pickup" ? 0 : deliveryDefaultBaseInr,
+    deliveryDefaultPerKmInr: input.deliveryType === "self_pickup" ? 0 : deliveryDefaultPerKmInr,
     tipAmount,
     donationAmount,
     subscriptionOptIn: input.subscriptionOptIn === true,
@@ -398,6 +407,7 @@ export async function computeBillForOrder(
     serviceRadiusKm,
     unserviceableReason: quote.unserviceable_reason ?? (serviceable ? null : "out_of_range"),
     computedAt: (input.now ?? new Date()).toISOString(),
+    deliveryType: input.deliveryType ?? "delivery",
   } as Record<string, unknown>;
 
   return { ok: true, billing, snapshot };

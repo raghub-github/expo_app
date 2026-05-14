@@ -1321,6 +1321,8 @@ export const ordersCore = pgTable(
     placedAt: timestamp("placed_at", { withTimezone: true }),
     paymentStatus: paymentStatusTypeEnum("payment_status"),
     paymentMethod: paymentModeTypeEnum("payment_method"),
+    /** 'delivery' = standard courier delivery, 'self_pickup' = customer collects from store (delivery fee waived). */
+    deliveryType: text("delivery_type").notNull().default("delivery"),
     riskFlagged: boolean("risk_flagged").notNull().default(false),
     riskReason: text("risk_reason"),
     isBulkOrder: boolean("is_bulk_order").notNull().default(false),
@@ -1796,6 +1798,8 @@ export const pendingOrders = pgTable(
     itemsSnapshot: jsonb("items_snapshot").notNull(),
     addressIdUsed: bigint("address_id_used", { mode: "number" }).notNull(),
     paymentMethod: text("payment_method").notNull(),
+    /** Delivery type chosen at checkout. 'delivery' = courier-fulfilled, 'self_pickup' = customer collects from store. */
+    deliveryType: text("delivery_type").notNull().default("delivery"),
     tipAmount: numeric("tip_amount", { precision: 12, scale: 2 }).default("0"),
     donationAmount: numeric("donation_amount", { precision: 12, scale: 2 }).default("0"),
     itemTotal: numeric("item_total", { precision: 12, scale: 2 }).notNull(),

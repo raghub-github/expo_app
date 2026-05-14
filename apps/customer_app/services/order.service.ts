@@ -80,6 +80,8 @@ export type CreateOrderPayload = {
   pickupLon?: number;
   couponCode?: string | null;
   subscriptionOptIn?: boolean;
+  /** 'delivery' (default) or 'self_pickup'. Self-pickup zeroes the delivery fee server-side. */
+  deliveryType?: "delivery" | "self_pickup";
   checkoutMetadata?: CheckoutMetadataPayload;
 };
 

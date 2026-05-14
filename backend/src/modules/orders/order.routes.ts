@@ -211,6 +211,8 @@ export async function orderRoutes(app: FastifyInstance) {
     pickupLat: z.number().optional(),
     pickupLon: z.number().optional(),
     subscriptionOptIn: z.boolean().optional(),
+    /** 'delivery' (default) or 'self_pickup' — waives delivery fee, skips rider dispatch. */
+    deliveryType: z.enum(["delivery", "self_pickup"]).optional(),
   });
 
   app.post(
@@ -259,6 +261,7 @@ export async function orderRoutes(app: FastifyInstance) {
         pickupLat: body.pickupLat,
         pickupLon: body.pickupLon,
         subscriptionOptIn: body.subscriptionOptIn,
+        deliveryType: body.deliveryType,
       });
       if (!result.ok) {
         return reply.status(400).send({ error: result.code, message: result.message });

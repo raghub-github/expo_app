@@ -95,26 +95,67 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ success: false, error: "assignments object required" }, { status: 400 });
     }
 
-    const sql = getSql();
-    await sql`DELETE FROM public.ticket_agent_queue_assignments`;
-
+    // Build the canonical set of rows we want in the table after this PUT.
+    // De-dup secondary against primary so the same group never appears in both
+    // tiers for a single agent.
+    type Row = { systemUserId: number; primary: number[]; secondary: number[] };
+    const desired: Row[] = [];
     for (const [uid, tiers] of Object.entries(raw)) {
       const systemUserId = Number(uid);
       if (!Number.isFinite(systemUserId)) continue;
       const primary = normalizeIds(tiers?.primary);
       const secondary = normalizeIds(tiers?.secondary).filter((id) => !primary.includes(id));
       if (primary.length === 0 && secondary.length === 0) continue;
-
-      await sql`
-        INSERT INTO public.ticket_agent_queue_assignments (system_user_id, primary_group_ids, secondary_group_ids, updated_at)
-        VALUES (
-          ${systemUserId},
-          ${pgBigintArrayLiteral(primary)}::bigint[],
-          ${pgBigintArrayLiteral(secondary)}::bigint[],
-          now()
-        )
-      `;
+      desired.push({ systemUserId, primary, secondary });
     }
+
+    const sql = getSql();
+
+    // All writes inside one transaction so the resulting table state is the
+    // exact `desired` set even under rapid-fire concurrent PUTs from the UI.
+    // Replaces the old "DELETE ALL + INSERT loop" — that pattern raced when
+    // two PUTs overlapped: both deleted, then both inserted the same
+    // system_user_id → unique-constraint violation on
+    // ticket_agent_queue_assignments_pkey.
+    await sql.begin(async (tx) => {
+      // Cast to outer `sql` shape so TypeScript recognizes tx as callable
+      // as a template tag (same pattern used elsewhere in the codebase, e.g.
+      // user-app-categories.ts).
+      const run = tx as unknown as typeof sql;
+
+      // 1. Remove rows for agents no longer assigned to ANY group. When the
+      //    desired set is empty we wipe the whole table.
+      if (desired.length === 0) {
+        await run`DELETE FROM public.ticket_agent_queue_assignments`;
+      } else {
+        const keepIds = desired.map((r) => r.systemUserId);
+        await run`
+          DELETE FROM public.ticket_agent_queue_assignments
+          WHERE system_user_id <> ALL(${keepIds}::bigint[])
+        `;
+      }
+
+      // 2. Upsert each desired row. ON CONFLICT (system_user_id) DO UPDATE
+      //    means concurrent PUTs no longer collide on the primary key — the
+      //    last writer wins for that agent's row, which matches the user's
+      //    intent (latest save reflects what they see in the UI).
+      for (const r of desired) {
+        await run`
+          INSERT INTO public.ticket_agent_queue_assignments
+            (system_user_id, primary_group_ids, secondary_group_ids, updated_at)
+          VALUES (
+            ${r.systemUserId},
+            ${pgBigintArrayLiteral(r.primary)}::bigint[],
+            ${pgBigintArrayLiteral(r.secondary)}::bigint[],
+            now()
+          )
+          ON CONFLICT (system_user_id) DO UPDATE SET
+            primary_group_ids = EXCLUDED.primary_group_ids,
+            secondary_group_ids = EXCLUDED.secondary_group_ids,
+            updated_at = now()
+        `;
+      }
+    });
 
     return NextResponse.json({ success: true, data: { saved: true } });
   } catch (e) {

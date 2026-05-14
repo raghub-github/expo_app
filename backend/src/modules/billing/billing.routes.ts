@@ -59,6 +59,8 @@ const calculateBodySchema = z.object({
   subscriptionOptIn: z.boolean().optional(),
   checkoutAudience: z.enum(["CUSTOMER", "MERCHANT", "RIDER"]).optional(),
   couponRedemptionsByUser: z.number().int().nonnegative().optional(),
+  /** 'delivery' (default) or 'self_pickup' — waives delivery fee on the billing engine side. */
+  deliveryType: z.enum(["delivery", "self_pickup"]).optional(),
 });
 
 function isSimRequest(req: { headers: Record<string, string | string[] | undefined> }): boolean {
@@ -322,6 +324,7 @@ export async function billingRoutes(app: FastifyInstance) {
           subscriptionOptIn: body.subscriptionOptIn,
           checkoutAudience: body.checkoutAudience,
           couponRedemptionsByUser: body.couponRedemptionsByUser,
+          deliveryType: body.deliveryType,
         });
         if (!result.ok) {
           return reply.status(400).send({ error: result.code, message: result.message });

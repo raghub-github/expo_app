@@ -945,6 +945,12 @@ export function ConversationPanel({
   const [noteVisibility, setNoteVisibility] = useState<"private" | "public">("private");
   const [sending, setSending] = useState(false);
   const [sendStatus, setSendStatus] = useState<string | null>(null);
+  /**
+   * Holds the AbortController for the in-flight reply send (upload + POST).
+   * Clicking Discard while sending calls `.abort()` so both fetch requests
+   * are cancelled at the network layer — not just visually dismissed.
+   */
+  const sendAbortRef = useRef<AbortController | null>(null);
   const [composeMode, setComposeMode] = useState<"reply" | "forward">("reply");
   const [toRecipientsInput, setToRecipientsInput] = useState("");
   const [ccRecipientsInput, setCcRecipientsInput] = useState("");
@@ -1294,6 +1300,13 @@ export function ConversationPanel({
       // Dropdown selection; "no_change" / missing = do not change status unless snooze wake rules apply below.
       const statusToSet =
         statusForThisSend && statusForThisSend !== "no_change" ? statusForThisSend : null;
+      // Make this send abortable. Discard button aborts the controller, which
+      // cancels both the attachment upload AND the messages POST at the
+      // network layer (not just hides the UI while the request keeps running).
+      const abortController = new AbortController();
+      sendAbortRef.current?.abort(); // cancel any leftover send first
+      sendAbortRef.current = abortController;
+
       setSending(true);
       setSendStatus(null);
       try {
@@ -1305,6 +1318,7 @@ export function ConversationPanel({
             method: "POST",
             credentials: "include",
             body: formData,
+            signal: abortController.signal,
           });
           const upData = await upRes.json();
           if (!upData.success) {
@@ -1321,6 +1335,7 @@ export function ConversationPanel({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
+          signal: abortController.signal,
           body: JSON.stringify({
             messageText: sanitizedHtml || text || "",
             messageType: composeAsInternalNote ? "INTERNAL_NOTE" : noteVisibility === "public" ? "PUBLIC_NOTE" : "TEXT",
@@ -1470,9 +1485,20 @@ export function ConversationPanel({
             });
           });
         }
-      } catch {
-        setSendStatus("Failed to send");
+      } catch (sendErr) {
+        // Abort: user clicked Discard mid-send. Silent — the Discard handler
+        // already cleared the composer state. Don't surface a "Failed to send"
+        // message because the user explicitly chose to cancel.
+        const isAbort =
+          (sendErr instanceof DOMException && sendErr.name === "AbortError") ||
+          (sendErr as { name?: string } | null)?.name === "AbortError";
+        if (!isAbort) {
+          setSendStatus("Failed to send");
+        }
       } finally {
+        if (sendAbortRef.current === abortController) {
+          sendAbortRef.current = null;
+        }
         setSending(false);
       }
     },
@@ -1529,6 +1555,18 @@ export function ConversationPanel({
   }, []);
 
   const discardDraft = useCallback(() => {
+    // Abort any in-flight send (upload + messages POST). This is the whole
+    // point of the Discard button while sending — previously it only cleared
+    // the composer UI but the network request kept running to completion.
+    if (sendAbortRef.current) {
+      try {
+        sendAbortRef.current.abort();
+      } catch {
+        /* ignore */
+      }
+      sendAbortRef.current = null;
+    }
+    setSending(false);
     setShowDiscardConfirm(false);
     setReplyText("");
     if (replyBodyRef.current) replyBodyRef.current.innerText = "";

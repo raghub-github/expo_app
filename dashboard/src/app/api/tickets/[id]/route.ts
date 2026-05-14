@@ -1038,12 +1038,21 @@ export async function PATCH(
       updateValues.push(body.groupId ?? null);
     }
     if (body.slaDueAt !== undefined) {
-      try {
-        updateFields.push(`sla_due_at = $${updateValues.length + 1}`);
-        updateValues.push(body.slaDueAt ? new Date(body.slaDueAt as string) : null);
-      } catch {
-        // ignore invalid date
+      // Pass the ISO string straight through and let Postgres cast text →
+      // timestamptz. postgres.js is configured with `prepare: false` and the
+      // `unsafe(query, values)` path doesn't reliably serialize Date objects
+      // in simple-query mode (it falls into a Buffer.from() codepath that
+      // throws `ERR_INVALID_ARG_TYPE: Received an instance of Date`).
+      let isoOrNull: string | null = null;
+      if (body.slaDueAt) {
+        const raw = String(body.slaDueAt);
+        const parsed = new Date(raw);
+        if (!Number.isNaN(parsed.getTime())) {
+          isoOrNull = parsed.toISOString();
+        }
       }
+      updateFields.push(`sla_due_at = $${updateValues.length + 1}::timestamptz`);
+      updateValues.push(isoOrNull);
     }
     if (body.tags !== undefined && Array.isArray(body.tags)) {
       updateFields.push(`tags = $${updateValues.length + 1}`);

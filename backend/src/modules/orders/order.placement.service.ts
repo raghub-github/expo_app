@@ -418,6 +418,8 @@ export type PendingOrderInput = {
   pickupLon?: number;
   couponCode?: string | null;
   subscriptionOptIn?: boolean;
+  /** 'delivery' (default) or 'self_pickup'. Self-pickup waives delivery fee in billing. */
+  deliveryType?: "delivery" | "self_pickup";
 };
 
 export type CreatePendingResult =
@@ -519,6 +521,7 @@ export async function createPendingOrder(
       pickupLat: input.pickupLat,
       pickupLon: input.pickupLon,
       subscriptionOptIn,
+      deliveryType: input.deliveryType ?? "delivery",
     });
     if (!billRes.ok) {
       return { ok: false, code: billRes.code, message: billRes.message };
@@ -572,6 +575,7 @@ export async function createPendingOrder(
     itemsSnapshot: items as unknown as Record<string, unknown>, // already normalized
     addressIdUsed: addressId,
     paymentMethod,
+    deliveryType: input.deliveryType ?? "delivery",
     tipAmount: sanitizeNumeric(tipAmount),
     donationAmount: sanitizeNumeric(donationAmount),
     itemTotal: sanitizeNumeric(itemTotal),
@@ -723,6 +727,7 @@ export async function finalizeOrder(
         distanceKm: pending.distanceKm ?? undefined,
         paymentStatus: PAYMENT_STATUS_COMPLETED,
         paymentMethod: paymentMethodEnum,
+        deliveryType: pending.deliveryType ?? "delivery",
         billingSnapshot: pending.billingSnapshot ?? undefined,
         billingRulesetVersion: pending.billingRulesetVersion ?? undefined,
       });
@@ -1016,13 +1021,14 @@ export async function finalizePendingOrderFromWebhook(
         distance_km: string | null;
         finalized_order_id: string | null;
         payment_state: string | null;
+        delivery_type: string | null;
       }>(sql`
         SELECT id, pending_id, customer_id, merchant_store_id, merchant_parent_id,
                item_total, addon_total, grand_total, tip_amount, currency,
                items_snapshot, billing_snapshot, billing_ruleset_version,
                pickup_address_normalized, delivery_address,
                pickup_lat, pickup_lon, drop_lat, drop_lon, distance_km,
-               finalized_order_id, payment_state
+               finalized_order_id, payment_state, delivery_type
         FROM pending_orders
         WHERE razorpay_order_id = ${razorpayOrderId}
         FOR UPDATE
@@ -1053,6 +1059,7 @@ export async function finalizePendingOrderFromWebhook(
             distance_km: string | null;
             finalized_order_id: string | null;
             payment_state: string | null;
+            delivery_type: string | null;
           }
         | undefined;
 
@@ -1116,6 +1123,7 @@ export async function finalizePendingOrderFromWebhook(
         distanceKm: pending.distance_km ?? undefined,
         paymentStatus: "completed" as const,
         paymentMethod: paymentMethodEnum,
+        deliveryType: pending.delivery_type ?? "delivery",
         billingSnapshot: (pending.billing_snapshot as Record<string, unknown> | null) ?? undefined,
         billingRulesetVersion: pending.billing_ruleset_version ?? undefined,
       });
