@@ -136,6 +136,13 @@ function mapBillingToResponse(b: BillingResult, snapshot?: Record<string, unknow
     addonTotal: b.addon_total,
     discountTotal: b.discount_total,
     deliveryFee: b.delivery_fee,
+    deliveryFeeQuotedInr: (() => {
+      if (snapshot == null) return null;
+      const v = (snapshot as { deliveryFeeQuotedInr?: unknown }).deliveryFeeQuotedInr;
+      if (typeof v !== "number" || !Number.isFinite(v)) return null;
+      const x = Math.max(0, v);
+      return x > 0.005 ? x : null;
+    })(),
     platformFee: b.platform_fee,
     packagingFee: b.packaging_fee,
     surgeFee: b.surge_fee,
@@ -218,6 +225,8 @@ export async function billingRoutes(app: FastifyInstance) {
             addonTotal: z.number(),
             discountTotal: z.number(),
             deliveryFee: z.number(),
+            /** Geo/slabs delivery fee before self-pickup waiver; null when unknown. */
+            deliveryFeeQuotedInr: z.number().nullable().optional(),
             platformFee: z.number(),
             packagingFee: z.number(),
             surgeFee: z.number(),
@@ -372,6 +381,7 @@ export async function billingRoutes(app: FastifyInstance) {
         subscriptionOptIn: body.subscriptionOptIn,
         checkoutAudience: body.checkoutAudience,
         couponRedemptionsByUser: body.couponRedemptionsByUser,
+        deliveryType: body.deliveryType,
       });
 
       if (!result.ok) {

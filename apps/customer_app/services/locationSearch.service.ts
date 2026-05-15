@@ -587,13 +587,14 @@ export async function searchLocations(
   sortByDeliveryPriority(results, trimmed, userCoords);
 
   const top = results[0];
-  const looksLikeCity =
-    top &&
-    (top.primary === top.city || (top.area == null && top.city != null)) &&
-    options?.getCityAreas;
-  if (looksLikeCity && top?.city) {
+  const getCityAreas = options?.getCityAreas;
+  if (
+    getCityAreas &&
+    top?.city &&
+    (top.primary === top.city || (top.area == null && top.city != null))
+  ) {
     try {
-      const areas = await options.getCityAreas(top.city);
+      const areas = await getCityAreas(top.city);
       if (options?.signal?.aborted) return results;
       const enrichedAreas = areas.map((loc) =>
         localToEnriched(loc, userCoords, recentKeys)

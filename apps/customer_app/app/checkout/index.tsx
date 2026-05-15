@@ -94,6 +94,9 @@ const CX = {
 
 const GMITRA_PLUS_NAME = "GMitra plus";
 
+/** Feeding India hero graphic (`apps/customer_app/public/img/fed.png`). */
+const FEEDING_INDIA_HERO_ART = require("../../public/img/fed.png");
+
 const SCHEDULE_SLOT_OPTIONS = [
   "11:00 AM - 11:30 AM",
   "11:30 AM - 12:00 PM",
@@ -208,8 +211,6 @@ const PAYMENT_OPTIONS = [
 const TIP_SLIDER_LABELS = [0, 20, 40, 60] as const;
 const TIP_SLIDER_MAX = 60;
 const TIP_SLIDER_THUMB_R = 10;
-/** Half-width of each ₹ label (px) — centers text under tick at 0%, 33⅓%, 66⅔%, 100% of track. */
-const TIP_LABEL_HALF_WIDTH: readonly [number, number, number, number] = [12, 14, 14, 16];
 
 /** Footer delivery / takeaway — active segment + shell border (mint, matches checkout CTAs). */
 const DELIVERY_TOGGLE_ACTIVE = CX.mint;
@@ -249,9 +250,9 @@ export default function CheckoutScreen() {
   const [paymentMethod, setPaymentMethod] = useState<string>("upi");
   /** Delivery / Self pickup toggle. Self pickup waives the delivery fee server-side. */
   const [deliveryType, setDeliveryType] = useState<"delivery" | "self_pickup">("delivery");
+  const [takeawayConfirmVisible, setTakeawayConfirmVisible] = useState(false);
   const [tipInputMode, setTipInputMode] = useState<"slider" | "custom">("slider");
   const [tipSliderValue, setTipSliderValue] = useState(0);
-  const [tipSliderBlockW, setTipSliderBlockW] = useState(0);
   const [customTip, setCustomTip] = useState("");
   const [donationEnabled, setDonationEnabled] = useState(false);
   const [subscriptionOptIn, setSubscriptionOptIn] = useState(false);
@@ -1605,9 +1606,15 @@ export default function CheckoutScreen() {
             <Ionicons name="chevron-back" size={22} color="#1A1A1A" />
           </TouchableOpacity>
           <View style={styles.headerCenter}>
-            <Text style={styles.headerStoreName} numberOfLines={1}>
-              {merchantName ?? storeFullAddress}
-            </Text>
+            {merchantName ? (
+              <Text style={styles.headerStoreName} numberOfLines={1}>
+                {merchantName}
+              </Text>
+            ) : (
+              <Text style={styles.headerStoreNameFallback} numberOfLines={1}>
+                {storeFullAddress}
+              </Text>
+            )}
             <TouchableOpacity
               style={styles.headerAddressRow}
               onPress={openCheckoutAddressSheet}
@@ -2231,7 +2238,7 @@ export default function CheckoutScreen() {
                     hitSlop={10}
                     style={styles.feedingIndiaInfoHit}
                   >
-                    <Ionicons name="information-circle-outline" size={22} color="#1E3A8A" />
+                    <Ionicons name="information-circle-outline" size={20} color="#1E3A8A" />
                   </Pressable>
                 </View>
                 <Text style={styles.feedingIndiaTagline}>
@@ -2239,21 +2246,7 @@ export default function CheckoutScreen() {
                 </Text>
               </View>
               <View style={styles.feedingIndiaArt}>
-                <LinearGradient
-                  colors={["#BFDBFE", "#E0F2FE", "#F8FAFC"]}
-                  style={styles.feedingIndiaArtGradient}
-                />
-                <View style={styles.feedingIndiaArtIconsRow}>
-                  <View style={styles.feedingArtIconRing}>
-                    <Ionicons name="restaurant-outline" size={16} color={CX.mintDark} />
-                  </View>
-                  <View style={styles.feedingArtIconRing}>
-                    <Ionicons name="heart-outline" size={16} color={CX.mintDark} />
-                  </View>
-                  <View style={styles.feedingArtIconRing}>
-                    <Ionicons name="people-outline" size={16} color={CX.mintDark} />
-                  </View>
-                </View>
+                <Image source={FEEDING_INDIA_HERO_ART} style={styles.feedingIndiaFedImage} resizeMode="contain" />
               </View>
             </LinearGradient>
 
@@ -2262,7 +2255,6 @@ export default function CheckoutScreen() {
                 <Text style={styles.feedingIndiaDonateLine}>
                   Donate with <Text style={styles.feedingIndiaDonateBold}>every order</Text>
                 </Text>
-                <Ionicons name="chevron-forward" size={14} color="#111827" />
               </View>
               <View style={styles.feedingInrRowOuter}>
                 <View style={styles.feedingInrPresetsGroup}>
@@ -2319,9 +2311,12 @@ export default function CheckoutScreen() {
                         setDonationPreset("custom");
                         setDonationAmount("");
                       }}
-                      style={({ pressed }) => [styles.feedingInrCustomTrigger, pressed && styles.tipChipPressed]}
+                      style={({ pressed }) => [
+                        styles.checkoutCustomAmtButton,
+                        pressed && { opacity: 0.88 },
+                      ]}
                     >
-                      <Text style={styles.feedingInrPresetAmt}>Custom</Text>
+                      <Text style={styles.checkoutCustomAmtLabel}>Custom</Text>
                     </Pressable>
                   )}
                 </View>
@@ -2341,117 +2336,169 @@ export default function CheckoutScreen() {
           </View>
         </Animated.View>
 
-        {/* Delivery partner tip — slider card (reference-style) */}
+        {/* Delivery partner tip — compact premium card */}
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(110)} style={styles.sectionContrib}>
-          <View style={[styles.donationCompactCard, styles.tipSliderCard]}>
-            <Text style={styles.tipSliderHeading}>{tipValue > 0 ? "Added a tip" : "Add a tip"}</Text>
-            <Text style={styles.tipSliderLead}>
-              Drag for up to ₹60 on the slider, or enter any amount below. Your partner keeps 100% of what you add.
-            </Text>
-
-            <View
-              style={styles.tipSliderBlock}
-              onLayout={(e) => {
-                const w = e.nativeEvent.layout.width;
-                tipSliderTrackWRef.current = w;
-                setTipSliderBlockW(w);
-              }}
-            >
-              <View style={styles.tipSliderTrackMeasure} {...tipTrackPanResponder.panHandlers}>
-                <View style={styles.tipSliderTrackPressable}>
-                  <View style={styles.tipSliderTrackBg}>
-                    <View style={[styles.tipSliderFill, { width: `${tipSliderThumbPercent}%` }]} />
-                  </View>
-                  <View style={styles.tipSliderTicksRow} pointerEvents="none">
-                    {TIP_SLIDER_LABELS.map((_, tickIdx) => (
-                      <View
-                        key={`tick-${tickIdx}`}
-                        style={[
-                          styles.tipSliderTick,
-                          {
-                            left: `${(tickIdx / 3) * 100}%`,
-                            transform: [{ translateX: tickIdx === 3 ? -2 : -1 }],
-                          },
-                        ]}
-                      />
-                    ))}
-                  </View>
-                  <View
-                    pointerEvents="none"
-                    style={[
-                      styles.tipSliderThumb,
-                      {
-                        left: `${tipSliderThumbPercent}%`,
-                        transform: [{ translateX: -TIP_SLIDER_THUMB_R }],
-                      },
-                    ]}
-                  />
+          <View style={styles.tipCardShell}>
+            <LinearGradient
+              colors={[CX.mint, "#14B8A6", "#0D9488"]}
+              start={{ x: 0, y: 0.5 }}
+              end={{ x: 1, y: 0.5 }}
+              style={styles.tipCardTopBand}
+            />
+            <View style={styles.tipCardInner}>
+              <View style={styles.tipCardHeadRow}>
+                <View style={styles.tipCardHeadTitleRow}>
+                  <LinearGradient
+                    colors={["#ECFDF5", "#D1FAE5"]}
+                    style={styles.tipCardIconRing}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                  >
+                    <Ionicons name="heart" size={13} color="#0F7669" />
+                  </LinearGradient>
+                  <Text style={styles.tipCardTitle} numberOfLines={1}>
+                    {tipValue > 0 ? "Tip added" : "Add a tip"}
+                  </Text>
+                </View>
+                <View style={styles.tipCardTrustChip}>
+                  <Text style={styles.tipCardTrustChipText}>100% partner</Text>
                 </View>
               </View>
-              <View style={styles.tipSliderLabelsRow}>
-                {TIP_SLIDER_LABELS.map((v, i) => {
-                  const atStop = tipNearestLabel === v;
-                  const w = tipSliderBlockW;
-                  const half = TIP_LABEL_HALF_WIDTH[i];
-                  const cx = w > 0 ? (i / 3) * w : 0;
-                  let leftPx = w > 0 ? cx - half : 0;
-                  if (i === 0) leftPx = Math.max(0, leftPx);
-                  if (i === 3 && w > 0) leftPx = Math.min(w - half * 2, leftPx);
-                  return (
+              <Text style={styles.tipCardSub} numberOfLines={2}>
+                Slide up to ₹60 or enter any amount — your rider keeps every rupee you add.
+              </Text>
+
+              <View style={styles.tipSliderBlock}>
+                <View style={styles.tipSliderPadH}>
+                  <View
+                    onLayout={(e) => {
+                      tipSliderTrackWRef.current = e.nativeEvent.layout.width;
+                    }}
+                  >
+                    <View style={styles.tipSliderTrackMeasure} {...tipTrackPanResponder.panHandlers}>
+                      <View style={styles.tipSliderTrackPressable}>
+                        <View style={styles.tipSliderTrackRail}>
+                          {tipSliderThumbPercent > 0.25 ? (
+                            <LinearGradient
+                              colors={["#5EEAD4", "#2DB5A0", "#0F7669"]}
+                              start={{ x: 0, y: 0.5 }}
+                              end={{ x: 1, y: 0.5 }}
+                              style={[styles.tipSliderFill, { width: `${tipSliderThumbPercent}%` }]}
+                            />
+                          ) : null}
+                          <View style={styles.tipSliderTicksRow} pointerEvents="none">
+                            {TIP_SLIDER_LABELS.map((_, tickIdx) => (
+                              <View
+                                key={`tick-${tickIdx}`}
+                                style={[
+                                  styles.tipSliderTick,
+                                  {
+                                    left: `${(tickIdx / 3) * 100}%`,
+                                    transform: [{ translateX: -1 }],
+                                  },
+                                ]}
+                              />
+                            ))}
+                          </View>
+                        </View>
+                        <View
+                          pointerEvents="none"
+                          style={[
+                            styles.tipSliderThumb,
+                            {
+                              left: `${tipSliderThumbPercent}%`,
+                              transform: [{ translateX: -TIP_SLIDER_THUMB_R }],
+                            },
+                          ]}
+                        />
+                      </View>
+                    </View>
+                    <View style={styles.tipSliderLabelsRow}>
+                      {TIP_SLIDER_LABELS.map((v, i) => {
+                        const atStop = tipNearestLabel === v;
+                        return (
+                          <Pressable
+                            key={`tip-lbl-${v}`}
+                            onPress={() => {
+                              setTipSliderValue(v);
+                              setTipInputMode("slider");
+                              setCustomTip("");
+                            }}
+                            hitSlop={10}
+                            style={[
+                              styles.tipSliderLabelHitAbs,
+                              {
+                                left: `${(i / 3) * 100}%`,
+                                transform: [{ translateX: "-50%" }],
+                              },
+                            ]}
+                          >
+                            <Text style={[styles.tipSliderLabel, atStop && styles.tipSliderLabelActive]}>₹{v}</Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </View>
+                </View>
+              </View>
+
+              {tipInputMode === "custom" ? (
+                <View style={styles.tipCustomSection}>
+                  <View style={styles.tipCustomSectionHeader}>
+                    <Text style={styles.tipCustomSectionTitle}>Custom tip</Text>
                     <Pressable
-                      key={`tip-lbl-${v}`}
                       onPress={() => {
-                        setTipSliderValue(v);
-                        setTipInputMode("slider");
-                        setCustomTip("");
+                        clearCheckoutTip();
                       }}
                       hitSlop={8}
-                      style={[styles.tipSliderLabelHitAbs, { left: leftPx }]}
+                      style={({ pressed }) => [styles.tipCustomBackChip, pressed && { opacity: 0.9 }]}
                     >
-                      <Text style={[styles.tipSliderLabel, atStop && styles.tipSliderLabelActive]}>₹{v}</Text>
+                      <Ionicons name="options-outline" size={14} color={CX.mintDark} style={styles.tipCustomBackIcon} />
+                      <Text style={styles.tipCustomBackText}>Use slider</Text>
                     </Pressable>
-                  );
-                })}
-              </View>
+                  </View>
+                  <Text style={styles.tipCustomHint}>Enter any amount — your rider keeps every rupee.</Text>
+                  <View style={styles.tipCustomInputShell}>
+                    <Text style={styles.tipCustomRupee}>₹</Text>
+                    <TextInput
+                      style={styles.tipCustomInput}
+                      placeholder="0"
+                      placeholderTextColor="#94A3B8"
+                      keyboardType="decimal-pad"
+                      value={customTip}
+                      onChangeText={setCustomTip}
+                    />
+                  </View>
+                </View>
+              ) : (
+                <Pressable
+                  onPress={() => {
+                    setTipInputMode("custom");
+                    setCustomTip(tipSliderValue > 0 ? String(tipSliderValue) : "");
+                  }}
+                  hitSlop={6}
+                  style={({ pressed }) => [
+                    styles.checkoutCustomAmtButton,
+                    styles.checkoutCustomAmtButtonTip,
+                    pressed && { opacity: 0.88 },
+                  ]}
+                >
+                  <Text style={styles.checkoutCustomAmtLabel}>Custom</Text>
+                </Pressable>
+              )}
+
+              {tipValue > 0 ? (
+                <LinearGradient
+                  colors={["#F5F3FF", "#EDE9FE", "#E9D5FF"]}
+                  start={{ x: 0, y: 0.5 }}
+                  end={{ x: 1, y: 0.5 }}
+                  style={styles.tipCardFooterBar}
+                >
+                  <Text style={styles.tipCardFooterLabel}>Tip added</Text>
+                  <Text style={styles.tipCardFooterValue}>+₹{tipValue.toFixed(0)}</Text>
+                </LinearGradient>
+              ) : null}
             </View>
-
-            <Pressable
-              onPress={() => {
-                if (tipInputMode === "custom") {
-                  clearCheckoutTip();
-                } else {
-                  setTipInputMode("custom");
-                  setCustomTip(tipSliderValue > 0 ? String(tipSliderValue) : "");
-                }
-              }}
-              hitSlop={6}
-              style={styles.tipCardOtherRow}
-            >
-              <Text style={styles.tipCardOtherText}>
-                {tipInputMode === "custom" ? "Use slider amounts" : "Enter a different amount"}
-              </Text>
-            </Pressable>
-
-            {tipInputMode === "custom" ? (
-              <View style={styles.tipCustomInputRow}>
-                <Text style={styles.tipCustomRupee}>₹</Text>
-                <TextInput
-                  style={styles.tipCustomInput}
-                  placeholder="Amount"
-                  placeholderTextColor={GatiMitraColors.textSecondary}
-                  keyboardType="numeric"
-                  value={customTip}
-                  onChangeText={setCustomTip}
-                />
-              </View>
-            ) : null}
-
-            {tipValue > 0 ? (
-              <View style={styles.tipCardFooterBar}>
-                <Text style={styles.tipCardFooterLabel}>Tip added</Text>
-                <Text style={styles.tipCardFooterValue}>+₹{tipValue.toFixed(0)}</Text>
-              </View>
-            ) : null}
           </View>
         </Animated.View>
 
@@ -2635,7 +2682,10 @@ export default function CheckoutScreen() {
                 styles.deliveryTypeSeg,
                 deliveryType === "self_pickup" && styles.deliveryTypeSegActive,
               ]}
-              onPress={() => setDeliveryType("self_pickup")}
+              onPress={() => {
+                if (deliveryType === "self_pickup") return;
+                setTakeawayConfirmVisible(true);
+              }}
               activeOpacity={0.88}
             >
               <MaterialCommunityIcons
@@ -2721,6 +2771,118 @@ export default function CheckoutScreen() {
           <Text style={styles.codUnavailableFooter}>Cash on Delivery is currently unavailable in your area.</Text>
         </View>
       </View>
+
+      <Modal
+        visible={takeawayConfirmVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setTakeawayConfirmVisible(false)}
+      >
+        <View style={styles.takeawayConfirmBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setTakeawayConfirmVisible(false)} />
+          <Animated.View entering={FadeInDown.duration(300)} style={styles.takeawayConfirmCard}>
+            <LinearGradient
+              colors={["#0D9488", "#14B8A6", "#2DD4BF"]}
+              start={{ x: 0, y: 1 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.takeawayConfirmHero}
+            >
+              <Pressable
+                style={({ pressed }) => [styles.takeawayConfirmCloseFab, pressed && { opacity: 0.85 }]}
+                onPress={() => setTakeawayConfirmVisible(false)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={20} color="#0F7669" />
+              </Pressable>
+              <View style={styles.takeawayConfirmHeroGlow} pointerEvents="none" />
+              <View style={styles.takeawayConfirmIconRing}>
+                <MaterialCommunityIcons name="shopping-outline" size={26} color="#0F7669" />
+              </View>
+              <Text style={styles.takeawayConfirmHeroKicker}>SELF PICKUP</Text>
+              <Text style={styles.takeawayConfirmHeroLine} numberOfLines={1}>
+                Pick up when ready at the counter
+              </Text>
+            </LinearGradient>
+
+            <View style={styles.takeawayConfirmBody}>
+              <Text style={styles.takeawayConfirmTitle}>Switch to takeaway?</Text>
+              <Text style={styles.takeawayConfirmSubtitle}>
+                {merchantName
+                  ? `You will pick up from ${merchantName}.`
+                  : "You will pick up from the restaurant."}{" "}
+                We will refresh your bill without delivery fee.
+              </Text>
+
+              <View style={styles.takeawayConfirmPerks}>
+                <View style={styles.takeawayConfirmPerkRow}>
+                  <View style={styles.takeawayConfirmPerkIcon}>
+                    <Ionicons name="walk-outline" size={16} color={CX.mintDark} />
+                  </View>
+                  <Text style={styles.takeawayConfirmPerkText}>Pickup at the store — no doorstep delivery</Text>
+                </View>
+                <View style={styles.takeawayConfirmPerkRow}>
+                  <View style={styles.takeawayConfirmPerkIcon}>
+                    <Ionicons name="pricetag-outline" size={16} color={CX.mintDark} />
+                  </View>
+                  <Text style={styles.takeawayConfirmPerkText}>Delivery fee drops from your total instantly</Text>
+                </View>
+                <View style={styles.takeawayConfirmPerkRow}>
+                  <View style={styles.takeawayConfirmPerkIcon}>
+                    <Ionicons name="swap-horizontal-outline" size={16} color={CX.mintDark} />
+                  </View>
+                  <Text style={styles.takeawayConfirmPerkText}>Change back to delivery before placing the order</Text>
+                </View>
+              </View>
+
+              <View style={styles.takeawayConfirmBtnStack}>
+                <Pressable
+                  onPress={() => {
+                    setDeliveryType("self_pickup");
+                    setTakeawayConfirmVisible(false);
+                  }}
+                  style={({ pressed }) => [styles.takeawayConfirmPrimaryShadow, pressed && styles.takeawayConfirmPressDim]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Confirm takeaway"
+                >
+                  <LinearGradient
+                    colors={["#34D399", "#2DB5A0", "#0D9488"]}
+                    start={{ x: 0, y: 0.5 }}
+                    end={{ x: 1, y: 0.5 }}
+                    style={styles.takeawayConfirmPrimaryGradient}
+                  >
+                    <Text style={styles.takeawayConfirmPrimaryLabel}>Confirm takeaway</Text>
+                    <Ionicons name="arrow-forward-circle" size={20} color="#FFFFFF" style={styles.takeawayConfirmPrimaryChevron} />
+                  </LinearGradient>
+                </Pressable>
+
+                <Pressable
+                  onPress={() => setTakeawayConfirmVisible(false)}
+                  style={({ pressed }) => [
+                    styles.takeawayConfirmSecondaryOuter,
+                    pressed && styles.takeawayConfirmPressDim,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Keep delivery"
+                >
+                  <View style={styles.takeawayConfirmSecondaryInner}>
+                    <View style={styles.takeawayConfirmSecondaryIconWrap}>
+                      <Ionicons name="bicycle" size={18} color={CX.mintDark} />
+                    </View>
+                    <Text style={styles.takeawayConfirmSecondaryBtnText} numberOfLines={2}>
+                      Keep delivery to my address
+                    </Text>
+                    <View style={styles.takeawayConfirmSecondaryChevronWrap}>
+                      <Ionicons name="chevron-forward" size={18} color={CX.mintDark} />
+                    </View>
+                  </View>
+                </Pressable>
+              </View>
+            </View>
+          </Animated.View>
+        </View>
+      </Modal>
 
       {editingItem && merchantId && (
         <ItemCustomizationSheet
@@ -3588,9 +3750,22 @@ export default function CheckoutScreen() {
                   {visibleDiscounts.map((c, idx) => (
                     <BillRow key={`sheet-dsc-${idx}`} label={c.label} value={`-₹${c.amount.toFixed(2)}`} green />
                   ))}
-                  {serverBill.deliveryFee > 0.005 && (
+                  {serverBill.deliveryFee > 0.005 && deliveryType !== "self_pickup" ? (
                     <BillRow label={deliveryFeeLabel} value={`₹${serverBill.deliveryFee.toFixed(2)}`} />
-                  )}
+                  ) : null}
+                  {deliveryType === "self_pickup" &&
+                  serverBill.deliveryFeeQuotedInr != null &&
+                  serverBill.deliveryFeeQuotedInr > 0.005 ? (
+                    <View style={[styles.billRow, styles.billRowTakeawayDelivery]}>
+                      <View style={styles.billRowLabelCol}>
+                        <Text style={styles.billLabel}>{deliveryFeeLabel}</Text>
+                        <Text style={styles.billWaivedHint}>Skip the wait, skip the fee . </Text>
+                      </View>
+                      <Text style={[styles.billValue, styles.billValueStrike]}>
+                        ₹{serverBill.deliveryFeeQuotedInr.toFixed(2)}
+                      </Text>
+                    </View>
+                  ) : null}
                   {gstAndOtherBreakdown != null && gstAndOtherBreakdown.total > 0.005 && (
                     <GstOtherChargesRow
                       label="GST & other charges"
@@ -3787,6 +3962,15 @@ const styles = StyleSheet.create({
   },
   headerCenter: { flex: 1, minWidth: 0 },
   headerStoreName: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#111827",
+    marginBottom: 1,
+    lineHeight: 20,
+    paddingBottom: 0,
+    ...Platform.select({ android: { includeFontPadding: false } }),
+  },
+  headerStoreNameFallback: {
     fontSize: 13,
     fontWeight: "500",
     color: "#4B5563",
@@ -4048,7 +4232,7 @@ const styles = StyleSheet.create({
   scroll: { flex: 1, backgroundColor: "#F5F6F8" },
   scrollContent: { paddingHorizontal: 12 },
   section: { marginTop: 0, marginBottom: 10 },
-  sectionContrib: { marginBottom: 18 },
+  sectionContrib: { marginBottom: 12 },
   sectionTitle: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary, marginBottom: 8 },
   sectionTitleSmall: {
     fontSize: 13,
@@ -4749,6 +4933,9 @@ const styles = StyleSheet.create({
   billSkeletonLast: { width: "60%" },
   billSkeletonLastLine: { height: 18, borderRadius: 8, width: "60%" },
   billRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 6 },
+  billRowTakeawayDelivery: { alignItems: "flex-start" },
+  billRowLabelCol: { flex: 1, minWidth: 0, paddingRight: 10 },
+  billWaivedHint: { fontSize: 11, fontWeight: "500", color: "#64748B", marginTop: 3, lineHeight: 14 },
   billRowLabelWithInfo: { flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 },
   billLabel: { fontSize: 13, color: GatiMitraColors.textSecondary },
   gstModalBackdrop: {
@@ -4783,6 +4970,226 @@ const styles = StyleSheet.create({
   gstModalDivider: { height: 1, backgroundColor: GatiMitraColors.border, marginVertical: 4 },
   gstModalTotalLabel: { fontSize: 14, fontWeight: "800", color: GatiMitraColors.textPrimary },
   gstModalTotalValue: { fontSize: 14, fontWeight: "800", color: GatiMitraColors.textPrimary },
+  takeawayConfirmBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.52)",
+    justifyContent: "center",
+    paddingHorizontal: 20,
+    position: "relative",
+  },
+  takeawayConfirmCard: {
+    width: "100%",
+    maxWidth: 348,
+    alignSelf: "center",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(45, 181, 160, 0.28)",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  takeawayConfirmHero: {
+    paddingTop: 22,
+    paddingBottom: 12,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    position: "relative",
+    overflow: "hidden",
+  },
+  takeawayConfirmCloseFab: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    zIndex: 4,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.94)",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  takeawayConfirmHeroGlow: {
+    position: "absolute",
+    width: 160,
+    height: 160,
+    borderRadius: 80,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    top: -70,
+    right: -50,
+  },
+  takeawayConfirmIconRing: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 6,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.55)",
+    shadowColor: "#064E3B",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  takeawayConfirmHeroKicker: {
+    fontSize: 10,
+    fontWeight: "900",
+    color: "rgba(255,255,255,0.92)",
+    letterSpacing: 2,
+    marginBottom: 3,
+  },
+  takeawayConfirmHeroLine: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.9)",
+    textAlign: "center",
+    lineHeight: 16,
+    paddingHorizontal: 12,
+  },
+  takeawayConfirmBody: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 16,
+  },
+  takeawayConfirmTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#0F172A",
+    letterSpacing: -0.35,
+  },
+  takeawayConfirmSubtitle: {
+    marginTop: 5,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "500",
+    color: "#64748B",
+  },
+  takeawayConfirmPerks: {
+    marginTop: 11,
+    backgroundColor: "#F0FDFA",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(45, 181, 160, 0.16)",
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+    gap: 8,
+  },
+  takeawayConfirmPerkRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 9,
+  },
+  takeawayConfirmPerkIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 9,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(45, 181, 160, 0.22)",
+    marginTop: 1,
+  },
+  takeawayConfirmPerkText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "600",
+    color: "#334155",
+  },
+  takeawayConfirmBtnStack: {
+    marginTop: 14,
+    gap: 9,
+  },
+  takeawayConfirmPrimaryShadow: {
+    borderRadius: 14,
+    overflow: "hidden",
+    shadowColor: "#0D9488",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.28,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  takeawayConfirmPrimaryGradient: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 13,
+    paddingHorizontal: 18,
+    minHeight: 50,
+  },
+  takeawayConfirmPrimaryLabel: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#FFFFFF",
+    letterSpacing: 0.15,
+  },
+  takeawayConfirmPrimaryChevron: {
+    marginLeft: 8,
+  },
+  takeawayConfirmSecondaryOuter: {
+    width: "100%",
+    borderRadius: 14,
+    overflow: "hidden",
+    borderWidth: 2,
+    borderColor: "#249682",
+    backgroundColor: "#ECFDF5",
+    shadowColor: "#0D9488",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  takeawayConfirmSecondaryInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 50,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    width: "100%",
+  },
+  takeawayConfirmSecondaryIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+    borderColor: "rgba(36, 150, 130, 0.45)",
+  },
+  takeawayConfirmSecondaryBtnText: {
+    flex: 1,
+    marginLeft: 11,
+    marginRight: 8,
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#0F172A",
+    letterSpacing: 0.1,
+    lineHeight: 19,
+  },
+  takeawayConfirmSecondaryChevronWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+    borderColor: "rgba(36, 150, 130, 0.35)",
+  },
+  takeawayConfirmPressDim: { opacity: 0.88 },
   billValue: { fontSize: 13, color: GatiMitraColors.textPrimary },
   billValueBold: { fontWeight: "800", fontSize: 15 },
   billValueGreen: { color: GatiMitraColors.emerald, fontWeight: "600" },
@@ -4852,120 +5259,253 @@ const styles = StyleSheet.create({
     color: GatiMitraColors.textPrimary,
   },
   donationCompactPillTextActive: { color: CX.mint },
-  tipSliderCard: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 16,
+  tipCardShell: {
+    borderRadius: 14,
+    overflow: "hidden",
+    backgroundColor: "#FFFFFF",
     borderWidth: 1,
-    borderColor: "#E8E8E8",
+    borderColor: "rgba(45, 181, 160, 0.28)",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    elevation: 3,
   },
-  tipSliderHeading: { fontSize: 16, fontWeight: "800", color: "#111827" },
-  tipSliderLead: { fontSize: 12, color: "#6B7280", marginTop: 4, lineHeight: 17 },
-  tipSliderBlock: { marginTop: 10 },
+  tipCardTopBand: { height: 3, width: "100%" },
+  tipCardInner: {
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 7,
+    backgroundColor: "rgba(255,255,255,0.98)",
+  },
+  tipCardHeadRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    marginBottom: 3,
+  },
+  tipCardHeadTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flex: 1,
+    minWidth: 0,
+  },
+  tipCardIconRing: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(45, 181, 160, 0.35)",
+  },
+  tipCardTitle: {
+    fontSize: 15,
+    fontWeight: "900",
+    color: "#0F172A",
+    letterSpacing: -0.35,
+    flex: 1,
+  },
+  tipCardTrustChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1,
+    borderColor: "rgba(45, 181, 160, 0.45)",
+  },
+  tipCardTrustChipText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#0F7669",
+    letterSpacing: 0.2,
+  },
+  tipCardSub: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "500",
+    color: "#64748B",
+    marginBottom: 2,
+  },
+  tipSliderBlock: { marginTop: 4 },
+  tipSliderPadH: {
+    paddingHorizontal: TIP_SLIDER_THUMB_R,
+  },
   tipSliderTrackMeasure: {
     width: "100%",
     minHeight: 36,
     justifyContent: "center",
-    paddingVertical: 2,
+    paddingVertical: 0,
   },
   tipSliderTrackPressable: {
-    height: 32,
+    height: 36,
     width: "100%",
     justifyContent: "center",
     position: "relative",
   },
-  tipSliderTrackBg: {
-    height: 7,
+  tipSliderTrackRail: {
+    height: 10,
     width: "100%",
-    borderRadius: 4,
-    backgroundColor: "#DCFCE7",
+    borderRadius: 5,
+    backgroundColor: "#D1FAE5",
     overflow: "hidden",
     position: "relative",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(45, 181, 160, 0.35)",
   },
   tipSliderFill: {
     position: "absolute",
     left: 0,
     top: 0,
     bottom: 0,
-    borderRadius: 4,
-    backgroundColor: CX.mint,
+    borderRadius: 5,
+    minWidth: 0,
   },
   tipSliderTicksRow: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    top: 0,
-    height: 32,
+    ...StyleSheet.absoluteFillObject,
+    pointerEvents: "none",
   },
   tipSliderTick: {
     position: "absolute",
-    bottom: 9,
+    bottom: 1,
     width: 2,
-    height: 9,
-    backgroundColor: "rgba(45, 181, 160, 0.45)",
+    height: 7,
     borderRadius: 1,
+    backgroundColor: "rgba(15, 118, 105, 0.45)",
   },
   tipSliderThumb: {
     position: "absolute",
-    top: 6,
+    top: 8,
     width: 20,
     height: 20,
     borderRadius: 10,
     backgroundColor: "#FFFFFF",
     borderWidth: 2,
     borderColor: CX.mint,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 1,
-    elevation: 2,
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 4,
   },
   tipSliderLabelsRow: {
     position: "relative",
     width: "100%",
-    height: 22,
-    marginTop: 6,
+    height: 16,
+    marginTop: 3,
   },
   tipSliderLabelHitAbs: {
     position: "absolute",
     top: 0,
-    paddingVertical: 2,
-    minWidth: 28,
+    paddingVertical: 4,
+    paddingHorizontal: 6,
     alignItems: "center",
   },
-  tipSliderLabel: { fontSize: 11, fontWeight: "600", color: "#64748B", textAlign: "center" },
+  tipSliderLabel: { fontSize: 10, fontWeight: "600", color: "#64748B", textAlign: "center" },
   tipSliderLabelActive: { color: CX.mintDark, fontWeight: "800" },
-  tipCardOtherRow: { marginTop: 6, alignSelf: "flex-start", paddingVertical: 0 },
-  tipCardOtherText: { fontSize: 12, fontWeight: "700", color: CX.mint },
-  tipCustomInputRow: {
+  /** Shared “Custom” text control (Feeding India + tip card). */
+  checkoutCustomAmtButton: {
+    alignSelf: "flex-start",
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    borderRadius: 10,
-    paddingHorizontal: 10,
+    justifyContent: "center",
+    minHeight: 40,
     paddingVertical: 8,
-    backgroundColor: "#FAFAFA",
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1.5,
+    borderColor: "rgba(45, 181, 160, 0.5)",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
   },
-  tipCustomRupee: { fontSize: 15, fontWeight: "800", marginRight: 4, color: "#111827" },
+  checkoutCustomAmtButtonTip: {
+    marginTop: 5,
+  },
+  checkoutCustomAmtLabel: { fontSize: 14, fontWeight: "900", color: "#0F7669", letterSpacing: -0.15 },
+  tipCustomSection: {
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 12,
+    borderRadius: 12,
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1,
+    borderColor: "rgba(45, 181, 160, 0.38)",
+  },
+  tipCustomSectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    marginBottom: 4,
+  },
+  tipCustomSectionTitle: {
+    fontSize: 14,
+    fontWeight: "900",
+    color: "#0F172A",
+    letterSpacing: -0.2,
+    flex: 1,
+  },
+  tipCustomBackChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "rgba(45, 181, 160, 0.45)",
+  },
+  tipCustomBackIcon: { marginRight: 4 },
+  tipCustomBackText: { fontSize: 12, fontWeight: "800", color: "#0F7669" },
+  tipCustomHint: {
+    fontSize: 11,
+    fontWeight: "500",
+    color: "#475569",
+    lineHeight: 15,
+    marginBottom: 10,
+  },
+  tipCustomInputShell: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: Platform.OS === "ios" ? 12 : 10,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1.5,
+    borderColor: "rgba(45, 181, 160, 0.5)",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  tipCustomRupee: { fontSize: 18, fontWeight: "900", marginRight: 6, color: "#0F172A" },
   tipCustomInput: {
     flex: 1,
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#111827",
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#0F172A",
     paddingVertical: 0,
+    letterSpacing: 0.2,
     ...Platform.select({ android: { paddingVertical: 0 } }),
   },
   tipCardFooterBar: {
-    marginTop: 8,
+    marginTop: 5,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    backgroundColor: "#EDE9FE",
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
     borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(139, 92, 246, 0.22)",
   },
   tipCardFooterLabel: { fontSize: 13, fontWeight: "700", color: "#374151" },
   tipCardFooterValue: { fontSize: 15, fontWeight: "800", color: CX.mintDark },
@@ -4997,9 +5537,9 @@ const styles = StyleSheet.create({
   feedingIndiaHero: {
     flexDirection: "row",
     alignItems: "flex-start",
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 18,
+    paddingHorizontal: 14,
+    paddingTop: 11,
+    paddingBottom: 12,
     overflow: "hidden",
   },
   feedingIndiaHeroDecor: {
@@ -5026,64 +5566,46 @@ const styles = StyleSheet.create({
   feedingIndiaHeroTextWrap: { flex: 1, minWidth: 0, zIndex: 1, paddingRight: 6 },
   feedingIndiaTitleRow: { flexDirection: "row", alignItems: "flex-start", gap: 4 },
   feedingIndiaTitleTextBlock: { flex: 1, minWidth: 0 },
-  feedingIndiaHeadline: { lineHeight: 24 },
-  feedingIndiaJoin: { fontSize: 15, fontWeight: "600", color: "#1E293B" },
-  feedingIndiaBrand: { fontSize: 16, fontWeight: "800", color: "#0F172A" },
-  feedingIndiaHeart: { fontSize: 14, color: "#EF4444" },
+  feedingIndiaHeadline: { lineHeight: 20 },
+  feedingIndiaJoin: { fontSize: 14, fontWeight: "600", color: "#1E293B" },
+  feedingIndiaBrand: { fontSize: 15, fontWeight: "800", color: "#0F172A" },
+  feedingIndiaHeart: { fontSize: 13, color: "#EF4444" },
   feedingIndiaInfoHit: { padding: 2, marginTop: -2 },
   feedingIndiaTagline: {
     fontSize: 12,
     fontWeight: "500",
     color: "#475569",
-    marginTop: 8,
-    lineHeight: 17,
+    marginTop: 4,
+    lineHeight: 16,
   },
   feedingIndiaArt: {
-    width: 96,
-    height: 76,
-    marginLeft: 4,
-    borderRadius: 14,
+    width: 152,
+    height: 72,
+    marginLeft: 2,
+    borderRadius: 12,
     overflow: "hidden",
     position: "relative",
     zIndex: 1,
+    backgroundColor: "transparent",
   },
-  feedingIndiaArtGradient: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  feedingIndiaArtIconsRow: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    paddingHorizontal: 6,
-  },
-  feedingArtIconRing: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: "rgba(255,255,255,0.94)",
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#0f172a",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.07,
-    shadowRadius: 2,
-    elevation: 2,
+  feedingIndiaFedImage: {
+    width: "100%",
+    height: "100%",
+    backgroundColor: "transparent",
   },
   feedingIndiaWhite: {
     backgroundColor: "#FFFFFF",
-    paddingHorizontal: 14,
-    paddingTop: 14,
-    paddingBottom: 10,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 8,
   },
   feedingIndiaDonateLineRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    marginBottom: 12,
+    marginBottom: 8,
   },
-  feedingIndiaDonateLine: { fontSize: 14, fontWeight: "500", color: "#334155", flex: 1 },
+  feedingIndiaDonateLine: { fontSize: 14, fontWeight: "500", color: "#334155" },
   feedingIndiaDonateBold: { fontWeight: "800", color: "#0F172A" },
   feedingInrRowOuter: {
     width: "100%",
@@ -5100,8 +5622,8 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   feedingInrPresetBox: {
-    width: 54,
-    height: 46,
+    width: 50,
+    height: 40,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: "#D1D5DB",
@@ -5118,24 +5640,14 @@ const styles = StyleSheet.create({
   feedingInrCustomSlot: {
     flexShrink: 0,
     marginLeft: "auto",
-  },
-  feedingInrCustomTrigger: {
-    minWidth: 76,
-    height: 46,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#D1D5DB",
-    backgroundColor: "#FFFFFF",
-    alignItems: "center",
-    justifyContent: "center",
+    alignSelf: "center",
   },
   feedingInrCustomCompact: {
-    height: 46,
-    minWidth: 88,
-    maxWidth: 104,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    height: 40,
+    minWidth: 84,
+    maxWidth: 100,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: "#D1D5DB",
@@ -5178,9 +5690,9 @@ const styles = StyleSheet.create({
   feedingDonationConfirmRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    marginTop: 14,
-    paddingTop: 12,
+    gap: 6,
+    marginTop: 8,
+    paddingTop: 8,
     borderTopWidth: 1,
     borderTopColor: "#E5E7EB",
   },
@@ -5806,89 +6318,7 @@ const styles = StyleSheet.create({
     color: GatiMitraColors.textPrimary,
     backgroundColor: "#fff",
   },
-  tipCard: {
-    backgroundColor: GatiMitraColors.cardSurface,
-    borderRadius: CARD_RADIUS,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: GatiMitraColors.border,
-    borderLeftWidth: 4,
-    borderLeftColor: GatiMitraColors.emerald,
-    overflow: "hidden",
-    ...GatiMitraColors.elevationShadow,
-  },
-  tipCardHeader: { flexDirection: "row", alignItems: "flex-start" },
-  tipIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: GatiMitraColors.warningAmberBg,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 12,
-  },
-  tipCardTitleWrap: { flex: 1, minWidth: 0 },
-  tipCardTitle: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary },
-  tipCardSub: { fontSize: 12, color: GatiMitraColors.textSecondary, marginTop: 3 },
-  tipBoxLabel: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: GatiMitraColors.textSecondary,
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
-    marginTop: 12,
-    marginBottom: 7,
-  },
-  tipAmountBoxRow: { flexDirection: "row", flexWrap: "wrap", gap: 9 },
-  tipAmountBox: {
-    minWidth: 52,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    backgroundColor: "#F3F4F6",
-    borderWidth: 2,
-    borderColor: "#D1D5DB",
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 3,
-    elevation: 2,
-  },
-  tipAmountBoxActive: {
-    backgroundColor: GatiMitraColors.warningAmberBg,
-    borderColor: GatiMitraColors.warmOrange,
-    borderWidth: 2,
-  },
-  tipAmountBoxText: { fontSize: 13, fontWeight: "700", color: GatiMitraColors.textPrimary },
-  tipAmountBoxTextActive: { color: GatiMitraColors.warmOrange, fontWeight: "800" },
-  tipChips: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
-  tipChip: {
-    minWidth: 48,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    backgroundColor: GatiMitraColors.softBackground,
-    borderWidth: 1.5,
-    borderColor: GatiMitraColors.border,
-    alignItems: "center",
-    justifyContent: "center",
-  },
   tipChipPressed: { opacity: 0.9 },
-  tipChipActive: { backgroundColor: CX.mint, borderColor: CX.mint },
-  tipChipText: { fontSize: 13, fontWeight: "600", color: GatiMitraColors.textPrimary },
-  tipChipTextActive: { color: "#fff" },
-  customTipInput: {
-    marginTop: 8,
-    borderWidth: 1,
-    borderColor: GatiMitraColors.border,
-    borderRadius: 10,
-    paddingVertical: 9,
-    paddingHorizontal: 12,
-    fontSize: 14,
-    color: GatiMitraColors.textPrimary,
-  },
   paymentSheetOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.4)",
