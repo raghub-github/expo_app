@@ -78,7 +78,7 @@ export default function ProfileScreen() {
 
   const quickActions = [
     { id: "transactions", label: t("profile.transactions"), icon: "receipt-outline" as const, path: "/wallet" },
-    { id: "support", label: t("profile.support"), icon: "help-circle-outline" as const, path: "/profile/help" },
+    { id: "support", label: t("profile.support"), icon: "help-circle-outline" as const, path: "/support" },
     { id: "settings", label: t("profile.settings"), icon: "settings-outline" as const, path: "/profile/settings" },
   ];
   const menuItems = [

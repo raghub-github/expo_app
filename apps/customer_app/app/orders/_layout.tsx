@@ -12,6 +12,7 @@ export default function OrdersLayout() {
       }}
     >
       <Stack.Screen name="[id]" options={{ title: "Order tracking" }} />
+      <Stack.Screen name="raise-ticket" options={{ title: "Raise ticket" }} />
       <Stack.Screen name="payment-success" options={{ headerShown: false, gestureEnabled: false }} />
       <Stack.Screen name="payment-failure" options={{ title: "Payment", headerBackTitle: "Back" }} />
     </Stack>
