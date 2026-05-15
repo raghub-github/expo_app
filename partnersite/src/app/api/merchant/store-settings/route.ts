@@ -96,7 +96,8 @@ export async function GET(req: NextRequest) {
         : [];
     const primary_phone = store_phones[0] ?? null;
 
-    const metadata = settingsData?.settings_metadata as Record<string, unknown> | null | undefined;
+    const settingsRow = settingsData as { settings_metadata?: unknown } | null;
+    const metadata = settingsRow?.settings_metadata as Record<string, unknown> | null | undefined;
     const preparationBufferMinutes =
       typeof metadata?.preparation_buffer_minutes === 'number' && !Number.isNaN(metadata.preparation_buffer_minutes)
         ? Number(metadata.preparation_buffer_minutes)

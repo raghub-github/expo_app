@@ -12,6 +12,10 @@
 export const GatiMitraColors = {
   // 2025 Primary Mint (NEW)
   primaryMint: "#22C55E",
+  /**
+   * Splash / bootstrap — teal-mint (blue-green). `primaryMint` reads lime on screen; use this for first paint.
+   */
+  splashMint: "#14b8a6",
   deepMintStart: "#16A34A",
   deepMintEnd: "#34D399",
   deepMintGradient: ["#16A34A", "#34D399"] as const,

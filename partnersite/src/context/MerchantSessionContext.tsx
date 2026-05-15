@@ -29,7 +29,7 @@ export interface MerchantParentSummary {
   store_logo?: string | null;
 }
 
-interface MerchantSessionContextValue {
+export interface MerchantSessionContextValue {
   user: MerchantSessionUser | null;
   sessionStatus: MerchantSessionStatus | null;
   parent: MerchantParentSummary | null;

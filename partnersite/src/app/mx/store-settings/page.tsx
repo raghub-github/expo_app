@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
+import { RefundPolicyContent } from '@/components/RefundPolicyContent'
 import { supabase } from '@/lib/supabase';
 import { fetchRestaurantById as fetchStoreById, fetchRestaurantByName as fetchStoreByName } from '@/lib/database'
 import { MerchantStore } from '@/lib/merchantStore'
@@ -14,6 +15,8 @@ import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants'
 import { Clock, Phone, Save, AlertCircle, CheckCircle2, X, Zap, Shield, BarChart3, Bell, Crown, Star, Check, MapPin, Calendar, Copy, Power, Plus, Trash2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Gift, Target, Globe, Users, Package, CreditCard, Sparkles, Smartphone, Lock, Unlock, Activity, FileText, Mail, MessageSquare, Radio, TrendingUp, Database, Eye, EyeOff, ShoppingBag, ChefHat, CheckCircle, XCircle, Image, Layers, BarChart2, Headphones, UserCheck, MoreVertical } from 'lucide-react'
 import { PageSkeletonGeneric } from '@/components/PageSkeleton'
 import { toast } from 'sonner'
+import { normalizeWallTimeToHHMM } from '@/lib/wallTimeHHMM'
+import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback'
 import { SettingsSidebar } from './components/SettingsSidebar'
 
 const StoreLocationMapboxGL = dynamicImport(() => import('@/components/StoreLocationMapboxGL'), { ssr: false })
@@ -29,7 +32,6 @@ interface TimeSlot {
   openingTime: string
   closingTime: string
 }
-
 interface DaySchedule {
   day: DayType
   label: string
@@ -42,10 +44,36 @@ interface DaySchedule {
   operationalMinutes: number
 }
 
-function getCurrentDayKey(): DayType {
-  const current = new Date().getDay()
+function getCurrentDayKeyInTimeZone(timeZone?: string | null): DayType {
+  const tz =
+    (timeZone && String(timeZone).trim()) ||
+    (typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone : '') ||
+    'Asia/Kolkata'
+  const dayFormatter = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'long' })
+  const dayStr = dayFormatter.format(new Date()).toLowerCase()
   const map: DayType[] = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
-  return map[current] || 'monday'
+  const idx = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'].indexOf(dayStr)
+  return map[idx >= 0 ? idx : 1]
+}
+
+const WEEKDAY_KEYS: readonly DayType[] = [
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday',
+]
+
+/** Coerce DB / JSON booleans (PostgREST sometimes returns strings). */
+function parseDbBool(value: unknown): boolean {
+  if (value === true || value === 1) return true
+  if (value === false || value === 0 || value == null || value === '') return false
+  const s = String(value).trim().toLowerCase()
+  if (s === 'true' || s === 't' || s === 'yes' || s === '1') return true
+  if (s === 'false' || s === 'f' || s === 'no' || s === '0') return false
+  return Boolean(value)
 }
 
 function StoreSettingsContent() {
@@ -95,6 +123,13 @@ function StoreSettingsContent() {
       }
     }
   }, [activeTab])
+  const openRefundPolicySheet = useCallback(() => {
+    setShowRefundPolicy(true)
+  }, [])
+
+  const closeRefundPolicySheet = useCallback(() => {
+    setShowRefundPolicy(false)
+  }, [])
 
   // POS integration state
   const [posPartner, setPosPartner] = useState('')
@@ -104,9 +139,14 @@ function StoreSettingsContent() {
   const [posIntegrationActive, setPosIntegrationActive] = useState(false)
   
   const [showStoreTimingModal, setShowStoreTimingModal] = useState(false)
-  const [expandedDay, setExpandedDay] = useState<DayType | null>(getCurrentDayKey())
+  const [expandedDay, setExpandedDay] = useState<DayType | null>(null)
   const [showMainToggleWarning, setShowMainToggleWarning] = useState(false)
   const [mainToggleAction, setMainToggleAction] = useState<boolean | null>(null)
+  const [showRefundPolicy, setShowRefundPolicy] = useState(false)
+  /** Confirm before removing morning or evening slot (centered modal). */
+  const [slotRemoveConfirm, setSlotRemoveConfirm] = useState<
+    null | { day: DayType; kind: 'morning' | 'evening'; slotId: string }
+  >(null)
 
   // Form state
   const [isStoreOpen, setIsStoreOpen] = useState(true)
@@ -293,35 +333,47 @@ function StoreSettingsContent() {
       }
       if (!data || data.error) return;
 
-      // Debug: Log fetched timings
-      console.log('Fetched timings from /api/operating-hours:', data);
+      // `closed_days` is auto-synced from *_open in DB (sync_operating_hours_closed_days). It must NOT
+      // be mapped to DaySchedule.isOutletClosed — that flag is for the partner "outlet closed" UX and
+      // using closed_days here made shouldFillOpenDaysMissingSlots' .some() fail whenever closed_days
+      // was stale or broad, so template slots never copied onto other open weekdays.
 
       // Map DB data to DaySchedule[]
-      const days: DayType[] = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+      const days: DayType[] = [...WEEKDAY_KEYS];
       const loadedSchedule: DaySchedule[] = days.map(day => {
-        const isOpen = !!data[`${day}_open`];
-        const isOutletClosed = (data.closed_days || []).includes(day);
+        const rawOpen = parseDbBool(data[`${day}_open`])
         const slots = [];
         let is24Hours = false;
 
-        const toHHMM = (v: string | null) => {
-          if (!v) return null;
-          const parts = v.split(':');
-          return parts.length >= 2 ? `${parts[0].padStart(2, '0')}:${parts[1]}` : v;
-        };
-        const s1Start = toHHMM(data[`${day}_slot1_start`]);
-        const s1End = toHHMM(data[`${day}_slot1_end`]);
-        const s2Start = toHHMM(data[`${day}_slot2_start`]);
-        const s2End = toHHMM(data[`${day}_slot2_end`]);
+        const toHHMM = (v: unknown): string | null => normalizeWallTimeToHHMM(v)
 
+        const s1Start = toHHMM(data[`${day}_slot1_start`])
+        const s1End = toHHMM(data[`${day}_slot1_end`])
+        const s2Start = toHHMM(data[`${day}_slot2_start`])
+        const s2End = toHHMM(data[`${day}_slot2_end`])
+
+        const dayDurationMin = Number(data[`${day}_total_duration_minutes`]) || 0
+
+        // DB sometimes has 00:00–00:00 as a placeholder when the day is "open" but no real slot was saved.
+        // Only treat midnight–midnight as empty when not 24h and the row has no derived duration for that day.
+        let hadSlot1FromPrimary = false
         if (s1Start && s1End) {
-          slots.push({ id: '1', openingTime: s1Start, closingTime: s1End });
-          if (s1Start === '00:00' && (s1End === '23:59' || s1End === '00:00')) {
-            is24Hours = true;
+          const midnightPair = s1Start === '00:00' && s1End === '00:00'
+          const treatAsEmptyPlaceholder = midnightPair && !data.is_24_hours && dayDurationMin === 0
+          if (!treatAsEmptyPlaceholder || !!data.is_24_hours) {
+            slots.push({ id: '1', openingTime: s1Start, closingTime: s1End });
+            hadSlot1FromPrimary = true;
+            if (s1Start === '00:00' && (s1End === '23:59' || (s1End === '00:00' && !!data.is_24_hours))) {
+              is24Hours = true;
+            }
           }
         }
-        if (s2Start && s2End) {
-          slots.push({ id: '2', openingTime: s2Start, closingTime: s2End });
+        if (hadSlot1FromPrimary) {
+          if (s2Start && s2End) {
+            slots.push({ id: '2', openingTime: s2Start, closingTime: s2End });
+          }
+        } else if (s2Start && s2End) {
+          slots.push({ id: '1', openingTime: s2Start, closingTime: s2End });
         }
 
         // Calculate duration
@@ -332,20 +384,62 @@ function StoreSettingsContent() {
         return {
           day,
           label: day.toUpperCase(),
-          isOpen: isOpen && !isOutletClosed,
+          isOpen: rawOpen,
           slots,
           is24Hours,
-          isOutletClosed,
+          isOutletClosed: false,
           duration: is24Hours ? '24.0 hrs' : `${hours}.${mins.toString().padStart(2, '0')} hrs`,
           operationalHours: is24Hours ? 24 : hours,
           operationalMinutes: is24Hours ? 0 : mins
         };
       });
 
-      setStoreSchedule(loadedSchedule);
+      // If the backend stored a shared schedule, mirror the populated slot values so every day row can render timings.
+      const populatedDays = loadedSchedule.filter((day) => day.slots.length > 0);
+      const referenceDay =
+        populatedDays.find((d) => d.day === 'monday') ?? populatedDays[0] ?? null;
+      const dbDayOpen = (d: DayType) => parseDbBool(data[`${d}_open`]);
+
+      const shouldMirrorAll = !!data.same_for_all_days || !!data.is_24_hours;
+
+      const shouldFillOpenDaysMissingSlots =
+        referenceDay != null &&
+        !shouldMirrorAll &&
+        populatedDays.length > 0 &&
+        loadedSchedule.some(
+          (d) => dbDayOpen(d.day) && d.slots.length === 0
+        );
+
+      const normalizedSchedule = referenceDay
+        ? loadedSchedule.map((day) => {
+            if (day.slots.length > 0) return day;
+            const copySlots =
+              (shouldMirrorAll && dbDayOpen(day.day)) ||
+              (shouldFillOpenDaysMissingSlots && dbDayOpen(day.day)) ||
+              (!shouldMirrorAll &&
+                populatedDays.length === 1 &&
+                dbDayOpen(day.day) &&
+                day.slots.length === 0);
+            if (!copySlots) return day;
+            return {
+              ...day,
+              slots: referenceDay.slots.map((slot) => ({
+                ...slot,
+                id: `${day.day}-${slot.id}-${slot.openingTime}-${slot.closingTime}`,
+              })),
+              is24Hours: referenceDay.is24Hours,
+              duration: referenceDay.duration,
+              operationalHours: referenceDay.operationalHours,
+              operationalMinutes: referenceDay.operationalMinutes,
+            };
+          })
+        : loadedSchedule;
+
+      setStoreSchedule(normalizedSchedule);
       setApplyMondayToAll(!!data.same_for_all_days);
       setForce24Hours(!!data.is_24_hours);
-      setClosedDay((data.closed_days && data.closed_days.length > 0) ? data.closed_days[0] : null);
+      const offDays = WEEKDAY_KEYS.filter((d) => !parseDbBool(data[`${d}_open`]))
+      setClosedDay(offDays.length > 0 ? offDays[0] : null);
       
       // Set last updated info
       if (data.updated_by_email || data.updated_by_at) {
@@ -361,10 +455,9 @@ function StoreSettingsContent() {
   };
 
   useEffect(() => {
-    if (storeId) {
-      fetchTimings();
-    }
-  }, [storeId]);
+    if (!storeId || activeTab !== 'timings') return
+    fetchTimings()
+  }, [storeId, activeTab])
 
   // Add a manual refresh button for debugging
   const handleRefreshTimings = () => {
@@ -467,7 +560,7 @@ function StoreSettingsContent() {
         console.error('Failed to parse store operations JSON:', jsonError);
         // fallback from store if loaded
         if (store) {
-          setIsStoreOpen((store as MerchantStore).operational_status === 'OPEN' || !!(store as MerchantStore).is_accepting_orders)
+          setIsStoreOpen((store as MerchantStore).operational_status === 'OPEN')
         }
         return;
       }
@@ -480,7 +573,7 @@ function StoreSettingsContent() {
     } catch {
       // fallback from store if loaded
       if (store) {
-        setIsStoreOpen((store as MerchantStore).operational_status === 'OPEN' || !!(store as MerchantStore).is_accepting_orders)
+        setIsStoreOpen((store as MerchantStore).operational_status === 'OPEN')
       }
     }
   }
@@ -1092,10 +1185,12 @@ function StoreSettingsContent() {
           setStore((prev) => prev ? { ...prev, operational_status: 'OPEN', is_accepting_orders: true } : prev)
           toast.success('🟢 Store is now OPEN')
         } else {
-          toast.error(data.error || 'Failed to open store')
+          toastStoreOperationsPostFailure(res, data, 'Failed to open store')
+          await fetchStoreOperations()
         }
       } catch {
         toast.error('Failed to open store')
+        await fetchStoreOperations()
       }
     }
   }
@@ -2054,7 +2149,7 @@ function StoreSettingsContent() {
     toast.success(`Outlet ${newOutletClosed ? 'closed' : 'opened'} on ${day}`)
   }
 
-  const addTimeSlot = (day: DayType) => {
+  const addTimeSlot = (day: DayType, slotPosition: 0 | 1) => {
     const daySchedule = storeSchedule.find(d => d.day === day)
     if (!daySchedule || daySchedule.slots.length >= 2) {
       toast.error('Maximum 2 slots allowed per day')
@@ -2067,13 +2162,13 @@ function StoreSettingsContent() {
     
     const newSlot: TimeSlot = {
       id: Date.now().toString(),
-      openingTime: '14:00',
-      closingTime: '18:00'
+      openingTime: slotPosition === 0 ? '09:00' : '14:00',
+      closingTime: slotPosition === 0 ? '13:00' : '18:00'
     }
     
     setStoreSchedule(prev => prev.map(d => {
       if (d.day === day) {
-        const newSlots = [...d.slots, newSlot]
+        const newSlots = slotPosition === 0 ? [newSlot, ...d.slots] : [...d.slots, newSlot]
         const { hours, minutes } = calculateOperationalTime(newSlots)
         return {
           ...d,
@@ -2114,6 +2209,43 @@ function StoreSettingsContent() {
       return d
     }))
     toast.success('Time slot removed')
+  }
+
+  /** Drop slot 1 when two slots exist (evening becomes the only / "morning" row). */
+  const removeMorningSlot = (day: DayType) => {
+    const daySchedule = storeSchedule.find((d) => d.day === day)
+    if (!daySchedule || daySchedule.slots.length < 2) {
+      toast.error('Add an evening slot first, or clear times in the morning fields.')
+      return
+    }
+    setManualTimeChanges((prev) => new Set(prev).add(day))
+    if (applyMondayToAll) setApplyMondayToAll(false)
+    if (force24Hours) setForce24Hours(false)
+    setStoreSchedule((prev) =>
+      prev.map((d) => {
+        if (d.day !== day) return d
+        const newSlots = [d.slots[1]]
+        const { hours, minutes } = calculateOperationalTime(newSlots)
+        return {
+          ...d,
+          slots: newSlots,
+          duration: `${hours}.${minutes.toString().padStart(2, '0')} hrs`,
+          operationalHours: hours,
+          operationalMinutes: minutes,
+        }
+      })
+    )
+    toast.success('Morning slot removed')
+  }
+
+  const confirmPendingSlotRemove = () => {
+    if (!slotRemoveConfirm) return
+    if (slotRemoveConfirm.kind === 'morning') {
+      removeMorningSlot(slotRemoveConfirm.day)
+    } else {
+      removeTimeSlot(slotRemoveConfirm.day, slotRemoveConfirm.slotId)
+    }
+    setSlotRemoveConfirm(null)
   }
 
   // Fetch last updated info from timings
@@ -2650,9 +2782,13 @@ function StoreSettingsContent() {
                 <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-6 shadow-sm">
                   <div className="flex flex-wrap items-center justify-between gap-2 mb-4 sm:mb-6">
                     <h3 className="text-lg sm:text-xl font-bold text-gray-900">Available Plans</h3>
-                    <Link href={storeId ? `/mx/refund-policy?storeId=${encodeURIComponent(storeId)}` : '/mx/refund-policy'} className="text-sm text-indigo-600 hover:text-indigo-700 font-medium underline underline-offset-2">
+                    <button
+                      type="button"
+                      onClick={openRefundPolicySheet}
+                      className="text-sm text-indigo-600 hover:text-indigo-700 font-medium underline underline-offset-2"
+                    >
                       View refund policy
-                    </Link>
+                    </button>
                   </div>
                   {loadingPlans && plans.length === 0 ? (
                     <div className="text-center py-8">
@@ -4164,7 +4300,7 @@ function StoreSettingsContent() {
                     <span />
                   </div>
                   {storeSchedule.map((daySchedule) => {
-                    const isCurrentDay = daySchedule.day === getCurrentDayKey()
+                    const isCurrentDay = daySchedule.day === getCurrentDayKeyInTimeZone((store as MerchantStore & { timezone?: string | null })?.timezone)
                     const hasSlot2 = !!daySchedule.slots[1]
                     const isClosed = daySchedule.isOutletClosed || !daySchedule.isOpen
                     const slotFieldClassName = `h-8 w-full rounded-md border pl-6 pr-5 text-xs appearance-none focus:outline-none focus:ring-2 [&::-webkit-calendar-picker-indicator]:opacity-0 ${
@@ -4172,7 +4308,12 @@ function StoreSettingsContent() {
                         ? 'border-gray-200 bg-white text-gray-800 focus:border-emerald-400 focus:ring-emerald-100'
                         : 'border-gray-200 bg-gray-100 text-gray-500 cursor-not-allowed opacity-60'
                     }`
-                    const showActionsPanel = expandedDay === daySchedule.day || manualTimeChanges.has(daySchedule.day)
+                    const showActionsPanel =
+                      expandedDay === daySchedule.day ||
+                      manualTimeChanges.has(daySchedule.day) ||
+                      (!daySchedule.isOutletClosed &&
+                        !daySchedule.is24Hours &&
+                        (daySchedule.isOpen || !!daySchedule.slots[0] || !!daySchedule.slots[1]))
                     return (
                       <div key={daySchedule.day} className="border-b border-gray-100 last:border-b-0 hover:bg-gray-50/40 transition-colors">
                         <div className="grid grid-cols-[80px_80px_1fr_1fr_24px] items-center gap-3 px-4 py-2.5 md:grid-cols-[80px_80px_1.2fr_1.2fr_24px] lg:grid-cols-[100px_100px_1.5fr_1.5fr_24px]">
@@ -4192,61 +4333,127 @@ function StoreSettingsContent() {
                             {isCurrentDay ? <span className="text-[10px] font-semibold text-emerald-600 flex-shrink-0">•</span> : null}
                           </div>
 
-                          {!daySchedule.is24Hours && daySchedule.slots[0] ? (
-                            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-                              <div className="relative">
-                                <Clock size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
-                                <input
-                                  type="time"
-                                  value={daySchedule.slots[0]?.openingTime || ''}
-                                  onChange={(e) => daySchedule.slots[0] && updateTimeSlot(daySchedule.day, daySchedule.slots[0].id, 'openingTime', e.target.value)}
-                                  disabled={!daySchedule.isOpen}
-                                  className={slotFieldClassName}
-                                />
-                                <ChevronDown size={11} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                          {daySchedule.is24Hours ? (
+                            <div className="h-8 rounded-md border border-emerald-100 bg-emerald-50/80 flex items-center justify-center text-emerald-800 text-xs font-semibold">
+                              Open 24 hours
+                            </div>
+                          ) : daySchedule.slots[0] ? (
+                            <div className="flex min-w-0 flex-col gap-1">
+                              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                                <div className="relative">
+                                  <Clock size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
+                                  <input
+                                    type="time"
+                                    value={daySchedule.slots[0]?.openingTime || ''}
+                                    onChange={(e) => daySchedule.slots[0] && updateTimeSlot(daySchedule.day, daySchedule.slots[0].id, 'openingTime', e.target.value)}
+                                    disabled={!daySchedule.isOpen}
+                                    className={slotFieldClassName}
+                                  />
+                                  <ChevronDown size={11} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                                </div>
+                                <span className="text-xs text-gray-400">-</span>
+                                <div className="relative">
+                                  <Clock size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
+                                  <input
+                                    type="time"
+                                    value={daySchedule.slots[0]?.closingTime || ''}
+                                    onChange={(e) => daySchedule.slots[0] && updateTimeSlot(daySchedule.day, daySchedule.slots[0].id, 'closingTime', e.target.value)}
+                                    disabled={!daySchedule.isOpen}
+                                    className={slotFieldClassName}
+                                  />
+                                  <ChevronDown size={11} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                                </div>
                               </div>
-                              <span className="text-xs text-gray-400">-</span>
-                              <div className="relative">
-                                <Clock size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
-                                <input
-                                  type="time"
-                                  value={daySchedule.slots[0]?.closingTime || ''}
-                                  onChange={(e) => daySchedule.slots[0] && updateTimeSlot(daySchedule.day, daySchedule.slots[0].id, 'closingTime', e.target.value)}
-                                  disabled={!daySchedule.isOpen}
-                                  className={slotFieldClassName}
-                                />
-                                <ChevronDown size={11} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400" />
-                              </div>
+                              {!!daySchedule.slots[0] && !daySchedule.isOutletClosed ? (
+                                <div className="flex flex-wrap justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setExpandedDay(daySchedule.day);
+                                      setManualTimeChanges((prev) => new Set(prev).add(daySchedule.day));
+                                    }}
+                                    className="text-[11px] font-semibold text-emerald-700 hover:underline"
+                                  >
+                                    Edit
+                                  </button>
+                                  {hasSlot2 ? (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setSlotRemoveConfirm({
+                                          day: daySchedule.day,
+                                          kind: 'morning',
+                                          slotId: '',
+                                        })
+                                      }
+                                      className="text-[11px] font-semibold text-rose-600 hover:underline"
+                                    >
+                                      Remove morning
+                                    </button>
+                                  ) : null}
+                                </div>
+                              ) : null}
                             </div>
                           ) : (
                             <div className="h-8 rounded-md border border-gray-200 bg-gray-50 flex items-center justify-center text-gray-400 text-xs">-</div>
                           )}
 
-                          {!daySchedule.is24Hours && hasSlot2 ? (
-                            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-                              <div className="relative">
-                                <Clock size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
-                                <input
-                                  type="time"
-                                  value={daySchedule.slots[1]?.openingTime || ''}
-                                  onChange={(e) => daySchedule.slots[1] && updateTimeSlot(daySchedule.day, daySchedule.slots[1].id, 'openingTime', e.target.value)}
-                                  disabled={!daySchedule.isOpen}
-                                  className={slotFieldClassName}
-                                />
-                                <ChevronDown size={11} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                          {daySchedule.is24Hours ? (
+                            <div className="h-8 rounded-md border border-gray-200 bg-gray-50 flex items-center justify-center text-gray-400 text-xs">—</div>
+                          ) : hasSlot2 ? (
+                            <div className="flex min-w-0 flex-col gap-1">
+                              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                                <div className="relative">
+                                  <Clock size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
+                                  <input
+                                    type="time"
+                                    value={daySchedule.slots[1]?.openingTime || ''}
+                                    onChange={(e) => daySchedule.slots[1] && updateTimeSlot(daySchedule.day, daySchedule.slots[1].id, 'openingTime', e.target.value)}
+                                    disabled={!daySchedule.isOpen}
+                                    className={slotFieldClassName}
+                                  />
+                                  <ChevronDown size={11} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                                </div>
+                                <span className="text-xs text-gray-400">-</span>
+                                <div className="relative">
+                                  <Clock size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
+                                  <input
+                                    type="time"
+                                    value={daySchedule.slots[1]?.closingTime || ''}
+                                    onChange={(e) => daySchedule.slots[1] && updateTimeSlot(daySchedule.day, daySchedule.slots[1].id, 'closingTime', e.target.value)}
+                                    disabled={!daySchedule.isOpen}
+                                    className={slotFieldClassName}
+                                  />
+                                  <ChevronDown size={11} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                                </div>
                               </div>
-                              <span className="text-xs text-gray-400">-</span>
-                              <div className="relative">
-                                <Clock size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
-                                <input
-                                  type="time"
-                                  value={daySchedule.slots[1]?.closingTime || ''}
-                                  onChange={(e) => daySchedule.slots[1] && updateTimeSlot(daySchedule.day, daySchedule.slots[1].id, 'closingTime', e.target.value)}
-                                  disabled={!daySchedule.isOpen}
-                                  className={slotFieldClassName}
-                                />
-                                <ChevronDown size={11} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400" />
-                              </div>
+                              {!!daySchedule.slots[1] && !daySchedule.isOutletClosed ? (
+                                <div className="flex flex-wrap justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setExpandedDay(daySchedule.day);
+                                      setManualTimeChanges((prev) => new Set(prev).add(daySchedule.day));
+                                    }}
+                                    className="text-[11px] font-semibold text-violet-700 hover:underline"
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setSlotRemoveConfirm({
+                                        day: daySchedule.day,
+                                        kind: 'evening',
+                                        slotId: daySchedule.slots[1].id,
+                                      })
+                                    }
+                                    className="text-[11px] font-semibold text-rose-600 hover:underline"
+                                  >
+                                    Remove evening
+                                  </button>
+                                </div>
+                              ) : null}
                             </div>
                           ) : (
                             <div className="h-8 rounded-md border border-gray-200 bg-gray-50 flex items-center justify-center text-gray-400 text-xs">-</div>
@@ -4264,35 +4471,39 @@ function StoreSettingsContent() {
                         {showActionsPanel ? (
                         <div className="flex flex-wrap items-center justify-between gap-3 px-4 pb-2.5">
                               <div className="flex items-center gap-3 text-sm">
-                                <button
-                                  type="button"
-                                  onClick={copyToAllDays}
-                                  className={`inline-flex items-center gap-2 text-gray-700 ${daySchedule.day === 'monday' ? '' : 'hidden'}`}
-                                >
-                                  <span className="flex h-4 w-4 items-center justify-center rounded border border-gray-300 bg-white">
-                                    <Copy size={11} className="text-gray-500" />
-                                  </span>
-                                  <span className="text-sm">Copy Monday timing to all days</span>
-                                </button>
-                                {daySchedule.day === 'monday' ? <span className="hidden sm:block h-4 w-px bg-gray-200" /> : null}
-                                {!hasSlot2 && !daySchedule.isOutletClosed && !daySchedule.is24Hours && daySchedule.isOpen ? (
+                                {daySchedule.day === 'monday' ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={copyToAllDays}
+                                      className="inline-flex items-center gap-2 text-gray-700"
+                                    >
+                                      <span className="flex h-4 w-4 items-center justify-center rounded border border-gray-300 bg-white">
+                                        <Copy size={11} className="text-gray-500" />
+                                      </span>
+                                      <span className="text-sm">Copy Monday timing to all days</span>
+                                    </button>
+                                    <span className="hidden sm:block h-4 w-px bg-gray-200" />
+                                  </>
+                                ) : null}
+                                {!daySchedule.slots[0] && !daySchedule.isOutletClosed && !daySchedule.is24Hours && daySchedule.isOpen ? (
                                   <button
                                     type="button"
-                                    onClick={() => addTimeSlot(daySchedule.day)}
+                                    onClick={() => addTimeSlot(daySchedule.day, 0)}
+                                    className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
+                                  >
+                                    <Plus size={13} />
+                                    Add morning slot
+                                  </button>
+                                ) : null}
+                                {daySchedule.slots[0] && !hasSlot2 && !daySchedule.isOutletClosed && !daySchedule.is24Hours && daySchedule.isOpen ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => addTimeSlot(daySchedule.day, 1)}
                                     className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
                                   >
                                     <Plus size={13} />
                                     Add evening slot
-                                  </button>
-                                ) : null}
-                                {hasSlot2 && !daySchedule.isOutletClosed && !daySchedule.is24Hours && daySchedule.isOpen ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => removeTimeSlot(daySchedule.day, daySchedule.slots[1].id)}
-                                    className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-600 hover:border-red-200 hover:bg-red-50 hover:text-red-600"
-                                  >
-                                    <Trash2 size={13} />
-                                    Remove evening slot
                                   </button>
                                 ) : null}
                               </div>
@@ -4518,7 +4729,7 @@ function StoreSettingsContent() {
           >
             <SettingsSidebar
               activeTab={activeTab}
-              onTabChange={(tab) => setActiveTab(tab as typeof activeTab)}
+              onTabChange={(tab: string) => setActiveTab(tab as typeof activeTab)}
               collapsed={settingsSidebarCollapsed}
             />
             <div className="flex justify-center py-2 border-t border-[#e8e8e8] shrink-0">
@@ -4716,6 +4927,68 @@ function StoreSettingsContent() {
           document.body
         )}
 
+        {typeof document !== 'undefined' && slotRemoveConfirm && createPortal(
+          (
+            <>
+              <div
+                className="fixed inset-0 bg-black/50"
+                onClick={() => setSlotRemoveConfirm(null)}
+                style={{
+                  backdropFilter: 'blur(12px)',
+                  WebkitBackdropFilter: 'blur(12px)',
+                  zIndex: 10001,
+                }}
+              />
+              <div className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none" style={{ zIndex: 10002 }}>
+                <div className="bg-white rounded-xl max-w-md w-full pointer-events-auto shadow-2xl">
+                  <div className="flex items-center justify-between p-6 border-b border-gray-200">
+                    <h2 className="text-lg font-bold text-gray-900">Remove time slot?</h2>
+                    <button
+                      type="button"
+                      onClick={() => setSlotRemoveConfirm(null)}
+                      className="text-gray-500 hover:text-gray-900"
+                      aria-label="Close"
+                    >
+                      <X size={20} />
+                    </button>
+                  </div>
+                  <div className="p-6 space-y-4">
+                    <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                      <AlertCircle className="text-amber-600 flex-shrink-0 mt-0.5" size={20} />
+                      <div>
+                        <p className="text-sm font-semibold text-gray-900 mb-1">This cannot be undone from here</p>
+                        <p className="text-sm text-gray-700">
+                          {slotRemoveConfirm.kind === 'morning'
+                            ? 'The morning slot will be removed and the evening slot will become the primary hours for this day.'
+                            : 'The evening slot will be removed. You can add it again later if needed.'}
+                        </p>
+                        <p className="text-sm text-gray-600 mt-2 capitalize">{slotRemoveConfirm.day}</p>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <button
+                        type="button"
+                        onClick={() => confirmPendingSlotRemove()}
+                        className="w-full px-4 py-2.5 bg-rose-600 text-white rounded-lg hover:bg-rose-700 font-semibold transition-colors"
+                      >
+                        Remove slot
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSlotRemoveConfirm(null)}
+                        className="w-full px-4 py-2.5 border border-gray-200 rounded-lg hover:bg-gray-50 font-semibold"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </>
+          ),
+          document.body
+        )}
+
         {/* Auto Renew Confirmation Modal - portaled so backdrop blurs sidebar */}
         {typeof document !== 'undefined' && showAutoRenewConfirm && createPortal(
           (
@@ -4823,6 +5096,40 @@ function StoreSettingsContent() {
                 </div>
               </div>
             </>
+          ),
+          document.body
+        )}
+        {typeof document !== 'undefined' && showRefundPolicy && createPortal(
+          (
+            <div
+              className="fixed inset-0 z-[10001] flex"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="refund-policy-sheet-title"
+            >
+              <div className="absolute inset-0 bg-black/40" onClick={closeRefundPolicySheet} />
+              <aside className="relative ml-auto w-full max-w-3xl h-full bg-white shadow-2xl flex flex-col overflow-hidden border-l border-gray-200">
+                <div className="flex-shrink-0 px-4 sm:px-5 py-4 border-b border-gray-200 bg-white/95 backdrop-blur flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-orange-600 font-semibold">Policy</p>
+                    <h2 id="refund-policy-sheet-title" className="text-base sm:text-lg font-bold text-gray-900 leading-tight">
+                      Refund Policy
+                    </h2>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeRefundPolicySheet}
+                    className="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-xl hover:bg-gray-100 text-gray-600"
+                    aria-label="Close refund policy"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+                <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar">
+                  <RefundPolicyContent compact />
+                </div>
+              </aside>
+            </div>
           ),
           document.body
         )}

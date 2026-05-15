@@ -6,6 +6,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { MXLayoutWhite } from '@/components/MXLayoutWhite';
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
 import { toast } from 'sonner';
+import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback';
 import {
   Clock,
   CheckCircle2,
@@ -396,7 +397,7 @@ function OrdersPageContent() {
         setStore(s as MerchantStore);
         setStoreInternalId((s as MerchantStore).id);
         const ms = s as MerchantStore;
-        setIsStoreOpen(ms.operational_status === 'OPEN' || !!ms.is_accepting_orders);
+        setIsStoreOpen(ms.operational_status === 'OPEN');
       }
     })();
   }, [storeId]);
@@ -697,14 +698,16 @@ function OrdersPageContent() {
         setShowTurnOnModal(false);
         toast.success('Store is now OPEN. Orders are being accepted!');
       } else {
-        toast.error(data.error || 'Failed to open store');
+        toastStoreOperationsPostFailure(res, data, 'Failed to open store');
+        await fetchStoreStatus();
       }
     } catch {
       toast.error('Failed to open store');
+      await fetchStoreStatus();
     } finally {
       setTurnOnLoading(false);
     }
-  }, [storeId]);
+  }, [storeId, fetchStoreStatus]);
 
   // When store close modal opens: fetch opening time and set default date/time
   useEffect(() => {

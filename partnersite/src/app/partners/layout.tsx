@@ -1,5 +1,6 @@
 "use client";
 
+import { Suspense } from "react";
 import { PartnerPendingNewOrdersBar } from "@/components/PartnerPendingNewOrdersBar";
 import { PartnerIncomingOrderModal } from "@/components/PartnerIncomingOrderModal";
 import { GlobalToaster } from "@/components/GlobalToaster";
@@ -19,7 +20,9 @@ export default function PartnersLayout({ children }: { children: React.ReactNode
         {children}
       </div>
       <GlobalToaster />
-      <PartnerPendingNewOrdersBar />
+      <Suspense fallback={null}>
+        <PartnerPendingNewOrdersBar />
+      </Suspense>
       <PartnerIncomingOrderModal />
     </>
   );

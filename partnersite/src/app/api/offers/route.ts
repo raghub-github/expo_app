@@ -10,8 +10,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: parse.error.issues[0].message }, { status: 400 });
   }
   const data = parse.data;
-  // If SPECIFIC_ITEM, item_id is required
-  if (data.offer_type === 'SPECIFIC_ITEM' && !data.item_id) {
+  if (
+    data.offer_sub_type === 'SPECIFIC_ITEM' &&
+    (!Array.isArray(data.menu_item_ids) || data.menu_item_ids.length === 0)
+  ) {
     return NextResponse.json({ error: 'Menu item required for SPECIFIC_ITEM offer' }, { status: 400 });
   }
   // Validate date range
@@ -19,11 +21,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid date range' }, { status: 400 });
   }
   try {
-    const [inserted] = await client`
+    const menuItemId = data.menu_item_ids?.[0] ?? null;
+    const discountType =
+      data.discount_percentage != null ? 'PERCENTAGE' : data.discount_value != null ? 'FLAT' : 'PERCENTAGE';
+    const discountValue = data.discount_percentage ?? data.discount_value ?? null;
+
+    const insertedRows = (await client`
       INSERT INTO offers (store_id, offer_type, menu_item_id, discount_type, discount_value, min_order_amount, valid_from, valid_till, is_active)
-      VALUES (${data.store_id}, ${data.offer_type}, ${data.item_id ?? null}, ${data.discount_type}, ${data.discount_value}, ${data.min_order_amount ?? null}, ${data.valid_from}, ${data.valid_till}, true)
+      VALUES (${data.store_id}, ${data.offer_type}, ${menuItemId}, ${discountType}, ${discountValue}, ${data.min_order_amount ?? null}, ${data.valid_from}, ${data.valid_till}, true)
       RETURNING id, offer_id
-    ` as { id: number; offer_id: string }[];
+    `) as unknown as { id: number; offer_id: string }[];
+    const inserted = insertedRows[0];
+    if (!inserted) {
+      return NextResponse.json({ error: 'Failed to create offer.' }, { status: 500 });
+    }
     await logAudit({
       entity_type: 'offers',
       entity_id: inserted.offer_id,

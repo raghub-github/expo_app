@@ -63,7 +63,7 @@ export const offerSchema = z.object({
   applicable_time_end: z.string().nullish(),
 
   // Metadata (tiers, bundle_items, free_item_ids, etc.)
-  offer_metadata: z.record(z.unknown()).nullish(),
+  offer_metadata: z.record(z.string(), z.unknown()).nullish(),
 });
 
 export type OfferInput = z.infer<typeof offerSchema>;

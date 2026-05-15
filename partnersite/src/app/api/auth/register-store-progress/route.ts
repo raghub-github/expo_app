@@ -21,6 +21,7 @@ import {
   insertStoreAfterStep1,
   upsertStoreDraft,
   syncMerchantStoreFromStep5,
+  type Step5Supabase,
 } from "./helpers";
 import {
   markMerchantResubmittedForRejectedSteps,
@@ -1654,9 +1655,19 @@ export async function PUT(req: NextRequest) {
 
     if (stepStore?.storeDbId && mergedFormData?.step5 && !preserveProgressPosition) {
       const s5 = mergedFormData.step5 as Record<string, unknown>;
-      await syncMerchantStoreFromStep5(db, stepStore.storeDbId, s5, progressStepForPersistence);
+      await syncMerchantStoreFromStep5(db as unknown as Step5Supabase, stepStore.storeDbId, s5, progressStepForPersistence);
 
-      const hours = s5.store_hours || {};
+      const hours = (s5.store_hours && typeof s5.store_hours === 'object' && !Array.isArray(s5.store_hours)
+        ? s5.store_hours
+        : {}) as {
+        monday?: unknown;
+        tuesday?: unknown;
+        wednesday?: unknown;
+        thursday?: unknown;
+        friday?: unknown;
+        saturday?: unknown;
+        sunday?: unknown;
+      };
       const parseMinutes = (v: string | null | undefined) => {
         if (!v) return null;
         const [h, m] = String(v).split(":").map(Number);

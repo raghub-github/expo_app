@@ -249,7 +249,15 @@ function ScheduleOffTimeField({
   );
 }
 
-type StoreOpRow = { open: boolean | null; autoOpen: boolean; manualLock: boolean };
+type StoreOpRow = {
+  open: boolean | null;
+  autoOpen: boolean;
+  manualLock: boolean;
+  /** From GET /api/store-operations — current time inside an active slot (or 24h). */
+  withinOperatingHours?: boolean | null;
+  /** From GET — today is a scheduled closed day or has no valid slots while "open" in DB. */
+  todayScheduledClosed?: boolean | null;
+};
 
 function WhatsappBrandIcon({ className }: { className?: string }) {
   return (
@@ -678,12 +686,22 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       const res = await fetch(`/api/store-operations?store_id=${encodeURIComponent(resolvedStoreId)}`);
       const data = await res.json().catch(() => ({}));
       if (res.ok && data && typeof data.operational_status === 'string') {
+        const withinH =
+          typeof (data as { within_operating_hours?: boolean }).within_operating_hours === 'boolean'
+            ? (data as { within_operating_hours: boolean }).within_operating_hours
+            : null;
+        const todayClosed =
+          typeof (data as { is_today_scheduled_closed?: boolean }).is_today_scheduled_closed === 'boolean'
+            ? (data as { is_today_scheduled_closed: boolean }).is_today_scheduled_closed
+            : null;
         clientStoreOpsDebugLog('refreshStoreOperations', {
           storeId: resolvedStoreId,
           operational_status: data.operational_status,
           last_toggle_type: (data as { last_toggle_type?: string }).last_toggle_type,
           within_hours_but_restricted: (data as { within_hours_but_restricted?: boolean })
             .within_hours_but_restricted,
+          within_operating_hours: withinH,
+          is_today_scheduled_closed: todayClosed,
         });
         setStoreOpen(data.operational_status === 'OPEN');
         setAutoOpenFromSchedule(data.auto_open_from_schedule !== false);
@@ -694,6 +712,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
             open: data.operational_status === 'OPEN',
             autoOpen: data.auto_open_from_schedule !== false,
             manualLock: data.block_auto_open === true,
+            withinOperatingHours: withinH,
+            todayScheduledClosed: todayClosed,
           },
         }));
       } else {
@@ -710,17 +730,29 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       const res = await fetch(`/api/store-operations?store_id=${encodeURIComponent(storeId)}`);
       const data = await res.json().catch(() => ({}));
       if (res.ok && data && typeof data.operational_status === 'string') {
+        const withinH =
+          typeof (data as { within_operating_hours?: boolean }).within_operating_hours === 'boolean'
+            ? (data as { within_operating_hours: boolean }).within_operating_hours
+            : null;
+        const todayClosed =
+          typeof (data as { is_today_scheduled_closed?: boolean }).is_today_scheduled_closed === 'boolean'
+            ? (data as { is_today_scheduled_closed: boolean }).is_today_scheduled_closed
+            : null;
         clientStoreOpsDebugLog('refetchStoreOp', {
           storeId,
           operational_status: data.operational_status,
           last_toggle_type: (data as { last_toggle_type?: string }).last_toggle_type,
           last_toggled_at: (data as { last_toggled_at?: string }).last_toggled_at,
           restriction_type: (data as { restriction_type?: string }).restriction_type,
+          within_operating_hours: withinH,
+          is_today_scheduled_closed: todayClosed,
         });
         const row: StoreOpRow = {
           open: data.operational_status === 'OPEN',
           autoOpen: data.auto_open_from_schedule !== false,
           manualLock: data.block_auto_open === true,
+          withinOperatingHours: withinH,
+          todayScheduledClosed: todayClosed,
         };
         setStoreOpsById((prev) => ({ ...prev, [storeId]: row }));
         if (storeId === resolvedStoreId) {
@@ -915,6 +947,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         open: p[storeId]?.open ?? null,
         autoOpen: enabled,
         manualLock: p[storeId]?.manualLock ?? false,
+        withinOperatingHours: p[storeId]?.withinOperatingHours ?? null,
+        todayScheduledClosed: p[storeId]?.todayScheduledClosed ?? null,
       },
     }));
     if (storeId === resolvedStoreId) setAutoOpenFromSchedule(enabled);
@@ -935,6 +969,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
             open: p[storeId]?.open ?? null,
             autoOpen: prev,
             manualLock: p[storeId]?.manualLock ?? false,
+            withinOperatingHours: p[storeId]?.withinOperatingHours ?? null,
+            todayScheduledClosed: p[storeId]?.todayScheduledClosed ?? null,
           },
         }));
         if (storeId === resolvedStoreId) setAutoOpenFromSchedule(prev);
@@ -950,6 +986,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           open: p[storeId]?.open ?? null,
           autoOpen: prev,
           manualLock: p[storeId]?.manualLock ?? false,
+          withinOperatingHours: p[storeId]?.withinOperatingHours ?? null,
+          todayScheduledClosed: p[storeId]?.todayScheduledClosed ?? null,
         },
       }));
       if (storeId === resolvedStoreId) setAutoOpenFromSchedule(prev);
@@ -967,6 +1005,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         open: p[storeId]?.open ?? null,
         autoOpen: p[storeId]?.autoOpen ?? true,
         manualLock: enabled,
+        withinOperatingHours: p[storeId]?.withinOperatingHours ?? null,
+        todayScheduledClosed: p[storeId]?.todayScheduledClosed ?? null,
       },
     }));
     if (storeId === resolvedStoreId) setManualLock(enabled);
@@ -987,6 +1027,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
             open: p[storeId]?.open ?? null,
             autoOpen: p[storeId]?.autoOpen ?? true,
             manualLock: prev,
+            withinOperatingHours: p[storeId]?.withinOperatingHours ?? null,
+            todayScheduledClosed: p[storeId]?.todayScheduledClosed ?? null,
           },
         }));
         if (storeId === resolvedStoreId) setManualLock(prev);
@@ -1002,6 +1044,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           open: p[storeId]?.open ?? null,
           autoOpen: p[storeId]?.autoOpen ?? true,
           manualLock: prev,
+          withinOperatingHours: p[storeId]?.withinOperatingHours ?? null,
+          todayScheduledClosed: p[storeId]?.todayScheduledClosed ?? null,
         },
       }));
       if (storeId === resolvedStoreId) setManualLock(prev);
@@ -1155,7 +1199,17 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   }, [refetchAllStoreOps]);
 
   const leftW = sidebarCollapsed ? 'md:w-14' : 'md:w-52';
-  const onlineLabel = storeOpen === null ? 'Status' : storeOpen ? 'Online' : 'Offline';
+  const resolvedOpsRow = resolvedStoreId ? storeOpsById[resolvedStoreId] : undefined;
+  const onlineLabel =
+    storeOpen === null
+      ? 'Status'
+      : storeOpen
+        ? 'Online'
+        : resolvedOpsRow?.todayScheduledClosed === true
+          ? 'Offline · Closed today'
+          : resolvedOpsRow?.withinOperatingHours === false
+            ? 'Offline · Outside hours'
+            : 'Offline';
   const onlineGreen = storeOpen === true;
 
   const q = resolvedStoreId ? `?storeId=${encodeURIComponent(resolvedStoreId)}` : '';
@@ -1171,7 +1225,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     const overrideBreadcrumbs = partnerShellHeader?.header.breadcrumbs ?? [];
     if (overrideBreadcrumbs.length > 0) return overrideBreadcrumbs;
 
-    const parts = pathname.split('/').filter(Boolean);
+    const parts = (pathname ?? '').split('/').filter(Boolean);
     const appRoute = parts[0] === 'partners' ? parts[1] ?? '' : parts[0] ?? '';
     const storeSettingsTab = (searchParams?.get('tab') || '').trim();
     const sectionLabelMap: Record<string, string> = {
@@ -1877,7 +1931,15 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                                         : 'bg-gray-200 text-gray-700'
                                   }`}
                                 >
-                                  {isOn == null ? '—' : isOn ? 'Online' : 'Offline'}
+                                  {isOn == null
+                                    ? '—'
+                                    : isOn
+                                      ? 'Online'
+                                      : row?.todayScheduledClosed === true
+                                        ? 'Offline · Closed today'
+                                        : row?.withinOperatingHours === false
+                                          ? 'Offline · Outside hours'
+                                          : 'Offline'}
                                 </span>
                                 <CompactSwitch
                                   on={isOn === true}
@@ -2125,6 +2187,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
             onClick={() => setSheet((s) => (s === 'status' ? null : 'status'))}
             className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs font-medium text-gray-800 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300 sm:gap-2 sm:px-2.5 sm:text-sm"
             aria-expanded={sheet === 'status'}
+            title={onlineLabel}
           >
             <span className={`h-2 w-2 rounded-full ${onlineGreen ? 'bg-emerald-500' : storeOpen === false ? 'bg-red-500' : 'bg-gray-400'}`} />
             <span className="hidden sm:inline">{onlineLabel}</span>

@@ -107,11 +107,12 @@ export interface Step3MenuUploadProps {
     SetStateAction<{
       title: string;
       message: string;
-      variant?: 'warning' | 'error' | 'info';
+      variant?: 'warning' | 'error' | 'info' | 'success';
       confirmLabel?: string;
       onConfirm: () => void | Promise<void>;
       onCancel?: () => void;
       isLoading?: boolean;
+      notice?: boolean;
     } | null>
   >;
   menuUploadError: string | null;

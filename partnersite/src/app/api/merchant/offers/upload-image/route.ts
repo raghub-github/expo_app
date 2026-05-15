@@ -12,7 +12,7 @@ import { validateMerchantFromSession } from '@/lib/auth/validate-merchant';
 import { getOffersR2Path } from '@/lib/r2-paths';
 import { uploadToR2, deleteFromR2, extractR2KeyFromUrl, listR2KeysByPrefix } from '@/lib/r2';
 import { toStoredDocumentUrl } from '@/lib/r2';
-import { getAuditActor, logMerchantAudit } from '@/lib/audit';
+import { getAuditActor, logMerchantAudit } from '@/lib/audit-merchant';
 import { logStoreActivity } from '@/lib/store-activity-feed';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;

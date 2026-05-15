@@ -141,9 +141,7 @@ export async function PATCH(
         user_agent: ua,
         audit_metadata: { description: descriptions[actionField] || actionField },
       });
-    }
 
-    if (actionField) {
       const actionMap: Record<string, string> = {
         BANK_ACCOUNT_SET_DEFAULT: 'set_default',
         BANK_ACCOUNT_DISABLE: 'disable',

@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useSyncExternalStore } from 'react'
+import React, { useState, useSyncExternalStore, Suspense } from 'react'
 import { PartnerShellHeaderProvider } from '@/context/PartnerShellHeaderContext'
 import { MXSidebarWhite } from './MXSidebarWhite'
 import { MXPartnerTopBar } from './MXPartnerTopBar'
@@ -52,6 +52,7 @@ export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
   return (
     <PartnerShellHeaderProvider>
       <div className="flex flex-col bg-white h-screen overflow-hidden">
+        <Suspense fallback={null}>
         {!isRight && (
           <MXPartnerTopBar
             restaurantName={restaurantName}
@@ -83,6 +84,7 @@ export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
             </div>
           </main>
         </div>
+        </Suspense>
         <PartnerIncomingOrderModal restaurantId={restaurantId} />
       </div>
     </PartnerShellHeaderProvider>

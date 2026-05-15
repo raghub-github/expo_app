@@ -3,20 +3,22 @@
  */
 
 import { useEffect, useState } from "react";
-import { View, ActivityIndicator } from "react-native";
+import { View } from "react-native";
 import { useRouter } from "expo-router";
 import { useAuthStore } from "@/store/authStore";
 import { profileService } from "@/services/profile.service";
+import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
 
 export default function IndexScreen() {
   const router = useRouter();
   const session = useAuthStore((s) => s.session);
   const hydrated = useAuthStore((s) => s.hydrated);
-  const [checkingProfile, setCheckingProfile] = useState(false);
+  const [checkingProfile, setCheckingProfile] = useState(true);
 
   useEffect(() => {
     if (!hydrated) return;
     if (!session?.accessToken) {
+      setCheckingProfile(false);
       router.replace("/(auth)/login");
       return;
     }
@@ -50,12 +52,8 @@ export default function IndexScreen() {
     };
   }, [hydrated, session?.accessToken, router]);
 
-  if (checkingProfile && session?.accessToken) {
-    return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#F0F4F3" }}>
-        <ActivityIndicator size="large" color="#14b8a6" />
-      </View>
-    );
+  if (!hydrated || checkingProfile) {
+    return <GatiMitraBootstrapScreen variant="index" />;
   }
   return <View style={{ flex: 1 }} />;
 }

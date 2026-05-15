@@ -52,12 +52,13 @@ function normalizeOrderItems(
 ): Array<{ name: string; quantity: number; price: number; total: number; customizations?: string[] }> {
   const arr = extractItemsArray(rawItems);
   if (!Array.isArray(arr) || arr.length === 0) return [];
-  return arr.map((it: Record<string, unknown>, idx: number) => {
-    const qty = Number(it.quantity) ?? 1;
-    const unitPrice = Number(it.price ?? it.unit_price ?? 0);
-    const total = Number(it.total ?? it.total_price ?? unitPrice * qty);
-    const name = String(it.name ?? it.item_name ?? `Item ${idx + 1}`).trim();
-    const customizations = Array.isArray(it.customizations) ? (it.customizations as string[]) : undefined;
+  return arr.map((it, idx) => {
+    const row = (it && typeof it === 'object' ? it : {}) as Record<string, unknown>;
+    const qty = Number(row.quantity) ?? 1;
+    const unitPrice = Number(row.price ?? row.unit_price ?? 0);
+    const total = Number(row.total ?? row.total_price ?? unitPrice * qty);
+    const name = String(row.name ?? row.item_name ?? `Item ${idx + 1}`).trim();
+    const customizations = Array.isArray(row.customizations) ? (row.customizations as string[]) : undefined;
     return { name, quantity: qty, price: unitPrice, total, customizations };
   });
 }
