@@ -12,7 +12,7 @@ import { supabase } from '@/lib/supabase';
 import { fetchRestaurantById as fetchStoreById, fetchRestaurantByName as fetchStoreByName } from '@/lib/database'
 import { MerchantStore } from '@/lib/merchantStore'
 import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants'
-import { Clock, Phone, Save, AlertCircle, CheckCircle2, X, Zap, Shield, BarChart3, Bell, Crown, Star, Check, MapPin, Calendar, Copy, Power, Plus, Trash2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Gift, Target, Globe, Users, Package, CreditCard, Sparkles, Smartphone, Lock, Unlock, Activity, FileText, Mail, MessageSquare, Radio, TrendingUp, Database, Eye, EyeOff, ShoppingBag, ChefHat, CheckCircle, XCircle, Image, Layers, BarChart2, Headphones, UserCheck, MoreVertical } from 'lucide-react'
+import { Clock, Phone, Save, AlertCircle, CheckCircle2, X, Zap, Shield, BarChart3, Bell, Crown, Star, Check, MapPin, Calendar, Copy, Power, Plus, Trash2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Gift, Target, Globe, Users, Package, CreditCard, Sparkles, Smartphone, Lock, Unlock, Activity, FileText, Mail, MessageSquare, Radio, TrendingUp, Database, Eye, EyeOff, ShoppingBag, ChefHat, CheckCircle, XCircle, Image, Layers, BarChart2, Headphones, UserCheck } from 'lucide-react'
 import { PageSkeletonGeneric } from '@/components/PageSkeleton'
 import { toast } from 'sonner'
 import { normalizeWallTimeToHHMM } from '@/lib/wallTimeHHMM'
@@ -79,7 +79,9 @@ function parseDbBool(value: unknown): boolean {
 function StoreSettingsContent() {
   const searchParams = useSearchParams()
   const [store, setStore] = useState<MerchantStore | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
+  const [timingsLoading, setTimingsLoading] = useState(false)
+  const [timingsLoaded, setTimingsLoaded] = useState(false)
+  const timingsFetchGenRef = React.useRef(0)
   const [storeId, setStoreId] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
   const [activeTab, setActiveTab] = useState<'plans' | 'premium' | 'timings' | 'operations' | 'menu-capacity' | 'delivery' | 'address' | 'pos' | 'notifications' | 'audit' | 'gatimitra'>(() => {
@@ -139,7 +141,6 @@ function StoreSettingsContent() {
   const [posIntegrationActive, setPosIntegrationActive] = useState(false)
   
   const [showStoreTimingModal, setShowStoreTimingModal] = useState(false)
-  const [expandedDay, setExpandedDay] = useState<DayType | null>(null)
   const [showMainToggleWarning, setShowMainToggleWarning] = useState(false)
   const [mainToggleAction, setMainToggleAction] = useState<boolean | null>(null)
   const [showRefundPolicy, setShowRefundPolicy] = useState(false)
@@ -304,25 +305,17 @@ function StoreSettingsContent() {
   // Last updated info state
   const [lastUpdatedBy, setLastUpdatedBy] = useState<{ email?: string; at?: string } | null>(null)
 
-  // Load timings from merchant_store_operating_hours on page load
-  const fetchTimings = async () => {
+  // Load timings (single API call — accepts public store_id e.g. GMMC1001)
+  const fetchTimings = React.useCallback(async (fetchGen?: number) => {
     if (!storeId) return;
+    const gen = fetchGen ?? ++timingsFetchGenRef.current;
+    setTimingsLoading(true);
     try {
-      // Get store bigint id from merchant_stores
-      const storeRes = await fetch(`/api/store-id?store_id=${storeId}`);
-      if (!storeRes.ok) return;
-      let storeData;
-      try {
-        storeData = await storeRes.json();
-      } catch (jsonError) {
-        console.error('Failed to parse store data JSON:', jsonError);
-        return;
-      }
-      if (!storeData || !storeData.id) return;
-      const storeBigIntId = storeData.id;
-
-      // Fetch timings from merchant_store_operating_hours
-      const res = await fetch(`/api/outlet-timings?store_id=${storeBigIntId}`);
+      const res = await fetch(`/api/outlet-timings?store_id=${encodeURIComponent(storeId)}`, {
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      if (gen !== timingsFetchGenRef.current) return;
       if (!res.ok) return;
       let data;
       try {
@@ -331,6 +324,7 @@ function StoreSettingsContent() {
         console.error('Failed to parse timings data JSON:', jsonError);
         return;
       }
+      if (gen !== timingsFetchGenRef.current) return;
       if (!data || data.error) return;
 
       // `closed_days` is auto-synced from *_open in DB (sync_operating_hours_closed_days). It must NOT
@@ -368,6 +362,9 @@ function StoreSettingsContent() {
             }
           }
         }
+        if (is24Hours && slots.length === 0) {
+          slots.push({ id: '1', openingTime: '00:00', closingTime: '23:59' });
+        }
         if (hadSlot1FromPrimary) {
           if (s2Start && s2End) {
             slots.push({ id: '2', openingTime: s2Start, closingTime: s2End });
@@ -376,10 +373,15 @@ function StoreSettingsContent() {
           slots.push({ id: '1', openingTime: s2Start, closingTime: s2End });
         }
 
-        // Calculate duration
+        const durationFromSlots = calculateOperationalTime(
+          slots.length > 0 ? slots : [{ id: '1', openingTime: '00:00', closingTime: '23:59' }]
+        );
         let minutes = data[`${day}_total_duration_minutes`] || 0;
-        let hours = Math.floor(minutes / 60);
-        let mins = minutes % 60;
+        if (slots.length > 0) {
+          minutes = durationFromSlots.hours * 60 + durationFromSlots.minutes;
+        }
+        const hours = Math.floor(minutes / 60);
+        const mins = minutes % 60;
 
         return {
           day,
@@ -388,9 +390,9 @@ function StoreSettingsContent() {
           slots,
           is24Hours,
           isOutletClosed: false,
-          duration: is24Hours ? '24.0 hrs' : `${hours}.${mins.toString().padStart(2, '0')} hrs`,
-          operationalHours: is24Hours ? 24 : hours,
-          operationalMinutes: is24Hours ? 0 : mins
+          duration: `${hours}.${mins.toString().padStart(2, '0')} hrs`,
+          operationalHours: hours,
+          operationalMinutes: mins,
         };
       });
 
@@ -449,15 +451,29 @@ function StoreSettingsContent() {
         });
       }
       // Do NOT override toggles based on other logic, always use DB values
+      setTimingsLoaded(true);
     } catch (error) {
       console.error('Error loading timings:', error);
+    } finally {
+      if (gen === timingsFetchGenRef.current) {
+        setTimingsLoading(false);
+      }
     }
-  };
+  }, [storeId]);
+
+  const fetchLastUpdatedInfo = fetchTimings;
+
+  // Prefetch timings as soon as store id is known (do not wait for full store profile)
+  useEffect(() => {
+    if (!storeId) return;
+    void fetchTimings();
+  }, [storeId, fetchTimings]);
 
   useEffect(() => {
-    if (!storeId || activeTab !== 'timings') return
-    fetchTimings()
-  }, [storeId, activeTab])
+    if (activeTab === 'timings' && storeId && !timingsLoaded && !timingsLoading) {
+      void fetchTimings();
+    }
+  }, [activeTab, storeId, timingsLoaded, timingsLoading, fetchTimings]);
 
   // Add a manual refresh button for debugging
   const handleRefreshTimings = () => {
@@ -470,7 +486,17 @@ function StoreSettingsContent() {
     const updateDurations = () => {
       setStoreSchedule(prev => prev.map(day => {
         if (day.is24Hours) {
-          return { ...day, duration: '24.0 hrs', operationalHours: 24, operationalMinutes: 0 }
+          const slots =
+            day.slots.length > 0
+              ? day.slots
+              : [{ id: '1', openingTime: '00:00', closingTime: '23:59' }]
+          const { hours, minutes } = calculateOperationalTime(slots)
+          return {
+            ...day,
+            duration: `${hours}.${minutes.toString().padStart(2, '0')} hrs`,
+            operationalHours: hours,
+            operationalMinutes: minutes,
+          }
         }
         if (day.isOutletClosed) {
           return { ...day, duration: '0.0 hrs', operationalHours: 0, operationalMinutes: 0 }
@@ -489,15 +515,12 @@ function StoreSettingsContent() {
     updateDurations()
   }, [])
 
-  // Get store ID
+  // Resolve store id immediately (sync) so timings can load without waiting on profile fetch
   useEffect(() => {
-    const getStoreId = async () => {
-      let id = searchParams?.get('storeId') ?? null
-      if (!id) id = typeof window !== 'undefined' ? localStorage.getItem('selectedStoreId') : null
-      if (!id) id = DEMO_STORE_ID
-      setStoreId(id)
-    }
-    getStoreId()
+    let id = searchParams?.get('storeId') ?? null
+    if (!id && typeof window !== 'undefined') id = localStorage.getItem('selectedStoreId')
+    if (!id) id = DEMO_STORE_ID
+    setStoreId(id)
   }, [searchParams])
 
   // Load store data
@@ -505,7 +528,6 @@ function StoreSettingsContent() {
     if (!storeId) return
 
     const loadStore = async () => {
-      setIsLoading(true)
       try {
         let storeData = await fetchStoreById(storeId)
         if (!storeData && !storeId.match(/^GMM\d{4}$/)) {
@@ -541,8 +563,6 @@ function StoreSettingsContent() {
         }
       } catch (error) {
         console.error('Error loading store:', error)
-      } finally {
-        setIsLoading(false)
       }
     }
     loadStore()
@@ -1904,9 +1924,92 @@ function StoreSettingsContent() {
     }
   };
 
-  // Store timing functions
-  const toggleDayExpansion = (day: DayType) => {
-    setExpandedDay(expandedDay === day ? null : day)
+  const slotHasTimingData = (slot?: TimeSlot | null) =>
+    !!(slot?.openingTime?.trim() && slot?.closingTime?.trim())
+
+  const saveSingleDayTimings = async (dayKey: DayType) => {
+    const dayData = storeSchedule.find((d) => d.day === dayKey)
+    if (!dayData || !storeId) return
+
+    if (dayData.isOpen && !dayData.isOutletClosed && !dayData.is24Hours) {
+      const toMin = (t: string) => {
+        const [h, m] = t.split(':').map(Number)
+        return h * 60 + m
+      }
+      const s1o = dayData.slots[0]?.openingTime
+      const s1c = dayData.slots[0]?.closingTime
+      if (s1o && s1c && toMin(s1c) <= toMin(s1o)) {
+        toast.error(`${dayData.label}: Slot 1 end time must be after start time`)
+        return
+      }
+      const s2o = dayData.slots[1]?.openingTime
+      const s2c = dayData.slots[1]?.closingTime
+      if (s2o && s2c && toMin(s2c) <= toMin(s2o)) {
+        toast.error(`${dayData.label}: Slot 2 end time must be after start time`)
+        return
+      }
+      if (s1c && s2o && toMin(s2o) <= toMin(s1c)) {
+        toast.error(`${dayData.label}: Slot 2 must start after Slot 1 ends (${s1c})`)
+        return
+      }
+    }
+
+    setIsSaving(true)
+    try {
+      const timings: Record<string, unknown> = {
+        store_id: storeId,
+        same_for_all: applyMondayToAll,
+        force_24_hours: force24Hours,
+      }
+      const prefix = dayData.day
+      timings[`${prefix}_open`] = dayData.isOpen && !dayData.isOutletClosed
+      if (dayData.is24Hours) {
+        timings[`${prefix}_slot1_start`] = '00:00'
+        timings[`${prefix}_slot1_end`] = '23:59'
+        timings[`${prefix}_slot2_start`] = null
+        timings[`${prefix}_slot2_end`] = null
+        timings[`${prefix}_total_duration_minutes`] = 24 * 60
+      } else {
+        timings[`${prefix}_slot1_start`] = dayData.slots[0]?.openingTime || null
+        timings[`${prefix}_slot1_end`] = dayData.slots[0]?.closingTime || null
+        timings[`${prefix}_slot2_start`] = dayData.slots[1]?.openingTime || null
+        timings[`${prefix}_slot2_end`] = dayData.slots[1]?.closingTime || null
+        timings[`${prefix}_total_duration_minutes`] =
+          dayData.operationalHours * 60 + dayData.operationalMinutes
+      }
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
+      timings.updated_by_email = user?.email || ''
+      timings.updated_by_at = new Date().toISOString()
+      const res = await fetch('/api/outlet-timings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(timings),
+      })
+      if (res.ok) {
+        toast.success(`✅ ${dayData.label} saved!`)
+        setManualTimeChanges((prev) => {
+          const next = new Set(prev)
+          next.delete(dayKey)
+          return next
+        })
+        await fetchTimings()
+      } else {
+        let errMsg = 'Failed to save timings'
+        try {
+          const errData = await res.json()
+          if (errData?.error) errMsg = errData.error
+        } catch {
+          /* ignore */
+        }
+        toast.error(errMsg)
+      }
+    } catch {
+      toast.error('Failed to save timings')
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   const handleMainToggle = async (turnOn: boolean) => {
@@ -2039,9 +2142,18 @@ function StoreSettingsContent() {
           is24Hours: new24Hours,
           isOutletClosed: false,
           slots: new24Hours ? [{ id: '1', openingTime: '00:00', closingTime: '23:59' }] : [],
-          duration: new24Hours ? '24.0 hrs' : '0.0 hrs',
-          operationalHours: new24Hours ? 24 : 0,
-          operationalMinutes: 0
+          ...(new24Hours
+            ? (() => {
+                const { hours, minutes } = calculateOperationalTime([
+                  { id: '1', openingTime: '00:00', closingTime: '23:59' },
+                ])
+                return {
+                  duration: `${hours}.${minutes.toString().padStart(2, '0')} hrs`,
+                  operationalHours: hours,
+                  operationalMinutes: minutes,
+                }
+              })()
+            : { duration: '0.0 hrs', operationalHours: 0, operationalMinutes: 0 })
         }
       }
       return d
@@ -2247,39 +2359,6 @@ function StoreSettingsContent() {
     }
     setSlotRemoveConfirm(null)
   }
-
-  // Fetch last updated info from timings
-  const fetchLastUpdatedInfo = async () => {
-    if (!storeId) return;
-    try {
-      // Get store bigint id
-      const storeRes = await fetch(`/api/store-id?store_id=${storeId}`);
-      if (!storeRes.ok) return;
-      const storeData = await storeRes.json();
-      if (!storeData?.id) return;
-      const storeBigIntId = storeData.id;
-
-      // Fetch timings to get last updated info
-      const res = await fetch(`/api/outlet-timings?store_id=${storeBigIntId}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.updated_by_email || data?.updated_by_at) {
-          setLastUpdatedBy({
-            email: data.updated_by_email,
-            at: data.updated_by_at,
-          });
-        }
-      }
-    } catch (error) {
-      console.error('Failed to fetch last updated info:', error);
-    }
-  };
-
-  useEffect(() => {
-    if (storeId && activeTab === 'timings') {
-      fetchLastUpdatedInfo();
-    }
-  }, [storeId, activeTab]);
 
   const updateTimeSlot = (day: DayType, slotId: string, field: 'openingTime' | 'closingTime', value: string) => {
     setManualTimeChanges(prev => new Set(prev).add(day))
@@ -2536,9 +2615,16 @@ function StoreSettingsContent() {
         isOutletClosed: false,
         isOpen: true,
         slots: [{ id: '1', openingTime: '00:00', closingTime: '23:59' }],
-        duration: '24.0 hrs',
-        operationalHours: 24,
-        operationalMinutes: 0
+        ...(() => {
+          const { hours, minutes } = calculateOperationalTime([
+            { id: '1', openingTime: '00:00', closingTime: '23:59' },
+          ])
+          return {
+            duration: `${hours}.${minutes.toString().padStart(2, '0')} hrs`,
+            operationalHours: hours,
+            operationalMinutes: minutes,
+          }
+        })(),
       }));
       
       setStoreSchedule(newSchedule);
@@ -2650,9 +2736,9 @@ function StoreSettingsContent() {
     window.open('https://gatimitra.com', '_blank', 'noopener,noreferrer')
   }
 
-  if (isLoading) {
+  if (!storeId) {
     return (
-      <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''}>
+      <MXLayoutWhite restaurantName={store?.store_name} restaurantId="">
         <PageSkeletonGeneric />
       </MXLayoutWhite>
     )
@@ -2660,17 +2746,23 @@ function StoreSettingsContent() {
 
   return (
     <>
-      <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || DEMO_STORE_ID}>
+      <MXLayoutWhite restaurantName={store?.store_name ?? 'Store'} restaurantId={storeId || DEMO_STORE_ID}>
         <PartnerPageHeader
           title="Store Settings"
           subtitle="Manage store configuration and preferences"
         />
-        <div className="flex h-full min-h-0 bg-gray-50 overflow-hidden">
-          {/* Main scroll area — no duplicate strip under MXPartnerTopBar (hamburger lives in top bar) */}
-          <div className="flex flex-1 min-w-0 flex-col min-h-0">
-            <div className="flex-1 overflow-y-auto overflow-x-hidden hide-scrollbar min-h-0">
-            <div className="px-4 sm:px-6 lg:px-8 pt-2 pb-4 sm:pb-5">
-              <div className="max-w-6xl mx-auto w-full">
+        <div className="flex h-full min-h-0 overflow-hidden bg-gray-50">
+          {/* Main content scrolls; right settings nav stays fixed (sibling, not inside this scroll). */}
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <div
+              className={`min-h-0 flex-1 hide-scrollbar ${
+                activeTab === 'timings'
+                  ? 'flex flex-col overflow-hidden'
+                  : 'overflow-x-hidden overflow-y-auto'
+              }`}
+            >
+            <div className={`px-4 sm:px-6 lg:px-8 pt-2 pb-4 sm:pb-5 ${activeTab === 'timings' ? 'flex min-h-0 flex-1 flex-col' : ''}`}>
+              <div className={`mx-auto w-full max-w-6xl ${activeTab === 'timings' ? 'flex min-h-0 flex-1 flex-col' : ''}`}>
               {/* Mobile Tabs */}
               <div className="lg:hidden mb-4 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8">
                 <div className="flex border-b border-gray-200 overflow-x-auto hide-scrollbar gap-2 pb-2">
@@ -4261,10 +4353,20 @@ function StoreSettingsContent() {
             )}
 
             {activeTab === 'timings' && (
-              <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
-                <div className="px-4 py-3.5 border-b border-gray-100">
-                  <div className="flex items-center justify-between gap-3 mb-2">
-                    <h2 className="text-lg font-bold text-gray-900">Store Operating Hours</h2>
+              <div className="flex min-h-0 min-h-[280px] flex-1 flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm max-h-[min(680px,calc(100dvh-11rem))] lg:max-h-[min(720px,calc(100dvh-9.5rem))]">
+                <div className="shrink-0 px-4 py-3.5 border-b border-gray-100">
+                  <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 mb-1">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <h2 className="text-lg font-bold text-gray-900">Store Operating Hours</h2>
+                      <button
+                        type="button"
+                        onClick={copyToAllDays}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-semibold text-violet-800 transition hover:bg-violet-100"
+                      >
+                        <Copy size={12} className="shrink-0" />
+                        <span className="whitespace-nowrap">Copy Monday to all days</span>
+                      </button>
+                    </div>
                     <button
                       type="button"
                       onClick={() => handleMainToggle(!storeSchedule.some((d) => d.isOpen && !d.isOutletClosed))}
@@ -4292,14 +4394,29 @@ function StoreSettingsContent() {
                   )}
                 </div>
 
-                <div className="grid grid-cols-[80px_80px_1fr_1fr_24px] items-center gap-3 px-4 py-2.5 text-[11px] font-semibold border-b border-gray-100 bg-gray-50 md:grid-cols-[80px_80px_1.2fr_1.2fr_24px] lg:grid-cols-[100px_100px_1.5fr_1.5fr_24px]">
-                    <span className="text-gray-500 truncate">Day</span>
-                    <span className="text-gray-500" />
-                    <span className="text-orange-500 truncate">☀ Morning Slot</span>
-                    <span className="text-violet-600 truncate">◔ Evening Slot</span>
+                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+                  <div className="sticky top-0 z-10 grid grid-cols-[44px_minmax(64px,76px)_minmax(0,1fr)_minmax(0,1fr)_64px] items-center gap-x-2 gap-y-0 border-b border-gray-200 bg-gray-50 px-3 py-2 text-[11px] font-semibold shadow-[0_1px_0_rgba(0,0,0,0.04)] sm:grid-cols-[48px_minmax(72px,88px)_minmax(0,1fr)_minmax(0,1fr)_72px] sm:gap-x-3 sm:px-4">
+                    <span className="truncate text-gray-500">Day</span>
                     <span />
+                    <span className="truncate text-orange-600">Morning</span>
+                    <span className="truncate text-violet-600">Evening</span>
+                    <span className="text-right text-gray-500">Save</span>
                   </div>
-                  {storeSchedule.map((daySchedule) => {
+                  {timingsLoading && !timingsLoaded ? (
+                    WEEKDAY_KEYS.map((day) => (
+                      <div
+                        key={`timings-skel-${day}`}
+                        className="grid grid-cols-[44px_minmax(64px,76px)_minmax(0,1fr)_minmax(0,1fr)_64px] items-center gap-x-2 gap-y-0 border-b border-gray-100 px-3 py-3 animate-pulse sm:grid-cols-[48px_minmax(72px,88px)_minmax(0,1fr)_minmax(0,1fr)_72px] sm:gap-x-3 sm:px-4"
+                      >
+                        <div className="h-4 w-8 rounded-full bg-gray-200 mx-auto" />
+                        <div className="h-3 w-12 rounded bg-gray-200" />
+                        <div className="h-8 rounded-md bg-gray-100" />
+                        <div className="h-8 rounded-md bg-gray-100" />
+                        <span />
+                      </div>
+                    ))
+                  ) : (
+                  storeSchedule.map((daySchedule) => {
                     const isCurrentDay = daySchedule.day === getCurrentDayKeyInTimeZone((store as MerchantStore & { timezone?: string | null })?.timezone)
                     const hasSlot2 = !!daySchedule.slots[1]
                     const isClosed = daySchedule.isOutletClosed || !daySchedule.isOpen
@@ -4308,16 +4425,18 @@ function StoreSettingsContent() {
                         ? 'border-gray-200 bg-white text-gray-800 focus:border-emerald-400 focus:ring-emerald-100'
                         : 'border-gray-200 bg-gray-100 text-gray-500 cursor-not-allowed opacity-60'
                     }`
-                    const showActionsPanel =
-                      expandedDay === daySchedule.day ||
-                      manualTimeChanges.has(daySchedule.day) ||
-                      (!daySchedule.isOutletClosed &&
-                        !daySchedule.is24Hours &&
-                        (daySchedule.isOpen || !!daySchedule.slots[0] || !!daySchedule.slots[1]))
+                    const timingsRowGrid =
+                      'grid grid-cols-[44px_minmax(64px,76px)_minmax(0,1fr)_minmax(0,1fr)_64px] items-start gap-x-2 gap-y-0 px-3 py-2 sm:grid-cols-[48px_minmax(72px,88px)_minmax(0,1fr)_minmax(0,1fr)_72px] sm:gap-x-3 sm:px-4 sm:py-2.5'
+                    const slotActionEdit =
+                      'inline-flex items-center rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 hover:bg-emerald-100'
+                    const slotActionRemove =
+                      'inline-flex items-center rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700 hover:bg-rose-100'
+                    const canEditSlots =
+                      !isClosed && !daySchedule.is24Hours && daySchedule.isOpen
                     return (
                       <div key={daySchedule.day} className="border-b border-gray-100 last:border-b-0 hover:bg-gray-50/40 transition-colors">
-                        <div className="grid grid-cols-[80px_80px_1fr_1fr_24px] items-center gap-3 px-4 py-2.5 md:grid-cols-[80px_80px_1.2fr_1.2fr_24px] lg:grid-cols-[100px_100px_1.5fr_1.5fr_24px]">
-                          <label className="relative inline-flex items-center cursor-pointer justify-center">
+                        <div className={timingsRowGrid}>
+                          <label className="relative inline-flex items-center cursor-pointer justify-center pt-1">
                             <input
                               type="checkbox"
                               checked={daySchedule.isOpen && !daySchedule.isOutletClosed}
@@ -4333,11 +4452,7 @@ function StoreSettingsContent() {
                             {isCurrentDay ? <span className="text-[10px] font-semibold text-emerald-600 flex-shrink-0">•</span> : null}
                           </div>
 
-                          {daySchedule.is24Hours ? (
-                            <div className="h-8 rounded-md border border-emerald-100 bg-emerald-50/80 flex items-center justify-center text-emerald-800 text-xs font-semibold">
-                              Open 24 hours
-                            </div>
-                          ) : daySchedule.slots[0] ? (
+                          {daySchedule.slots[0] ? (
                             <div className="flex min-w-0 flex-col gap-1">
                               <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
                                 <div className="relative">
@@ -4364,15 +4479,14 @@ function StoreSettingsContent() {
                                   <ChevronDown size={11} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400" />
                                 </div>
                               </div>
-                              {!!daySchedule.slots[0] && !daySchedule.isOutletClosed ? (
-                                <div className="flex flex-wrap justify-end gap-2">
+                              {slotHasTimingData(daySchedule.slots[0]) && !daySchedule.isOutletClosed ? (
+                                <div className="mt-1 flex flex-wrap items-center gap-1.5">
                                   <button
                                     type="button"
-                                    onClick={() => {
-                                      setExpandedDay(daySchedule.day);
-                                      setManualTimeChanges((prev) => new Set(prev).add(daySchedule.day));
-                                    }}
-                                    className="text-[11px] font-semibold text-emerald-700 hover:underline"
+                                    onClick={() =>
+                                      setManualTimeChanges((prev) => new Set(prev).add(daySchedule.day))
+                                    }
+                                    className={slotActionEdit}
                                   >
                                     Edit
                                   </button>
@@ -4386,21 +4500,45 @@ function StoreSettingsContent() {
                                           slotId: '',
                                         })
                                       }
-                                      className="text-[11px] font-semibold text-rose-600 hover:underline"
+                                      className={slotActionRemove}
                                     >
-                                      Remove morning
+                                      Remove
                                     </button>
-                                  ) : null}
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        daySchedule.slots[0] &&
+                                        setSlotRemoveConfirm({
+                                          day: daySchedule.day,
+                                          kind: 'evening',
+                                          slotId: daySchedule.slots[0].id,
+                                        })
+                                      }
+                                      className={slotActionRemove}
+                                    >
+                                      Remove
+                                    </button>
+                                  )}
                                 </div>
                               ) : null}
                             </div>
+                          ) : canEditSlots ? (
+                            <button
+                              type="button"
+                              onClick={() => addTimeSlot(daySchedule.day, 0)}
+                              className="inline-flex min-h-[40px] w-full flex-row items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-dashed border-orange-200 bg-orange-50/50 px-2 py-2 text-[11px] font-semibold text-orange-800 transition hover:bg-orange-50"
+                            >
+                              <Plus size={14} className="shrink-0" aria-hidden />
+                              <span className="whitespace-nowrap">Add morning slot</span>
+                            </button>
                           ) : (
-                            <div className="h-8 rounded-md border border-gray-200 bg-gray-50 flex items-center justify-center text-gray-400 text-xs">-</div>
+                            <div className="flex h-8 items-center justify-center rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-400">
+                              —
+                            </div>
                           )}
 
-                          {daySchedule.is24Hours ? (
-                            <div className="h-8 rounded-md border border-gray-200 bg-gray-50 flex items-center justify-center text-gray-400 text-xs">—</div>
-                          ) : hasSlot2 ? (
+                          {hasSlot2 ? (
                             <div className="flex min-w-0 flex-col gap-1">
                               <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
                                 <div className="relative">
@@ -4427,15 +4565,14 @@ function StoreSettingsContent() {
                                   <ChevronDown size={11} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400" />
                                 </div>
                               </div>
-                              {!!daySchedule.slots[1] && !daySchedule.isOutletClosed ? (
-                                <div className="flex flex-wrap justify-end gap-2">
+                              {slotHasTimingData(daySchedule.slots[1]) && !daySchedule.isOutletClosed ? (
+                                <div className="mt-1 flex flex-wrap items-center gap-1.5">
                                   <button
                                     type="button"
-                                    onClick={() => {
-                                      setExpandedDay(daySchedule.day);
-                                      setManualTimeChanges((prev) => new Set(prev).add(daySchedule.day));
-                                    }}
-                                    className="text-[11px] font-semibold text-violet-700 hover:underline"
+                                    onClick={() =>
+                                      setManualTimeChanges((prev) => new Set(prev).add(daySchedule.day))
+                                    }
+                                    className={slotActionEdit}
                                   >
                                     Edit
                                   </button>
@@ -4448,160 +4585,47 @@ function StoreSettingsContent() {
                                         slotId: daySchedule.slots[1].id,
                                       })
                                     }
-                                    className="text-[11px] font-semibold text-rose-600 hover:underline"
+                                    className={slotActionRemove}
                                   >
-                                    Remove evening
+                                    Remove
                                   </button>
                                 </div>
                               ) : null}
                             </div>
+                          ) : canEditSlots && daySchedule.slots[0] ? (
+                            <button
+                              type="button"
+                              onClick={() => addTimeSlot(daySchedule.day, 1)}
+                              className="inline-flex min-h-[40px] w-full flex-row items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-dashed border-violet-200 bg-violet-50/50 px-2 py-2 text-[11px] font-semibold text-violet-800 transition hover:bg-violet-50"
+                            >
+                              <Plus size={14} className="shrink-0" aria-hidden />
+                              <span className="whitespace-nowrap">Add evening slot</span>
+                            </button>
                           ) : (
-                            <div className="h-8 rounded-md border border-gray-200 bg-gray-50 flex items-center justify-center text-gray-400 text-xs">-</div>
+                            <div className="flex h-8 items-center justify-center rounded-md border border-gray-200 bg-gray-50 text-xs text-gray-400">
+                              —
+                            </div>
                           )}
 
-                          <button
-                            type="button"
-                            onClick={() => toggleDayExpansion(daySchedule.day)}
-                            className="text-gray-400 hover:text-gray-600"
-                          >
-                            <MoreVertical size={14} />
-                          </button>
+                          <div className="flex items-start justify-center pt-1">
+                            {manualTimeChanges.has(daySchedule.day) ? (
+                              <button
+                                type="button"
+                                onClick={() => void saveSingleDayTimings(daySchedule.day)}
+                                disabled={isSaving}
+                                className="inline-flex min-w-[60px] items-center justify-center gap-1 rounded-lg bg-emerald-500 px-2 py-1.5 text-[11px] font-semibold text-white shadow-sm transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                <Save size={12} />
+                                {isSaving ? '…' : 'Save'}
+                              </button>
+                            ) : null}
+                          </div>
                         </div>
-
-                        {showActionsPanel ? (
-                        <div className="flex flex-wrap items-center justify-between gap-3 px-4 pb-2.5">
-                              <div className="flex items-center gap-3 text-sm">
-                                {daySchedule.day === 'monday' ? (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={copyToAllDays}
-                                      className="inline-flex items-center gap-2 text-gray-700"
-                                    >
-                                      <span className="flex h-4 w-4 items-center justify-center rounded border border-gray-300 bg-white">
-                                        <Copy size={11} className="text-gray-500" />
-                                      </span>
-                                      <span className="text-sm">Copy Monday timing to all days</span>
-                                    </button>
-                                    <span className="hidden sm:block h-4 w-px bg-gray-200" />
-                                  </>
-                                ) : null}
-                                {!daySchedule.slots[0] && !daySchedule.isOutletClosed && !daySchedule.is24Hours && daySchedule.isOpen ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => addTimeSlot(daySchedule.day, 0)}
-                                    className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
-                                  >
-                                    <Plus size={13} />
-                                    Add morning slot
-                                  </button>
-                                ) : null}
-                                {daySchedule.slots[0] && !hasSlot2 && !daySchedule.isOutletClosed && !daySchedule.is24Hours && daySchedule.isOpen ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => addTimeSlot(daySchedule.day, 1)}
-                                    className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
-                                  >
-                                    <Plus size={13} />
-                                    Add evening slot
-                                  </button>
-                                ) : null}
-                              </div>
-
-                              {manualTimeChanges.has(daySchedule.day) ? (
-                                <button
-                                  onClick={async () => {
-                                    setIsSaving(true)
-                                    try {
-                                      const dayData = storeSchedule.find(d => d.day === daySchedule.day)
-                                      if (dayData && storeId) {
-                                        if (dayData.isOpen && !dayData.isOutletClosed && !dayData.is24Hours) {
-                                          const toMin = (t: string) => { const [h, m] = t.split(':').map(Number); return h * 60 + m }
-                                          const s1o = dayData.slots[0]?.openingTime
-                                          const s1c = dayData.slots[0]?.closingTime
-                                          if (s1o && s1c && toMin(s1c) <= toMin(s1o)) {
-                                            toast.error(`${daySchedule.label}: Slot 1 end time must be after start time`)
-                                            setIsSaving(false)
-                                            return
-                                          }
-                                          const s2o = dayData.slots[1]?.openingTime
-                                          const s2c = dayData.slots[1]?.closingTime
-                                          if (s2o && s2c && toMin(s2c) <= toMin(s2o)) {
-                                            toast.error(`${daySchedule.label}: Slot 2 end time must be after start time`)
-                                            setIsSaving(false)
-                                            return
-                                          }
-                                          if (s1c && s2o && toMin(s2o) <= toMin(s1c)) {
-                                            toast.error(`${daySchedule.label}: Slot 2 must start after Slot 1 ends (${s1c})`)
-                                            setIsSaving(false)
-                                            return
-                                          }
-                                        }
-
-                                        const timings: any = {
-                                          store_id: storeId,
-                                          same_for_all: applyMondayToAll,
-                                          force_24_hours: force24Hours,
-                                        }
-                                        const prefix = dayData.day
-                                        timings[`${prefix}_open`] = dayData.isOpen && !dayData.isOutletClosed
-                                        if (dayData.is24Hours) {
-                                          timings[`${prefix}_slot1_start`] = '00:00'
-                                          timings[`${prefix}_slot1_end`] = '23:59'
-                                          timings[`${prefix}_slot2_start`] = null
-                                          timings[`${prefix}_slot2_end`] = null
-                                          timings[`${prefix}_total_duration_minutes`] = 24 * 60
-                                        } else {
-                                          timings[`${prefix}_slot1_start`] = dayData.slots[0]?.openingTime || null
-                                          timings[`${prefix}_slot1_end`] = dayData.slots[0]?.closingTime || null
-                                          timings[`${prefix}_slot2_start`] = dayData.slots[1]?.openingTime || null
-                                          timings[`${prefix}_slot2_end`] = dayData.slots[1]?.closingTime || null
-                                          timings[`${prefix}_total_duration_minutes`] = (dayData.operationalHours * 60 + dayData.operationalMinutes)
-                                        }
-                                        const { data: { user } } = await supabase.auth.getUser()
-                                        timings.updated_by_email = user?.email || ''
-                                        timings.updated_by_at = new Date().toISOString()
-                                        const res = await fetch('/api/outlet-timings', {
-                                          method: 'POST',
-                                          headers: { 'Content-Type': 'application/json' },
-                                          body: JSON.stringify(timings),
-                                        })
-                                        if (res.ok) {
-                                          toast.success(`✅ ${daySchedule.label} saved!`)
-                                          setManualTimeChanges(prev => {
-                                            const newSet = new Set(prev)
-                                            newSet.delete(daySchedule.day)
-                                            return newSet
-                                          })
-                                          await fetchTimings()
-                                          await fetchLastUpdatedInfo()
-                                        } else {
-                                          let errMsg = 'Failed to save timings'
-                                          try {
-                                            const errData = await res.json()
-                                            if (errData?.error) errMsg = errData.error
-                                          } catch {}
-                                          toast.error(errMsg)
-                                        }
-                                      }
-                                    } catch {
-                                      toast.error('Failed to save timings')
-                                    } finally {
-                                      setIsSaving(false)
-                                    }
-                                  }}
-                                  disabled={isSaving}
-                                  className="inline-flex min-w-[92px] items-center justify-center gap-2 rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  <Save size={14} />
-                                  {isSaving ? 'Saving...' : 'Save'}
-                                </button>
-                              ) : <div />}
-                        </div>
-                        ) : null}
                       </div>
                     )
-                  })}
+                  })
+                  )}
+                </div>
               </div>
             )}
 
@@ -4723,7 +4747,7 @@ function StoreSettingsContent() {
 
           {/* Right nav — collapsible on desktop (icon strip vs full labels) */}
           <div
-            className={`hidden lg:flex lg:flex-col lg:shrink-0 lg:min-h-0 h-full bg-[#f5f5f5] border-l border-[#e8e8e8] transition-[width] duration-200 ease-out ${
+            className={`hidden h-full min-h-0 shrink-0 overflow-hidden bg-[#f5f5f5] border-l border-[#e8e8e8] transition-[width] duration-200 ease-out lg:flex lg:flex-col ${
               settingsSidebarCollapsed ? 'lg:w-14' : 'lg:w-56'
             }`}
           >

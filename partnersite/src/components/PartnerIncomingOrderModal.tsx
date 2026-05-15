@@ -14,6 +14,11 @@ import {
   volumeStepTo01,
 } from '@/lib/partner-device-order-alerts';
 import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
+import {
+  hasShownPartnerOrderActionToast,
+  markPartnerOrderActionToastShown,
+  type PartnerOrderActionToastKind,
+} from '@/lib/partner-order-action-toast';
 
 const MUTE_KEY = 'partner_incoming_order_mute_sound';
 const FALLBACK_POLL_MS = 15_000;
@@ -166,6 +171,8 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const chimeRunIdRef = useRef(0);
   const chimeAudioRef = useRef<HTMLAudioElement | null>(null);
   const autoAcceptTimerRef = useRef<number | null>(null);
+  /** Prevents duplicate auto-cancel + toast when the acceptance timer hits zero. */
+  const autoCancelFiredForOrderIdRef = useRef<number | null>(null);
   const [storeOpsSettings, setStoreOpsSettings] = useState<{ auto_accept_orders: boolean; auto_accept_time_seconds: number; show_floating_orders: boolean } | null>(null);
 
   const getDismissed = () => {
@@ -335,6 +342,17 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       const dedupeKey = `o:${full.order_id}`;
       if (shownInsertIds.current.has(dedupeKey)) return;
       shownInsertIds.current.add(dedupeKey);
+
+      const acceptWindowMs = Math.max(
+        60_000,
+        Math.max(1, Math.min(180, Number(settings.acceptance_window_minutes || 5))) * 60_000
+      );
+      const orderAgeMs = Date.now() - new Date(full.created_at).getTime();
+      if (orderAgeMs >= acceptWindowMs) {
+        addDismissed(full.order_id);
+        return;
+      }
+
       setModalOrder(full);
       if (shouldPlayIncomingSound(storeId) && settings.alert_sound_enabled) {
         const device = readPartnerDeviceOrderAlerts(storeId);
@@ -362,6 +380,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     },
     [
       storeId,
+      settings.acceptance_window_minutes,
       settings.alert_sound_enabled,
       settings.alert_sound_repeat_count,
       settings.alert_sound_url,
@@ -489,10 +508,15 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const isBig = isBulkOrderFlag(modalOrder);
 
   useEffect(() => {
-    if (!modalOrder) return;
+    if (!modalOrder) {
+      autoCancelFiredForOrderIdRef.current = null;
+      return;
+    }
     if (actionLoading) return;
     if (secondsLeft > 0) return;
-    // Safety: auto-cancel when acceptance window finishes.
+    if (autoCancelFiredForOrderIdRef.current === modalOrder.order_id) return;
+    autoCancelFiredForOrderIdRef.current = modalOrder.order_id;
+    // Safety: auto-cancel when acceptance window finishes (once per order).
     void patchStatus('CANCELLED', { rejected_reason: 'Auto Cancelled: acceptance timeout' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [secondsLeft, modalOrder, actionLoading]);
@@ -528,14 +552,22 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     setRejectReason('');
   };
 
+  const showOrderActionToast = (kind: PartnerOrderActionToastKind, orderId: number) => {
+    if (hasShownPartnerOrderActionToast(orderId, kind)) return;
+    markPartnerOrderActionToastShown(orderId, kind);
+    const message = kind === 'accepted' ? 'Order accepted' : 'Order rejected';
+    toast.success(message, { id: `partner-order-${kind}-${orderId}` });
+  };
+
   const patchStatus = async (status: 'ACCEPTED' | 'CANCELLED', extra?: { rejected_reason?: string }) => {
     if (!storeId || !modalOrder) return;
+    const orderIdForToast = modalOrder.order_id;
     setActionLoading(true);
     try {
       const url = modalOrder.core_only
         ? `/api/merchant/orders-core/${modalOrder.order_id}`
         : `/api/food-orders/${modalOrder.id}`;
-      const payload = { store_id: storeId, status, ...extra };
+      const payload = { store_id: storeId, status, action_source: 'website' as const, ...extra };
       console.debug('[partner-incoming-modal] PATCH start', {
         url,
         payload,
@@ -559,8 +591,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
         throw new Error(err.error || 'Update failed');
       }
       console.debug('[partner-incoming-modal] PATCH ok', { url, httpStatus: res.status });
-      if (status === 'ACCEPTED') toast.success('Order accepted');
-      else toast.success('Order rejected');
+      showOrderActionToast(status === 'ACCEPTED' ? 'accepted' : 'rejected', orderIdForToast);
       close();
     } catch (e) {
       console.debug('[partner-incoming-modal] PATCH exception', {

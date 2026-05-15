@@ -78,6 +78,11 @@ export interface StoreOperationsData {
   opens_at?: string | null;
   today_date?: string;
   today_slots?: { start: string; end: string }[];
+  configured_today_slots?: { start: string; end: string }[];
+  active_slot?: { start: string; end: string } | null;
+  schedule_phase?: 'OFF_DAY' | 'BREAK' | 'WITHIN_SLOT' | 'OUTSIDE_HOURS' | 'NO_HOURS';
+  schedule_status_label?: string;
+  within_operating_hours?: boolean;
   last_toggled_by_email?: string | null;
   last_toggle_type?: string | null;
   last_toggled_by_name?: string | null;
@@ -87,6 +92,10 @@ export interface StoreOperationsData {
   last_toggled_at?: string | null;
   block_auto_open?: boolean;
   is_today_scheduled_closed?: boolean;
+  auto_open_from_schedule?: boolean;
+  schedule_end_prompt_active?: boolean;
+  schedule_end_prompt_expires_at?: string | null;
+  next_schedule_transition_at?: string | null;
 }
 
 export interface StoreSettingsData {
@@ -226,7 +235,8 @@ export function useStoreOperations(storeId: string | null, options?: { enabled?:
     queryKey: merchantKeys.storeOperations(storeId ?? ''),
     queryFn: () => fetchStoreOperations(storeId!),
     enabled,
-    staleTime: 20 * 1000,
+    staleTime: 15 * 1000,
+    refetchInterval: 30 * 1000,
   });
 }
 

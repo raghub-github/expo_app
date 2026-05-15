@@ -703,14 +703,15 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           within_operating_hours: withinH,
           is_today_scheduled_closed: todayClosed,
         });
+        const autoOpenEnabled = data.auto_open_from_schedule !== false;
         setStoreOpen(data.operational_status === 'OPEN');
-        setAutoOpenFromSchedule(data.auto_open_from_schedule !== false);
+        setAutoOpenFromSchedule(autoOpenEnabled);
         setManualLock(data.block_auto_open === true);
         setStoreOpsById((prev) => ({
           ...prev,
           [resolvedStoreId]: {
             open: data.operational_status === 'OPEN',
-            autoOpen: data.auto_open_from_schedule !== false,
+            autoOpen: autoOpenEnabled,
             manualLock: data.block_auto_open === true,
             withinOperatingHours: withinH,
             todayScheduledClosed: todayClosed,
@@ -783,7 +784,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   useEffect(() => {
     if (!resolvedStoreId) return;
     refreshStoreOperations();
-    const t = window.setInterval(refreshStoreOperations, 60_000);
+    const t = window.setInterval(refreshStoreOperations, 30_000);
     return () => window.clearInterval(t);
   }, [refreshStoreOperations, resolvedStoreId]);
 
@@ -1870,18 +1871,35 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                   {outletsOrderedForStatus.length === 0 ? (
                     <p className="py-4 text-center text-xs text-gray-500">No approved stores yet.</p>
                   ) : (
-                    <ul className="max-h-[min(48vh,300px)] space-y-1 overflow-y-auto pr-0.5">
+                    <ul className="scrollbar-hide max-h-[min(48vh,300px)] space-y-1.5 overflow-y-auto">
                       {outletsOrderedForStatus.map((s) => {
                         const row = storeOpsById[s.store_id];
                         const isOn = row?.open;
                         const isCurrent = s.store_id === resolvedStoreId;
-                        const city =
+                        const locality =
                           s.full_address?.split(',').pop()?.trim() ||
-                          (s.full_address ? s.full_address.slice(0, 28) : '');
+                          s.full_address ||
+                          '';
+                        const statusLabel =
+                          isOn == null
+                            ? 'Unknown'
+                            : isOn
+                              ? 'Online'
+                              : row?.todayScheduledClosed === true
+                                ? 'Closed today'
+                                : row?.withinOperatingHours === false
+                                  ? 'Outside hours'
+                                  : 'Offline';
+                        const statusDotClass =
+                          isOn == null
+                            ? 'bg-gray-400'
+                            : isOn
+                              ? 'bg-emerald-500'
+                              : 'bg-rose-400';
                         return (
                           <li
                             key={s.store_id}
-                            className={`flex items-center gap-3 rounded-lg border bg-white px-4 py-3 shadow-sm transition-colors ${
+                            className={`flex items-center gap-2.5 rounded-lg border bg-white px-2.5 py-2 shadow-sm transition-colors ${
                               isCurrent
                                 ? 'border-sky-200/90 ring-1 ring-sky-100'
                                 : 'border-gray-200 hover:border-gray-300'
@@ -1889,15 +1907,29 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                           >
                             <OutletBannerThumb url={s.banner_url} />
                             <div className="min-w-0 flex-1">
-                              <p className="text-sm font-semibold leading-snug text-gray-900 sm:text-[15px]">
+                              <p
+                                className="truncate text-[13px] font-semibold leading-tight text-gray-900"
+                                title={s.store_name}
+                              >
                                 {s.store_name}
                               </p>
-                              <p className="mt-0.5 text-xs leading-snug text-gray-500">
+                              <p
+                                className="mt-0.5 truncate text-[11px] leading-snug text-gray-500"
+                                title={`${s.store_id}${locality ? ` · ${locality}` : ''}`}
+                              >
                                 <span className="font-medium text-gray-500">ID:</span>{' '}
-                                <span className="font-mono text-[12px] text-gray-600">{s.store_id}</span>
-                                {city ? <span className="text-gray-300"> | </span> : null}
-                                {city ? <span className="text-gray-500">{city}</span> : null}
+                                <span className="font-mono text-gray-600">{s.store_id}</span>
+                                {locality ? <span className="text-gray-300"> · </span> : null}
+                                {locality ? <span className="text-gray-500">{locality}</span> : null}
                               </p>
+                              {!switchStoreMode ? (
+                                <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 py-0.5">
+                                  <span className={`h-1.5 w-1.5 rounded-full ${statusDotClass}`} />
+                                  <span className="text-[10px] font-semibold text-slate-600">
+                                    {statusLabel}
+                                  </span>
+                                </span>
+                              ) : null}
                             </div>
                             {switchStoreMode ? (
                               <div className="flex shrink-0 items-center">
@@ -1921,45 +1953,24 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                                 )}
                               </div>
                             ) : (
-                              <div className="flex shrink-0 items-center gap-3">
-                                <span
-                                  className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                                    isOn == null
-                                      ? 'bg-gray-200 text-gray-600'
-                                      : isOn
-                                        ? 'bg-emerald-500 text-white'
-                                        : 'bg-gray-200 text-gray-700'
-                                  }`}
-                                >
-                                  {isOn == null
-                                    ? '—'
-                                    : isOn
-                                      ? 'Online'
-                                      : row?.todayScheduledClosed === true
-                                        ? 'Offline · Closed today'
-                                        : row?.withinOperatingHours === false
-                                          ? 'Offline · Outside hours'
-                                          : 'Offline'}
-                                </span>
-                                <CompactSwitch
-                                  on={isOn === true}
-                                  disabled={isOn === null}
-                                  ariaLabel={`${isOn === true ? 'Turn off' : 'Turn on'} ${s.store_name}`}
-                                  onToggle={() => {
-                                    if (isOn === true) {
-                                      setOperationalCloseModal({
-                                        storeId: s.store_id,
-                                        storeName: s.store_name,
-                                      });
-                                    } else {
-                                      setOperationalOpenModal({
-                                        storeId: s.store_id,
-                                        storeName: s.store_name,
-                                      });
-                                    }
-                                  }}
-                                />
-                              </div>
+                              <CompactSwitch
+                                on={isOn === true}
+                                disabled={isOn === null}
+                                ariaLabel={`${isOn === true ? 'Turn off' : 'Turn on'} ${s.store_name}`}
+                                onToggle={() => {
+                                  if (isOn === true) {
+                                    setOperationalCloseModal({
+                                      storeId: s.store_id,
+                                      storeName: s.store_name,
+                                    });
+                                  } else {
+                                    setOperationalOpenModal({
+                                      storeId: s.store_id,
+                                      storeName: s.store_name,
+                                    });
+                                  }
+                                }}
+                              />
                             )}
                           </li>
                         );

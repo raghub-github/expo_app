@@ -45,6 +45,17 @@ import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 import { FoodOrdersEmptyState } from '@/components/FoodOrdersEmptyState';
 import { mapStateMachineStatusToPartnerUi, normFoodStatus } from '@/lib/partner-orders-unify';
 import {
+  actionSourceLabel,
+  computeOrderItemQuantityCount,
+  formatStatusActionMessage,
+  type MerchantOrderActionRow,
+} from '@/lib/merchantOrderFoodActions';
+import { OrderPanel } from '@/components/orders/OrderPanel';
+import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
+import { OrderCustomerSidesheet } from '@/components/orders/OrderCustomerSidesheet';
+import { OrderTimelineModal } from '@/components/orders/OrderTimelineModal';
+import type { OrderPricingBreakdown } from '@/lib/orderLineItems';
+import {
   PARTNER_DEVICE_ORDER_ALERTS_EVENT,
   readPartnerDeviceOrderAlerts,
   writePartnerDeviceOrderAlerts,
@@ -224,6 +235,19 @@ function OrdersPageContent() {
     return () => window.clearInterval(t);
   }, []);
 
+  // Lock shell scroll: only order panel + list column scroll, not pills/sidebar together.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const html = document.documentElement;
+    const body = document.body;
+    html.classList.add('mx-no-page-scroll');
+    body.classList.add('mx-no-page-scroll');
+    return () => {
+      html.classList.remove('mx-no-page-scroll');
+      body.classList.remove('mx-no-page-scroll');
+    };
+  }, []);
+
   useEffect(() => {
     if (ridersLogModalOrderId == null) return;
     const onKey = (e: KeyboardEvent) => {
@@ -248,6 +272,10 @@ function OrdersPageContent() {
     } catch { return true; }
   });
   const [actionLoading, setActionLoading] = useState<number | null>(null);
+  const [billSheetOpen, setBillSheetOpen] = useState(false);
+  const [billSheetAllItemsOnly, setBillSheetAllItemsOnly] = useState(false);
+  const [customerSheetOpen, setCustomerSheetOpen] = useState(false);
+  const [timelineModalOpen, setTimelineModalOpen] = useState(false);
   const [isStoreOpen, setIsStoreOpen] = useState<boolean | null>(null);
   const [showStoreCloseModal, setShowStoreCloseModal] = useState(false);
   const [closeClosureType, setCloseClosureType] = useState<'temporary' | 'today' | 'manual_hold' | null>(null);
@@ -383,11 +411,32 @@ function OrdersPageContent() {
     const id = parseInt(orderIdFromUrl, 10);
     if (isNaN(id)) return;
     const order = orders.find((o) => o.order_id === id || o.id === id);
-    if (order) {
+    if (order && orderMatchesFoodOrdersSidebar(order, filter)) {
       setSelectedOrder(order);
       setRightPanelOpen(true);
+    } else if (order) {
+      updateUrlParams({ orderId: null });
+      setSelectedOrder(null);
+      setRightPanelOpen(false);
     }
-  }, [loading, orderIdFromUrl, orders]);
+  }, [loading, orderIdFromUrl, orders, filter, updateUrlParams]);
+
+  /** Close detail panel when the open order no longer belongs on the active tab (e.g. after Complete). */
+  useEffect(() => {
+    if (!rightPanelOpen || !selectedOrder) return;
+    const fresh = orders.find((o) => o.id === selectedOrder.id);
+    const orderToCheck = fresh ?? selectedOrder;
+    if (!fresh) {
+      closeOrderPanel();
+      return;
+    }
+    if (fresh.order_status !== selectedOrder.order_status) {
+      setSelectedOrder(fresh);
+    }
+    if (!orderMatchesFoodOrdersSidebar(orderToCheck, filter)) {
+      closeOrderPanel();
+    }
+  }, [orders, filter, selectedOrder, rightPanelOpen, closeOrderPanel]);
 
   useEffect(() => {
     if (!storeId) return;
@@ -815,7 +864,7 @@ function OrdersPageContent() {
         return;
       }
       setActionLoading(order.id);
-      const payload = { store_id: storeId, status: newStatus, ...extra };
+      const payload = { store_id: storeId, status: newStatus, action_source: 'website' as const, ...extra };
 
       const safeReadBody = async (res: Response): Promise<unknown> => {
         try {
@@ -962,6 +1011,39 @@ function OrdersPageContent() {
     [storeId, selectedOrder, closeOrderPanel, fetchOrders]
   );
 
+  const selectedOrderPricing = useMemo((): OrderPricingBreakdown | null => {
+    if (!selectedOrder) return null;
+    const lineSum = (selectedOrder.items ?? []).reduce(
+      (acc, it) => acc + Number(it.total || (it.price || 0) * (it.quantity || 1)),
+      0
+    );
+    const p = selectedOrder.pricing;
+    if (p) return p;
+    const total = Number(selectedOrder.food_items_total_value ?? lineSum);
+    return {
+      subtotal: lineSum,
+      packaging: 0,
+      taxes: 0,
+      discount: 0,
+      total: Number.isFinite(total) ? total : lineSum,
+    };
+  }, [selectedOrder]);
+
+  const selectedOrderLineSum = useMemo(() => {
+    if (!selectedOrder?.items?.length) return 0;
+    return selectedOrder.items.reduce(
+      (acc, it) => acc + Number(it.total || (it.price || 0) * (it.quantity || 1)),
+      0
+    );
+  }, [selectedOrder]);
+
+  useEffect(() => {
+    setBillSheetOpen(false);
+    setBillSheetAllItemsOnly(false);
+    setCustomerSheetOpen(false);
+    setTimelineModalOpen(false);
+  }, [selectedOrder?.id]);
+
   const acceptCountdown = useMemo(() => {
     if (!selectedOrder) return { label: undefined as string | undefined, disabled: false };
     const st = normOrderStatus(selectedOrder.order_status);
@@ -995,6 +1077,9 @@ function OrdersPageContent() {
   );
 
   const filteredOrders = orders.filter((o) => orderMatchesFoodOrdersSidebar(o, filter));
+
+  const selectedOrderBelongsToFilter =
+    selectedOrder != null && orderMatchesFoodOrdersSidebar(selectedOrder, filter);
 
   const displayOrders = useMemo(() => {
     let list = [...filteredOrders];
@@ -1122,7 +1207,7 @@ function OrdersPageContent() {
             <button
               type="button"
               onClick={() => {
-                window.dispatchEvent(new Event("mx-open-need-help"));
+                window.dispatchEvent(new CustomEvent("mx-open-need-help"));
               }}
               className="font-semibold text-emerald-600 underline decoration-emerald-300 underline-offset-2 hover:text-emerald-700"
             >
@@ -1139,8 +1224,8 @@ function OrdersPageContent() {
     <>
     <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''} mobileMenuExtra={mobileStatsExtra}>
       <PartnerPageHeader title="Orders" subtitle={store?.store_name || undefined} />
-      <div className="flex h-full min-h-0 bg-gray-50 relative flex-col">
-        <header id="food-orders-header" className="sticky top-0 z-20 bg-white shrink-0">
+      <div className="flex h-full min-h-0 overflow-hidden bg-gray-50 relative flex-col">
+        <header id="food-orders-header" className="shrink-0 z-20 bg-white">
           <div className="mx-shell-header !px-3 sm:!px-4 md:!px-4 lg:!px-6">
             {/* Mobile: 2 rows (Row 1 = Today+Active, Row 2 = Filter + status + sound). Desktop: single row */}
             <div className="flex w-full min-w-0 flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-0">
@@ -1245,8 +1330,12 @@ function OrdersPageContent() {
               </div>
             </div>
           </div>
-          {/* Status pills + sort + search (Zomato-style band) */}
-          <div className="border-t border-gray-200 bg-white px-3 sm:px-4 lg:px-6 py-3">
+        </header>
+
+        <div
+          id="food-orders-pills"
+          className="shrink-0 z-30 border-t border-b border-gray-200 bg-white px-3 sm:px-4 lg:px-6 py-3 shadow-sm"
+        >
             <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
               <div className="flex flex-wrap items-center gap-2 min-w-0">
                 {FOOD_ORDERS_SIDEBAR_FILTERS.map(({ id, label }) => (
@@ -1291,229 +1380,43 @@ function OrdersPageContent() {
                 </div>
               </div>
             </div>
-          </div>
-        </header>
+        </div>
 
-        <div className="flex flex-1 min-h-0 overflow-hidden">
-          <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+        <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
           <div className="flex flex-col lg:flex-row flex-1 min-h-0 overflow-hidden">
             {/* Store closed/offline: show dedicated blank-state in the main area */}
             {isStoreOpen === false ? (
               <StoreClosedOrdersState />
-            ) : rightPanelOpen && selectedOrder ? (
+            ) : rightPanelOpen && selectedOrder && selectedOrderBelongsToFilter ? (
               <>
-                {/* Order details: single card, actions top-right, reject half width, space used evenly */}
-                <div className="hidden lg:flex flex-1 min-w-0 border-r border-gray-200 bg-gray-50/80 flex-col overflow-hidden order-1 p-3">
-                <div className="flex-1 overflow-y-auto min-h-0 hide-scrollbar overflow-x-hidden">
-                  <div className="bg-white rounded-xl border border-gray-200/80 shadow-md overflow-hidden flex flex-col h-full min-h-[320px]">
-                    {/* Single header row: Order id + OTP + status + time | Compact timeline | Close */}
-                    <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 bg-gradient-to-r from-gray-50 to-white border-b border-gray-200/60">
-                      <div className="flex items-center gap-2.5 min-w-0 shrink-0">
-                        <FormattedOrderId 
-                          formattedOrderId={selectedOrder.formatted_order_id} 
-                          fallbackOrderId={selectedOrder.order_id}
-                          size="base"
-                        />
-                        <div className="flex items-center gap-2 px-3 py-1 bg-gradient-to-r from-slate-100 to-slate-50 rounded-lg border border-slate-200">
-                          <span className="text-xs font-semibold text-gray-700">OTP:</span>
-                          {otpCache[selectedOrder.id] ? (
-                            <>
-                              <span className="font-mono font-bold text-lg text-gray-900 tracking-wider">{otpCache[selectedOrder.id].otp_code}</span>
-                              <span className="text-[10px] text-slate-600">({otpCache[selectedOrder.id].otp_type})</span>
-                              {otpVerified.has(selectedOrder.id) && <span className="text-green-600 text-xs font-medium">✓</span>}
-                            </>
-                          ) : (
-                            <span className="text-xs text-gray-500 animate-pulse">Loading...</span>
-                          )}
-                        </div>
-                        <span
-                          className={`shrink-0 px-2 py-0.5 rounded-md text-[10px] font-semibold tracking-wide ${
-                            (selectedOrder.order_status || 'CREATED') === 'CREATED' || (selectedOrder.order_status || '') === 'NEW'
-                              ? 'bg-red-100 text-red-700'
-                              : (selectedOrder.order_status || '') === 'DELIVERED'
-                                ? 'bg-green-100 text-green-700'
-                                : (selectedOrder.order_status || '') === 'CANCELLED' || (selectedOrder.order_status || '') === 'RTO'
-                                  ? 'bg-gray-100 text-gray-600'
-                                  : 'bg-blue-100 text-blue-700'
-                          }`}
-                        >
-                          {STATUS_LABEL[selectedOrder.order_status || 'CREATED'] || selectedOrder.order_status || 'CREATED'}
-                        </span>
-                        <span className="text-[10px] text-gray-500">{formatTimeAgo(selectedOrder.created_at)}</span>
-                      </div>
-                      <div className="flex-1 min-w-0 flex items-center justify-center px-2">
-                        <OrderStatusTimeline order={selectedOrder} compact />
-                      </div>
-                      {['PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY'].includes(selectedOrder.order_status || '') && (
-                        <div className="relative shrink-0" ref={headerRtoMenuRef}>
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); setHeaderRtoMenuOpen((o) => !o); }}
-                            disabled={actionLoading === selectedOrder.id}
-                            className="p-2 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 disabled:opacity-50 transition-colors"
-                            aria-label="More actions"
-                          >
-                            <MoreVertical size={18} />
-                          </button>
-                          {headerRtoMenuOpen && (
-                            <div className="absolute right-0 top-full mt-1 py-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 min-w-[100px]">
-                              <button
-                                type="button"
-                                onClick={(e) => { e.stopPropagation(); setRtoModalOrder(selectedOrder); setHeaderRtoMenuOpen(false); }}
-                                disabled={actionLoading === selectedOrder.id}
-                                className="w-full text-left px-3 py-2 text-sm font-medium text-orange-700 hover:bg-orange-50 rounded-none first:rounded-t-lg last:rounded-b-lg"
-                              >
-                                RTO
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      <button onClick={closeOrderPanel} className="p-1.5 hover:bg-gray-100 rounded-md shrink-0 transition-colors" aria-label="Close">
-                        <X size={16} className="text-gray-500" />
-                      </button>
-                    </div>
-                    {/* Card body: compact premium layout */}
-                    <div className="flex-1 overflow-y-auto p-4 min-h-0 overflow-x-hidden">
-                      <div className="flex flex-col lg:flex-row gap-4 items-start">
-                        {/* Left: Customer & Rider Details - auto width based on content */}
-                        <div className="flex flex-col gap-3 w-full lg:w-auto lg:min-w-[260px] lg:max-w-none lg:flex-shrink-0">
-                          {/* Customer - Full Details - auto width */}
-                          {selectedOrder.customer_name && (
-                            <div className="rounded-lg bg-gradient-to-br from-blue-50/50 to-blue-100/30 p-3 border border-blue-100/60 shadow-sm w-full">
-                              <div className="flex items-start gap-2.5">
-                                <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center shrink-0">
-                                  <User size={16} className="text-blue-600" />
-                                </div>
-                                <div className="min-w-0 flex-1 space-y-1.5">
-                                  <div className="flex items-center gap-2">
-                                    <p className="font-semibold text-gray-900 text-sm">{selectedOrder.customer_name}</p>
-                                    {selectedOrder.customer_scores && (
-                                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${
-                                        (selectedOrder.customer_scores.trust_score || 100) >= 80 
-                                          ? 'bg-green-100 text-green-700' 
-                                          : (selectedOrder.customer_scores.trust_score || 100) >= 50
-                                            ? 'bg-yellow-100 text-yellow-700'
-                                            : 'bg-red-100 text-red-700'
-                                      }`}>
-                                        {(selectedOrder.customer_scores.trust_score || 100).toFixed(0)}
-                                      </span>
-                                    )}
-                                  </div>
-                                  {selectedOrder.customer_phone && (
-                                    <a href={`tel:${selectedOrder.customer_phone}`} className="flex items-center gap-1.5 text-blue-600 text-xs font-medium hover:text-blue-700">
-                                      <Phone size={12} /> {selectedOrder.customer_phone}
-                                    </a>
-                                  )}
-                                  {(selectedOrder.drop_address_raw || selectedOrder.drop_address_normalized) && (
-                                    <div className="flex items-start gap-1.5 text-xs text-gray-700">
-                                      <MapPin size={12} className="shrink-0 mt-0.5 text-amber-600" />
-                                      <span className="leading-relaxed">{selectedOrder.drop_address_normalized || selectedOrder.drop_address_raw}</span>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          )}
-                          
-                          {/* Rider - Full Details with Timeline (always show if rider_id exists) - auto width */}
-                          {(selectedOrder.rider_id || selectedOrder.rider_name || selectedOrder.rider_details) ? (
-                            <div className="rounded-lg bg-gradient-to-br from-purple-50/50 to-purple-100/30 p-3 border border-purple-100/60 shadow-sm w-full relative">
-                              <button
-                                type="button"
-                                onClick={() => { setRidersLogModalOrderId(selectedOrder.id); setRidersLogModalOrderLabel(selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`); }}
-                                className="absolute top-2 right-2 text-[10px] font-semibold text-purple-600 hover:text-purple-800 hover:underline"
-                              >
-                                Rider&apos;s log
-                              </button>
-                              <div className="space-y-2.5">
-                                <div className="flex items-start gap-2.5">
-                                  {selectedOrder.rider_details?.selfie_url ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => setRiderImageModalUrl(selectedOrder.rider_details?.selfie_url || null)}
-                                      className="shrink-0 rounded-full border-2 border-purple-200 overflow-hidden focus:outline-none focus:ring-2 focus:ring-purple-400"
-                                    >
-                                      <img 
-                                        src={selectedOrder.rider_details.selfie_url} 
-                                        alt={selectedOrder.rider_name || 'Rider'} 
-                                        className="w-8 h-8 rounded-full object-cover"
-                                      />
-                                    </button>
-                                  ) : (
-                                    <div className="w-8 h-8 rounded-full bg-purple-100 flex items-center justify-center shrink-0">
-                                      <Bike size={16} className="text-purple-600" />
-                                    </div>
-                                  )}
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex items-center gap-2 mb-1">
-                                      <p className="font-semibold text-gray-900 text-sm">
-                                        {selectedOrder.rider_details?.name || selectedOrder.rider_name || `Rider #${selectedOrder.rider_id}`}
-                                      </p>
-                                      {selectedOrder.rider_details?.id && (
-                                        <span className="text-[9px] text-gray-500">ID: {selectedOrder.rider_details.id}</span>
-                                      )}
-                                      {selectedOrder.rider_details?.status && (
-                                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${
-                                          selectedOrder.rider_details.status === 'ACTIVE' 
-                                            ? 'bg-green-100 text-green-700' 
-                                            : 'bg-gray-100 text-gray-600'
-                                        }`}>
-                                          {selectedOrder.rider_details.status}
-                                        </span>
-                                      )}
-                                    </div>
-                                    {selectedOrder.rider_details?.mobile && (
-                                      <a href={`tel:${selectedOrder.rider_details.mobile}`} className="flex items-center gap-1.5 text-purple-600 text-xs font-medium hover:text-purple-700">
-                                        <Phone size={12} /> {selectedOrder.rider_details.mobile}
-                                      </a>
-                                    )}
-                                    {selectedOrder.rider_details?.city && (
-                                      <p className="text-xs text-gray-600 mt-0.5">{selectedOrder.rider_details.city}</p>
-                                    )}
-                                  </div>
-                                </div>
-                                {/* Rider Timeline */}
-                                {selectedOrder.rider_id && (
-                                  <div className="pt-2 border-t border-purple-100/60">
-                                    <RiderTimeline riderId={selectedOrder.rider_id} orderId={selectedOrder.order_id} />
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          ) : null}
-                          
-                          {/* Delivery Instructions */}
-                          {selectedOrder.delivery_instructions && (
-                            <div className="rounded-lg bg-amber-50/60 p-2.5 border border-amber-100">
-                              <div className="flex items-start gap-2">
-                                <MapPin size={12} className="shrink-0 mt-0.5 text-amber-600" />
-                                <p className="text-xs text-gray-700 leading-relaxed">{selectedOrder.delivery_instructions}</p>
-                              </div>
-                            </div>
-                          )}
-                          
-                          {/* Flags - compact */}
-                          {(selectedOrder.requires_utensils || (selectedOrder.veg_non_veg && selectedOrder.veg_non_veg !== 'na') || selectedOrder.is_fragile || selectedOrder.is_high_value) && (
-                            <div className="rounded-lg bg-gray-50/60 p-2.5 border border-gray-100">
-                              <div className="flex flex-wrap gap-1.5">
-                                {selectedOrder.requires_utensils && (
-                                  <span className="px-2 py-0.5 bg-gray-100 text-gray-700 text-[10px] rounded-md flex items-center gap-1 w-fit"><UtensilsCrossed size={10} /> Utensils</span>
-                                )}
-                                {selectedOrder.veg_non_veg && selectedOrder.veg_non_veg !== 'na' && (
-                                  <span className="px-2 py-0.5 bg-green-100 text-green-800 text-[10px] rounded-md w-fit">{formatVegNonVeg(selectedOrder.veg_non_veg)}</span>
-                                )}
-                                {selectedOrder.is_fragile && <span className="px-2 py-0.5 bg-amber-100 text-amber-800 text-[10px] rounded-md">Fragile</span>}
-                                {selectedOrder.is_high_value && <span className="px-2 py-0.5 bg-yellow-100 text-yellow-800 text-[10px] rounded-md">High value</span>}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                        
-                        {/* Center: Items & Amount - flexible width, uses remaining space */}
-                        <div className="flex-1 min-w-0 space-y-3 lg:max-w-none">
-                          {/* Action buttons - same width as items card; 3-dot RTO is in header */}
-                          <div className="w-full flex gap-2 items-center">
+                <div className="hidden lg:grid lg:grid-cols-[minmax(0,1fr)_16rem] flex-1 min-h-0 min-w-0 w-full overflow-hidden">
+                  <div className="min-h-0 overflow-hidden border-r border-gray-200 bg-gray-50/80 p-3">
+                      {selectedOrderPricing ? (
+                        <OrderPanel
+                          className="h-full min-h-0"
+                          order={selectedOrder}
+                          pricing={selectedOrderPricing}
+                          formattedOrderId={
+                            <FormattedOrderId
+                              formattedOrderId={selectedOrder.formatted_order_id}
+                              fallbackOrderId={selectedOrder.order_id}
+                              size="lg"
+                            />
+                          }
+                          onOpenBill={() => {
+                            setBillSheetAllItemsOnly(false);
+                            setBillSheetOpen(true);
+                          }}
+                          onOpenCustomer={() => setCustomerSheetOpen(true)}
+                          onOpenAllItems={() => {
+                            setBillSheetAllItemsOnly(true);
+                            setBillSheetOpen(true);
+                          }}
+                          onOpenTimeline={() => setTimelineModalOpen(true)}
+                          onClose={closeOrderPanel}
+                          otpCode={otpCache[selectedOrder.id]?.otp_code}
+                          otpType={otpCache[selectedOrder.id]?.otp_type}
+                          primaryAction={
                             <ActionBtns
                               order={selectedOrder}
                               onAccept={() => updateStatus(selectedOrder, 'ACCEPTED')}
@@ -1530,114 +1433,13 @@ function OrdersPageContent() {
                               acceptLabel={acceptCountdown.label}
                               acceptDisabled={acceptCountdown.disabled}
                             />
-                          </div>
-                          {/* Items - compact premium with QTY | Price | Amount */}
-                          <div className="rounded-lg bg-white p-3 border border-gray-200 shadow-sm w-full">
-                            <div className="flex items-center justify-between mb-2.5">
-                              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide">Items</p>
-                              <span className="text-xs text-gray-500">{selectedOrder.preparation_time_minutes ?? '—'}m prep</span>
-                            </div>
-                            {/* Header row */}
-                            {selectedOrder.items && Array.isArray(selectedOrder.items) && selectedOrder.items.length > 0 && (
-                              <div className="grid grid-cols-12 gap-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1.5 pb-1 border-b border-gray-200">
-                                <div className="col-span-5">Item</div>
-                                <div className="col-span-2 text-center">QTY</div>
-                                <div className="col-span-2 text-right">Price</div>
-                                <div className="col-span-3 text-right">Amount</div>
-                              </div>
-                            )}
-                            {selectedOrder.items && Array.isArray(selectedOrder.items) && selectedOrder.items.length > 0 ? (
-                              <div className="space-y-2">
-                                {selectedOrder.items.map((item: any, idx: number) => {
-                                  const qty = item.quantity || 1;
-                                  const itemPrice = Number(item.price || 0);
-                                  const amount = Number(item.total || itemPrice * qty);
-                                  return (
-                                    <div key={idx} className="grid grid-cols-12 gap-2 text-xs items-center py-1 border-b border-gray-100 last:border-0">
-                                      <div className="col-span-5 min-w-0">
-                                        <p className="font-medium text-gray-900 truncate">{item.name || `Item ${idx + 1}`}</p>
-                                        {item.customizations && Array.isArray(item.customizations) && item.customizations.length > 0 && (
-                                          <p className="text-[10px] text-gray-500 mt-0.5 truncate">{item.customizations.join(', ')}</p>
-                                        )}
-                                      </div>
-                                      <div className="col-span-2 text-center">
-                                        <p className="text-gray-600 font-medium">{qty}</p>
-                                      </div>
-                                      <div className="col-span-2 text-right">
-                                        <p className="text-gray-600">₹{itemPrice.toFixed(2)}</p>
-                                      </div>
-                                      <div className="col-span-3 text-right">
-                                        <p className="font-semibold text-gray-900">₹{amount.toFixed(2)}</p>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            ) : (
-                              <p className="text-xs text-gray-500">{selectedOrder.food_items_count ?? '—'} items</p>
-                            )}
-                            <div className="mt-2.5 pt-2.5 border-t border-gray-100 flex justify-between items-center">
-                              <span className="text-xs text-gray-600">Total</span>
-                              <span className="font-bold text-gray-900">₹{Number(selectedOrder.food_items_total_value || 0).toFixed(2)}</span>
-                            </div>
-                          </div>
-                          
-                        </div>
-                      </div>
-                      
-                      {/* Cancellation - compact */}
-                      {(selectedOrder.rejected_reason || selectedOrder.cancelled_by_type) && (
-                        <div className="mt-3 p-2.5 bg-red-50/80 rounded-lg border border-red-200/60">
-                          <p className="text-[10px] font-semibold text-red-600 uppercase tracking-wide mb-1.5">Cancellation</p>
-                          {selectedOrder.rejected_reason && (
-                            <p className="text-xs text-red-800 mb-1.5 leading-relaxed">{selectedOrder.rejected_reason}</p>
-                          )}
-                          {selectedOrder.cancelled_by_type && (
-                            <p className="text-[10px] text-red-700">
-                              <span className="font-medium capitalize">{selectedOrder.cancelled_by_type}</span>
-                              {selectedOrder.cancelled_at && (
-                                <span className="ml-1.5 text-red-600">• {formatTimeAgo(selectedOrder.cancelled_at)}</span>
-                              )}
-                            </p>
-                          )}
-                        </div>
-                      )}
-                    </div>
+                          }
+                        />
+                      ) : null}
                   </div>
-                </div>
-              </div>
-
-                {/* Mobile: Order details panel beside sidebar - card-based layout */}
-                <div className="lg:hidden flex-1 min-w-0 flex flex-col overflow-hidden order-1">
-                  <OrderDetailMobile
-                    order={selectedOrder}
-                    onClose={closeOrderPanel}
-                    statusLabel={STATUS_LABEL[selectedOrder.order_status || 'CREATED'] || selectedOrder.order_status || 'CREATED'}
-                    formatVegNonVeg={formatVegNonVeg}
-                    formatTimeAgo={formatTimeAgo}
-                    otpCode={otpCache[selectedOrder.id]?.otp_code}
-                    otpType={otpCache[selectedOrder.id]?.otp_type}
-                    otpVerified={otpVerified.has(selectedOrder.id)}
-                    onFetchOtp={() => fetchOtp(selectedOrder.id)}
-                    onAccept={() => updateStatus(selectedOrder, 'ACCEPTED')}
-                    onReject={() => { setRejectModal(selectedOrder); closeOrderPanel(); }}
-                    onPreparing={() => updateStatus(selectedOrder, 'PREPARING')}
-                    onReady={() => updateStatus(selectedOrder, 'READY_FOR_PICKUP')}
-                    onDispatch={() => setDispatchModal(selectedOrder)}
-                    onComplete={() => updateStatus(selectedOrder, 'DELIVERED')}
-                    onRto={() => setRtoModalOrder(selectedOrder)}
-                    actionLoading={actionLoading === selectedOrder.id}
-                    onOpenRidersLog={() => { setRidersLogModalOrderId(selectedOrder.id); setRidersLogModalOrderLabel(selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`); }}
-                    onOpenRiderImage={(url) => setRiderImageModalUrl(url)}
-                    acceptLabel={acceptCountdown.label}
-                    acceptDisabled={acceptCountdown.disabled}
-                  />
-                </div>
-
-                {/* Right: Cards column - desktop only when order open (hidden on mobile) */}
-                <div className="hidden lg:flex w-64 shrink-0 flex-col overflow-hidden pl-4 order-2">
-                  <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 hide-scrollbar">
-                    <div className="space-y-3 pr-1">
+                  <div className="min-h-0 overflow-hidden flex flex-col bg-gray-50/80 p-3 pl-4">
+                    <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden hide-scrollbar">
+                      <div className="space-y-3 pr-1">
                       {displayOrders.map((order) => (
                         <OrderCard
                           key={order.id}
@@ -1666,9 +1468,41 @@ function OrdersPageContent() {
                           hideDetails
                         />
                       ))}
+                      </div>
+                      {displayOrders.length === 0 && <FoodOrdersEmptyState variant={foodOrdersEmptyVariant} />}
                     </div>
-                    {displayOrders.length === 0 && <FoodOrdersEmptyState variant={foodOrdersEmptyVariant} />}
                   </div>
+                </div>
+
+                <div className="lg:hidden flex-1 min-w-0 flex flex-col overflow-hidden">
+                  <OrderDetailMobile
+                    order={selectedOrder}
+                    onClose={closeOrderPanel}
+                    statusLabel={STATUS_LABEL[selectedOrder.order_status || 'CREATED'] || selectedOrder.order_status || 'CREATED'}
+                    formatVegNonVeg={formatVegNonVeg}
+                    formatTimeAgo={formatTimeAgo}
+                    otpCode={otpCache[selectedOrder.id]?.otp_code}
+                    otpType={otpCache[selectedOrder.id]?.otp_type}
+                    otpVerified={otpVerified.has(selectedOrder.id)}
+                    onFetchOtp={() => fetchOtp(selectedOrder.id)}
+                    onAccept={() => updateStatus(selectedOrder, 'ACCEPTED')}
+                    onReject={() => { setRejectModal(selectedOrder); closeOrderPanel(); }}
+                    onPreparing={() => updateStatus(selectedOrder, 'PREPARING')}
+                    onReady={() => updateStatus(selectedOrder, 'READY_FOR_PICKUP')}
+                    onDispatch={() => setDispatchModal(selectedOrder)}
+                    onComplete={() => updateStatus(selectedOrder, 'DELIVERED')}
+                    onRto={() => setRtoModalOrder(selectedOrder)}
+                    actionLoading={actionLoading === selectedOrder.id}
+                    onOpenRidersLog={() => { setRidersLogModalOrderId(selectedOrder.id); setRidersLogModalOrderLabel(selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`); }}
+                    onOpenRiderImage={(url) => setRiderImageModalUrl(url)}
+                    acceptLabel={acceptCountdown.label}
+                    acceptDisabled={acceptCountdown.disabled}
+                    onOpenBill={() => {
+                      setBillSheetAllItemsOnly(false);
+                      setBillSheetOpen(true);
+                    }}
+                    onOpenTimeline={() => setTimelineModalOpen(true)}
+                  />
                 </div>
               </>
             ) : (
@@ -1746,7 +1580,36 @@ function OrdersPageContent() {
           </div>
           </div>
         </div>
-      </div>
+
+      <OrderBillSidesheet
+        open={billSheetOpen && !!selectedOrder}
+        onClose={() => {
+          setBillSheetOpen(false);
+          setBillSheetAllItemsOnly(false);
+        }}
+        order={selectedOrder}
+        pricing={
+          selectedOrderPricing ?? {
+            subtotal: 0,
+            packaging: 0,
+            taxes: 0,
+            discount: 0,
+            total: 0,
+          }
+        }
+        lineSum={selectedOrderLineSum}
+        allItemsOnly={billSheetAllItemsOnly}
+      />
+      <OrderCustomerSidesheet
+        open={customerSheetOpen && !!selectedOrder}
+        onClose={() => setCustomerSheetOpen(false)}
+        order={selectedOrder}
+      />
+      <OrderTimelineModal
+        open={timelineModalOpen && !!selectedOrder}
+        onClose={() => setTimelineModalOpen(false)}
+        order={selectedOrder}
+      />
 
       {/* Reject modal – portaled so overlay is above sidebar (z-50); backdrop-blur covers full screen */}
       {rejectModal && typeof document !== 'undefined' && createPortal(
@@ -2162,11 +2025,31 @@ function DetailSection({ title, children }: { title: string; children: React.Rea
 const ORDER_STEPS = [
   { key: 'placed', label: 'Placed', status: 'CREATED', at: (o: OrdersFoodRow) => o.created_at },
   { key: 'accepted', label: 'Accepted', status: 'ACCEPTED', at: (o: OrdersFoodRow) => o.accepted_at },
-  { key: 'preparing', label: 'Preparing', status: 'PREPARING', at: () => null },
+  { key: 'preparing', label: 'Preparing', status: 'PREPARING', at: (o: OrdersFoodRow) => o.preparing_at ?? null },
   { key: 'ready', label: 'Ready', status: 'READY_FOR_PICKUP', at: (o: OrdersFoodRow) => o.prepared_at },
   { key: 'dispatch', label: 'Dispatch', status: 'OUT_FOR_DELIVERY', at: (o: OrdersFoodRow) => o.dispatched_at },
   { key: 'delivered', label: 'Delivered', status: 'DELIVERED', at: (o: OrdersFoodRow) => o.delivered_at },
 ] as const;
+
+function normalizeTimelineStatus(status: string | undefined): string {
+  const s = (status || 'CREATED').toUpperCase();
+  if (s === 'NEW' || s === 'PLACED') return 'CREATED';
+  return s;
+}
+
+type OrderStepVisual = 'completed' | 'active' | 'pending';
+
+function orderStepVisualState(
+  order: OrdersFoodRow,
+  step: (typeof ORDER_STEPS)[number],
+  status: string
+): OrderStepVisual {
+  if (step.at(order)) return 'completed';
+  const st = normalizeTimelineStatus(status);
+  if (st === step.status) return 'active';
+  if (step.status === 'CREATED' && st === 'CREATED') return 'active';
+  return 'pending';
+}
 
 function orderStepIndex(status: string | undefined): number {
   const order = ['CREATED', 'NEW', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'DELIVERED', 'RTO', 'CANCELLED'];
@@ -2284,11 +2167,53 @@ function RiderTimeline({ riderId, orderId }: { riderId: number | null | undefine
   );
 }
 
+function OrderActivityStrip({ ordersFoodId, storeId }: { ordersFoodId: number; storeId: string }) {
+  const [actions, setActions] = useState<MerchantOrderActionRow[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetch(
+      `/api/food-orders/${ordersFoodId}/activity?store_id=${encodeURIComponent(storeId)}`
+    )
+      .then((r) => (r.ok ? r.json() : { actions: [] }))
+      .then((data: { actions?: MerchantOrderActionRow[] }) => {
+        if (!cancelled) setActions(data.actions ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setActions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ordersFoodId, storeId]);
+
+  if (loading && actions.length === 0) return null;
+  if (actions.length === 0) return null;
+
+  return (
+    <div className="rounded-lg bg-slate-50/80 p-2.5 border border-slate-100">
+      <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Recent activity</p>
+      <ul className="space-y-1 max-h-28 overflow-y-auto hide-scrollbar">
+        {actions.slice(0, 8).map((a) => (
+          <li key={a.id} className="text-[11px] text-gray-700 flex justify-between gap-2">
+            <span className="truncate">{formatStatusActionMessage(a.to_status, a.action_source)}</span>
+            <span className="text-gray-400 shrink-0">{actionSourceLabel(a.action_source)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function OrderStatusTimeline({ order, compact }: { order: OrdersFoodRow; compact?: boolean }) {
   const status = order.order_status || 'CREATED';
   const isTerminal = status === 'CANCELLED' || status === 'RTO';
   const lastCompletedIdx = lastCompletedStepIndex(order);
-  const currentIdx = isTerminal ? lastCompletedIdx : orderStepIndex(status);
   const formatTs = (s: string | null | undefined) => (s ? new Date(s).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true }) : '');
 
   const stepsToShow = isTerminal ? ORDER_STEPS.slice(0, lastCompletedIdx + 1) : ORDER_STEPS;
@@ -2320,12 +2245,22 @@ function OrderStatusTimeline({ order, compact }: { order: OrdersFoodRow; compact
           <div className="shrink-0 w-16 mr-3" aria-hidden />
           <div className="flex-1 flex items-center min-w-0">
             {stepsToShow.map((step, i) => {
-              const stepIdx = orderStepIndex(step.status);
-              const done = currentIdx >= stepIdx || (status === step.status);
-              const prevDone = i > 0 && (currentIdx >= orderStepIndex(stepsToShow[i - 1].status));
+              const visual = orderStepVisualState(order, step, status);
+              const done = visual === 'completed';
+              const active = visual === 'active';
+              const prevDone =
+                i > 0 && orderStepVisualState(order, stepsToShow[i - 1], status) === 'completed';
               return (
                 <div key={step.key} className="flex-1 flex items-center min-w-0">
-                  <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${done ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-500'}`}>
+                  <div
+                    className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
+                      done
+                        ? 'bg-green-500 text-white'
+                        : active
+                          ? 'bg-blue-500 text-white ring-2 ring-blue-200'
+                          : 'bg-gray-200 text-gray-500'
+                    }`}
+                  >
                     {done ? <Check size={10} strokeWidth={3} /> : <span className="text-[8px] font-bold">{i + 1}</span>}
                   </div>
                   {i < stepsToShow.length - 1 ? (
@@ -2372,17 +2307,27 @@ function OrderStatusTimeline({ order, compact }: { order: OrdersFoodRow; compact
   return (
     <div className="flex items-start overflow-x-auto hide-scrollbar">
       {stepsToShow.map((step, i) => {
-        const stepIdx = orderStepIndex(step.status);
-        const done = currentIdx >= stepIdx || (status === step.status);
+        const visual = orderStepVisualState(order, step, status);
+        const done = visual === 'completed';
+        const active = visual === 'active';
         const ts = step.at(order);
-        const prevDone = i > 0 && (currentIdx >= orderStepIndex(stepsToShow[i - 1].status));
+        const prevDone =
+          i > 0 && orderStepVisualState(order, stepsToShow[i - 1], status) === 'completed';
         return (
           <React.Fragment key={step.key}>
             {i > 0 && (
               <div className={`shrink-0 w-4 h-0.5 mt-3 ${prevDone ? 'bg-green-400' : 'bg-gray-200'}`} />
             )}
             <div className="flex flex-col items-center shrink-0 min-w-[44px]">
-              <div className={`w-6 h-6 rounded-full flex items-center justify-center ${done ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-500'}`}>
+              <div
+                className={`w-6 h-6 rounded-full flex items-center justify-center ${
+                  done
+                    ? 'bg-green-500 text-white'
+                    : active
+                      ? 'bg-blue-500 text-white ring-2 ring-blue-200'
+                      : 'bg-gray-200 text-gray-500'
+                }`}
+              >
                 {done ? <Check size={12} strokeWidth={3} /> : <span className="text-[9px] font-bold">{i + 1}</span>}
               </div>
               <span className="text-[9px] font-medium text-gray-600 mt-1 text-center leading-tight">{step.label}</span>
@@ -2429,6 +2374,8 @@ function OrderDetailMobile({
   onOpenRiderImage,
   acceptLabel,
   acceptDisabled,
+  onOpenBill,
+  onOpenTimeline,
 }: {
   order: OrdersFoodRow;
   onClose: () => void;
@@ -2451,6 +2398,8 @@ function OrderDetailMobile({
   onOpenRiderImage?: (url: string) => void;
   acceptLabel?: string;
   acceptDisabled?: boolean;
+  onOpenBill?: () => void;
+  onOpenTimeline?: () => void;
 }) {
   const status = order.order_status || 'CREATED';
   const statusColor =
@@ -2664,12 +2613,23 @@ function OrderDetailMobile({
               })}
             </div>
           ) : (
-            <p className="text-xs text-gray-500">{order.food_items_count ?? '—'} items</p>
+            <p className="text-xs text-gray-500">{computeOrderItemQuantityCount(order)} items</p>
           )}
-          <div className="mt-2.5 pt-2.5 border-t border-gray-100 flex justify-between items-center">
-            <span className="text-xs text-gray-600">Total</span>
+          <button
+            type="button"
+            onClick={onOpenBill}
+            className="mt-2.5 pt-2.5 border-t border-gray-100 w-full flex justify-between items-center gap-2 text-left"
+          >
+            <span className="flex items-center gap-2">
+              <span className="text-xs font-medium text-gray-800 underline decoration-dashed decoration-gray-400">
+                Total Bill
+              </span>
+              <span className="rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-bold text-teal-700 border border-teal-100">
+                PAID
+              </span>
+            </span>
             <span className="font-bold text-gray-900">₹{Number(order.food_items_total_value || 0).toFixed(2)}</span>
-          </div>
+          </button>
         </div>
 
         {/* Delivery Instructions */}
@@ -2703,25 +2663,6 @@ function OrderDetailMobile({
           <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-2.5">Order Status Timeline</p>
           <OrderStatusTimeline order={order} />
         </div>
-
-        {/* Cancellation - compact */}
-        {(order.rejected_reason || order.cancelled_by_type) && (
-          <div className="mt-3 p-2.5 bg-red-50/80 rounded-lg border border-red-200/60">
-            <p className="text-[10px] font-semibold text-red-600 uppercase tracking-wide mb-1.5">Cancellation</p>
-            {order.rejected_reason && (
-              <p className="text-xs text-red-800 mb-1.5 leading-relaxed break-words">{order.rejected_reason}</p>
-            )}
-            {order.cancelled_by_type && (
-              <p className="text-[10px] text-red-700">
-                <span className="font-medium capitalize">{order.cancelled_by_type}</span>
-                {order.cancelled_at && (
-                  <span className="ml-1.5 text-red-600">• {formatTimeAgo(order.cancelled_at)}</span>
-                )}
-              </p>
-            )}
-          </div>
-        )}
-
 
         {/* Action Buttons Card */}
         <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
@@ -2834,7 +2775,7 @@ function OrderCard({
           {formatTimeAgo(order.created_at)}
         </span>
         <span>•</span>
-        <span>{order.food_items_count ?? 0} items</span>
+        <span>{computeOrderItemQuantityCount(order)} items</span>
         <span>•</span>
         <span className="font-semibold text-gray-900">₹{value.toFixed(0)}</span>
         {order.preparation_time_minutes != null && (
@@ -3016,7 +2957,7 @@ function OrderListRow({
             {formatTimeAgo(order.created_at)}
           </span>
           <span className="text-xs text-gray-600 font-medium">
-            {order.food_items_count ?? 0} {order.food_items_count === 1 ? 'item' : 'items'}
+            {computeOrderItemQuantityCount(order)} {computeOrderItemQuantityCount(order) === 1 ? 'item' : 'items'}
           </span>
           <span className="text-xs font-bold text-gray-900">
             ₹{value.toFixed(0)}
@@ -3170,7 +3111,7 @@ function ActionBtns({
     );
   }
   const RtoMenu = () => {
-    if (!onRto || hideRtoMenu) return null;
+    if (!onRto || hideRtoMenu || topRightLayout) return null;
     return (
       <div className="relative shrink-0" ref={menuRef}>
         <button
@@ -3204,7 +3145,7 @@ function ActionBtns({
         <button
           onClick={(e) => { e.stopPropagation(); onReady(); }}
           disabled={dis}
-          className={`${btnBase} ${topRightLayout ? 'flex-[2] px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-emerald-600 text-white hover:bg-emerald-700 hover:shadow-md border-emerald-700/20`}
+          className={`${btnBase} ${topRightLayout ? 'w-full px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-emerald-600 text-white hover:bg-emerald-700 hover:shadow-md border-emerald-700/20`}
         >
           Ready
         </button>
@@ -3218,7 +3159,7 @@ function ActionBtns({
         <button
           onClick={(e) => { e.stopPropagation(); onDispatch(); }}
           disabled={dis}
-          className={`${btnBase} ${topRightLayout ? 'flex-[2] px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-purple-600 text-white hover:bg-purple-700 hover:shadow-md border-purple-700/20`}
+          className={`${btnBase} ${topRightLayout ? 'w-full px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-purple-600 text-white hover:bg-purple-700 hover:shadow-md border-purple-700/20`}
         >
           Dispatch
         </button>
@@ -3232,7 +3173,7 @@ function ActionBtns({
         <button
           onClick={(e) => { e.stopPropagation(); onComplete(); }}
           disabled={dis}
-          className={`${btnBase} ${topRightLayout ? 'flex-[2] px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-green-600 text-white hover:bg-green-700 hover:shadow-md border-green-700/20`}
+          className={`${btnBase} ${topRightLayout ? 'w-full px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-green-600 text-white hover:bg-green-700 hover:shadow-md border-green-700/20`}
         >
           Complete
         </button>

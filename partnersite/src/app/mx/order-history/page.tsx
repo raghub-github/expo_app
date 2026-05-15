@@ -25,6 +25,9 @@ import { DEMO_RESTAURANT_ID } from '@/lib/constants';
 import { toast } from 'sonner';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
+import { normalizeOrderItems, type NormalizedOrderLineItem } from '@/lib/orderLineItems';
+import { OrderHistoryItemDetailsModal } from '@/components/OrderHistoryItemDetailsModal';
+import { openMxNeedHelp } from '@/lib/openMxNeedHelp';
 
 const FILTER_STATUS_OPTIONS = [
   'CREATED',
@@ -93,9 +96,9 @@ function historyBadgeClass(status: string) {
   if (s === 'PREPARING' || s === 'ACCEPTED' || s === 'CREATED') return 'bg-violet-600 text-white';
   if (s === 'READY_FOR_PICKUP') return 'bg-emerald-600 text-white';
   if (s === 'OUT_FOR_DELIVERY') return 'bg-orange-500 text-white';
-  if (s === 'DELIVERED') return 'bg-teal-600 text-white';
+  if (s === 'DELIVERED') return 'bg-green-600 text-white';
   if (s === 'RTO') return 'bg-amber-600 text-white';
-  if (s === 'CANCELLED') return 'bg-gray-600 text-white';
+  if (s === 'CANCELLED') return 'bg-red-600 text-white';
   return 'bg-slate-600 text-white';
 }
 
@@ -138,16 +141,8 @@ function formatRangeSummary(fromYmd: string, toYmd: string) {
   return `${a.toLocaleDateString('en-IN', o)} to ${b.toLocaleDateString('en-IN', o)}`;
 }
 
-function normalizeItems(order: OrdersFoodRow): Array<{ name: string; quantity: number; price: number; total: number }> {
-  const raw = order.items;
-  if (!Array.isArray(raw) || raw.length === 0) return [];
-  return raw.map((it: Record<string, unknown>, idx: number) => {
-    const qty = Number(it.quantity) || 1;
-    const unit = Number(it.price ?? it.unit_price ?? 0);
-    const total = Number(it.total ?? it.total_price ?? unit * qty);
-    const name = String(it.name ?? it.item_name ?? `Item ${idx + 1}`).trim();
-    return { name, quantity: qty, price: unit, total };
-  });
+function normalizeItems(order: OrdersFoodRow): NormalizedOrderLineItem[] {
+  return normalizeOrderItems(order.items ?? []);
 }
 
 function statusSetFromUiKeys(keys: Set<string>): Set<string> {
@@ -200,6 +195,7 @@ function OrderHistoryInner() {
 
   const downloadBtnRef = useRef<HTMLButtonElement>(null);
   const [downloadMenuPos, setDownloadMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const [itemDetailModal, setItemDetailModal] = useState<NormalizedOrderLineItem | null>(null);
 
   useEffect(() => {
     let id = searchParams?.get('storeId') || searchParams?.get('store_id');
@@ -417,19 +413,44 @@ function OrderHistoryInner() {
   }
 
   const lineItems = selected ? normalizeItems(selected) : [];
-  const subtotalItems = lineItems.reduce((acc, it) => acc + it.total, 0);
-  const orderTotal = Number(selected?.food_items_total_value ?? subtotalItems);
+  const lineSum = lineItems.reduce((acc, it) => acc + it.total, 0);
+  const pricing = selected?.pricing;
+  const subtotalItems = pricing?.subtotal ?? (lineSum > 0 ? lineSum : 0);
+  const packaging = pricing?.packaging ?? 0;
+  const taxes = pricing?.taxes ?? 0;
+  const discount = pricing?.discount ?? 0;
+  const orderTotal = pricing?.total ?? Number(selected?.food_items_total_value ?? lineSum);
 
   return (
     <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''}>
       <PartnerPageHeader title="Order History" subtitle={store?.store_name || undefined} />
-      <div className="flex flex-col h-full min-h-0 bg-gray-50">
+      <div className="flex flex-col h-full min-h-0 bg-gray-50 overflow-hidden">
         <header className="mx-shell-header sticky top-0 z-30 !px-3 sm:!px-4 lg:!px-6">
-          <div className="flex items-center gap-2 sm:gap-3 w-full min-w-0">
-            <div className="md:hidden shrink-0 flex items-center">
-              <MobileHamburgerButton />
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between w-full min-w-0">
+            <div className="flex items-center gap-2 min-w-0 w-full sm:w-auto sm:max-w-[280px]">
+              <div className="md:hidden shrink-0 flex items-center">
+                <MobileHamburgerButton />
+              </div>
+              <div className="flex gap-1.5 min-w-0 flex-1 sm:flex-none sm:w-[260px]">
+              <input
+                type="search"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && setSearchApplied(searchInput)}
+                placeholder="Order ID"
+                className="flex-1 min-w-0 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs sm:text-sm bg-white"
+              />
+              <button
+                type="button"
+                onClick={() => setSearchApplied(searchInput)}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 shrink-0"
+                aria-label="Search orders"
+              >
+                <Search size={14} />
+              </button>
+              </div>
             </div>
-            <div className="flex-1 min-w-0 flex items-center justify-end gap-2">
+            <div className="flex min-w-0 w-full sm:w-auto items-center justify-end gap-1.5 sm:gap-2 shrink-0 flex-wrap sm:flex-nowrap">
               <div className="min-w-0 overflow-x-auto hide-scrollbar flex items-center gap-1.5 sm:gap-2 py-0.5">
                 <button
                   type="button"
@@ -661,26 +682,6 @@ function OrderHistoryInner() {
 
         <div className="flex flex-1 min-h-0 flex-col lg:flex-row overflow-hidden">
           <aside className="w-full lg:w-[380px] shrink-0 border-b lg:border-b-0 lg:border-r border-gray-200 bg-white flex flex-col min-h-0 max-h-[45vh] lg:max-h-none">
-            <div className="mx-shell-header !py-2 flex-col !items-stretch gap-2 sm:flex-row sm:!items-center">
-              <div className="flex gap-2 w-full min-w-0">
-                <input
-                  type="search"
-                  value={searchInput}
-                  onChange={(e) => setSearchInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && setSearchApplied(searchInput)}
-                  placeholder="Enter full order ID to search"
-                  className="flex-1 min-w-0 border border-gray-200 rounded-lg px-3 py-2 text-sm"
-                />
-                <button
-                  type="button"
-                  onClick={() => setSearchApplied(searchInput)}
-                  className="inline-flex items-center gap-1 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 shrink-0"
-                >
-                  <Search size={16} />
-                  Search
-                </button>
-              </div>
-            </div>
             <div className="flex-1 overflow-y-auto min-h-0 p-2 space-y-2 hide-scrollbar">
               {loading && (
                 <div className="flex justify-center py-8 text-gray-500">
@@ -722,7 +723,7 @@ function OrderHistoryInner() {
             </div>
           </aside>
 
-          <main className="flex-1 min-w-0 overflow-y-auto min-h-0 bg-gray-50 p-3 sm:p-5">
+          <main className="flex-1 min-w-0 overflow-y-auto min-h-0 bg-gray-50 p-3 sm:p-5 hide-scrollbar">
             {!selected ? (
               <div className="h-full flex flex-col items-center justify-center text-gray-500 text-sm gap-2">
                 <span className="text-4xl opacity-40" aria-hidden>
@@ -753,7 +754,22 @@ function OrderHistoryInner() {
                     <button
                       type="button"
                       className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-blue-500 text-blue-600 text-xs font-semibold hover:bg-blue-50"
-                      onClick={() => toast.message('Support', { description: 'Use Help in your profile or contact your account manager.' })}
+                      onClick={() => {
+                        const formattedId =
+                          selected.formatted_order_id?.trim() ||
+                          (selected.order_id != null ? String(selected.order_id) : '');
+                        const coreId =
+                          selected.core_order_id ??
+                          (typeof selected.order_id === 'number' ? selected.order_id : null);
+                        openMxNeedHelp({
+                          formattedOrderId: formattedId || undefined,
+                          coreOrderId: coreId ?? undefined,
+                          prefillSubject: formattedId ? `Order ${formattedId}` : 'Order support',
+                          prefillDescription: formattedId
+                            ? `I need help with order ${formattedId}.`
+                            : undefined,
+                        });
+                      }}
                     >
                       <HelpCircle size={14} />
                       Help
@@ -784,31 +800,37 @@ function OrderHistoryInner() {
                       className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-blue-500 text-blue-600 text-xs font-semibold hover:bg-blue-50"
                     >
                       <Printer size={14} />
-                      KOT
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => window.print()}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-blue-500 text-blue-600 text-xs font-semibold hover:bg-blue-50"
-                    >
-                      <Printer size={14} />
                       ORDER
                     </button>
                   </div>
-                  <ul className="divide-y divide-gray-100">
+                  <div className="mb-4">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">
+                      Order details
+                    </p>
                     {lineItems.length === 0 ? (
-                      <li className="py-2 text-sm text-gray-500">No line items</li>
+                      <p className="text-sm text-gray-500">No line items</p>
                     ) : (
-                      lineItems.map((it, i) => (
-                        <li key={i} className="py-2 flex justify-between text-sm gap-2">
-                          <span className="text-gray-800">
-                            {it.quantity} × {it.name}
-                          </span>
-                          <span className="font-medium text-gray-900 shrink-0">₹{it.total.toFixed(2)}</span>
-                        </li>
-                      ))
+                      <ul className="space-y-2.5">
+                        {lineItems.map((it, i) => (
+                          <li key={i} className="flex justify-between items-start gap-3 text-sm">
+                            <p className="text-gray-800 min-w-0">
+                              <span className="text-gray-600">{it.quantity} × </span>
+                              <button
+                                type="button"
+                                onClick={() => setItemDetailModal(it)}
+                                className="font-medium text-gray-900 border-b border-dashed border-gray-400 hover:border-gray-700 hover:text-gray-700 text-left"
+                              >
+                                {it.name}
+                              </button>
+                            </p>
+                            <span className="font-medium text-gray-900 shrink-0 tabular-nums pt-0.5">
+                              ₹{it.total.toFixed(2)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
                     )}
-                  </ul>
+                  </div>
                   <div className="mt-4 pt-3 border-t border-gray-200 space-y-1.5 text-sm">
                     <div className="flex justify-between text-gray-600">
                       <span>Subtotal</span>
@@ -816,15 +838,17 @@ function OrderHistoryInner() {
                     </div>
                     <div className="flex justify-between text-gray-600">
                       <span>Restaurant packaging</span>
-                      <span>₹0.00</span>
+                      <span className="tabular-nums">₹{packaging.toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between text-gray-600">
                       <span>Taxes</span>
-                      <span>₹0.00</span>
+                      <span className="tabular-nums">₹{taxes.toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between text-gray-600">
                       <span>Discount</span>
-                      <span>₹0.00</span>
+                      <span className="tabular-nums">
+                        {discount > 0 ? `−₹${discount.toFixed(2)}` : '₹0.00'}
+                      </span>
                     </div>
                     <div className="flex justify-between font-bold text-gray-900 pt-2">
                       <span>Total</span>
@@ -837,6 +861,13 @@ function OrderHistoryInner() {
           </main>
         </div>
       </div>
+
+      <OrderHistoryItemDetailsModal
+        open={itemDetailModal != null}
+        onClose={() => setItemDetailModal(null)}
+        lineItem={itemDetailModal}
+        storeId={storeId}
+      />
     </MXLayoutWhite>
   );
 }

@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import {
+  extractItemsArray,
+  mapCoreDbItemsToRaw,
+  normalizeOrderItems,
+} from '@/lib/orderLineItems';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -49,25 +54,59 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: 'Order not found for this store' }, { status: 404 });
       }
 
-      const items: { id: number; item_name: string; item_title: string | null; quantity: number; unit_price: number; total_price: number; item_type: string | null }[] = [];
-      const rawItems = food.items;
-      if (Array.isArray(rawItems)) {
-        rawItems.forEach((it: Record<string, unknown>, idx: number) => {
-          const qty = Number(it.quantity) || 1;
-          const unitPrice = Number(it.price ?? it.unit_price ?? 0);
-          const total = Number(it.total ?? it.total_price ?? unitPrice * qty);
-          const name = String(it.name ?? it.item_name ?? `Item ${idx + 1}`).trim();
-          items.push({
-            id: idx + 1,
-            item_name: name,
-            item_title: name || null,
-            quantity: qty,
-            unit_price: unitPrice,
-            total_price: total,
-            item_type: (it.item_type as string) ?? null,
-          });
-        });
+      let rawItems: unknown = food.items;
+      if (extractItemsArray(rawItems).length === 0) {
+        const { data: coreRow } = await db
+          .from('orders_core')
+          .select('order_id, items')
+          .eq('id', orderIdNum)
+          .maybeSingle();
+        if (coreRow?.items && extractItemsArray(coreRow.items).length > 0) {
+          rawItems = coreRow.items;
+        } else {
+          const textOrderId = String(coreRow?.order_id ?? '').trim();
+          if (textOrderId) {
+            const { data: coreItemRows } = await db
+              .from('orders_core_items')
+              .select('id, order_id, item_name, variant_name, quantity, base_price, total_price, veg_nonveg')
+              .eq('order_id', textOrderId)
+              .order('id');
+            if (coreItemRows && coreItemRows.length > 0) {
+              const itemIds = coreItemRows.map((r) => Number((r as { id: number }).id)).filter(Number.isFinite);
+              const addonsByItemId = new Map<number, { order_item_id: number; addon_name?: string | null; quantity: number }[]>();
+              if (itemIds.length > 0) {
+                const { data: addonRows } = await db
+                  .from('orders_core_item_addons')
+                  .select('order_item_id, addon_name, quantity, addon_price')
+                  .in('order_item_id', itemIds);
+                for (const a of addonRows || []) {
+                  const itemId = Number((a as { order_item_id: number }).order_item_id);
+                  if (!Number.isFinite(itemId)) continue;
+                  const list = addonsByItemId.get(itemId) ?? [];
+                  list.push(a as { order_item_id: number; addon_name?: string | null; quantity: number });
+                  addonsByItemId.set(itemId, list);
+                }
+              }
+              rawItems = mapCoreDbItemsToRaw(
+                coreItemRows as Parameters<typeof mapCoreDbItemsToRaw>[0],
+                addonsByItemId
+              );
+            }
+          }
+        }
       }
+
+      const normalized = normalizeOrderItems(rawItems);
+      const items = normalized.map((it, idx) => ({
+        id: idx + 1,
+        item_name: it.name,
+        item_title: it.name || null,
+        quantity: it.quantity,
+        unit_price: it.price,
+        total_price: it.total,
+        item_type: it.vegNonveg ?? null,
+        customizations: it.customizations,
+      }));
 
       const riders: { id: number; rider_id: number; rider_name: string | null; rider_mobile: string | null; assignment_status: string; assigned_at: string | null; accepted_at: string | null; rejected_at: string | null; reached_merchant_at: string | null; picked_up_at: string | null; delivered_at: string | null; cancelled_at: string | null }[] = [];
       if (food.rider_id != null || food.rider_name != null || food.rider_phone != null) {

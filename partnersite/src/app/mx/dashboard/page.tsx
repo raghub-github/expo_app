@@ -164,11 +164,115 @@ function DashboardContent() {
   const [manualActivationLock, setManualActivationLock] = useState(false)
   /** From GET /api/store-operations — close reason line (dashboard parity). */
   const [closeReasonFromOps, setCloseReasonFromOps] = useState<string | null>(null)
+  const [schedulePhase, setSchedulePhase] = useState<string | null>(null)
+  const [scheduleStatusLabel, setScheduleStatusLabel] = useState<string | null>(null)
+  const [isTodayScheduledClosed, setIsTodayScheduledClosed] = useState(false)
+  const [configuredTodaySlots, setConfiguredTodaySlots] = useState<{ start: string; end: string }[]>([])
+  const [nextScheduleTransitionAt, setNextScheduleTransitionAt] = useState<string | null>(null)
+  const [withinOperatingHours, setWithinOperatingHours] = useState<boolean | null>(null)
+  const [countdownAt, setCountdownAt] = useState<string | null>(null)
+  const [countdownKind, setCountdownKind] = useState<string | null>(null)
+  const [countdownWallLabel, setCountdownWallLabel] = useState<string | null>(null)
 
   const closeReasonDisplay = useMemo(() => {
     const r = closeReasonFromOps != null && String(closeReasonFromOps).trim() !== '' ? String(closeReasonFromOps).trim() : null
     return formatCloseReasonForCard(r)
   }, [closeReasonFromOps])
+
+  const cardDisplaySlots = useMemo(() => {
+    if (configuredTodaySlots.length > 0) return configuredTodaySlots
+    if (todaySlots.length > 0) return todaySlots
+    return []
+  }, [configuredTodaySlots, todaySlots])
+
+  const cardBreakGapLabel = useMemo(() => {
+    if (cardDisplaySlots.length < 2) return null
+    const toMin = (t: string) => {
+      const [h, m] = t.split(':').map(Number)
+      return (h ?? 0) * 60 + (m ?? 0)
+    }
+    const end1 = toMin(cardDisplaySlots[0].end)
+    const start2 = toMin(cardDisplaySlots[1].start)
+    if (start2 > end1) {
+      return `${formatTimeHMS(cardDisplaySlots[0].end)} – ${formatTimeHMS(cardDisplaySlots[1].start)}`
+    }
+    return null
+  }, [cardDisplaySlots])
+
+  const showOpensCountdownLegacy =
+    !isStoreOpen && !!opensAt && !withinHoursButRestricted && !countdownAt
+
+  const activeCountdownAt = countdownAt ?? (showOpensCountdownLegacy ? opensAt : null)
+
+  const showScheduleCountdown =
+    !!activeCountdownAt &&
+    !withinHoursButRestricted &&
+    (countdownKind != null || showOpensCountdownLegacy)
+
+  const opensCountdownLabel = useMemo(() => {
+    if (countdownKind === 'break_starts_in') return 'Break starts in'
+    if (countdownKind === 'reopens_in') return 'Reopens in'
+    if (isTodayScheduledClosed || schedulePhase === 'OFF_DAY' || countdownKind === 'next_online_in') {
+      return 'Next online in'
+    }
+    if (schedulePhase === 'BREAK') return 'Reopens in'
+    if (schedulePhase === 'PRE_BREAK') return 'Break starts in'
+    return 'Opens in'
+  }, [countdownKind, isTodayScheduledClosed, schedulePhase])
+
+  const countdownTargetWallLabel = countdownWallLabel
+
+  const formatHmsCountdown = React.useCallback((ms: number) => {
+    if (ms <= 0) return '00:00:00'
+    const totalSec = Math.floor(ms / 1000)
+    const h = Math.floor(totalSec / 3600)
+    const m = Math.floor((totalSec % 3600) / 60)
+    const s = totalSec % 60
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  }, [])
+
+  const storeStatusBadge = useMemo(() => {
+    if (isTodayScheduledClosed || schedulePhase === 'OFF_DAY') {
+      return {
+        label: 'Scheduled Off',
+        dot: 'bg-slate-500',
+        pill: 'bg-slate-500/10 text-slate-800 ring-1 ring-slate-500/20',
+      }
+    }
+    if (restrictionType === 'MANUAL_HOLD') {
+      return {
+        label: 'Waiting manual activation',
+        dot: 'bg-amber-500',
+        pill: 'bg-amber-500/10 text-amber-900 ring-1 ring-amber-500/25',
+      }
+    }
+    if (schedulePhase === 'BREAK' || (!isStoreOpen && countdownKind === 'reopens_in')) {
+      return {
+        label: 'Break Time',
+        dot: 'bg-amber-500',
+        pill: 'bg-amber-500/10 text-amber-900 ring-1 ring-amber-500/25',
+      }
+    }
+    if (schedulePhase === 'PRE_BREAK' || countdownKind === 'break_starts_in') {
+      return {
+        label: 'Open',
+        dot: 'bg-emerald-500 animate-pulse',
+        pill: 'bg-emerald-500/10 text-emerald-800 ring-1 ring-emerald-500/20',
+      }
+    }
+    if (isStoreOpen) {
+      return {
+        label: 'Open',
+        dot: 'bg-emerald-500 animate-pulse',
+        pill: 'bg-emerald-500/10 text-emerald-800 ring-1 ring-emerald-500/20',
+      }
+    }
+    return {
+      label: 'Closed',
+      dot: 'bg-red-500',
+      pill: 'bg-red-500/10 text-red-800 ring-1 ring-red-500/20',
+    }
+  }, [isTodayScheduledClosed, schedulePhase, restrictionType, isStoreOpen, countdownKind])
 
   // Store close: popup modal (no in-card expansion)
   const [showClosePopup, setShowClosePopup] = useState(false)
@@ -366,15 +470,6 @@ function DashboardContent() {
     loadStore()
   }, [storeId])
 
-  // Local engine hydration + tick (independent engine; identical spec across platforms)
-  useEffect(() => {
-    if (!storeId) return;
-    engine.hydrate(String(storeId));
-    engine.startTick();
-    return () => engine.stopTick();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storeId])
-
   // Fetch store operations (same API as Food Orders header) – open/closed, today's slots, activity
   const fetchStoreOperations = React.useCallback(async () => {
     if (!storeId) return
@@ -394,13 +489,25 @@ function DashboardContent() {
         setOpensAt(data.opens_at ?? null)
         const slots = (data.today_slots || []) as { start: string; end: string }[]
         setTodaySlots(slots)
-        if (slots.length > 0) {
-          setOpeningTime(slots[0].start ?? null)
-          setClosingTime(slots[0].end ?? null)
+        const activeSlot = (data.active_slot ?? null) as { start: string; end: string } | null
+        const displaySlot = activeSlot ?? slots[0] ?? null
+        if (displaySlot) {
+          setOpeningTime(displaySlot.start ?? null)
+          setClosingTime(displaySlot.end ?? null)
         } else {
           setOpeningTime(null)
           setClosingTime(null)
         }
+        setSchedulePhase(typeof data.schedule_phase === 'string' ? data.schedule_phase : null)
+        setWithinOperatingHours(
+          typeof data.within_operating_hours === 'boolean' ? data.within_operating_hours : null
+        )
+        setScheduleStatusLabel(
+          typeof data.schedule_status_label === 'string' ? data.schedule_status_label : null
+        )
+        setIsTodayScheduledClosed(data.is_today_scheduled_closed === true)
+        const configured = (data.configured_today_slots || []) as { start: string; end: string }[]
+        setConfiguredTodaySlots(configured)
         setLastToggleBy(data.last_toggled_by_email || null)
         setLastToggleType(data.last_toggle_type || null)
         setLastToggledByName(data.last_toggled_by_name || null)
@@ -419,6 +526,17 @@ function DashboardContent() {
             : null
         const closeReason =
           typeof data.close_reason === 'string' && data.close_reason.trim() !== '' ? data.close_reason.trim() : null
+        setNextScheduleTransitionAt(
+          typeof data.next_schedule_transition_at === 'string' ? data.next_schedule_transition_at : null
+        )
+        setCountdownAt(typeof data.countdown_at === 'string' ? data.countdown_at : null)
+        setCountdownKind(typeof data.countdown_kind === 'string' ? data.countdown_kind : null)
+        setCountdownWallLabel(
+          typeof data.countdown_wall_label === 'string' ? data.countdown_wall_label : null
+        )
+        if (data.schedule_end_prompt_active === true) {
+          engine.openScheduleEndModal()
+        }
         useLocalStoreStatusEngineStore.getState().syncFromStoreOperations({
           operationalOpen: data.operational_status === 'OPEN',
           manualCloseUntil: manualUntil,
@@ -436,6 +554,28 @@ function DashboardContent() {
   useEffect(() => {
     if (storeId) fetchStoreOperations()
   }, [storeId, fetchStoreOperations])
+
+  // Poll store-operations: faster near slot/break boundaries, otherwise every 30s
+  useEffect(() => {
+    if (!storeId) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const schedulePoll = () => {
+      void fetchStoreOperations().finally(() => {
+        const transitionMs = nextScheduleTransitionAt
+          ? new Date(nextScheduleTransitionAt).getTime() - Date.now()
+          : null
+        const delay =
+          transitionMs != null && transitionMs > 0 && transitionMs <= 120_000
+            ? Math.max(3_000, Math.min(transitionMs + 500, 15_000))
+            : 30_000
+        timer = setTimeout(schedulePoll, delay)
+      })
+    }
+    schedulePoll()
+    return () => {
+      if (timer) clearTimeout(timer)
+    }
+  }, [storeId, fetchStoreOperations, nextScheduleTransitionAt])
 
   // When close popup opens, set default date (today, local) and time (now + 10 min) for Temporary Closed
   useEffect(() => {
@@ -459,24 +599,40 @@ function DashboardContent() {
       .channel(`dashboard_store:${storeInternalId}`)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'merchant_stores', filter: `id=eq.${storeInternalId}` }, () => { fetchStoreOperations() })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'merchant_store_availability', filter: `store_id=eq.${storeInternalId}` }, () => { fetchStoreOperations() })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'merchant_store_operating_hours', filter: `store_id=eq.${storeInternalId}` }, () => { fetchStoreOperations() })
       .subscribe()
     return () => { ch.unsubscribe() }
   }, [storeInternalId, storeId, fetchStoreOperations])
 
-  // Live countdown: update every 1s; when it hits zero, refetch so status flips to Open without refresh
+  // Live countdown: 1s tick (break, pre-break, opens-at) — no page refresh
   useEffect(() => {
-    if (!isStoreOpen && opensAt && !withinHoursButRestricted) {
-      const t = setInterval(() => {
-        const ms = new Date(opensAt).getTime() - Date.now()
-        if (ms <= 0) {
-          fetchStoreOperations()
-          return
-        }
-        setCountdownTick((n) => n + 1)
-      }, 1000)
-      return () => clearInterval(t)
-    }
-  }, [isStoreOpen, opensAt, withinHoursButRestricted, fetchStoreOperations])
+    if (!showScheduleCountdown || !activeCountdownAt) return
+    const t = setInterval(() => {
+      const ms = new Date(activeCountdownAt).getTime() - Date.now()
+      if (ms <= 0) {
+        void fetchStoreOperations()
+        return
+      }
+      setCountdownTick((n) => n + 1)
+    }, 1000)
+    return () => clearInterval(t)
+  }, [showScheduleCountdown, activeCountdownAt, fetchStoreOperations])
+
+  // Re-sync when store shows OPEN but schedule says outside hours (break / before slot)
+  useEffect(() => {
+    const needsScheduleSync =
+      isStoreOpen &&
+      (withinOperatingHours === false ||
+        schedulePhase === 'BREAK' ||
+        schedulePhase === 'PRE_BREAK' ||
+        schedulePhase === 'OUTSIDE_HOURS')
+    if (!needsScheduleSync) return
+    const pollMs = schedulePhase === 'BREAK' ? 5_000 : 15_000
+    const t = setInterval(() => {
+      void fetchStoreOperations()
+    }, pollMs)
+    return () => clearInterval(t)
+  }, [isStoreOpen, withinOperatingHours, schedulePhase, fetchStoreOperations])
 
   // Delivery mode from merchant_store_settings (self_delivery)
   const fetchDeliverySettings = React.useCallback(async () => {
@@ -635,6 +791,10 @@ function DashboardContent() {
   }
 
   const handleStoreToggle = () => {
+    if (!isStoreOpen && isTodayScheduledClosed) {
+      toast.error('Today is scheduled closed. Update Outlet Timings to open on this day.')
+      return
+    }
     if (isStoreOpen) {
       setShowClosePopup(true)
       setToggleClosureType(null)
@@ -788,13 +948,33 @@ function DashboardContent() {
               <div className="mt-5 flex items-center justify-end gap-2">
                 <button
                   className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-700 hover:bg-gray-100"
-                  onClick={() => engine.scheduleEndRespond('stay_online')}
+                  onClick={async () => {
+                    if (!storeId) return
+                    engine.closeScheduleEndModal()
+                    const res = await fetch('/api/store-operations', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ store_id: storeId, action: 'schedule_end_stay_online' }),
+                    })
+                    if (res.ok) await fetchStoreOperations()
+                    else toast.error('Could not keep store online')
+                  }}
                 >
                   Stay Online
                 </button>
                 <button
                   className="px-4 py-2 rounded-lg text-sm font-semibold text-white bg-red-600 hover:bg-red-700"
-                  onClick={() => engine.scheduleEndRespond('go_offline')}
+                  onClick={async () => {
+                    if (!storeId) return
+                    engine.closeScheduleEndModal()
+                    const res = await fetch('/api/store-operations', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ store_id: storeId, action: 'schedule_end_go_offline' }),
+                    })
+                    if (res.ok) await fetchStoreOperations()
+                    else toast.error('Could not close store')
+                  }}
                 >
                   Go Offline
                 </button>
@@ -1035,19 +1215,46 @@ function DashboardContent() {
                   >
                     <div className="flex items-start justify-between gap-2 shrink-0">
                       <div className="min-w-0">
-                        <div className="flex items-center gap-1.5 mb-0.5">
+                        <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
                           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-800/[0.06] text-slate-700 ring-1 ring-slate-900/10">
                             <Store className="h-[15px] w-[15px]" strokeWidth={2} />
                           </span>
                           <h2 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Store status</h2>
+                          <span
+                            className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${storeStatusBadge.pill}`}
+                          >
+                            <span className={`h-1.5 w-1.5 rounded-full ${storeStatusBadge.dot}`} />
+                            {storeStatusBadge.label}
+                          </span>
                         </div>
-                        <p className="text-sm font-semibold text-slate-900 tabular-nums leading-tight">
-                          {openingTime && closingTime
-                            ? `${formatTimeHMS(openingTime)} – ${formatTimeHMS(closingTime)}`
-                            : todaySlots.length
-                              ? todaySlots.map((s) => `${s.start}–${s.end}`).join(', ')
-                              : '—'}
-                        </p>
+                        {cardDisplaySlots.length === 0 ? (
+                          <p className="text-sm font-semibold text-slate-500">—</p>
+                        ) : cardDisplaySlots.length === 1 ? (
+                          <p className="text-sm font-semibold text-slate-900 tabular-nums leading-tight">
+                            {formatTimeHMS(cardDisplaySlots[0].start)} – {formatTimeHMS(cardDisplaySlots[0].end)}
+                          </p>
+                        ) : (
+                          <div className="mt-1 space-y-1">
+                            {cardDisplaySlots.map((slot, idx) => (
+                              <div
+                                key={`${slot.start}-${slot.end}-${idx}`}
+                                className="flex items-center justify-between gap-2 rounded-md bg-slate-50/90 px-2 py-1 ring-1 ring-slate-200/70"
+                              >
+                                <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-500 shrink-0">
+                                  {idx === 0 ? 'Slot 1' : 'Slot 2'}
+                                </span>
+                                <span className="text-[11px] font-semibold tabular-nums text-slate-900 text-right">
+                                  {formatTimeHMS(slot.start)} – {formatTimeHMS(slot.end)}
+                                </span>
+                              </div>
+                            ))}
+                            {cardBreakGapLabel && (
+                              <p className="text-[9px] font-medium text-amber-700 pl-0.5">
+                                Break {cardBreakGapLabel}
+                              </p>
+                            )}
+                          </div>
+                        )}
                       </div>
                       <button
                         type="button"
@@ -1065,39 +1272,42 @@ function DashboardContent() {
                       </button>
                     </div>
                     <div className="flex-1 min-h-0 flex flex-col gap-1.5 mt-2">
-                      <div className="flex flex-wrap items-center gap-1.5 shrink-0">
-                        <span
-                          className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                            isStoreOpen
-                              ? 'bg-emerald-500/10 text-emerald-800 ring-1 ring-emerald-500/20'
-                              : restrictionType === 'MANUAL_HOLD'
-                                ? 'bg-amber-500/10 text-amber-900 ring-1 ring-amber-500/25'
-                                : 'bg-red-500/10 text-red-800 ring-1 ring-red-500/20'
-                          }`}
-                        >
-                          <span className={`h-1.5 w-1.5 rounded-full ${isStoreOpen ? 'bg-emerald-500 animate-pulse' : restrictionType === 'MANUAL_HOLD' ? 'bg-amber-500' : 'bg-red-500'}`} />
-                          {isStoreOpen ? 'Open' : restrictionType === 'MANUAL_HOLD' ? 'Waiting manual activation' : 'Closed'}
-                        </span>
-                      </div>
-                      {!isStoreOpen && opensAt && !withinHoursButRestricted && (() => {
+                      {!isTodayScheduledClosed && scheduleStatusLabel && !isStoreOpen && schedulePhase !== 'BREAK' && (
+                        <p className="text-[10px] font-medium text-slate-500">{scheduleStatusLabel}</p>
+                      )}
+                      {showScheduleCountdown && activeCountdownAt && (() => {
                         void countdownTick
-                        const ms = new Date(opensAt).getTime() - Date.now()
-                        if (ms <= 0) {
-                          return <p className="text-[11px] font-medium text-red-600">Opens now</p>
-                        }
-                        const h = Math.floor(ms / 3600000)
-                        const m = Math.floor((ms % 3600000) / 60000)
-                        const s = Math.floor((ms % 60000) / 1000)
-                        if (h === 0 && m === 0 && s === 0) {
-                          return <p className="text-[11px] font-medium text-red-600">Opens now</p>
-                        }
+                        const ms = new Date(activeCountdownAt).getTime() - Date.now()
+                        const countdownText = formatHmsCountdown(ms)
+                        const isPreBreak =
+                          countdownKind === 'break_starts_in' || schedulePhase === 'PRE_BREAK'
+                        const boxClass = isPreBreak
+                          ? 'rounded-lg bg-amber-50/90 px-2.5 py-2 ring-1 ring-amber-200/80'
+                          : 'rounded-lg bg-red-50/90 px-2.5 py-2 ring-1 ring-red-200/80'
+                        const textClass = isPreBreak ? 'text-amber-900' : 'text-red-800'
+                        const subClass = isPreBreak ? 'text-amber-700/90' : 'text-red-600/90'
+                        const dotClass = isPreBreak ? 'text-amber-400/90' : 'text-red-400/90'
                         return (
-                          <p
-                            className="text-[11px] font-medium text-red-700"
-                            title="Updates every second. Store will open automatically at zero."
-                          >
-                            Opens in {h}h {m}m {s}s
-                          </p>
+                          <div className={boxClass}>
+                            <p className={`flex flex-nowrap items-center gap-x-2 text-[11px] ${textClass} leading-snug`}>
+                              <span className="font-semibold shrink-0 whitespace-nowrap">
+                                {opensCountdownLabel}{' '}
+                                <span className="tabular-nums">{countdownText}</span>
+                              </span>
+                              {countdownTargetWallLabel && ms > 0 && (
+                                <>
+                                  <span className={`${dotClass} shrink-0`} aria-hidden>
+                                    ·
+                                  </span>
+                                  <span className={`text-[10px] font-medium whitespace-nowrap ${subClass}`}>
+                                    {countdownKind === 'reopens_in' || schedulePhase === 'BREAK'
+                                      ? `Next slot at ${countdownTargetWallLabel}`
+                                      : `At ${countdownTargetWallLabel}`}
+                                  </span>
+                                </>
+                              )}
+                            </p>
+                          </div>
                         )
                       })()}
                       {!isStoreOpen && closeReasonDisplay && (
