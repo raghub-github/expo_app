@@ -276,6 +276,7 @@ function RootStack({ onLayoutRootView }: { onLayoutRootView: () => void }) {
           <Stack.Screen name="profile" />
           <Stack.Screen name="wallet" />
           <Stack.Screen name="notifications" />
+          <Stack.Screen name="support" />
         </Stack>
       </View>
     </>

@@ -137,7 +137,8 @@ export async function POST(
     const sqlClient = getSql();
 
     const ticketCheck = await sqlClient`
-      SELECT id, first_response_at, subject, ticket_id, raised_by_email
+      SELECT id, first_response_at, subject, ticket_id, raised_by_email,
+             raised_by_type, raised_by_id
       FROM public.unified_tickets
       WHERE id = ${ticketId}
       LIMIT 1
@@ -398,6 +399,94 @@ export async function POST(
             }
           } catch (e) {
             console.error("[POST /api/tickets/[id]/messages] Outbound email job failed:", e);
+          }
+        })();
+      }
+    }
+
+    // Push notification dispatch — fire when an agent posts a PUBLIC reply
+    // (not internal notes). Looks up the ticket-raiser's Expo push tokens by
+    // (user_id, role) in `expo_push_tokens` and pushes via Expo Push API.
+    // Same mechanism for customer-raised and merchant-raised tickets; both
+    // apps register their tokens against the same table with the same shape.
+    // Fire-and-forget so the agent reply API stays fast.
+    if (!isInternalNote && messageType === "TEXT" && !dedupedExistingMessage) {
+      const ticketRow = ticketCheck[0] as {
+        raised_by_type?: unknown;
+        raised_by_id?: unknown;
+        subject?: unknown;
+        ticket_id?: unknown;
+      };
+      const raisedByType =
+        typeof ticketRow.raised_by_type === "string"
+          ? ticketRow.raised_by_type.trim().toLowerCase()
+          : null;
+      const raisedById =
+        ticketRow.raised_by_id != null && /^\d+$/.test(String(ticketRow.raised_by_id).trim())
+          ? String(ticketRow.raised_by_id).trim()
+          : null;
+      if (raisedByType && raisedById && (raisedByType === "customer" || raisedByType === "merchant" || raisedByType === "rider")) {
+        const ticketRef =
+          ticketRow.ticket_id != null && String(ticketRow.ticket_id).trim() !== ""
+            ? String(ticketRow.ticket_id).trim()
+            : String(ticketId);
+        const subjBase =
+          typeof ticketRow.subject === "string" && ticketRow.subject.trim()
+            ? ticketRow.subject.trim()
+            : "Your support ticket";
+        const replyPreview =
+          messageText.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 140) ||
+          "You have a new reply on your ticket.";
+        const pushTitle = `New reply on #${ticketRef}`;
+        const pushBody = `${subjBase}: ${replyPreview}`;
+        void (async () => {
+          try {
+            const tokenRows = await sqlClient`
+              SELECT expo_push_token
+              FROM public.expo_push_tokens
+              WHERE user_id = ${raisedById}
+                AND role = ${raisedByType}
+                AND expo_push_token IS NOT NULL
+                AND TRIM(expo_push_token) <> ''
+            `;
+            const tokens = (tokenRows as Array<{ expo_push_token: unknown }>)
+              .map((r) => (typeof r.expo_push_token === "string" ? r.expo_push_token.trim() : ""))
+              .filter((t) => t.length > 0);
+            if (tokens.length === 0) return;
+            // Compose deep-link routing data. `navigateFromPushData` in the
+            // shared expo-push-kit checks `screen` first (expo-router path),
+            // then `deepLink` (URL/scheme). Customer + merchant apps each
+            // route their own ticket detail screen.
+            const screenPath =
+              raisedByType === "customer"
+                ? `/support/${ticketId}`
+                : raisedByType === "merchant"
+                  ? `/support/chat/${ticketId}`
+                  : null;
+            const messages = tokens.map((to) => ({
+              to,
+              title: pushTitle,
+              body: pushBody,
+              sound: "default" as const,
+              priority: "high" as const,
+              channelId: raisedByType === "customer" ? "customer_default" : "default",
+              data: {
+                kind: "ticket_reply",
+                ticket_pk: ticketId,
+                ticket_ref: ticketRef,
+                ...(screenPath ? { screen: screenPath } : {}),
+              },
+            }));
+            await fetch("https://exp.host/--/api/v2/push/send", {
+              method: "POST",
+              headers: { Accept: "application/json", "Content-Type": "application/json" },
+              body: JSON.stringify(messages),
+            });
+          } catch (pushErr) {
+            console.warn(
+              "[POST /api/tickets/[id]/messages] push dispatch failed (non-fatal):",
+              pushErr
+            );
           }
         })();
       }

@@ -398,10 +398,24 @@ export default function OrderTrackingScreen() {
             )}
           </View>
 
-          {/* Help / Support placeholder */}
+          {/* Help / Support — opens order-linked raise-ticket flow.
+              We pass both the internal numeric id (used by backend joins)
+              and the human-readable order ref (used in subject + display). */}
           <TouchableOpacity
             style={styles.helpBtn}
-            onPress={() => {}}
+            onPress={() => {
+              const orderInternalId = (order as { id?: number | string }).id;
+              const orderRef = (order as { orderId?: string; order_id?: string }).orderId
+                ?? (order as { order_id?: string }).order_id
+                ?? orderId;
+              router.push({
+                pathname: "/orders/raise-ticket",
+                params: {
+                  orderId: String(orderInternalId ?? ""),
+                  orderRef: String(orderRef ?? ""),
+                },
+              });
+            }}
             activeOpacity={0.8}
           >
             <Ionicons name="help-circle-outline" size={22} color={GatiMitraColors.textSecondary} />
