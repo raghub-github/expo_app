@@ -72,7 +72,7 @@ function userIdFromPresenceMeta(meta: object): string | null {
   if (nested != null && typeof nested === "object") {
     const p = nested as Record<string, unknown>;
     const inner = [p.user_id, p.userId, p.sub].find((v) => typeof v === "string" && v.trim());
-    if (inner) return inner.trim();
+    if (inner) return (inner as string).trim();
   }
   return null;
 }
@@ -85,7 +85,7 @@ function displayNameFromPresenceMeta(meta: object): string {
   if (nested != null && typeof nested === "object") {
     const p = nested as Record<string, unknown>;
     const inner = [p.name, p.displayName, p.full_name].find((v) => typeof v === "string" && v.trim());
-    if (inner) return inner.trim();
+    if (inner) return (inner as string).trim();
   }
   return "";
 }

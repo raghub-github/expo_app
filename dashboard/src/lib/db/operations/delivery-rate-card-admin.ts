@@ -1,4 +1,5 @@
 import { getSql } from "../client";
+import { sqlJsonb } from "./billing-admin";
 
 export type DeliveryRateCardAdminRow = {
   id: number;
@@ -119,7 +120,7 @@ export async function insertDeliveryRateCardFull(input: UpsertDeliveryRateCardIn
   const st = input.service_type.trim().toUpperCase();
   const [row] = await sql<{ id: number }[]>`
     INSERT INTO delivery_rate_cards (name, service_type, city_name, priority, is_active, metadata)
-    VALUES (${input.name}, ${st}, ${input.city_name ?? null}, ${input.priority ?? 0}, ${input.is_active ?? true}, ${input.metadata ?? null})
+    VALUES (${input.name}, ${st}, ${input.city_name ?? null}, ${input.priority ?? 0}, ${input.is_active ?? true}, ${sqlJsonb(input.metadata)}::jsonb)
     RETURNING id
   `;
   if (!row) throw new Error("Insert failed");
@@ -137,7 +138,7 @@ export async function updateDeliveryRateCardFull(id: number, input: UpsertDelive
         city_name = ${input.city_name ?? null},
         priority = ${input.priority ?? 0},
         is_active = ${input.is_active ?? true},
-        metadata = ${input.metadata ?? null},
+        metadata = ${sqlJsonb(input.metadata)}::jsonb,
         updated_at = now()
     WHERE id = ${id}
   `;
@@ -155,7 +156,7 @@ async function replaceChildren(id: number, input: UpsertDeliveryRateCardInput): 
     const s = slabs[i]!;
     await sql`
       INSERT INTO delivery_rate_card_distance_slabs (rate_card_id, min_km, max_km, base_fare, per_km_rate, priority, metadata)
-      VALUES (${id}, ${s.min_km ?? null}, ${s.max_km ?? null}, ${s.base_fare ?? 0}, ${s.per_km_rate ?? 0}, ${s.priority ?? i}, ${s.metadata ?? null})
+      VALUES (${id}, ${s.min_km ?? null}, ${s.max_km ?? null}, ${s.base_fare ?? 0}, ${s.per_km_rate ?? 0}, ${s.priority ?? i}, ${sqlJsonb(s.metadata)}::jsonb)
     `;
   }
 
@@ -163,7 +164,7 @@ async function replaceChildren(id: number, input: UpsertDeliveryRateCardInput): 
   for (const t of timeSlots) {
     await sql`
       INSERT INTO delivery_rate_card_time_slots (rate_card_id, start_min, end_min, surge_multiplier, is_weekend_only, metadata)
-      VALUES (${id}, ${t.start_min}, ${t.end_min}, ${t.surge_multiplier ?? 1}, ${t.is_weekend_only ?? false}, ${t.metadata ?? null})
+      VALUES (${id}, ${t.start_min}, ${t.end_min}, ${t.surge_multiplier ?? 1}, ${t.is_weekend_only ?? false}, ${sqlJsonb(t.metadata)}::jsonb)
     `;
   }
 
@@ -172,7 +173,7 @@ async function replaceChildren(id: number, input: UpsertDeliveryRateCardInput): 
     const z = zones[i]!;
     await sql`
       INSERT INTO delivery_rate_card_zones (rate_card_id, zone_name, geojson, multiplier, priority, is_active, metadata)
-      VALUES (${id}, ${z.zone_name ?? null}, ${z.geojson}, ${z.multiplier ?? 1}, ${z.priority ?? i}, ${z.is_active ?? true}, ${z.metadata ?? null})
+      VALUES (${id}, ${z.zone_name ?? null}, ${sqlJsonb(z.geojson)}::jsonb, ${z.multiplier ?? 1}, ${z.priority ?? i}, ${z.is_active ?? true}, ${sqlJsonb(z.metadata)}::jsonb)
     `;
   }
 }

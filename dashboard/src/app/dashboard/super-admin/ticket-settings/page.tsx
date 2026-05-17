@@ -127,10 +127,10 @@ function slugSegment(raw: string | null | undefined): string {
 /** Deterministic code from routing dimensions; suffix if it collides with existing groups. */
 function generateTicketGroupCode(
   partial: {
-    serviceType: string | null | undefined;
-    ticketCategory: string | null | undefined;
-    ticketSection: string | null | undefined;
-    sourceRole: string | null | undefined;
+    serviceType?: string | null | undefined;
+    ticketCategory?: string | null | undefined;
+    ticketSection?: string | null | undefined;
+    sourceRole?: string | null | undefined;
   },
   existingCodes: Set<string>,
   excludeCode?: string
@@ -401,7 +401,7 @@ function TicketSettingsPageContent() {
     }
   };
 
-  const toggleGroupActive = async (g: Group) => {
+  const toggleGroupActive = async (g: { id: number; isActive: boolean }) => {
     setTogglingActiveId(g.id);
     setError(null);
     try {
@@ -876,10 +876,10 @@ function TicketSettingsPageContent() {
                             onClick={() => setGroupForm({
                               ...g,
                               titles: (g.titles ?? []).map((t) => ({
-                                id: t.id,
+                                id: t.id ?? 0,
                                 titleCode: t.titleCode,
                                 titleText: t.titleText,
-                                displayOrder: t.displayOrder,
+                                displayOrder: t.displayOrder ?? null,
                               })),
                             })}
                             className="p-1.5 rounded text-gray-500 hover:bg-gray-200 hover:text-gray-700"

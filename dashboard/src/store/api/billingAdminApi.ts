@@ -556,8 +556,6 @@ export const billingAdminApi = baseApi.injectEndpoints({
       query: () => "/super-admin/billing/discounts",
       transformResponse: (res: { discounts?: BillingAdminDiscountRow[] }) => res.discounts ?? [],
       providesTags: [billingTags.discounts],
-      refetchOnFocus: false,
-      refetchOnMountOrArgChange: false,
     }),
 
     createBillingDiscount: build.mutation<BillingAdminDiscountRow, BillingAdminDiscountCreateBody>({
@@ -670,8 +668,6 @@ export const billingAdminApi = baseApi.injectEndpoints({
         }));
       },
       providesTags: [billingTags.platformOffers],
-      refetchOnFocus: false,
-      refetchOnMountOrArgChange: false,
     }),
 
     createBillingPlatformOffer: build.mutation<BillingAdminPlatformOfferRow, Record<string, unknown>>({

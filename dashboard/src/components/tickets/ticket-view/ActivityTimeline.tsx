@@ -338,13 +338,23 @@ export function ActivityTimeline({
 
   const messageItems: TimelineItem[] = (Array.isArray(messages) ? messages : [])
     .filter((m) => m && m.createdAt)
-    .map((m) => {
+    .map((m): TimelineItem => {
       const mt = String(m.messageType ?? "").toLowerCase();
       const isInternal = Boolean(m.isInternalNote) || mt === "internal_note";
       const isPublic = !isInternal && (mt === "public_note" || mt === "note_public");
       const fromAgent = String(m.senderType ?? "").toUpperCase() === "AGENT";
-      const actionType: TimelineItem["actionType"] =
-        isInternal ? "internal_note" : isPublic ? "public_note" : fromAgent ? "response_sent" : "message_received";
+      const actionType =
+        (isInternal
+          ? "internal_note"
+          : isPublic
+            ? "public_note"
+            : fromAgent
+              ? "response_sent"
+              : "message_received") as
+          | "internal_note"
+          | "public_note"
+          | "response_sent"
+          | "message_received";
       const label =
         actionType === "internal_note"
           ? "Internal note"

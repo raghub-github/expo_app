@@ -53,7 +53,7 @@ function templatesFromSnapshot(): TicketResponseTemplatesDto | undefined {
   const templates: TicketResponseTemplate[] = snap.templates
     .map((t) => ({
       id: Number(t.id ?? 0),
-      templateType: t.templateType === "knowledge_base" ? "knowledge_base" : "quick_reply",
+      templateType: (t.templateType === "knowledge_base" ? "knowledge_base" : "quick_reply") as TicketResponseTemplate["templateType"],
       title: String(t.title ?? ""),
       content: String(t.content ?? ""),
       sortOrder: Number(t.sortOrder ?? 0),

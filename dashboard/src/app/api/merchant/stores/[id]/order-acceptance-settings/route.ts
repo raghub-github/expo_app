@@ -25,8 +25,10 @@ function trimUrl(v: unknown): string | null {
   return t === "" ? null : t;
 }
 
-function slotsFromPlatformRow(row: Record<string, unknown> | null | undefined) {
-  if (!row) return [null, null, null] as [string | null, string | null, string | null];
+function slotsFromPlatformRow(
+  row: Record<string, unknown> | null | undefined
+): [string | null, string | null, string | null] {
+  if (!row) return [null, null, null];
   return [trimUrl(row.alert_sound_url), trimUrl(row.alert_sound_url_2), trimUrl(row.alert_sound_url_3)];
 }
 

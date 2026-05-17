@@ -12,6 +12,10 @@ interface AgentStatus {
   currentStatus: "online" | "offline" | "break" | "busy";
   breakStartedAt: string | null;
   lastOnlineAt: string | null;
+  totalOnlineTimeMinutes?: number;
+  totalBreakTimeMinutes?: number;
+  totalBusyTimeMinutes?: number;
+  busyStartedAt?: string | null;
 }
 
 const AGENT_STATUS_SNAPSHOT_KEY = "dashboard_snapshot:agentStatus";

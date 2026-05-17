@@ -331,6 +331,7 @@ export async function POST(request: NextRequest) {
       
       // Get access point definitions to get names and descriptions
       const { DASHBOARD_DEFINITIONS } = await import("@/components/users/DashboardAccessSelector");
+      const allAccessPointDefs = Object.values(DASHBOARD_DEFINITIONS).flatMap((d) => d.accessPoints);
 
       for (const accessPoint of accessPointsData) {
         // Determine orderType (service_type) from access point group name or provided value

@@ -108,7 +108,7 @@ export const RateCardModal = React.memo(function RateCardModal(props: {
                 try {
                   await upsert({
                     level,
-                    refId,
+                    refId: props.row!.id,
                     service: tab,
                     baseFare: Number(vals.baseFare),
                     perKmRate: Number(vals.perKmRate),

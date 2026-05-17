@@ -122,7 +122,7 @@ export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan, planTyp
       planCode: planCode.trim().toUpperCase().replace(/\s+/g, "_"),
       description: description.trim() || null,
       price: priceNum,
-      gstPercent: gstNum,
+      gstPercent: String(gstNum),
       planType: selectedPlanType,
       billingCycle,
       maxMenuItems: maxMenuItems ? parseInt(maxMenuItems, 10) : null,
