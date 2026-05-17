@@ -6,7 +6,10 @@ import { Dialog } from '@headlessui/react';
 import { Loader2, Power } from 'lucide-react';
 import { toast } from 'sonner';
 import { clientStoreOpsDebugLog } from '@/lib/store-ops-client-debug';
-import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback';
+import {
+  isLicenseBlockedStoreOpsError,
+  toastStoreOperationsPostFailure,
+} from '@/lib/storeOperationsPostFeedback';
 
 export type StoreOperationalTarget = { storeId: string; storeName: string };
 
@@ -209,6 +212,9 @@ export function StoreOperationalFlowModals({
         await onSuccess();
       } else {
         toastStoreOperationsPostFailure(res, data, 'Failed to open store');
+        if (isLicenseBlockedStoreOpsError(data)) {
+          onDismissOpen();
+        }
         await onSuccess();
       }
     } catch {

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
 import {
   Wallet,
@@ -22,9 +22,16 @@ import {
   ChevronUp,
   Package,
   User,
-  FileImage,
   Search,
+  FileImage,
+  ArrowDownToLine,
+  Clock,
 } from "lucide-react";
+import { formatInr } from "@/lib/format-inr";
+import {
+  PaymentsOverviewCharts,
+  type WalletAnalyticsPeriod,
+} from "@/components/merchants/payments/PaymentsOverviewCharts";
 import { useToast } from "@/context/ToastContext";
 import { WalletRequestsSection } from "@/components/merchants/WalletRequestsSection";
 import {
@@ -111,6 +118,15 @@ function formatCategory(cat: string): string {
   return cat.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function pctChangeLabel(current: number, prior: number): { text: string; positive: boolean } {
+  if (prior === 0) {
+    if (current === 0) return { text: "0%", positive: true };
+    return { text: "+100%", positive: true };
+  }
+  const pct = Math.round(((current - prior) / prior) * 100);
+  return { text: `${pct > 0 ? "+" : ""}${pct}%`, positive: pct >= 0 };
+}
+
 export function StorePaymentsClient({ storeId }: { storeId: string }) {
   const { toast } = useToast();
   const [storeName, setStoreName] = useState<string>("");
@@ -127,7 +143,8 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
   const [filterCategory, setFilterCategory] = useState("");
   const [filterSearch, setFilterSearch] = useState("");
 
-  const [bankSectionExpanded, setBankSectionExpanded] = useState(false);
+  const [analyticsPeriod, setAnalyticsPeriod] = useState<WalletAnalyticsPeriod>("week");
+  const ledgerSectionRef = useRef<HTMLDivElement>(null);
 
   const [wallet, setWallet] = useState<WalletSummary | null>(null);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
@@ -215,7 +232,7 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
     isLoading: bankAccountsQueryLoading,
     refetch: refetchBankAccounts,
   } = useGetBankAccountsQuery(storeId, {
-    skip: !storeId || (!bankSectionExpanded && !showWithdrawal),
+    skip: !storeId,
   });
 
   const [triggerPayoutQuote] = useLazyGetPayoutQuoteQuery();
@@ -331,6 +348,74 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
     setFilterSearch("");
     setLedgerOffset(0);
   };
+
+  const todayVsYesterday = pctChangeLabel(
+    wallet?.today_earning ?? 0,
+    wallet?.yesterday_earning ?? 0
+  );
+
+  const payoutSummaryForCharts = useMemo(
+    () => ({
+      paid: wallet?.total_withdrawn ?? 0,
+      in_process: 0,
+      pending: wallet?.pending_withdrawal_total ?? 0,
+      failed: 0,
+      total:
+        (wallet?.total_withdrawn ?? 0) + (wallet?.pending_withdrawal_total ?? 0),
+    }),
+    [wallet]
+  );
+
+  const scrollToLedger = useCallback((opts?: { category?: string }) => {
+    if (opts?.category) setFilterCategory(opts.category);
+    setLedgerOffset(0);
+    requestAnimationFrame(() => {
+      ledgerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, []);
+
+  const downloadLedgerCsv = useCallback(async () => {
+    if (!storeId) return;
+    try {
+      const search = new URLSearchParams({
+        limit: "2000",
+        offset: "0",
+      });
+      if (filterFrom) search.set("from", filterFrom);
+      if (filterTo) search.set("to", filterTo);
+      if (filterDirection !== "all") search.set("direction", filterDirection);
+      if (filterCategory) search.set("category", filterCategory);
+      const res = await fetch(`/api/merchant/stores/${storeId}/ledger?${search}`);
+      const data = await res.json();
+      if (!res.ok) {
+        toast(data.error || "Could not export ledger");
+        return;
+      }
+      const rows = (data.entries ?? []) as LedgerEntry[];
+      const header = ["Date", "Category", "Description", "Direction", "Amount", "Balance after"];
+      const lines = rows.map((r) => [
+        new Date(r.created_at).toISOString(),
+        r.category,
+        (r.description ?? "").replace(/"/g, '""'),
+        r.direction,
+        String(r.amount),
+        String(r.balance_after),
+      ]);
+      const csv = [header, ...lines]
+        .map((line) => line.map((c) => `"${c}"`).join(","))
+        .join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `ledger-${storeId}-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast("Ledger downloaded");
+    } catch {
+      toast("Export failed");
+    }
+  }, [storeId, filterFrom, filterTo, filterDirection, filterCategory, toast]);
 
   const handleWithdrawal = async () => {
     const amount = parseFloat(withdrawalAmount);
@@ -602,269 +687,323 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
   }
 
   return (
-    <div className="min-h-screen bg-[#f8fafc] px-4 sm:px-6 lg:px-8 py-6">
-      <div className="max-w-6xl mx-auto space-y-6">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+    <>
+    <div className="min-h-screen bg-[#f8fafc]">
+      <div className="bg-white">
+        <div className="px-4 sm:px-6 lg:px-8 py-2.5 max-w-7xl mx-auto w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 min-w-0">
           <div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Payments & Ledger</h1>
-              <Link
-                href={storeId ? `/dashboard/merchants/stores/${storeId}/refund-policy` : "#"}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 text-sm font-medium hover:bg-indigo-100 transition-colors"
-              >
-                <FileText size={14} />
-                View refund policy
-              </Link>
-            </div>
-            <p className="text-sm text-gray-500 mt-0.5">
-              Wallet balance and full transaction history
-              {storeName ? ` for ${storeName}` : ""}
-            </p>
+            <h1 className="text-base font-semibold text-gray-900">Overview</h1>
+            {storeName ? (
+              <p className="text-xs text-gray-500 mt-0.5 truncate">{storeName}</p>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              href={storeId ? `/dashboard/merchants/stores/${storeId}/refund-policy` : "#"}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 text-xs font-medium hover:bg-blue-100 transition-colors"
+            >
+              <FileText size={16} />
+              View refund policy
+            </Link>
           </div>
         </div>
+      </div>
 
-        {/* Wallet summary cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-          <div className="bg-gradient-to-br from-emerald-600 to-emerald-700 rounded-2xl p-5 text-white shadow-lg">
-            <div className="flex items-center justify-between">
+      <div className="px-4 sm:px-6 lg:px-8 py-4 max-w-7xl mx-auto w-full space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
+          <div className="lg:col-span-1 bg-emerald-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+            <div className="flex items-start justify-between">
               <div>
-                <p className="text-emerald-100 text-xs font-medium uppercase tracking-wide">
-                  Available balance
-                </p>
+                <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Available Balance</p>
                 {walletLoading ? (
-                  <div className="h-9 w-32 mt-2 bg-white/20 rounded animate-pulse" />
+                  <div className="h-7 w-20 mt-1.5 bg-gray-200 rounded animate-pulse" />
                 ) : (
-                  <p className="text-2xl font-bold mt-1">
-                    ₹
-                    {(wallet?.available_balance ?? 0).toLocaleString("en-IN", {
-                      minimumFractionDigits: 2,
-                      maximumFractionDigits: 2,
-                    })}
-                  </p>
+                  <p className="text-xl font-bold text-gray-900 mt-1">{formatInr(wallet?.available_balance ?? 0)}</p>
                 )}
               </div>
-              <Wallet size={40} className="text-white/30" />
+              <div className="p-2 rounded-lg bg-emerald-100 flex-shrink-0">
+                <Wallet size={16} className="text-emerald-700" />
+              </div>
             </div>
           </div>
-          <div className="bg-white rounded-2xl border border-orange-200/80 p-5 shadow-sm">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-              Today&apos;s earning
-            </p>
-            {walletLoading ? (
-              <div className="h-8 w-24 mt-2 bg-gray-100 rounded animate-pulse" />
-            ) : (
-              <p className="text-xl font-bold text-orange-600 mt-1">
-                ₹
-                {(wallet?.today_earning ?? 0).toLocaleString("en-IN", {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}
-              </p>
-            )}
+
+          <div className="bg-blue-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Today&apos;s Earning</p>
+                {walletLoading ? (
+                  <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
+                ) : (
+                  <p className="text-xl font-bold text-gray-900 mt-1">{formatInr(wallet?.today_earning ?? 0)}</p>
+                )}
+                <p className="text-[10px] text-gray-600 mt-1">
+                  vs yesterday{" "}
+                  <span className={`font-semibold ${todayVsYesterday.positive ? "text-emerald-600" : "text-red-600"}`}>
+                    {todayVsYesterday.text}
+                  </span>
+                </p>
+              </div>
+              <div className="p-2 rounded-lg bg-blue-100 flex-shrink-0">
+                <TrendingUp size={16} className="text-blue-700" />
+              </div>
+            </div>
           </div>
-          <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-              Yesterday&apos;s earning
-            </p>
-            {walletLoading ? (
-              <div className="h-8 w-24 mt-2 bg-gray-100 rounded animate-pulse" />
-            ) : (
-              <p className="text-xl font-bold text-slate-700 mt-1">
-                ₹
-                {(wallet?.yesterday_earning ?? 0).toLocaleString("en-IN", {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}
-              </p>
-            )}
+
+          <div className="bg-purple-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Yesterday&apos;s Earning</p>
+                {walletLoading ? (
+                  <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
+                ) : (
+                  <p className="text-xl font-bold text-gray-900 mt-1">{formatInr(wallet?.yesterday_earning ?? 0)}</p>
+                )}
+                <p className="text-[10px] text-gray-600 mt-1">Previous day earnings</p>
+              </div>
+              <div className="p-2 rounded-lg bg-purple-100 flex-shrink-0">
+                <TrendingDown size={16} className="text-purple-700" />
+              </div>
+            </div>
           </div>
-          <div className="bg-white rounded-2xl border border-violet-200/80 p-5 shadow-sm">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Pending</p>
-            {walletLoading ? (
-              <div className="h-8 w-24 mt-2 bg-gray-100 rounded animate-pulse" />
-            ) : (
-              <p className="text-xl font-bold text-violet-700 mt-1">
-                ₹
-                {(wallet?.pending_balance ?? 0).toLocaleString("en-IN", {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}
-              </p>
-            )}
+
+          <div className="bg-orange-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Pending</p>
+                {walletLoading ? (
+                  <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
+                ) : (
+                  <p className="text-xl font-bold text-gray-900 mt-1">{formatInr(wallet?.pending_balance ?? 0)}</p>
+                )}
+                <p className="text-[10px] text-gray-600 mt-1">Orders awaiting settlement</p>
+              </div>
+              <div className="p-2 rounded-lg bg-orange-100 flex-shrink-0">
+                <Clock size={16} className="text-orange-700" />
+              </div>
+            </div>
           </div>
-          <div className="bg-white rounded-2xl border border-amber-200/80 p-5 shadow-sm">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-              Pending withdrawal
-            </p>
-            {walletLoading ? (
-              <div className="h-8 w-24 mt-2 bg-gray-100 rounded animate-pulse" />
-            ) : (
-              <p className="text-xl font-bold text-amber-700 mt-1">
-                ₹
-                {(wallet?.pending_withdrawal_total ?? 0).toLocaleString("en-IN", {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}
-              </p>
-            )}
-            <p className="text-[10px] text-gray-500 mt-1">In process</p>
+
+          <div className="bg-red-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Pending Withdrawal</p>
+                {walletLoading ? (
+                  <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
+                ) : (
+                  <p className="text-xl font-bold text-gray-900 mt-1">{formatInr(wallet?.pending_withdrawal_total ?? 0)}</p>
+                )}
+                <p className="text-[10px] text-gray-600 mt-1">Awaiting processing</p>
+              </div>
+              <div className="p-2 rounded-lg bg-red-100 flex-shrink-0">
+                <ArrowDownToLine size={16} className="text-red-700" />
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-yellow-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">In Process</p>
+                {walletLoading ? (
+                  <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
+                ) : (
+                  <p className="text-xl font-bold text-gray-900 mt-1">{formatInr(0)}</p>
+                )}
+                <p className="text-[10px] text-gray-600 mt-1">Being processed</p>
+              </div>
+              <div className="p-2 rounded-lg bg-yellow-100 flex-shrink-0">
+                <Package size={16} className="text-yellow-700" />
+              </div>
+            </div>
           </div>
         </div>
+      </div>
 
-        {/* Bank / UPI */}
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setBankSectionExpanded((e) => !e)}
-            className="w-full px-4 py-3 border-b border-gray-100 flex flex-wrap items-center justify-between gap-3 text-left hover:bg-gray-50/80 transition-colors"
-          >
-            <div className="flex items-center gap-2 text-gray-700 font-medium">
-              <Building2 size={18} />
-              Bank & UPI accounts
-            </div>
-            <span className="text-sm text-gray-500">
-              {bankSectionExpanded ? "Hide" : "View or add accounts for withdrawals"}
-            </span>
-            {bankSectionExpanded ? (
-              <ChevronUp size={20} className="text-gray-500" />
-            ) : (
-              <ChevronDown size={20} className="text-gray-500" />
-            )}
-          </button>
-          {bankSectionExpanded && (
-            <div className="p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-                <span className="text-sm text-gray-600">Manage payout accounts</span>
-                <button
-                  onClick={() => {
-                    setBankProofFile(null);
-                    setAddBankForm((f) => ({ ...f, bank_proof_type: "", bank_proof_file_url: "" }));
-                    setShowAddBank(true);
-                  }}
-                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700"
-                >
-                  <Plus size={16} />
-                  Add bank / UPI
-                </button>
+      <div className="px-4 sm:px-6 lg:px-8 py-4 max-w-7xl mx-auto w-full space-y-3">
+        <PaymentsOverviewCharts
+          analyticsPeriod={analyticsPeriod}
+          onAnalyticsPeriodChange={setAnalyticsPeriod}
+          analytics={undefined}
+          analyticsLoading={false}
+          payoutSummary={payoutSummaryForCharts}
+          payoutsLoading={walletLoading}
+        />
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="lg:col-span-2 bg-white rounded-lg shadow-sm p-4 border border-gray-200">
+            <div className="flex items-start justify-between mb-3">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+                  <Building2 size={16} className="text-gray-700" />
+                  Bank & UPI Accounts
+                </h3>
+                <p className="text-xs text-gray-600 mt-1">Manage bank and UPI accounts for receiving payouts</p>
               </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setBankProofFile(null);
+                  setAddBankForm((f) => ({ ...f, bank_proof_type: "", bank_proof_file_url: "" }));
+                  setShowAddBank(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 transition-colors flex-shrink-0"
+              >
+                <Plus size={14} />
+                Add Bank / UPI
+              </button>
+            </div>
+            <div className="space-y-2">
               {bankAccountsLoading ? (
-                <div className="flex items-center justify-center py-8 text-gray-500">
-                  <Loader2 size={24} className="animate-spin mr-2" />
-                  Loading...
+                <div className="flex items-center justify-center py-6 text-gray-500">
+                  <Loader2 size={16} className="animate-spin mr-2" />
+                  <span className="text-xs">Loading accounts...</span>
                 </div>
               ) : bankAccounts.length === 0 ? (
-                <p className="text-sm text-gray-500 py-4">
-                  No bank or UPI account added. Add one to withdraw.
-                </p>
+                <div className="flex flex-col items-center justify-center py-8 text-center bg-gray-50 rounded-lg">
+                  <Building2 size={32} className="text-gray-300 mb-2" />
+                  <p className="text-sm text-gray-600 font-medium">No bank or UPI account added</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Add an account to start receiving payouts</p>
+                </div>
               ) : (
-                <div className="space-y-3">
-                  {bankAccounts.map((acc) => (
-                    <div
-                      key={acc.id}
-                      className={`flex flex-wrap items-center justify-between gap-3 p-4 rounded-xl border ${
-                        acc.is_disabled ? "bg-gray-50 border-gray-200" : "bg-gray-50/50 border-gray-200"
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="p-2 rounded-lg bg-white border border-gray-200">
-                          {acc.payout_method === "upi" ? (
-                            <CreditCard size={20} className="text-violet-600" />
-                          ) : (
-                            <Building2 size={20} className="text-blue-600" />
-                          )}
-                        </div>
-                        <div>
-                          <p className="font-medium text-gray-900">{acc.account_holder_name}</p>
-                          <p className="text-sm text-gray-600">
+                bankAccounts.map((acc) => (
+                  <div
+                    key={acc.id}
+                    className={`flex items-center justify-between gap-3 p-3 rounded-lg border transition-all ${acc.is_disabled ? "bg-gray-50 border-gray-200 opacity-70" : "bg-white border-gray-200 hover:border-gray-300"}`}
+                  >
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      <div className={`p-2 rounded-lg flex-shrink-0 ${acc.is_disabled ? "bg-gray-100" : acc.payout_method === "upi" ? "bg-violet-100" : "bg-emerald-100"}`}>
+                        {acc.payout_method === "upi" ? (
+                          <CreditCard size={16} className={acc.is_disabled ? "text-gray-500" : "text-violet-600"} />
+                        ) : (
+                          <Building2 size={16} className={acc.is_disabled ? "text-gray-500" : "text-emerald-600"} />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="font-semibold text-gray-900 text-sm">{acc.account_holder_name}</p>
+                          <span className="text-xs text-gray-500">·</span>
+                          <p className="text-xs text-gray-600 truncate">
                             {acc.payout_method === "upi"
                               ? acc.upi_id || "—"
                               : `${acc.account_number_masked || "****"} · ${acc.bank_name}`}
                           </p>
-                          <div className="flex items-center gap-2 mt-1">
-                            {acc.is_primary && (
-                              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">
-                                Default
-                              </span>
-                            )}
-                            {acc.is_disabled && (
-                              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-gray-200 text-gray-600">
-                                Disabled
-                              </span>
-                            )}
-                          </div>
+                          {acc.is_primary && (
+                            <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 whitespace-nowrap">
+                              Default
+                            </span>
+                          )}
+                          {acc.is_disabled && (
+                            <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-200 text-gray-600 whitespace-nowrap">
+                              Disabled
+                            </span>
+                          )}
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        {!acc.is_primary && !acc.is_disabled && (
-                          <button
-                            onClick={() => patchBankAccount(acc.id, { set_default: true })}
-                            disabled={bankActionLoading !== null}
-                            className="text-xs font-medium text-emerald-600 hover:text-emerald-700 px-2 py-1 rounded border border-emerald-200 hover:bg-emerald-50"
-                          >
-                            {bankActionLoading === acc.id ? (
-                              <Loader2 size={14} className="animate-spin" />
-                            ) : (
-                              "Set default"
-                            )}
-                          </button>
-                        )}
-                        {!acc.is_disabled && (
-                          <button
-                            onClick={() => {
-                              if (
-                                !confirm(
-                                  "Disable this account? It cannot be removed, but you can re-enable later."
-                                )
-                              )
-                                return;
-                              patchBankAccount(acc.id, { set_disabled: true });
-                            }}
-                            disabled={bankActionLoading !== null}
-                            className="text-xs font-medium text-amber-600 hover:text-amber-700 px-2 py-1 rounded border border-amber-200 hover:bg-amber-50 flex items-center gap-1"
-                          >
-                            <Ban size={12} /> Disable
-                          </button>
-                        )}
-                        {acc.is_disabled && (
-                          <button
-                            onClick={() => patchBankAccount(acc.id, { set_disabled: false })}
-                            disabled={bankActionLoading !== null}
-                            className="text-xs font-medium text-gray-600 hover:text-gray-700 px-2 py-1 rounded border border-gray-200 hover:bg-gray-100"
-                          >
-                            Enable
-                          </button>
-                        )}
-                      </div>
                     </div>
-                  ))}
-                </div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end">
+                      {!acc.is_primary && !acc.is_disabled && (
+                        <button
+                          type="button"
+                          onClick={() => patchBankAccount(acc.id, { set_default: true })}
+                          disabled={bankActionLoading !== null}
+                          className="px-2 py-1 rounded-lg border border-gray-300 text-gray-700 text-[10px] font-medium hover:bg-gray-50 disabled:opacity-50"
+                        >
+                          Set default
+                        </button>
+                      )}
+                      {!acc.is_disabled ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!confirm("Disable this account?")) return;
+                            patchBankAccount(acc.id, { set_disabled: true });
+                          }}
+                          disabled={bankActionLoading !== null}
+                          className="px-2 py-1 rounded-lg border border-amber-200 text-amber-700 text-[10px] font-medium hover:bg-amber-50 disabled:opacity-50"
+                        >
+                          Disable
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => patchBankAccount(acc.id, { set_disabled: false })}
+                          disabled={bankActionLoading !== null}
+                          className="px-2 py-1 rounded-lg border border-gray-300 text-gray-700 text-[10px] font-medium hover:bg-gray-50 disabled:opacity-50"
+                        >
+                          Enable
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))
               )}
-              <p className="text-xs text-gray-500 mt-3">
-                Accounts can be disabled but not removed. One account must be default for withdrawals.
-              </p>
             </div>
-          )}
+          </div>
+
+          <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
+            <h3 className="text-sm font-semibold text-gray-900 mb-3">Quick Actions</h3>
+            <div className="grid grid-cols-1 gap-2">
+              <button
+                type="button"
+                onClick={() => scrollToLedger({ category: "WITHDRAWAL" })}
+                className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 transition-colors group"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-blue-100 group-hover:bg-blue-200 transition-colors">
+                    <ArrowDownToLine size={16} className="text-blue-600" />
+                  </div>
+                  <div className="text-left">
+                    <p className="font-medium text-gray-900 text-xs">Withdrawal History</p>
+                    <p className="text-[10px] text-gray-600">View withdrawal ledger entries</p>
+                  </div>
+                </div>
+                <ChevronRight size={14} className="text-gray-400 flex-shrink-0" />
+              </button>
+              <button
+                type="button"
+                onClick={() => void downloadLedgerCsv()}
+                className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 transition-colors group"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-orange-100 group-hover:bg-orange-200 transition-colors">
+                    <FileText size={16} className="text-orange-600" />
+                  </div>
+                  <div className="text-left">
+                    <p className="font-medium text-gray-900 text-xs">Download Ledger</p>
+                    <p className="text-[10px] text-gray-600">Export transaction report (CSV)</p>
+                  </div>
+                </div>
+                <ChevronRight size={14} className="text-gray-400 flex-shrink-0" />
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Wallet adjustment requests */}
         <WalletRequestsSection storeId={storeId} summaryCounts={walletRequestsSummaryData?.counts ?? null} />
 
-        {/* Filters + Ledger */}
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100 flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-2 text-gray-700 font-medium">
-              <Filter size={18} />
-              Filters
-            </div>
+        <div
+          id="payments-ledger-section"
+          ref={ledgerSectionRef}
+          className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden"
+        >
+          <div className="px-4 py-2.5 border-b border-gray-100">
+            <h3 className="text-sm font-semibold text-gray-900">Recent Transactions</h3>
+          </div>
+          <div className="px-4 py-2.5 border-b border-gray-100 bg-gray-50/50">
             <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center gap-1.5">
-                <Calendar size={14} className="text-gray-400" />
+              <div className="flex items-center gap-1">
+                <Filter size={14} className="text-gray-600" />
+                <span className="text-xs font-medium text-gray-700">Filters</span>
+              </div>
+              <div className="flex-1 flex flex-wrap items-center gap-1.5">
+                <div className="flex items-center gap-1">
+                <Calendar size={12} className="text-gray-400" />
                 <input
                   type="date"
                   value={filterFrom}
                   onChange={(e) => setFilterFrom(e.target.value)}
-                  className="text-sm border border-gray-300 rounded-lg px-2.5 py-1.5"
+                  className="text-[10px] border border-gray-300 rounded px-2 py-1 bg-white"
                 />
               </div>
               <span className="text-gray-400">–</span>
@@ -872,14 +1011,14 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
                 type="date"
                 value={filterTo}
                 onChange={(e) => setFilterTo(e.target.value)}
-                className="text-sm border border-gray-300 rounded-lg px-2.5 py-1.5"
+                className="text-[10px] border border-gray-300 rounded px-2 py-1 bg-white"
               />
               <select
                 value={filterDirection}
                 onChange={(e) =>
                   setFilterDirection(e.target.value as "all" | "CREDIT" | "DEBIT")
                 }
-                className="text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white"
+                className="text-[10px] border border-gray-300 rounded px-2 py-1 bg-white"
               >
                 <option value="all">All</option>
                 <option value="CREDIT">Credit</option>
@@ -888,7 +1027,7 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
               <select
                 value={filterCategory}
                 onChange={(e) => setFilterCategory(e.target.value)}
-                className="text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white min-w-[140px]"
+                className="text-[10px] border border-gray-300 rounded px-2 py-1 bg-white"
               >
                 <option value="">All categories</option>
                 {LEDGER_CATEGORIES.map((c) => (
@@ -898,27 +1037,28 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
                 ))}
               </select>
               <div className="relative">
-                <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input
                   type="text"
-                  placeholder="Search description..."
+                  placeholder="Search..."
                   value={filterSearch}
                   onChange={(e) => setFilterSearch(e.target.value)}
-                  className="text-sm border border-gray-300 rounded-lg pl-8 pr-3 py-1.5 w-44"
+                  className="text-[10px] border border-gray-300 rounded pl-6 pr-2 py-1 bg-white w-32"
                 />
               </div>
               <button
                 onClick={applyFilters}
-                className="px-3 py-1.5 rounded-lg bg-orange-600 text-white text-sm font-medium hover:bg-orange-700"
+                className="px-2 py-1 rounded bg-emerald-600 text-white text-[10px] font-medium hover:bg-emerald-700 transition-colors"
               >
                 Apply
               </button>
               <button
                 onClick={clearFilters}
-                className="px-3 py-1.5 rounded-lg border border-gray-300 text-gray-600 text-sm font-medium hover:bg-gray-50"
+                className="px-2 py-1 rounded border border-gray-300 text-gray-600 text-[10px] font-medium hover:bg-gray-100 transition-colors"
               >
                 Clear
               </button>
+              </div>
             </div>
           </div>
 
@@ -936,113 +1076,91 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
               </div>
             ) : (
               <>
-                <table className="w-full text-sm">
+                <table className="w-full text-xs">
                   <thead>
-                    <tr className="bg-slate-50 border-b border-slate-200">
-                      <th className="w-9 py-3 px-2" />
-                      <th className="text-left py-3 px-3 font-semibold text-slate-700">Date</th>
-                      <th className="text-left py-3 px-3 font-semibold text-slate-700">Order ID</th>
-                      <th className="text-left py-3 px-3 font-semibold text-slate-700">
-                        Formatted order ID
-                      </th>
-                      <th className="text-left py-3 px-3 font-semibold text-slate-700">
-                        Table ID
-                      </th>
-                      <th className="text-left py-3 px-3 font-semibold text-slate-700">Type</th>
-                      <th className="text-left py-3 px-3 font-semibold text-slate-700 max-w-[180px]">
-                        Description
-                      </th>
-                      <th className="text-left py-3 px-3 font-semibold text-slate-700">Direction</th>
-                      <th className="text-right py-3 px-3 font-semibold text-slate-700">Amount</th>
-                      <th className="text-right py-3 px-3 font-semibold text-slate-700">
-                        Balance after
-                      </th>
+                    <tr className="bg-gray-100 border-b border-gray-200">
+                      <th className="w-8 py-3 px-4 text-left" />
+                      <th className="text-left py-3 px-4 font-semibold text-gray-700">Type</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-700">Order ID</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-700">Date & Time</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-700">Description</th>
+                      <th className="text-right py-3 px-4 font-semibold text-gray-700">Amount</th>
+                      <th className="text-center py-3 px-4 font-semibold text-gray-700">Status</th>
+                      <th className="text-right py-3 px-4 font-semibold text-gray-700">Balance After</th>
                     </tr>
                   </thead>
                   <tbody>
                     {ledger.map((row) => (
                       <React.Fragment key={row.id}>
                         <tr
-                          className={`border-b border-slate-100 transition-colors ${
-                            expandedLedgerId === row.id ? "bg-slate-50/80" : "hover:bg-slate-50/50"
+                          className={`transition-colors divide-y divide-gray-100 ${
+                            expandedLedgerId === row.id ? "bg-blue-50" : "hover:bg-gray-50"
                           }`}
                         >
-                          <td className="py-2 px-2 align-middle">
+                          <td className="py-3 px-4">
                             {(row.reference_type === "ORDER" && row.order_id != null) ||
                             (row.category === "WITHDRAWAL" && row.reference_id != null) ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(row)}
-                                className="p-1.5 rounded-lg hover:bg-slate-200/80 text-slate-600 hover:text-slate-900 transition-colors"
-                                aria-label={expandedLedgerId === row.id ? "Collapse" : "Expand"}
+                                className="p-1 rounded hover:bg-gray-200 text-gray-600 hover:text-gray-900 transition-colors"
                               >
                                 {expandedLedgerId === row.id ? (
-                                  <ChevronUp size={18} />
+                                  <ChevronUp size={16} />
                                 ) : (
-                                  <ChevronDown size={18} />
+                                  <ChevronDown size={16} />
                                 )}
                               </button>
-                            ) : (
-                              <span className="inline-block w-9" />
-                            )}
+                            ) : null}
                           </td>
-                          <td className="py-3 px-3 text-slate-600 whitespace-nowrap">
+                          <td className="py-3 px-4 font-medium text-gray-900">
+                            {formatCategory(row.category)}
+                          </td>
+                          <td className="py-3 px-4 text-gray-600 tabular-nums">
+                            {row.order_id != null ? row.order_id : "—"}
+                          </td>
+                          <td className="py-3 px-4 text-gray-600 whitespace-nowrap">
                             {new Date(row.created_at).toLocaleString("en-IN", {
                               dateStyle: "short",
                               timeStyle: "short",
                             })}
                           </td>
-                          <td className="py-3 px-3 font-medium text-slate-800 tabular-nums">
-                            {row.order_id != null ? row.order_id : "—"}
-                          </td>
-                          <td className="py-3 px-3 font-medium text-slate-800">
-                            {row.formatted_order_id ?? "—"}
-                          </td>
-                          <td className="py-3 px-3 text-slate-600">{row.table_id ?? "—"}</td>
-                          <td className="py-3 px-3 font-medium text-slate-800">
-                            {formatCategory(row.category)}
-                          </td>
                           <td
-                            className="py-3 px-3 text-slate-600 max-w-[180px] truncate"
+                            className="py-3 px-4 text-gray-600 truncate max-w-xs"
                             title={row.description ?? row.reference_extra ?? ""}
                           >
                             {row.description || row.reference_extra || "—"}
                           </td>
-                          <td className="py-3 px-3">
-                            {row.direction === "CREDIT" ? (
-                              <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
-                                <TrendingUp size={14} /> Credit
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-red-600 font-medium">
-                                <TrendingDown size={14} /> Debit
-                              </span>
-                            )}
-                          </td>
                           <td
-                            className={`py-3 px-3 text-right font-semibold tabular-nums ${
+                            className={`py-3 px-4 text-right font-semibold tabular-nums ${
                               row.direction === "CREDIT" ? "text-emerald-600" : "text-red-600"
                             }`}
                           >
-                            {row.direction === "CREDIT" ? "+" : "-"}₹
-                            {row.amount.toLocaleString("en-IN", {
-                              minimumFractionDigits: 2,
-                              maximumFractionDigits: 2,
-                            })}
+                            {row.direction === "CREDIT" ? "+" : "-"}
+                            {formatInr(row.amount)}
                           </td>
-                          <td className="py-3 px-3 text-right text-slate-700 tabular-nums">
-                            ₹
-                            {row.balance_after.toLocaleString("en-IN", {
-                              minimumFractionDigits: 2,
-                              maximumFractionDigits: 2,
-                            })}
+                          <td className="py-3 px-4 text-center">
+                            {row.direction === "CREDIT" ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">
+                                <span className="w-2 h-2 rounded-full bg-emerald-600" />
+                                Credit
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-red-100 text-red-700 text-xs font-medium">
+                                <span className="w-2 h-2 rounded-full bg-red-600" />
+                                Debit
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-4 text-right text-gray-700 tabular-nums">
+                            {formatInr(row.balance_after)}
                           </td>
                         </tr>
                         {expandedLedgerId === row.id &&
                           row.category === "WITHDRAWAL" &&
                           row.reference_id != null && (
                             <tr className="bg-slate-50/60 border-b border-slate-200">
-                              <td colSpan={10} className="p-0">
+                              <td colSpan={8} className="p-0">
                                 <div className="px-4 pb-4 pt-1">
                                   {payoutDetailsLoading === row.reference_id ? (
                                     <div className="flex items-center justify-center py-8 text-slate-500">
@@ -1170,7 +1288,7 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
                           )}
                         {expandedLedgerId === row.id && row.order_id != null && (
                           <tr className="bg-slate-50/60 border-b border-slate-200">
-                            <td colSpan={10} className="p-0">
+                            <td colSpan={8} className="p-0">
                               <div className="px-4 pb-4 pt-1">
                                 {orderDetailsLoading === row.order_id ? (
                                   <div className="flex items-center justify-center py-8 text-slate-500">
@@ -1325,6 +1443,7 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
           </div>
         </div>
       </div>
+    </div>
 
       {/* Withdrawal modal — removed: agents cannot withdraw; merchants use app/partnersite */}
       {false && showWithdrawal && (
@@ -1382,7 +1501,7 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
                 const q = payoutQuote as NonNullable<typeof payoutQuote>;
                 return (
                     <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2">
-                      <p className="text-sm font-medium text-slate-700">
+                      <p className="text-sm font-medium text-gray-700">
                         Withdrawal calculation
                       </p>
                       <div className="flex justify-between text-sm text-slate-600">
@@ -1790,6 +1909,6 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }

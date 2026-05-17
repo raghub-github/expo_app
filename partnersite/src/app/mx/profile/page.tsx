@@ -12,6 +12,40 @@ import {
   getMerchantStoreMediaPath,
 } from "@/lib/r2-paths";
 import { normalizeMerchantStoreMediaUrl, normalizeR2ObjectKey, toStoredDocumentUrl } from "@/lib/r2";
+import { LegalDocumentCard } from "@/components/LegalDocumentCard";
+import { LicenseExpiredModal } from "@/components/LicenseExpiredModal";
+import {
+  evaluateMerchantLicenseCompliance,
+  PROFILE_LEGAL_DOC_CONFIG,
+  type MerchantDocumentPrefix,
+} from "@/lib/merchantLicenseExpiry";
+import { fetchStoreDocuments } from "@/lib/database";
+
+const GALLERY_SLOT_COUNT = 5;
+
+/** Fixed slots 0–4 for gallery UI (empty slots stay empty when another image is removed). */
+function galleryToSlots(images: string[] | null | undefined): (string | null)[] {
+  const slots: (string | null)[] = Array.from({ length: GALLERY_SLOT_COUNT }, () => null);
+  if (!Array.isArray(images)) return slots;
+  for (let i = 0; i < GALLERY_SLOT_COUNT; i++) {
+    const u = images[i];
+    if (typeof u === "string" && u.trim()) slots[i] = u.trim();
+  }
+  return slots;
+}
+
+/** Persist slot positions (holes as "") so removing slot 2 does not move slot 4 into slot 2. */
+function slotsToStoredGallery(slots: (string | null)[]): string[] {
+  const out = slots
+    .slice(0, GALLERY_SLOT_COUNT)
+    .map((u) => (typeof u === "string" && u.trim() ? u.trim() : ""));
+  while (out.length > 0 && out[out.length - 1] === "") out.pop();
+  return out;
+}
+
+function countFilledGallerySlots(slots: (string | null)[]): number {
+  return slots.filter((u) => typeof u === "string" && u.trim().length > 0).length;
+}
 
 /** Bank/UPI attachment link that never expires: store keys use proxy?key=; full R2 URLs use proxy?url= so old signed URLs are served via proxy. */
 function bankAttachmentHref(value: string | null | undefined): string | null {
@@ -192,6 +226,14 @@ export default function ProfilePage() {
   const [bankVerifying, setBankVerifying] = useState(false);
   const [operatingHours, setOperatingHours] = useState<any[]>([]);
   const [storeDocuments, setStoreDocuments] = useState<any>(null);
+  const [licenseModalOpen, setLicenseModalOpen] = useState(false);
+  const [licenseUploadPrefix, setLicenseUploadPrefix] = useState<MerchantDocumentPrefix | null>(null);
+  const storeInternalIdRef = useRef<number | null>(null);
+
+  const licenseEvaluation = useMemo(
+    () => (storeDocuments ? evaluateMerchantLicenseCompliance(storeDocuments as Record<string, unknown>) : null),
+    [storeDocuments]
+  );
   const [bankAccounts, setBankAccounts] = useState<any[]>([]);
   const [showAllBankAccounts, setShowAllBankAccounts] = useState(false);
   const [areaManager, setAreaManager] = useState<{ id?: number | null; name: string; email: string; mobile: string } | null>(null);
@@ -433,6 +475,7 @@ export default function ProfilePage() {
       try {
         const storeData = await fetchStoreById(storeId);
         const internalId = storeData?.id;
+        storeInternalIdRef.current = internalId ?? null;
 
         const [hoursData, { docs, banks }] = await Promise.all([
           internalId
@@ -767,11 +810,11 @@ export default function ProfilePage() {
     const files = Array.from(e.target.files || []);
     if (!files.length || !storeId) return;
 
-    const currentGallery = store?.gallery_images || [];
-    const remainingSlots = Math.max(0, 5 - currentGallery.length);
+    const gallerySlots = galleryToSlots(store?.gallery_images);
+    const remainingSlots = Math.max(0, GALLERY_SLOT_COUNT - countFilledGallerySlots(gallerySlots));
     const effectiveFiles = type === "gallery" ? files.slice(0, remainingSlots) : files.slice(0, 1);
 
-    setUploadingImages(effectiveFiles.map(file => URL.createObjectURL(file)));
+    setUploadingImages(effectiveFiles.map((file) => URL.createObjectURL(file)));
     e.target.value = "";
 
     try {
@@ -789,14 +832,25 @@ export default function ProfilePage() {
           return;
         }
         const galleryBatch = Date.now();
-        const urls = await Promise.all(
-          effectiveFiles.map((file, i) => uploadStoreMediaToR2(file, "gallery", i, galleryBatch))
-        );
-        const validUrls = urls.filter(Boolean) as string[];
-        const newGallery = [...currentGallery, ...validUrls].slice(0, 5);
+        const slots = [...gallerySlots];
+        let fileIdx = 0;
+        for (let slot = 0; slot < GALLERY_SLOT_COUNT && fileIdx < effectiveFiles.length; slot++) {
+          if (slots[slot]) continue;
+          const url = await uploadStoreMediaToR2(
+            effectiveFiles[fileIdx],
+            "gallery",
+            slot,
+            galleryBatch
+          );
+          if (url) {
+            slots[slot] = url;
+            fileIdx++;
+          }
+        }
+        const newGallery = slotsToStoredGallery(slots);
         await updateStoreMedia({ gallery_images: newGallery });
-        setStore(r => r ? { ...r, gallery_images: newGallery } : r);
-        setEditData(r => r ? { ...r, gallery_images: newGallery } : r);
+        setStore((r) => (r ? { ...r, gallery_images: newGallery } : r));
+        setEditData((r) => (r ? { ...r, gallery_images: newGallery } : r));
         toast.success("Gallery images updated!");
       }
 
@@ -819,14 +873,15 @@ export default function ProfilePage() {
     e.target.value = "";
     if (!file || !storeId) return;
 
-    const currentGallery = store?.gallery_images || [];
-    if (currentGallery.length >= 5) {
+    const slots = galleryToSlots(store?.gallery_images);
+    const targetIndex = gallerySlotIndexRef.current ?? 0;
+    if (targetIndex < 0 || targetIndex >= GALLERY_SLOT_COUNT) return;
+
+    if (!slots[targetIndex] && countFilledGallerySlots(slots) >= GALLERY_SLOT_COUNT) {
       toast.error("Gallery is full (max 5 images).");
       return;
     }
 
-    const requestedIndex = gallerySlotIndexRef.current ?? currentGallery.length;
-    const targetIndex = requestedIndex < currentGallery.length ? requestedIndex : currentGallery.length;
     const preview = URL.createObjectURL(file);
     setUploadingGallerySlot({ index: targetIndex, preview });
 
@@ -835,10 +890,9 @@ export default function ProfilePage() {
       const url = await uploadStoreMediaToR2(file, "gallery", targetIndex, galleryBatch);
       if (!url) throw new Error("Gallery upload failed");
 
-      const next = [...currentGallery];
-      if (targetIndex < next.length) next[targetIndex] = url;
-      else next.push(url);
-      const newGallery = next.slice(0, 5);
+      const next = [...slots];
+      next[targetIndex] = url;
+      const newGallery = slotsToStoredGallery(next);
 
       await updateStoreMedia({ gallery_images: newGallery });
       setStore((r) => (r ? { ...r, gallery_images: newGallery } : r));
@@ -853,19 +907,24 @@ export default function ProfilePage() {
   };
 
   /* ===== REMOVE GALLERY IMAGE ===== */
-  const handleRemoveGalleryImage = async (index: number) => {
-    if (!storeId || !store?.gallery_images) return;
+  const handleRemoveGalleryImage = async (slotIndex: number) => {
+    if (!storeId) return;
 
-    const newGallery = [...store.gallery_images];
-    newGallery.splice(index, 1);
+    const slots = galleryToSlots(store?.gallery_images);
+    if (!slots[slotIndex]) return;
+
+    const nextSlots = [...slots];
+    nextSlots[slotIndex] = null;
+    const newGallery = slotsToStoredGallery(nextSlots);
 
     try {
       await updateStoreMedia({ gallery_images: newGallery });
-      setStore(r => r ? { ...r, gallery_images: newGallery } : r);
-      setEditData(r => r ? { ...r, gallery_images: newGallery } : r);
+      setStore((r) => (r ? { ...r, gallery_images: newGallery } : r));
+      setEditData((r) => (r ? { ...r, gallery_images: newGallery } : r));
       toast.success("Image removed!");
     } catch (error) {
-      toast.error("Failed to remove image");
+      console.error("Gallery remove error:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to remove image");
     }
   };
 
@@ -1022,9 +1081,9 @@ export default function ProfilePage() {
                   <div className="p-3">
                     <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)] gap-3 lg:gap-4 lg:items-stretch">
                       
-                      {/* Left: 2×2 pairs — row1 Store Details | Operating Days; row2 Location | Area Manager; then Store Info */}
-                      <div className="min-w-0 grid grid-cols-1 lg:grid-cols-2 gap-3 lg:gap-4 lg:items-stretch">
-                        <div className="min-w-0 flex min-h-0 lg:h-full">
+                      {/* Left: row1 Store Details (2 cols) | Operating Days; row2 Location | Area Manager | Store Info */}
+                      <div className="min-w-0 grid grid-cols-1 lg:grid-cols-3 gap-3 lg:gap-4 lg:items-stretch">
+                        <div className="min-w-0 flex min-h-0 lg:h-full lg:col-span-2">
                         <div className="bg-gray-50 rounded-lg p-3 border border-gray-200 flex flex-col min-h-0 h-full w-full min-w-0">
                           <div className="flex items-center justify-between mb-1.5 shrink-0">
                             <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2 m-0">
@@ -1366,13 +1425,14 @@ export default function ProfilePage() {
                         </div>
                         </div>
 
-                        <div className="lg:col-span-2 bg-gray-50 rounded-lg p-2.5 border border-gray-200 w-full min-w-0">
-                          <h3 className="text-sm font-semibold text-gray-900 mb-1.5 flex items-center gap-2">
+                        <div className="min-w-0 flex min-h-0 lg:h-full">
+                        <div className="bg-gray-50 rounded-lg p-2.5 border border-gray-200 w-full min-w-0 h-full flex flex-col min-h-0">
+                          <h3 className="text-sm font-semibold text-gray-900 mb-1.5 flex items-center gap-2 shrink-0">
                             <Activity size={16} className="text-blue-600" />
                             Store Info
                           </h3>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-                            <div className="sm:col-span-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
+                          <div className="space-y-1.5 flex-1 min-h-0 overflow-y-auto text-xs">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
                               <Clock size={12} className="text-gray-500 shrink-0" />
                               <span className="text-gray-800">Today&apos;s hours:</span>
                               <span className="font-semibold text-gray-900 break-words">{formatOperatingHours()}</span>
@@ -1401,7 +1461,7 @@ export default function ProfilePage() {
                             <div className="flex items-center gap-2 min-w-0">
                               <Activity size={12} className="text-gray-500 shrink-0" />
                               <span className="text-gray-800 shrink-0">Active:</span>
-                              <label className="inline-flex items-center cursor-pointer ml-2">
+                              <label className="inline-flex items-center cursor-pointer">
                                 <input
                                   type="checkbox"
                                   checked={!!editData && editData.status === 'ACTIVE'}
@@ -1432,6 +1492,7 @@ export default function ProfilePage() {
                             </div>
                           </div>
                         </div>
+                        </div>
                       </div>
 
                       {/* COLUMN 2: DOCUMENTS & IMAGES */}
@@ -1444,159 +1505,48 @@ export default function ProfilePage() {
                           <div className="space-y-2">
                             {storeDocuments ? (
                               <>
-                                {/* PAN Document */}
-                                {storeDocuments.pan_document_number && (
-                                  <div className="bg-white rounded p-2 border border-gray-200">
-                                    <div className="flex items-center justify-between mb-1">
-                                      <span className="text-xs font-semibold text-gray-900">PAN</span>
-                                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                                        storeDocuments.pan_is_verified ? 'bg-green-100 text-green-700' :
-                                        storeDocuments.pan_is_expired ? 'bg-red-100 text-red-700' :
-                                        'bg-yellow-100 text-yellow-700'
-                                      }`}>
-                                        {storeDocuments.pan_is_verified ? 'Verified' :
-                                         storeDocuments.pan_is_expired ? 'Expired' : 'Pending'}
-                                      </span>
-                                    </div>
-                                    <div className="text-xs text-gray-600">Number: {storeDocuments.pan_document_number}</div>
-                                    {storeDocuments.pan_holder_name && (
-                                      <div className="text-xs text-gray-600">Holder: {storeDocuments.pan_holder_name}</div>
-                                    )}
-                                    {storeDocuments.pan_expiry_date && (
-                                      <div className="text-xs text-gray-600">Expiry: {formatDate(storeDocuments.pan_expiry_date)}</div>
-                                    )}
-                                    {storeDocuments.pan_document_url && (
-                                      <a href={storeDocuments.pan_document_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-600 hover:underline mt-1 inline-block">View Document</a>
-                                    )}
-                                  </div>
-                                )}
-
-                                {/* GST Document */}
-                                {storeDocuments.gst_document_number && (
-                                  <div className="bg-white rounded p-2 border border-gray-200">
-                                    <div className="flex items-center justify-between mb-1">
-                                      <span className="text-xs font-semibold text-gray-900">GST</span>
-                                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                                        storeDocuments.gst_is_verified ? 'bg-green-100 text-green-700' :
-                                        storeDocuments.gst_is_expired ? 'bg-red-100 text-red-700' :
-                                        'bg-yellow-100 text-yellow-700'
-                                      }`}>
-                                        {storeDocuments.gst_is_verified ? 'Verified' :
-                                         storeDocuments.gst_is_expired ? 'Expired' : 'Pending'}
-                                      </span>
-                                    </div>
-                                    <div className="text-xs text-gray-600">Number: {storeDocuments.gst_document_number}</div>
-                                    {storeDocuments.gst_expiry_date && (
-                                      <div className="text-xs text-gray-600">Expiry: {formatDate(storeDocuments.gst_expiry_date)}</div>
-                                    )}
-                                    {storeDocuments.gst_document_url && (
-                                      <a href={storeDocuments.gst_document_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-600 hover:underline mt-1 inline-block">View Document</a>
-                                    )}
-                                  </div>
-                                )}
-
-                                {/* Aadhaar Document */}
-                                {storeDocuments.aadhaar_document_number && (
-                                  <div className="bg-white rounded p-2 border border-gray-200">
-                                    <div className="flex items-center justify-between mb-1">
-                                      <span className="text-xs font-semibold text-gray-900">Aadhaar</span>
-                                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                                        storeDocuments.aadhaar_is_verified ? 'bg-green-100 text-green-700' :
-                                        storeDocuments.aadhaar_is_expired ? 'bg-red-100 text-red-700' :
-                                        'bg-yellow-100 text-yellow-700'
-                                      }`}>
-                                        {storeDocuments.aadhaar_is_verified ? 'Verified' :
-                                         storeDocuments.aadhaar_is_expired ? 'Expired' : 'Pending'}
-                                      </span>
-                                    </div>
-                                    <div className="text-xs text-gray-600">Number: {storeDocuments.aadhaar_document_number}</div>
-                                    {storeDocuments.aadhaar_holder_name && (
-                                      <div className="text-xs text-gray-600">Holder: {storeDocuments.aadhaar_holder_name}</div>
-                                    )}
-                                    {storeDocuments.aadhaar_expiry_date && (
-                                      <div className="text-xs text-gray-600">Expiry: {formatDate(storeDocuments.aadhaar_expiry_date)}</div>
-                                    )}
-                                    {storeDocuments.aadhaar_document_url && (
-                                      <a href={storeDocuments.aadhaar_document_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-600 hover:underline mt-1 inline-block">View Document</a>
-                                    )}
-                                  </div>
-                                )}
-
-                                {/* FSSAI Document */}
-                                {storeDocuments.fssai_document_number && (
-                                  <div className="bg-white rounded p-2 border border-gray-200">
-                                    <div className="flex items-center justify-between mb-1">
-                                      <span className="text-xs font-semibold text-gray-900">FSSAI</span>
-                                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                                        storeDocuments.fssai_is_verified ? 'bg-green-100 text-green-700' :
-                                        storeDocuments.fssai_is_expired ? 'bg-red-100 text-red-700' :
-                                        'bg-yellow-100 text-yellow-700'
-                                      }`}>
-                                        {storeDocuments.fssai_is_verified ? 'Verified' :
-                                         storeDocuments.fssai_is_expired ? 'Expired' : 'Pending'}
-                                      </span>
-                                    </div>
-                                    <div className="text-xs text-gray-600">Number: {storeDocuments.fssai_document_number}</div>
-                                    {storeDocuments.fssai_expiry_date && (
-                                      <div className="text-xs text-gray-600">Expiry: {formatDate(storeDocuments.fssai_expiry_date)}</div>
-                                    )}
-                                    {storeDocuments.fssai_document_url && (
-                                      <a href={storeDocuments.fssai_document_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-600 hover:underline mt-1 inline-block">View Document</a>
-                                    )}
-                                  </div>
-                                )}
-
-                                {/* Trade License */}
-                                {storeDocuments.trade_license_document_number && (
-                                  <div className="bg-white rounded p-2 border border-gray-200">
-                                    <div className="flex items-center justify-between mb-1">
-                                      <span className="text-xs font-semibold text-gray-900">Trade License</span>
-                                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                                        storeDocuments.trade_license_is_verified ? 'bg-green-100 text-green-700' :
-                                        storeDocuments.trade_license_is_expired ? 'bg-red-100 text-red-700' :
-                                        'bg-yellow-100 text-yellow-700'
-                                      }`}>
-                                        {storeDocuments.trade_license_is_verified ? 'Verified' :
-                                         storeDocuments.trade_license_is_expired ? 'Expired' : 'Pending'}
-                                      </span>
-                                    </div>
-                                    <div className="text-xs text-gray-600">Number: {storeDocuments.trade_license_document_number}</div>
-                                    {storeDocuments.trade_license_expiry_date && (
-                                      <div className="text-xs text-gray-600">Expiry: {formatDate(storeDocuments.trade_license_expiry_date)}</div>
-                                    )}
-                                    {storeDocuments.trade_license_document_url && (
-                                      <a href={storeDocuments.trade_license_document_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-600 hover:underline mt-1 inline-block">View Document</a>
-                                    )}
-                                  </div>
-                                )}
-
-                                {/* Other Documents */}
-                                {storeDocuments.other_document_number && (
-                                  <div className="bg-white rounded p-2 border border-gray-200">
-                                    <div className="flex items-center justify-between mb-1">
-                                      <span className="text-xs font-semibold text-gray-900">
-                                        {storeDocuments.other_document_type || 'Other Document'}
-                                      </span>
-                                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                                        storeDocuments.other_is_verified ? 'bg-green-100 text-green-700' :
-                                        storeDocuments.other_is_expired ? 'bg-red-100 text-red-700' :
-                                        'bg-yellow-100 text-yellow-700'
-                                      }`}>
-                                        {storeDocuments.other_is_verified ? 'Verified' :
-                                         storeDocuments.other_is_expired ? 'Expired' : 'Pending'}
-                                      </span>
-                                    </div>
-                                    <div className="text-xs text-gray-600">Number: {storeDocuments.other_document_number}</div>
-                                    {(storeDocuments.other_expiry_date || storeDocuments.other_document_expiry_date) && (
-                                      <div className="text-xs text-gray-600">
-                                        Expiry: {formatDate((storeDocuments.other_expiry_date || storeDocuments.other_document_expiry_date) as string)}
-                                      </div>
-                                    )}
-                                    {storeDocuments.other_document_url && (
-                                      <a href={storeDocuments.other_document_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-600 hover:underline mt-1 inline-block">View Document</a>
-                                    )}
-                                  </div>
-                                )}
+                                {PROFILE_LEGAL_DOC_CONFIG.map((cfg) => {
+                                  if (!storeId) return null;
+                                  const doc = storeDocuments as Record<string, unknown>;
+                                  const num = doc[cfg.numberKey];
+                                  if (!num || String(num).trim() === "") return null;
+                                  const label =
+                                    cfg.typeKey && doc[cfg.typeKey]
+                                      ? String(doc[cfg.typeKey])
+                                      : cfg.label;
+                                  const meta = doc[cfg.metaKey];
+                                  const renewalPending: boolean =
+                                    meta != null &&
+                                    typeof meta === "object" &&
+                                    (meta as { renewal_pending?: boolean }).renewal_pending === true;
+                                  const verifiedRaw = doc[cfg.verifiedKey];
+                                  const expiredRaw = doc[cfg.expiredKey];
+                                  const isVerified =
+                                    typeof verifiedRaw === "boolean" ? verifiedRaw : null;
+                                  const isExpiredFlag =
+                                    typeof expiredRaw === "boolean" ? expiredRaw : null;
+                                  return (
+                                    <LegalDocumentCard
+                                      key={cfg.prefix}
+                                      storeId={storeId}
+                                      label={label}
+                                      prefix={cfg.prefix}
+                                      documentNumber={String(num)}
+                                      holderName={
+                                        cfg.holderKey ? (doc[cfg.holderKey] as string | null) : null
+                                      }
+                                      expiryDate={(doc[cfg.expiryKey] as string | null) ?? null}
+                                      documentUrl={(doc[cfg.urlKey] as string | null) ?? null}
+                                      isVerified={isVerified}
+                                      isExpiredFlag={isExpiredFlag}
+                                      renewalPending={renewalPending}
+                                      onRenew={(p) => {
+                                        setLicenseUploadPrefix(p);
+                                        setLicenseModalOpen(true);
+                                      }}
+                                    />
+                                  );
+                                })}
                               </>
                             ) : (
                               <p className="text-xs text-gray-500 text-center py-2">No documents found</p>
@@ -2022,7 +1972,7 @@ export default function ProfilePage() {
                         <div className="flex items-center justify-between mb-3">
                           <div>
                             <h3 className="text-sm font-semibold text-gray-900 mb-1">
-                              Gallery Images ({store.gallery_images?.length || 0}/5)
+                              Gallery Images ({countFilledGallerySlots(galleryToSlots(store.gallery_images))}/5)
                             </h3>
                             <p className="text-xs text-gray-600">
                               Upload up to 5 promotional images
@@ -2032,7 +1982,7 @@ export default function ProfilePage() {
                             type="button"
                             className="flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg text-xs font-medium"
                             onClick={() => galleryInputRef.current?.click()}
-                            disabled={(store.gallery_images?.length || 0) >= 5}
+                            disabled={countFilledGallerySlots(galleryToSlots(store.gallery_images)) >= GALLERY_SLOT_COUNT}
                           >
                             <Upload size={12} />
                             Upload
@@ -2055,24 +2005,33 @@ export default function ProfilePage() {
                         </div>
                         
                         <div className="grid grid-cols-5 gap-2 mt-3">
-                          {Array.from({ length: 5 }).map((_: unknown, index: number) => {
-                            const gallery = store.gallery_images || [];
-                            const img = gallery[index];
-                            const uploadingIndex = index - gallery.length;
-                            const isUploading = uploadingIndex >= 0 && uploadingIndex < uploadingImages.length;
-                            const uploadingPreview = isUploading ? uploadingImages[uploadingIndex] : null;
+                          {galleryToSlots(store.gallery_images).map((img, index) => {
+                            const gallerySlots = galleryToSlots(store.gallery_images);
+                            const filledCount = countFilledGallerySlots(gallerySlots);
+                            const emptySlotIndexes = gallerySlots
+                              .map((s, i) => (s ? -1 : i))
+                              .filter((i) => i >= 0);
+                            const bulkUploadSlotPos = emptySlotIndexes.indexOf(index);
+                            const isBulkUploading =
+                              bulkUploadSlotPos >= 0 && bulkUploadSlotPos < uploadingImages.length;
+                            const uploadingPreview = isBulkUploading ? uploadingImages[bulkUploadSlotPos] : null;
                             const slotUploading = uploadingGallerySlot?.index === index ? uploadingGallerySlot : null;
+                            const canPickSlot = !img && filledCount < GALLERY_SLOT_COUNT;
                             return (
                               <div
-                                key={index}
+                                key={`gallery-slot-${index}`}
                                 className={`relative group aspect-square min-h-[80px] bg-gray-100 rounded-lg border border-gray-200 overflow-hidden flex items-center justify-center ${
-                                  (img || (store.gallery_images?.length ?? 0) < 5) ? "cursor-pointer hover:ring-2 hover:ring-green-300" : ""
+                                  canPickSlot ? "cursor-pointer hover:ring-2 hover:ring-green-300" : ""
                                 }`}
-                                role="button"
-                                tabIndex={0}
-                                onClick={() => openGallerySlotPicker(index)}
+                                role={canPickSlot ? "button" : undefined}
+                                tabIndex={canPickSlot ? 0 : undefined}
+                                onClick={() => {
+                                  if (canPickSlot) openGallerySlotPicker(index);
+                                }}
                                 onKeyDown={(ev) => {
-                                  if (ev.key === "Enter" || ev.key === " ") openGallerySlotPicker(index);
+                                  if ((ev.key === "Enter" || ev.key === " ") && canPickSlot) {
+                                    openGallerySlotPicker(index);
+                                  }
                                 }}
                               >
                                 {img ? (
@@ -2084,10 +2043,13 @@ export default function ProfilePage() {
                                     />
                                     <button
                                       type="button"
-                                      onClick={() => handleRemoveGalleryImage(index)}
-                                      onMouseDown={(ev) => ev.stopPropagation()}
-                                      onClickCapture={(ev) => ev.stopPropagation()}
-                                      className="absolute top-1 right-1 bg-red-500 hover:bg-red-600 text-white w-5 h-5 rounded-full flex items-center justify-center text-sm opacity-0 group-hover:opacity-100 transition-opacity"
+                                      aria-label={`Remove gallery image slot ${index + 1}`}
+                                      onClick={(ev) => {
+                                        ev.preventDefault();
+                                        ev.stopPropagation();
+                                        void handleRemoveGalleryImage(index);
+                                      }}
+                                      className="absolute top-1 right-1 z-10 bg-red-500 hover:bg-red-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-base shadow-md opacity-95 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
                                     >
                                       ×
                                     </button>
@@ -2136,6 +2098,24 @@ export default function ProfilePage() {
           </div>
         </div>
 
+        <LicenseExpiredModal
+          storeId={store.store_id}
+          open={licenseModalOpen}
+          expired={licenseEvaluation?.expired ?? []}
+          pendingVerification={licenseEvaluation?.pending_verification ?? []}
+          initialStepPrefix={licenseUploadPrefix}
+          onClose={() => {
+            setLicenseModalOpen(false);
+            setLicenseUploadPrefix(null);
+          }}
+          onUploaded={async () => {
+            const id = storeInternalIdRef.current;
+            if (id) {
+              const docs = await fetchStoreDocuments(id);
+              setStoreDocuments(docs);
+            }
+          }}
+        />
       </MXLayoutWhite>
     </ProfileErrorBoundary>
   );

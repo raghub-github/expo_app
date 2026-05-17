@@ -49,7 +49,9 @@ export async function GET(
     const sql = getSql();
     const categories = await sql`
       SELECT id, store_id, category_name, category_description, category_image_url,
-             parent_category_id, cuisine_id, display_order, is_active, created_at, updated_at
+             parent_category_id, cuisine_id, display_order, is_active,
+             out_of_stock_manual, out_of_stock_until, out_of_stock_updated_at,
+             created_at, updated_at
       FROM merchant_menu_categories
       WHERE store_id = ${storeId}
         AND COALESCE(is_deleted, FALSE) = FALSE
@@ -91,7 +93,8 @@ export async function GET(
       SELECT id, store_id, item_id, item_name, item_description, item_image_url,
              category_id, food_type, spice_level, cuisine_type,
              base_price, selling_price, discount_percentage, tax_percentage,
-             in_stock, is_active, is_deleted, display_order,
+             in_stock, out_of_stock_manual, out_of_stock_until, out_of_stock_updated_at,
+             is_active, is_deleted, display_order,
              has_customizations,
              (
                COALESCE(has_addons, FALSE)

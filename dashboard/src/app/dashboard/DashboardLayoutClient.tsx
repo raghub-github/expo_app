@@ -14,6 +14,7 @@ import {
   type TicketSettingsSection,
 } from "@/context/RightSidebarContext";
 import { MerchantsSearchProvider } from "@/context/MerchantsSearchContext";
+import { StoreVerificationSheetProvider } from "@/context/StoreVerificationSheetContext";
 import { LeftSidebarMobileProvider, useLeftSidebarMobile } from "@/context/LeftSidebarMobileContext";
 import { TicketFilterSidebarProvider, useTicketFilterSidebar } from "@/context/TicketFilterSidebarContext";
 import { getCurrentDashboard, getCurrentDashboardSubRoutes } from "@/lib/navigation/dashboard-routes";
@@ -700,6 +701,7 @@ function DashboardLayoutContent({
           />
         )}
         <RightSidebarProvider value={rightSidebarContextValue}>
+          <StoreVerificationSheetProvider>
           <MerchantsSearchProvider>
             <SyncSidebarsOnMobile />
             {/*
@@ -795,6 +797,7 @@ function DashboardLayoutContent({
               )}
             </div>
           </MerchantsSearchProvider>
+          </StoreVerificationSheetProvider>
         </RightSidebarProvider>
       </div>
     </LeftSidebarMobileProvider>

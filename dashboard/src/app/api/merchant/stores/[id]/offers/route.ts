@@ -52,8 +52,8 @@ function mapRowToOffer(row: Record<string, unknown>) {
     coupon_code: (row.coupon_code as string) ?? (meta.coupon_code as string) ?? null,
     image_url: (row.offer_image_url as string) ?? (row.image_url as string) ?? null,
     offer_image_aspect_ratio,
-    valid_from: (row.valid_from as string) || new Date().toISOString(),
-    valid_till: (row.valid_till as string) || new Date().toISOString(),
+    valid_from: row.valid_from != null ? new Date(row.valid_from as string | Date).toISOString() : new Date().toISOString(),
+    valid_till: row.valid_till != null ? new Date(row.valid_till as string | Date).toISOString() : new Date().toISOString(),
     is_active: row.is_active != null ? Boolean(row.is_active) : true,
     auto_apply: row.auto_apply != null ? Boolean(row.auto_apply) : true,
     is_stackable: row.is_stackable != null ? Boolean(row.is_stackable) : false,
@@ -69,7 +69,9 @@ function mapRowToOffer(row: Record<string, unknown>) {
     applicable_time_end: (row.applicable_time_end as string) ?? null,
     offer_metadata: meta,
     created_source_platform: (row.created_source_platform as string) ?? null,
+    updated_source_platform: (row.updated_source_platform as string) ?? null,
     created_by_role: (row.created_by_role as string) ?? null,
+    updated_by_role: (row.updated_by_role as string) ?? null,
     approval_status: (row.approval_status as string) ?? null,
     created_at: (row.created_at as string) || new Date().toISOString(),
     updated_at: (row.updated_at as string) || (row.created_at as string) || new Date().toISOString(),
@@ -128,7 +130,7 @@ export async function GET(
         first_order_only, new_user_only,
         max_uses_total, max_uses_per_user, current_uses,
         applicable_on_days, applicable_time_start, applicable_time_end,
-        created_source_platform, created_by_role, approval_status,
+        created_source_platform, updated_source_platform, created_by_role, updated_by_role, approval_status,
         valid_from, valid_till, is_active,
         created_at, updated_at, created_by_name, updated_by_name
       FROM merchant_offers
@@ -199,6 +201,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { getSystemUserByEmail: getSysUser } = await import("@/lib/auth/user-mapping");
     const sysUser = caller?.email ? await getSysUser(caller.email) : null;
     if (sysUser) createdByUserId = sysUser.id;
+    const createdByName =
+      sysUser?.full_name?.trim() || caller?.email?.trim() || null;
     if (isAdmin) {
       callerRole = "ADMIN";
       approvalStatus = "APPROVED";
@@ -240,7 +244,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         applicable_on_days, applicable_time_start, applicable_time_end,
         valid_from, valid_till, is_active,
         created_source_platform, created_by_role, approval_status,
-        created_by_user_id, managed_by_agent, approved_by_admin
+        created_by_user_id, managed_by_agent, approved_by_admin, created_by_name
       )
       VALUES (
         ${offerIdCode}, ${String(offer_title).trim()}, ${storeId}, ${type}, ${String(offer_sub_type ?? "ALL_ORDERS")},
@@ -258,7 +262,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         ${applicable_time_start ?? null}, ${applicable_time_end ?? null},
         ${new Date(valid_from).toISOString()}, ${new Date(valid_till).toISOString()}, ${Boolean(is_active)},
         ${createdSourcePlatform}, ${callerRole}, ${approvalStatus},
-        ${createdByUserId}, ${managedByAgent}, ${approvedByAdmin}
+        ${createdByUserId}, ${managedByAgent}, ${approvedByAdmin}, ${createdByName}
       )
       RETURNING *
     `;

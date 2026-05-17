@@ -3,12 +3,22 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   Plus, Edit2, Trash2, Zap, X, Calendar, Percent, DollarSign,
-  Tag, Gift, User, Clock, ShoppingBag, Copy, Search, Check,
+  Tag, Gift, User, Clock, Copy, Search, Check,
   Sparkles, ChevronDown, Truck, Package, BarChart2,
 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useToast } from "@/context/ToastContext";
 import type { AllOfferTypes, Offer, MenuItemForOffer, OfferTier } from "./offers-types";
+import { OfferTrackCard } from "./offer-track-card";
+import {
+  countOffersForTrackFilter,
+  campaignDateToValidFromIso,
+  campaignDateToValidTillIso,
+  formatOfferActorDisplay,
+  offerMatchesTrackFilter,
+  offerWasUpdated,
+  type OfferTrackFilter,
+} from "./offer-lifecycle";
 
 const DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"] as const;
 type Day = typeof DAYS[number];
@@ -92,6 +102,26 @@ function getStatusColor(offer: Offer) {
   return { bg: "bg-green-50", text: "text-green-700", label: "ACTIVE" };
 }
 
+/** Normalize API/DB timestamps to yyyy-MM-dd for <input type="date" /> */
+function toDateInputValue(value: unknown): string {
+  if (value == null || value === "") return "";
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    const isoDay = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (isoDay) return isoDay[1];
+  }
+  const d = value instanceof Date ? value : new Date(String(value));
+  if (Number.isNaN(d.getTime())) return "";
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function todayDateInputValue(): string {
+  return new Date().toISOString().split("T")[0];
+}
+
 const defaultForm = {
   offer_title: "",
   offer_description: "",
@@ -127,9 +157,11 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
   const [isLoading, setIsLoading] = useState(true);
   const [offers, setOffers] = useState<Offer[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItemForOffer[]>([]);
+  const [pageTab, setPageTab] = useState<"create" | "track">("create");
+  const [trackFilter, setTrackFilter] = useState<OfferTrackFilter>("all");
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [expandedOfferItems, setExpandedOfferItems] = useState<Record<string, boolean>>({});
+  const [expandedOfferCards, setExpandedOfferCards] = useState<Record<string, boolean>>({});
   const [isSaving, setIsSaving] = useState(false);
   const [activeTab, setActiveTab] = useState<"basic" | "details" | "validity">("basic");
   const [formData, setFormData] = useState(defaultForm);
@@ -293,8 +325,8 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
         new_user_only: offer.new_user_only ?? false,
         applicable_time_start: offer.applicable_time_start ?? "",
         applicable_time_end: offer.applicable_time_end ?? "",
-        valid_from: offer.valid_from.split("T")[0],
-        valid_till: offer.valid_till.split("T")[0],
+        valid_from: toDateInputValue(offer.valid_from),
+        valid_till: toDateInputValue(offer.valid_till),
       });
       // Restore tiers
       const savedTiers = Array.isArray(meta.tiers) ? (meta.tiers as Array<{ min_order?: number; discount_pct?: number; discount_flat?: number }>) : [];
@@ -354,12 +386,41 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
     return Object.keys(meta).length > 0 ? meta : null;
   };
 
+  const mergeOfferFromApi = (prev: Offer | null, api: Record<string, unknown>): Offer => {
+    const base = prev ?? ({} as Offer);
+    const meta =
+      typeof api.offer_metadata === "object" && api.offer_metadata != null
+        ? (api.offer_metadata as Record<string, unknown>)
+        : base.offer_metadata;
+    const menuFromMeta = (meta as Record<string, unknown> | null)?.menu_item_ids;
+    return {
+      ...base,
+      ...api,
+      id: Number(api.id ?? base.id),
+      offer_id: String(api.offer_id ?? base.offer_id ?? ""),
+      menu_item_ids:
+        (api.menu_item_ids as string[] | null) ??
+        (Array.isArray(menuFromMeta) ? (menuFromMeta as string[]) : null) ??
+        base.menu_item_ids,
+      offer_metadata: meta as Record<string, unknown> | null,
+      valid_from: String(api.valid_from ?? base.valid_from),
+      valid_till: String(api.valid_till ?? base.valid_till),
+      created_by_name: (api.created_by_name as string | null) ?? base.created_by_name,
+      updated_by_name: (api.updated_by_name as string | null) ?? base.updated_by_name,
+      created_source_platform: (api.created_source_platform as string | null) ?? base.created_source_platform,
+      updated_source_platform: (api.updated_source_platform as string | null) ?? base.updated_source_platform,
+    } as Offer;
+  };
+
   const handleSaveOffer = async () => {
     if (!storeId) { toast("Store context not loaded."); return; }
     if (!formData.offer_title.trim()) { toast("Offer title is required"); return; }
     if (!formData.valid_from || !formData.valid_till) { toast("Valid dates are required"); return; }
     const today = new Date(); today.setHours(0, 0, 0, 0);
-    if (new Date(formData.valid_from) < today) { toast("Offer start date cannot be before today"); return; }
+    if (!editingId && new Date(formData.valid_from) < today) {
+      toast("Offer start date cannot be before today");
+      return;
+    }
     if (new Date(formData.valid_till) < new Date(formData.valid_from)) { toast("End date must be after start date"); return; }
     if (formData.offer_sub_type === "SPECIFIC_ITEM" && formData.menu_item_ids.length === 0) {
       toast("Please select at least one menu item when applying to specific items"); return;
@@ -398,8 +459,8 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
       applicable_time_start: formData.applicable_time_start || null,
       applicable_time_end: formData.applicable_time_end || null,
       offer_metadata: meta,
-      valid_from: new Date(formData.valid_from).toISOString(),
-      valid_till: new Date(formData.valid_till).toISOString(),
+      valid_from: campaignDateToValidFromIso(formData.valid_from),
+      valid_till: campaignDateToValidTillIso(formData.valid_till),
       is_active: true,
     };
 
@@ -433,7 +494,9 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
             }
           } catch { /* best effort */ }
         }
-        setOffers((prev) => prev.map((o) => (o.id === editingId ? { ...o, ...payload, ...data.offer } : o)));
+        const prevOffer = offers.find((o) => o.id === editingId) ?? null;
+        const merged = mergeOfferFromApi(prevOffer, (data.offer ?? {}) as Record<string, unknown>);
+        setOffers((prev) => prev.map((o) => (o.id === editingId ? merged : o)));
         toast("Offer updated successfully!");
       } else {
         const res = await fetch(`/api/merchant/stores/${storeId}/offers`, {
@@ -458,9 +521,13 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
             }
           } catch { /* best effort */ }
         }
-        if (created) setOffers((prev) => [{ ...created, id: created.id }, ...prev]);
+        if (created) {
+          const merged = mergeOfferFromApi(null, created as Record<string, unknown>);
+          setOffers((prev) => [merged, ...prev]);
+        }
         toast("Offer created successfully!");
       }
+      setPageTab("track");
       setShowModal(false);
       resetForm();
     } catch {
@@ -488,7 +555,8 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
     return { ...prev, menu_item_ids: isSelected ? prev.menu_item_ids.filter((id) => id !== itemId) : [...prev.menu_item_ids, itemId] };
   });
   const getMenuItemName = (itemId: string) => menuItems.find((m) => m.item_id === itemId)?.item_name ?? "Unknown Item";
-  const toggleOfferItemsExpanded = (offerKey: string) => setExpandedOfferItems((prev) => ({ ...prev, [offerKey]: !prev[offerKey] }));
+  const toggleOfferCardExpanded = (offerKey: string) =>
+    setExpandedOfferCards((prev) => ({ ...prev, [offerKey]: !(prev[offerKey] ?? true) }));
 
   const handleOfferTypeChange = (type: AllOfferTypes) => {
     setFormData((prev) => ({ ...prev, offer_type: type }));
@@ -509,11 +577,33 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
   const addTier = () => setTiers((prev) => [...prev, emptyTier()]);
   const removeTier = (index: number) => setTiers((prev) => prev.filter((_, i) => i !== index));
 
-  if (isLoading) return (
-    <div className="flex items-center justify-center py-12">
-      <div className="h-8 w-8 animate-spin rounded-full border-2 border-orange-600 border-t-transparent" />
-    </div>
+  const trackFilterCounts = useMemo(
+    () => ({
+      active: countOffersForTrackFilter(offers, "active"),
+      scheduled: countOffersForTrackFilter(offers, "scheduled"),
+      inactive: countOffersForTrackFilter(offers, "inactive"),
+      all: offers.length,
+    }),
+    [offers]
   );
+
+  const filteredTrackOffers = useMemo(
+    () => offers.filter((o) => offerMatchesTrackFilter(o, trackFilter)),
+    [offers, trackFilter]
+  );
+
+  const editingOffer = useMemo(() => {
+    if (editingId == null) return null;
+    return offers.find((o) => (o.id ?? parseInt(String(o.offer_id), 10)) === editingId) ?? null;
+  }, [editingId, offers]);
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-orange-600 border-t-transparent" />
+      </div>
+    );
+  }
 
   const needsBuyGet = ["BUY_X_GET_Y", "BUY_N_GET_M", "BOGO"].includes(formData.offer_type);
   const needsDiscountPct = ["PERCENTAGE", "CART_PERCENTAGE"].includes(formData.offer_type);
@@ -523,141 +613,125 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
   const isFreeDelivery = formData.offer_type === "FREE_DELIVERY";
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
-      <div className="bg-white border-b border-gray-200 shadow-sm px-4 md:px-6 py-4 md:py-5">
-        <div className="flex items-center gap-3 md:gap-4">
-          <div className="flex-1 min-w-0">
-            <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-gray-900 bg-gradient-to-r from-orange-600 to-red-600 bg-clip-text text-transparent">
-              Offers & Promotions
-            </h1>
-            <p className="text-gray-600 mt-1 text-sm md:text-base flex items-center gap-2">
-              <ShoppingBag size={16} />
-              Manage offers for <span className="font-semibold text-orange-600">{storeName || "your store"}</span>
-            </p>
-          </div>
+    <div className="flex h-full min-h-0 flex-col bg-white overflow-hidden">
+      <div className="shrink-0 border-b border-gray-200 bg-white px-4 sm:px-5 md:px-6">
+        <div className="mt-1 flex gap-8 text-sm">
           <button
-            onClick={() => handleOpenModal()}
-            className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-red-500 text-white font-bold rounded-lg hover:from-orange-600 hover:to-red-600 transition-all text-sm shadow-lg hover:shadow-xl"
+            type="button"
+            onClick={() => setPageTab("create")}
+            className={`pb-3 border-b-2 transition-colors ${
+              pageTab === "create" ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
           >
-            <Plus size={18} />Create Offer
+            Create offers
+          </button>
+          <button
+            type="button"
+            onClick={() => setPageTab("track")}
+            className={`pb-3 border-b-2 transition-colors ${
+              pageTab === "track" ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            Track offers
           </button>
         </div>
+
+        {pageTab === "track" && offers.length > 0 ? (
+          <div className="pb-4 pt-3 border-t border-gray-100">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex-1 h-px bg-gray-200" />
+              <span className="text-[11px] font-semibold tracking-wider text-gray-500 uppercase shrink-0">
+                Offer campaigns
+              </span>
+              <div className="flex-1 h-px bg-gray-200" />
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+              {(
+                [
+                  { id: "active" as const, label: "Active" },
+                  { id: "scheduled" as const, label: "Scheduled" },
+                  { id: "inactive" as const, label: "Inactive" },
+                  { id: "all" as const, label: "All" },
+                ] as const
+              ).map(({ id, label }) => {
+                const selected = trackFilter === id;
+                const n = trackFilterCounts[id];
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setTrackFilter(id)}
+                    className={`min-h-[44px] rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors ${
+                      selected
+                        ? "border-blue-600 bg-blue-600 text-white shadow-sm"
+                        : "border-gray-300 bg-white text-gray-800 hover:border-gray-400 hover:bg-gray-50"
+                    }`}
+                  >
+                    {label}
+                    {n > 0 ? ` (${n})` : ""}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
       </div>
 
-      <div className="px-4 md:px-6 py-6">
-        {offers.length === 0 ? (
-          <div className="bg-white rounded-2xl border-2 border-dashed border-gray-300 p-8 md:p-12 text-center max-w-2xl mx-auto">
-            <div className="w-20 h-20 bg-gradient-to-br from-orange-100 to-red-100 rounded-full flex items-center justify-center mx-auto mb-6">
-              <Zap size={32} className="text-orange-500" />
+      <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-5 md:px-6 py-4 sm:py-6 w-full min-w-0">
+        {pageTab === "create" ? (
+          <div className="py-6">
+            <div className="rounded-lg border border-gray-200 bg-white p-6">
+              <div className="flex flex-col items-center justify-center gap-3 text-center">
+                <p className="text-sm text-gray-700 font-medium">Create offers</p>
+                <p className="text-sm text-gray-500">Click below to start creating a new offer for {storeName || "your store"}.</p>
+                <button
+                  type="button"
+                  onClick={() => handleOpenModal()}
+                  className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                >
+                  <Plus size={16} className="shrink-0" />
+                  Create offer
+                </button>
+              </div>
             </div>
-            <h3 className="text-xl font-bold text-gray-900 mb-3">No offers created yet</h3>
-            <p className="text-gray-600 mb-8 max-w-md mx-auto">Create your first offer to attract more customers and boost your sales</p>
-            <button onClick={() => handleOpenModal()} className="px-6 py-3 bg-gradient-to-r from-orange-500 to-red-500 text-white rounded-xl hover:from-orange-600 hover:to-red-600 font-semibold shadow-lg hover:shadow-xl transition-all">
+          </div>
+        ) : offers.length === 0 ? (
+          <div className="bg-white/80 backdrop-blur-sm rounded-2xl border border-gray-200/90 border-dashed shadow-sm p-6 sm:p-8 md:p-10 text-center max-w-xl mx-auto">
+            <div className="w-16 h-16 sm:w-20 sm:h-20 bg-gradient-to-br from-orange-100 to-red-50 rounded-2xl flex items-center justify-center mx-auto mb-4 sm:mb-5">
+              <Zap size={28} className="sm:w-8 sm:h-8 text-orange-500" />
+            </div>
+            <h3 className="text-base sm:text-lg font-bold text-gray-900 mb-2">No offers created yet</h3>
+            <p className="text-gray-500 text-sm sm:text-base mb-6 sm:mb-8 max-w-sm mx-auto">Create your first offer to attract more customers and boost sales.</p>
+            <button
+              type="button"
+              onClick={() => { setPageTab("create"); handleOpenModal(); }}
+              className="inline-flex items-center justify-center gap-2 px-5 py-2.5 sm:px-6 sm:py-3 bg-gradient-to-r from-orange-500 to-red-500 text-white rounded-xl hover:from-orange-600 hover:to-red-600 font-semibold text-sm shadow-md hover:shadow-lg transition-all active:scale-[0.98]"
+            >
+              <Plus size={18} />
               Create First Offer
             </button>
           </div>
+        ) : filteredTrackOffers.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50/80 py-12 text-center max-w-xl mx-auto">
+            <p className="text-sm font-medium text-gray-700">No offers in this filter</p>
+            <p className="text-xs text-gray-500 mt-1">Try another campaign filter above.</p>
+          </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {offers.map((offer) => {
-              const now = new Date();
-              const vf = new Date(offer.valid_from);
-              const vt = new Date(offer.valid_till);
-              const validFrom = new Date(vf.getFullYear(), vf.getMonth(), vf.getDate());
-              const validTill = new Date(vt.getFullYear(), vt.getMonth(), vt.getDate());
-              let statusLabel = "";
-              if (now < validFrom) {
-                const startsIn = Math.ceil((validFrom.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-                statusLabel = `Starts in ${startsIn}d`;
-              } else if (now > validTill) {
-                statusLabel = "Expired";
-              } else {
-                const daysLeft = Math.ceil((validTill.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-                statusLabel = `${daysLeft} day${daysLeft !== 1 ? "s" : ""} left`;
-              }
-              const status = getStatusColor(offer);
-              const badgeClass = getOfferBadgeClass(offer.offer_type);
-              const offerKey = String(offer.offer_id ?? offer.id ?? "");
-              const itemNames = offer.offer_sub_type === "SPECIFIC_ITEM" && offer.menu_item_ids?.length
-                ? offer.menu_item_ids.map((id) => getMenuItemName(id)) : [];
-              const isExpanded = expandedOfferItems[offerKey] ?? false;
-              const itemsToShow = isExpanded ? itemNames : itemNames.slice(0, 3);
-              const imageAspectRatio = offer.offer_image_aspect_ratio != null && offer.offer_image_aspect_ratio > 0 ? offer.offer_image_aspect_ratio : 2;
+          <div className="flex flex-col gap-3 w-full min-w-0">
+            {filteredTrackOffers.map((offer, index) => {
+              const offerKey = String(offer.offer_id ?? offer.id ?? index);
               return (
-                <div key={offer.offer_id} className={`bg-white rounded-xl shadow-sm border border-gray-200 hover:shadow-lg transition-all duration-300 hover:-translate-y-0.5 group relative overflow-hidden ${statusLabel === "Expired" ? "opacity-80" : ""}`} style={{ maxWidth: 340 }}>
-                  <div className={`absolute top-0 left-0 right-0 h-1 ${badgeClass}`} />
-                  <div className="p-2">
-                    <div className="flex items-start justify-between mb-2">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1 mb-0.5">
-                          {getOfferIcon(offer.offer_type)}
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${status.bg} ${status.text}`}>{status.label}</span>
-                        </div>
-                        <h3 className="font-bold text-gray-900 text-xs truncate group-hover:text-orange-600 transition-colors">{offer.offer_title}</h3>
-                        <p className="text-[9px] text-gray-400 font-mono">{getOfferTypeLabel(offer.offer_type)}</p>
-                      </div>
-                      <div className="flex-shrink-0">
-                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-semibold ${offer.offer_sub_type === "SPECIFIC_ITEM" ? "bg-indigo-50 text-indigo-700" : "bg-blue-50 text-blue-700"}`}>
-                          {offer.offer_sub_type === "SPECIFIC_ITEM" ? `Items (${offer.menu_item_ids?.length ?? 0})` : "All Orders"}
-                        </span>
-                      </div>
-                    </div>
-
-                    {offer.offer_sub_type === "SPECIFIC_ITEM" && itemsToShow.length > 0 && (
-                      <div className="mb-2">
-                        {itemsToShow.map((name, idx) => (
-                          <div key={`${offerKey}-${idx}`} className="text-[10px] text-gray-700 truncate">• {name}</div>
-                        ))}
-                        {!isExpanded && itemNames.length > 3 && (
-                          <button type="button" onClick={() => toggleOfferItemsExpanded(offerKey)} className="text-[10px] font-semibold text-orange-600">View all ({itemNames.length})</button>
-                        )}
-                        {isExpanded && itemNames.length > 3 && (
-                          <button type="button" onClick={() => toggleOfferItemsExpanded(offerKey)} className="text-[10px] font-semibold text-orange-600">View fewer</button>
-                        )}
-                      </div>
-                    )}
-
-                    {offer.offer_type === "COUPON" && offer.coupon_code && (
-                      <div className="mb-2 flex items-center justify-between bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5">
-                        <code className="text-xs font-bold text-gray-900 font-mono tracking-wider">{offer.coupon_code}</code>
-                        <button type="button" onClick={() => copyToClipboard(offer.coupon_code!)} className="text-gray-400 hover:text-orange-600">
-                          <Copy size={11} />
-                        </button>
-                      </div>
-                    )}
-
-                    <p className="text-xs font-bold text-gray-800 mb-1">{getOfferDisplayDescription(offer)}</p>
-                    {offer.max_discount_amount && <p className="text-[10px] text-gray-500">Max discount: ₹{offer.max_discount_amount}</p>}
-                    {offer.max_uses_total && <p className="text-[10px] text-gray-500">Uses: {offer.current_uses ?? 0}/{offer.max_uses_total}</p>}
-                    {(offer.first_order_only || offer.new_user_only) && (
-                      <span className="inline-block bg-amber-50 text-amber-700 text-[9px] font-semibold px-1.5 py-0.5 rounded-full">{offer.first_order_only ? "First order only" : "New users only"}</span>
-                    )}
-
-                    <div className="flex items-center justify-between text-[10px] text-gray-500 bg-gray-50 rounded-lg p-1.5 mt-1">
-                      <span className="flex items-center gap-1"><Calendar size={11} />{new Date(offer.valid_from).toLocaleDateString("en-IN", { day: "numeric", month: "short" })} – {new Date(offer.valid_till).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</span>
-                      {statusLabel && statusLabel !== "Expired" && (
-                        <span className="flex items-center gap-1 bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-full font-bold"><Clock size={10} />{statusLabel}</span>
-                      )}
-                    </div>
-
-                    {offer.image_url && (
-                      <div className="mt-1 rounded-lg overflow-hidden border border-gray-200" style={{ aspectRatio: imageAspectRatio }}>
-                        <img src={offer.image_url} alt={offer.offer_title} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                      </div>
-                    )}
-
-                    <div className="flex items-center justify-between pt-1.5 border-t border-gray-100 mt-1.5">
-                      <span className="text-[9px] text-gray-400">{offer.created_source_platform ?? "MERCHANT_APP"} · {offer.created_by_role ?? "MERCHANT"}</span>
-                      <div className="flex items-center gap-0.5">
-                        <button type="button" onClick={() => handleOpenModal(offer)} className="p-1 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100" title="Edit">
-                          <Edit2 size={12} />
-                        </button>
-                        <button type="button" onClick={() => handleDeleteOffer(offer)} className="p-1 rounded-lg bg-red-50 text-red-700 hover:bg-red-100" title="Delete">
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                <OfferTrackCard
+                  key={offerKey}
+                  offer={offer}
+                  storeName={storeName}
+                  expanded={expandedOfferCards[offerKey] ?? true}
+                  onToggleExpand={() => toggleOfferCardExpanded(offerKey)}
+                  onEdit={() => handleOpenModal(offer)}
+                  onDelete={() => handleDeleteOffer(offer)}
+                  onCopyCoupon={copyToClipboard}
+                  getMenuItemName={getMenuItemName}
+                />
               );
             })}
           </div>
@@ -665,13 +739,41 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
       </div>
 
       {showModal && typeof document !== "undefined" && createPortal(
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-2 md:p-4 backdrop-blur-[2px]">
-          <div className="bg-white w-full max-w-lg border border-gray-200 shadow-2xl flex flex-col max-h-[92vh] rounded-[20px] overflow-hidden">
+        <div className="fixed inset-0 z-[9999]">
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={() => { setShowModal(false); resetForm(); }}
+            className="fixed inset-0 bg-black/35 backdrop-blur-md"
+          />
+          <div className="fixed right-0 top-0 h-dvh w-full sm:max-w-lg bg-white border-l border-gray-200 shadow-2xl flex flex-col overflow-hidden">
             {/* Header */}
-            <div className="flex-shrink-0 flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white">
+            <div className="flex-shrink-0 flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-gradient-to-r from-slate-50 to-white">
               <div>
-                <h2 className="text-lg font-bold text-gray-900">{editingId ? "Edit Offer" : "Create New Offer"}</h2>
-                <p className="text-xs text-gray-500 mt-0.5">Platform: Agent Dashboard</p>
+                <h2 className="text-lg font-bold text-gray-900">{editingId ? "Edit Offer" : "Create Offer"}</h2>
+                {editingId && editingOffer ? (
+                  <div className="mt-2 space-y-1 text-xs text-gray-600">
+                    <p>
+                      <span className="text-gray-500">Created by:</span>{" "}
+                      <strong className="text-gray-800">
+                        {formatOfferActorDisplay(editingOffer.created_source_platform, editingOffer.created_by_name)}
+                      </strong>
+                    </p>
+                    <p>
+                      <span className="text-gray-500">Updated by:</span>{" "}
+                      <strong className="text-gray-800">
+                        {offerWasUpdated(editingOffer)
+                          ? formatOfferActorDisplay(
+                              editingOffer.updated_source_platform ?? editingOffer.created_source_platform,
+                              editingOffer.updated_by_name
+                            )
+                          : "Not updated yet"}
+                      </strong>
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-gray-500 mt-0.5">Creating from Agent Dashboard (GatiMitra Team)</p>
+                )}
               </div>
               <button type="button" onClick={() => { setShowModal(false); resetForm(); }} className="p-2 hover:bg-gray-100 rounded-lg" aria-label="Close">
                 <X size={20} className="text-gray-600" />
@@ -990,11 +1092,25 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
                       <div className="grid grid-cols-2 gap-3">
                         <div>
                           <label className="block text-xs font-semibold text-gray-700 mb-1">Start Date *</label>
-                          <input type="date" value={formData.valid_from} onChange={handleInputChange("valid_from")} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm" min={new Date().toISOString().split("T")[0]} required />
+                          <input
+                            type="date"
+                            value={formData.valid_from}
+                            onChange={handleInputChange("valid_from")}
+                            className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm"
+                            min={editingId ? undefined : todayDateInputValue()}
+                            required
+                          />
                         </div>
                         <div>
                           <label className="block text-xs font-semibold text-gray-700 mb-1">End Date *</label>
-                          <input type="date" value={formData.valid_till} onChange={handleInputChange("valid_till")} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm" min={formData.valid_from || new Date().toISOString().split("T")[0]} required />
+                          <input
+                            type="date"
+                            value={formData.valid_till}
+                            onChange={handleInputChange("valid_till")}
+                            className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm"
+                            min={formData.valid_from || (editingId ? undefined : todayDateInputValue())}
+                            required
+                          />
                         </div>
                       </div>
                     </div>

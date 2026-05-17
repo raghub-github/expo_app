@@ -18,6 +18,50 @@ export interface WalletSummary {
   total_earned: number;
   total_withdrawn: number;
   pending_withdrawal_total: number;
+  in_process_withdrawal_total: number;
+}
+
+export type WalletAnalyticsPeriod = 'week' | 'month' | 'quarter';
+
+export interface WalletAnalyticsPoint {
+  date: string;
+  label: string;
+  earnings: number;
+  withdrawals: number;
+}
+
+export interface WalletAnalytics {
+  period: WalletAnalyticsPeriod;
+  series: WalletAnalyticsPoint[];
+  period_total_earnings: number;
+  period_total_withdrawals: number;
+  period_transaction_count: number;
+  total_earned: number;
+  total_withdrawn: number;
+}
+
+export interface PayoutSummary {
+  paid: number;
+  in_process: number;
+  pending: number;
+  failed: number;
+  total: number;
+}
+
+export interface PayoutRequestRow {
+  id: number;
+  amount: number;
+  net_payout_amount: number;
+  status: string;
+  requested_at: string;
+  completed_at: string | null;
+  utr_reference: string | null;
+  failure_reason: string | null;
+}
+
+export interface PayoutRequestsResponse {
+  summary: PayoutSummary;
+  recent: PayoutRequestRow[];
 }
 
 export interface LedgerEntry {
@@ -96,6 +140,14 @@ export interface StoreOperationsData {
   schedule_end_prompt_active?: boolean;
   schedule_end_prompt_expires_at?: string | null;
   next_schedule_transition_at?: string | null;
+  scheduled_time_offs?: Array<{
+    id: number;
+    reason: string | null;
+    starts_at: string;
+    ends_at: string;
+    status: string;
+    phase: 'active' | 'upcoming';
+  }>;
 }
 
 export interface StoreSettingsData {
@@ -115,6 +167,42 @@ async function fetchWallet(storeId: string): Promise<WalletSummary> {
     total_earned: data.total_earned ?? 0,
     total_withdrawn: data.total_withdrawn ?? 0,
     pending_withdrawal_total: data.pending_withdrawal_total ?? 0,
+    in_process_withdrawal_total: data.in_process_withdrawal_total ?? 0,
+  };
+}
+
+async function fetchWalletAnalytics(
+  storeId: string,
+  period: WalletAnalyticsPeriod
+): Promise<WalletAnalytics> {
+  const res = await fetch(
+    `/api/merchant/wallet/analytics?storeId=${encodeURIComponent(storeId)}&period=${period}`
+  );
+  const data = await res.json();
+  if (!res.ok || data.error) throw new Error(data.error ?? 'Failed to load wallet analytics');
+  return {
+    period: (data.period as WalletAnalyticsPeriod) ?? period,
+    series: Array.isArray(data.series) ? data.series : [],
+    period_total_earnings: data.period_total_earnings ?? 0,
+    period_total_withdrawals: data.period_total_withdrawals ?? 0,
+    period_transaction_count: data.period_transaction_count ?? 0,
+    total_earned: data.total_earned ?? 0,
+    total_withdrawn: data.total_withdrawn ?? 0,
+  };
+}
+
+async function fetchPayoutRequests(
+  storeId: string,
+  limit = 5
+): Promise<PayoutRequestsResponse> {
+  const res = await fetch(
+    `/api/merchant/payout-requests?storeId=${encodeURIComponent(storeId)}&limit=${limit}`
+  );
+  const data = await res.json();
+  if (!res.ok || data.error) throw new Error(data.error ?? 'Failed to load payouts');
+  return {
+    summary: data.summary ?? { paid: 0, in_process: 0, pending: 0, failed: 0, total: 0 },
+    recent: Array.isArray(data.recent) ? data.recent : [],
   };
 }
 
@@ -202,6 +290,34 @@ export function useMerchantWallet(storeId: string | null, options?: { enabled?: 
   });
 }
 
+export function useMerchantWalletAnalytics(
+  storeId: string | null,
+  period: WalletAnalyticsPeriod,
+  options?: { enabled?: boolean }
+) {
+  const enabled = (options?.enabled ?? true) && !!storeId;
+  return useQuery({
+    queryKey: merchantKeys.walletAnalytics(storeId ?? '', period),
+    queryFn: () => fetchWalletAnalytics(storeId!, period),
+    enabled,
+    staleTime: 60 * 1000,
+  });
+}
+
+export function useMerchantPayoutRequests(
+  storeId: string | null,
+  limit = 5,
+  options?: { enabled?: boolean }
+) {
+  const enabled = (options?.enabled ?? true) && !!storeId;
+  return useQuery({
+    queryKey: merchantKeys.payoutRequests(storeId ?? '', limit),
+    queryFn: () => fetchPayoutRequests(storeId!, limit),
+    enabled,
+    staleTime: 45 * 1000,
+  });
+}
+
 /** Paginated ledger with filters; keepPreviousData for smooth pagination. */
 export function useMerchantLedger(
   storeId: string | null,
@@ -280,6 +396,12 @@ export function usePayoutRequestMutation() {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: merchantKeys.wallet(variables.storeId) });
       queryClient.invalidateQueries({ queryKey: [...merchantKeys.all, 'ledger', variables.storeId] });
+      queryClient.invalidateQueries({
+        queryKey: [...merchantKeys.all, 'wallet-analytics', variables.storeId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: [...merchantKeys.all, 'payout-requests', variables.storeId],
+      });
     },
   });
 }

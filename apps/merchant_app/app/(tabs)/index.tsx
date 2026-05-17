@@ -3,7 +3,7 @@
  * All Orders with New/Active tabs, recent orders. Main area only; header/status card untouched.
  */
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -13,7 +13,6 @@ import {
   Dimensions,
   RefreshControl,
 } from "react-native";
-import { useEffect, useRef } from "react";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -28,6 +27,12 @@ import {
 } from "@/constants/theme";
 import { SwipeableOrderCard } from "@/components/SwipeableOrderCard";
 import { useStoreStatus } from "@/context/StoreStatusContext";
+import { useAuth } from "@/context/AuthContext";
+import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { useOrders, type OrderStage } from "@/hooks/useOrders";
+import { fetchGrowthSummary } from "@/services/growthApi";
+import { fetchWalletSummary } from "@/services/walletApi";
+import { getActiveOrdersCount } from "@/services/storeSettingsApi";
 
 const { width } = Dimensions.get("window");
 const CARD_WIDTH = (width - H_PADDING * 2 - CARD_GAP) / 2;
@@ -35,19 +40,26 @@ const MAX_RECENT_ORDERS = 5;
 
 type OrderFilterTab = "New" | "Active";
 
-const DUMMY_ORDERS: Array<{
-  id: string;
-  items: string;
-  amount: string;
-  status: "Preparing" | "Pending" | "Completed";
-  time: string;
-}> = [
-  { id: "GM-2851", items: "2× Burger, 1× Fries", amount: "₹349", status: "Preparing", time: "5 min ago" },
-  { id: "GM-2850", items: "1× Margherita Pizza", amount: "₹499", status: "Pending", time: "12 min ago" },
-  { id: "GM-2849", items: "3× Biryani, 2× Raita", amount: "₹720", status: "Completed", time: "28 min ago" },
-  { id: "GM-2848", items: "1× Cold Coffee, 2× Sandwich", amount: "₹385", status: "Completed", time: "1 hr ago" },
-  { id: "GM-2847", items: "4× Samosa, 2× Chai", amount: "₹220", status: "Completed", time: "1 hr 15 min ago" },
-];
+function formatCurrency(n: number): string {
+  return `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+}
+
+function cardStatusForStage(stage: OrderStage): "Preparing" | "Pending" | "Completed" {
+  if (stage === "created") return "Pending";
+  if (stage === "delivered" || stage === "rejected" || stage === "rto") return "Completed";
+  return "Preparing";
+}
+
+function relativeTime(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} hr ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
 
 // GatiMitra brand only: white/surface cards + primary green or navy for accent
 function KpiCard({
@@ -129,6 +141,10 @@ function formatScheduledOffDateAndTime(value: string | null | undefined): string
 
 export default function DashboardScreen() {
   const router = useRouter();
+  const { token } = useAuth();
+  const { selectedStore } = useSelectedStore();
+  const storeId = selectedStore?.id ?? null;
+  const { orders, refetch: refetchOrders } = useOrders(12000);
   const {
     isOnline,
     manualCloseUntil,
@@ -146,6 +162,31 @@ export default function DashboardScreen() {
   const [refreshing, setRefreshing] = useState(false);
 
   const [orderTab, setOrderTab] = useState<OrderFilterTab>("New");
+  const [todayEarning, setTodayEarning] = useState(0);
+  const [deliveredToday, setDeliveredToday] = useState(0);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [walletBalance, setWalletBalance] = useState(0);
+
+  const loadDashboardStats = useCallback(async () => {
+    if (!token || !storeId) return;
+    try {
+      const [growth, wallet, active] = await Promise.all([
+        fetchGrowthSummary(storeId, token, "today"),
+        fetchWalletSummary(storeId, token),
+        getActiveOrdersCount(storeId, token),
+      ]);
+      setTodayEarning(Number(growth.total_sales) || 0);
+      setDeliveredToday(Number(growth.total_orders) || 0);
+      setWalletBalance(Number(wallet.available_balance ?? 0) || 0);
+      setPendingCount(Number(active) || 0);
+    } catch {
+      /* keep previous values */
+    }
+  }, [token, storeId]);
+
+  useEffect(() => {
+    void loadDashboardStats();
+  }, [loadDashboardStats]);
 
   useFocusEffect(
     useCallback(() => {
@@ -174,14 +215,24 @@ export default function DashboardScreen() {
   const showClosedBanner = !isOnline && hasManualOrScheduledClosure;
 
   const recentOrders = useMemo(() => {
-    let list = DUMMY_ORDERS.filter((o) => !dismissedRecentIds.has(o.id));
+    let list = orders
+      .filter((o) => !dismissedRecentIds.has(o.id))
+      .map((o) => ({
+        id: o.id,
+        displayId: `#${o.formattedOrderId ?? o.orderNumber}`,
+        items: o.lineItems.map((li) => `${li.qty}× ${li.name}`).join(", ") || "Order items",
+        amount: formatCurrency(o.total),
+        status: cardStatusForStage(o.status),
+        time: relativeTime(o.createdAt),
+        stage: o.status,
+      }));
     if (orderTab === "New") {
-      list = list.filter((o) => o.status === "Pending");
+      list = list.filter((o) => o.stage === "created");
     } else {
-      list = list.filter((o) => o.status === "Preparing" || o.status === "Pending");
+      list = list.filter((o) => o.stage === "preparing" || o.stage === "ready" || o.stage === "picked_up");
     }
     return list.slice(0, MAX_RECENT_ORDERS);
-  }, [dismissedRecentIds, orderTab]);
+  }, [dismissedRecentIds, orderTab, orders]);
 
   const handleDismissRecent = (id: string) => {
     setDismissedRecentIds((prev) => new Set(prev).add(id));
@@ -205,14 +256,14 @@ export default function DashboardScreen() {
       setRefreshing(false);
     }, REFRESH_TIMEOUT_MS);
     try {
-      await refresh();
+      await Promise.all([refresh(), refetchOrders(), loadDashboardStats()]);
     } catch {
       // Keep spinner stop on error; finally will clear it
     } finally {
       clearTimeout(timeoutId);
       setRefreshing(false);
     }
-  }, [refresh]);
+  }, [refresh, refetchOrders, loadDashboardStats]);
 
   return (
     <View style={styles.screenWrap}>
@@ -258,14 +309,14 @@ export default function DashboardScreen() {
         <View style={styles.kpiRow}>
           <KpiCard
             title="Today's earning"
-            value="₹2,000"
+            value={formatCurrency(todayEarning)}
             icon="cash-outline"
             accent="primary"
             onPress={() => router.push("/(tabs)/earnings")}
           />
           <KpiCard
             title="Delivered"
-            value="08"
+            value={String(deliveredToday).padStart(2, "0")}
             icon="cube-outline"
             accent="navy"
             onPress={() => router.push("/(tabs)/orders")}
@@ -274,14 +325,14 @@ export default function DashboardScreen() {
         <View style={styles.kpiRow}>
           <KpiCard
             title="Pending deliveries"
-            value="6"
+            value={String(pendingCount)}
             icon="time-outline"
             accent="primary"
             onPress={() => router.push("/(tabs)/orders")}
           />
           <KpiCard
             title="Overall wallet balance"
-            value="₹1,24,200"
+            value={formatCurrency(walletBalance)}
             icon="wallet-outline"
             accent="navy"
             onPress={() => router.push("/(tabs)/earnings")}
@@ -314,7 +365,7 @@ export default function DashboardScreen() {
             recentOrders.map((order) => (
               <SwipeableOrderCard
                 key={order.id}
-                id={order.id}
+                id={order.displayId}
                 items={order.items}
                 amount={order.amount}
                 status={order.status}

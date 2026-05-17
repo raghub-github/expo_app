@@ -35,6 +35,7 @@ import {
   Pause,
 } from "lucide-react";
 import { SkeletonReviewRow } from "@/components/PageSkeleton";
+import { UserInsightsOrderDetailsSidesheet } from "@/components/merchant/UserInsightsOrderDetailsSidesheet";
 import { getTicketAttachmentViewUrl } from "@/lib/ticket-attachment-url";
 import { MobileHamburgerButton } from "@/components/MobileHamburgerButton";
 import { createClient } from "@/lib/supabase/client";
@@ -772,6 +773,11 @@ const UserInsightsContent = () => {
   >({});
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [expandedReview, setExpandedReview] = useState<number | null>(null);
+  const [orderSheetOpen, setOrderSheetOpen] = useState(false);
+  const [orderSheetCoreId, setOrderSheetCoreId] = useState<number | null>(null);
+  const [orderSheetPublicId, setOrderSheetPublicId] = useState<string | null>(
+    null,
+  );
 
   // If URL says inbox OR this is the dedicated inbox route, render inbox immediately.
   const isInboxRoute =
@@ -3594,7 +3600,7 @@ const UserInsightsContent = () => {
                       const storeCity =
                         typeof (store as any)?.city === "string" ? String((store as any).city).trim() : "";
                       const storeHeading = storeCity ? `${storeTitle}, ${storeCity}` : storeTitle;
-                      const orderLabel = (review.orderPublicId || "").trim() || (review.orderId ? String(review.orderId) : "");
+                      const orderLabel = (review.orderPublicId || "").trim();
                       const orderCountLabel =
                         typeof review.orderCount === "number" && review.orderCount > 0
                           ? `${review.orderCount} ${review.orderCount === 1 ? "order" : "orders"} with you`
@@ -3624,7 +3630,13 @@ const UserInsightsContent = () => {
                               </div>
                               <button
                                 type="button"
-                                disabled={!orderLabel}
+                                disabled={!review.orderId && !orderLabel}
+                                onClick={() => {
+                                  if (!review.orderId && !orderLabel) return;
+                                  setOrderSheetCoreId(review.orderId);
+                                  setOrderSheetPublicId(orderLabel || null);
+                                  setOrderSheetOpen(true);
+                                }}
                                 className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
                                 title={orderLabel ? "Order details" : "No order linked"}
                               >
@@ -3766,6 +3778,16 @@ const UserInsightsContent = () => {
           </div>
         )}
       </div>
+
+      {storeId ? (
+        <UserInsightsOrderDetailsSidesheet
+          open={orderSheetOpen}
+          onClose={() => setOrderSheetOpen(false)}
+          storeId={storeId}
+          ordersCoreId={orderSheetCoreId}
+          formattedOrderId={orderSheetPublicId}
+        />
+      ) : null}
     </MXLayoutWhite>
   );
 };

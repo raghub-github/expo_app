@@ -49,6 +49,7 @@ export async function GET(req: NextRequest) {
     const ordersCoreIdRaw = searchParams.get('orders_core_id');
     const ordersCoreId =
       ordersCoreIdRaw != null && ordersCoreIdRaw !== '' ? parseInt(ordersCoreIdRaw, 10) : NaN;
+    const formattedOrderId = (searchParams.get('formatted_order_id') || '').trim();
 
     if (!storeId) {
       return NextResponse.json({ error: 'store_id is required' }, { status: 400 });
@@ -98,6 +99,42 @@ export async function GET(req: NextRequest) {
         .maybeSingle();
       foodByCoreId = new Map();
       if (foodOne) foodByCoreId.set(ordersCoreId, foodOne as FoodRow);
+    } else if (formattedOrderId) {
+      const { data: coreOne } = await db
+        .from('orders_core')
+        .select('*')
+        .eq('merchant_store_id', store.id)
+        .eq('formatted_order_id', formattedOrderId)
+        .maybeSingle();
+      if (coreOne) {
+        const corePk = Number((coreOne as CoreRow).id);
+        coreRows = [coreOne as CoreRow];
+        const { data: foodOne } = await db
+          .from('orders_food')
+          .select('*')
+          .eq('order_id', corePk)
+          .maybeSingle();
+        foodByCoreId = new Map();
+        if (foodOne) foodByCoreId.set(corePk, foodOne as FoodRow);
+      } else {
+        const { data: foodOne, error: foodErr } = await db
+          .from('orders_food')
+          .select('*')
+          .eq('merchant_store_id', store.id)
+          .eq('formatted_order_id', formattedOrderId)
+          .maybeSingle();
+        if (foodErr || !foodOne) {
+          return NextResponse.json({ error: 'Order not found' }, { status: 404 });
+        }
+        const f = foodOne as FoodRow;
+        const corePk = Number(f.order_id);
+        const { data: coreFromFood } = await db.from('orders_core').select('*').eq('id', corePk).single();
+        if (!coreFromFood) {
+          return NextResponse.json({ error: 'Core order not found' }, { status: 404 });
+        }
+        coreRows = [coreFromFood as CoreRow];
+        foodByCoreId = new Map([[corePk, f]]);
+      }
     } else {
       let q = db
         .from('orders_core')

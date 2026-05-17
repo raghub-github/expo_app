@@ -3,7 +3,51 @@
  * Writes to merchant_audit_logs so activity shows in the store's audit log.
  */
 
+import { createClient } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+
+function getSupabaseAdmin() {
+  return createClient(supabaseUrl, supabaseServiceKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
+
+async function resolveMerchantOwnerDisplayName(user: {
+  id: string;
+  email?: string | null;
+}): Promise<string | null> {
+  try {
+    const db = getSupabaseAdmin();
+    const { data: byUser } = await db
+      .from('merchant_parents')
+      .select('owner_name, parent_name')
+      .eq('supabase_user_id', user.id)
+      .maybeSingle();
+    const fromUser =
+      (typeof byUser?.owner_name === 'string' && byUser.owner_name.trim()) ||
+      (typeof byUser?.parent_name === 'string' && byUser.parent_name.trim()) ||
+      null;
+    if (fromUser) return fromUser;
+
+    const email = user.email?.trim();
+    if (!email) return null;
+    const { data: byEmail } = await db
+      .from('merchant_parents')
+      .select('owner_name, parent_name')
+      .eq('owner_email', email)
+      .maybeSingle();
+    return (
+      (typeof byEmail?.owner_name === 'string' && byEmail.owner_name.trim()) ||
+      (typeof byEmail?.parent_name === 'string' && byEmail.parent_name.trim()) ||
+      null
+    );
+  } catch {
+    return null;
+  }
+}
 
 export type AuditActor = {
   performed_by: 'MERCHANT' | 'ADMIN' | 'SYSTEM' | 'AREA_MANAGER';
@@ -28,7 +72,19 @@ export async function getAuditActor(): Promise<AuditActor> {
         performed_by_email: null,
       };
     }
-    const name = user.email?.split('@')[0] || user.phone || user.user_metadata?.name || 'Merchant';
+    const metaName =
+      (typeof user.user_metadata?.name === 'string' && user.user_metadata.name.trim()) ||
+      (typeof user.user_metadata?.full_name === 'string' && user.user_metadata.full_name.trim()) ||
+      null;
+    const ownerName = await resolveMerchantOwnerDisplayName({
+      id: user.id,
+      email: user.email ?? null,
+    });
+    const name =
+      ownerName ||
+      metaName ||
+      user.phone ||
+      'Merchant';
     const email = user.email ?? null;
     return {
       performed_by: 'MERCHANT',

@@ -41,6 +41,7 @@ export async function syncMerchantStoresOnlineTriple(
           WHEN ${online} THEN 'OPEN'::store_operational_status
           ELSE 'CLOSED'::store_operational_status
         END,
+        last_activity_at = NOW(),
         updated_at = NOW()
       WHERE id = ${storeId} AND parent_id = ${parentId}
     `;
@@ -55,6 +56,7 @@ export async function syncMerchantStoresOnlineTriple(
           WHEN ${online} THEN 'OPEN'::store_operational_status
           ELSE 'CLOSED'::store_operational_status
         END,
+        last_activity_at = NOW(),
         updated_at = NOW()
       WHERE id = ${storeId}
     `;
@@ -525,7 +527,7 @@ function isInBreakBetweenSlots(
   return minutesSinceMidnight >= s1End && minutesSinceMidnight < s2Start;
 }
 
-function isBeforeFirstSlotToday(
+export function isBeforeFirstSlotToday(
   row: Record<string, unknown>,
   dayOfWeek: number,
   minutesSinceMidnight: number
@@ -840,6 +842,9 @@ export { nowInStoreTz };
 type StoreRow = {
   store_id: number;
   timezone?: string | null;
+  operational_status?: string | null;
+  /** `merchant_stores.is_available` (distinct from joined `msa.is_available` → `StoreRow.is_available`) */
+  ms_is_available?: boolean | null;
   is_accepting_orders: boolean | null;
   is_active: boolean | null;
   auto_open_from_schedule: boolean | null;
@@ -852,6 +857,20 @@ type StoreRow = {
   is_manual_override: boolean | null;
   schedule_end_prompt_expires_at: Date | string | null;
 };
+
+/** When `operational_status` is already CLOSED but an orphan boolean stayed TRUE, strict `currentlyOpen` misses — still run close/repair. */
+function storeRowShowsStaleOnlineSignals(store: StoreRow): boolean {
+  return (
+    String(store.operational_status ?? "").trim().toUpperCase() === "OPEN" ||
+    store.is_active === true ||
+    store.is_accepting_orders === true ||
+    store.ms_is_available === true
+  );
+}
+
+function shouldForceScheduleClose(currentlyOpen: boolean, store: StoreRow): boolean {
+  return currentlyOpen || storeRowShowsStaleOnlineSignals(store);
+}
 
 export async function runStoreScheduleTick(log: { info: (o: object, msg?: string) => void; error: (o: object, msg?: string) => void }): Promise<void> {
   const maxAttempts = 3;
@@ -885,8 +904,10 @@ async function runStoreScheduleTickOnce(
   const storeRows = await sql`
       SELECT
         ms.id AS store_id,
+        ms.operational_status,
         ms.is_accepting_orders,
         ms.is_active,
+        ms.is_available AS ms_is_available,
         msa.auto_open_from_schedule,
         msa.block_auto_open,
         msa.manual_close_until,
@@ -1005,7 +1026,7 @@ async function runStoreScheduleTickOnce(
         // Vacation mode (scheduled closure active): force OFFLINE and ignore manual toggles/schedule.
         const closureEndsAtIso = activeClosureEndByStore.get(storeId) ?? null;
         if (closureEndsAtIso) {
-          if (currentlyOpen) {
+          if (shouldForceScheduleClose(currentlyOpen, store as StoreRow)) {
             await syncMerchantStoresOnlineTriple(sql, storeId, false);
           }
           await sql`
@@ -1033,7 +1054,7 @@ async function runStoreScheduleTickOnce(
 
         // Fail-safe: no hours config => treat as closed (1. Schedule closed)
         if (!hoursRow) {
-          if (currentlyOpen && autoOpen) {
+          if (shouldForceScheduleClose(currentlyOpen, store as StoreRow) && autoOpen) {
             await syncMerchantStoresOnlineTriple(sql, storeId, false);
             await applyScheduleExpired(sql, storeId, log);
           }
@@ -1041,7 +1062,7 @@ async function runStoreScheduleTickOnce(
         }
 
         // Scheduled off day: force CLOSED (manual override cannot keep store online)
-        if (isTodayScheduledClosed && currentlyOpen) {
+        if (isTodayScheduledClosed && shouldForceScheduleClose(currentlyOpen, store as StoreRow)) {
           await syncMerchantStoresOnlineTriple(sql, storeId, false);
           await applyScheduleClosed(sql, storeId, log);
           continue;
@@ -1049,7 +1070,7 @@ async function runStoreScheduleTickOnce(
 
         // 5. Forced lock
         if (blockAutoOpen) {
-          if (currentlyOpen) {
+          if (shouldForceScheduleClose(currentlyOpen, store as StoreRow)) {
             await syncMerchantStoresOnlineTriple(sql, storeId, false);
             await applyForcedLock(sql, storeId, log);
           }
@@ -1075,13 +1096,14 @@ async function runStoreScheduleTickOnce(
           // 3. Outside hours (break, before first slot, mid-day gap, after final slot):
           //
           //    Priority order:
-          //      a. `is_manual_override = true`  → merchant explicitly turned the store ON
-          //         outside schedule. Skip auto-close so the override actually sticks.
+          //      a. `is_manual_override = true` → skip auto-close (override sticks), except
+          //         before today's first operating slot (`isBeforeFirstSlotToday`), where OPEN
+          //         stays disallowed until the slot starts when auto-open is enabled.
           //      b. Active `merchant_store_rush_windows` row → skip auto-close.
           //      c. Otherwise → close IMMEDIATELY at the slot boundary (no 5-minute end-of-
           //         day prompt). Slot boundaries come from `merchant_store_operating_hours`.
-          if (currentlyOpen) {
-            if (isManualOverride) continue;
+          if (shouldForceScheduleClose(currentlyOpen, store as StoreRow)) {
+            if (isManualOverride && !isBeforeFirstSlotToday(hoursRow, dayOfWeek, minutesSinceMidnight)) continue;
             if (rushActiveStoreIds.has(storeId)) continue;
 
             if (shouldCloseOutsideHoursImmediately(hoursRow, dayOfWeek, minutesSinceMidnight)) {
@@ -1145,8 +1167,10 @@ export async function runStoreScheduleTickForStore(
     const storeRows = await sql`
       SELECT
         ms.id AS store_id,
+        ms.operational_status,
         ms.is_accepting_orders,
         ms.is_active,
+        ms.is_available AS ms_is_available,
         msa.auto_open_from_schedule,
         msa.block_auto_open,
         msa.manual_close_until,
@@ -1201,7 +1225,9 @@ export async function runStoreScheduleTickForStore(
       const endsAt = new Date(endsAtRaw instanceof Date ? endsAtRaw.toISOString() : String(endsAtRaw));
       const endsAtIso = Number.isNaN(endsAt.getTime()) ? null : endsAt.toISOString();
       if (endsAtIso) {
-        if (currentlyOpen) await syncMerchantStoresOnlineTriple(sql, storeId, false);
+        if (shouldForceScheduleClose(currentlyOpen, store as StoreRow)) {
+          await syncMerchantStoresOnlineTriple(sql, storeId, false);
+        }
         await sql`
           UPDATE merchant_store_availability
           SET
@@ -1227,14 +1253,14 @@ export async function runStoreScheduleTickForStore(
     }
 
     if (!hoursRow) {
-      if (currentlyOpen && autoOpen) {
+      if (shouldForceScheduleClose(currentlyOpen, store as StoreRow) && autoOpen) {
         await syncMerchantStoresOnlineTriple(sql, storeId, false);
         await applyScheduleExpired(sql, storeId, log);
       }
       return;
     }
     if (blockAutoOpen) {
-      if (currentlyOpen) {
+      if (shouldForceScheduleClose(currentlyOpen, store as StoreRow)) {
         await syncMerchantStoresOnlineTriple(sql, storeId, false);
         await applyForcedLock(sql, storeId, log);
       }
@@ -1254,8 +1280,13 @@ export async function runStoreScheduleTickForStore(
       // Outside hours: same priority as `runStoreScheduleTickOnce` — manual override + rush
       // window first, then immediate close at the slot boundary read from
       // `merchant_store_operating_hours`. No 5-minute end-of-day prompt.
-      if (currentlyOpen) {
-        if (isManualOverride) return;
+      if (shouldForceScheduleClose(currentlyOpen, store as StoreRow)) {
+        if (
+          isManualOverride &&
+          !isBeforeFirstSlotToday(hoursRow, dayOfWeek, minutesSinceMidnight)
+        ) {
+          return;
+        }
         const rushRows = await sql`
           SELECT 1
           FROM merchant_store_rush_windows

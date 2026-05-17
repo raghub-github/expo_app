@@ -16,6 +16,7 @@ import { GatiMitraMerchant, H_PADDING, TAB_BAR_SCROLL_CONTENT_PADDING } from "@/
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import { getRushStatus, startRushWindow, stopRushWindow } from "@/services/rushApi";
+import { formatStoreActionSourceLabel } from "@/lib/storeActionSource";
 
 const DURATION_OPTIONS = [
   { id: "30", label: "30 minutes", minutes: 30 },
@@ -37,6 +38,7 @@ export default function PreparationTimeScreen() {
   const [activeDurationId, setActiveDurationId] = useState<string | null>(null);
   const [confirmVisible, setConfirmVisible] = useState(false);
   const [rushActive, setRushActive] = useState(false);
+  const [rushSourceLabel, setRushSourceLabel] = useState<string | null>(null);
 
   const storeId = selectedStore?.id ?? null;
 
@@ -54,6 +56,9 @@ export default function PreparationTimeScreen() {
         const isActive = status.is_active && status.remaining_minutes > 0;
         setRemainingMinutes(isActive ? status.remaining_minutes : 0);
         setRushActive(isActive);
+        setRushSourceLabel(
+          isActive ? formatStoreActionSourceLabel(status.marked_from) : null
+        );
         if (status.is_active && status.duration_minutes != null) {
           const match = DURATION_OPTIONS.find(
             (o) => o.minutes === status.duration_minutes
@@ -87,6 +92,9 @@ export default function PreparationTimeScreen() {
       const isActive = status.is_active && status.remaining_minutes > 0;
       setRemainingMinutes(isActive ? status.remaining_minutes : 0);
       setRushActive(isActive);
+      setRushSourceLabel(
+        isActive ? formatStoreActionSourceLabel(status.marked_from) ?? "Merchant app" : null
+      );
       setSelectedId(null);
       const match = DURATION_OPTIONS.find(
         (o) => o.minutes === status.duration_minutes
@@ -102,7 +110,9 @@ export default function PreparationTimeScreen() {
 
   const activeLabel =
     rushActive && remainingMinutes > 0
-      ? `Rush mode is active for the next ~${remainingMinutes} minutes.`
+      ? `Rush mode is active for the next ~${remainingMinutes} minutes.${
+          rushSourceLabel ? ` Set via ${rushSourceLabel}.` : ""
+        }`
       : "Rush mode is currently OFF.";
 
   const handleToggleRush = (next: boolean) => {
@@ -129,6 +139,7 @@ export default function PreparationTimeScreen() {
                 const status = await stopRushWindow(storeId, token);
                 const isActive = status.is_active && status.remaining_minutes > 0;
                 setRushActive(isActive);
+                setRushSourceLabel(null);
                 setRemainingMinutes(isActive ? status.remaining_minutes : 0);
                 setActiveDurationId(null);
               } catch {

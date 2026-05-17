@@ -137,14 +137,18 @@ export async function GET(req: NextRequest) {
     });
 
     let pending_withdrawal_total = 0;
+    let in_process_withdrawal_total = 0;
     try {
       const { data: payoutRows } = await db
         .from('merchant_payout_requests')
-        .select('net_payout_amount')
+        .select('net_payout_amount, status')
         .eq('wallet_id', walletId)
         .in('status', ['PENDING', 'APPROVED', 'PROCESSING']);
       (payoutRows || []).forEach((row) => {
-        pending_withdrawal_total += Number(row.net_payout_amount ?? 0);
+        const amt = Number(row.net_payout_amount ?? 0);
+        const st = String(row.status ?? '').toUpperCase();
+        if (st === 'PENDING') pending_withdrawal_total += amt;
+        else if (st === 'APPROVED' || st === 'PROCESSING') in_process_withdrawal_total += amt;
       });
     } catch {
       // Table may not exist or RLS may block
@@ -170,6 +174,7 @@ export async function GET(req: NextRequest) {
       today_earning: roundMoney(today_earning),
       yesterday_earning: roundMoney(yesterday_earning),
       pending_withdrawal_total: roundMoney(pending_withdrawal_total),
+      in_process_withdrawal_total: roundMoney(in_process_withdrawal_total),
     });
   } catch (e) {
     console.error('[merchant/wallet]', e);

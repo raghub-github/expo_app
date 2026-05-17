@@ -10,6 +10,11 @@ import { fetchRestaurantById as fetchStoreById, fetchRestaurantByName as fetchSt
 import { MerchantStore } from '@/lib/merchantStore'
 import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants'
 import { clientStoreOpsDebugLog } from '@/lib/store-ops-client-debug'
+import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline'
+import {
+  PARTNER_STORE_OPERATIONS_REFRESH_EVENT,
+  type PartnerStoreOperationsRefreshDetail,
+} from '@/lib/partnerStoreOperationsRefresh'
 import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback'
 import {
   Power,
@@ -31,12 +36,14 @@ import {
   Table2,
   Download,
   Funnel,
+  CalendarClock,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Suspense } from 'react'
 
 import { UI_STRINGS, useLocalStoreStatusEngineStore } from '@/lib/localStoreStatusEngineStore'
 import { formatCloseReasonForCard } from '@/lib/formatCloseReasonForCard'
+import { formatStoreActionSourceLabel } from '@/lib/storeActionSource'
 
 import { PageSkeletonDashboard } from '@/components/PageSkeleton';
 import { createClient } from '@/lib/supabase/client';
@@ -135,6 +142,57 @@ const FILTER_SHEET_CATEGORIES = [
 
 type FilterCategoryId = (typeof FILTER_SHEET_CATEGORIES)[number]['id']
 
+type ScheduledTimeOffRow = {
+  id: number
+  reason: string | null
+  starts_at: string
+  ends_at: string
+  status: string
+  phase: 'active' | 'upcoming'
+  marked_from: string | null
+}
+
+type ActiveRushRow = {
+  is_active: boolean
+  remaining_minutes: number
+  marked_from: string | null
+}
+
+function parseScheduledTimeOffsFromApi(raw: unknown): ScheduledTimeOffRow[] {
+  if (!Array.isArray(raw)) return []
+  const out: ScheduledTimeOffRow[] = []
+  for (const item of raw) {
+    if (item == null || typeof item !== 'object') continue
+    const o = item as Record<string, unknown>
+    const id = Number(o.id)
+    const starts_at = typeof o.starts_at === 'string' ? o.starts_at : ''
+    const ends_at = typeof o.ends_at === 'string' ? o.ends_at : ''
+    const status = typeof o.status === 'string' ? o.status : ''
+    const phaseRaw = o.phase
+    const phase = phaseRaw === 'active' || phaseRaw === 'upcoming' ? phaseRaw : null
+    const reason =
+      typeof o.reason === 'string' && o.reason.trim() !== '' ? o.reason.trim() : null
+    const marked_from =
+      o.marked_from != null && String(o.marked_from).trim() !== '' ? String(o.marked_from).trim() : null
+    if (!Number.isFinite(id) || !starts_at || !ends_at || !phase) continue
+    out.push({ id, reason, starts_at, ends_at, status, phase, marked_from })
+  }
+  return out
+}
+
+function parseActiveRushFromApi(raw: unknown): ActiveRushRow | null {
+  if (raw == null || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  if (o.is_active !== true) return null
+  const remaining = Number(o.remaining_minutes)
+  return {
+    is_active: true,
+    remaining_minutes: Number.isFinite(remaining) ? remaining : 0,
+    marked_from:
+      o.marked_from != null && String(o.marked_from).trim() !== '' ? String(o.marked_from).trim() : null,
+  }
+}
+
 function DashboardContent() {
   const router = useRouter()
   const pathname = usePathname()
@@ -162,6 +220,7 @@ function DashboardContent() {
   const [opensAt, setOpensAt] = useState<string | null>(null)
   const [countdownTick, setCountdownTick] = useState(0)
   const [manualActivationLock, setManualActivationLock] = useState(false)
+  const [licenseBlockedForOps, setLicenseBlockedForOps] = useState(false)
   /** From GET /api/store-operations — close reason line (dashboard parity). */
   const [closeReasonFromOps, setCloseReasonFromOps] = useState<string | null>(null)
   const [schedulePhase, setSchedulePhase] = useState<string | null>(null)
@@ -173,6 +232,14 @@ function DashboardContent() {
   const [countdownAt, setCountdownAt] = useState<string | null>(null)
   const [countdownKind, setCountdownKind] = useState<string | null>(null)
   const [countdownWallLabel, setCountdownWallLabel] = useState<string | null>(null)
+  const [scheduledTimeOffs, setScheduledTimeOffs] = useState<ScheduledTimeOffRow[]>([])
+  const [activeRush, setActiveRush] = useState<ActiveRushRow | null>(null)
+
+  const storeTimeZone = useMemo(() => {
+    const tz = (store as { timezone?: string | null } | null)?.timezone
+    const t = typeof tz === 'string' ? tz.trim() : ''
+    return t !== '' ? t : 'Asia/Kolkata'
+  }, [store])
 
   const closeReasonDisplay = useMemo(() => {
     const r = closeReasonFromOps != null && String(closeReasonFromOps).trim() !== '' ? String(closeReasonFromOps).trim() : null
@@ -199,15 +266,11 @@ function DashboardContent() {
     return null
   }, [cardDisplaySlots])
 
-  const showOpensCountdownLegacy =
-    !isStoreOpen && !!opensAt && !withinHoursButRestricted && !countdownAt
-
-  const activeCountdownAt = countdownAt ?? (showOpensCountdownLegacy ? opensAt : null)
+  /** Prefer server countdown; fallback to opens_at, then next_schedule_transition_at so closed stores always get a target when the API provides one. */
+  const activeCountdownAt = countdownAt ?? opensAt ?? nextScheduleTransitionAt ?? null
 
   const showScheduleCountdown =
-    !!activeCountdownAt &&
-    !withinHoursButRestricted &&
-    (countdownKind != null || showOpensCountdownLegacy)
+    !isStoreOpen && !withinHoursButRestricted && !!activeCountdownAt
 
   const opensCountdownLabel = useMemo(() => {
     if (countdownKind === 'break_starts_in') return 'Break starts in'
@@ -217,10 +280,27 @@ function DashboardContent() {
     }
     if (schedulePhase === 'BREAK') return 'Reopens in'
     if (schedulePhase === 'PRE_BREAK') return 'Break starts in'
+    if (!isStoreOpen && schedulePhase === 'OUTSIDE_HOURS') return 'Opens in'
+    if (!isStoreOpen && countdownKind == null && activeCountdownAt) return 'Opens in'
     return 'Opens in'
-  }, [countdownKind, isTodayScheduledClosed, schedulePhase])
+  }, [countdownKind, isTodayScheduledClosed, schedulePhase, isStoreOpen, activeCountdownAt])
 
-  const countdownTargetWallLabel = countdownWallLabel
+  const countdownSubtitleWallLabel = useMemo(() => {
+    if (countdownWallLabel && String(countdownWallLabel).trim() !== '') return countdownWallLabel
+    if (!activeCountdownAt) return null
+    try {
+      return new Date(activeCountdownAt).toLocaleString('en-IN', {
+        weekday: 'short',
+        day: 'numeric',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+      })
+    } catch {
+      return null
+    }
+  }, [countdownWallLabel, activeCountdownAt])
 
   const formatHmsCountdown = React.useCallback((ms: number) => {
     if (ms <= 0) return '00:00:00'
@@ -231,7 +311,48 @@ function DashboardContent() {
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
   }, [])
 
+  const formatScheduledTimeOffWindow = React.useCallback(
+    (startsAt: string, endsAt: string) => {
+      try {
+        const s = new Date(startsAt)
+        const e = new Date(endsAt)
+        if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) {
+          return { primary: `${startsAt} – ${endsAt}`, secondary: null as string | null }
+        }
+        const dOpts: Intl.DateTimeFormatOptions = {
+          timeZone: storeTimeZone,
+          weekday: 'short',
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        }
+        const tOpts: Intl.DateTimeFormatOptions = {
+          timeZone: storeTimeZone,
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true,
+        }
+        const d1 = s.toLocaleDateString('en-IN', dOpts)
+        const d2 = e.toLocaleDateString('en-IN', dOpts)
+        const t1 = s.toLocaleTimeString('en-IN', tOpts)
+        const t2 = e.toLocaleTimeString('en-IN', tOpts)
+        if (d1 === d2) return { primary: d1, secondary: `${t1} – ${t2}` }
+        return { primary: `${d1}, ${t1} → ${d2}, ${t2}`, secondary: null }
+      } catch {
+        return { primary: `${startsAt} – ${endsAt}`, secondary: null }
+      }
+    },
+    [storeTimeZone]
+  )
+
   const storeStatusBadge = useMemo(() => {
+    if (scheduledTimeOffs.some((x) => x.phase === 'active')) {
+      return {
+        label: 'Sheduled-off Active',
+        dot: 'bg-rose-600',
+        pill: 'bg-rose-500/10 text-rose-950 ring-1 ring-rose-500/25',
+      }
+    }
     if (isTodayScheduledClosed || schedulePhase === 'OFF_DAY') {
       return {
         label: 'Scheduled Off',
@@ -261,10 +382,13 @@ function DashboardContent() {
       }
     }
     if (isStoreOpen) {
+      const hasUpcoming = scheduledTimeOffs.some((x) => x.phase === 'upcoming')
       return {
-        label: 'Open',
+        label: hasUpcoming ? 'Open ' : 'Open',
         dot: 'bg-emerald-500 animate-pulse',
-        pill: 'bg-emerald-500/10 text-emerald-800 ring-1 ring-emerald-500/20',
+        pill: hasUpcoming
+          ? 'bg-emerald-500/10 text-emerald-900 ring-1 ring-amber-400/50'
+          : 'bg-emerald-500/10 text-emerald-800 ring-1 ring-emerald-500/20',
       }
     }
     return {
@@ -272,7 +396,33 @@ function DashboardContent() {
       dot: 'bg-red-500',
       pill: 'bg-red-500/10 text-red-800 ring-1 ring-red-500/20',
     }
-  }, [isTodayScheduledClosed, schedulePhase, restrictionType, isStoreOpen, countdownKind])
+  }, [
+    scheduledTimeOffs,
+    isTodayScheduledClosed,
+    schedulePhase,
+    restrictionType,
+    isStoreOpen,
+    countdownKind,
+  ])
+
+  /** Earliest upcoming scheduled time-off start (relative to now), live via countdownTick */
+  const showScheduledOffStartsCountdown =
+    isStoreOpen &&
+    !scheduledTimeOffs.some((x) => x.phase === 'active') &&
+    scheduledTimeOffs.some((x) => x.phase === 'upcoming')
+
+  const scheduledOffStartsInMs = useMemo(() => {
+    void countdownTick
+    let bestTs: number | null = null
+    const now = Date.now()
+    for (const row of scheduledTimeOffs) {
+      if (row.phase !== 'upcoming') continue
+      const t = new Date(row.starts_at).getTime()
+      if (Number.isNaN(t) || t <= now) continue
+      if (bestTs === null || t < bestTs) bestTs = t
+    }
+    return bestTs == null ? null : bestTs - now
+  }, [scheduledTimeOffs, countdownTick])
 
   // Store close: popup modal (no in-card expansion)
   const [showClosePopup, setShowClosePopup] = useState(false)
@@ -477,15 +627,19 @@ function DashboardContent() {
       const res = await fetch(`/api/store-operations?store_id=${encodeURIComponent(storeId)}`)
       const data = await res.json()
       if (res.ok) {
+        const surfaceOnline = partnerSurfaceOnlineFromStoreOperationsBody(data as Record<string, unknown>)
         clientStoreOpsDebugLog('dashboard fetchStoreOperations', {
           storeId,
           operational_status: data.operational_status,
+          within_operating_hours: data.within_operating_hours,
+          surface_online: surfaceOnline,
           last_toggle_type: data.last_toggle_type,
           last_toggled_at: data.last_toggled_at,
           restriction_type: data.restriction_type,
           within_hours_but_restricted: data.within_hours_but_restricted,
         })
-        setIsStoreOpen(data.operational_status === 'OPEN')
+        const openForPartnerUi = surfaceOnline ?? false
+        setIsStoreOpen(openForPartnerUi)
         setOpensAt(data.opens_at ?? null)
         const slots = (data.today_slots || []) as { start: string; end: string }[]
         setTodaySlots(slots)
@@ -517,6 +671,7 @@ function DashboardContent() {
         setWithinHoursButRestricted(data.within_hours_but_restricted === true)
         setLastToggledAt(data.last_toggled_at || null)
         setManualActivationLock(data.block_auto_open === true)
+        setLicenseBlockedForOps(data.license_blocked === true)
         setCloseReasonFromOps(
           typeof data.close_reason === 'string' && data.close_reason.trim() !== '' ? data.close_reason.trim() : null
         )
@@ -534,17 +689,21 @@ function DashboardContent() {
         setCountdownWallLabel(
           typeof data.countdown_wall_label === 'string' ? data.countdown_wall_label : null
         )
+        setScheduledTimeOffs(parseScheduledTimeOffsFromApi((data as { scheduled_time_offs?: unknown }).scheduled_time_offs))
+        setActiveRush(parseActiveRushFromApi((data as { active_rush?: unknown }).active_rush))
         if (data.schedule_end_prompt_active === true) {
           engine.openScheduleEndModal()
         }
         useLocalStoreStatusEngineStore.getState().syncFromStoreOperations({
-          operationalOpen: data.operational_status === 'OPEN',
+          operationalOpen: openForPartnerUi,
           manualCloseUntil: manualUntil,
           manualCloseReason: closeReason,
         })
       } else {
         setTodaySlots([])
         setCloseReasonFromOps(null)
+        setScheduledTimeOffs([])
+        setActiveRush(null)
       }
     } catch {
       // keep current state
@@ -553,6 +712,18 @@ function DashboardContent() {
 
   useEffect(() => {
     if (storeId) fetchStoreOperations()
+  }, [storeId, fetchStoreOperations])
+
+  // Header / schedule sheet updates store-operations fetch there first — mirror here without reload.
+  useEffect(() => {
+    if (!storeId || typeof window === 'undefined') return
+    const onRefresh = (ev: Event) => {
+      const ce = ev as CustomEvent<PartnerStoreOperationsRefreshDetail>
+      const sid = ce.detail?.storeId
+      if (sid && sid === storeId) void fetchStoreOperations()
+    }
+    window.addEventListener(PARTNER_STORE_OPERATIONS_REFRESH_EVENT, onRefresh as EventListener)
+    return () => window.removeEventListener(PARTNER_STORE_OPERATIONS_REFRESH_EVENT, onRefresh as EventListener)
   }, [storeId, fetchStoreOperations])
 
   // Poll store-operations: faster near slot/break boundaries, otherwise every 30s
@@ -600,23 +771,43 @@ function DashboardContent() {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'merchant_stores', filter: `id=eq.${storeInternalId}` }, () => { fetchStoreOperations() })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'merchant_store_availability', filter: `store_id=eq.${storeInternalId}` }, () => { fetchStoreOperations() })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'merchant_store_operating_hours', filter: `store_id=eq.${storeInternalId}` }, () => { fetchStoreOperations() })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'merchant_store_scheduled_closures', filter: `store_id=eq.${storeInternalId}` }, () => { fetchStoreOperations() })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'merchant_store_holidays', filter: `store_id=eq.${storeInternalId}` }, () => { fetchStoreOperations() })
       .subscribe()
     return () => { ch.unsubscribe() }
   }, [storeInternalId, storeId, fetchStoreOperations])
 
-  // Live countdown: 1s tick (break, pre-break, opens-at) — no page refresh
+  // Live countdown: 1s tick for closed-store opens/break countdown + badge countdown until scheduled time-off starts
   useEffect(() => {
-    if (!showScheduleCountdown || !activeCountdownAt) return
+    const needClosedCountdown = showScheduleCountdown && !!activeCountdownAt
+    const needsUpcomingScheduledOffTick =
+      isStoreOpen &&
+      !scheduledTimeOffs.some((x) => x.phase === 'active') &&
+      scheduledTimeOffs.some((x) => x.phase === 'upcoming')
+    if (!needClosedCountdown && !needsUpcomingScheduledOffTick) return
     const t = setInterval(() => {
-      const ms = new Date(activeCountdownAt).getTime() - Date.now()
-      if (ms <= 0) {
-        void fetchStoreOperations()
-        return
+      if (needClosedCountdown && activeCountdownAt) {
+        const ms = new Date(activeCountdownAt).getTime() - Date.now()
+        if (ms <= 0) {
+          void fetchStoreOperations()
+          return
+        }
+      }
+      if (needsUpcomingScheduledOffTick) {
+        const now = Date.now()
+        let best: number | null = null
+        for (const row of scheduledTimeOffs) {
+          if (row.phase !== 'upcoming') continue
+          const st = new Date(row.starts_at).getTime()
+          if (Number.isNaN(st) || st <= now) continue
+          if (best === null || st < best) best = st
+        }
+        if (best === null || best <= now) void fetchStoreOperations()
       }
       setCountdownTick((n) => n + 1)
     }, 1000)
     return () => clearInterval(t)
-  }, [showScheduleCountdown, activeCountdownAt, fetchStoreOperations])
+  }, [showScheduleCountdown, activeCountdownAt, fetchStoreOperations, isStoreOpen, scheduledTimeOffs])
 
   // Re-sync when store shows OPEN but schedule says outside hours (break / before slot)
   useEffect(() => {
@@ -653,6 +844,12 @@ function DashboardContent() {
   // Save manual activation lock to database
   const saveManualActivationLock = React.useCallback(async (enabled: boolean) => {
     if (!storeId) return;
+    if (licenseBlockedForOps) {
+      toast.error(
+        'Manual activation lock cannot be changed while the store is closed due to an expired licence. Upload and verify your licence first.'
+      );
+      return;
+    }
     try {
       const res = await fetch('/api/store-operations', {
         method: 'POST',
@@ -691,7 +888,7 @@ function DashboardContent() {
       // Revert toggle on error
       setManualActivationLock(!enabled);
     }
-  }, [storeId, fetchStoreOperations]);
+  }, [storeId, fetchStoreOperations, licenseBlockedForOps]);
 
   // Audit log lines for store card (e.g. last close reason)
   useEffect(() => {
@@ -1221,10 +1418,22 @@ function DashboardContent() {
                           </span>
                           <h2 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Store status</h2>
                           <span
-                            className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${storeStatusBadge.pill}`}
+                            className={`inline-flex max-w-full flex-wrap items-center gap-x-2 gap-y-0.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${storeStatusBadge.pill}`}
                           >
-                            <span className={`h-1.5 w-1.5 rounded-full ${storeStatusBadge.dot}`} />
-                            {storeStatusBadge.label}
+                            <span className="inline-flex min-w-0 items-center gap-1.5">
+                              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${storeStatusBadge.dot}`} />
+                              <span className="min-w-0">{storeStatusBadge.label}</span>
+                            </span>
+                            {showScheduledOffStartsCountdown && scheduledOffStartsInMs != null ? (
+                              <span
+                                className="inline-flex shrink-0 items-center border-l border-current/20 pl-2 tabular-nums text-[10px] font-semibold opacity-95"
+                                aria-live="polite"
+                              >
+                                {scheduledOffStartsInMs <= 0
+                                  ? 'Starting soon'
+                                  : `Starts in ${formatHmsCountdown(scheduledOffStartsInMs)}`}
+                              </span>
+                            ) : null}
                           </span>
                         </div>
                         {cardDisplaySlots.length === 0 ? (
@@ -1272,6 +1481,61 @@ function DashboardContent() {
                       </button>
                     </div>
                     <div className="flex-1 min-h-0 flex flex-col gap-1.5 mt-2">
+                      {scheduledTimeOffs.length > 0 && (
+                        <div className="rounded-lg bg-amber-50/95 px-2.5 py-2 ring-1 ring-amber-200/80">
+                          <div className="flex items-start gap-2">
+                            <CalendarClock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-800" aria-hidden />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-[10px] font-bold uppercase tracking-wide text-amber-950">
+                                Scheduled time-off
+                              </p>
+                              <ul className="mt-1.5 space-y-1.5">
+                                {scheduledTimeOffs.map((row) => {
+                                  const { primary, secondary } = formatScheduledTimeOffWindow(
+                                    row.starts_at,
+                                    row.ends_at
+                                  )
+                                  return (
+                                    <li key={row.id} className="text-[11px] leading-snug text-amber-950">
+                                      <span
+                                        className={`font-semibold ${
+                                          row.phase === 'active' ? 'text-rose-800' : 'text-amber-900'
+                                        }`}
+                                      >
+                                        {row.phase === 'active' ? 'Active' : 'Upcoming'}
+                                      </span>
+                                      <span className="text-amber-950/90">
+                                        {' '}
+                                        · {primary}
+                                        {secondary ? ` · ${secondary}` : ''}
+                                        {row.reason ? ` · ${row.reason}` : ''}
+                                        {row.marked_from
+                                          ? ` · via ${formatStoreActionSourceLabel(row.marked_from) ?? row.marked_from}`
+                                          : ''}
+                                      </span>
+                                    </li>
+                                  )
+                                })}
+                              </ul>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      {activeRush && activeRush.remaining_minutes > 0 && (
+                        <div className="rounded-lg bg-orange-50/95 px-2.5 py-2 ring-1 ring-orange-200/80">
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-orange-950">Rush hour</p>
+                          <p className="mt-1 text-[11px] leading-snug text-orange-950">
+                            <span className="font-semibold text-orange-900">Active</span>
+                            <span className="text-orange-950/90">
+                              {' '}
+                              · ~{activeRush.remaining_minutes} min left
+                              {activeRush.marked_from
+                                ? ` · via ${formatStoreActionSourceLabel(activeRush.marked_from) ?? activeRush.marked_from}`
+                                : ''}
+                            </span>
+                          </p>
+                        </div>
+                      )}
                       {!isTodayScheduledClosed && scheduleStatusLabel && !isStoreOpen && schedulePhase !== 'BREAK' && (
                         <p className="text-[10px] font-medium text-slate-500">{scheduleStatusLabel}</p>
                       )}
@@ -1294,15 +1558,15 @@ function DashboardContent() {
                                 {opensCountdownLabel}{' '}
                                 <span className="tabular-nums">{countdownText}</span>
                               </span>
-                              {countdownTargetWallLabel && ms > 0 && (
+                              {countdownSubtitleWallLabel && ms > 0 && (
                                 <>
                                   <span className={`${dotClass} shrink-0`} aria-hidden>
                                     ·
                                   </span>
                                   <span className={`text-[10px] font-medium whitespace-nowrap ${subClass}`}>
                                     {countdownKind === 'reopens_in' || schedulePhase === 'BREAK'
-                                      ? `Next slot at ${countdownTargetWallLabel}`
-                                      : `At ${countdownTargetWallLabel}`}
+                                      ? `Next slot at ${countdownSubtitleWallLabel}`
+                                      : `At ${countdownSubtitleWallLabel}`}
                                   </span>
                                 </>
                               )}
@@ -1321,24 +1585,30 @@ function DashboardContent() {
                           Last:{' '}
                           {(() => {
                             const typeUp = String(lastToggleType || '').toUpperCase()
-                            const timeStr = new Date(lastToggledAt).toLocaleTimeString('en-IN', {
+                            const toggledAtDate = new Date(lastToggledAt)
+                            const timeStr = toggledAtDate.toLocaleTimeString('en-IN', {
                               hour: '2-digit',
                               minute: '2-digit',
                               second: '2-digit',
                               hour12: true,
+                            })
+                            const dateStr = toggledAtDate.toLocaleDateString('en-IN', {
+                              day: 'numeric',
+                              month: 'short',
+                              year: 'numeric',
                             })
                             const email = lastToggleBy || ''
                             const emailNorm = String(email).toLowerCase()
                             const isGatiMitraAgent =
                               emailNorm.includes('gatimitra') || emailNorm.endsWith('@gatimitra.in') || emailNorm.endsWith('@gatimitra.com')
                             if (typeUp.startsWith('AUTO')) {
-                              return `${isStoreOpen ? 'Auto on' : 'Auto closed'} · ${timeStr}`
+                              return `${isStoreOpen ? 'Auto on' : 'Auto closed'} · ${timeStr} · ${dateStr}`
                             }
                             if (isGatiMitraAgent) {
-                              return `${isStoreOpen ? 'Opened' : 'Closed'} by GatiMitra (agent: ${email || 'unknown'}) · ${timeStr}`
+                              return `${isStoreOpen ? 'Opened' : 'Closed'} by GatiMitra (agent: ${email || 'unknown'}) · ${timeStr} · ${dateStr}`
                             }
                             const who = lastToggledByName || lastToggleBy || 'Owner'
-                            return `${isStoreOpen ? 'Opened' : 'Closed'} by ${who}${storeId ? ` (ID: ${storeId})` : ''} · ${timeStr}`
+                            return `${isStoreOpen ? 'Opened' : 'Closed'} by ${who}${storeId ? ` (ID: ${storeId})` : ''} · ${timeStr} · ${dateStr}`
                           })()}
                         </p>
                       )}
@@ -1346,13 +1616,28 @@ function DashboardContent() {
                     <div className="mt-auto flex items-center justify-between gap-2 pt-2.5 border-t border-slate-200/80 shrink-0">
                       <div className="min-w-0">
                         <p className="text-[11px] font-semibold text-slate-800">Manual activation lock</p>
-                        <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">Prevents automatic opening</p>
+                        <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">
+                          {licenseBlockedForOps
+                            ? 'Locked while licence is expired — upload & verify first'
+                            : 'Prevents automatic opening'}
+                        </p>
                       </div>
-                      <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                      <label
+                        className={`relative inline-flex shrink-0 items-center ${
+                          licenseBlockedForOps ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'
+                        }`}
+                        title={
+                          licenseBlockedForOps
+                            ? 'Cannot change while store is closed due to expired licence'
+                            : undefined
+                        }
+                      >
                         <input
                           type="checkbox"
                           checked={manualActivationLock}
+                          disabled={licenseBlockedForOps}
                           onChange={async (e) => {
+                            if (licenseBlockedForOps) return;
                             const newValue = e.target.checked
                             setManualActivationLock(newValue)
                             await saveManualActivationLock(newValue)

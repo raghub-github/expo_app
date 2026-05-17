@@ -97,6 +97,8 @@ export async function PATCH(
     const { getSystemUserByEmail: getSysUser } = await import("@/lib/auth/user-mapping");
     const sysUser = caller?.email ? await getSysUser(caller.email) : null;
     const updatedByUserId: number | null = sysUser ? sysUser.id : null;
+    const updatedByName =
+      sysUser?.full_name?.trim() || caller?.email?.trim() || null;
 
     const sql = getSql();
     const [existing] = await sql`
@@ -114,9 +116,18 @@ export async function PATCH(
       max_uses_total, max_uses_per_user, applicable_on_days,
       applicable_time_start, applicable_time_end, offer_metadata,
     } = body;
-    const updates: string[] = ["updated_at = NOW()", `updated_source_platform = '${updatedSourcePlatform}'`, `updated_by_role = '${updaterRole}'`, `updated_by_user_id = ${updatedByUserId ?? "NULL"}`];
+    const updates: string[] = [
+      "updated_at = NOW()",
+      `updated_source_platform = '${updatedSourcePlatform}'`,
+      `updated_by_role = '${updaterRole}'`,
+      `updated_by_user_id = ${updatedByUserId ?? "NULL"}`,
+    ];
     const values: unknown[] = [];
     let p = 1;
+    if (updatedByName) {
+      updates.push(`updated_by_name = $${p++}`);
+      values.push(updatedByName);
+    }
     if (offer_title !== undefined) { updates.push(`offer_title = $${p++}`); values.push(String(offer_title).trim()); }
     if (offer_description !== undefined) { updates.push(`offer_description = $${p++}`); values.push(offer_description == null || offer_description === "" ? null : String(offer_description)); }
     if (offer_sub_type !== undefined) { updates.push(`offer_sub_type = $${p++}`); values.push(String(offer_sub_type)); }
@@ -166,7 +177,7 @@ export async function PATCH(
     const setClause = updates.join(", ");
     const sqlUnsafe = sql as { unsafe: (q: string, v?: unknown[]) => Promise<unknown[]> };
     const [updated] = await sqlUnsafe.unsafe(
-      `UPDATE merchant_offers SET ${setClause} WHERE id = $${p} AND store_id = ${storeId} RETURNING id, offer_id, store_id, offer_title, offer_description, offer_sub_type, offer_type, coupon_code, offer_image_url, discount_value, discount_percentage, max_discount_amount, min_order_amount, max_order_amount, buy_quantity, get_quantity, is_stackable, priority, first_order_only, new_user_only, max_uses_total, max_uses_per_user, current_uses, applicable_on_days, applicable_time_start, applicable_time_end, created_source_platform, updated_source_platform, created_by_role, updated_by_role, approval_status, valid_from, valid_till, is_active, created_at, updated_at`,
+      `UPDATE merchant_offers SET ${setClause} WHERE id = $${p} AND store_id = ${storeId} RETURNING id, offer_id, store_id, offer_title, offer_description, offer_sub_type, offer_type, coupon_code, offer_image_url, discount_value, discount_percentage, max_discount_amount, min_order_amount, max_order_amount, buy_quantity, get_quantity, is_stackable, priority, first_order_only, new_user_only, max_uses_total, max_uses_per_user, current_uses, applicable_on_days, applicable_time_start, applicable_time_end, created_source_platform, updated_source_platform, created_by_role, updated_by_role, approval_status, valid_from, valid_till, is_active, created_at, updated_at, created_by_name, updated_by_name`,
       values
     );
     if (!updated) {

@@ -1,9 +1,9 @@
 /**
- * POST /api/merchant/offers
- * Create offer with audit: records created_by_name and logs to merchant_audit_logs.
+ * GET  /api/merchant/offers?storeId=GMMC… — list offers (service role, same merchant_offers table as dashboard)
+ * POST /api/merchant/offers — create offer with audit
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant';
 import { getAuditActor, logMerchantAudit } from '@/lib/audit-merchant';
@@ -16,6 +16,145 @@ function getDb() {
   return createClient(supabaseUrl, supabaseServiceKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
+}
+
+type StoreRow = {
+  id: number;
+  parent_id: number | null;
+  store_id: string;
+  store_name?: string | null;
+  store_display_name?: string | null;
+};
+
+async function resolveMerchantStore(
+  db: SupabaseClient,
+  storeIdParam: string,
+  merchantParentId: number
+): Promise<{ store: StoreRow } | { error: string; status: number }> {
+  const trimmed = String(storeIdParam).trim();
+  if (!trimmed) {
+    return { error: 'storeId is required', status: 400 };
+  }
+
+  let storeData: StoreRow | null = null;
+
+  const { data: byCode, error: byCodeErr } = await db
+    .from('merchant_stores')
+    .select('id, parent_id, store_id, store_name, store_display_name')
+    .eq('store_id', trimmed)
+    .maybeSingle();
+
+  if (!byCodeErr && byCode) {
+    storeData = byCode as StoreRow;
+  }
+
+  if (!storeData && /^\d+$/.test(trimmed)) {
+    const { data: byPk, error: byPkErr } = await db
+      .from('merchant_stores')
+      .select('id, parent_id, store_id, store_name, store_display_name')
+      .eq('id', parseInt(trimmed, 10))
+      .maybeSingle();
+    if (!byPkErr && byPk) {
+      storeData = byPk as StoreRow;
+    }
+  }
+
+  if (!storeData) {
+    return { error: 'Store not found', status: 404 };
+  }
+  if (storeData.parent_id !== merchantParentId) {
+    return { error: 'Store not accessible', status: 403 };
+  }
+  return { store: storeData };
+}
+
+function shapeTimeColumn(value: unknown): string | null {
+  if (value == null || value === '') return null;
+  const s = String(value).trim();
+  const m = s.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return s;
+  return `${m[1].padStart(2, '0')}:${m[2]}`;
+}
+
+function shapeOfferRow(row: Record<string, unknown>) {
+  const meta = (row.offer_metadata as Record<string, unknown>) || {};
+  return {
+    ...row,
+    menu_item_ids: (meta.menu_item_ids as string[]) ?? null,
+    image_url: row.offer_image_url ?? row.image_url ?? null,
+    applicable_time_start: shapeTimeColumn(row.applicable_time_start),
+    applicable_time_end: shapeTimeColumn(row.applicable_time_end),
+    applicable_on_days: Array.isArray(row.applicable_on_days) ? row.applicable_on_days : null,
+    valid_from:
+      row.valid_from != null ? new Date(row.valid_from as string).toISOString() : row.valid_from,
+    valid_till:
+      row.valid_till != null ? new Date(row.valid_till as string).toISOString() : row.valid_till,
+    created_at:
+      row.created_at != null ? new Date(row.created_at as string).toISOString() : new Date().toISOString(),
+    updated_at:
+      row.updated_at != null
+        ? new Date(row.updated_at as string).toISOString()
+        : row.created_at != null
+          ? new Date(row.created_at as string).toISOString()
+          : new Date().toISOString(),
+  };
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const storeIdParam = searchParams.get('storeId') ?? searchParams.get('store_id');
+    if (!storeIdParam) {
+      return NextResponse.json({ error: 'storeId query param required' }, { status: 400 });
+    }
+
+    const supabase = await createServerSupabaseClient();
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+    if (userError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const validation = await validateMerchantFromSession({
+      id: user.id,
+      email: user.email ?? null,
+      phone: user.phone ?? null,
+    });
+    if (!validation.isValid || validation.merchantParentId == null) {
+      return NextResponse.json({ error: validation.error ?? 'Forbidden' }, { status: 403 });
+    }
+
+    const db = getDb();
+    const resolved = await resolveMerchantStore(db, storeIdParam, validation.merchantParentId);
+    if ('error' in resolved) {
+      return NextResponse.json({ error: resolved.error }, { status: resolved.status });
+    }
+
+    const { data, error } = await db
+      .from('merchant_offers')
+      .select('*')
+      .eq('store_id', resolved.store.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('[merchant/offers] GET failed:', error);
+      return NextResponse.json({ error: error.message || 'Failed to load offers' }, { status: 500 });
+    }
+
+    const offers = (data ?? []).map((row) => shapeOfferRow(row as Record<string, unknown>));
+
+    return NextResponse.json({
+      success: true,
+      offers,
+      store_name: resolved.store.store_display_name ?? resolved.store.store_name ?? null,
+      store_id: resolved.store.store_id,
+    });
+  } catch (e) {
+    console.error('[merchant/offers] GET', e);
+    return NextResponse.json({ error: 'Server error' }, { status: 500 });
+  }
 }
 
 function generateOfferId(storeId: string): string {
@@ -47,21 +186,14 @@ export async function POST(req: NextRequest) {
     }
 
     const db = getDb();
-    const storeId = String(storeIdParam).trim();
-
-    const { data: storeData, error: storeErr } = await db
-      .from('merchant_stores')
-      .select('id, parent_id')
-      .eq('store_id', storeId)
-      .single();
-    if (storeErr || !storeData) {
-      return NextResponse.json({ error: 'Store not found' }, { status: 404 });
+    const resolved = await resolveMerchantStore(db, String(storeIdParam), validation.merchantParentId);
+    if ('error' in resolved) {
+      return NextResponse.json({ error: resolved.error }, { status: resolved.status });
     }
-    const merchantStoreId = storeData.id as number;
-    const parentId = storeData.parent_id as number | null;
-    if (parentId !== validation.merchantParentId) {
-      return NextResponse.json({ error: 'Store not accessible' }, { status: 403 });
-    }
+    const storeData = resolved.store;
+    const merchantStoreId = storeData.id;
+    const parentId = storeData.parent_id;
+    const storeId = storeData.store_id;
 
     const actor = await getAuditActor();
     const offerId = generateOfferId(storeId);

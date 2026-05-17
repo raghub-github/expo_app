@@ -49,7 +49,9 @@ export interface Offer {
   applicable_time_end: string | null;
   offer_metadata: Record<string, unknown> | null;
   created_source_platform: string | null;
+  updated_source_platform: string | null;
   created_by_role: string | null;
+  updated_by_role: string | null;
   approval_status: string | null;
   created_at: string;
   updated_at: string;

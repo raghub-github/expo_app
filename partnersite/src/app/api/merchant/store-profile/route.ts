@@ -146,12 +146,18 @@ export async function PATCH(req: NextRequest) {
           else if (typeof val === 'string') {
             updates[key] = toStoredDocumentUrl(val) ?? val;
           }
-        } else {
+        } else if (key === 'gallery_images') {
           if (Array.isArray(val)) {
-            updates[key] = val
-              .slice(0, 10)
-              .map((u: unknown) => (typeof u === 'string' ? toStoredDocumentUrl(u) ?? u : u))
-              .filter((u): u is string => typeof u === 'string' && u.length > 0);
+            const normalized = val.slice(0, 5).map((u: unknown) => {
+              if (typeof u !== 'string') return '';
+              const t = u.trim();
+              if (!t) return '';
+              return toStoredDocumentUrl(t) ?? t;
+            });
+            while (normalized.length > 0 && normalized[normalized.length - 1] === '') {
+              normalized.pop();
+            }
+            updates[key] = normalized;
           } else if (val === null || val === undefined) updates[key] = null;
         }
       }

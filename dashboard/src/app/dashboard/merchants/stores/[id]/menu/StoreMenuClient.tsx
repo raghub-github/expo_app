@@ -15,8 +15,11 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronDown,
+  ChevronUp,
   FileText,
   Layers,
+  LayoutGrid,
+  ListTree,
 } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
 import { R2Image } from "@/components/ui/R2Image";
@@ -37,6 +40,20 @@ import Link from "next/link";
 import { normalizeMenuItemImageFile, validateMenuItemImageFile } from "@/lib/menuItemImageValidationClient";
 import { ensureStoreCuisinesLinkedForItemNames } from "@/lib/merchant/ensureStoreCuisinesForItem";
 import type { MenuMediaFile } from "@/lib/merchant-menu-media";
+import {
+  MENU_PAGE_GLOBAL_STYLES,
+  menuCategoryChipActive,
+  menuCategoryChipIdle,
+  menuFilterSelect,
+  menuItemCard,
+  menuSearchInput,
+  menuStatCard,
+} from "./menu-page-styles";
+import { useMenuPageChrome } from "./menu-page-chrome-context";
+import { useMenuOutOfStock } from "./useMenuOutOfStock";
+import { MenuOutOfStockSheet } from "@/components/merchant/MenuOutOfStockSheet";
+import { MenuRestoreStockConfirm } from "@/components/merchant/MenuRestoreStockConfirm";
+import { MenuItemStockToggle } from "@/components/merchant/MenuItemStockToggle";
 
 const defaultItemFormData: ItemFormData = {
   item_name: "",
@@ -138,6 +155,10 @@ function normalizeCategory(c: {
     cuisine_id: Number.isFinite(cuisineIdNum as number) ? cuisineIdNum : undefined,
     display_order: c.display_order ?? undefined,
     is_active: c.is_active !== false,
+    out_of_stock_manual: Boolean((c as { out_of_stock_manual?: boolean }).out_of_stock_manual),
+    out_of_stock_until: ((c as { out_of_stock_until?: string | null }).out_of_stock_until as string | null) ?? null,
+    out_of_stock_updated_at:
+      ((c as { out_of_stock_updated_at?: string | null }).out_of_stock_updated_at as string | null) ?? null,
   };
 }
 
@@ -168,6 +189,10 @@ function normalizeItem(
     discount_percentage: Number(item.discount_percentage) ?? 0,
     tax_percentage: Number(item.tax_percentage) ?? 0,
     in_stock: (item.in_stock as boolean) ?? true,
+    out_of_stock_manual: Boolean((item as { out_of_stock_manual?: boolean }).out_of_stock_manual),
+    out_of_stock_until: ((item as { out_of_stock_until?: string | null }).out_of_stock_until as string | null) ?? null,
+    out_of_stock_updated_at:
+      ((item as { out_of_stock_updated_at?: string | null }).out_of_stock_updated_at as string | null) ?? null,
     has_customizations: (item.has_customizations as boolean) ?? false,
     has_addons: (item.has_addons as boolean) ?? false,
     has_variants: (item.has_variants as boolean) ?? false,
@@ -222,7 +247,43 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const queryClient = useQueryClient();
   const menuQuery = useStoreMenuQuery(storeId);
   const data = menuQuery.data ?? null;
-  const loading = menuQuery.isLoading;
+  const loading = menuQuery.isLoading && !data;
+  const menuScrollRef = useRef<HTMLDivElement>(null);
+  const preserveMenuScroll = useCallback(() => {
+    const el = menuScrollRef.current;
+    if (!el) return;
+    const top = el.scrollTop;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (menuScrollRef.current) menuScrollRef.current.scrollTop = top;
+      });
+    });
+  }, []);
+
+  const categories = useMemo((): MenuCategory[] => {
+    const raw = (data && "categories" in data && Array.isArray(data.categories) ? data.categories : []) as Record<
+      string,
+      unknown
+    >[];
+    return raw.map((c, i) => {
+      const norm = normalizeCategory(c as Parameters<typeof normalizeCategory>[0]);
+      return { ...norm, id: norm.id && norm.id > 0 ? norm.id : i + 1 };
+    });
+  }, [data]);
+
+  const menuItems = useMemo((): MenuItem[] => {
+    const raw = (data && "items" in data && Array.isArray(data.items) ? data.items : []) as Record<string, unknown>[];
+    return raw.map((item, i) => normalizeItem(item, i));
+  }, [data]);
+
+  const menuOos = useMenuOutOfStock({
+    storeId,
+    menuItems,
+    categories,
+    queryClient,
+    toast,
+    onStockUpdated: preserveMenuScroll,
+  });
   const storeMenuDefaults = useMemo(() => {
     const s = (
       data as {
@@ -259,7 +320,6 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     setShowAddModal(true);
   }, [storeMenuDefaults]);
   const refreshMenu = useCallback(async () => {
-    await queryClient.invalidateQueries({ queryKey: queryKeys.merchantStore.menu(storeId) });
     await queryClient.refetchQueries({ queryKey: queryKeys.merchantStore.menu(storeId), type: "active" });
   }, [queryClient, storeId]);
   const patchMenuItemInCache = useCallback(
@@ -280,6 +340,9 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     [queryClient, storeId]
   );
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
+  const [categoryPillMode, setCategoryPillMode] = useState<"category" | "sub-category">("category");
+  const [viewMode, setViewMode] = useState<"card" | "tree">("card");
+  const [openTreeGroups, setOpenTreeGroups] = useState<Record<string, boolean>>({});
   const [categoryChipDropdownId, setCategoryChipDropdownId] = useState<number | null>(null);
   const [subcategoryRowOffset, setSubcategoryRowOffset] = useState(0);
   const categoryChipRefs = useRef<Record<number, HTMLDivElement | null>>({});
@@ -290,7 +353,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const [changeRequestFilter, setChangeRequestFilter] = useState<"ALL" | "UPDATE" | "DELETE">("ALL");
   const [visibilityFilter, setVisibilityFilter] = useState<"LIVE" | "REMOVED" | "ALL">("LIVE");
   const [showMenuFileSection, setShowMenuFileSection] = useState(false);
-  const menuFileSectionRef = useRef<HTMLDivElement>(null);
+  const { setItemsToolbar } = useMenuPageChrome();
   const [menuReferenceFiles, setMenuReferenceFiles] = useState<MenuMediaFile[]>([]);
   const [menuReferenceLoading, setMenuReferenceLoading] = useState(false);
   const [menuReferenceError, setMenuReferenceError] = useState<string | null>(null);
@@ -299,8 +362,6 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [showStockModal, setShowStockModal] = useState(false);
-
   useEffect(() => {
     if (!showMenuFileSection) return;
     if (menuReferenceLoadedForStoreRef.current === storeId) return;
@@ -406,8 +467,6 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [deleteItemId, setDeleteItemId] = useState<number | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [stockToggleItem, setStockToggleItem] = useState<{ id: number; newStatus: boolean } | null>(null);
-  const [isTogglingStock, setIsTogglingStock] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [categoryLoading, setCategoryLoading] = useState(false);
   const [reviewItem, setReviewItem] = useState<MenuItem | null>(null);
@@ -574,22 +633,19 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     setCategoryForm((prev) => ({ ...prev, cuisine_id: undefined }));
   }, [categoryCuisineInput, cuisineOptions]);
 
-  const rawCategories = (data && "categories" in data && Array.isArray(data.categories) ? data.categories : []) as Record<string, unknown>[];
-  const categories: MenuCategory[] = rawCategories.map((c, i) => {
-    const norm = normalizeCategory(c as {
-      id?: number;
-      store_id?: number;
-      name?: string;
-      category_name?: string;
-      category_description?: string | null;
-      parent_category_id?: number | null;
-      cuisine_id?: number | null;
-      display_order?: number | null;
-      is_active?: boolean;
-    });
-    return { ...norm, id: (norm.id && norm.id > 0) ? norm.id : i + 1 };
-  });
-  const parentCategories = useMemo(() => categories.filter((c) => !c.parent_category_id).sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0)), [categories]);
+  const parentCategories = useMemo(
+    () => categories.filter((c) => !c.parent_category_id).sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0)),
+    [categories]
+  );
+  const rootCategories = parentCategories;
+  const subCategories = useMemo(
+    () =>
+      categories
+        .filter((c) => c.parent_category_id != null)
+        .sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0)),
+    [categories]
+  );
+  const categoriesForPills = categoryPillMode === "category" ? rootCategories : subCategories;
   const childrenByParentId = useMemo(() => {
     const map = new Map<number, MenuCategory[]>();
     for (const c of categories) {
@@ -703,13 +759,23 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     useSubcategoryPeerSuggestions,
   ]);
 
-  const rawItems = (data && "items" in data && Array.isArray(data.items) ? data.items : []) as Record<string, unknown>[];
-  const menuItems: MenuItem[] = rawItems.map((item, i) => normalizeItem(item, i));
-
-  const filteredByCategory =
-    selectedCategoryId === null
-      ? menuItems
-      : menuItems.filter((item) => item.category_id === selectedCategoryId);
+  const filteredByCategory = (() => {
+    if (selectedCategoryId === null) return menuItems;
+    const selected = categories.find((c) => c.id === selectedCategoryId);
+    if (!selected) return menuItems.filter((item) => item.category_id === selectedCategoryId);
+    const isRoot = !selected.parent_category_id;
+    if (categoryPillMode === "category" && isRoot) {
+      const childIds = new Set(
+        categories.filter((c) => c.parent_category_id === selected.id).map((c) => c.id)
+      );
+      return menuItems.filter(
+        (item) =>
+          item.category_id === selected.id ||
+          (item.category_id != null && childIds.has(item.category_id))
+      );
+    }
+    return menuItems.filter((item) => item.category_id === selectedCategoryId);
+  })();
 
   const filteredByStatus =
     statusFilter === "ALL"
@@ -723,7 +789,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     stockFilter === "ALL"
       ? filteredByStatus
       : filteredByStatus.filter((item) => {
-          const inStockNow = item.in_stock ?? true;
+          const inStockNow = menuOos.isItemInStock(item);
           return stockFilter === "IN_STOCK" ? inStockNow : !inStockNow;
         });
 
@@ -752,12 +818,112 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       )
     : filteredByVisibility;
 
-  const inStock = menuItems.filter((item) => item.in_stock).length;
-  const outStock = menuItems.filter((item) => !item.in_stock).length;
+  const treeGroups = useMemo(() => {
+    const byCat = new Map<
+      string,
+      { key: string; categoryId: number | null; categoryName: string; items: MenuItem[] }
+    >();
+    for (const item of searchedItems) {
+      const categoryId = item.category_id ?? null;
+      const categoryName =
+        categoryId == null
+          ? "Uncategorized"
+          : categories.find((c) => c.id === categoryId)?.category_name ?? "Uncategorized";
+      const key = String(categoryId ?? "uncategorized");
+      const existing = byCat.get(key);
+      if (existing) {
+        existing.items.push(item);
+      } else {
+        byCat.set(key, { key, categoryId, categoryName, items: [item] });
+      }
+    }
+    return Array.from(byCat.values()).sort((a, b) => a.categoryName.localeCompare(b.categoryName));
+  }, [searchedItems, categories]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const saved = window.localStorage.getItem("dashboard_menu_view_mode");
+      if (saved === "card" || saved === "tree") setViewMode(saved);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem("dashboard_menu_view_mode", viewMode);
+    } catch {
+      // ignore
+    }
+  }, [viewMode]);
+
+  const inStock = menuItems.filter((item) => menuOos.isItemInStock(item)).length;
+  const outStock = menuItems.filter((item) => !menuOos.isItemInStock(item)).length;
   const outStockPercent = menuItems.length ? Math.round((outStock / menuItems.length) * 100) : 0;
 
   const planLimits = null;
   const canAddItem = true;
+
+  useEffect(() => {
+    setItemsToolbar(
+      <>
+        <p className="text-xs text-gray-500 min-w-0 max-w-[200px] sm:max-w-none truncate sm:whitespace-normal">
+          Manage your menu items and categories
+          {planLimits != null && (
+            <span className="text-gray-400">
+              {" "}
+              · Plan: {(planLimits as { planName?: string })?.planName ?? "—"}
+            </span>
+          )}
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1 text-xs font-medium text-gray-600">
+            <span>Status</span>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
+              className={menuFilterSelect}
+              aria-label="Filter by status"
+            >
+              <option value="ALL">All</option>
+              <option value="PENDING">Pending</option>
+              <option value="APPROVED">Approved</option>
+              <option value="REJECTED">Rejected</option>
+            </select>
+          </div>
+          <div className="flex items-center gap-1 text-xs font-medium text-gray-600">
+            <span>Stock</span>
+            <select
+              value={stockFilter}
+              onChange={(e) => setStockFilter(e.target.value as typeof stockFilter)}
+              className={menuFilterSelect}
+              aria-label="Filter by stock"
+            >
+              <option value="ALL">All</option>
+              <option value="IN_STOCK">In stock</option>
+              <option value="OUT_OF_STOCK">Out of stock</option>
+            </select>
+          </div>
+          <div className="flex items-center gap-1 text-xs font-medium text-gray-600">
+            <span>Requests</span>
+            <select
+              value={changeRequestFilter}
+              onChange={(e) => setChangeRequestFilter(e.target.value as typeof changeRequestFilter)}
+              className={menuFilterSelect}
+              aria-label="Filter by change request"
+            >
+              <option value="ALL">All</option>
+              <option value="UPDATE">Edit</option>
+              <option value="DELETE">Delete</option>
+            </select>
+          </div>
+        </div>
+      </>
+    );
+    return () => setItemsToolbar(null);
+  }, [setItemsToolbar, statusFilter, stockFilter, changeRequestFilter]);
   const canAddCategory = true;
   const imageUploadAllowed = true;
   const imageLimitReached = false;
@@ -1663,44 +1829,6 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     setIsDeleting(false);
   };
 
-  const handleStockToggle = async () => {
-    if (!stockToggleItem) return;
-    setIsTogglingStock(true);
-    try {
-      const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${stockToggleItem.id}/stock`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ in_stock: stockToggleItem.newStatus }),
-      });
-      const r = await res.json().catch(() => ({}));
-      if (!res.ok || r?.success === false) throw new Error(r?.error || "Stock update failed");
-      toast(`Item marked as ${stockToggleItem.newStatus ? "In Stock" : "Out of Stock"}.`);
-      trackAudit({
-        actionType: "UPDATE",
-        resourceType: "merchant_menu_items",
-        resourceId: String(stockToggleItem.id),
-        actionDetails: { action: "toggle_stock", in_stock: stockToggleItem.newStatus },
-        actionStatus: "SUCCESS",
-        requestMethod: "PATCH",
-      });
-      await refreshMenu();
-      setShowStockModal(false);
-      setStockToggleItem(null);
-    } catch {
-      toast("Error updating stock.");
-      trackAudit({
-        actionType: "UPDATE",
-        resourceType: "merchant_menu_items",
-        resourceId: stockToggleItem?.id != null ? String(stockToggleItem.id) : undefined,
-        actionDetails: { action: "toggle_stock" },
-        actionStatus: "FAILED",
-        errorMessage: "Error updating stock.",
-        requestMethod: "PATCH",
-      });
-    }
-    setIsTogglingStock(false);
-  };
-
   const openAddCategory = () => {
     setCategoryModalMode("add");
     setCategoryForm({
@@ -1899,24 +2027,75 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="sticky top-0 z-20 shrink-0 border-b border-gray-200 bg-white/95 shadow-sm">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between px-3 sm:px-4 py-1 gap-1">
-          <div className="flex items-center gap-2 w-full sm:w-auto min-w-0">
-            <div className="min-w-0">
-              <h1 className="text-sm sm:text-base font-bold text-gray-900">Menu Management</h1>
-              <p className="text-gray-500 text-[11px] mt-0 flex items-center gap-2 flex-wrap">
-                <span>Manage your menu items and categories</span>
-                {planLimits != null && (
-                  <span className="text-gray-400">· Plan: {(planLimits as { planName?: string })?.planName ?? "—"}</span>
-                )}
-              </p>
+    <div className="menu-page-root flex h-full min-h-0 flex-col bg-white">
+      <style>{MENU_PAGE_GLOBAL_STYLES}</style>
+      <header className="sticky top-0 z-40 shrink-0 border-b border-gray-200 bg-white shadow-sm">
+        <div className="px-3 sm:px-4 lg:px-6 flex flex-wrap items-center gap-2 justify-between py-2.5">
+          <div className="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
+            <div className="flex flex-wrap gap-2 items-center">
+              <div className={menuStatCard}>
+                <div className="text-gray-500 text-xs font-medium">
+                  Total Items
+                  {planLimits != null && (
+                    <span className="ml-1 text-gray-400">
+                      / {(planLimits as { maxMenuItems?: number })?.maxMenuItems ?? "—"}
+                    </span>
+                  )}
+                </div>
+                <div className="text-lg font-bold text-gray-900 leading-tight">{menuItems.length}</div>
+              </div>
+              <div className={menuStatCard}>
+                <div className="text-gray-500 text-xs font-medium">In Stock</div>
+                <div className="text-lg font-bold text-green-600 leading-tight">{inStock}</div>
+              </div>
+              <div className={menuStatCard}>
+                <div className="text-gray-500 text-xs font-medium">Out of Stock</div>
+                <div className="text-lg font-bold text-red-600 leading-tight">
+                  {outStock} ({outStockPercent}%)
+                </div>
+              </div>
+              <div className={menuStatCard}>
+                <div className="text-gray-500 text-xs font-medium">
+                  Categories
+                  {planLimits != null && (
+                    <span className="ml-1 text-gray-400">
+                      / {(planLimits as { maxMenuCategories?: number })?.maxMenuCategories ?? "—"}
+                    </span>
+                  )}
+                </div>
+                <div className="text-lg font-bold text-blue-600 leading-tight">{categories.length}</div>
+              </div>
             </div>
           </div>
-          <div className="flex items-center gap-1.5 flex-shrink-0">
+          <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end min-w-0">
+            <div className="inline-flex rounded-lg border border-gray-200 bg-white overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setViewMode("card")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold transition-colors ${
+                  viewMode === "card" ? "bg-gray-900 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
+                }`}
+                aria-pressed={viewMode === "card"}
+              >
+                <LayoutGrid size={16} />
+                Card
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("tree")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold transition-colors border-l border-gray-200 ${
+                  viewMode === "tree" ? "bg-gray-900 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
+                }`}
+                aria-pressed={viewMode === "tree"}
+              >
+                <ListTree size={16} />
+                Tree
+              </button>
+            </div>
             <button
+              type="button"
               onClick={() => setShowManageCategoriesModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1 text-xs sm:text-sm font-semibold rounded-lg transition-colors bg-white text-gray-700 border border-gray-300 hover:bg-gray-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg transition-colors bg-white text-gray-700 border border-gray-300 hover:bg-gray-50"
             >
               <Layers size={16} />
               Manage categories
@@ -1924,7 +2103,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
             <button
               onClick={() => openAddItemModal()}
               disabled={!canAddItem}
-              className="flex cursor-pointer items-center gap-1.5 px-3 py-1 text-xs sm:text-sm font-semibold rounded-lg transition-colors bg-orange-500 text-white hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex cursor-pointer items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg transition-colors bg-gray-900 text-white hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Plus size={16} />
               Add Menu Item
@@ -1934,11 +2113,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
             </button>
             <button
               type="button"
-              onClick={() => {
-                setShowMenuFileSection(true);
-                setTimeout(() => menuFileSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
-              }}
-              className="flex items-center gap-1.5 px-3 py-1 text-xs sm:text-sm font-semibold rounded-lg border border-amber-600 text-amber-700 bg-white hover:bg-amber-50 transition-colors"
+              onClick={() => setShowMenuFileSection(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg border border-amber-600 text-amber-700 bg-white hover:bg-amber-50 transition-colors"
             >
               <Upload size={16} />
               Menu file
@@ -1946,194 +2122,47 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-1 px-3 sm:px-4 pb-1">
-          <div className="bg-gray-50 border border-gray-200 rounded-md px-2 py-1 min-w-[120px]">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-gray-500 text-[10px] font-medium">
-                Total Items
-                {planLimits != null && (
-                  <span className="ml-1 text-gray-400">/ {(planLimits as { maxMenuItems?: number })?.maxMenuItems ?? "—"}</span>
-                )}
-              </span>
-              <span className="text-sm font-bold text-gray-900 leading-tight">{menuItems.length}</span>
-            </div>
-          </div>
-          <div className="bg-gray-50 border border-gray-200 rounded-md px-2 py-1 min-w-[100px]">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-gray-500 text-[10px] font-medium">In Stock</span>
-              <span className="text-sm font-bold text-green-600 leading-tight">{inStock}</span>
-            </div>
-          </div>
-          <div className="bg-gray-50 border border-gray-200 rounded-md px-2 py-1 min-w-[120px]">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-gray-500 text-[10px] font-medium">Out Of Stocks</span>
-              <span className="text-sm font-bold text-red-600 leading-tight">
-                {outStock} ({outStockPercent}%)
-              </span>
-            </div>
-          </div>
-          <div className="bg-gray-50 border border-gray-200 rounded-md px-2 py-1 min-w-[120px]">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-gray-500 text-[10px] font-medium">
-                Categories
-                {planLimits != null && (
-                  <span className="ml-1 text-gray-400">/ {(planLimits as { maxMenuCategories?: number })?.maxMenuCategories ?? "—"}</span>
-                )}
-              </span>
-              <span className="text-sm font-bold text-blue-600 leading-tight">{categories.length}</span>
-            </div>
-          </div>
-        </div>
-
-        {showMenuFileSection && (
-          <div
-            ref={menuFileSectionRef}
-            className="mx-3 sm:mx-4 mb-2 rounded-xl border border-amber-200/90 bg-gradient-to-br from-amber-50/95 to-orange-50/80 shadow-sm overflow-hidden"
-          >
-            <div className="flex items-start justify-between gap-2 p-2.5 sm:p-3">
-              <div className="min-w-0 flex-1">
-                <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
-                  <span className="flex items-center justify-center w-7 h-7 rounded-lg bg-amber-100 text-amber-700">
-                    <FileText size={16} />
-                  </span>
-                  Menu file (CSV or image)
-                </h3>
-                <p className="text-xs text-gray-600 mt-1">
-                  Please review the store menu and add item accordingly.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowMenuFileSection(false)}
-                aria-label="Close menu file section"
-                className="flex-shrink-0 p-1.5 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-white/80 border border-transparent hover:border-gray-200 transition-colors"
-              >
-                <X size={16} strokeWidth={2} />
-              </button>
-            </div>
-            <div className="px-3 sm:px-4 pb-2.5 sm:pb-3 pt-0">
-              {menuReferenceLoading ? (
-                <p className="text-xs text-gray-500">Loading uploaded menu files...</p>
-              ) : menuReferenceError ? (
-                <p className="text-xs text-red-600">{menuReferenceError}</p>
-              ) : (
-                <div className="space-y-2">
-                  {menuSheetOrPdfFiles.length > 0 && (
-                    <div className="rounded-lg border border-amber-200 bg-white/80 p-2">
-                      <div className="text-[11px] font-semibold text-gray-800 mb-1">Menu document(s)</div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {menuSheetOrPdfFiles.map((f) => (
-                          <a
-                            key={`doc-${f.id}`}
-                            href={String(f.menu_url)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
-                          >
-                            View {f.original_file_name || `file #${f.id}`}
-                          </a>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {menuImageFiles.length > 0 && (
-                    <div className="rounded-lg border border-blue-200 bg-white/80 p-2">
-                      <div className="text-[11px] font-semibold text-gray-800 mb-1">Menu image(s)</div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {menuImageFiles.flatMap((file) =>
-                          (file.reference_images ?? []).map((img, idx) => (
-                            <a
-                              key={`img-${file.id}-${img.id}-${idx}`}
-                              href={img.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center rounded-md border border-blue-300 bg-blue-50 px-2.5 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-100"
-                            >
-                              View {img.file_name || `image ${idx + 1}`}
-                            </a>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  {menuSheetOrPdfFiles.length === 0 && menuImageFiles.length === 0 && (
-                    <p className="text-xs text-gray-500">
-                      No menu file found for this store yet.
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        <div className="px-3 sm:px-4 pb-2">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
-          <div className="order-2 sm:order-1">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 sm:px-4 lg:px-6 py-3">
+          <div className="flex-1 max-w-sm min-w-0 order-2 sm:order-1">
             <input
               type="text"
               placeholder="Search menu items..."
-              className="w-48 sm:w-60 px-2.5 py-1 text-[11px] sm:text-xs border border-gray-300 rounded-lg focus:border-orange-400 focus:ring-1 focus:ring-orange-100 text-gray-900"
+              className={menuSearchInput}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
-          <div className="order-3 sm:order-2 flex items-center gap-2 flex-wrap">
-            <div className="flex items-center gap-1 text-[10px] sm:text-xs font-medium text-gray-600">
-              <span>Status</span>
+          <div className="flex-1 min-w-0 order-1 sm:order-2 flex items-center gap-1 overflow-hidden">
+            <div className="flex-shrink-0 rounded-md text-xs font-medium whitespace-nowrap bg-orange-500 text-white shadow-sm ring-1 ring-orange-200">
               <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as any)}
-                className="px-2 py-1 text-[11px] sm:text-xs border border-gray-300 rounded-lg bg-white text-gray-900"
-                aria-label="Filter by status"
+                className="bg-transparent px-3 py-1.5 outline-none text-white cursor-pointer"
+                value={categoryPillMode}
+                onChange={(e) => {
+                  const v = e.target.value === "sub-category" ? "sub-category" : "category";
+                  setCategoryPillMode(v);
+                  setSelectedCategoryId(null);
+                  setCategoryChipDropdownId(null);
+                }}
+                aria-label="Category filter mode"
               >
-                <option value="ALL">All</option>
-                <option value="PENDING">Pending</option>
-                <option value="APPROVED">Approved</option>
-                <option value="REJECTED">Rejected</option>
+                <option value="category">All Category</option>
+                <option value="sub-category">All Sub-Category</option>
               </select>
             </div>
-            <div className="flex items-center gap-1 text-[10px] sm:text-xs font-medium text-gray-600">
-              <span>Stock</span>
-              <select
-                value={stockFilter}
-                onChange={(e) => setStockFilter(e.target.value as any)}
-                className="px-2 py-1 text-[11px] sm:text-xs border border-gray-300 rounded-lg bg-white text-gray-900"
-                aria-label="Filter by stock"
-              >
-                <option value="ALL">All</option>
-                <option value="IN_STOCK">In stock</option>
-                <option value="OUT_OF_STOCK">Out of stock</option>
-              </select>
-            </div>
-            <div className="flex items-center gap-1 text-[10px] sm:text-xs font-medium text-gray-600">
-              <span>Requests</span>
-              <select
-                value={changeRequestFilter}
-                onChange={(e) => setChangeRequestFilter(e.target.value as any)}
-                className="px-2 py-1 text-[11px] sm:text-xs border border-gray-300 rounded-lg bg-white text-gray-900"
-                aria-label="Filter by change request"
-              >
-                <option value="ALL">All</option>
-                <option value="UPDATE">Edit</option>
-                <option value="DELETE">Delete</option>
-              </select>
-            </div>
-          </div>
-          <div className="flex-1 min-w-0 order-1 sm:order-2 flex items-center gap-1 overflow-x-hidden overflow-y-visible">
             <button
+              type="button"
               onClick={() => {
                 setSelectedCategoryId(null);
                 setCategoryChipDropdownId(null);
               }}
-              className={`flex-shrink-0 px-2.5 py-1 rounded-md text-[11px] font-medium whitespace-nowrap ${
-                selectedCategoryId === null ? "bg-orange-500 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200"
+              className={`flex-shrink-0 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap ${
+                selectedCategoryId === null ? menuCategoryChipActive : menuCategoryChipIdle
               }`}
             >
-              All Categories
+              {categoryPillMode === "category" ? "All Categories" : "All Sub-Categories"}
             </button>
-            <div className="flex-1 min-w-0 flex items-center gap-0.5 overflow-x-hidden overflow-y-visible">
-              {categories.length > 0 && (
+            <div className="flex-1 min-w-0 flex items-center gap-0.5 overflow-hidden">
+              {categoriesForPills.length > 0 && (
                 <button
                   type="button"
                   onClick={() => categoryScrollRef.current?.scrollBy({ left: -200, behavior: "smooth" })}
@@ -2145,69 +2174,31 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
               )}
               <div
                 ref={categoryScrollRef}
-                  className="flex-1 min-w-0 overflow-x-auto overflow-y-visible hide-scrollbar scroll-smooth touch-pan-x py-0.5"
+                className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden scrollbar-hide scroll-smooth touch-pan-x py-0.5"
               >
                 <div className="flex items-center gap-1.5 flex-nowrap">
-                  {displayCategoriesForChips.map((category) => {
-                    const subcategories = categories.filter(
-                      (c) =>
-                        c.id !== category.id &&
-                        c.parent_category_id != null &&
-                        Number(c.parent_category_id) === Number(category.id)
-                    );
-                    const hasSubcategories = subcategories.length > 0;
-                    return (
-                      <div
-                        key={category.id}
-                        className="relative flex-shrink-0"
-                        ref={(el) => {
-                          categoryChipRefs.current[category.id] = el;
-                        }}
-                      >
-                        <div
-                          className={`flex items-center rounded-md text-[11px] font-medium whitespace-nowrap max-w-[150px] ${
-                            selectedCategoryId === category.id ? "bg-orange-500 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                          }`}
-                        >
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedCategoryId(category.id);
-                              if (!hasSubcategories) setCategoryChipDropdownId(null);
-                            }}
-                            className="px-2.5 py-1 rounded-l-md max-w-[120px] truncate"
-                            title={category.parent_category_id ? `${categories.find((c) => c.id === category.parent_category_id)?.category_name ?? ""} › ${category.category_name}` : category.category_name}
-                          >
-                            {category.parent_category_id ? `  ${category.category_name}` : category.category_name}
-                          </button>
-                          {hasSubcategories && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setCategoryChipDropdownId((prev) => (prev === category.id ? null : category.id))
-                              }
-                              className={`cursor-pointer px-1.5 py-1 rounded-r-md border-l transition-colors ${
-                                categoryChipDropdownId === category.id
-                                  ? "bg-orange-100 text-orange-700 border-orange-300"
-                                  : selectedCategoryId === category.id
-                                    ? "border-orange-400/60 hover:bg-orange-600"
-                                    : "border-gray-300 hover:bg-gray-300/60"
-                              }`}
-                              aria-label={`Show subcategories for ${category.category_name}`}
-                            >
-                              <ChevronDown
-                                size={12}
-                                className={categoryChipDropdownId === category.id ? "rotate-180 transition-transform" : "transition-transform"}
-                              />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
+                  {categoriesForPills.map((category) => (
+                    <button
+                      key={category.id}
+                      type="button"
+                      onClick={() => setSelectedCategoryId(category.id)}
+                      className={`flex-shrink-0 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap max-w-[160px] truncate ${
+                        selectedCategoryId === category.id ? menuCategoryChipActive : menuCategoryChipIdle
+                      }`}
+                      title={
+                        categoryPillMode === "sub-category" && category.parent_category_id
+                          ? `${categories.find((c) => c.id === category.parent_category_id)?.category_name ?? ""} / ${category.category_name}`
+                          : category.category_name
+                      }
+                    >
+                      {categoryPillMode === "sub-category" && category.parent_category_id
+                        ? `${categories.find((c) => c.id === category.parent_category_id)?.category_name ?? ""} / ${category.category_name}`
+                        : category.category_name}
+                    </button>
+                  ))}
                 </div>
               </div>
-              {categories.length > 0 && (
+              {categoriesForPills.length > 0 && (
                 <button
                   type="button"
                   onClick={() => categoryScrollRef.current?.scrollBy({ left: 200, behavior: "smooth" })}
@@ -2219,43 +2210,11 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
               )}
             </div>
           </div>
-          </div>
-          {categoryChipDropdownId != null && activeChipSubcategories.length > 0 && (
-            <div ref={subcategoryRowRef} className="relative w-full mt-1">
-              <span
-                className="absolute -top-2 h-3 w-px bg-orange-500"
-                style={{ left: `${subcategoryRowOffset + 18}px` }}
-                aria-hidden
-              />
-              <div
-                className="relative flex items-center gap-1.5 flex-nowrap overflow-x-auto hide-scrollbar py-0.5"
-                style={{ paddingLeft: `${subcategoryRowOffset}px` }}
-              >
-                {activeChipSubcategories.map((sub) => (
-                  <button
-                    key={sub.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedCategoryId(sub.id);
-                      setCategoryChipDropdownId(null);
-                    }}
-                    className={`px-2 py-1 rounded text-[11px] font-medium ${
-                      selectedCategoryId === sub.id
-                        ? "bg-orange-500 text-white"
-                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                    }`}
-                  >
-                    {sub.category_name}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       </header>
 
       <div className="flex flex-1 min-h-0">
-        <div className="flex-1 min-w-0 overflow-y-auto px-3 sm:px-4 pt-3 pb-0 bg-slate-50">
+        <div ref={menuScrollRef} className="flex-1 min-w-0 overflow-y-auto px-3 sm:px-4 py-3 bg-white">
           {loading ? (
             <MenuItemsGridSkeleton />
           ) : searchedItems.length === 0 ? (
@@ -2275,8 +2234,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 <p className="text-sm text-gray-400 mt-2">You need to create a category first</p>
               )}
             </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          ) : viewMode === "card" ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {searchedItems.map((item) => {
                 const categoryDisplayLabel = formatCategoryLabel(categories, item.category_id);
                 const discount = Number(item.discount_percentage);
@@ -2294,10 +2253,10 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 return (
                   <div
                     key={item.id}
-                    className="bg-white/95 rounded-lg border border-gray-200/80 shadow-sm hover:shadow-md transition-all overflow-hidden"
+                    className={menuItemCard}
                   >
-                    <div className="flex p-3 h-full gap-3">
-                      <div className="w-20 h-20 flex-shrink-0 rounded-lg border border-gray-200 overflow-hidden bg-gray-100">
+                    <div className="flex p-2.5 h-full gap-2.5">
+                      <div className="w-14 h-14 flex-shrink-0 rounded-lg border border-gray-200 overflow-hidden bg-gray-100">
                         <R2Image
                           src={item.item_image_url}
                           alt={item.item_name}
@@ -2306,13 +2265,21 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                         />
                       </div>
                       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-                        <div className="flex items-start justify-between gap-2 mb-1">
+                        <div className="flex items-start justify-between gap-1 mb-0.5">
                           <div className="flex-1 min-w-0">
                             <div className="font-bold text-sm text-gray-900 truncate">{item.item_name}</div>
                           <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
                             <div className="text-[10px] text-gray-500 font-semibold uppercase tracking-wide truncate" title={categoryDisplayLabel}>
                               {categoryDisplayLabel}
                             </div>
+                            {(() => {
+                              const oosLabel = menuOos.itemOosLabel(item);
+                              return oosLabel ? (
+                                <div className="text-[11px] font-semibold text-red-600 mt-0.5">{oosLabel}</div>
+                              ) : (
+                                <div className="text-[11px] font-semibold text-green-600 mt-0.5">In stock</div>
+                              );
+                            })()}
                             <span
                               className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
                                 (item.approval_status ?? "PENDING") === "APPROVED"
@@ -2372,29 +2339,16 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                             )}
                           </div>
                           </div>
-                          <label className="inline-flex items-center cursor-pointer flex-shrink-0">
-                            <input
-                              type="checkbox"
-                              checked={item.in_stock ?? true}
-                              onChange={() => {
-                                setStockToggleItem({ id: item.id, newStatus: !item.in_stock });
-                                setShowStockModal(true);
-                              }}
-                              className="sr-only peer"
-                            />
-                            <div className="w-7 h-4 bg-gray-200 rounded-full peer peer-checked:bg-green-500 transition-all relative">
-                              <div
-                                className={`absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${
-                                  item.in_stock ? "translate-x-3" : ""
-                                }`}
-                              />
-                            </div>
-                          </label>
+                          <MenuItemStockToggle
+                            inStock={menuOos.isItemInStock(item)}
+                            disabled={menuOos.oosBusy}
+                            onToggle={() => menuOos.handleItemStockToggle(item)}
+                          />
                         </div>
                         <div className="flex items-center gap-1 mb-1">
                           {hasDiscount ? (
                             <>
-                              <span className="text-sm font-semibold text-orange-600">₹{item.selling_price}</span>
+                              <span className="text-sm font-bold text-orange-600">₹{item.selling_price}</span>
                               <span className="text-xs font-medium text-gray-500 line-through">₹{item.base_price}</span>
                               <span className="px-1 py-0.5 rounded bg-green-100 text-green-700 text-[10px] font-bold">
                                 {discount}% OFF
@@ -2405,7 +2359,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                           )}
                         </div>
                         {item.item_description && (
-                          <p className="text-[11px] text-gray-600 line-clamp-1 mb-1 flex-grow leading-tight">
+                          <p className="text-[11px] text-gray-600 line-clamp-2 mb-1.5 flex-grow leading-tight">
                             {item.item_description}
                           </p>
                         )}
@@ -2468,7 +2422,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                             <span className="truncate max-w-[120px]">• {item.cuisine_type}</span>
                           )}
                         </div>
-                        <div className="flex items-center gap-1.5 mt-1.5 min-w-0">
+                        <div className="flex items-center gap-1.5 mt-auto min-w-0">
                           {(item.customizations?.length ?? 0) > 0 || (item.variants?.length ?? 0) > 0 ? (
                             <button
                               onClick={(e) => {
@@ -2531,9 +2485,199 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 );
               })}
             </div>
+          ) : (
+            <div className="space-y-3">
+              {treeGroups.map((group) => {
+                const isOpen = openTreeGroups[group.key] ?? true;
+                return (
+                  <div key={group.key} className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+                    <div className="px-3 py-2.5 flex items-center justify-between gap-3 bg-gray-50">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setOpenTreeGroups((prev) => ({ ...prev, [group.key]: !isOpen }))
+                        }
+                        className="min-w-0 flex items-center gap-2 text-left"
+                        aria-expanded={isOpen}
+                      >
+                        <span className="flex-shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50">
+                          {isOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                        </span>
+                        <span className="font-semibold text-gray-900 truncate">
+                          {group.categoryName}{" "}
+                          <span className="text-gray-400 font-medium">({group.items.length})</span>
+                        </span>
+                      </button>
+                    </div>
+                    {isOpen && (
+                      <div className="divide-y divide-gray-100">
+                        {group.items.map((item) => (
+                          <div
+                            key={item.id}
+                            className="px-3 py-2 flex flex-wrap items-center justify-between gap-2 sm:gap-3"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="text-sm font-semibold text-gray-900 truncate">{item.item_name}</div>
+                              {(() => {
+                                const oosLabel = menuOos.itemOosLabel(item);
+                                return oosLabel ? (
+                                  <div className="text-xs font-semibold text-red-600 mt-0.5">{oosLabel}</div>
+                                ) : (
+                                  <div className="text-xs font-semibold text-green-600 mt-0.5">In stock</div>
+                                );
+                              })()}
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+                              <div className="text-sm font-bold text-orange-600">₹{item.selling_price}</div>
+                              <MenuItemStockToggle
+                                inStock={menuOos.isItemInStock(item)}
+                                disabled={menuOos.oosBusy}
+                                onToggle={() => menuOos.handleItemStockToggle(item)}
+                              />
+                              {(item.approval_status ?? "PENDING") === "PENDING" && (
+                                <button
+                                  type="button"
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    try {
+                                      const res = await fetch(
+                                        `/api/merchant/stores/${storeId}/menu/items/${item.id}`
+                                      );
+                                      const full = res.ok ? await res.json().catch(() => null) : null;
+                                      if (full?.item) {
+                                        setReviewItem({ ...item, ...full.item });
+                                        setShowReviewDrawer(true);
+                                      } else {
+                                        setReviewItem(item);
+                                        setShowReviewDrawer(true);
+                                      }
+                                    } catch {
+                                      setReviewItem(item);
+                                      setShowReviewDrawer(true);
+                                    }
+                                  }}
+                                  className="px-2 py-1 text-[10px] font-semibold rounded-md border border-gray-200 bg-gray-100 hover:bg-gray-200"
+                                >
+                                  Review
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEditModal(item)}
+                                className="px-2 py-1 text-[10px] font-bold rounded-md border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDeleteItemId(item.id);
+                                  setShowDeleteModal(true);
+                                }}
+                                className="px-2 py-1 text-[10px] font-bold rounded-md border border-red-200 bg-red-50 text-red-600 hover:bg-red-100"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       </div>
+
+      {showMenuFileSection &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[9998] flex items-stretch justify-end bg-black/40 backdrop-blur-sm"
+            onClick={() => setShowMenuFileSection(false)}
+          >
+            <div
+              className="w-full max-w-md bg-white shadow-xl border-l border-gray-200 flex flex-col max-h-full"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-4 py-3 border-b border-gray-200 flex items-start justify-between gap-3 bg-gradient-to-br from-amber-50/80 to-orange-50/50">
+                <div className="min-w-0">
+                  <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                    <span className="flex items-center justify-center w-8 h-8 rounded-lg bg-amber-100 text-amber-700">
+                      <FileText size={18} />
+                    </span>
+                    Menu file (CSV or image)
+                  </h2>
+                  <p className="text-xs text-gray-600 mt-1">
+                    Please review the store menu and add items accordingly.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowMenuFileSection(false)}
+                  aria-label="Close menu file panel"
+                  className="flex-shrink-0 p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-white border border-transparent hover:border-gray-200 transition-colors"
+                >
+                  <X size={18} strokeWidth={2} />
+                </button>
+              </div>
+              <div className="p-4 flex-1 overflow-y-auto">
+                {menuReferenceLoading ? (
+                  <p className="text-sm text-gray-500">Loading uploaded menu files...</p>
+                ) : menuReferenceError ? (
+                  <p className="text-sm text-red-600">{menuReferenceError}</p>
+                ) : (
+                  <div className="space-y-3">
+                    {menuSheetOrPdfFiles.length > 0 && (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-3">
+                        <div className="text-xs font-semibold text-gray-800 mb-2">Menu document(s)</div>
+                        <div className="flex flex-wrap gap-2">
+                          {menuSheetOrPdfFiles.map((f) => (
+                            <a
+                              key={`doc-${f.id}`}
+                              href={String(f.menu_url)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-50"
+                            >
+                              View {f.original_file_name || `file #${f.id}`}
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {menuImageFiles.length > 0 && (
+                      <div className="rounded-xl border border-blue-200 bg-blue-50/50 p-3">
+                        <div className="text-xs font-semibold text-gray-800 mb-2">Menu image(s)</div>
+                        <div className="flex flex-wrap gap-2">
+                          {menuImageFiles.flatMap((file) =>
+                            (file.reference_images ?? []).map((img, idx) => (
+                              <a
+                                key={`img-${file.id}-${img.id}-${idx}`}
+                                href={img.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+                              >
+                                View {img.file_name || `image ${idx + 1}`}
+                              </a>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {menuSheetOrPdfFiles.length === 0 && menuImageFiles.length === 0 && (
+                      <p className="text-sm text-gray-500">No menu file found for this store yet.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
 
       {showReviewDrawer && reviewItem &&
         typeof document !== "undefined" &&
@@ -3167,55 +3311,30 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
           document.body
         )}
 
-      {showStockModal &&
-        stockToggleItem &&
-        typeof document !== "undefined" &&
-        createPortal(
-          <div className="fixed inset-0 flex items-center justify-center z-[9999] bg-black/40 backdrop-blur-md">
-            <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
-              <div className="p-6">
-                <div className="text-center">
-                  <div
-                    className={`mx-auto flex items-center justify-center h-12 w-12 rounded-full mb-4 ${
-                      stockToggleItem.newStatus ? "bg-green-100" : "bg-red-100"
-                    }`}
-                  >
-                    <span className={stockToggleItem.newStatus ? "text-green-600 text-xl" : "text-red-600 text-xl"}>
-                      {stockToggleItem.newStatus ? "✓" : "✗"}
-                    </span>
-                  </div>
-                  <h3 className="text-lg font-bold text-gray-900 mb-2">
-                    {stockToggleItem.newStatus ? "Mark as In Stock" : "Mark as Out of Stock"}
-                  </h3>
-                  <p className="text-gray-600 mb-6">
-                    {stockToggleItem.newStatus
-                      ? "This item will be available for customers to order."
-                      : "This item will be hidden from customers and marked as unavailable."}
-                  </p>
-                </div>
-                <div className="flex gap-3">
-                  <button
-                    onClick={() => setShowStockModal(false)}
-                    className="flex-1 px-4 py-2.5 rounded-lg font-bold text-gray-600 bg-white border border-gray-200 hover:bg-gray-100"
-                    disabled={isTogglingStock}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleStockToggle}
-                    className={`flex-1 px-4 py-2.5 rounded-lg font-bold text-white ${
-                      stockToggleItem.newStatus ? "bg-green-500 hover:bg-green-600" : "bg-red-500 hover:bg-red-600"
-                    }`}
-                    disabled={isTogglingStock}
-                  >
-                    {isTogglingStock ? "Updating..." : "Confirm"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>,
-          document.body
-        )}
+      <MenuOutOfStockSheet
+        modal={menuOos.oosModal}
+        sheetShown={menuOos.oosSheetShown}
+        busy={menuOos.oosBusy}
+        choice={menuOos.oosChoice}
+        hours={menuOos.oosHours}
+        date={menuOos.oosDate}
+        time={menuOos.oosTime}
+        onClose={() => menuOos.setOosModal(null)}
+        onConfirm={() => void menuOos.confirmOutOfStock()}
+        onChoiceChange={menuOos.setOosChoice}
+        onHoursChange={menuOos.setOosHours}
+        onDateChange={menuOos.setOosDate}
+        onTimeChange={menuOos.setOosTime}
+        onCustomTouched={() => menuOos.setOosCustomTouched(true)}
+      />
+      <MenuRestoreStockConfirm
+        open={menuOos.restoreConfirm != null}
+        busy={menuOos.oosBusy}
+        title={menuOos.restoreConfirm?.title ?? ""}
+        message={menuOos.restoreConfirm?.message ?? ""}
+        onCancel={() => menuOos.setRestoreConfirm(null)}
+        onConfirm={() => void menuOos.restoreConfirm?.onConfirm()}
+      />
 
       {showCategoryModal &&
         typeof document !== "undefined" &&

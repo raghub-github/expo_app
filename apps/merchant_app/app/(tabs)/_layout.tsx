@@ -140,7 +140,6 @@ export default function TabsLayout() {
         name="profile"
         options={{
           title: "Profile",
-          unmountOnBlur: true,
           tabBarIcon: ({ color, focused, size }) => (
             <TabIcon name={focused ? "person" : "person-outline"} color={color} size={size} />
           ),

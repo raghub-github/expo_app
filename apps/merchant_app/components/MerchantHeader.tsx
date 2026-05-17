@@ -27,6 +27,7 @@ import {
   operatingHoursToFlatRow,
 } from "@/lib/merchantStoreNextOpenIso";
 import { formatCloseReasonForCard } from "@/lib/formatCloseReasonForCard";
+import { formatStoreActionSourceLabel } from "@/lib/storeActionSource";
 import type { ChildStore } from "@/context/AuthContext";
 
 const DAY_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
@@ -102,16 +103,26 @@ const PAGE_TITLES: Record<string, string> = {
   profile: "Profile",
 };
 
+function resolveProfileSubPage(pathname: string | undefined): string | null {
+  if (!pathname) return null;
+  if (pathname.includes("offer-insights")) return "Detailed performance";
+  if (pathname.includes("order-history")) return "Order history";
+  if (pathname.includes("/offers")) return "Offers";
+  return null;
+}
+
 function MainHeader({
   compact,
   pickerVisible,
   setPickerVisible,
   onRequestSwitchStore,
+  pathname,
 }: {
   compact?: boolean;
   pickerVisible: boolean;
   setPickerVisible: (v: boolean) => void;
   onRequestSwitchStore: (store: ChildStore) => void;
+  pathname?: string;
 }) {
   const { isOnline, scheduledClosure, manualCloseUntil, restrictionType } = useStoreStatus();
   const { selectedStore } = useSelectedStore();
@@ -128,6 +139,7 @@ function MainHeader({
   const segments = useSegments();
   const tab = segments[segments.length - 1] ?? "index";
   const isProfileSection = segments.includes("profile");
+  const profileSubPageTitle = isProfileSection ? resolveProfileSubPage(pathname) : null;
   const pageTitle = PAGE_TITLES[String(tab)] ?? "Dashboard";
   const stores = partner?.childStores ?? [];
   const hasMultipleChildStores = stores.length > 1;
@@ -143,29 +155,42 @@ function MainHeader({
     <View style={[styles.mainHeader, compact && styles.mainHeaderCompact]}>
       <View style={styles.mainHeaderInner}>
         <View style={styles.leftSection}>
-          <Image
-            source={require("../assets/onlylogo.png")}
-            style={styles.logo}
-            resizeMode="contain"
-            accessibilityLabel="GatiMitra"
-          />
+          {profileSubPageTitle ? (
+            <Pressable
+              onPress={() => router.back()}
+              style={({ pressed }) => [styles.headerBackBtn, pressed && styles.pressed]}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="Go back"
+            >
+              <Ionicons name="chevron-back" size={26} color={GatiMitraMerchant.textPrimary} />
+            </Pressable>
+          ) : (
+            <Image
+              source={require("../assets/onlylogo.png")}
+              style={styles.logo}
+              resizeMode="contain"
+              accessibilityLabel="GatiMitra"
+            />
+          )}
           <Pressable
-            disabled={stores.length === 0 || !hasMultipleChildStores}
-            onPress={() => setPickerVisible(true)}
+            disabled={profileSubPageTitle ? false : stores.length === 0 || !hasMultipleChildStores}
+            onPress={() => (profileSubPageTitle ? router.back() : setPickerVisible(true))}
             style={({ pressed }) => [
               styles.greetingBlock,
-              pressed && hasMultipleChildStores && styles.pressed,
+              pressed && styles.pressed,
               GatiMitraMerchant.cursorPointer,
             ]}
           >
             <View style={styles.greetingRow}>
               <Text style={styles.greeting} numberOfLines={1} ellipsizeMode="clip">
-                {truncateStoreNameForHeader(
-                  selectedStore?.store_name ?? "Select a store",
-                  HEADER_STORE_NAME_MAX_CHARS
-                )}
+                {profileSubPageTitle ??
+                  truncateStoreNameForHeader(
+                    selectedStore?.store_name ?? "Select a store",
+                    HEADER_STORE_NAME_MAX_CHARS
+                  )}
               </Text>
-              {hasMultipleChildStores && (
+              {!profileSubPageTitle && hasMultipleChildStores && (
                 <Ionicons
                   name={pickerVisible ? "chevron-up" : "chevron-down"}
                   size={16}
@@ -184,7 +209,7 @@ function MainHeader({
               <RadarLiveIndicator />
             </View>
           )}
-          {isProfileSection ? (
+          {isProfileSection && !profileSubPageTitle ? (
             <Pressable
               onPress={async () => {
                 const store = selectedStore;
@@ -212,7 +237,7 @@ function MainHeader({
                 color={GatiMitraMerchant.textPrimary}
               />
             </Pressable>
-          ) : (
+          ) : !isProfileSection ? (
             <View style={styles.bellWrap}>
               <Pressable
                 onPress={() => router.push("/notifications")}
@@ -238,7 +263,7 @@ function MainHeader({
                 ) : null}
               </Pressable>
             </View>
-          )}
+          ) : null}
         </View>
       </View>
 
@@ -381,6 +406,8 @@ function StoreStatusCard({
   reopenCountdownLabelPrefix,
   lastOpenedLine,
   lastClosedLine,
+  scheduledTimeOffLines,
+  activeRushLine,
 }: {
   onToggleRequest: () => void;
   offlineSubtitle?: string;
@@ -396,6 +423,13 @@ function StoreStatusCard({
   lastOpenedLine?: string | null;
   /** "Last: Closed by Name (ID: id) · 11:56:12 am" when temp close */
   lastClosedLine?: string | null;
+  scheduledTimeOffLines?: Array<{
+    phase: "active" | "upcoming";
+    windowText: string;
+    reason?: string | null;
+    sourceLabel: string | null;
+  }>;
+  activeRushLine?: { remainingMinutes: number; sourceLabel: string | null } | null;
 }) {
   const { isOnline } = useStoreStatus();
   const countdownPrefix = reopenCountdownLabelPrefix ?? "Reopen at:";
@@ -426,6 +460,34 @@ function StoreStatusCard({
 
   return (
     <View style={[styles.statusCard, isOnline ? styles.statusCardOnline : styles.statusCardOffline]}>
+      {scheduledTimeOffLines && scheduledTimeOffLines.length > 0 ? (
+        <View style={styles.scheduleOffBanner}>
+          <Text style={styles.scheduleOffBannerTitle}>Scheduled time-off</Text>
+          {scheduledTimeOffLines.map((row, idx) => (
+            <Text key={`sched-${idx}`} style={styles.scheduleOffBannerLine} numberOfLines={3}>
+              <Text style={row.phase === "active" ? styles.scheduleOffPhaseActive : styles.scheduleOffPhaseUpcoming}>
+                {row.phase === "active" ? "Active" : "Upcoming"}
+              </Text>
+              {" · "}
+              {row.windowText}
+              {row.reason ? ` · ${row.reason}` : ""}
+              {row.sourceLabel ? ` · via ${row.sourceLabel}` : ""}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+      {activeRushLine && activeRushLine.remainingMinutes > 0 ? (
+        <View style={styles.rushBanner}>
+          <Text style={styles.rushBannerTitle}>Rush hour</Text>
+          <Text style={styles.rushBannerLine} numberOfLines={2}>
+            <Text style={styles.rushBannerActive}>Active</Text>
+            {" · ~"}
+            {activeRushLine.remainingMinutes}
+            {" min left"}
+            {activeRushLine.sourceLabel ? ` · via ${activeRushLine.sourceLabel}` : ""}
+          </Text>
+        </View>
+      ) : null}
       <View style={styles.statusCardInner}>
         <View style={styles.statusCardLeft}>
           <View style={styles.statusCardTitleRow}>
@@ -501,6 +563,7 @@ export function MerchantCustomHeader() {
     autoOpenFromSchedule,
     manualActivationLock,
     upcomingScheduledClosure,
+    activeRush,
     statusReason,
     unavailableReason,
     reopenAtIso: reopenAtIsoFromContext,
@@ -846,6 +909,50 @@ export function MerchantCustomHeader() {
     }
   }
 
+  const formatScheduleWindow = (fromIso: string, toIso: string) => {
+    const fromLabel = formatIstDateTimeCompact(fromIso);
+    const toLabel = formatIstDateTimeCompact(toIso);
+    if (fromLabel && toLabel) return `${fromLabel} – ${toLabel}`;
+    return fromLabel || toLabel || "";
+  };
+
+  const scheduledTimeOffLines: Array<{
+    phase: "active" | "upcoming";
+    windowText: string;
+    reason?: string | null;
+    sourceLabel: string | null;
+  }> = [];
+  if (upcomingScheduledClosure) {
+    const w = formatScheduleWindow(upcomingScheduledClosure.from, upcomingScheduledClosure.to);
+    if (w) {
+      scheduledTimeOffLines.push({
+        phase: "upcoming",
+        windowText: w,
+        reason: upcomingScheduledClosure.reason,
+        sourceLabel: formatStoreActionSourceLabel(upcomingScheduledClosure.marked_from),
+      });
+    }
+  }
+  if (scheduledClosure && !isOnline) {
+    const w = formatScheduleWindow(scheduledClosure.from, scheduledClosure.to);
+    if (w) {
+      scheduledTimeOffLines.push({
+        phase: "active",
+        windowText: w,
+        reason: scheduledClosure.reason,
+        sourceLabel: formatStoreActionSourceLabel(scheduledClosure.marked_from),
+      });
+    }
+  }
+
+  const activeRushLine =
+    activeRush && activeRush.is_active && activeRush.remaining_minutes > 0
+      ? {
+          remainingMinutes: activeRush.remaining_minutes,
+          sourceLabel: formatStoreActionSourceLabel(activeRush.marked_from),
+        }
+      : null;
+
   const isGatiMitraActor = (emailOrName: string | null | undefined): boolean => {
     const v = emailOrName != null ? String(emailOrName).toLowerCase() : "";
     return v.includes("gatimitra") || v.endsWith("@gatimitra.in") || v.endsWith("@gatimitra.com");
@@ -903,6 +1010,7 @@ export function MerchantCustomHeader() {
           pickerVisible={pickerVisible}
           setPickerVisible={setPickerVisible}
           onRequestSwitchStore={showSwitchStoreWarning}
+          pathname={pathname}
         />
         {isHomeScreen && (
           <StoreStatusCard
@@ -924,6 +1032,8 @@ export function MerchantCustomHeader() {
             reopenAtFormatted={!isOnline ? formatIstDateTimeCompact(primaryReopenIso) : null}
             lastOpenedLine={isOnline ? lastOpenedLine : null}
             lastClosedLine={!isOnline ? lastClosedLine : null}
+            scheduledTimeOffLines={scheduledTimeOffLines}
+            activeRushLine={activeRushLine}
           />
         )}
       </View>
@@ -1490,6 +1600,13 @@ const styles = StyleSheet.create({
     width: LOGO_SIZE,
     height: LOGO_SIZE,
   },
+  headerBackBtn: {
+    width: LOGO_SIZE,
+    height: LOGO_SIZE,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 2,
+  },
   greetingBlock: {
     flex: 1,
     minWidth: 0,
@@ -1653,6 +1770,61 @@ const styles = StyleSheet.create({
   statusCardOffline: {
     borderLeftWidth: 4,
     borderLeftColor: GatiMitraMerchant.storeOffline,
+  },
+  scheduleOffBanner: {
+    marginBottom: 10,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: "#FFFBEB",
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+  },
+  scheduleOffBannerTitle: {
+    fontSize: 10,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    color: "#78350F",
+    marginBottom: 4,
+  },
+  scheduleOffBannerLine: {
+    fontSize: 11,
+    lineHeight: 16,
+    color: "#78350F",
+    marginTop: 2,
+  },
+  scheduleOffPhaseActive: {
+    fontWeight: "700",
+    color: "#9F1239",
+  },
+  scheduleOffPhaseUpcoming: {
+    fontWeight: "700",
+    color: "#92400E",
+  },
+  rushBanner: {
+    marginBottom: 10,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: "#FFF7ED",
+    borderWidth: 1,
+    borderColor: "#FDBA74",
+  },
+  rushBannerTitle: {
+    fontSize: 10,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    color: "#9A3412",
+    marginBottom: 4,
+  },
+  rushBannerLine: {
+    fontSize: 11,
+    lineHeight: 16,
+    color: "#9A3412",
+  },
+  rushBannerActive: {
+    fontWeight: "700",
+    color: "#C2410C",
   },
   statusCardInner: {
     flexDirection: "row",

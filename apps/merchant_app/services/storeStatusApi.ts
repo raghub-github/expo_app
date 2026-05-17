@@ -53,11 +53,25 @@ export type ScheduledClosure = {
   from: string;
   to: string;
   reason: string;
+  marked_from?: string | null;
+};
+
+export type ActiveRushWindow = {
+  is_active: boolean;
+  duration_minutes: number | null;
+  remaining_minutes: number;
+  started_at: string | null;
+  ends_at: string | null;
+  marked_from?: string | null;
 };
 
 export type StoreStatus = {
   store_id: number;
   is_open: boolean;
+  /** OPEN | CLOSED from merchant_stores (Partner Site parity). */
+  operational_status?: string | null;
+  /** Inside an active operating slot (false during break / outside hours). */
+  within_operating_hours?: boolean;
   is_accepting_orders: boolean;
   is_available: boolean;
   auto_open_from_schedule: boolean;
@@ -80,6 +94,7 @@ export type StoreStatus = {
   restriction_type: string | null;
   scheduled_closure: ScheduledClosure | null;
   scheduled_closure_upcoming?: ScheduledClosure | null;
+  active_rush?: ActiveRushWindow | null;
   status_reason?: string | null;
   unavailable_reason?: string | null;
   next_open_time?: string | null;
@@ -261,15 +276,41 @@ async function fetchStoreStatusOnce(storeIdNum: number, tokenStr: string): Promi
         ? String(rawClosedById).trim() || null
         : null;
 
-  const rawClosure = data?.scheduled_closure;
-  let scheduledClosure: ScheduledClosure | null = null;
-  if (rawClosure != null && typeof rawClosure === "object" && !Array.isArray(rawClosure)) {
-    const r = rawClosure as Record<string, unknown>;
+  const parseClosure = (raw: unknown): ScheduledClosure | null => {
+    if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const r = raw as Record<string, unknown>;
     const from = r.from != null ? String(r.from) : "";
     const to = r.to != null ? String(r.to) : "";
     const reason = r.reason != null ? String(r.reason) : "Scheduled off";
-    if (from !== "" || to !== "" || reason !== "") {
-      scheduledClosure = { from: from || to || "scheduled date", to: to || from || "scheduled date", reason };
+    if (from === "" && to === "" && reason === "") return null;
+    const marked_from =
+      r.marked_from != null && String(r.marked_from).trim() !== "" ? String(r.marked_from).trim() : null;
+    return {
+      from: from || to || "scheduled date",
+      to: to || from || "scheduled date",
+      reason,
+      marked_from,
+    };
+  };
+
+  const scheduledClosure = parseClosure(data?.scheduled_closure);
+  const scheduled_closure_upcoming = parseClosure((data as { scheduled_closure_upcoming?: unknown }).scheduled_closure_upcoming);
+
+  let active_rush: ActiveRushWindow | null = null;
+  const rawRush = (data as { active_rush?: unknown }).active_rush;
+  if (rawRush != null && typeof rawRush === "object" && !Array.isArray(rawRush)) {
+    const r = rawRush as Record<string, unknown>;
+    if (r.is_active === true) {
+      const remaining = Number(r.remaining_minutes);
+      active_rush = {
+        is_active: true,
+        duration_minutes: typeof r.duration_minutes === "number" ? r.duration_minutes : null,
+        remaining_minutes: Number.isFinite(remaining) ? remaining : 0,
+        started_at: typeof r.started_at === "string" ? r.started_at : null,
+        ends_at: typeof r.ends_at === "string" ? r.ends_at : null,
+        marked_from:
+          r.marked_from != null && String(r.marked_from).trim() !== "" ? String(r.marked_from).trim() : null,
+      };
     }
   }
 
@@ -341,7 +382,8 @@ async function fetchStoreStatusOnce(storeIdNum: number, tokenStr: string): Promi
     last_toggled_by_id: lastToggledById,
     restriction_type: restrictionType,
     scheduled_closure: scheduledClosure,
-    scheduled_closure_upcoming: (data as any).scheduled_closure_upcoming ?? null,
+    scheduled_closure_upcoming,
+    active_rush,
     status_reason: statusReason,
     unavailable_reason: unavailableReason,
     next_open_time: nextOpenTime,

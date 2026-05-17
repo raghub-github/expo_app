@@ -13,6 +13,12 @@ const TICK_MS = 5_000;
 type EngineStore = {
   state: StoreStatusEngineState;
   hydrate: (storeKey: string) => void;
+  /** Align local state with GET store-operations (DB is source of truth). */
+  syncFromStoreOperations: (input: {
+    operationalOpen: boolean;
+    manualCloseUntil: string | null;
+    manualCloseReason: string | null;
+  }) => void;
   manualOn: () => void;
   manualOff: (manualCloseReason?: string | null) => void;
   tempClose: (untilIso: string, reason?: string | null) => void;
@@ -45,7 +51,8 @@ function runEffects(effects: StoreStatusEngineEffect[], api: { openModal: () => 
 export const useLocalStoreStatusEngineStore = create<EngineStore>((set, get) => ({
   state: createInitialStoreStatusState(),
   scheduleEndModalOpen: false,
-  openScheduleEndModal: () => set({ scheduleEndModalOpen: true }),
+  openScheduleEndModal: () =>
+    set((prev) => (prev.scheduleEndModalOpen ? prev : { scheduleEndModalOpen: true })),
   closeScheduleEndModal: () => set({ scheduleEndModalOpen: false }),
 
   hydrate: (storeKey: string) => {
@@ -60,6 +67,34 @@ export const useLocalStoreStatusEngineStore = create<EngineStore>((set, get) => 
     } catch {
       // ignore
     }
+  },
+
+  syncFromStoreOperations: ({ operationalOpen, manualCloseUntil, manualCloseReason }) => {
+    const now = new Date();
+    const nextStatus = operationalOpen ? "ONLINE" : "OFFLINE";
+    set((prev) => {
+      if (
+        prev.state.store_status === nextStatus &&
+        prev.state.manual_close_until === manualCloseUntil &&
+        prev.state.manual_close_reason === manualCloseReason
+      ) {
+        return prev;
+      }
+      const patch: Partial<StoreStatusEngineState> = {
+        store_status: nextStatus,
+        manual_close_until: manualCloseUntil,
+        manual_close_reason: manualCloseReason,
+        is_manual_override: false,
+        manual_override_at: null,
+        schedule_end_prompt_expires_at: null,
+        is_schedule_enabled: false,
+        last_action_source: "system",
+      };
+      const { state, effects } = reduceStoreStatusEngine(prev.state, { type: "CONFIG_UPDATE", now, patch });
+      if (effects.some((e) => e.type === "persist") && currentKey) persist(currentKey, state);
+      runEffects(effects, { openModal: get().openScheduleEndModal });
+      return { state };
+    });
   },
 
   manualOn: () => {

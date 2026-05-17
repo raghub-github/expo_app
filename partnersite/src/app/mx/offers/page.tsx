@@ -5,12 +5,25 @@ import { createPortal } from 'react-dom'
 import { useSearchParams } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
-import { fetchStoreById, fetchStoreByName, fetchAllOffers, fetchMenuCategories } from '@/lib/database'
 import type { Offer as DbOffer, OfferType, ApplicabilityType } from '@/lib/database'
+import { fetchStoreById, fetchStoreByName, fetchMenuCategories } from '@/lib/database'
 import { Plus, Edit2, Trash2, Zap, X, Calendar, Percent, DollarSign, Tag, Gift, User, Clock, ChevronDown, Copy, Search, Check, Sparkles, Truck, Layers, Package } from 'lucide-react'
-import { PageSkeletonGeneric } from '@/components/PageSkeleton'
 import { toast } from 'sonner'
-import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
+import { OfferTrackCard } from './offer-track-card'
+import {
+  countOffersForTrackFilter,
+  formatOfferActorDisplay,
+  offerMatchesTrackFilter,
+  offerWasUpdated,
+  type OfferTrackFilter,
+} from './offer-lifecycle'
+import {
+  normalizeOfferFromApi,
+  campaignDateToValidFromIso,
+  campaignDateToValidTillIso,
+  toLocalDateInputValue,
+  normalizeTimeColumnForInput,
+} from './offer-utils'
 
 export const dynamic = 'force-dynamic'
 
@@ -51,6 +64,35 @@ async function uploadOfferImageViaApi(
   if (!res.ok) return null;
   const data = await res.json();
   return data?.url ?? null;
+}
+
+/** Fetch offers via API (service role + merchant auth — same merchant_offers table as agent dashboard). */
+async function fetchOffersViaApi(
+  storeId: string
+): Promise<{ offers: DbOffer[]; storeName: string | null; storeCode: string | null }> {
+  try {
+    const res = await fetch(
+      `/api/merchant/offers?storeId=${encodeURIComponent(storeId)}`,
+      { credentials: 'include', cache: 'no-store' }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      console.error('[offers] API load failed:', err?.error ?? res.status);
+      return { offers: [], storeName: null, storeCode: null };
+    }
+    const data = await res.json();
+    const raw = Array.isArray(data?.offers) ? data.offers : [];
+    return {
+      offers: raw.map((row: Record<string, unknown>) =>
+        normalizeOfferFromApi(row as unknown as DbOffer)
+      ),
+      storeName: (data?.store_name as string) ?? null,
+      storeCode: (data?.store_id as string) ?? null,
+    };
+  } catch (e) {
+    console.error('[offers] fetchOffersViaApi', e);
+    return { offers: [], storeName: null, storeCode: null };
+  }
 }
 
 /** Fetch menu items via API (same as menu page; bypasses RLS and returns consistent shape) */
@@ -118,7 +160,11 @@ function OffersContent() {
   const [isLoading, setIsLoading] = useState(true)
   const [offers, setOffers] = useState<Offer[]>([])
   const [menuItems, setMenuItems] = useState<MenuItem[]>([])
-  const [pageTab, setPageTab] = useState<"create" | "track">("create")
+  const [pageTab, setPageTab] = useState<"create" | "track">("track")
+  const [storeName, setStoreName] = useState<string | null>(null)
+  const [ownerDisplayName, setOwnerDisplayName] = useState<string | null>(null)
+  const [trackFilter, setTrackFilter] = useState<OfferTrackFilter>("all")
+  const [expandedOfferCards, setExpandedOfferCards] = useState<Record<string, boolean>>({})
   
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])
   const [showModal, setShowModal] = useState(false)
@@ -195,12 +241,24 @@ function OffersContent() {
   }
 
   useEffect(() => {
-    const getStoreId = async () => {
-      let id = searchParams?.get('storeId')
-      if (!id) id = typeof window !== 'undefined' ? localStorage.getItem('selectedStoreId') : null
-      setStoreId(id)
+    const getStoreId = () => {
+      let id = searchParams?.get('storeId') ?? searchParams?.get('store_id')
+      if (!id && typeof window !== 'undefined') {
+        id =
+          localStorage.getItem('selectedStoreId') ??
+          localStorage.getItem('selectedRestaurantId')
+      }
+      setStoreId(id ?? null)
     }
     getStoreId()
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'selectedStoreId' || e.key === 'selectedRestaurantId') {
+        getStoreId()
+      }
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
   }, [searchParams])
 
   useEffect(() => {
@@ -208,7 +266,9 @@ function OffersContent() {
       setIsLoading(false)
       return
     }
-    
+
+    let cancelled = false
+
     const loadData = async () => {
       setIsLoading(true)
       try {
@@ -217,30 +277,73 @@ function OffersContent() {
         if (!storeData) {
           storeData = await fetchStoreByName(storeId)
         }
-        setStore(storeData as unknown as MerchantStore)
+        const { offers: offersData, storeName: apiStoreName, storeCode: apiStoreCode } =
+          await fetchOffersViaApi(storeId)
 
-        // Load offers (all, not just active)
-        const offersData = await fetchAllOffers(storeId)
-        setOffers(offersData || [])
-        
-        // Load menu items (via API for auth/RLS) and categories for selection
+        const resolvedName =
+          apiStoreName ??
+          (storeData as { store_name?: string; store_display_name?: string } | null)?.store_display_name ??
+          (storeData as { store_name?: string } | null)?.store_name ??
+          null
+        if (cancelled) return
+        setStoreName(resolvedName)
+
+        if (storeData) {
+          setStore(storeData as unknown as MerchantStore)
+        } else if (apiStoreName || apiStoreCode) {
+          setStore({
+            id: apiStoreCode ?? storeId,
+            store_name: apiStoreName ?? apiStoreCode ?? 'Store',
+          })
+        }
+
+        if (cancelled) return
+        setOffers(offersData)
+
         const [items, categories] = await Promise.all([
           fetchMenuItemsForOffers(storeId),
           fetchMenuCategories(storeId),
         ])
+        if (cancelled) return
         setMenuItems(items || [])
         setFilteredMenuItems(items || [])
         setMenuCategories(categories || [])
       } catch (error) {
+        if (cancelled) return
         console.error('Error loading offers:', error)
         toast.error('Failed to load offers')
       } finally {
-        setIsLoading(false)
+        if (!cancelled) setIsLoading(false)
       }
     }
-    
-    loadData()
+
+    void loadData()
+    return () => {
+      cancelled = true
+    }
   }, [storeId])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadOwner = async () => {
+      try {
+        const res = await fetch('/api/merchant-auth/resolve-session', { credentials: 'include' })
+        const data = await res.json().catch(() => ({}))
+        if (cancelled || !res.ok || !(data as { success?: boolean }).success) return
+        const owner =
+          typeof (data as { ownerName?: string }).ownerName === 'string'
+            ? (data as { ownerName: string }).ownerName.trim()
+            : ''
+        setOwnerDisplayName(owner || null)
+      } catch {
+        /* ignore */
+      }
+    }
+    void loadOwner()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const offersByItemId = useMemo(() => {
     const now = new Date();
@@ -265,6 +368,46 @@ function OffersContent() {
     });
     return map;
   }, [offers]);
+
+  const trackFilterCounts = useMemo(
+    () => ({
+      active: countOffersForTrackFilter(offers, "active"),
+      scheduled: countOffersForTrackFilter(offers, "scheduled"),
+      inactive: countOffersForTrackFilter(offers, "inactive"),
+      all: offers.length,
+    }),
+    [offers]
+  );
+
+  const filteredTrackOffers = useMemo(
+    () => offers.filter((o) => offerMatchesTrackFilter(o, trackFilter)),
+    [offers, trackFilter]
+  );
+
+  const toggleOfferCardExpanded = (offerKey: string) =>
+    setExpandedOfferCards((prev) => ({ ...prev, [offerKey]: !(prev[offerKey] ?? true) }));
+
+  const editingOffer = useMemo(() => {
+    if (!editingId) return null
+    return offers.find((o) => o.offer_id === editingId) ?? null
+  }, [editingId, offers])
+
+  const displayStoreName = storeName ?? store?.store_name ?? null
+
+  const offerActorDisplayOpts = useMemo(
+    () => ({ ownerDisplayName }),
+    [ownerDisplayName]
+  )
+
+  const offerHeaderBreadcrumbs = useMemo(() => {
+    const crumbs: Array<{ label: string; href?: string }> = [
+      { label: 'Partner', href: '/partners/dashboard' },
+    ]
+    if (displayStoreName) crumbs.push({ label: displayStoreName })
+    const sid = storeId?.trim()
+    if (sid) crumbs.push({ label: sid })
+    return crumbs
+  }, [displayStoreName, storeId])
 
   // Filter menu items based on search
   useEffect(() => {
@@ -342,39 +485,47 @@ function OffersContent() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [showModal])
 
-  // Auto-generate coupon when COUPON type is selected
-  useEffect(() => {
-    if (formData.offer_type === 'COUPON' && !generatedCouponCode && !editingId) {
-      generateCoupon()
-    }
-  }, [formData.offer_type])
-
   const generateCoupon = () => {
     setIsGeneratingCoupon(true)
-    
-    // Generate a random coupon code
+
     const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
     let coupon = ''
-    
-    // Format: STORE-XXXX-XXXX where X is alphanumeric
     const storePrefix = store?.store_name ? store.store_name.substring(0, 3).toUpperCase() : 'OFF'
-    
+
     for (let i = 0; i < 8; i++) {
       coupon += characters.charAt(Math.floor(Math.random() * characters.length))
     }
-    
-    // Insert hyphen after 4 characters
     coupon = coupon.slice(0, 4) + '-' + coupon.slice(4)
-    
-    // Add store prefix
     const finalCoupon = `${storePrefix}-${coupon}`
-    
-    setTimeout(() => {
+
+    return window.setTimeout(() => {
       setGeneratedCouponCode(finalCoupon)
       setIsGeneratingCoupon(false)
       toast.success('Coupon code generated!')
     }, 500)
   }
+
+  useEffect(() => {
+    if (formData.offer_type !== 'COUPON' || generatedCouponCode || editingId) return
+    setIsGeneratingCoupon(true)
+    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    let coupon = ''
+    const storePrefix = store?.store_name ? store.store_name.substring(0, 3).toUpperCase() : 'OFF'
+    for (let i = 0; i < 8; i++) {
+      coupon += characters.charAt(Math.floor(Math.random() * characters.length))
+    }
+    coupon = coupon.slice(0, 4) + '-' + coupon.slice(4)
+    const finalCoupon = `${storePrefix}-${coupon}`
+    const timer = window.setTimeout(() => {
+      setGeneratedCouponCode(finalCoupon)
+      setIsGeneratingCoupon(false)
+      toast.success('Coupon code generated!')
+    }, 500)
+    return () => {
+      window.clearTimeout(timer)
+      setIsGeneratingCoupon(false)
+    }
+  }, [formData.offer_type, generatedCouponCode, editingId, store?.store_name])
 
   const offerImageInputRef = useRef<HTMLInputElement>(null)
 
@@ -416,16 +567,16 @@ function OffersContent() {
         max_order_amount: offer.max_order_amount?.toString() ?? '',
         buy_quantity: offer.buy_quantity?.toString() ?? '',
         get_quantity: offer.get_quantity?.toString() ?? '',
-        valid_from: offer.valid_from.split('T')[0],
-        valid_till: offer.valid_till.split('T')[0],
+        valid_from: toLocalDateInputValue(offer.valid_from),
+        valid_till: toLocalDateInputValue(offer.valid_till),
         coupon_code: offer.coupon_code ?? '',
         auto_apply: offer.auto_apply ?? true,
         first_order_only: offer.first_order_only ?? false,
         max_uses_total: offer.max_uses_total?.toString() ?? '',
         max_uses_per_user: offer.max_uses_per_user?.toString() ?? '',
         applicable_on_days: offer.applicable_on_days || [],
-        applicable_time_start: offer.applicable_time_start ?? '',
-        applicable_time_end: offer.applicable_time_end ?? '',
+        applicable_time_start: normalizeTimeColumnForInput(offer.applicable_time_start),
+        applicable_time_end: normalizeTimeColumnForInput(offer.applicable_time_end),
         is_stackable: offer.is_stackable ?? false,
         priority: offer.priority?.toString() ?? '0',
         tiered_tiers: (meta.tiers || []).map((t: { min: number; discount: number }) => ({ min: String(t.min), discount: String(t.discount) })),
@@ -478,10 +629,12 @@ function OffersContent() {
     setStep('basic')
     // Refetch menu items when opening modal so "Specific items" selection has fresh data
     if (storeId) {
-      fetchMenuItemsForOffers(storeId).then((items) => {
-        setMenuItems(items)
-        setFilteredMenuItems(items)
-      }).catch(() => {})
+      void fetchMenuItemsForOffers(storeId)
+        .then((items) => {
+          setMenuItems(items)
+          setFilteredMenuItems(items)
+        })
+        .catch(() => {})
     }
   }
 
@@ -602,8 +755,8 @@ function OffersContent() {
         buy_quantity: formData.buy_quantity ? parseInt(formData.buy_quantity, 10) : null,
         get_quantity: formData.get_quantity ? parseInt(formData.get_quantity, 10) : null,
         coupon_code: (formData.offer_type === 'COUPON' ? generatedCouponCode : formData.coupon_code) || null,
-        valid_from: new Date(formData.valid_from).toISOString(),
-        valid_till: new Date(formData.valid_till).toISOString(),
+        valid_from: campaignDateToValidFromIso(formData.valid_from),
+        valid_till: campaignDateToValidTillIso(formData.valid_till),
         is_active: true,
         auto_apply: formData.auto_apply,
         is_stackable: formData.is_stackable,
@@ -676,17 +829,15 @@ function OffersContent() {
       }
 
       if (result) {
-        // Update local state instantly with new offer data
-        setOffers(prev => {
+        const normalized = normalizeOfferFromApi(result as unknown as Record<string, unknown>);
+        setOffers((prev) => {
           if (editingId) {
-            // Replace the edited offer with the new result
-            return prev.map(offer => offer.offer_id === editingId ? result : offer);
-          } else {
-            // Add new offer to the top
-            return [result, ...prev];
+            return prev.map((offer) => (offer.offer_id === editingId ? normalized : offer));
           }
+          return [normalized, ...prev];
         });
         toast.success(editingId ? 'Offer updated successfully!' : 'Offer created successfully!');
+        setPageTab('track');
         setShowModal(false);
         resetForm();
       } else {
@@ -910,50 +1061,24 @@ function OffersContent() {
     setShowApplyToDropdown(false)
   }
 
-  const getStatusColor = (offer: Offer) => {
-    const isExpired = new Date(offer.valid_till) < new Date();
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const validFrom = new Date(offer.valid_from);
-    const isUpcoming = validFrom > today;
-    
-    if (isExpired) return { bg: 'bg-gray-100', text: 'text-gray-700', label: 'EXPIRED' };
-    if (!offer.is_active) return { bg: 'bg-yellow-50', text: 'text-amber-700', label: 'INACTIVE' };
-    if (isUpcoming) return { bg: 'bg-blue-50', text: 'text-blue-700', label: 'UPCOMING' };
-    return { bg: 'bg-green-50', text: 'text-green-700', label: 'ACTIVE' };
-  }
-
-  const getOfferBadgeColor = (offerType: Offer['offer_type']) => {
-    switch (offerType) {
-      case 'PERCENTAGE': return 'bg-gradient-to-r from-emerald-500 to-green-600';
-      case 'FLAT': return 'bg-gradient-to-r from-blue-500 to-cyan-600';
-      case 'COUPON': return 'bg-gradient-to-r from-rose-500 to-pink-600';
-      case 'BUY_N_GET_M': return 'bg-gradient-to-r from-purple-500 to-violet-600';
-      case 'FREE_ITEM': return 'bg-gradient-to-r from-amber-500 to-orange-600';
-      default: return 'bg-gradient-to-r from-gray-500 to-gray-600';
-    }
-  }
-
   if (isLoading) {
     return (
-      <MXLayoutWhite restaurantName={store?.store_name || "Loading..."} restaurantId={storeId || ""}>
-        <PageSkeletonGeneric />
+      <MXLayoutWhite restaurantName={displayStoreName || store?.store_name || "Loading..."} restaurantId={storeId || ""}>
+        <PartnerPageHeader title="Offers" breadcrumbs={offerHeaderBreadcrumbs} />
+        <div className="flex flex-1 items-center justify-center py-12 min-h-0">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-orange-600 border-t-transparent" />
+        </div>
       </MXLayoutWhite>
     )
   }
 
   return (
     <>
-      <MXLayoutWhite restaurantName={store?.store_name || "Offers"} restaurantId={storeId || ""}>
-        <PartnerPageHeader title="Offers" subtitle="" />
-        <div className="h-screen bg-white overflow-y-auto hide-scrollbar">
-          <div className="bg-white border-b border-gray-200 mx-shell-header !px-4 sm:!px-5 md:!px-6">
-            <div className="flex items-center justify-between gap-3">
-              <MobileHamburgerButton />
-              <div className="flex-1" />
-            </div>
-
-            <div className="mt-3 flex gap-8 text-sm">
+      <MXLayoutWhite restaurantName={displayStoreName || store?.store_name || "Offers"} restaurantId={storeId || ""}>
+        <PartnerPageHeader title="Offers" breadcrumbs={offerHeaderBreadcrumbs} />
+        <div className="flex h-full min-h-0 flex-col bg-white overflow-hidden">
+          <div className="shrink-0 border-b border-gray-200 bg-white px-4 sm:px-5 md:px-6">
+            <div className="mt-1 flex gap-8 text-sm">
               <button
                 type="button"
                 onClick={() => setPageTab("create")}
@@ -973,16 +1098,55 @@ function OffersContent() {
                 Track offers
               </button>
             </div>
+
+            {pageTab === "track" && offers.length > 0 ? (
+              <div className="pb-4 pt-3 border-t border-gray-100">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="flex-1 h-px bg-gray-200" />
+                  <span className="text-[11px] font-semibold tracking-wider text-gray-500 uppercase shrink-0">
+                    Offer campaigns
+                  </span>
+                  <div className="flex-1 h-px bg-gray-200" />
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+                  {(
+                    [
+                      { id: "active" as const, label: "Active" },
+                      { id: "scheduled" as const, label: "Scheduled" },
+                      { id: "inactive" as const, label: "Inactive" },
+                      { id: "all" as const, label: "All" },
+                    ] as const
+                  ).map(({ id, label }) => {
+                    const selected = trackFilter === id;
+                    const n = trackFilterCounts[id];
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setTrackFilter(id)}
+                        className={`min-h-[44px] rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors ${
+                          selected
+                            ? "border-blue-600 bg-blue-600 text-white shadow-sm"
+                            : "border-gray-300 bg-white text-gray-800 hover:border-gray-400 hover:bg-gray-50"
+                        }`}
+                      >
+                        {label}
+                        {n > 0 ? ` (${n})` : ""}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
           </div>
 
-          {/* Content — responsive padding and max-width */}
-          <div className="px-4 sm:px-5 md:px-6 py-4 sm:py-6 max-w-7xl mx-auto">
+          <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-5 md:px-6 py-4 sm:py-6 w-full min-w-0">
             {pageTab === "create" ? (
               <div className="py-6">
                 <div className="rounded-lg border border-gray-200 bg-white p-6">
                   <div className="flex flex-col items-center justify-center gap-3 text-center">
                     <p className="text-sm text-gray-700 font-medium">Create offers</p>
-                    <p className="text-sm text-gray-500">Click below to start creating a new offer.</p>
+                    <p className="text-sm text-gray-500">Click below to start creating a new offer for {displayStoreName || "your store"}.</p>
                     <button
                       onClick={() => handleOpenModal()}
                       className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
@@ -1008,228 +1172,35 @@ function OffersContent() {
                   Create First Offer
                 </button>
               </div>
+            ) : filteredTrackOffers.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50/80 py-12 text-center max-w-xl mx-auto">
+                <p className="text-sm font-medium text-gray-700">No offers in this filter</p>
+                <p className="text-xs text-gray-500 mt-1">Try another campaign filter above.</p>
+              </div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
-                {offers.map(offer => {
-                  const now = new Date();
-                  const validFrom = new Date(offer.valid_from);
-                  const validTill = new Date(offer.valid_till);
-                  let daysLeft = 0;
-                  let statusLabel = '';
-                  if (now < validFrom) {
-                    // Offer not started yet
-                    const totalDuration = Math.ceil((validTill.getTime() - validFrom.getTime()) / (1000 * 60 * 60 * 24));
-                    const startsIn = Math.ceil((validFrom.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-                    statusLabel = `Starts in ${startsIn} day${startsIn !== 1 ? 's' : ''} (Duration: ${totalDuration} day${totalDuration !== 1 ? 's' : ''})`;
-                  } else if (now > validTill) {
-                    // Offer expired
-                    statusLabel = 'Expired';
-                  } else {
-                    // Offer is active, show days left from now to validTill
-                    daysLeft = Math.ceil((validTill.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-                    statusLabel = `${daysLeft} day${daysLeft !== 1 ? 's' : ''} left`;
-                  }
-                  const status = getStatusColor(offer);
-                  const badgeColor = getOfferBadgeColor(offer.offer_type);
-                  
+              <div className="flex flex-col gap-3 w-full min-w-0">
+                {filteredTrackOffers.map((offer, index) => {
+                  const offerKey = offer.offer_id || String(index);
                   return (
-                    <div
-                      key={offer.offer_id || Math.random()}
-                      className={`bg-white rounded-xl shadow-sm border border-gray-200 hover:shadow-lg transition-all duration-300 hover:-translate-y-0.5 group relative overflow-hidden${statusLabel === 'Expired' ? ' opacity-80' : ''}`}
-                      style={{ minHeight: 'auto', maxWidth: 340, cursor: 'pointer', paddingTop: 0, paddingBottom: 0 }}
-                    >
-                      {/* Top accent bar */}
-                      <div className={`absolute top-0 left-0 right-0 h-1 ${badgeColor}`}></div>
-                      {/* Content */}
-                      <div className="p-1.5 md:p-2">
-                        {/* Header row */}
-                        <div className="flex items-start justify-between mb-2">
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1 mb-0.5">
-                              {getOfferIcon(offer.offer_type)}
-                              <span className={`px-2 py-1 rounded-full text-[10px] font-bold ${status.bg} ${status.text}`}>
-                                {status.label}
-                              </span>
-                            </div>
-                            <h3 className="font-bold text-gray-900 text-xs truncate group-hover:text-orange-600 transition-colors">
-                              {offer.offer_title}
-                            </h3>
-                            <p className="text-[9px] text-gray-500 font-mono mt-0.5">
-                              ID: {offer.offer_id.substring(0, 8)}...
-                            </p>
-                          </div>
-                          
-                          {/* Scope badge */}
-                          <div className="flex-shrink-0">
-                            {offer.offer_sub_type === 'SPECIFIC_ITEM' ? (
-                              <span
-                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-semibold bg-indigo-50 text-indigo-700 relative hover:bg-indigo-100"
-                                style={{ cursor: 'pointer', position: 'relative' }}
-                                tabIndex={0}
-                                onMouseEnter={e => {
-                                  const tooltip = e.currentTarget.querySelector('.offer-items-tooltip') as HTMLElement | null;
-                                  if (tooltip) { tooltip.style.opacity = '1'; tooltip.style.pointerEvents = 'auto'; }
-                                }}
-                                onMouseLeave={e => {
-                                  const tooltip = e.currentTarget.querySelector('.offer-items-tooltip') as HTMLElement | null;
-                                  if (tooltip) { tooltip.style.opacity = '0'; tooltip.style.pointerEvents = 'none'; }
-                                }}
-                              >
-                                Specific Items
-                                <span className="offer-items-tooltip absolute left-1/2 z-50 -translate-x-1/2 mt-2 min-w-max bg-white border border-gray-300 rounded-lg shadow-lg text-xs text-gray-900 px-3 py-2 whitespace-pre-line opacity-0 pointer-events-none transition-opacity duration-200"
-                                  style={{
-                                    top: '100%',
-                                    whiteSpace: 'pre-line',
-                                    minWidth: '180px',
-                                    maxWidth: '260px',
-                                    fontSize: '11px',
-                                    left: '50%',
-                                    transform: 'translateX(-50%)',
-                                  }}
-                                >
-                                  {((offer.menu_item_ids ?? (offer.offer_metadata as { menu_item_ids?: string[] })?.menu_item_ids) || []).length > 0
-                                    ? (offer.menu_item_ids ?? (offer.offer_metadata as { menu_item_ids?: string[] })?.menu_item_ids ?? []).map(
-                                        (id: string) => {
-                                          const item = menuItems.find(m => m.item_id === id);
-                                          return item ? `• ${item.item_name}` : null;
-                                        }
-                                      ).filter(Boolean).join('\n')
-                                    : 'No items found'}
-                                </span>
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-semibold bg-blue-50 text-blue-700">
-                                All Orders
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Offer details */}
-                        <div className="mb-2">
-                          {offer.offer_type === 'COUPON' && offer.coupon_code && (
-                            <div className="mb-1.5">
-                              <div className="flex items-center justify-between mb-1">
-                                <span className="text-xs font-semibold text-gray-600">Coupon Code</span>
-                                <button
-                                  onClick={() => copyToClipboard(offer.coupon_code!)}
-                                  className="text-xs font-medium text-gray-500 hover:text-orange-600 transition-colors flex items-center gap-1"
-                                >
-                                  <Copy size={10} />
-                                  Copy
-                                </button>
-                              </div>
-                              <div className="bg-gradient-to-r from-gray-50 to-gray-100 border border-gray-300 rounded-lg p-2">
-                                <code className="text-sm font-bold text-gray-900 font-mono tracking-wider block text-center">
-                                  {offer.coupon_code}
-                                </code>
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Discount summary */}
-                          <div className="flex items-center justify-between mb-2">
-                            <div className="flex items-center gap-1">
-                              <div className="p-1 rounded-lg bg-gradient-to-br from-gray-50 to-gray-100">
-                                {offer.offer_type === 'PERCENTAGE' ? (
-                                  <Percent size={14} className="text-green-600" />
-                                ) : offer.offer_type === 'FLAT' ? (
-                                  <DollarSign size={14} className="text-blue-600" />
-                                ) : offer.offer_type === 'BUY_N_GET_M' ? (
-                                  <Gift size={14} className="text-purple-600" />
-                                ) : (
-                                  <Tag size={14} className="text-red-600" />
-                                )}
-                              </div>
-                              <div>
-                                <p className="text-xs font-bold text-gray-900">
-                                  {getOfferDescription(offer)}
-                                </p>
-                                {offer.min_order_amount && (
-                                  <p className="text-[9px] text-gray-500 mt-0.5">
-                                    Min. order: ₹{offer.min_order_amount}
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Validity */}
-                          <div className="flex items-center justify-between text-[10px] text-gray-600 bg-gray-50 rounded-lg p-1.5">
-                            <div className="flex items-center gap-1">
-                              <Calendar size={12} className="text-gray-500" />
-                              <span className="font-medium">
-                                {new Date(offer.valid_from).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} - {new Date(offer.valid_till).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                              </span>
-                            </div>
-                            {(statusLabel && statusLabel !== 'Expired') && (
-                              <div className="flex items-center gap-1 bg-gradient-to-r from-amber-100 to-orange-100 px-2 py-1 rounded-full">
-                                <Clock size={10} className="text-amber-700" />
-                                <span className="font-bold text-amber-800 text-[10px]">
-                                  {statusLabel}
-                                </span>
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Image preview if available */}
-                          {offer.image_url && (
-                            <div className="mt-0.5 rounded-lg overflow-hidden border border-gray-200">
-                              <img
-                                src={offer.image_url}
-                                alt={offer.offer_title}
-                                className="w-full h-10 object-cover"
-                              />
-                            </div>
-                          )}
-
-                          {/* Description if available */}
-                          {offer.offer_description && (
-                            <p className="text-[10px] text-gray-500 mt-0.5 line-clamp-2">
-                              {offer.offer_description}
-                            </p>
-                          )}
-                        </div>
-
-                        {/* Actions + audit */}
-                        <div className="flex items-center justify-between pt-1.5 border-t border-gray-100">
-                          <div className="flex flex-col gap-0.5 min-w-0">
-                            {(offer.created_by_name || offer.updated_by_name) && (
-                              <span className="text-[9px] text-gray-500 truncate" title={[offer.created_by_name && `Created by ${offer.created_by_name}`, offer.updated_by_name && `Updated by ${offer.updated_by_name}`].filter(Boolean).join(' • ')}>
-                                {offer.created_by_name && <>Created by {offer.created_by_name}</>}
-                                {offer.created_by_name && offer.updated_by_name && ' • '}
-                                {offer.updated_by_name && <>Updated by {offer.updated_by_name}</>}
-                              </span>
-                            )}
-                            <span className="text-[9px] text-gray-400">
-                              Updated: {new Date(offer.updated_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-0.5">
-                            <button
-                              onClick={() => handleOpenModal(offer)}
-                              className="p-1 rounded-lg bg-gradient-to-r from-blue-50 to-blue-100 text-blue-700 hover:from-blue-100 hover:to-blue-200 transition-all duration-200 group/btn"
-                              title="Edit offer"
-                            >
-                              <Edit2 size={12} />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteOffer(offer.offer_id)}
-                              className="p-1 rounded-lg bg-gradient-to-r from-red-50 to-red-100 text-red-700 hover:from-red-100 hover:to-red-200 transition-all duration-200 group/btn"
-                              title="Delete offer"
-                            >
-                              <Trash2 size={12} />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
+                    <OfferTrackCard
+                      key={offerKey}
+                      offer={offer}
+                      storeName={displayStoreName}
+                      ownerDisplayName={ownerDisplayName}
+                      expanded={expandedOfferCards[offerKey] ?? true}
+                      onToggleExpand={() => toggleOfferCardExpanded(offerKey)}
+                      onEdit={() => handleOpenModal(offer)}
+                      onDelete={() => handleDeleteOffer(offer.offer_id)}
+                      onCopyCoupon={copyToClipboard}
+                      getMenuItemName={getMenuItemName}
+                    />
                   );
                 })}
               </div>
             )}
           </div>
         </div>
+
 
         {/* Create/Edit Right Sheet — 5-step enterprise offer wizard */}
         {(showModal || sheetVisible) && (
@@ -1260,7 +1231,34 @@ function OffersContent() {
               <div className="flex-shrink-0 flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-gradient-to-r from-slate-50 to-white">
                 <div>
                   <h2 className="text-lg font-bold text-gray-900">{editingId ? 'Edit Offer' : 'Create Offer'}</h2>
-                  <p className="text-xs text-gray-500 mt-0.5">Step {STEPS.indexOf(activeTab) + 1} of {STEPS.length}: {STEP_LABELS[activeTab]}</p>
+                  {editingId && editingOffer ? (
+                    <div className="mt-2 space-y-1 text-xs text-gray-600">
+                      <p>
+                        <span className="text-gray-500">Created by:</span>{' '}
+                        <strong className="text-gray-800">
+                          {formatOfferActorDisplay(
+                            editingOffer.created_source_platform,
+                            editingOffer.created_by_name,
+                            offerActorDisplayOpts
+                          )}
+                        </strong>
+                      </p>
+                      <p>
+                        <span className="text-gray-500">Updated by:</span>{' '}
+                        <strong className="text-gray-800">
+                          {offerWasUpdated(editingOffer)
+                            ? formatOfferActorDisplay(
+                                editingOffer.updated_source_platform ?? editingOffer.created_source_platform,
+                                editingOffer.updated_by_name,
+                                offerActorDisplayOpts
+                              )
+                            : 'Not updated yet'}
+                        </strong>
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-500 mt-0.5">Creating from Merchant Portal</p>
+                  )}
                 </div>
                 <button
                   onClick={() => { setShowModal(false); resetForm(); }}

@@ -9,7 +9,7 @@
  * 4. Active temp close / manual indefinite
  * 5. Expired manual_close_until — clear; auto-open when within hours
  * 6. Within operating hours + auto_open + CLOSED → AUTO_OPEN
- * 7. Outside hours + OPEN + auto_open — break/off-day immediate close; else schedule-end prompt → auto off
+ * 7. Outside hours + OPEN — immediate close (manual_override bypass omitted before first slot today)
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -17,9 +17,11 @@ import {
   evaluateStoreSchedule,
   getOutsideHoursClosePolicy,
   isAutoOpenFromScheduleEnabled,
+  isBeforeFirstSlotToday,
   isInBreakBetweenSlots,
   type ScheduleEvaluation,
 } from '@/lib/storeScheduleEngine';
+import { syncMerchantLicenseCompliance } from '@/lib/syncMerchantLicenseCompliance';
 
 /**
  * Legacy constant kept for back-compat with any external importers. The 5-minute
@@ -92,13 +94,13 @@ async function loadAvailability(
   return (data as AvailabilityRow | null) ?? null;
 }
 
-async function loadActiveVacationEndsAt(
+async function loadActiveVacationContext(
   db: SupabaseClient,
   storeInternalId: number
-): Promise<string | null> {
+): Promise<{ endsAtIso: string; merchantReasonDetail: string | null } | null> {
   const { data } = await db
     .from('merchant_store_scheduled_closures')
-    .select('ends_at')
+    .select('ends_at, reason')
     .eq('store_id', storeInternalId)
     .in('status', ['scheduled', 'active'])
     .lte('starts_at', new Date().toISOString())
@@ -108,7 +110,50 @@ async function loadActiveVacationEndsAt(
     .maybeSingle();
   if (!data?.ends_at) return null;
   const d = parseIsoDate(String(data.ends_at));
-  return d ? d.toISOString() : null;
+  if (!d) return null;
+  const mr =
+    typeof (data as { reason?: unknown }).reason === 'string' &&
+    String((data as { reason?: string }).reason).trim().length > 0
+      ? String((data as { reason?: string }).reason).trim()
+      : null;
+  return { endsAtIso: d.toISOString(), merchantReasonDetail: mr };
+}
+
+/**
+ * Scheduled time-off closes stamp `merchant_store_availability` with vacation-ish fields via
+ * `syncOperationalStatusFromSchedule`. If closures are cancelled/removed server-side without
+ * updating availability, leftover `manual_close_until` acts like a bogus temp close and blocks
+ * auto-open. Clear leftovers when nothing in-window remains in `merchant_store_scheduled_closures`.
+ */
+export async function clearStaleScheduledClosureVacationOnAvailability(
+  db: SupabaseClient,
+  storeInternalId: number
+): Promise<boolean> {
+  const activeCtx = await loadActiveVacationContext(db, storeInternalId);
+  if (activeCtx) return false;
+  const avail = await loadAvailability(db, storeInternalId);
+  if (!avail) return false;
+  const unavail = String(avail.unavailable_reason ?? '').toLowerCase();
+  const restriction = String(avail.restriction_type ?? '').toUpperCase();
+  const cr = typeof avail.close_reason === 'string' ? avail.close_reason.trim() : '';
+  const staleVacAvail =
+    unavail === 'vacation' ||
+    restriction === 'VACATION' ||
+    /^vacation\b/i.test(cr);
+  if (!staleVacAvail) return false;
+  const nowIso = new Date().toISOString();
+  await db
+    .from('merchant_store_availability')
+    .update({
+      unavailable_reason: null,
+      restriction_type: null,
+      manual_close_until: null,
+      close_reason: null,
+      auto_off_reason: null,
+      updated_at: nowIso,
+    })
+    .eq('store_id', storeInternalId);
+  return true;
 }
 
 async function hasActiveRushWindow(db: SupabaseClient, storeInternalId: number): Promise<boolean> {
@@ -140,20 +185,24 @@ async function closeStore(
   const nowIso = new Date().toISOString();
   await db
     .from('merchant_stores')
-    .update({ operational_status: 'CLOSED', ...merchantStoresOnlineFlags(false) })
+    .update({
+      operational_status: 'CLOSED',
+      ...merchantStoresOnlineFlags(false),
+      last_activity_at: nowIso,
+    })
     .eq('id', storeInternalId);
   await db
     .from('merchant_store_availability')
     .update({
+      ...availPatch,
       is_available: false,
       is_accepting_orders: false,
-      last_toggle_type: toggleType,
-      last_toggled_at: nowIso,
       last_auto_action_at: nowIso,
       auto_unavailable_at: nowIso,
       auto_available_at: null,
       auto_off_reason: autoOffReason ?? null,
-      ...availPatch,
+      last_toggle_type: toggleType,
+      last_toggled_at: nowIso,
     })
     .eq('store_id', storeInternalId);
 }
@@ -167,20 +216,24 @@ async function openStore(
   const nowIso = new Date().toISOString();
   await db
     .from('merchant_stores')
-    .update({ operational_status: 'OPEN', ...merchantStoresOnlineFlags(true) })
+    .update({
+      operational_status: 'OPEN',
+      ...merchantStoresOnlineFlags(true),
+      last_activity_at: nowIso,
+    })
     .eq('id', storeInternalId);
   await db
     .from('merchant_store_availability')
     .update({
+      ...availPatch,
       is_available: true,
       is_accepting_orders: true,
-      last_toggle_type: toggleType,
-      last_toggled_at: nowIso,
       last_auto_action_at: nowIso,
       auto_available_at: nowIso,
       auto_unavailable_at: null,
       auto_off_reason: null,
-      ...availPatch,
+      last_toggle_type: toggleType,
+      last_toggled_at: nowIso,
     })
     .eq('store_id', storeInternalId);
 }
@@ -189,6 +242,137 @@ function closeReasonForOutsideHours(schedule: ScheduleEvaluation): string {
   if (schedule.schedulePhase === 'BREAK') return 'Break between operating slots';
   if (schedule.schedulePhase === 'OFF_DAY') return 'Today Closed (Scheduled Closed)';
   return 'Outside operating hours';
+}
+
+/**
+ * Keeps merchant_store_availability online flags aligned when merchant_stores is already gated
+ * CLOSED but availability still has stale TRUE defaults (ensureAvailabilityRow parity, partial
+ * updates, imports). Optionally fills schedule metadata when absent.
+ */
+export async function clampAvailabilityAcceptingFlagsIfOffline(
+  db: SupabaseClient,
+  storeInternalId: number,
+  args: {
+    storeEffectivelyOpen: boolean;
+    withinOperatingHours: boolean;
+    isTodayScheduledClosed: boolean;
+    schedule: ScheduleEvaluation;
+  }
+): Promise<boolean> {
+  if (args.storeEffectivelyOpen) return false;
+
+  const { data: row } = await db
+    .from('merchant_store_availability')
+    .select('is_available, is_accepting_orders, unavailable_reason, close_reason')
+    .eq('store_id', storeInternalId)
+    .maybeSingle();
+
+  if (!row || (row.is_available !== true && row.is_accepting_orders !== true)) {
+    return false;
+  }
+
+  const hasUnavail =
+    row.unavailable_reason != null && String(row.unavailable_reason).trim().length > 0;
+  const nowStamp = new Date().toISOString();
+  const patch: Record<string, unknown> = {
+    is_available: false,
+    is_accepting_orders: false,
+    last_toggle_type: 'AUTO_CLOSE',
+    last_toggled_at: nowStamp,
+    last_auto_action_at: nowStamp,
+    auto_unavailable_at: nowStamp,
+    auto_available_at: null,
+    auto_off_reason: 'availability_clamp',
+  };
+
+  const scheduleLikelyCause = !args.withinOperatingHours || args.isTodayScheduledClosed;
+
+  if (!hasUnavail && scheduleLikelyCause) {
+    patch.unavailable_reason = 'schedule_closed';
+    patch.close_reason = args.isTodayScheduledClosed
+      ? 'Today Closed (Scheduled Closed)'
+      : closeReasonForOutsideHours(args.schedule);
+  }
+
+  await db.from('merchant_store_availability').update(patch).eq('store_id', storeInternalId);
+  return true;
+}
+
+/** Partner UI gates on merchant_stores; availability can become schedule_closed first (clamp/cron/import). Offline triple + schedule_closed ⇒ align CLOSED triple on merchant_stores. Skips explicit manual_schedule override. */
+export async function alignMerchantStoresIfAvailabilityScheduleOffline(
+  db: SupabaseClient,
+  storeInternalId: number,
+  args: {
+    gateSaysOpen: boolean;
+    unavailableReason: string | null | undefined;
+    isAvailable: boolean | null | undefined;
+    isAcceptingOrders: boolean | null | undefined;
+    isManualOverride: boolean;
+  }
+): Promise<boolean> {
+  if (!args.gateSaysOpen || args.isManualOverride) return false;
+
+  const online =
+    args.isAvailable === true && args.isAcceptingOrders === true;
+  if (online) return false;
+
+  const norm = String(args.unavailableReason ?? '').trim().toLowerCase();
+  if (norm !== 'schedule_closed') return false;
+
+  const nowIso = new Date().toISOString();
+  await db
+    .from('merchant_stores')
+    .update({
+      operational_status: 'CLOSED',
+      ...merchantStoresOnlineFlags(false),
+      last_activity_at: nowIso,
+    })
+    .eq('id', storeInternalId);
+  return true;
+}
+
+/**
+ * Persist a consistent merchant_stores operational pack (operational_status + is_active +
+ * is_accepting_orders + is_available + last_activity_at) when legacy/partial rows disagree
+ * with whether the store should be fully online or fully offline.
+ */
+export async function normalizeMerchantStoresOperationalPack(
+  db: SupabaseClient,
+  storeInternalId: number,
+  desiredTripleOnline: boolean
+): Promise<boolean> {
+  const { data: row } = await db
+    .from('merchant_stores')
+    .select('operational_status, is_active, is_accepting_orders, is_available')
+    .eq('id', storeInternalId)
+    .maybeSingle();
+
+  const op = String(row?.operational_status ?? '').trim().toUpperCase();
+  const tripleOnlinePack =
+    op === 'OPEN' &&
+    row?.is_active === true &&
+    row?.is_accepting_orders === true &&
+    row?.is_available === true;
+
+  const tripleOfflinePack =
+    op === 'CLOSED' &&
+    row?.is_active === false &&
+    row?.is_accepting_orders === false &&
+    row?.is_available === false;
+
+  const matches = desiredTripleOnline ? tripleOnlinePack : tripleOfflinePack;
+  if (matches) return false;
+
+  const nowIso = new Date().toISOString();
+  await db
+    .from('merchant_stores')
+    .update({
+      operational_status: desiredTripleOnline ? 'OPEN' : 'CLOSED',
+      ...merchantStoresOnlineFlags(desiredTripleOnline),
+      last_activity_at: nowIso,
+    })
+    .eq('id', storeInternalId);
+  return true;
 }
 
 /**
@@ -232,11 +416,41 @@ export async function syncOperationalStatusFromSchedule(args: {
   const nowMs = now.getTime();
   const mutations: string[] = [];
 
+  const licenseSync = await syncMerchantLicenseCompliance(db, storeInternalId, { trace });
+  if (licenseSync.evaluation.blocked) {
+    mutations.push('license_compliance_force_close');
+    const { data: storeAfterLicense } = await db
+      .from('merchant_stores')
+      .select('operational_status')
+      .eq('id', storeInternalId)
+      .single();
+    const effectiveStatus: 'OPEN' | 'CLOSED' =
+      String(storeAfterLicense?.operational_status || 'CLOSED').toUpperCase() === 'OPEN' ? 'OPEN' : 'CLOSED';
+    const availRow = (await loadAvailability(db, storeInternalId)) ?? args.avail;
+    const manualCloseUntil = parseManualCloseUntil(availRow?.manual_close_until ?? null);
+    trace('license_blocked_skip_schedule', {
+      effective_status: effectiveStatus,
+      expired: licenseSync.evaluation.expired.map((d) => d.prefix),
+      pending: licenseSync.evaluation.pending_verification.map((d) => d.prefix),
+    });
+    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, false, null);
+  }
+
   let effectiveStatus: 'OPEN' | 'CLOSED' =
     String(args.initialOperationalStatus || 'CLOSED').toUpperCase() === 'OPEN' ? 'OPEN' : 'CLOSED';
 
   let availRow: AvailabilityRow | null = args.avail;
   let manualCloseUntil = parseManualCloseUntil(availRow?.manual_close_until ?? null);
+  const clearedStaleScheduleVacAvail = await clearStaleScheduledClosureVacationOnAvailability(
+    db,
+    storeInternalId
+  );
+  if (clearedStaleScheduleVacAvail) {
+    availRow = (await loadAvailability(db, storeInternalId)) ?? availRow;
+    manualCloseUntil = parseManualCloseUntil(availRow?.manual_close_until ?? null);
+    mutations.push('clear_stale_scheduled_closure_vacation_avail');
+    trace('clear_stale_scheduled_closure_vacation_avail', {});
+  }
   const blockAutoOpen = availRow?.block_auto_open === true;
   const autoOpenEnabled = isAutoOpenFromScheduleEnabled(availRow?.auto_open_from_schedule);
   const manualIndefinite = isManualIndefinite(availRow?.unavailable_reason);
@@ -246,12 +460,28 @@ export async function syncOperationalStatusFromSchedule(args: {
   let promptExpiresAt = parseIsoDate(availRow?.schedule_end_prompt_expires_at ?? null);
   let scheduleEndPromptActive = !!promptExpiresAt && nowMs < promptExpiresAt.getTime();
 
-  const vacationEndsAt = await loadActiveVacationEndsAt(db, storeInternalId);
-  if (vacationEndsAt && effectiveStatus === 'OPEN') {
+  const { data: storeLive } = await db
+    .from('merchant_stores')
+    .select('operational_status, is_active, is_accepting_orders, is_available')
+    .eq('id', storeInternalId)
+    .single();
+
+  /** Single-table hint: CLOSED ops + orphaned `is_active`/triple must still trigger schedule close. */
+  const storeRowShowsOnline =
+    String(storeLive?.operational_status || '').toUpperCase() === 'OPEN' ||
+    storeLive?.is_active === true ||
+    storeLive?.is_accepting_orders === true ||
+    storeLive?.is_available === true;
+
+  const vacationCtx = await loadActiveVacationContext(db, storeInternalId);
+  if (vacationCtx && (effectiveStatus === 'OPEN' || storeRowShowsOnline)) {
+    const closeReasonLine = vacationCtx.merchantReasonDetail
+      ? `Vacation · ${vacationCtx.merchantReasonDetail}`
+      : 'Vacation mode active';
     await closeStore(db, storeInternalId, {
       unavailable_reason: 'vacation',
-      close_reason: 'Vacation mode active',
-      manual_close_until: vacationEndsAt,
+      close_reason: closeReasonLine,
+      manual_close_until: vacationCtx.endsAtIso,
       restriction_type: 'VACATION',
       is_manual_override: false,
       schedule_end_prompted_at: null,
@@ -261,22 +491,11 @@ export async function syncOperationalStatusFromSchedule(args: {
     availRow = (await loadAvailability(db, storeInternalId)) ?? availRow;
     manualCloseUntil = parseManualCloseUntil(availRow?.manual_close_until ?? null);
     mutations.push('vacation_force_close');
-    trace('vacation_force_close', { effective_status: effectiveStatus, vacationEndsAt });
+    trace('vacation_force_close', { effective_status: effectiveStatus, vacationEndsAt: vacationCtx.endsAtIso });
     return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, scheduleEndPromptActive, promptExpiresAt);
   }
 
   // Scheduled off day: always CLOSED (manual override cannot keep store online)
-  const { data: storeLive } = await db
-    .from('merchant_stores')
-    .select('operational_status, is_active, is_accepting_orders, is_available')
-    .eq('id', storeInternalId)
-    .single();
-  const storeRowShowsOnline =
-    String(storeLive?.operational_status || '').toUpperCase() === 'OPEN' ||
-    storeLive?.is_active === true ||
-    storeLive?.is_accepting_orders === true ||
-    storeLive?.is_available === true;
-
   if (
     isTodayScheduledClosed &&
     (effectiveStatus === 'OPEN' ||
@@ -300,7 +519,7 @@ export async function syncOperationalStatusFromSchedule(args: {
   }
 
   // Manual activation lock
-  if (blockAutoOpen && effectiveStatus === 'OPEN') {
+  if (blockAutoOpen && (effectiveStatus === 'OPEN' || storeRowShowsOnline)) {
     await closeStore(db, storeInternalId, {
       unavailable_reason: 'forced_lock',
       close_reason: 'Store locked manually',
@@ -376,7 +595,7 @@ export async function syncOperationalStatusFromSchedule(args: {
   // closed until slot 2 starts (5:00 PM). Manual override (merchant explicitly turned ON
   // during break) bypasses this so the merchant can keep accepting orders mid-break.
   if (
-    effectiveStatus === 'OPEN' &&
+    (effectiveStatus === 'OPEN' || storeRowShowsOnline) &&
     args.oh &&
     (schedulePhase === 'BREAK' ||
       isInBreakBetweenSlots(args.oh, schedule.dayName, schedule.minutesSinceMidnight))
@@ -424,8 +643,12 @@ export async function syncOperationalStatusFromSchedule(args: {
   //   3. Otherwise (auto behaviour): close IMMEDIATELY at the slot boundary. No 5-minute
   //      end-of-day prompt — the merchant's stated expectation is "at exactly 11:00 PM →
   //      automatically OFFLINE". All slot times come from `merchant_store_operating_hours`.
-  if (!withinOperatingHours && effectiveStatus === 'OPEN' && args.oh) {
-    if (isManualOverride) {
+  if (!withinOperatingHours && (effectiveStatus === 'OPEN' || storeRowShowsOnline)) {
+    /** Manual open before today's first slot is not treated as schedule override — stay CLOSED until the slot starts (auto-open). */
+    if (
+      isManualOverride &&
+      !isBeforeFirstSlotToday(schedule, schedule.minutesSinceMidnight)
+    ) {
       trace('outside_hours_manual_override_skip', { schedule_phase: schedulePhase });
       return buildResult(
         effectiveStatus,

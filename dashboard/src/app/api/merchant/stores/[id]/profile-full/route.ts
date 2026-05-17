@@ -11,6 +11,7 @@ import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getStoreBankAccounts } from "@/lib/db/operations/merchant-store-bank-accounts";
 import { getSql } from "@/lib/db/client";
+import { normalizeMerchantDocumentUrls } from "@/lib/attachments/resolve-attachment-proxy-url";
 
 export const runtime = "nodejs";
 
@@ -134,7 +135,7 @@ export async function GET(
         if (d.aadhaar_verified_at instanceof Date) d.aadhaar_verified_at = d.aadhaar_verified_at.toISOString();
         if (d.fssai_verified_at instanceof Date) d.fssai_verified_at = d.fssai_verified_at.toISOString();
         if (d.drug_license_verified_at instanceof Date) d.drug_license_verified_at = d.drug_license_verified_at.toISOString();
-        documents = d;
+        documents = normalizeMerchantDocumentUrls(d);
       }
     } catch {
       // table may not exist or RLS

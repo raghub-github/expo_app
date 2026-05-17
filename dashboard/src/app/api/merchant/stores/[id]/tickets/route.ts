@@ -82,6 +82,7 @@ export async function GET(
           ut.attachments, ut.reopened_at
         FROM public.unified_tickets ut
         WHERE ut.merchant_store_id = ${storeId}
+          AND ut.ticket_source = 'MERCHANT'
         ORDER BY ut.updated_at DESC NULLS LAST, ut.created_at DESC
         LIMIT 500
       `;
@@ -96,6 +97,7 @@ export async function GET(
             ut.attachments
           FROM public.unified_tickets ut
           WHERE ut.merchant_store_id = ${storeId}
+            AND ut.ticket_source = 'MERCHANT'
           ORDER BY ut.updated_at DESC NULLS LAST, ut.created_at DESC
           LIMIT 500
         `;

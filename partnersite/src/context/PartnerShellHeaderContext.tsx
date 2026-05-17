@@ -5,6 +5,7 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useState,
 } from 'react';
@@ -61,13 +62,15 @@ export function PartnerPageHeader({
   const ctx = usePartnerShellHeader();
   const setHeader = ctx?.setPartnerShellHeader;
   const clearHeader = ctx?.clearPartnerShellHeader;
-  useEffect(() => {
+  const breadcrumbsKey = useMemo(() => JSON.stringify(breadcrumbs ?? []), [breadcrumbs]);
+
+  useLayoutEffect(() => {
     if (!setHeader || !clearHeader) return;
     setHeader({ title, subtitle, breadcrumbs });
     return () => {
       clearHeader();
     };
-  }, [title, subtitle, breadcrumbs, setHeader, clearHeader]);
+  }, [title, subtitle, breadcrumbsKey, setHeader, clearHeader, breadcrumbs]);
   return null;
 }
 

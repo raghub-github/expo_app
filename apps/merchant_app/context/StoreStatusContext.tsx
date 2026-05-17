@@ -10,6 +10,7 @@ import {
   updateManualActivationLock,
   respondScheduleEndPrompt,
   type ScheduledClosure,
+  type ActiveRushWindow,
 } from "@/services/storeStatusApi";
 const STATUS_CACHE_KEY_PREFIX = "merchant_store_status_";
 
@@ -44,6 +45,7 @@ type StoreStatusContextValue = {
   scheduledClosure: ScheduledClosure | null;
   /** Upcoming scheduled closure (not active yet). */
   upcomingScheduledClosure: ScheduledClosure | null;
+  activeRush: ActiveRushWindow | null;
   /** Offline reason: manual_lock | manual_close | schedule_closed | outside_operating_hours */
   statusReason: string | null;
   /** Backend unavailable_reason (manual_close, schedule_closed, manual_indefinite, etc.) */
@@ -85,6 +87,7 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
   const [restrictionType, setRestrictionType] = useState<string | null>(null);
   const [scheduledClosure, setScheduledClosure] = useState<ScheduledClosure | null>(null);
   const [upcomingScheduledClosure, setUpcomingScheduledClosure] = useState<ScheduledClosure | null>(null);
+  const [activeRush, setActiveRush] = useState<ActiveRushWindow | null>(null);
   const [statusReason, setStatusReason] = useState<string | null>(null);
   const [unavailableReason, setUnavailableReason] = useState<string | null>(null);
   const [nextOpenTime, setNextOpenTime] = useState<string | null>(null);
@@ -159,6 +162,7 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
       setRestrictionType(null);
       setScheduledClosure(null);
       setUpcomingScheduledClosure(null);
+      setActiveRush(null);
       setStatusReason(null);
       setUnavailableReason(null);
       setNextOpenTime(null);
@@ -229,6 +233,7 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
       setRestrictionType(status.restriction_type ?? null);
       setScheduledClosure(status.scheduled_closure ?? null);
       setUpcomingScheduledClosure(status.scheduled_closure_upcoming ?? null);
+      setActiveRush(status.active_rush ?? null);
       setStatusReason(status.status_reason ?? null);
       setUnavailableReason((status as { unavailable_reason?: string | null }).unavailable_reason ?? null);
       setNextOpenTime(status.next_open_time ?? null);
@@ -269,6 +274,7 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
           closed_by_id: (status as { closed_by_id?: string | null }).closed_by_id,
           scheduled_closure: status.scheduled_closure,
           scheduled_closure_upcoming: status.scheduled_closure_upcoming,
+          active_rush: status.active_rush,
         })
       ).catch(() => {});
 
@@ -519,6 +525,7 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
         restrictionType,
         scheduledClosure,
         upcomingScheduledClosure,
+        activeRush,
         statusReason,
         unavailableReason,
         nextOpenTime,

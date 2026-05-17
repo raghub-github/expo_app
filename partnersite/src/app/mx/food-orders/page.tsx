@@ -7,6 +7,7 @@ import { MXLayoutWhite } from '@/components/MXLayoutWhite';
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
 import { toast } from 'sonner';
 import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback';
+import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
 import {
   Clock,
   CheckCircle2,
@@ -457,7 +458,8 @@ function OrdersPageContent() {
       const res = await fetch(`/api/store-operations?store_id=${encodeURIComponent(storeId)}`);
       const data = await res.json();
       if (data.operational_status !== undefined) {
-        setIsStoreOpen(data.operational_status === 'OPEN');
+        const surface = partnerSurfaceOnlineFromStoreOperationsBody(data as Record<string, unknown>);
+        setIsStoreOpen(surface ?? String(data.operational_status).toUpperCase() === 'OPEN');
       }
     } catch {}
   }, [storeId]);

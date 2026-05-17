@@ -43,10 +43,46 @@ function minutesToTimeStr(min: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
-/** Current time in IST: day of week (0–6 Sun–Sat) and minutes since midnight (aligned with backend schedule engine). */
-export function nowInStoreTz(): { dayOfWeek: number; minutesSinceMidnight: number } {
+/** Map a wall-clock moment in `timeZone` to the corresponding UTC `Date`. */
+export function utcInstantFromWallClock(ymd: string, hm: string, timeZone: string): Date | null {
+  const [Y, Mo, D] = ymd.split("-").map((s) => parseInt(s.trim(), 10));
+  const segs = hm.split(":");
+  const hh = parseInt(segs[0] ?? "0", 10);
+  const mm = parseInt(segs[1] ?? "0", 10);
+  const ss = segs[2] != null ? parseInt(segs[2], 10) : 0;
+  if (![Y, Mo, D, hh, mm, ss].every((n) => Number.isFinite(n))) return null;
+  let t = Date.UTC(Y, Mo - 1, D, hh, mm, ss, 0);
+  for (let i = 0; i < 16; i++) {
+    const d = new Date(t);
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).formatToParts(d);
+    const py = parseInt(parts.find((p) => p.type === "year")?.value ?? "0", 10);
+    const pmo = parseInt(parts.find((p) => p.type === "month")?.value ?? "0", 10);
+    const pd = parseInt(parts.find((p) => p.type === "day")?.value ?? "0", 10);
+    const ph = parseInt(parts.find((p) => p.type === "hour")?.value ?? "0", 10);
+    const pmi = parseInt(parts.find((p) => p.type === "minute")?.value ?? "0", 10);
+    const psec = parseInt(parts.find((p) => p.type === "second")?.value ?? "0", 10);
+    if (py === Y && pmo === Mo && pd === D && ph === hh && pmi === mm && psec === ss) return d;
+    const want = Date.UTC(Y, Mo - 1, D, hh, mm, ss, 0);
+    const got = Date.UTC(py, pmo - 1, pd, ph, pmi, psec, 0);
+    t += want - got;
+  }
+  return new Date(t);
+}
+
+/** Current time in `timeZone`: day of week (0–6 Sun–Sat) and minutes since midnight. */
+export function nowInStoreTz(timeZone: string = DEFAULT_STORE_TIMEZONE): { dayOfWeek: number; minutesSinceMidnight: number } {
+  const tz = timeZone || DEFAULT_STORE_TIMEZONE;
   const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: DEFAULT_STORE_TIMEZONE,
+    timeZone: tz,
     hour: "numeric",
     minute: "numeric",
     second: "numeric",
@@ -58,7 +94,7 @@ export function nowInStoreTz(): { dayOfWeek: number; minutesSinceMidnight: numbe
   const second = Number(parts.find((p) => p.type === "second")?.value ?? 0);
   const minutesSinceMidnight = hour * 60 + minute + second / 60;
 
-  const dayFormatter = new Intl.DateTimeFormat("en-US", { timeZone: DEFAULT_STORE_TIMEZONE, weekday: "short" });
+  const dayFormatter = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" });
   const dayShort = dayFormatter.format(new Date()).toLowerCase();
   const dayMap: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
   const dayOfWeek = dayMap[dayShort.slice(0, 3)] ?? 0;

@@ -203,6 +203,7 @@ function StoreSettingsContent() {
   const [autoAcceptOrders, setAutoAcceptOrders] = useState(false)
   const [preparationBufferMinutes, setPreparationBufferMinutes] = useState(15)
   const [manualActivationLock, setManualActivationLock] = useState(false)
+  const [licenseBlockedForOps, setLicenseBlockedForOps] = useState(false)
   
   // Menu & Capacity Controls state
   const [currentMenuItemsCount, setCurrentMenuItemsCount] = useState(0)
@@ -589,6 +590,7 @@ function StoreSettingsContent() {
         setManualCloseUntil(data.manual_close_until || null)
         // Load manual activation lock state from block_auto_open
         setManualActivationLock(data.block_auto_open === true)
+        setLicenseBlockedForOps(data.license_blocked === true)
       }
     } catch {
       // fallback from store if loaded
@@ -1783,6 +1785,12 @@ function StoreSettingsContent() {
   // Save manual activation lock to database
   const saveManualActivationLock = async (enabled: boolean) => {
     if (!storeId) return;
+    if (licenseBlockedForOps) {
+      toast.error(
+        'Manual activation lock cannot be changed while the store is closed due to an expired licence. Upload and verify your licence first.'
+      );
+      return;
+    }
     try {
       const res = await fetch('/api/store-operations', {
         method: 'POST',
@@ -3288,16 +3296,25 @@ function StoreSettingsContent() {
                     <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
                       <div>
                         <p className="font-semibold text-gray-900">Manual Activation Lock</p>
-                        <p className="text-sm text-gray-600">Prevent automatic store opening</p>
+                        <p className="text-sm text-gray-600">
+                          {licenseBlockedForOps
+                            ? 'Cannot change while store is closed due to expired licence'
+                            : 'Prevent automatic store opening'}
+                        </p>
                       </div>
-                      <label className="relative inline-flex items-center cursor-pointer">
+                      <label
+                        className={`relative inline-flex items-center ${
+                          licenseBlockedForOps ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'
+                        }`}
+                      >
                         <input
                           type="checkbox"
                           checked={manualActivationLock}
+                          disabled={licenseBlockedForOps}
                           onChange={async (e) => {
+                            if (licenseBlockedForOps) return;
                             const newValue = e.target.checked;
                             setManualActivationLock(newValue);
-                            // Save to database immediately
                             await saveManualActivationLock(newValue);
                           }}
                           className="sr-only peer"
@@ -4394,7 +4411,7 @@ function StoreSettingsContent() {
                   )}
                 </div>
 
-                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden hide-scrollbar">
                   <div className="sticky top-0 z-10 grid grid-cols-[44px_minmax(64px,76px)_minmax(0,1fr)_minmax(0,1fr)_64px] items-center gap-x-2 gap-y-0 border-b border-gray-200 bg-gray-50 px-3 py-2 text-[11px] font-semibold shadow-[0_1px_0_rgba(0,0,0,0.04)] sm:grid-cols-[48px_minmax(72px,88px)_minmax(0,1fr)_minmax(0,1fr)_72px] sm:gap-x-3 sm:px-4">
                     <span className="truncate text-gray-500">Day</span>
                     <span />
