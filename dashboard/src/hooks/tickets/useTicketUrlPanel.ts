@@ -14,7 +14,7 @@ function parsePanel(search: string): TicketUrlPanel {
 const locationSearchListeners = new Set<() => void>();
 let historyPatched = false;
 /** Pending macrotask so we coalesce multiple push/replace in one frame. */
-let notifyTimeout: ReturnType<typeof setTimeout> | null = null;
+let notifyTimeout: number | null = null;
 
 function flushLocationSearchListeners() {
   notifyTimeout = null;

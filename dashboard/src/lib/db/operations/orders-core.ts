@@ -210,8 +210,6 @@ export async function listOrdersCore(
     const mapping = STATUS_FILTER_TO_DB[statusFilter as keyof typeof STATUS_FILTER_TO_DB];
     if ("status" in mapping) {
       conditions.push(inArray(ordersCore.status, [...mapping.status]));
-    } else if ("paymentStatus" in mapping) {
-      conditions.push(eq(ordersCore.paymentStatus, mapping.paymentStatus));
     } else if ("isBulkOrder" in mapping) {
       conditions.push(eq(ordersCore.isBulkOrder, true));
     }

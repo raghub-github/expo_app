@@ -486,5 +486,5 @@ export async function loadMerchantStoreFoodOrders(
     );
 
 
-  return ordersWithDetails as OrdersFoodRow[];
+  return ordersWithDetails as unknown as OrdersFoodRow[];
 }

@@ -32,3 +32,9 @@ export function getSql() {
   }
   return _sql!;
 }
+
+/** Serialize JSON/JSONB params for postgres.js tagged templates (unknown metadata objects). */
+export function sqlJsonbParam(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  return JSON.stringify(value);
+}

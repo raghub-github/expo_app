@@ -893,16 +893,12 @@ export default function SuperAdminBillingPage() {
 
   const moveCombinedRow = useCallback(
     async (idx: number, dir: -1 | 1) => {
-      let nextKeys: CombinedOrderKey[] | null = null;
+      const base = optimisticCombinedKeys ?? serverCombinedKeys;
+      const j = idx + dir;
+      if (j < 0 || j >= base.length) return;
+      const nextKeys = swapKeysAt(base, idx, j);
       captureFlipRects();
-      setOptimisticCombinedKeys((prev) => {
-        const base = prev ?? serverCombinedKeys;
-        const j = idx + dir;
-        if (j < 0 || j >= base.length) return prev;
-        nextKeys = swapKeysAt(base, idx, j);
-        return nextKeys;
-      });
-      if (!nextKeys) return;
+      setOptimisticCombinedKeys(nextKeys);
       try {
         await reorderCombinedRows(nextKeys);
       } catch (e) {
@@ -914,7 +910,7 @@ export default function SuperAdminBillingPage() {
         setOptimisticCombinedKeys(null);
       }
     },
-    [serverCombinedKeys, reorderCombinedRows, captureFlipRects]
+    [optimisticCombinedKeys, serverCombinedKeys, reorderCombinedRows, captureFlipRects]
   );
 
   const reorderBusy =

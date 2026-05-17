@@ -430,7 +430,7 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
                           const num = doc[cfg.numberKey];
                           if (!num || String(num).trim() === "") return null;
                           const label =
-                            cfg.typeKey && doc[cfg.typeKey]
+                            "typeKey" in cfg && cfg.typeKey && doc[cfg.typeKey]
                               ? String(doc[cfg.typeKey])
                               : cfg.label;
                           return (
@@ -439,7 +439,9 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
                               label={label}
                               documentNumber={String(num)}
                               holderName={
-                                cfg.holderKey ? (doc[cfg.holderKey] as string | null) : null
+                                "holderKey" in cfg && cfg.holderKey
+                                  ? (doc[cfg.holderKey] as string | null)
+                                  : null
                               }
                               expiryDate={(doc[cfg.expiryKey] as string | null) ?? null}
                               documentUrl={(doc[cfg.urlKey] as string | null) ?? null}

@@ -27,6 +27,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
           started_at: Date | string;
           ends_at: Date | string;
           is_active: boolean;
+          marked_from: string | null;
         }
       | undefined;
 
@@ -119,6 +120,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       started_at: now.toISOString(),
       ends_at: endsAt.toISOString(),
       remaining_minutes: remainingMinutes,
+      marked_from: "dashboard",
     });
   } catch (e) {
     console.error("[POST rush]", e);

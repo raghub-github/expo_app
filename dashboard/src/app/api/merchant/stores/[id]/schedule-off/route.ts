@@ -31,6 +31,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
         starts_at: Date | string;
         ends_at: Date | string;
         status: string;
+        marked_from: string | null;
       };
       return {
         id: row.id,

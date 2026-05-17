@@ -509,18 +509,18 @@ export function computeOpensAtIso(args: {
   let nextOpenIso: string | null = null;
   if (ohRecord) {
     nextOpenIso =
-      getNextOpenIso(ohRecord, dayOfWeek, minutesSinceMidnight, refNow, tz) ??
-      getNextOpenDayStartIso(ohRecord, dayOfWeek, refNow, tz);
+      getNextOpenIso(ohRecord, dayOfWeek, minutesSinceMidnight, refNow) ??
+      getNextOpenDayStartIso(ohRecord, dayOfWeek, refNow);
   }
 
   const nextOpenIsoAfterToday =
     ohRecord != null
-      ? getNextOpenIsoAfterIstCalendarDay(ohRecord, dayOfWeek, refNow, tz) ??
-        getNextOpenDayStartIso(ohRecord, dayOfWeek, refNow, tz)
+      ? getNextOpenIsoAfterIstCalendarDay(ohRecord, dayOfWeek, refNow) ??
+        getNextOpenDayStartIso(ohRecord, dayOfWeek, refNow)
       : null;
 
   if (manualIso) {
-    if (isLikelyLegacyEndOfDayIstClose(manualIso, refNow, tz)) {
+    if (isLikelyLegacyEndOfDayIstClose(manualIso, refNow)) {
       return nextOpenIsoAfterToday ?? nextOpenIso ?? manualIso;
     }
     return manualIso;
@@ -687,8 +687,8 @@ export function computeNextScheduleTransitionIso(
 
   if (candidates.length === 0) {
     return (
-      getNextOpenIso(oh, schedule.dayOfWeek, schedule.minutesSinceMidnight, refNow, tz) ??
-      getNextOpenDayStartIso(oh, schedule.dayOfWeek, refNow, tz)
+      getNextOpenIso(oh, schedule.dayOfWeek, schedule.minutesSinceMidnight, refNow) ??
+      getNextOpenDayStartIso(oh, schedule.dayOfWeek, refNow)
     );
   }
   return new Date(Math.min(...candidates)).toISOString();

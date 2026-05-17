@@ -101,7 +101,8 @@ export const SearchChainPanel = React.memo(function SearchChainPanel(props: {
           <div className="relative space-y-0 pl-2">
             <div className="absolute bottom-2 left-[7px] top-2 w-px bg-teal-200/90" />
             {data.chain.map((node) => {
-              const isHit = node.id === props.row.id && node.kind === props.row.kind;
+              const isHit =
+                props.row != null && node.id === props.row.id && node.kind === props.row.kind;
               return (
                 <div key={`${node.kind}-${node.id}`} className="relative pb-4 pl-5 last:pb-0">
                   <span className="absolute left-0 top-3 h-2 w-2 rounded-full border-2 border-white bg-teal-500 shadow ring-1 ring-teal-200" />

@@ -81,7 +81,7 @@ export async function PATCH(
     if (hasTitle && hasDone) {
       const [row] = await sql`
         UPDATE public.agent_helpdesk_todos
-        SET title = ${title!}, done = ${o.done}, updated_at = NOW()
+        SET title = ${title!}, done = ${Boolean(o.done)}, updated_at = NOW()
         WHERE id = ${id} AND system_user_id = ${systemUser.id}
         RETURNING id, title, done, sort_order, created_at, updated_at
       `;
