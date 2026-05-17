@@ -1,0 +1,73 @@
+              <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <div className="lg:col-span-2">
+                  <MerchantStoreStatusCard
+                    isStoreOpen={statusCard.isStoreOpen}
+                    restrictionType={statusCard.restrictionType}
+                    storeStatusBadge={statusCard.storeStatusBadge}
+                    cardDisplaySlots={statusCard.cardDisplaySlots}
+                    cardBreakGapLabel={statusCard.cardBreakGapLabel}
+                    scheduledTimeOffs={statusCard.scheduledTimeOffs}
+                    formatScheduledTimeOffWindow={statusCard.formatScheduledTimeOffWindow}
+                    isTodayScheduledClosed={statusCard.isTodayScheduledClosed}
+                    scheduleStatusLabel={statusCard.scheduleStatusLabel}
+                    schedulePhase={statusCard.schedulePhase}
+                    showScheduleCountdown={statusCard.showScheduleCountdown}
+                    activeCountdownAt={statusCard.activeCountdownAt}
+                    countdownTick={statusCard.countdownTick}
+                    opensCountdownLabel={statusCard.opensCountdownLabel}
+                    countdownKind={statusCard.countdownKind}
+                    countdownSubtitleWallLabel={statusCard.countdownSubtitleWallLabel}
+                    closeReasonDisplay={statusCard.closeReasonDisplay}
+                    lastToggledByName={statusCard.lastToggledByName}
+                    lastToggleBy={statusCard.lastToggleBy}
+                    lastToggleType={statusCard.lastToggleType}
+                    lastToggledAt={statusCard.lastToggledAt}
+                    storeIdLabel={effectiveStore?.store_id ?? null}
+                    manualActivationLock={statusCard.manualActivationLock}
+                    showScheduledOffStartsCountdown={statusCard.showScheduledOffStartsCountdown}
+                    scheduledOffStartsInMs={statusCard.scheduledOffStartsInMs}
+                    onStoreToggle={() => handleStoreToggle({ isDelisted })}
+                    onManualLockChange={(enabled) => {
+                      statusCard.setManualActivationLock(enabled);
+                      void saveManualActivationLock(enabled);
+                    }}
+                  />
+                </div>
+                <div className="rounded-lg border border-gray-200 bg-gray-50/60 p-4">
+                  <h3 className="text-sm font-semibold text-gray-900">Order handling</h3>
+                  <p className="mt-0.5 text-xs text-gray-500 mb-3">Auto-accept and preparation buffer.</p>
+                  <div className="space-y-3">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={autoAcceptOrders}
+                        onChange={(e) => setAutoAcceptOrders(e.target.checked)}
+                        className="rounded border-gray-300"
+                      />
+                      <span className="text-sm font-medium text-gray-900">Auto-accept orders</span>
+                    </label>
+                    <div className="flex flex-wrap items-end gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-700 mb-1">
+                          Preparation buffer (minutes)
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={preparationBufferMin}
+                          onChange={(e) => setPreparationBufferMin(Number(e.target.value) || 0)}
+                          className="w-24 rounded-lg border border-gray-300 px-3 py-1.5 text-sm"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleSaveOperations}
+                        disabled={isSaving}
+                        className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                      >
+                        <Save className="h-4 w-4" />
+                        {isSaving ? "Saving..." : "Save changes"}
+                      </button>
+                    </div>
+                  </div>
+                </div>

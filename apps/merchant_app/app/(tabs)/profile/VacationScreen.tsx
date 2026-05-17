@@ -33,6 +33,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useStoreStatus } from "@/context/StoreStatusContext";
 import { cancelScheduledOff, scheduleStoreOff } from "@/services/storeVacationApi";
 import { getScheduledOffHolidays, type StoreHoliday } from "@/services/storeHolidaysApi";
+import { formatStoreActionSourceLabel } from "@/lib/storeActionSource";
 import { TimePickerModal } from "@/components/TimePickerModal";
 
 // Optional: native module may be missing in some environments (Expo Go / web),
@@ -447,6 +448,9 @@ export default function VacationScreen() {
             <Text style={styles.currentOffText}>
               Upcoming closure: {formatScheduledOffDateAndTime(upcomingScheduledClosure.from)} to {formatScheduledOffDateAndTime(upcomingScheduledClosure.to)}.
               {"\n"}Reason: {upcomingScheduledClosure.reason}
+              {upcomingScheduledClosure.marked_from
+                ? `\nSet via ${formatStoreActionSourceLabel(upcomingScheduledClosure.marked_from) ?? upcomingScheduledClosure.marked_from}`
+                : ""}
             </Text>
             {upcomingActivatesInMs != null && (
               <Text style={[styles.currentOffText, { marginTop: 6, fontWeight: "500", color: GatiMitraMerchant.textSecondary }]}>

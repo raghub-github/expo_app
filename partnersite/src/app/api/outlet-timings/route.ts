@@ -2,12 +2,45 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { normalizeWallTimeToHHMM } from '@/lib/wallTimeHHMM';
+import { syncStoreStatusAfterOperatingHoursChange } from '@/lib/storeScheduleSync';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
+
+const OPERATING_HOURS_SELECT = [
+  'store_id',
+  'same_for_all_days',
+  'is_24_hours',
+  'closed_days',
+  'updated_by_email',
+  'updated_by_at',
+  ...DAYS.flatMap((day) => [
+    `${day}_open`,
+    `${day}_slot1_start`,
+    `${day}_slot1_end`,
+    `${day}_slot2_start`,
+    `${day}_slot2_end`,
+    `${day}_total_duration_minutes`,
+  ]),
+].join(', ');
+
+async function resolveInternalStoreId(storeIdParam: string): Promise<number | null> {
+  const trimmed = storeIdParam.trim();
+  if (/^\d+$/.test(trimmed)) {
+    const n = parseInt(trimmed, 10);
+    const { data } = await supabase.from('merchant_stores').select('id').eq('id', n).maybeSingle();
+    return data?.id != null ? (data.id as number) : null;
+  }
+  const { data } = await supabase
+    .from('merchant_stores')
+    .select('id')
+    .eq('store_id', trimmed)
+    .maybeSingle();
+  return data?.id != null ? (data.id as number) : null;
+}
 
 function toMinutes(t: string): number {
   const [h, m] = t.split(':').map(Number);
@@ -189,7 +222,22 @@ export async function POST(req: NextRequest) {
     }, { status: 500 });
   }
 
-  return NextResponse.json({ success: true, warnings: warnings.length > 0 ? warnings : undefined });
+  const { data: storeTzRow } = await supabase
+    .from('merchant_stores')
+    .select('timezone')
+    .eq('id', storeData.id)
+    .single();
+  const storeTz = (storeTzRow as { timezone?: string } | null)?.timezone || 'Asia/Kolkata';
+
+  // Re-evaluate store status in background so save response stays fast
+  void syncStoreStatusAfterOperatingHoursChange(supabase, storeData.id as number, storeTz).catch(
+    (syncErr) => console.error('[outlet-timings] schedule sync after save failed:', syncErr)
+  );
+
+  return NextResponse.json({
+    success: true,
+    warnings: warnings.length > 0 ? warnings : undefined,
+  });
 }
 
 export async function GET(req: NextRequest) {
@@ -199,28 +247,14 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'store_id is required' }, { status: 400 });
   }
 
-  let internalStoreId: number | null = null;
-  const trimmed = store_id_param.trim();
-  if (/^\d+$/.test(trimmed)) {
-    const n = parseInt(trimmed, 10);
-    const { data: byInternal } = await supabase.from('merchant_stores').select('id').eq('id', n).maybeSingle();
-    if (byInternal?.id != null) internalStoreId = byInternal.id as number;
-  }
+  const internalStoreId = await resolveInternalStoreId(store_id_param);
   if (internalStoreId == null) {
-    const { data: byPublic, error: pubErr } = await supabase
-      .from('merchant_stores')
-      .select('id')
-      .eq('store_id', trimmed)
-      .maybeSingle();
-    if (pubErr || !byPublic?.id) {
-      return NextResponse.json({ error: 'Store not found' }, { status: 404 });
-    }
-    internalStoreId = byPublic.id as number;
+    return NextResponse.json({ error: 'Store not found' }, { status: 404 });
   }
 
   const { data, error } = await supabase
     .from('merchant_store_operating_hours')
-    .select('*')
+    .select(OPERATING_HOURS_SELECT)
     .eq('store_id', internalStoreId)
     .maybeSingle();
   if (error) {
@@ -229,13 +263,14 @@ export async function GET(req: NextRequest) {
   if (!data) {
     return NextResponse.json(null, { status: 200 });
   }
+  const row = data as unknown as Record<string, unknown>;
   for (const day of DAYS) {
     for (const suffix of ['_slot1_start', '_slot1_end', '_slot2_start', '_slot2_end']) {
       const field = `${day}${suffix}`;
-      if (data[field] == null || data[field] === '') continue;
-      const n = normalizeWallTimeToHHMM(data[field]);
-      if (n != null) data[field] = n;
+      if (row[field] == null || row[field] === '') continue;
+      const n = normalizeWallTimeToHHMM(row[field]);
+      if (n != null) row[field] = n;
     }
   }
-  return NextResponse.json(data);
+  return NextResponse.json(row);
 }

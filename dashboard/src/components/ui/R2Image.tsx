@@ -1,5 +1,7 @@
 "use client";
 
+import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
+
 interface R2ImageProps {
   src?: string | null;
   alt: string;
@@ -8,37 +10,7 @@ interface R2ImageProps {
 }
 
 export function R2Image({ src, alt, className = "", fallbackSrc }: R2ImageProps) {
-  let resolvedSrc = src ?? "";
-
-  // Normalize old backend attachment URLs (e.g. http://host:3000/v1/attachments/proxy?key=...)
-  if (resolvedSrc) {
-    try {
-      const url = new URL(resolvedSrc);
-      const path = url.pathname;
-      const search = url.search || "";
-      if (path.startsWith("/v1/attachments/proxy")) {
-        // Use current origin + new dashboard proxy route
-        resolvedSrc = `/api/attachments/proxy${search}`;
-      } else if (path.startsWith("/api/attachments/proxy")) {
-        resolvedSrc = `/api/attachments/proxy${search}`;
-      }
-    } catch {
-      // If it's already a relative path, just keep it as is.
-      if (resolvedSrc.startsWith("/v1/attachments/proxy")) {
-        resolvedSrc = resolvedSrc.replace("/v1/attachments/proxy", "/api/attachments/proxy");
-      }
-    }
-  }
-
-  // Legacy DB values: raw R2 object key (e.g. merchants/.../menu/... or merchant-menu/...)
-  if (
-    resolvedSrc &&
-    !resolvedSrc.includes("://") &&
-    !resolvedSrc.startsWith("/") &&
-    !resolvedSrc.startsWith("data:")
-  ) {
-    resolvedSrc = `/api/attachments/proxy?key=${encodeURIComponent(resolvedSrc)}`;
-  }
+  const resolvedSrc = resolveAttachmentProxyUrl(src ?? "");
 
   const resolved =
     resolvedSrc &&

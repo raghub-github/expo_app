@@ -12,7 +12,6 @@ import {
 } from "@/hooks/queries/useMerchantStoreQueries";
 import { StoreDashboardSkeleton } from "./StoreDashboardSkeleton";
 import {
-  Power,
   Truck,
   TrendingUp,
   TrendingDown,
@@ -26,22 +25,15 @@ import {
   Table2,
   LineChart as LucideLineChart,
   Download,
+  Funnel,
+  ChevronDown,
+  Check,
 } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
-import {
-  MERCHANT_PORTAL_CLOSE_REASONS,
-  formatCloseReasonForCard,
-  merchantPortalCloseReasonWithSuffix,
-} from "@/lib/merchantPortalCloseReasons";
-import { supabase } from "@/lib/supabase/client";
-
-function formatTimeHMS(t: string | null): string {
-  if (!t) return "--";
-  const parts = t.split(":");
-  if (parts.length === 2) return `${t}:00`;
-  if (parts.length === 1) return `${t.padStart(2, "0")}:00:00`;
-  return t;
-}
+import { MerchantStoreStatusCard } from "@/components/merchant/MerchantStoreStatusCard";
+import { MerchantStoreOperationsModals } from "@/components/merchant/MerchantStoreOperationsModals";
+import { useMerchantStoreOperations } from "@/hooks/useMerchantStoreOperations";
+import { useStoreStatusCardModel, type StoreOperationsSnapshot } from "@/hooks/useStoreStatusCardModel";
 
 function MiniSparkline({ values, className = "" }: { values: readonly number[]; className?: string }) {
   const gid = React.useId().replace(/:/g, "");
@@ -111,36 +103,32 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
   const [statsDate, setStatsDate] = useState("");
   const invalidateStoreQueries = useInvalidateMerchantStoreQueries();
   const operationsQuery = useStoreOperationsQuery(storeId);
+  const storeOps = useMerchantStoreOperations({ storeId, poll: true, syncEngine: false });
+  const {
+    showClosePopup,
+    closeConfirmLoading,
+    toggleClosureType,
+    setToggleClosureType,
+    closureDate,
+    setClosureDate,
+    closureTime,
+    setClosureTime,
+    closeReason,
+    setCloseReason,
+    closeReasonOther,
+    setCloseReasonOther,
+    showToggleOnWarning,
+    setShowToggleOnWarning,
+    toggleOnLoading,
+    handleStoreToggle,
+    handleConfirmToggleOn,
+    handleClosePopupConfirm,
+    handleCancelClosePopup,
+    saveManualActivationLock,
+  } = storeOps;
   const walletQuery = useStoreWalletQuery(storeId);
   const statsQuery = useStoreStatsQuery(storeId, statsDate || undefined, { refetchInterval: 60000 });
 
-  const [isStoreOpen, setIsStoreOpen] = useState(true);
-  const [mxDeliveryEnabled, setMxDeliveryEnabled] = useState(false);
-  const [openingTime, setOpeningTime] = useState<string | null>(null);
-  const [closingTime, setClosingTime] = useState<string | null>(null);
-  const [todayDate, setTodayDate] = useState("");
-  const [todaySlots, setTodaySlots] = useState<{ start: string; end: string }[]>([]);
-  const [lastToggleBy, setLastToggleBy] = useState<string | null>(null);
-  const [lastToggleType, setLastToggleType] = useState<string | null>(null);
-  const [lastToggledByName, setLastToggledByName] = useState<string | null>(null);
-  const [lastToggledById, setLastToggledById] = useState<string | null>(null);
-  const [restrictionType, setRestrictionType] = useState<string | null>(null);
-  const [withinHoursButRestricted, setWithinHoursButRestricted] = useState(false);
-  const [lastToggledAt, setLastToggledAt] = useState<string | null>(null);
-  const [opensAt, setOpensAt] = useState<string | null>(null);
-  /** Bumps every second while closed with a future `opensAt` so countdown text re-renders (same pattern as Partner Site mx dashboard). */
-  const [countdownTick, setCountdownTick] = useState(0);
-  const [manualActivationLock, setManualActivationLock] = useState(false);
-
-  const [showClosePopup, setShowClosePopup] = useState(false);
-  const [closeConfirmLoading, setCloseConfirmLoading] = useState(false);
-  const [toggleClosureType, setToggleClosureType] = useState<"temporary" | "today" | "manual_hold" | null>(null);
-  const [closureDate, setClosureDate] = useState("");
-  const [closureTime, setClosureTime] = useState("12:00");
-  const [closeReason, setCloseReason] = useState("");
-  const [closeReasonOther, setCloseReasonOther] = useState("");
-  const [showToggleOnWarning, setShowToggleOnWarning] = useState(false);
-  const [toggleOnLoading, setToggleOnLoading] = useState(false);
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [modalStatus, setModalStatus] = useState<{ status: string; reason?: string }>({ status: "", reason: "" });
   const [hasMounted, setHasMounted] = useState(false);
@@ -157,6 +145,7 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
   const [walletYesterdayEarning, setWalletYesterdayEarning] = useState(0);
   const [walletPendingBalance, setWalletPendingBalance] = useState(0);
   const [walletLoading, setWalletLoading] = useState(true);
+  const [mxDeliveryEnabled, setMxDeliveryEnabled] = useState(false);
 
   useEffect(() => {
     if (statsDate === "" && typeof window !== "undefined") {
@@ -180,95 +169,13 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
 
   const isDelisted = ((storeFromHook?.approval_status ?? store?.approval_status) || "").toUpperCase() === "DELISTED";
 
-  const closeReasonDisplay = useMemo(() => {
-    const d = operationsQuery.data as { close_reason?: string | null } | undefined;
-    const r = d?.close_reason;
-    return formatCloseReasonForCard(r != null && String(r).trim() !== "" ? String(r).trim() : null);
-  }, [operationsQuery.data]);
+  const statusCard = useStoreStatusCardModel(operationsQuery.data as StoreOperationsSnapshot | undefined, {
+    storeTimezone: (storeFromHook as { timezone?: string | null } | null)?.timezone,
+    storeIdLabel: storeFromHook?.store_id ?? null,
+    onCountdownExpired: () => invalidateStoreQueries(storeId),
+  });
 
-  // When app / Partner Site / another tab updates `merchant_stores` or `merchant_store_availability`, refetch ops + store profile.
-  useEffect(() => {
-    const internalId = storeFromHook?.id;
-    if (!internalId || !storeId) return;
-    const ch = supabase
-      .channel(`merchant_portal_store_ops:${internalId}`)
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "merchant_stores", filter: `id=eq.${internalId}` },
-        () => {
-          invalidateStoreQueries(storeId);
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "merchant_store_availability", filter: `store_id=eq.${internalId}` },
-        () => {
-          invalidateStoreQueries(storeId);
-        }
-      )
-      .subscribe();
-    return () => {
-      void supabase.removeChannel(ch);
-    };
-  }, [storeFromHook?.id, storeId, invalidateStoreQueries]);
 
-  // Live countdown: tick every 1s; at zero refetch so status can flip to Open without refresh (parity with Partner Site / merchant app).
-  useEffect(() => {
-    if (!isStoreOpen && opensAt && !withinHoursButRestricted) {
-      const t = setInterval(() => {
-        const ms = new Date(opensAt).getTime() - Date.now();
-        if (ms <= 0) {
-          invalidateStoreQueries(storeId);
-          return;
-        }
-        setCountdownTick((n) => n + 1);
-      }, 1000);
-      return () => clearInterval(t);
-    }
-  }, [isStoreOpen, opensAt, withinHoursButRestricted, storeId, invalidateStoreQueries]);
-
-  // Sync operations from shared React Query cache
-  useEffect(() => {
-    const data = operationsQuery.data;
-    if (!data || (data as { operational_status?: string }).operational_status === undefined) return;
-    const d = data as {
-      operational_status?: string;
-      opens_at?: string | null;
-      today_date?: string;
-      today_slots?: { start: string; end: string }[];
-      last_toggled_by_email?: string | null;
-      last_toggle_type?: string | null;
-      last_toggled_by_name?: string | null;
-      last_toggled_by_id?: string | null;
-      restriction_type?: string | null;
-      within_hours_but_restricted?: boolean;
-      last_toggled_at?: string | null;
-      block_auto_open?: boolean;
-      is_today_scheduled_closed?: boolean;
-    };
-    setIsStoreOpen(d.operational_status === "OPEN");
-    setOpensAt(d.opens_at ?? null);
-    setTodayDate(d.today_date || "");
-    setTodaySlots(d.today_slots || []);
-    setLastToggleBy(d.last_toggled_by_email ?? null);
-    setLastToggleType(d.last_toggle_type ?? null);
-    setLastToggledByName(d.last_toggled_by_name ?? null);
-    setLastToggledById(d.last_toggled_by_id ?? null);
-    const rt = d.restriction_type != null ? String(d.restriction_type).toLowerCase() : "";
-    setRestrictionType(rt === "manual_hold" ? "MANUAL_HOLD" : d.restriction_type ?? null);
-    setWithinHoursButRestricted(d.within_hours_but_restricted === true);
-    setLastToggledAt(d.last_toggled_at ?? null);
-    setManualActivationLock(d.block_auto_open === true);
-    const todaySlots = d.today_slots ?? [];
-    if (todaySlots.length > 0) {
-      const first = todaySlots[0];
-      setOpeningTime(first.start ?? null);
-      setClosingTime(first.end ?? null);
-    } else {
-      setOpeningTime(null);
-      setClosingTime(null);
-    }
-  }, [operationsQuery.data]);
 
   // Sync wallet from shared React Query cache
   useEffect(() => {
@@ -296,153 +203,6 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
     setRevenueToday(d.totalRevenueToday ?? 0);
   }, [statsQuery.data]);
 
-  useEffect(() => {
-    if (showClosePopup) {
-      const now = new Date();
-      setClosureDate(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`);
-      const in10 = new Date(now.getTime() + 10 * 60 * 1000);
-      setClosureTime(`${String(in10.getHours()).padStart(2, "0")}:${String(in10.getMinutes()).padStart(2, "0")}`);
-    }
-  }, [showClosePopup]);
-
-  const handleStoreToggle = () => {
-    if (isDelisted) {
-      toast("Store is delisted. Please relist it before opening.");
-      return;
-    }
-    if (isStoreOpen) {
-      setShowClosePopup(true);
-      setToggleClosureType(null);
-    } else {
-      setShowToggleOnWarning(true);
-    }
-  };
-
-  const handleConfirmToggleOn = async () => {
-    if (isDelisted) {
-      toast("Store is delisted. Please relist it before opening.");
-      setShowToggleOnWarning(false);
-      return;
-    }
-    setToggleOnLoading(true);
-    try {
-      const res = await fetch(`/api/merchant/stores/${storeId}/store-operations`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "manual_open" }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.success) {
-        invalidateStoreQueries(storeId);
-        setShowToggleOnWarning(false);
-        toast("Store is now OPEN. Orders are being accepted!");
-      } else {
-        toast(data.error || "Failed to open store");
-      }
-    } catch {
-      toast("Failed to open store");
-    } finally {
-      setToggleOnLoading(false);
-    }
-  };
-
-  const handleClosePopupConfirm = () => {
-    if (!toggleClosureType) {
-      toast("Please select closure type");
-      return;
-    }
-    if (toggleClosureType === "temporary") {
-      if (!closureDate || !closureTime) {
-        toast("Please select date and time for reopening");
-        return;
-      }
-      // Treat picker inputs as IST wall time (parity with backend + mobile/partner clients).
-      const closedUntil = new Date(`${closureDate}T${closureTime}:00+05:30`);
-      if (closedUntil.getTime() <= Date.now()) {
-        toast("Reopening date and time must be in the future");
-        return;
-      }
-    }
-    if (!closeReason?.trim()) {
-      toast("Please select a reason for closing");
-      return;
-    }
-    if (closeReason === "Other" && !closeReasonOther?.trim()) {
-      toast('Please enter the reason in "Other"');
-      return;
-    }
-    void handleFinalCloseConfirm();
-  };
-
-  const handleFinalCloseConfirm = async () => {
-    if (!toggleClosureType) return;
-    setCloseConfirmLoading(true);
-    const baseReason = closeReason === "Other" ? (closeReasonOther?.trim() || "Other") : closeReason;
-    const reasonText = merchantPortalCloseReasonWithSuffix(baseReason);
-    const manualCloseUntilIso =
-      toggleClosureType === "temporary" && closureDate && closureTime
-        ? (() => {
-            const d = new Date(`${closureDate}T${closureTime}:00+05:30`);
-            return Number.isNaN(d.getTime()) ? null : d.toISOString();
-          })()
-        : null;
-    try {
-      const res = await fetch(`/api/merchant/stores/${storeId}/store-operations`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "manual_close",
-          closure_type: toggleClosureType,
-          close_reason: reasonText,
-          ...(manualCloseUntilIso ? { manual_close_until: manualCloseUntilIso } : null),
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.success) {
-        invalidateStoreQueries(storeId);
-        setShowClosePopup(false);
-        setToggleClosureType(null);
-        setCloseReason("");
-        setCloseReasonOther("");
-        toast("Store closed.");
-      } else {
-        toast(data.error || "Failed to close store");
-      }
-    } catch {
-      toast("Failed to close store");
-    } finally {
-      setCloseConfirmLoading(false);
-    }
-  };
-
-  const handleCancelClosePopup = () => {
-    if (closeConfirmLoading) return;
-    setShowClosePopup(false);
-    setToggleClosureType(null);
-    setCloseReason("");
-    setCloseReasonOther("");
-  };
-
-  const saveManualActivationLock = useCallback(async (enabled: boolean) => {
-    try {
-      const res = await fetch(`/api/merchant/stores/${storeId}/store-operations`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "update_manual_lock", block_auto_open: enabled }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.success) {
-        invalidateStoreQueries(storeId);
-        toast(enabled ? "Manual activation lock enabled" : "Manual activation lock disabled");
-      } else {
-        setManualActivationLock(!enabled);
-        toast("Failed to save");
-      }
-    } catch {
-      setManualActivationLock(!enabled);
-      toast("Failed to save");
-    }
-  }, [storeId, invalidateStoreQueries, toast]);
 
   const isLoading = storeLoading;
 
@@ -564,79 +324,27 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
         </div>
       )}
 
-      {/* Close store popup */}
-      {showClosePopup && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" role="dialog">
-          <div className="mx-auto max-w-md rounded-2xl bg-white p-6 shadow-xl border border-gray-200">
-            <h2 className="text-lg font-bold text-gray-900 mb-4">How would you like to close your store?</h2>
-            <div className="space-y-3">
-              <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer border-2 ${toggleClosureType === "temporary" ? "bg-orange-50 border-orange-400" : "border-gray-200"}`}>
-                <input type="radio" name="closureType" checked={toggleClosureType === "temporary"} onChange={() => setToggleClosureType("temporary")} className="w-4 h-4" />
-                <div><p className="text-sm font-semibold">Temporary Closed</p><p className="text-xs text-gray-600">Reopens at date & time or turn ON manually.</p></div>
-              </label>
-              {toggleClosureType === "temporary" && (
-                <div className="ml-7 grid grid-cols-2 gap-3">
-                  <div><label className="text-[10px] text-gray-500 block mb-1">Date</label><input type="date" value={closureDate} onChange={(e) => setClosureDate(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" /></div>
-                  <div><label className="text-[10px] text-gray-500 block mb-1">Time</label><input type="time" value={closureTime} onChange={(e) => setClosureTime(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" /></div>
-                </div>
-              )}
-              <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer border-2 ${toggleClosureType === "today" ? "bg-red-50 border-red-400" : "border-gray-200"}`}>
-                <input type="radio" name="closureType" checked={toggleClosureType === "today"} onChange={() => setToggleClosureType("today")} className="w-4 h-4" />
-                <div><p className="text-sm font-semibold">Close for Today</p><p className="text-xs text-gray-600">Reopen tomorrow at {openingTime ? formatTimeHMS(openingTime) : "scheduled opening time"}</p></div>
-              </label>
-              <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer border-2 ${toggleClosureType === "manual_hold" ? "bg-amber-50 border-amber-400" : "border-gray-200"}`}>
-                <input type="radio" name="closureType" checked={toggleClosureType === "manual_hold"} onChange={() => setToggleClosureType("manual_hold")} className="w-4 h-4" />
-                <div><p className="text-sm font-semibold">Until I manually turn it ON</p></div>
-              </label>
-            </div>
-            <div className="mt-4">
-              <label className="text-xs font-semibold text-gray-700 block mb-2">Reason for closing *</label>
-              <select value={closeReason} onChange={(e) => setCloseReason(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm">
-                <option value="">Select reason</option>
-                {MERCHANT_PORTAL_CLOSE_REASONS.map((r) => (
-                  <option key={r} value={r}>
-                    {merchantPortalCloseReasonWithSuffix(r)}
-                  </option>
-                ))}
-              </select>
-              {closeReason === "Other" && <input type="text" value={closeReasonOther} onChange={(e) => setCloseReasonOther(e.target.value)} placeholder="Enter reason" className="w-full mt-2 px-3 py-2 border rounded-lg text-sm" />}
-            </div>
-            <div className="flex gap-3 mt-5">
-              <button type="button" onClick={handleCancelClosePopup} disabled={closeConfirmLoading} className="flex-1 px-4 py-2.5 border rounded-xl text-gray-700 font-medium">Cancel</button>
-              <button
-                type="button"
-                onClick={handleClosePopupConfirm}
-                disabled={
-                  !toggleClosureType ||
-                  !closeReason?.trim() ||
-                  (closeReason === "Other" && !closeReasonOther?.trim()) ||
-                  (toggleClosureType === "temporary" && (!closureDate || !closureTime)) ||
-                  closeConfirmLoading
-                }
-                className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl font-medium disabled:opacity-50"
-              >
-                {closeConfirmLoading ? <><Loader2 className="inline h-4 w-4 animate-spin mr-1" />Confirming...</> : "Confirm"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Turn store ON warning */}
-      {showToggleOnWarning && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4">
-          <div className="max-w-sm w-full rounded-2xl bg-white p-6 border-2 border-emerald-200">
-            <h3 className="text-lg font-bold text-gray-900 text-center mb-4">Turn Store ON?</h3>
-            <p className="text-sm text-gray-600 text-center mb-6">Your store will be OPEN and customers can place orders.</p>
-            <div className="flex gap-3">
-              <button onClick={() => !toggleOnLoading && setShowToggleOnWarning(false)} disabled={toggleOnLoading} className="flex-1 px-4 py-2.5 border-2 border-gray-300 rounded-lg font-semibold">Cancel</button>
-              <button onClick={handleConfirmToggleOn} disabled={toggleOnLoading} className="flex-1 px-4 py-2.5 bg-emerald-600 text-white rounded-lg font-semibold inline-flex items-center justify-center gap-2">
-                {toggleOnLoading ? <><Loader2 className="h-4 w-4 animate-spin" /> Turning ON...</> : "Yes, Turn ON"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <MerchantStoreOperationsModals
+        isDelisted={isDelisted}
+        showClosePopup={showClosePopup}
+        closeConfirmLoading={closeConfirmLoading}
+        toggleClosureType={toggleClosureType}
+        setToggleClosureType={setToggleClosureType}
+        closureDate={closureDate}
+        setClosureDate={setClosureDate}
+        closureTime={closureTime}
+        setClosureTime={setClosureTime}
+        closeReason={closeReason}
+        setCloseReason={setCloseReason}
+        closeReasonOther={closeReasonOther}
+        setCloseReasonOther={setCloseReasonOther}
+        showToggleOnWarning={showToggleOnWarning}
+        setShowToggleOnWarning={setShowToggleOnWarning}
+        toggleOnLoading={toggleOnLoading}
+        handleConfirmToggleOn={handleConfirmToggleOn}
+        handleClosePopupConfirm={handleClosePopupConfirm}
+        handleCancelClosePopup={handleCancelClosePopup}
+      />
 
       <div className="flex-1 flex flex-col min-h-0 bg-[#f8fafc] overflow-hidden w-full">
         <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 sm:px-6 lg:px-8 py-5">
@@ -694,129 +402,41 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
               </section>
 
               <section className="min-w-0 flex flex-col h-full">
-                <div
-                  className={`flex flex-1 flex-col min-h-[240px] sm:min-h-[252px] rounded-xl border-2 bg-white/40 p-3 sm:p-3.5 ${
-                    isStoreOpen ? "border-teal-500" : restrictionType === "MANUAL_HOLD" ? "border-amber-500" : "border-red-500"
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2 shrink-0">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 mb-0.5">
-                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-800/[0.06] text-slate-700 ring-1 ring-slate-900/10">
-                          <Store className="h-[15px] w-[15px]" strokeWidth={2} />
-                        </span>
-                        <h2 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Store status</h2>
-                      </div>
-                      <p className="text-sm font-semibold text-slate-900 tabular-nums leading-tight">
-                        {openingTime && closingTime ? `${formatTimeHMS(openingTime)} – ${formatTimeHMS(closingTime)}` : todaySlots.length ? todaySlots.map((s) => `${s.start}–${s.end}`).join(", ") : "—"}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleStoreToggle}
-                      className={`shrink-0 flex h-10 w-10 items-center justify-center rounded-full text-white shadow-sm transition-transform hover:scale-105 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 ${
-                        isStoreOpen
-                          ? "bg-emerald-500 hover:bg-emerald-600 focus-visible:ring-emerald-500"
-                          : restrictionType === "MANUAL_HOLD"
-                            ? "bg-amber-500 hover:bg-amber-600 focus-visible:ring-amber-500"
-                            : "bg-red-500 hover:bg-red-600 focus-visible:ring-red-500"
-                      }`}
-                      aria-label={isStoreOpen ? "Close store" : "Open store"}
-                    >
-                      <Power size={18} strokeWidth={2.25} />
-                    </button>
-                  </div>
-                  <div className="flex-1 min-h-0 flex flex-col gap-1.5 mt-2">
-                    <div className="flex flex-wrap items-center gap-1.5 shrink-0">
-                      <span
-                        className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                          isStoreOpen
-                            ? "bg-emerald-500/10 text-emerald-800 ring-1 ring-emerald-500/20"
-                            : restrictionType === "MANUAL_HOLD"
-                              ? "bg-amber-500/10 text-amber-900 ring-1 ring-amber-500/25"
-                              : "bg-red-500/10 text-red-800 ring-1 ring-red-500/20"
-                        }`}
-                      >
-                        <span
-                          className={`h-1.5 w-1.5 rounded-full ${isStoreOpen ? "bg-emerald-500 animate-pulse" : restrictionType === "MANUAL_HOLD" ? "bg-amber-500" : "bg-red-500"}`}
-                        />
-                        {isStoreOpen ? "Open" : restrictionType === "MANUAL_HOLD" ? "Waiting manual activation" : "Closed"}
-                      </span>
-                    </div>
-                    {!isStoreOpen && opensAt && !withinHoursButRestricted && (() => {
-                      void countdownTick;
-                      const ms = new Date(opensAt).getTime() - Date.now();
-                      if (ms <= 0) {
-                        return <p className="text-[11px] font-medium text-red-600">Opens now</p>;
-                      }
-                      const h = Math.floor(ms / 3600000);
-                      const m = Math.floor((ms % 3600000) / 60000);
-                      const s = Math.floor((ms % 60000) / 1000);
-                      if (h === 0 && m === 0 && s === 0) {
-                        return <p className="text-[11px] font-medium text-red-600">Opens now</p>;
-                      }
-                      return (
-                        <p
-                          className="text-[11px] font-medium text-red-700"
-                          title="Updates every second. Store will open automatically at zero."
-                        >
-                          Opens in {h}h {m}m {s}s
-                        </p>
-                      );
-                    })()}
-                    {!isStoreOpen && closeReasonDisplay && (
-                      <p className="text-[11px] text-slate-600 leading-snug line-clamp-3" title={closeReasonDisplay}>
-                        <span className="font-semibold text-slate-700">Close reason: </span>
-                        {closeReasonDisplay}
-                      </p>
-                    )}
-                    {(lastToggledByName || lastToggleBy || lastToggleType) && lastToggledAt && (
-                      <p className="text-[11px] text-slate-500 leading-snug">
-                        Last:{" "}
-                        {(() => {
-                          const typeUp = String(lastToggleType || "").toUpperCase();
-                          const timeStr = new Date(lastToggledAt).toLocaleTimeString("en-IN", {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                            second: "2-digit",
-                            hour12: true,
-                          });
-                          const email = lastToggleBy || "";
-                          const emailNorm = String(email).toLowerCase();
-                          const isGatiMitraAgent =
-                            emailNorm.includes("gatimitra") || emailNorm.endsWith("@gatimitra.in") || emailNorm.endsWith("@gatimitra.com");
-                          if (typeUp.startsWith("AUTO")) {
-                            return `${isStoreOpen ? "Auto on" : "Auto closed"} · ${timeStr}`;
-                          }
-                          if (isGatiMitraAgent) {
-                            return `${isStoreOpen ? "Opened" : "Closed"} by GatiMitra (agent: ${email || "unknown"}) · ${timeStr}`;
-                          }
-                          const who = lastToggledByName || lastToggleBy || "User";
-                          const storeIdText = storeFromHook?.store_id ? ` (ID: ${storeFromHook.store_id})` : "";
-                          return `${isStoreOpen ? "Opened" : "Closed"} by ${who}${storeIdText} · ${timeStr}`;
-                        })()}
-                      </p>
-                    )}
-                  </div>
-                  <div className="mt-auto flex items-center justify-between gap-2 pt-2.5 border-t border-slate-200/80 shrink-0">
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-semibold text-slate-800">Manual activation lock</p>
-                      <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">Prevents automatic opening</p>
-                    </div>
-                    <label className="relative inline-flex shrink-0 cursor-pointer items-center">
-                      <input
-                        type="checkbox"
-                        checked={manualActivationLock}
-                        onChange={(e) => {
-                          setManualActivationLock(e.target.checked);
-                          saveManualActivationLock(e.target.checked);
-                        }}
-                        className="peer sr-only"
-                      />
-                      <div className="relative h-6 w-11 rounded-full bg-slate-200 transition-colors after:absolute after:left-[3px] after:top-[3px] after:h-[18px] after:w-[18px] after:rounded-full after:border after:border-slate-200/80 after:bg-white after:shadow-sm after:transition-transform after:content-[''] peer-focus-visible:ring-2 peer-focus-visible:ring-orange-400 peer-focus-visible:ring-offset-2 peer-checked:bg-red-600 peer-checked:after:translate-x-[22px]" />
-                    </label>
-                  </div>
-                </div>
+                <MerchantStoreStatusCard
+                  isStoreOpen={statusCard.isStoreOpen}
+                  restrictionType={statusCard.restrictionType}
+                  storeStatusBadge={statusCard.storeStatusBadge}
+                  cardDisplaySlots={statusCard.cardDisplaySlots}
+                  cardBreakGapLabel={statusCard.cardBreakGapLabel}
+                  scheduledTimeOffs={statusCard.scheduledTimeOffs}
+                  activeRush={statusCard.activeRush}
+                  formatScheduledTimeOffWindow={statusCard.formatScheduledTimeOffWindow}
+                  isTodayScheduledClosed={statusCard.isTodayScheduledClosed}
+                  scheduleStatusLabel={statusCard.scheduleStatusLabel}
+                  schedulePhase={statusCard.schedulePhase}
+                  showScheduleCountdown={statusCard.showScheduleCountdown}
+                  activeCountdownAt={statusCard.activeCountdownAt}
+                  countdownTick={statusCard.countdownTick}
+                  opensCountdownLabel={statusCard.opensCountdownLabel}
+                  countdownKind={statusCard.countdownKind}
+                  countdownSubtitleWallLabel={statusCard.countdownSubtitleWallLabel}
+                  closeReasonDisplay={statusCard.closeReasonDisplay}
+                  lastToggledByName={statusCard.lastToggledByName}
+                  lastToggleBy={statusCard.lastToggleBy}
+                  lastToggleType={statusCard.lastToggleType}
+                  lastToggledAt={statusCard.lastToggledAt}
+                  storeIdLabel={storeFromHook?.store_id ?? null}
+                  manualActivationLock={statusCard.manualActivationLock}
+                  showScheduledOffStartsCountdown={statusCard.showScheduledOffStartsCountdown}
+                  scheduledOffStartsInMs={statusCard.scheduledOffStartsInMs}
+                  onStoreToggle={() => handleStoreToggle({ isDelisted })}
+                  onManualLockChange={(enabled) => {
+                    statusCard.setManualActivationLock(enabled);
+                    void saveManualActivationLock(enabled);
+                  }}
+                  storeInternalId={storeId}
+                  onOperationsRefresh={() => storeOps.refreshOperations()}
+                />
               </section>
 
               <section className="min-w-0 flex flex-col h-full">
@@ -865,11 +485,11 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
                           </div>
                         ) : (
                           <div className="flex flex-1 min-h-0 flex-col gap-2">
-                            <ul className="space-y-2 max-h-44 overflow-y-auto pr-1">
-                              {selfDeliveryRiders.map((r) => (
+                            <ul className="space-y-1.5">
+                              {selfDeliveryRiders.slice(0, 2).map((r) => (
                                 <li
                                   key={String(r.id)}
-                                  className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded-lg bg-slate-50/90 px-2 py-1.5 text-xs text-slate-800 border border-slate-100"
+                                  className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs text-slate-800"
                                 >
                                   <span className="font-mono text-[10px] font-medium text-slate-400 tabular-nums">#{String(r.id)}</span>
                                   <span className="font-semibold text-slate-900">{r.rider_name}</span>
@@ -877,9 +497,12 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
                                 </li>
                               ))}
                             </ul>
+                            {selfDeliveryRiders.length > 2 && (
+                              <p className="text-[11px] text-slate-500">+{selfDeliveryRiders.length - 2} more</p>
+                            )}
                             <Link
                               href={`/dashboard/merchants/stores/${storeId}/store-settings`}
-                              className="inline-flex items-center text-xs font-semibold text-orange-600 hover:text-orange-700 shrink-0 pt-1"
+                              className="inline-flex items-center text-xs font-semibold text-orange-600 hover:text-orange-700 mt-auto"
                             >
                               Manage all riders →
                             </Link>
@@ -887,12 +510,7 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
                         )}
                       </>
                     ) : (
-                      <div className="flex flex-1 flex-col justify-center">
-                        <p className="text-[11px] text-slate-500 leading-snug">
-                          Delivery is handled by <span className="font-semibold text-violet-700">GatiMitra</span> platform riders. If Self Delivery is enabled for the {" "}
-                          <span className="font-semibold text-slate-700">Merchant</span> their own riders list will be visible here for assignment..
-                        </p>
-                      </div>
+                      <div className="flex-1 min-h-[1px]" aria-hidden />
                     )}
                   </div>
                 </div>
@@ -1056,8 +674,117 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
                           </Link>
                         </div>
                       </div>
+                      <div className="py-2">
+                        <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2 pl-0.5">Bad orders</p>
+                        <div className="divide-y divide-slate-200/60">
+                          {[
+                            { label: "Rejected orders", v: [0.2, 0.1, 0.15, 0.1, 0.08, 0.05, 0.04, 0.03, 0.02, 0] },
+                            { label: "Delayed orders", v: [1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2] },
+                            { label: "Poor rated orders", v: [0.5, 0.45, 0.4, 0.35, 0.3, 0.25, 0.2, 0.15, 0.1, 0.08] },
+                          ].map((row) => (
+                            <div
+                              key={row.label}
+                              className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-2.5 pl-2 sm:pl-3 border-l-2 border-slate-200/80"
+                            >
+                              <div className="sm:col-span-3 text-xs sm:text-sm text-slate-600">{row.label}</div>
+                              <div className="sm:col-span-5 flex justify-start sm:justify-center">
+                                <MiniSparkline values={row.v} />
+                              </div>
+                              <div className="sm:col-span-4 flex flex-wrap items-center justify-start sm:justify-end gap-2">
+                                <span className="text-xs text-slate-500 tabular-nums">0.0%</span>
+                                <span className="text-[11px] font-medium tabular-nums text-slate-600 bg-slate-100/80 px-2 py-0.5 rounded-full">0%</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-3.5">
+                        <div className="sm:col-span-3 text-sm text-slate-700 font-medium">Total complaints</div>
+                        <div className="sm:col-span-5 flex justify-start sm:justify-center">
+                          <MiniSparkline values={[2, 1, 2, 1, 1, 0, 1, 0, 0, 0]} />
+                        </div>
+                        <div className="sm:col-span-4 flex justify-start sm:justify-end">
+                          <Link href={`/dashboard/merchants/stores/${storeId}/user-insights`} className="text-xs font-semibold text-blue-600 hover:text-blue-700">
+                            View business reports
+                          </Link>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-3.5">
+                        <div className="sm:col-span-3 text-sm text-slate-700 font-medium">Lost sales</div>
+                        <div className="sm:col-span-5 flex justify-start sm:justify-center">
+                          <MiniSparkline values={[0, 0, 0, 0, 0, 0, 0, 0, 0, 0]} />
+                        </div>
+                        <div className="sm:col-span-4 flex flex-wrap items-center justify-start sm:justify-end gap-2">
+                          <span className="text-sm font-semibold tabular-nums text-slate-900">₹0</span>
+                          <span className="text-[11px] font-medium tabular-nums text-slate-600 bg-slate-100/80 px-2 py-0.5 rounded-full">0%</span>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-3.5">
+                        <div className="sm:col-span-3 text-sm text-slate-700 font-medium">Online %</div>
+                        <div className="sm:col-span-5 flex justify-start sm:justify-center">
+                          <MiniSparkline values={[98, 97, 99, 98, 96, 95, 97, 98, 99, 97]} />
+                        </div>
+                        <div className="sm:col-span-4 flex justify-start sm:justify-end">
+                          <Link href={`/dashboard/merchants/stores/${storeId}/user-insights`} className="text-xs font-semibold text-blue-600 hover:text-blue-700">
+                            View business reports
+                          </Link>
+                        </div>
+                      </div>
                     </div>
                   </div>
+
+                  <div className="pb-4">
+                    <div className="flex flex-wrap items-center gap-2 gap-y-1 pb-3 border-b border-slate-200/80">
+                      <Funnel className="text-violet-600 shrink-0" size={18} strokeWidth={2} aria-hidden />
+                      <h2 className="text-sm font-bold text-slate-900 tracking-tight">Customer funnel</h2>
+                      <span className="text-slate-400">
+                        <Info size={15} strokeWidth={2} aria-hidden />
+                      </span>
+                    </div>
+                    <div className="divide-y divide-slate-200/70">
+                      {[
+                        { label: "Impressions", icon: ChevronDown, spark: [120, 132, 128, 140, 135, 118, 105, 92, 78, 65], val: "48", pct: -18 },
+                        { label: "Impressions to menu", icon: ChevronDown, spark: [45, 48, 44, 50, 46, 40, 35, 30, 26, 22], val: "8.3%", pct: -12 },
+                        { label: "Menu to cart", icon: ChevronDown, spark: [22, 24, 21, 23, 22, 19, 17, 15, 13, 11], val: "25.0%", pct: -9 },
+                        { label: "Cart to order", icon: Check, spark: [8, 9, 8, 9, 8, 7, 6, 5, 4, 3], val: "0.0%", pct: -22 },
+                      ].map((row, idx) => {
+                        const StageIcon = row.icon;
+                        return (
+                          <div key={row.label} className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-3.5">
+                            <div className="sm:col-span-3 flex items-center gap-2 text-sm text-slate-700 font-medium">
+                              <span className="flex w-6 shrink-0 flex-col items-center text-slate-400" aria-hidden>
+                                <span className="h-2 w-px bg-slate-300" style={{ opacity: idx === 0 ? 0 : 1 }} />
+                                <StageIcon size={14} className="text-blue-600 my-0.5" strokeWidth={2.5} />
+                                <span className="h-2 w-px bg-slate-300" style={{ opacity: idx === 3 ? 0 : 1 }} />
+                              </span>
+                              {row.label}
+                            </div>
+                            <div className="sm:col-span-5 flex justify-start sm:justify-center">
+                              <MiniSparkline values={row.spark} />
+                            </div>
+                            <div className="sm:col-span-4 flex flex-wrap items-center justify-start sm:justify-end gap-2">
+                              <span className="text-sm font-semibold tabular-nums text-slate-900">{row.val}</span>
+                              <DeltaBadge pct={row.pct} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {(["New users", "Repeat users", "Lapsed users"] as const).map((label) => (
+                        <div key={label} className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-3.5">
+                          <div className="sm:col-span-3 text-sm text-slate-700 font-medium">{label}</div>
+                          <div className="sm:col-span-5 flex justify-start sm:justify-center">
+                            <MiniSparkline values={[40, 42, 41, 44, 43, 40, 38, 36, 35, 34]} />
+                          </div>
+                          <div className="sm:col-span-4 flex justify-start sm:justify-end">
+                            <Link href={`/dashboard/merchants/stores/${storeId}/user-insights`} className="text-xs font-semibold text-blue-600 hover:text-blue-700">
+                              View business reports
+                            </Link>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
                 </>
               )}
 

@@ -1,13 +1,11 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import {
-  Clock,
   Power,
   Package,
   Save,
-  Copy,
   Crown,
   ChefHat,
   Users,
@@ -22,18 +20,19 @@ import {
   Star,
   AlertTriangle,
   Loader2,
-  ChevronDown,
-  ChevronUp,
-  Plus,
-  Trash2,
 } from "lucide-react";
 import { Toaster, toast } from "sonner";
-import { UI_STRINGS, useLocalStoreStatusEngineStore } from "@/lib/localStoreStatusEngineStore";
+import { UI_STRINGS } from "@/lib/localStoreStatusEngineStore";
 import {
   MERCHANT_PORTAL_CLOSE_REASONS,
   merchantPortalCloseReasonWithSuffix,
 } from "@/lib/merchantPortalCloseReasons";
+import { useMerchantStoreOperations } from "@/hooks/useMerchantStoreOperations";
+import { MerchantStoreStatusCard } from "@/components/merchant/MerchantStoreStatusCard";
+import { useStoreStatusCardModel, type StoreOperationsSnapshot } from "@/hooks/useStoreStatusCardModel";
+import { useInvalidateMerchantStoreQueries } from "@/hooks/queries/useMerchantStoreQueries";
 import { SettingsNavBar } from "./SettingsSidebar";
+import { OutletTimingsPanel } from "./OutletTimingsPanel";
 import { useStoreContext } from "../StoreContext";
 import { useStore } from "@/hooks/useStore";
 
@@ -59,9 +58,6 @@ type StoreDetail = {
   [key: string]: unknown;
 };
 
-type DayType = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
-const DAYS: DayType[] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
-
 type SelfDeliveryRider = {
   id: number;
   rider_name: string;
@@ -71,82 +67,6 @@ type SelfDeliveryRider = {
   is_primary: boolean;
   is_active: boolean;
 };
-
-type DaySlots = { open: boolean; slot1_start: string; slot1_end: string; slot2_start: string; slot2_end: string };
-function defaultDaySlots(): Record<DayType, DaySlots> {
-  return DAYS.reduce((acc, day) => {
-    acc[day] = { open: false, slot1_start: "", slot1_end: "", slot2_start: "", slot2_end: "" };
-    return acc;
-  }, {} as Record<DayType, DaySlots>);
-}
-function parseTime(v: unknown): string {
-  if (v == null || v === "") return "";
-  if (typeof v === "string") return v.slice(0, 5);
-  if (v instanceof Date) return v.toTimeString().slice(0, 5);
-  return String(v).slice(0, 5);
-}
-
-function timeToMinutes(s: string): number {
-  if (!s || s.length < 5) return 0;
-  const [h, m] = s.split(":").map(Number);
-  if (Number.isNaN(h) || Number.isNaN(m)) return 0;
-  return h * 60 + m;
-}
-
-/** Slot duration in minutes; supports overnight (end < start => end is next day). */
-function slotDurationMinutes(start: string, end: string): number {
-  if (!start || !end) return 0;
-  const sm = timeToMinutes(start);
-  const em = timeToMinutes(end);
-  if (em > sm) return em - sm;
-  if (em <= sm) return 24 * 60 - sm + em; // overnight: e.g. 17:00–00:00 = 7h
-  return 0;
-}
-
-function dayHasCustomSlots(s: DaySlots): boolean {
-  const slot1Default = s.slot1_start === "00:00" && s.slot1_end === "23:59";
-  const slot2Set = !!(s.slot2_start && s.slot2_end);
-  return (s.slot1_start && s.slot1_end && !slot1Default) || slot2Set;
-}
-
-function dayDurationMinutes(
-  day: DayType,
-  slots: Record<DayType, DaySlots>,
-  is24: boolean,
-  sameForAll: boolean
-): number {
-  const s = sameForAll ? slots.monday : slots[day];
-  if (!s.open) return 0;
-  if (is24 && !dayHasCustomSlots(s)) return 24 * 60;
-  let total = 0;
-  if (s.slot1_start && s.slot1_end) total += slotDurationMinutes(s.slot1_start, s.slot1_end);
-  if (s.slot2_start && s.slot2_end) total += slotDurationMinutes(s.slot2_start, s.slot2_end);
-  return total;
-}
-
-function formatDuration(minutes: number): string {
-  if (minutes <= 0) return "—";
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return m > 0 ? `${h}h ${m}m` : `${h}h`;
-}
-
-function getCurrentDayKey(): DayType {
-  const current = new Date().getDay();
-  const map: DayType[] = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
-  return map[current] ?? "monday";
-}
-
-function formatTimeForMerchCard(value: string): string {
-  if (!value) return "--:--";
-  const [hourStr, minuteStr] = value.split(":");
-  const hour = Number(hourStr);
-  const minute = Number(minuteStr);
-  if (Number.isNaN(hour) || Number.isNaN(minute)) return value;
-  const period = hour >= 12 ? "PM" : "AM";
-  const displayHour = hour % 12 || 12;
-  return `${displayHour}:${String(minute).padStart(2, "0")} ${period}`;
-}
 
 function Toggle({
   checked,
@@ -240,12 +160,6 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
     preparation_buffer_minutes?: number;
     address?: Record<string, unknown>;
   } | null>(null);
-  const [operatingHours, setOperatingHours] = useState<Record<string, unknown> | null>(null);
-  const [storeOperations, setStoreOperations] = useState<{
-    operational_status?: string;
-    manual_close_until?: string | null;
-    block_auto_open?: boolean;
-  } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
   const [gatimitraDelivery, setGatimitraDelivery] = useState(true);
@@ -267,20 +181,6 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
   const [addressLat, setAddressLat] = useState("");
   const [addressLng, setAddressLng] = useState("");
 
-  const [schedule, setSchedule] = useState<Record<string, unknown>>({});
-  const [daySlots, setDaySlots] = useState<Record<DayType, DaySlots>>(defaultDaySlots());
-  const [closedDays, setClosedDays] = useState<string[]>([]);
-  const [applyMondayToAll, setApplyMondayToAll] = useState(false);
-  const [force24Hours, setForce24Hours] = useState(false);
-  const lastSavedTimingsRef = useRef<string | null>(null);
-  const [savingDay, setSavingDay] = useState<DayType | null>(null);
-  const [expandedTimingDay, setExpandedTimingDay] = useState<DayType | null>(getCurrentDayKey);
-  const [copyMondayConfirmOpen, setCopyMondayConfirmOpen] = useState(false);
-  const [copyMondayConfirmLoading, setCopyMondayConfirmLoading] = useState(false);
-  const engine = useLocalStoreStatusEngineStore();
-  const isStoreOpen = engine.state.store_status === "ONLINE";
-  const setIsStoreOpen = (_: boolean) => {};
-  const [manualActivationLock, setManualActivationLock] = useState(false);
   const [delistReasonCategory, setDelistReasonCategory] = useState("");
   const [delistType, setDelistType] = useState<"temporary_delisted" | "permanently_delisted" | "compliance_hold" | null>(
     null
@@ -291,15 +191,6 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
   const [relistLoading, setRelistLoading] = useState(false);
   const [relistModalOpen, setRelistModalOpen] = useState(false);
   const [relistReason, setRelistReason] = useState("");
-
-  /** Store close options (parity with Partner Site mx dashboard). */
-  const [showClosePopup, setShowClosePopup] = useState(false);
-  const [closeConfirmLoading, setCloseConfirmLoading] = useState(false);
-  const [toggleClosureType, setToggleClosureType] = useState<"temporary" | "today" | "manual_hold" | null>(null);
-  const [closureDate, setClosureDate] = useState("");
-  const [closureTime, setClosureTime] = useState("12:00");
-  const [closeReason, setCloseReason] = useState("");
-  const [closeReasonOther, setCloseReasonOther] = useState("");
 
   const [plans, setPlans] = useState<
     Array<{
@@ -357,77 +248,6 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
   }, [effectivePlans, currentSubscription, freePlan]);
 
   const base = `/api/merchant/stores/${storeId}`;
-
-  useEffect(() => {
-    if (!storeId) return;
-    engine.hydrate(String(storeId));
-    engine.startTick();
-    return () => engine.stopTick();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storeId]);
-
-  // When close popup opens, default date (today) and time (now + 10 min) for Temporary Closed
-  useEffect(() => {
-    if (!showClosePopup) return;
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = (now.getMonth() + 1).toString().padStart(2, "0");
-    const d = now.getDate().toString().padStart(2, "0");
-    setClosureDate(`${y}-${m}-${d}`);
-    const in10 = new Date(now.getTime() + 10 * 60 * 1000);
-    setClosureTime(
-      `${in10.getHours().toString().padStart(2, "0")}:${in10.getMinutes().toString().padStart(2, "0")}`
-    );
-  }, [showClosePopup]);
-
-  const lastSavedTimings = useMemo(() => {
-    try {
-      return lastSavedTimingsRef.current != null
-        ? (JSON.parse(lastSavedTimingsRef.current) as { daySlots: Record<DayType, DaySlots> })
-        : null;
-    } catch {
-      return null;
-    }
-  }, [daySlots, savingDay]);
-
-  /** Row is dirty only when slot times changed (not when only Open toggle changed). */
-  const isRowDirty = useCallback(
-    (day: DayType) => {
-      if (!lastSavedTimings) return false;
-      const current = applyMondayToAll ? daySlots.monday : daySlots[day];
-      const saved = applyMondayToAll ? lastSavedTimings.daySlots.monday : lastSavedTimings.daySlots[day];
-      return (
-        current.slot1_start !== saved.slot1_start ||
-        current.slot1_end !== saved.slot1_end ||
-        current.slot2_start !== saved.slot2_start ||
-        current.slot2_end !== saved.slot2_end
-      );
-    },
-    [applyMondayToAll, daySlots, lastSavedTimings]
-  );
-
-  const weeklyOperatingSummary = useMemo(() => {
-    if (force24Hours) {
-      const openCount = DAYS.filter((d) => daySlots[d].open).length;
-      return openCount === 0 ? "Closed" : openCount === 7 ? "24 hours (all days)" : "24 hours (selected days)";
-    }
-    const openDays = DAYS.filter((d) => daySlots[d].open);
-    if (openDays.length === 0) return "Closed";
-    if (applyMondayToAll && daySlots.monday.open) {
-      const s = daySlots.monday;
-      const range = s.slot1_start && s.slot1_end ? `${s.slot1_start}–${s.slot1_end}` : "—";
-      return `Daily ${range}`;
-    }
-    const parts: string[] = [];
-    for (const d of DAYS) {
-      if (!daySlots[d].open) continue;
-      const s = daySlots[d];
-      const range = s.slot1_start && s.slot1_end ? `${s.slot1_start}–${s.slot1_end}` : "—";
-      const label = d.slice(0, 2);
-      parts.push(`${label} ${range}`);
-    }
-    return parts.length <= 3 ? parts.join(", ") : `${parts.length} days set`;
-  }, [force24Hours, applyMondayToAll, daySlots]);
 
   useEffect(() => {
     if (layoutStore && !store) setStore(layoutStore as StoreDetail);
@@ -571,65 +391,6 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
     if (activeTab !== "delivery" || !selfDelivery) setSelfDeliveryRiders([]);
   }, [activeTab, selfDelivery, loadSelfDeliveryRiders]);
 
-  const loadOperatingHours = useCallback(async (signal?: AbortSignal): Promise<void> => {
-    try {
-      const res = await fetch(`${base}/operating-hours`, { signal });
-      if (!res.ok) return;
-      const d = await res.json().catch(() => ({}));
-      if (d.success) {
-        setOperatingHours(d);
-        setApplyMondayToAll(!!d.same_for_all_days);
-        setForce24Hours(!!d.is_24_hours);
-        setSchedule(d);
-        setClosedDays(Array.isArray(d.closed_days) ? d.closed_days : []);
-        const slots = defaultDaySlots();
-        for (const day of DAYS) {
-          slots[day] = {
-            open: !!d[`${day}_open`],
-            slot1_start: parseTime(d[`${day}_slot1_start`]),
-            slot1_end: parseTime(d[`${day}_slot1_end`]),
-            slot2_start: parseTime(d[`${day}_slot2_start`]),
-            slot2_end: parseTime(d[`${day}_slot2_end`]),
-          };
-        }
-        setDaySlots(slots);
-        const closed = Array.isArray(d.closed_days) ? d.closed_days.slice().sort() : [];
-        lastSavedTimingsRef.current = JSON.stringify({
-          applyMondayToAll: !!d.same_for_all_days,
-          force24Hours: !!d.is_24_hours,
-          closedDays: closed,
-          daySlots: DAYS.reduce((acc, day) => {
-            acc[day] = slots[day];
-            return acc;
-          }, {} as Record<DayType, DaySlots>),
-        });
-      }
-    } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") return;
-      if (typeof window !== "undefined" && process.env.NODE_ENV === "development") {
-        console.warn("[StoreSettings] loadOperatingHours failed:", err);
-      }
-    }
-  }, [base]);
-
-  const loadStoreOperations = useCallback(async (signal?: AbortSignal): Promise<void> => {
-    try {
-      const res = await fetch(`${base}/store-operations`, { signal });
-      if (!res.ok) return;
-      const d = await res.json().catch(() => ({}));
-      if (d.success) {
-        setStoreOperations(d);
-        setIsStoreOpen(d.operational_status === "OPEN");
-        setManualActivationLock(d.block_auto_open === true);
-      }
-    } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") return;
-      if (typeof window !== "undefined" && process.env.NODE_ENV === "development") {
-        console.warn("[StoreSettings] loadStoreOperations failed:", err);
-      }
-    }
-  }, [base]);
-
   const loadPlans = useCallback(async (signal?: AbortSignal): Promise<void> => {
     setPlansLoading(true);
     try {
@@ -658,8 +419,6 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
     Promise.all([
       loadStore(ac.signal),
       loadSettings(ac.signal),
-      loadOperatingHours(ac.signal),
-      loadStoreOperations(ac.signal),
       loadPlans(ac.signal),
     ]).catch(() => {
       // All loaders swallow errors; this catches any unexpected rejection
@@ -670,7 +429,7 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
       cancelled = true;
       ac.abort();
     };
-  }, [storeId, hasCachedStore, loadStore, loadSettings, loadOperatingHours, loadStoreOperations, loadPlans]);
+  }, [storeId, hasCachedStore, loadStore, loadSettings, loadPlans]);
 
   const handleSaveOperations = async () => {
     setIsSaving(true);
@@ -793,114 +552,47 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
     }
   };
 
-  const buildTimingsPayload = useCallback(
-    (override?: {
-      same_for_all_days?: boolean;
-      is_24_hours?: boolean;
-      closed_days?: string[];
-      daySlots?: Record<DayType, DaySlots>;
-    }) => {
-      const same = override?.same_for_all_days ?? applyMondayToAll;
-      const hours24 = override?.is_24_hours ?? force24Hours;
-      const closed = override?.closed_days ?? closedDays;
-      const slots = override?.daySlots ?? daySlots;
-      const payload: Record<string, unknown> = {
-        same_for_all_days: same,
-        is_24_hours: hours24,
-        closed_days: closed,
-      };
-      const source = same ? { ...slots.monday } : null;
-      for (const day of DAYS) {
-        const s = source ?? slots[day];
-        payload[`${day}_open`] = s.open;
-        if (!s.open) {
-          payload[`${day}_slot1_start`] = s.slot1_start || null;
-          payload[`${day}_slot1_end`] = s.slot1_end || null;
-          payload[`${day}_slot2_start`] = s.slot2_start || null;
-          payload[`${day}_slot2_end`] = s.slot2_end || null;
-        } else if (hours24) {
-          payload[`${day}_slot1_start`] = s.slot1_start || "00:00";
-          payload[`${day}_slot1_end`] = s.slot1_end || "23:59";
-          payload[`${day}_slot2_start`] = s.slot2_start || null;
-          payload[`${day}_slot2_end`] = s.slot2_end || null;
-        } else {
-          payload[`${day}_slot1_start`] = s.slot1_start || null;
-          payload[`${day}_slot1_end`] = s.slot1_end || null;
-          payload[`${day}_slot2_start`] = s.slot2_start || null;
-          payload[`${day}_slot2_end`] = s.slot2_end || null;
-        }
-      }
-      return { payload, same, hours24, closed, slots };
-    },
-    [applyMondayToAll, force24Hours, closedDays, daySlots]
-  );
-
-  const saveTimingsToServer = useCallback(
-    async (override?: {
-      same_for_all_days?: boolean;
-      is_24_hours?: boolean;
-      closed_days?: string[];
-      daySlots?: Record<DayType, DaySlots>;
-    }) => {
-      const { payload, same, hours24, closed, slots } = buildTimingsPayload(override);
-      const res = await fetch(`${base}/operating-hours`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.success) {
-        lastSavedTimingsRef.current = JSON.stringify({
-          applyMondayToAll: same,
-          force24Hours: hours24,
-          closedDays: closed.slice().sort(),
-          daySlots: DAYS.reduce((acc, day) => {
-            acc[day] = slots[day];
-            return acc;
-          }, {} as Record<DayType, DaySlots>),
-        });
-        toast.success("Saved");
-        loadOperatingHours();
-        return true;
-      } else {
-        toast.error(data.error || "Failed to save.");
-        return false;
-      }
-    },
-    [base, buildTimingsPayload, loadOperatingHours]
-  );
-
-  const handleConfirmCopyMondayToAll = useCallback(async () => {
-    const previousSlots = daySlots;
-    const previousClosedDays = closedDays;
-    const previousApplyMondayToAll = applyMondayToAll;
-    const source = applyMondayToAll ? daySlots.monday : daySlots.monday;
-    const newSlots = DAYS.reduce((acc, dayKey) => {
-      acc[dayKey] = { ...source, open: true };
-      return acc;
-    }, {} as Record<DayType, DaySlots>);
-
-    setCopyMondayConfirmLoading(true);
-    setApplyMondayToAll(true);
-    setDaySlots(newSlots);
-    setClosedDays([]);
-
-    try {
-      const saved = await saveTimingsToServer({ same_for_all_days: true, daySlots: newSlots, closed_days: [] });
-      if (saved) {
-        setCopyMondayConfirmOpen(false);
-      } else {
-        setApplyMondayToAll(previousApplyMondayToAll);
-        setDaySlots(previousSlots);
-        setClosedDays(previousClosedDays);
-      }
-    } finally {
-      setCopyMondayConfirmLoading(false);
-    }
-  }, [applyMondayToAll, closedDays, daySlots, saveTimingsToServer]);
-
   const effectiveStore = (store ?? layoutStore ?? queryStore) as StoreDetail | null;
   const isDelisted = (effectiveStore?.approval_status || "").toUpperCase() === "DELISTED";
+
+  const {
+    isStoreOpen,
+    manualActivationLock,
+    showClosePopup,
+    closeConfirmLoading,
+    toggleClosureType,
+    setToggleClosureType,
+    closureDate,
+    setClosureDate,
+    closureTime,
+    setClosureTime,
+    closeReason,
+    setCloseReason,
+    closeReasonOther,
+    setCloseReasonOther,
+    showToggleOnWarning,
+    setShowToggleOnWarning,
+    toggleOnLoading,
+    handleStoreToggle,
+    handleConfirmToggleOn,
+    handleClosePopupConfirm,
+    handleCancelClosePopup,
+    refreshOperations,
+    saveManualActivationLock,
+    engine,
+    operationsQuery,
+  } = useMerchantStoreOperations({
+    storeId,
+    poll: activeTab === "operations",
+    syncEngine: true,
+  });
+
+  const invalidateStoreQueries = useInvalidateMerchantStoreQueries();
+  const statusCard = useStoreStatusCardModel(operationsQuery.data as StoreOperationsSnapshot | undefined, {
+    storeTimezone: typeof effectiveStore?.timezone === "string" ? effectiveStore.timezone : null,
+    storeIdLabel: effectiveStore?.store_id ?? null,
+    onCountdownExpired: () => invalidateStoreQueries(storeId),
+  });
 
   const handleRelistSubmit = async () => {
     if (!storeId) return;
@@ -922,7 +614,7 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
       toast.success("Store relisted. It will remain CLOSED until you open it from Store operations.");
       setRelistModalOpen(false);
       setRelistReason("");
-      await Promise.all([loadStore(), loadStoreOperations()]);
+      await Promise.all([loadStore(), refreshOperations()]);
     } catch {
       toast.error("Failed to relist store");
     } finally {
@@ -938,78 +630,6 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
     }
   };
 
-  const handleStoreToggle = async () => {
-    if (isDelisted) {
-      toast.error("This store is delisted. Relist the store before opening it.");
-      return;
-    }
-    if (isStoreOpen) {
-      setShowClosePopup(true);
-      return;
-    }
-    engine.manualOn();
-    toast.success("Store opened.");
-    if (engine.state.is_manual_override) toast.message(UI_STRINGS.manualOnBeforeSchedule);
-  };
-
-  const handleCancelClosePopup = () => {
-    if (closeConfirmLoading) return;
-    setShowClosePopup(false);
-    setToggleClosureType(null);
-    setClosureDate("");
-    setClosureTime("12:00");
-    setCloseReason("");
-    setCloseReasonOther("");
-  };
-
-  const handleClosePopupConfirm = () => {
-    if (!toggleClosureType) {
-      toast.error("Please select closure type");
-      return;
-    }
-    if (toggleClosureType === "temporary") {
-      if (!closureDate || !closureTime) {
-        toast.error("Please select date and time for reopening");
-        return;
-      }
-      const closedUntil = new Date(`${closureDate}T${closureTime}:00`);
-      if (closedUntil.getTime() <= Date.now()) {
-        toast.error("Reopening date and time must be in the future");
-        return;
-      }
-    }
-    if (!closeReason?.trim()) {
-      toast.error("Please select a reason for closing");
-      return;
-    }
-    if (closeReason === "Other" && !closeReasonOther?.trim()) {
-      toast.error('Please enter the reason in "Other"');
-      return;
-    }
-    void handleFinalCloseConfirm();
-  };
-
-  const handleFinalCloseConfirm = async () => {
-    if (!toggleClosureType) return;
-    setCloseConfirmLoading(true);
-    try {
-      const baseReason = closeReason === "Other" ? (closeReasonOther?.trim() || "Other") : closeReason;
-      const reasonText = merchantPortalCloseReasonWithSuffix(baseReason);
-      if (toggleClosureType === "temporary") {
-        const closedUntil = new Date(`${closureDate}T${closureTime}:00`);
-        engine.tempClose(closedUntil.toISOString(), reasonText);
-      } else {
-        engine.manualOff(reasonText);
-      }
-      setShowClosePopup(false);
-      setToggleClosureType(null);
-      setCloseReason("");
-      setCloseReasonOther("");
-      toast.success("Store closed.");
-    } finally {
-      setCloseConfirmLoading(false);
-    }
-  };
   if (loading && !effectiveStore) {
     return (
       <div className="flex items-center justify-center py-16">
@@ -1029,8 +649,7 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
             Promise.all([
               loadStore(),
               loadSettings(),
-              loadOperatingHours(),
-              loadStoreOperations(),
+              refreshOperations(),
               loadPlans(),
             ]).catch(() => {}).finally(() => setLoading(false));
           }}
@@ -1064,59 +683,6 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                 onClick={() => engine.scheduleEndRespond("go_offline")}
               >
                 Go Offline
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {copyMondayConfirmOpen && (
-        <div
-          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 backdrop-blur-md p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="dashboard-copy-monday-title"
-          onClick={() => !copyMondayConfirmLoading && setCopyMondayConfirmOpen(false)}
-        >
-          <div
-            className="mx-auto w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700">
-                <AlertTriangle className="h-5 w-5" />
-              </div>
-              <div className="flex-1">
-                <h2 id="dashboard-copy-monday-title" className="text-lg font-bold text-gray-900">
-                  Copy Monday timing to all days?
-                </h2>
-                <p className="mt-1 text-sm text-gray-600">
-                  This will replace the timings for every day with Monday&apos;s current timings and save the change to the database.
-                </p>
-              </div>
-            </div>
-            <div className="mt-5 flex gap-3">
-              <button
-                type="button"
-                onClick={() => setCopyMondayConfirmOpen(false)}
-                disabled={copyMondayConfirmLoading}
-                className="flex-1 rounded-xl border border-gray-300 px-4 py-2.5 font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleConfirmCopyMondayToAll()}
-                disabled={copyMondayConfirmLoading}
-                className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {copyMondayConfirmLoading ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Saving...
-                  </>
-                ) : (
-                  "OK, Copy"
-                )}
               </button>
             </div>
           </div>
@@ -1292,228 +858,62 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
           </div>
         </div>
       )}
+      {showToggleOnWarning && (
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-sm rounded-2xl border-2 border-emerald-200 bg-white p-6 shadow-2xl">
+            <h3 className="text-center text-lg font-bold text-gray-900">Turn Store ON?</h3>
+            <p className="mt-2 text-center text-sm text-gray-600">
+              Your store will be OPEN and customers can place orders. Make sure you&apos;re ready to accept orders!
+            </p>
+            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50/70 p-3">
+              <p className="text-xs font-medium text-amber-800">
+                Orders will start coming immediately. Be prepared to receive and process them.
+              </p>
+            </div>
+            <div className="mt-5 flex gap-3">
+              <button
+                type="button"
+                onClick={() => !toggleOnLoading && setShowToggleOnWarning(false)}
+                disabled={toggleOnLoading}
+                className="flex-1 rounded-lg border-2 border-gray-300 px-4 py-2.5 text-sm font-semibold text-gray-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmToggleOn({ isDelisted })}
+                disabled={toggleOnLoading}
+                className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {toggleOnLoading ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Turning ON...
+                  </>
+                ) : (
+                  "Yes, Turn ON"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <SettingsNavBar activeTab={activeTab} onTabChange={setActiveTab} />
       <div className="flex-1 min-w-0 pt-4">
+        {activeTab === "timings" ? (
+          <OutletTimingsPanel
+            apiBase={base}
+            active
+            storeTimezone={
+              typeof effectiveStore?.timezone === "string" ? effectiveStore.timezone : null
+            }
+          />
+        ) : (
         <div className="rounded-xl border border-gray-200 bg-white p-4 sm:p-6 space-y-6">
-
-          {activeTab === "timings" && (
-            <>
-              <div className="space-y-4">
-                <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 via-white to-teal-50 p-4 shadow-sm">
-                  <h2 className="flex items-center gap-2 text-base font-semibold text-gray-900">
-                    <Clock className="h-4 w-4 text-emerald-700" />
-                    GatiMitra Operations
-                  </h2>
-                </div>
-
-                <div className="space-y-2.5">
-                  {DAYS.map((day) => {
-                    const d = day as DayType;
-                    const s = applyMondayToAll ? daySlots.monday : daySlots[d];
-                    const isCurrentDay = d === getCurrentDayKey();
-                    const isExpanded = expandedTimingDay === d;
-                    const hasSlot2 = !!(s.slot2_start || s.slot2_end);
-                    const isClosed = closedDays.includes(d) || !s.open;
-
-                    const updateDaySlots = (updater: (base: DaySlots) => DaySlots) => {
-                      if (applyMondayToAll) {
-                        setDaySlots((prev) => {
-                          const nextMonday = updater(prev.monday);
-                          const next = { ...prev };
-                          for (const dd of DAYS) next[dd] = { ...nextMonday };
-                          return next;
-                        });
-                        return;
-                      }
-                      setDaySlots((prev) => ({ ...prev, [d]: updater(prev[d]) }));
-                    };
-
-                    return (
-                      <div
-                        key={day}
-                        className={`overflow-hidden rounded-xl border shadow-sm transition ${
-                          isExpanded ? "border-emerald-300 bg-white" : "border-gray-200 bg-white"
-                        }`}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => setExpandedTimingDay((prev) => (prev === d ? null : d))}
-                          className={`flex w-full items-center justify-between gap-3 px-3.5 py-2.5 text-left ${
-                            isExpanded ? "bg-gradient-to-r from-emerald-500 to-teal-500 text-white" : "bg-white text-gray-900 hover:bg-emerald-50/50"
-                          }`}
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                              isExpanded ? "bg-white/20 text-white" : isClosed ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"
-                            }`}>
-                              {isClosed ? "Closed" : force24Hours ? "24 Hours" : "Open"}
-                            </div>
-                            <div>
-                              <p className="text-sm font-semibold capitalize">{day}</p>
-                              <p className={`text-xs ${isExpanded ? "text-emerald-50" : "text-gray-500"}`}>
-                                {isClosed
-                                  ? "No service"
-                                  : `${formatTimeForMerchCard(s.slot1_start)} - ${formatTimeForMerchCard(s.slot1_end)}${
-                                      hasSlot2 ? `, ${formatTimeForMerchCard(s.slot2_start)} - ${formatTimeForMerchCard(s.slot2_end)}` : ""
-                                    }`}
-                              </p>
-                            </div>
-                            {isCurrentDay ? (
-                              <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${isExpanded ? "bg-white/20 text-white" : "bg-emerald-100 text-emerald-800"}`}>
-                                Today
-                              </span>
-                            ) : null}
-                          </div>
-                          {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                        </button>
-
-                        {isExpanded ? (
-                          <div className="space-y-3 bg-white p-3">
-                            <div className={`${!s.open ? "pointer-events-none opacity-50" : ""} space-y-2.5`}>
-                              <div className="py-1">
-                                <div className="grid gap-3 lg:grid-cols-[72px_minmax(0,1fr)_28px_minmax(0,1fr)_24px_72px_minmax(0,1fr)_28px_minmax(0,1fr)_48px] lg:items-end">
-                                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-600 lg:pb-2">Slot 1</div>
-                                  <div>
-                                    <label className="mb-1 block text-xs font-medium text-gray-500">Start time</label>
-                                    <input
-                                      type="time"
-                                      value={s.slot1_start}
-                                      onChange={(e) => updateDaySlots((base) => ({ ...base, slot1_start: e.target.value }))}
-                                      disabled={!s.open || force24Hours}
-                                      className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100 disabled:bg-gray-50 disabled:text-gray-400"
-                                    />
-                                  </div>
-                                  <div className="pb-2 text-center text-sm font-medium text-gray-400">to</div>
-                                  <div>
-                                    <label className="mb-1 block text-xs font-medium text-gray-500">End time</label>
-                                    <input
-                                      type="time"
-                                      value={s.slot1_end}
-                                      onChange={(e) => updateDaySlots((base) => ({ ...base, slot1_end: e.target.value }))}
-                                      disabled={!s.open || force24Hours}
-                                      className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100 disabled:bg-gray-50 disabled:text-gray-400"
-                                    />
-                                  </div>
-                                  <div className="hidden lg:block" />
-                                  {hasSlot2 ? (
-                                    <>
-                                      <div className="text-xs font-semibold uppercase tracking-wide text-gray-600 lg:pb-2">Slot 2</div>
-                                      <div>
-                                        <label className="mb-1 block text-xs font-medium text-gray-500">Start time</label>
-                                        <input
-                                          type="time"
-                                          value={s.slot2_start}
-                                          onChange={(e) => updateDaySlots((base) => ({ ...base, slot2_start: e.target.value }))}
-                                          disabled={!s.open || force24Hours}
-                                          className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100 disabled:bg-gray-50 disabled:text-gray-400"
-                                        />
-                                      </div>
-                                      <div className="pb-2 text-center text-sm font-medium text-gray-400">to</div>
-                                      <div>
-                                        <label className="mb-1 block text-xs font-medium text-gray-500">End time</label>
-                                        <input
-                                          type="time"
-                                          value={s.slot2_end}
-                                          onChange={(e) => updateDaySlots((base) => ({ ...base, slot2_end: e.target.value }))}
-                                          disabled={!s.open || force24Hours}
-                                          className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100 disabled:bg-gray-50 disabled:text-gray-400"
-                                        />
-                                      </div>
-                                      <div className="flex items-end justify-end">
-                                        <button
-                                          type="button"
-                                          onClick={() => updateDaySlots((base) => ({ ...base, slot2_start: "", slot2_end: "" }))}
-                                          className="rounded-xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600"
-                                        >
-                                          <Trash2 className="h-4 w-4" />
-                                        </button>
-                                      </div>
-                                    </>
-                                  ) : (
-                                    <div className="lg:col-start-6 lg:col-end-10 flex items-end justify-end pb-1">
-                                      {s.open && !force24Hours ? (
-                                        <button
-                                          type="button"
-                                          onClick={() => updateDaySlots((base) => ({ ...base, slot2_start: "14:00", slot2_end: "18:00" }))}
-                                          className="inline-flex items-center justify-end gap-2 px-1 text-sm font-medium text-emerald-700 transition hover:text-emerald-800"
-                                        >
-                                          <Plus className="h-4 w-4" />
-                                          Add time slot
-                                        </button>
-                                      ) : null}
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-2.5">
-                              <div className="flex items-center gap-3 text-sm">
-                                <button
-                                  type="button"
-                                  onClick={() => setCopyMondayConfirmOpen(true)}
-                                  className="inline-flex items-center gap-2 text-gray-700"
-                                >
-                                  <span className="flex h-4 w-4 items-center justify-center rounded border border-gray-300 bg-white">
-                                    <Copy className="h-3 w-3 text-gray-500" />
-                                  </span>
-                                  <span className="text-sm">Copy Monday timing to all days</span>
-                                </button>
-                                <span className="hidden sm:block h-4 w-px bg-gray-200" />
-                                <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
-                                  <Toggle
-                                    checked={s.open}
-                                    onChange={(v) => {
-                                      const newSlots = applyMondayToAll
-                                        ? DAYS.reduce((acc, dayKey) => {
-                                            acc[dayKey] = { ...daySlots.monday, open: v };
-                                            return acc;
-                                          }, {} as Record<DayType, DaySlots>)
-                                        : { ...daySlots, [d]: { ...daySlots[d], open: v } };
-                                      const newClosed = v
-                                        ? closedDays.filter((x) => x !== d)
-                                        : closedDays.includes(d) ? closedDays : [...closedDays, d];
-                                      setClosedDays(newClosed);
-                                      setDaySlots(newSlots);
-                                      if (!v && force24Hours) setForce24Hours(false);
-                                      saveTimingsToServer({
-                                        ...(applyMondayToAll && !v ? { same_for_all_days: false } : {}),
-                                        daySlots: newSlots,
-                                        closed_days: newClosed,
-                                        ...(force24Hours && !v ? { is_24_hours: false } : {}),
-                                      });
-                                    }}
-                                  />
-                                  Outlet open
-                                </label>
-                              </div>
-
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  setSavingDay(d);
-                                  try {
-                                    await saveTimingsToServer();
-                                  } finally {
-                                    setSavingDay(null);
-                                  }
-                                }}
-                                disabled={savingDay !== null || !isRowDirty(d)}
-                                className="inline-flex min-w-[92px] items-center justify-center gap-2 rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
-                              >
-                                {savingDay === d ? <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" /> : <Save className="h-4 w-4" />}
-                                {savingDay === d ? "Saving..." : "Save"}
-                              </button>
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </>
-          )}
 
           {activeTab === "operations" && (
             <>
@@ -1522,35 +922,47 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                 Store operations
               </h2>
               <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
-                {/* Left: status & basic operations card */}
+                <div className="lg:col-span-2">
+                  <MerchantStoreStatusCard
+                    isStoreOpen={statusCard.isStoreOpen}
+                    restrictionType={statusCard.restrictionType}
+                    storeStatusBadge={statusCard.storeStatusBadge}
+                    cardDisplaySlots={statusCard.cardDisplaySlots}
+                    cardBreakGapLabel={statusCard.cardBreakGapLabel}
+                    scheduledTimeOffs={statusCard.scheduledTimeOffs}
+                    activeRush={statusCard.activeRush}
+                    formatScheduledTimeOffWindow={statusCard.formatScheduledTimeOffWindow}
+                    isTodayScheduledClosed={statusCard.isTodayScheduledClosed}
+                    scheduleStatusLabel={statusCard.scheduleStatusLabel}
+                    schedulePhase={statusCard.schedulePhase}
+                    showScheduleCountdown={statusCard.showScheduleCountdown}
+                    activeCountdownAt={statusCard.activeCountdownAt}
+                    countdownTick={statusCard.countdownTick}
+                    opensCountdownLabel={statusCard.opensCountdownLabel}
+                    countdownKind={statusCard.countdownKind}
+                    countdownSubtitleWallLabel={statusCard.countdownSubtitleWallLabel}
+                    closeReasonDisplay={statusCard.closeReasonDisplay}
+                    lastToggledByName={statusCard.lastToggledByName}
+                    lastToggleBy={statusCard.lastToggleBy}
+                    lastToggleType={statusCard.lastToggleType}
+                    lastToggledAt={statusCard.lastToggledAt}
+                    storeIdLabel={effectiveStore?.store_id ?? null}
+                    manualActivationLock={statusCard.manualActivationLock}
+                    showScheduledOffStartsCountdown={statusCard.showScheduledOffStartsCountdown}
+                    scheduledOffStartsInMs={statusCard.scheduledOffStartsInMs}
+                    onStoreToggle={() => handleStoreToggle({ isDelisted })}
+                    onManualLockChange={(enabled) => {
+                      statusCard.setManualActivationLock(enabled);
+                      void saveManualActivationLock(enabled);
+                    }}
+                    storeInternalId={storeId}
+                    onOperationsRefresh={() => refreshOperations()}
+                  />
+                </div>
                 <div className="rounded-lg border border-gray-200 bg-gray-50/60 p-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <h3 className="text-sm font-semibold text-gray-900">Store status & operations</h3>
-                      <p className="mt-0.5 text-xs text-gray-500">
-                        Open or close the store and control basic order handling.
-                      </p>
-                    </div>
-                    <div className="flex flex-col items-end gap-2">
-                      <span
-                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${
-                          isStoreOpen ? "bg-emerald-100 text-emerald-800" : "bg-red-100 text-red-800"
-                        }`}
-                      >
-                        {isStoreOpen ? <CheckCircle className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
-                        {isStoreOpen ? "OPEN" : "CLOSED"}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={handleStoreToggle}
-                        className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700"
-                      >
-                        {isStoreOpen ? "Close store" : "Open store"}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="mt-4 space-y-3 border-t border-gray-200 pt-3">
+                  <h3 className="text-sm font-semibold text-gray-900">Order handling</h3>
+                  <p className="mt-0.5 text-xs text-gray-500 mb-3">Auto-accept and preparation buffer.</p>
+                  <div className="space-y-3">
                     <label className="flex items-center gap-2">
                       <input
                         type="checkbox"
@@ -1585,8 +997,7 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                     </div>
                   </div>
                 </div>
-
-                {/* Right: Delist / Relist card (depends on status) */}
+{/* Right: Delist / Relist card (depends on status) */}
                 <div className="rounded-lg border border-red-200 bg-red-50 p-4">
                   <div className="flex items-start gap-2">
                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-100 text-red-700">
@@ -2283,6 +1694,7 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
             </div>
           )}
         </div>
+        )}
       </div>
     </div>
   );

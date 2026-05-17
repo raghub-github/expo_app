@@ -422,6 +422,8 @@ export interface Offer {
   updated_by_name?: string | null;
   /** Audit: when last updated by a user */
   updated_by_at?: string | null;
+  created_source_platform?: string | null;
+  updated_source_platform?: string | null;
 }
 
 // Fetch active offers for a store

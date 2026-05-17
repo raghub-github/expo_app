@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { assertStoreAccess } from "@/lib/auth/assert-store-access";
+import {
+  resolveOrderMetaByRatingOrderIds,
+  type RatingOrderMeta,
+} from "@/lib/resolve-order-meta-for-ratings";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -31,15 +35,7 @@ type RatingRow = {
   created_at: string;
 };
 
-type OrdersCoreRow = {
-  id: number;
-  order_id: string | null;
-  order_type?: string | null;
-  items?: unknown;
-  grand_total?: number | null;
-};
-
-function orderSummaryFromOrdersCore(o: OrdersCoreRow | undefined): string | null {
+function orderSummaryFromOrderMeta(o: RatingOrderMeta | undefined): string | null {
   if (!o) return null;
   const orderType = (o.order_type || "").toString().trim().toLowerCase();
   const typeLabel =
@@ -159,23 +155,17 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const orderById: Record<number, OrdersCoreRow> = {};
-    if (orderIds.length > 0) {
-      const { data: orderRows } = await db
-        .from("orders_core")
-        .select("id, order_id, order_type, items, grand_total")
-        .in("id", orderIds);
-      for (const o of (orderRows ?? []) as any[]) {
-        const id = (o as { id?: number }).id;
-        if (typeof id === "number") {
-          orderById[id] = o as OrdersCoreRow;
-        }
-      }
-    }
+    const orderMetaByRatingOrderId = await resolveOrderMetaByRatingOrderIds(
+      db,
+      orderIds,
+    );
 
     const formattedReviews = filtered.map((review) => {
       const customer = review.customer_id != null ? customerById[review.customer_id] : undefined;
-      const order = review.order_id != null ? orderById[review.order_id] : undefined;
+      const orderMeta =
+        review.order_id != null
+          ? orderMetaByRatingOrderId.get(review.order_id)
+          : undefined;
       const orderCount = review.customer_id != null ? orderCounts[review.customer_id] || 0 : 0;
       let userType: "new" | "repeated" | "fraud" = "new";
       if (review.is_flagged === true) userType = "fraud";
@@ -190,9 +180,9 @@ export async function GET(request: NextRequest) {
         customerName: customer?.name || "Anonymous",
         customerEmail: customer?.email ?? null,
         customerMobile: customer?.mobile ?? null,
-        orderId: review.order_id,
-        orderPublicId: order?.order_id ?? null,
-        orderSummary: orderSummaryFromOrdersCore(order),
+        orderId: orderMeta?.coreId ?? review.order_id,
+        orderPublicId: orderMeta?.orderPublicId ?? null,
+        orderSummary: orderSummaryFromOrderMeta(orderMeta),
         date: review.created_at,
         type,
         message: review.review_text || review.review_title || "",

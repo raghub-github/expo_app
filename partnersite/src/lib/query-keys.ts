@@ -18,4 +18,8 @@ export const merchantKeys = {
   payoutQuote: (storeId: string, amount: number) => [...merchantKeys.all, 'payout-quote', storeId, amount] as const,
   orderDetails: (storeId: string, orderId: number) => [...merchantKeys.all, 'order-details', storeId, orderId] as const,
   payoutRequest: (storeId: string, payoutRequestId: number) => [...merchantKeys.all, 'payout-request', storeId, payoutRequestId] as const,
+  walletAnalytics: (storeId: string, period: string) =>
+    [...merchantKeys.all, 'wallet-analytics', storeId, period] as const,
+  payoutRequests: (storeId: string, limit: number) =>
+    [...merchantKeys.all, 'payout-requests', storeId, limit] as const,
 };

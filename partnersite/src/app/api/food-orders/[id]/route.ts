@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
+import { normalizeActionSource } from '@/lib/merchantOrderFoodActions';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -55,6 +56,7 @@ export async function PATCH(
     const storeId = body.store_id;
     const newStatus = (body.status || '').toUpperCase();
     const rejectedReason = body.rejected_reason || null;
+    const actionSource = normalizeActionSource(body.action_source);
 
     if (!storeId || !newStatus) {
       return NextResponse.json({ error: 'store_id and status are required' }, { status: 400 });
@@ -118,7 +120,10 @@ export async function PATCH(
     };
 
     if (newStatus === 'ACCEPTED') updates.accepted_at = now;
-    else if (newStatus === 'PREPARING') updates.prepared_at = null;
+    else if (newStatus === 'PREPARING') {
+      updates.preparing_at = now;
+      updates.prepared_at = null;
+    }
     else if (newStatus === 'READY_FOR_PICKUP') updates.prepared_at = now;
     else if (newStatus === 'OUT_FOR_DELIVERY') {
       // Store can mark as dispatched from portal without OTP validation (OTP is for rider handover only).
@@ -148,6 +153,30 @@ export async function PATCH(
     if (error) {
       console.error('[food-orders PATCH] Error:', error);
       return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    try {
+      await db
+        .from('orders_core')
+        .update({ current_status: newStatus, updated_at: now })
+        .eq('id', existing.order_id as number);
+    } catch (coreErr) {
+      console.warn('[food-orders PATCH] orders_core sync failed:', coreErr);
+    }
+
+    try {
+      await db.from('merchant_order_food_actions').insert({
+        orders_food_id: orderIdNum,
+        orders_core_id: existing.order_id as number,
+        merchant_store_id: storeInternalId,
+        from_status: currentStatus,
+        to_status: newStatus,
+        action_source: actionSource,
+        actor_type: 'merchant',
+        metadata: rejectedReason ? { rejected_reason: rejectedReason } : {},
+      });
+    } catch (logErr) {
+      console.warn('[food-orders PATCH] action log failed (run migration 0146?):', logErr);
     }
 
     // When order transitions to DELIVERED, credit merchant wallet (ORDER_EARNING) so dashboard/payments show correct earnings

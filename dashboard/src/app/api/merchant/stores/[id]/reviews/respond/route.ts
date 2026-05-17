@@ -1,60 +1,95 @@
 /**
  * POST /api/merchant/stores/[id]/reviews/respond
- * Body: { reviewId: number, message: string, images?: string[] }
+ * Body: { reviewId: number, message?: string, images?: string[] }
+ * Updates merchant_store_ratings — same as partnersite.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
-import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
+import { assertStoreAccess } from "@/app/api/merchant/stores/[id]/menu/assert-store-access";
+import { respondToUserInsightReview } from "@/lib/merchant-user-insights";
 
 export const runtime = "nodejs";
 
-async function assertStoreAccess(storeId: number) {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user }, error } = await supabase.auth.getUser();
-  if (error || !user?.email) return { ok: false as const, status: 401, error: "Not authenticated" };
-  const allowed =
-    (await isSuperAdmin(user.id, user.email)) ||
-    (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
-  if (!allowed) return { ok: false as const, status: 403, error: "Forbidden" };
-  let areaManagerId: number | null = null;
-  if (!(await isSuperAdmin(user.id, user.email))) {
-    const systemUser = await getSystemUserByEmail(user.email);
-    if (systemUser) {
-      const am = await getAreaManagerByUserId(systemUser.id);
-      if (am) areaManagerId = am.id;
-    }
-  }
-  const store = await getMerchantStoreById(storeId, areaManagerId);
-  if (!store) return { ok: false as const, status: 404, error: "Store not found" };
-  return { ok: true as const, store };
-}
-
 export async function POST(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     const { id } = await params;
     const storeId = parseInt(id, 10);
     if (!Number.isFinite(storeId)) {
-      return NextResponse.json({ success: false, error: "Invalid store id" }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: "Invalid store id" },
+        { status: 400 },
+      );
     }
     const access = await assertStoreAccess(storeId);
     if (!access.ok) {
-      return NextResponse.json({ success: false, error: access.error }, { status: access.status });
+      return NextResponse.json(
+        { success: false, error: access.error },
+        { status: access.status },
+      );
     }
+
     const body = await request.json().catch(() => ({}));
     const reviewId = Number(body.reviewId);
+    const message = typeof body.message === "string" ? body.message : undefined;
+    const images = Array.isArray(body.images)
+      ? body.images.filter((x: unknown) => typeof x === "string")
+      : undefined;
+
     if (!Number.isFinite(reviewId)) {
-      return NextResponse.json({ success: false, error: "reviewId required" }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: "reviewId required" },
+        { status: 400 },
+      );
     }
-    // TODO: persist response to reviews table
-    return NextResponse.json({ success: true });
+
+    if (!message?.trim() && (!images || images.length === 0)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Review ID and either message or images are required.",
+        },
+        { status: 400 },
+      );
+    }
+
+    const { review } = await respondToUserInsightReview(
+      storeId,
+      reviewId,
+      message,
+      images,
+    );
+
+    return NextResponse.json({
+      success: true,
+      message: "Response saved successfully.",
+      review,
+    });
   } catch (e) {
+    const msg = e instanceof Error ? e.message : "";
+    if (msg === "REVIEW_NOT_FOUND") {
+      return NextResponse.json(
+        { success: false, error: "Review not found." },
+        { status: 404 },
+      );
+    }
+    if (msg === "FORBIDDEN") {
+      return NextResponse.json(
+        { success: false, error: "You don't have permission to respond to this review." },
+        { status: 403 },
+      );
+    }
+    if (msg === "Failed to save response.") {
+      return NextResponse.json(
+        { success: false, error: msg },
+        { status: 500 },
+      );
+    }
     console.error("[POST /api/merchant/stores/[id]/reviews/respond]", e);
-    return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });
+    return NextResponse.json(
+      { success: false, error: "Internal error" },
+      { status: 500 },
+    );
   }
 }

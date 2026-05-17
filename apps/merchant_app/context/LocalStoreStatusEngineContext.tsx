@@ -15,8 +15,14 @@ const TICK_MS = 5_000;
 
 type Ctx = {
   state: StoreStatusEngineState;
+  syncFromStoreOperations: (input: {
+    operationalOpen: boolean;
+    manualCloseUntil: string | null;
+    manualCloseReason: string | null;
+  }) => void;
   manualOn: () => void;
   manualOff: () => void;
+  tempClose: (untilIso: string, reason?: string | null) => void;
   scheduleEndRespond: (action: "stay_online" | "go_offline") => void;
   updateConfig: (patch: Partial<StoreStatusEngineState>) => void;
 };
@@ -88,8 +94,33 @@ export function LocalStoreStatusEngineProvider({ children }: { children: ReactNo
     [persist, showScheduleEndModal]
   );
 
+  const syncFromStoreOperations = useCallback(
+    (input: { operationalOpen: boolean; manualCloseUntil: string | null; manualCloseReason: string | null }) => {
+      dispatch({
+        type: "CONFIG_UPDATE",
+        now: new Date(),
+        patch: {
+          store_status: input.operationalOpen ? "ONLINE" : "OFFLINE",
+          manual_close_until: input.manualCloseUntil,
+          manual_close_reason: input.manualCloseReason,
+          is_manual_override: false,
+          manual_override_at: null,
+          schedule_end_prompt_expires_at: null,
+          is_schedule_enabled: false,
+          last_action_source: "system",
+        },
+      });
+    },
+    [dispatch]
+  );
+
   const manualOn = useCallback(() => dispatch({ type: "MANUAL_ON", now: new Date() }), [dispatch]);
   const manualOff = useCallback(() => dispatch({ type: "MANUAL_OFF", now: new Date() }), [dispatch]);
+  const tempClose = useCallback(
+    (untilIso: string, reason?: string | null) =>
+      dispatch({ type: "TEMP_CLOSE", now: new Date(), manual_close_until: untilIso, manual_close_reason: reason ?? null }),
+    [dispatch]
+  );
   const scheduleEndRespond = useCallback(
     (action: "stay_online" | "go_offline") => dispatch({ type: "SCHEDULE_END_RESPONSE", now: new Date(), action }),
     [dispatch]
@@ -106,8 +137,8 @@ export function LocalStoreStatusEngineProvider({ children }: { children: ReactNo
   }, [dispatch]);
 
   const value: Ctx = useMemo(
-    () => ({ state, manualOn, manualOff, scheduleEndRespond, updateConfig }),
-    [state, manualOn, manualOff, scheduleEndRespond, updateConfig]
+    () => ({ state, syncFromStoreOperations, manualOn, manualOff, tempClose, scheduleEndRespond, updateConfig }),
+    [state, syncFromStoreOperations, manualOn, manualOff, tempClose, scheduleEndRespond, updateConfig]
   );
 
   return <LocalStoreStatusEngineContext.Provider value={value}>{children}</LocalStoreStatusEngineContext.Provider>;

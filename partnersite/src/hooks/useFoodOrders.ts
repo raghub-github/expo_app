@@ -23,8 +23,31 @@ export interface OrdersFoodRow {
   restaurant_phone: string | null;
   preparation_time_minutes: number | null;
   food_items_count: number | null;
+  display_item_count?: number | null;
   food_items_total_value: string | number | null;
-  items?: any; // JSONB array of items
+  items?: Array<{
+    name: string;
+    quantity: number;
+    price: number;
+    total: number;
+    customizations?: string[];
+    vegNonveg?: string | null;
+    menuItemId?: number | null;
+    variantName?: string | null;
+    categoryName?: string | null;
+    description?: string | null;
+    imageUrl?: string | null;
+  }>;
+  item_total?: number | null;
+  addon_total?: number | null;
+  grand_total?: number | null;
+  pricing?: {
+    subtotal: number;
+    packaging: number;
+    taxes: number;
+    discount: number;
+    total: number;
+  };
   requires_utensils: boolean | null;
   is_fragile: boolean | null;
   is_high_value: boolean | null;
@@ -37,6 +60,10 @@ export interface OrdersFoodRow {
   customer_email?: string | null;
   /** Total historical orders for this customer at this store (orders_core count). */
   customer_order_count?: number | null;
+  customer_platform_order_count?: number | null;
+  /** 1-based ordinal of this order for the customer at this store. */
+  customer_store_order_ordinal?: number | null;
+  customer_platform_order_ordinal?: number | null;
   // Rider details
   rider_id?: number | null;
   rider_name?: string | null;
@@ -54,6 +81,10 @@ export interface OrdersFoodRow {
   // Drop address
   drop_address_raw?: string | null;
   drop_address_normalized?: string | null;
+  /** Store → customer distance (orders_core.distance_km). */
+  distance_km?: number | null;
+  /** Estimated delivery ETA in seconds (orders_core.eta_seconds). */
+  eta_seconds?: number | null;
   // Customer character flags
   customer_scores?: {
     trust_score?: number | null;
@@ -62,6 +93,7 @@ export interface OrdersFoodRow {
   } | null;
   order_status?: string;
   accepted_at?: string | null;
+  preparing_at?: string | null;
   prepared_at?: string | null;
   dispatched_at?: string | null;
   delivered_at?: string | null;

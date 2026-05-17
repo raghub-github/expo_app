@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { assertStoreAccess } from '@/lib/auth/assert-store-access';
+import { clearStaleScheduledClosureVacationOnAvailability } from '@/lib/storeScheduleSync';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -9,6 +10,59 @@ function getDb() {
   return createClient(supabaseUrl, supabaseServiceKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
+}
+
+/** Recreate future `scheduled_off` holiday rows from all active/upcoming closures (drops stale slices first). */
+async function rebuildScheduledOffHolidaysFromClosures(
+  db: ReturnType<typeof getDb>,
+  storeIdNum: number
+): Promise<void> {
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  await db
+    .from('merchant_store_holidays')
+    .delete()
+    .eq('store_id', storeIdNum)
+    .eq('holiday_type', 'scheduled_off')
+    .gte('holiday_date', todayUtc);
+
+  const nowIso = new Date().toISOString();
+  const { data: closures } = await db
+    .from('merchant_store_scheduled_closures')
+    .select('reason, starts_at, ends_at')
+    .eq('store_id', storeIdNum)
+    .in('status', ['scheduled', 'active'])
+    .gt('ends_at', nowIso)
+    .order('starts_at', { ascending: true });
+
+  const istDateFormatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+
+  for (const c of closures ?? []) {
+    const startsAt = new Date(String(c.starts_at));
+    const endsAt = new Date(String(c.ends_at));
+    if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) continue;
+    if (endsAt.getTime() <= startsAt.getTime()) continue;
+    const reason = typeof c.reason === 'string' && c.reason.trim() !== '' ? c.reason.trim() : 'Scheduled time-off';
+    const startDateStr = istDateFormatter.format(startsAt);
+    const startTimeStr = startsAt.toISOString().slice(11, 19);
+    const endTimeStr = endsAt.toISOString().slice(11, 19);
+    const isFullDay = startTimeStr === '00:00:00' && endTimeStr >= '23:59:00';
+
+    await db.from('merchant_store_holidays').insert({
+      store_id: storeIdNum,
+      holiday_name: 'Scheduled off',
+      holiday_type: 'scheduled_off',
+      holiday_date: startDateStr,
+      is_full_day: isFullDay,
+      closed_from: startTimeStr,
+      closed_till: endTimeStr,
+      closure_reason: reason,
+    });
+  }
 }
 
 async function loadAuditContext(db: ReturnType<typeof getDb>, storeInternalId: number) {
@@ -45,11 +99,13 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: gate.error }, { status: gate.status });
     }
     const db = getDb();
+    const nowIso = new Date().toISOString();
     const { data: rows, error } = await db
       .from('merchant_store_scheduled_closures')
-      .select('id, reason, starts_at, ends_at, status')
+      .select('id, reason, starts_at, ends_at, status, marked_from')
       .eq('store_id', gate.storeIdNum)
       .in('status', ['scheduled', 'active'])
+      .gt('ends_at', nowIso)
       .order('starts_at', { ascending: true });
     if (error) {
       console.error('[merchant/schedule-off GET]', error);
@@ -157,6 +213,7 @@ export async function POST(req: NextRequest) {
         starts_at: startsAt.toISOString(),
         ends_at: endsAt.toISOString(),
         status: 'scheduled',
+        marked_from: 'partnersite',
       })
       .select('id')
       .single();
@@ -166,27 +223,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to save schedule' }, { status: 500 });
     }
 
-    const istDateFormatter = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Kolkata',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    });
-    const startDateStr = istDateFormatter.format(startsAt);
-    const startTimeStr = startsAt.toISOString().slice(11, 19);
-    const endTimeStr = endsAt.toISOString().slice(11, 19);
-    const isFullDay = startTimeStr === '00:00:00' && endTimeStr >= '23:59:00';
-
-    await db.from('merchant_store_holidays').insert({
-      store_id: storeIdNum,
-      holiday_name: 'Scheduled off',
-      holiday_type: 'scheduled_off',
-      holiday_date: startDateStr,
-      is_full_day: isFullDay,
-      closed_from: startTimeStr,
-      closed_till: endTimeStr,
-      closure_reason: reason,
-    });
+    await rebuildScheduledOffHolidaysFromClosures(db, storeIdNum);
 
     await db.from('merchant_store_notifications').insert({
       store_id: storeIdNum,
@@ -233,12 +270,34 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   try {
     const storeId = new URL(req.url).searchParams.get('store_id');
+    const closureIdRaw = new URL(req.url).searchParams.get('closure_id');
     const gate = await assertStoreAccess(storeId);
     if (!gate.ok) {
       return NextResponse.json({ error: gate.error }, { status: gate.status });
     }
     const db = getDb();
     const storeIdNum = gate.storeIdNum;
+
+    if (closureIdRaw != null && closureIdRaw !== '') {
+      const closureId = parseInt(closureIdRaw, 10);
+      if (!Number.isFinite(closureId)) {
+        return NextResponse.json({ error: 'invalid closure_id' }, { status: 400 });
+      }
+      const { data: row } = await db
+        .from('merchant_store_scheduled_closures')
+        .select('id')
+        .eq('id', closureId)
+        .eq('store_id', storeIdNum)
+        .in('status', ['scheduled', 'active'])
+        .maybeSingle();
+      if (!row) {
+        return NextResponse.json({ error: 'Closure not found' }, { status: 404 });
+      }
+      await db.from('merchant_store_scheduled_closures').delete().eq('id', closureId).eq('store_id', storeIdNum);
+      await rebuildScheduledOffHolidaysFromClosures(db, storeIdNum);
+      await clearStaleScheduledClosureVacationOnAvailability(db, storeIdNum);
+      return NextResponse.json({ ok: true, partial: true });
+    }
 
     await db
       .from('merchant_store_scheduled_closures')
@@ -253,6 +312,8 @@ export async function DELETE(req: NextRequest) {
       .eq('holiday_type', 'scheduled_off')
       .gte('holiday_date', new Date().toISOString().slice(0, 10));
 
+    await clearStaleScheduledClosureVacationOnAvailability(db, storeIdNum);
+
     await db.from('merchant_store_notifications').insert({
       store_id: storeIdNum,
       type: 'store',
@@ -265,6 +326,86 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (e) {
     console.error('[merchant/schedule-off DELETE]', e);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+/**
+ * PATCH /api/merchant/schedule-off
+ * Body: { store_id, closure_id, reason, starts_at, ends_at }
+ */
+export async function PATCH(req: NextRequest) {
+  try {
+    const body = await req.json().catch(() => ({}));
+    const storeIdParam = typeof body.store_id === 'string' ? body.store_id.trim() : '';
+    const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+    const closureId = Number(body.closure_id);
+    const startsAtRaw = typeof body.starts_at === 'string' ? body.starts_at : '';
+    const endsAtRaw = typeof body.ends_at === 'string' ? body.ends_at : '';
+
+    const gate = await assertStoreAccess(storeIdParam || null);
+    if (!gate.ok) {
+      return NextResponse.json({ error: gate.error }, { status: gate.status });
+    }
+    const storeIdNum = gate.storeIdNum;
+    const db = getDb();
+
+    if (!Number.isFinite(closureId) || !reason || !startsAtRaw || !endsAtRaw) {
+      return NextResponse.json({ error: 'closure_id, reason, starts_at, ends_at required' }, { status: 400 });
+    }
+
+    const startsAt = new Date(startsAtRaw);
+    const endsAt = new Date(endsAtRaw);
+    if (
+      Number.isNaN(startsAt.getTime()) ||
+      Number.isNaN(endsAt.getTime()) ||
+      endsAt.getTime() <= startsAt.getTime()
+    ) {
+      return NextResponse.json({ error: 'invalid_body', message: 'starts_at/ends_at are invalid' }, { status: 400 });
+    }
+
+    const { data: existing } = await db
+      .from('merchant_store_scheduled_closures')
+      .select('id')
+      .eq('id', closureId)
+      .eq('store_id', storeIdNum)
+      .in('status', ['scheduled', 'active'])
+      .maybeSingle();
+    if (!existing) {
+      return NextResponse.json({ error: 'Closure not found' }, { status: 404 });
+    }
+
+    await db
+      .from('merchant_store_scheduled_closures')
+      .update({
+        reason,
+        starts_at: startsAt.toISOString(),
+        ends_at: endsAt.toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', closureId)
+      .eq('store_id', storeIdNum);
+
+    await rebuildScheduledOffHolidaysFromClosures(db, storeIdNum);
+
+    await db.from('merchant_store_notifications').insert({
+      store_id: storeIdNum,
+      type: 'store',
+      title: 'Scheduled time-off updated',
+      body: 'Your scheduled store closure was updated.',
+      read: false,
+      action_url: '/(tabs)/profile/vacation',
+    });
+
+    return NextResponse.json({
+      store_id: storeIdNum,
+      scheduled_closure_id: closureId,
+      reason,
+      starts_at: startsAt.toISOString(),
+      ends_at: endsAt.toISOString(),
+    });
+  } catch (e) {
+    console.error('[merchant/schedule-off PATCH]', e);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

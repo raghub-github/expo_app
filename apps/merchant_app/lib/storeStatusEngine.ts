@@ -7,6 +7,9 @@ export type StoreStatusEngineState = {
   is_manual_override: boolean;
   manual_override_at: string | null;
 
+  manual_close_until: string | null; // ISO
+  manual_close_reason: string | null;
+
   is_schedule_enabled: boolean;
   schedule_start_time: string | null; // "HH:mm"
   schedule_end_time: string | null; // "HH:mm"
@@ -30,6 +33,7 @@ export type StoreStatusEngineEffect =
 export type StoreStatusEngineEvent =
   | { type: "MANUAL_ON"; now: Date }
   | { type: "MANUAL_OFF"; now: Date }
+  | { type: "TEMP_CLOSE"; now: Date; manual_close_until: string; manual_close_reason?: string | null }
   | { type: "SCHEDULE_END_RESPONSE"; now: Date; action: "stay_online" | "go_offline" }
   | { type: "CONFIG_UPDATE"; now: Date; patch: Partial<StoreStatusEngineState> }
   | { type: "TICK"; now: Date };
@@ -49,6 +53,8 @@ export function createInitialStoreStatusState(): StoreStatusEngineState {
     store_status: "OFFLINE",
     is_manual_override: false,
     manual_override_at: null,
+    manual_close_until: null,
+    manual_close_reason: null,
     is_schedule_enabled: false,
     schedule_start_time: null,
     schedule_end_time: null,
@@ -99,7 +105,6 @@ function isWithinScheduleWindow(s: StoreStatusEngineState, now: Date): boolean {
   const endMin = hhmmToMinutes(s.schedule_end_time);
   if (startMin == null || endMin == null) return false;
   const cur = minutesSinceMidnightInTz(now);
-  // [start, end) same-day only (spec v1)
   if (endMin <= startMin) return false;
   return cur >= startMin && cur < endMin;
 }
@@ -118,6 +123,11 @@ function isRushActive(s: StoreStatusEngineState, now: Date): boolean {
   return e > 0 && t < e;
 }
 
+function isTempCloseActive(s: StoreStatusEngineState, now: Date): boolean {
+  const untilMs = parseIsoMs(s.manual_close_until);
+  return untilMs > 0 && now.getTime() < untilMs;
+}
+
 function clearPrompt(s: StoreStatusEngineState): StoreStatusEngineState {
   if (!s.schedule_end_prompt_expires_at) return s;
   return { ...s, schedule_end_prompt_expires_at: null };
@@ -130,7 +140,29 @@ export function reduceStoreStatusEngine(
   const now = event.now;
   const effects: StoreStatusEngineEffect[] = [];
 
-  // System rule: vacation override
+  // System rule: temp close until time overrides schedule/manual.
+  if (event.type !== "CONFIG_UPDATE" && isTempCloseActive(state, now)) {
+    if (
+      state.store_status !== "OFFLINE" ||
+      state.is_manual_override ||
+      state.manual_override_at != null ||
+      state.schedule_end_prompt_expires_at != null
+    ) {
+      return {
+        state: {
+          ...state,
+          store_status: "OFFLINE",
+          is_manual_override: false,
+          manual_override_at: null,
+          schedule_end_prompt_expires_at: null,
+          last_action_source: "system",
+        },
+        effects: [{ type: "persist" }],
+      };
+    }
+    return { state, effects };
+  }
+
   if (event.type !== "CONFIG_UPDATE" && isVacationActive(state, now)) {
     if (
       state.store_status !== "OFFLINE" ||
@@ -174,6 +206,8 @@ export function reduceStoreStatusEngine(
       store_status: "ONLINE",
       is_manual_override: manualOverride,
       manual_override_at: manualOverride ? toIso(now) : null,
+      manual_close_until: null,
+      manual_close_reason: null,
       schedule_end_prompt_expires_at: null,
       last_action_source: "manual",
     };
@@ -193,6 +227,25 @@ export function reduceStoreStatusEngine(
       store_status: "OFFLINE",
       is_manual_override: false,
       manual_override_at: null,
+      manual_close_until: null,
+      manual_close_reason: null,
+      schedule_end_prompt_expires_at: null,
+      last_action_source: "manual",
+    };
+    effects.push({ type: "persist" });
+    return { state: next, effects };
+  }
+
+  if (event.type === "TEMP_CLOSE") {
+    const untilMs = parseIsoMs(event.manual_close_until);
+    if (!untilMs || untilMs <= now.getTime()) return { state, effects };
+    const next: StoreStatusEngineState = {
+      ...state,
+      store_status: "OFFLINE",
+      is_manual_override: false,
+      manual_override_at: null,
+      manual_close_until: new Date(untilMs).toISOString(),
+      manual_close_reason: event.manual_close_reason ?? null,
       schedule_end_prompt_expires_at: null,
       last_action_source: "manual",
     };
@@ -213,15 +266,23 @@ export function reduceStoreStatusEngine(
       effects.push({ type: "persist" });
       return { state: next, effects };
     }
-    // go_offline
     return reduceStoreStatusEngine(state, { type: "MANUAL_OFF", now });
   }
 
-  // TICK
+  // Tick: clear expired temp close then proceed.
+  if (state.manual_close_until) {
+    const untilMs = parseIsoMs(state.manual_close_until);
+    if (untilMs > 0 && now.getTime() >= untilMs) {
+      const cleared = { ...state, manual_close_until: null, manual_close_reason: null };
+      effects.push({ type: "persist" });
+      return { state: cleared, effects };
+    }
+  }
+
   const within = isWithinScheduleWindow(state, now);
 
-  // Schedule start
   if (within && state.is_schedule_enabled) {
+    if (isTempCloseActive(state, now)) return { state, effects };
     if (state.store_status === "OFFLINE" && state.is_manual_override === false) {
       const next: StoreStatusEngineState = {
         ...state,
@@ -231,7 +292,6 @@ export function reduceStoreStatusEngine(
       effects.push({ type: "persist" });
       return { state: next, effects };
     }
-    // Within hours: clear schedule-end prompt if any
     if (state.schedule_end_prompt_expires_at) {
       const next = { ...state, schedule_end_prompt_expires_at: null };
       effects.push({ type: "persist" });
@@ -240,7 +300,6 @@ export function reduceStoreStatusEngine(
     return { state, effects };
   }
 
-  // Schedule end
   if (!within && state.is_schedule_enabled) {
     if (state.store_status === "ONLINE") {
       if (state.is_manual_override) return { state, effects };
@@ -269,12 +328,9 @@ export function reduceStoreStatusEngine(
         effects.push({ type: "persist" });
         return { state: next, effects };
       }
-
-      // Prompt still active; keep online
       return { state, effects };
     }
 
-    // Offline: ensure prompt cleared
     if (state.schedule_end_prompt_expires_at) {
       const next = { ...state, schedule_end_prompt_expires_at: null };
       effects.push({ type: "persist" });
@@ -284,4 +340,3 @@ export function reduceStoreStatusEngine(
 
   return { state, effects };
 }
-

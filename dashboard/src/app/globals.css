@@ -118,3 +118,21 @@ textarea::placeholder {
 select option {
   color: rgb(17, 24, 39) !important; /* text-gray-900 */
 }
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}

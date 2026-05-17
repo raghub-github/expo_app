@@ -46,6 +46,15 @@ export async function POST(request: NextRequest) {
     const subjectIn = typeof body.subject === "string" ? body.subject.trim() : "";
     const descriptionIn = typeof body.description === "string" ? body.description.trim() : "";
     const attachmentsRaw = body.attachments;
+    const formattedOrderIdIn =
+      typeof body.formatted_order_id === "string" ? body.formatted_order_id.trim() : "";
+    const coreOrderIdRaw = body.core_order_id;
+    const coreOrderId =
+      typeof coreOrderIdRaw === "number" && Number.isInteger(coreOrderIdRaw) && coreOrderIdRaw > 0
+        ? coreOrderIdRaw
+        : typeof coreOrderIdRaw === "string" && /^\d+$/.test(coreOrderIdRaw.trim())
+          ? Number(coreOrderIdRaw.trim())
+          : NaN;
 
     if (!storeIdParam || !Number.isInteger(ticketTitleId) || ticketTitleId < 1) {
       return NextResponse.json(
@@ -159,13 +168,28 @@ export async function POST(request: NextRequest) {
         ? Number(titleRow.group_id)
         : null;
 
-    const metadataPayload = {
+    const metadataPayload: Record<string, unknown> = {
       merchant_help: {
         section_code: sectionCode || null,
         ticket_title_id: ticketTitleId,
         ticket_title_row_code: ticketTitleRaw,
+        ...(formattedOrderIdIn ? { formatted_order_id: formattedOrderIdIn } : {}),
+        ...(Number.isFinite(coreOrderId) ? { core_order_id: coreOrderId } : {}),
       },
     };
+
+    const ticketType =
+      Number.isFinite(coreOrderId) || formattedOrderIdIn ? "ORDER_RELATED" : "NON_ORDER_RELATED";
+    let resolvedCoreOrderId: number | null = Number.isFinite(coreOrderId) ? coreOrderId : null;
+    if (resolvedCoreOrderId == null && formattedOrderIdIn) {
+      const { data: coreByFmt } = await db
+        .from("orders_core")
+        .select("id")
+        .eq("formatted_order_id", formattedOrderIdIn)
+        .eq("merchant_store_id", storeIdNum)
+        .maybeSingle();
+      if (coreByFmt?.id != null) resolvedCoreOrderId = Number(coreByFmt.id);
+    }
 
     const attachmentUrls =
       Array.isArray(attachmentsRaw) && attachmentsRaw.length > 0
@@ -184,12 +208,13 @@ export async function POST(request: NextRequest) {
 
     const insertRow: Record<string, unknown> = {
       ticket_id: "",
-      ticket_type: "NON_ORDER_RELATED",
+      ticket_type: ticketType,
       ticket_source: "MERCHANT",
       service_type: serviceType,
       ticket_title: ticketTitleForInsert,
       ticket_category: ticketCategory,
-      order_id: null,
+      order_id: ticketType === "ORDER_RELATED" ? resolvedCoreOrderId : null,
+      order_type: ticketType === "ORDER_RELATED" ? "food" : null,
       customer_id: null,
       rider_id: null,
       merchant_store_id: storeIdNum,

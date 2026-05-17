@@ -20,7 +20,6 @@ import {
   Printer,
   Calendar,
   ChevronLeft,
-  Sparkles,
   LayoutGrid,
   List,
   Phone,
@@ -47,6 +46,21 @@ import {
   merchantPortalCloseReasonWithSuffix,
 } from '@/lib/merchantPortalCloseReasons';
 import { FoodOrdersEmptyState, type FoodOrdersEmptyVariant } from '@/components/orders/FoodOrdersEmptyState';
+import { mapStateMachineStatusToPartnerUi, normFoodStatus } from '@/lib/partner-orders-unify';
+import {
+  PARTNER_DEVICE_ORDER_ALERTS_EVENT,
+  readPartnerDeviceOrderAlerts,
+  resolveAlertUrlFromSlots,
+  volumeStepTo01,
+  writePartnerDeviceOrderAlerts,
+} from '@/lib/partner-device-order-alerts';
+import {
+  formatItemsSummary,
+  formatListTime,
+  historyBadgeClass,
+  historyStatusLabel,
+} from './orders-page-ui';
+import { HistoryOrderDetailPanel } from './HistoryOrderDetailPanel';
 
 // orders_food_status enum: CREATED, ACCEPTED, PREPARING, READY_FOR_PICKUP, OUT_FOR_DELIVERY, DELIVERED, RTO, CANCELLED
 const STATUS_LABEL: Record<string, string> = {
@@ -72,14 +86,33 @@ const STATUS_FILTERS = [
   { id: 'CANCELLED', label: 'Cancelled', color: 'bg-gray-100 text-gray-700 border-gray-200' },
 ];
 
-// Tabs shown in the Orders page header (matches the portal UI).
-const ORDERS_TABS = [
-  { id: 'CREATED', label: 'New orders' },
+const PREPARING_PIPELINE = new Set(['ACCEPTED', 'PREPARING']);
+
+const FOOD_ORDERS_SIDEBAR_FILTERS = [
+  { id: 'NEW_ORDERS', label: 'New orders' },
   { id: 'PREPARING', label: 'Preparing' },
   { id: 'READY_FOR_PICKUP', label: 'Ready' },
   { id: 'OUT_FOR_DELIVERY', label: 'Picked up' },
   { id: 'RTO', label: 'RTO' },
 ] as const;
+
+type FoodOrdersSidebarFilterId = (typeof FOOD_ORDERS_SIDEBAR_FILTERS)[number]['id'];
+
+function normOrderStatus(s: string | null | undefined) {
+  const mapped = mapStateMachineStatusToPartnerUi(s);
+  if (mapped) return mapped;
+  return normFoodStatus(s);
+}
+
+function orderMatchesFoodOrdersSidebar(order: OrdersFoodRow, filterId: string): boolean {
+  const st = normOrderStatus(order.order_status);
+  if (filterId === 'NEW_ORDERS') return st === 'CREATED';
+  if (filterId === 'PREPARING') return PREPARING_PIPELINE.has(st);
+  if (filterId === 'READY_FOR_PICKUP') return st === 'READY_FOR_PICKUP';
+  if (filterId === 'OUT_FOR_DELIVERY') return st === 'OUT_FOR_DELIVERY';
+  if (filterId === 'RTO') return st === 'RTO';
+  return false;
+}
 
 const FILTER_STATUS_OPTIONS = [
   'CREATED',
@@ -318,15 +351,43 @@ function formatTimeAgo(dateStr: string): string {
   return d.toLocaleDateString();
 }
 
-function useNewOrderSound(enabled: boolean) {
+type OrderAcceptanceSettings = {
+  acceptance_window_minutes: number;
+  alert_sound_enabled: boolean;
+  alert_sound_url: string | null;
+  alert_sound_repeat_count: number;
+  alert_sound_urls_by_slot?: [string | null, string | null, string | null];
+  alert_sound_slot_choice: number;
+};
+
+function useNewOrderSound(
+  enabled: boolean,
+  publicStoreId: string | null,
+  acceptanceSettings: OrderAcceptanceSettings | null
+) {
   const play = useCallback(() => {
     if (!enabled || typeof window === 'undefined') return;
+    if (acceptanceSettings && acceptanceSettings.alert_sound_enabled === false) return;
+
+    const device = publicStoreId ? readPartnerDeviceOrderAlerts(publicStoreId) : null;
+    if (device && !device.soundAlertsEnabled) return;
+
+    const slots = acceptanceSettings?.alert_sound_urls_by_slot ?? [null, null, null];
+    const choice =
+      acceptanceSettings?.alert_sound_slot_choice ??
+      device?.alertSoundSlot ??
+      0;
+    const url =
+      resolveAlertUrlFromSlots(slots, choice) ||
+      acceptanceSettings?.alert_sound_url ||
+      null;
+
     try {
-      const audio = new Audio('/notification.wav');
-      audio.volume = 0.8;
+      const audio = new Audio(url || '/notification.wav');
+      audio.volume = volumeStepTo01(device?.volumeStep ?? 5);
       audio.play().catch(() => {});
     } catch {}
-  }, [enabled]);
+  }, [enabled, publicStoreId, acceptanceSettings]);
 
   return play;
 }
@@ -388,7 +449,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const storeInternalId = parseInt(storeId, 10);
   const [orders, setOrders] = useState<OrdersFoodRow[]>([]);
   const [stats, setStats] = useState<FoodOrderStats | null>(null);
-  const [filter, setFilter] = useState<string>('CREATED');
+  const [filter, setFilter] = useState<string>('PREPARING');
   const [selectedOrder, setSelectedOrder] = useState<OrdersFoodRow | null>(null);
   // Partnersite-style: show full-width list by default, open details panel only after selecting an order.
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
@@ -495,6 +556,9 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const hasNotifiedNew = useRef<Set<number>>(new Set());
 
   const { store: storeMeta } = useStore(storeId);
+  const merchantPublicStoreId =
+    (storeMeta as { store_id?: string } | null)?.store_id?.trim() || null;
+  const [acceptanceSettings, setAcceptanceSettings] = useState<OrderAcceptanceSettings | null>(null);
   const isDelisted =
     ((storeMeta as { approval_status?: string } | null)?.approval_status || '').toUpperCase() === 'DELISTED';
 
@@ -538,15 +602,23 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     }
   }, [viewMode]);
 
-  const persistLocal = useCallback((key: 'viewMode' | 'notifyEnabled', value: unknown) => {
-    if (typeof window === 'undefined') return;
-    try {
-      const s = localStorage.getItem(ORDERS_STORAGE_KEY);
-      const prev = s ? JSON.parse(s) : {};
-      const next = { ...prev, [key]: value };
-      localStorage.setItem(ORDERS_STORAGE_KEY, JSON.stringify(next));
-    } catch {}
-  }, []);
+  const persistLocal = useCallback(
+    (key: 'viewMode' | 'notifyEnabled', value: unknown) => {
+      if (typeof window === 'undefined') return;
+      try {
+        const s = localStorage.getItem(ORDERS_STORAGE_KEY);
+        const prev = s ? JSON.parse(s) : {};
+        const next = { ...prev, [key]: value };
+        localStorage.setItem(ORDERS_STORAGE_KEY, JSON.stringify(next));
+        if (key === 'notifyEnabled' && merchantPublicStoreId) {
+          writePartnerDeviceOrderAlerts(merchantPublicStoreId, {
+            soundAlertsEnabled: value === true,
+          });
+        }
+      } catch {}
+    },
+    [merchantPublicStoreId]
+  );
 
   const openOrder = useCallback((order: OrdersFoodRow) => {
     setSelectedOrder(order);
@@ -646,12 +718,80 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   };
   const { toast } = useToast();
   const { subscribe } = useStoreFoodOrders(storeId, storeInternalId);
-  const playNewOrderSound = useNewOrderSound(notifyEnabled);
+  const playNewOrderSound = useNewOrderSound(notifyEnabled, merchantPublicStoreId, acceptanceSettings);
+
+  useEffect(() => {
+    if (!merchantPublicStoreId) return;
+    setNotifyEnabled(readPartnerDeviceOrderAlerts(merchantPublicStoreId).soundAlertsEnabled);
+  }, [merchantPublicStoreId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !merchantPublicStoreId) return;
+    const syncFromDevice = () => {
+      setNotifyEnabled(readPartnerDeviceOrderAlerts(merchantPublicStoreId).soundAlertsEnabled);
+    };
+    window.addEventListener(PARTNER_DEVICE_ORDER_ALERTS_EVENT, syncFromDevice);
+    return () => window.removeEventListener(PARTNER_DEVICE_ORDER_ALERTS_EVENT, syncFromDevice);
+  }, [merchantPublicStoreId]);
+
+  useEffect(() => {
+    if (!storeId || ordersSection !== 'live') return;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/merchant/stores/${storeId}/order-acceptance-settings`, {
+          credentials: 'include',
+        });
+        const data = (await res.json().catch(() => ({}))) as { settings?: OrderAcceptanceSettings };
+        if (res.ok && data.settings) setAcceptanceSettings(data.settings);
+      } catch {
+        setAcceptanceSettings(null);
+      }
+    })();
+  }, [storeId, ordersSection]);
+
+  const notificationSoundOptions = useMemo(() => {
+    const slots = acceptanceSettings?.alert_sound_urls_by_slot ?? [null, null, null];
+    const out: { slot: number; label: string }[] = [];
+    slots.forEach((u, i) => {
+      if (u && String(u).trim()) out.push({ slot: i, label: `Gmitra Notification - ${i + 1}` });
+    });
+    return out;
+  }, [acceptanceSettings?.alert_sound_urls_by_slot]);
+
+  const notificationSoundSelectValue = useMemo(() => {
+    const choice = acceptanceSettings?.alert_sound_slot_choice ?? 0;
+    if (notificationSoundOptions.some((o) => o.slot === choice)) return choice;
+    return notificationSoundOptions[0]?.slot ?? 0;
+  }, [acceptanceSettings?.alert_sound_slot_choice, notificationSoundOptions]);
+
+  const patchNotificationSoundSlot = useCallback(
+    async (slot: number) => {
+      if (!storeId) return;
+      try {
+        const res = await fetch(`/api/merchant/stores/${storeId}/order-acceptance-settings`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ platform_food_alert_sound_slot: slot }),
+        });
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) {
+          toast('Error: ' + (data.error || 'Could not update notification sound'));
+          return;
+        }
+        setAcceptanceSettings((prev) => (prev ? { ...prev, alert_sound_slot_choice: slot } : prev));
+        toast('Notification sound updated');
+      } catch {
+        toast('Error: Could not update notification sound');
+      }
+    },
+    [storeId, toast]
+  );
 
   useEffect(() => {
     const f = searchParams?.get('filter');
-    if (f && ['all', 'active', 'CREATED', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'DELIVERED', 'RTO', 'CANCELLED'].includes(f)) {
-      setFilter(f === 'NEW' ? 'CREATED' : f);
+    if (f && ['NEW_ORDERS', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO', 'CREATED'].includes(f)) {
+      setFilter(f === 'CREATED' || f === 'NEW' ? 'NEW_ORDERS' : f);
     }
   }, [searchParams]);
 
@@ -678,7 +818,9 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         if (isDelisted) {
           setIsStoreOpen(false);
         } else {
-          setIsStoreOpen(data.operational_status === 'OPEN');
+          const opOpen = data.operational_status === "OPEN";
+          const wh = data.within_operating_hours;
+          setIsStoreOpen(typeof wh === "boolean" ? opOpen && wh : opOpen);
         }
       }
     } catch {}
@@ -717,7 +859,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const fetchOrders = useCallback(async (signal?: AbortSignal) => {
     if (!storeId) return;
     try {
-      const res = await fetch(`/api/merchant/stores/${storeId}/orders?limit=200`, {
+      const res = await fetch(`/api/merchant/stores/${storeId}/orders?limit=500`, {
         credentials: 'include',
         signal: signal ?? null,
       });
@@ -777,6 +919,30 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
 
   useEffect(() => {
     if (!storeInternalId || !storeId) return;
+    const reload = () => {
+      void fetchOrders();
+      void fetchStats();
+    };
+    const ch = supabase
+      .channel(`partner_store_orders:${storeInternalId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders_core', filter: `merchant_store_id=eq.${storeInternalId}` },
+        reload
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders_food', filter: `merchant_store_id=eq.${storeInternalId}` },
+        reload
+      )
+      .subscribe();
+    return () => {
+      ch.unsubscribe();
+    };
+  }, [storeInternalId, storeId, fetchOrders, fetchStats]);
+
+  useEffect(() => {
+    if (!storeInternalId || !storeId) return;
     const unsub = subscribe(
       (row) => {
         setOrders((prev) => {
@@ -821,7 +987,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
 
   // Auto-fetch OTP for all orders when they're loaded (always visible)
   useEffect(() => {
-    const orderIds = orders.map(o => o.id).filter(Boolean) as number[];
+    const orderIds = orders.filter((o) => !o.core_only).map((o) => o.id).filter(Boolean) as number[];
     orderIds.forEach((orderId) => {
       if (!otpCache[orderId]) {
         fetchOtp(orderId);
@@ -1008,7 +1174,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const updateStatus = useCallback(
     async (order: OrdersFoodRow, newStatus: string, extra?: { rejected_reason?: string }) => {
       setActionLoading(order.id);
-      const payload = { store_id: storeId, status: newStatus, ...extra };
+      const payload = { status: newStatus, action_source: 'admin', ...extra };
 
       const tryUpdate = async (): Promise<{ ok: boolean; data: unknown }> => {
         const res = await fetch(`/api/merchant/stores/${storeId}/orders/${order.id}`, {
@@ -1052,27 +1218,20 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     [storeId, selectedOrder, closeOrderPanel]
   );
 
-  const norm = (s: string | null | undefined) => (s === 'NEW' ? 'CREATED' : s || 'CREATED');
-  const filteredOrders =
-    filter === 'all'
-      ? orders
-      : filter === 'active'
-        ? orders.filter((o) =>
-            ['CREATED', 'NEW', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO'].includes(o.order_status || 'CREATED')
-          )
-        : orders.filter((o) => norm(o.order_status) === filter);
+  const norm = (s: string | null | undefined) => normOrderStatus(s);
+
+  const filteredOrders = orders.filter((o) => orderMatchesFoodOrdersSidebar(o, filter));
 
   const displayOrders = useMemo(() => {
     let rows = [...filteredOrders];
-    const q = orderIdSearch.trim();
-    if (q) {
+    const digitsOnly = orderIdSearch.replace(/\D/g, '');
+    if (digitsOnly.length >= 4) {
+      const last4 = digitsOnly.slice(-4);
       rows = rows.filter((o) => {
-        const idStr = String(o.formatted_order_id ?? o.order_id ?? o.id ?? '').replace(/\s+/g, '');
-        const digits = idStr.replace(/\D/g, '');
-        if (!digits) return false;
-        // Match last 4 digits (partner UI behavior)
-        if (q.length <= 4) return digits.endsWith(q);
-        return digits.includes(q);
+        const fd = (o.formatted_order_id || '').replace(/\D/g, '');
+        if (fd.slice(-4) === last4) return true;
+        const oid = String(o.order_id).replace(/\D/g, '');
+        return oid.slice(-4) === last4;
       });
     }
     if (orderSort === 'newest') {
@@ -1090,7 +1249,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     const from = startOfDay(parseYmd(historyDateFrom));
     const to = endOfDay(parseYmd(historyDateTo));
     let rows = [...orders].filter((o) => {
-      const st = norm(o.order_status);
+      const st = normOrderStatus(o.order_status);
       if (!historyStatuses.has(st)) return false;
       const created = new Date(o.created_at);
       if (created < from || created > to) return false;
@@ -1164,21 +1323,27 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     setDownloadOpen(false);
   }, [historyOrders, historyDateFrom, historyDateTo, storeId]);
 
-  const counts: Record<string, number> = {};
-  orders.forEach((o) => {
-    const s = norm(o.order_status);
-    counts[s] = (counts[s] || 0) + 1;
-  });
+  const sidebarFilterCounts: Record<FoodOrdersSidebarFilterId, number> = {
+    NEW_ORDERS: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'NEW_ORDERS')).length,
+    PREPARING: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'PREPARING')).length,
+    READY_FOR_PICKUP: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'READY_FOR_PICKUP')).length,
+    OUT_FOR_DELIVERY: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'OUT_FOR_DELIVERY')).length,
+    RTO: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'RTO')).length,
+  };
 
   const emptyVariant: FoodOrdersEmptyVariant = useMemo(() => {
-    if (orderIdSearch.trim() && displayOrders.length === 0) return 'search';
-    if (filter === 'CREATED') return 'NEW_ORDERS';
-    if (filter === 'PREPARING') return 'PREPARING';
-    if (filter === 'READY_FOR_PICKUP') return 'READY_FOR_PICKUP';
-    if (filter === 'OUT_FOR_DELIVERY') return 'OUT_FOR_DELIVERY';
-    if (filter === 'RTO') return 'RTO';
-    return 'NEW_ORDERS';
-  }, [displayOrders.length, filter, orderIdSearch]);
+    if (filteredOrders.length > 0 && displayOrders.length === 0) return 'search';
+    if (
+      filter === 'NEW_ORDERS' ||
+      filter === 'PREPARING' ||
+      filter === 'READY_FOR_PICKUP' ||
+      filter === 'OUT_FOR_DELIVERY' ||
+      filter === 'RTO'
+    ) {
+      return filter as FoodOrdersEmptyVariant;
+    }
+    return 'PREPARING';
+  }, [filteredOrders.length, displayOrders.length, filter]);
 
   if (loading && orders.length === 0) {
     return <><PageSkeletonOrders /></>;
@@ -1204,30 +1369,18 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   return (
     <>
       <div className="flex h-full min-h-0 bg-gray-50 relative flex-col">
-        <header id="food-orders-header" className="sticky top-0 z-20 bg-white border-b border-gray-200 shrink-0">
-          <div className="w-full min-w-0 px-3 sm:px-4 py-2 sm:py-3">
-            {/* Mobile: 2 rows (Row 1 = Today+Active, Row 2 = Filter + status + sound). Desktop: single row */}
+        {ordersSection === 'live' ? (
+        <header id="food-orders-header" className="shrink-0 z-20 bg-white border-b border-gray-200">
+          <div className="w-full min-w-0 px-3 sm:px-4 lg:px-6 py-2 sm:py-3">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-0 min-w-0">
-              {/* Row 1 (mobile) / Left (desktop): On mobile Today+Active on right. On desktop title + all stats on left */}
               <div className="flex items-center justify-end md:justify-start md:flex-1 md:items-center md:gap-3 min-w-0 overflow-x-auto hide-scrollbar shrink-0">
-                {/* Hamburger menu on left (mobile) */}
-                <div className="md:hidden mr-2">
-                  {null}
-                </div>
-                {/* Title - always visible on desktop */}
-                <div className="hidden md:flex items-center gap-2 shrink-0">
-                  <Sparkles className="w-5 h-5 text-orange-500 shrink-0" />
-                  <h1 className="text-lg font-bold text-gray-900 whitespace-nowrap">
-                    {ordersSection === 'history' ? 'Order History' : storeOrdersTitle((storeMeta as any)?.store_type)}
-                  </h1>
-                </div>
-                {ordersSection === 'live' && stats && (
+                {stats && (
                   <div className="flex items-center gap-2 shrink-0">
-                    <StatBadge label="Today" value={String(stats.ordersToday)} />
-                    <StatBadge label="Active" value={String(stats.activeOrders)} accent />
+                    <StatBadge label="Today" value={String(stats.ordersTodayActive ?? stats.ordersToday)} />
+                    <StatBadge label="Active" value={String(stats.activeOrders ?? stats.ordersTodayActive ?? 0)} accent />
                   </div>
                 )}
-                {ordersSection === 'live' && stats && (
+                {stats && (
                   <div className="hidden md:flex items-center gap-2 sm:gap-3 shrink-0">
                     <StatBadge label="Avg Prep" value={`${stats.avgPreparationTimeMinutes}m`} />
                     <StatBadge label="Revenue" value={`₹${stats.totalRevenueToday.toFixed(0)}`} />
@@ -1235,7 +1388,6 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                   </div>
                 )}
               </div>
-              {/* Row 2 (mobile) / Right (desktop): Filter, Store, grid/list, sound - shrink so never overlaps sidebar */}
               <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0 min-w-0 lg:pl-4">
               <button
                 onClick={handleStoreToggle}
@@ -1253,7 +1405,6 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                 <span className="hidden min-[400px]:inline">{isStoreOpen === null ? 'Loading...' : isStoreOpen ? 'Store Open' : 'Store Closed'}</span>
                 <span className="min-[400px]:hidden">{isStoreOpen === null ? '...' : isStoreOpen ? 'Open' : 'Closed'}</span>
               </button>
-              {/* View mode toggle - only visible on large screens (lg+) */}
               <div className="hidden lg:flex items-center gap-1 border border-gray-200 rounded-lg p-0.5 shrink-0">
                 <button
                   onClick={() => { setViewMode('card'); persistLocal('viewMode', 'card'); }}
@@ -1280,15 +1431,42 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                 {notifyEnabled ? <Bell size={14} /> : <BellOff size={14} />}
                 <span className="hidden sm:inline">{notifyEnabled ? 'Sound On' : 'Sound Off'}</span>
               </button>
+              {notificationSoundOptions.length > 1 ? (
+                <div className="relative shrink-0">
+                  <select
+                    value={notificationSoundSelectValue}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      if (!Number.isInteger(v) || v < 0 || v > 2) return;
+                      void patchNotificationSoundSlot(v);
+                    }}
+                    className="appearance-none pl-2 pr-7 py-1.5 rounded-lg border border-gray-200 bg-white text-xs font-medium text-gray-800 cursor-pointer max-w-[140px] sm:max-w-[180px] truncate"
+                    aria-label="Notification sound"
+                    title="Choose which uploaded notification sound plays"
+                  >
+                    {notificationSoundOptions.map(({ slot, label }) => (
+                      <option key={slot} value={slot}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-orange-500 pointer-events-none" aria-hidden />
+                </div>
+              ) : null}
               </div>
             </div>
           </div>
-          {/* Status pills + section + search (partnersite-style band) */}
-          <div className="border-t border-gray-200 bg-white px-3 sm:px-4 py-3">
+        </header>
+        ) : null}
+
+        <div
+          id="food-orders-pills"
+          className={`shrink-0 z-30 border-b border-gray-200 bg-white px-3 sm:px-4 lg:px-6 py-2 sm:py-3 shadow-sm${ordersSection === 'live' ? ' border-t' : ''}`}
+        >
             <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
               {ordersSection === 'live' ? (
                 <div className="flex flex-wrap items-center gap-2 min-w-0">
-                  {ORDERS_TABS.map(({ id, label }) => (
+                  {FOOD_ORDERS_SIDEBAR_FILTERS.map(({ id, label }) => (
                     <button
                       key={id}
                       type="button"
@@ -1297,7 +1475,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                         filter === id ? 'bg-orange-500 text-white border-orange-500 shadow-sm' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                       }`}
                     >
-                      {label} ({counts[id] || 0})
+                      {label} ({sidebarFilterCounts[id as FoodOrdersSidebarFilterId] || 0})
                     </button>
                   ))}
                 </div>
@@ -1367,8 +1545,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                 </div>
               </div>
             </div>
-          </div>
-        </header>
+        </div>
 
         {downloadOpen && downloadMenuPos && typeof document !== 'undefined' && createPortal(
           <>
@@ -1553,15 +1730,17 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
           {ordersSection === 'history' ? (
             <div className="flex flex-1 min-h-0 flex-col lg:flex-row overflow-hidden">
               <aside className="w-full lg:w-[380px] shrink-0 border-b lg:border-b-0 lg:border-r border-gray-200 bg-white flex flex-col min-h-0 max-h-[45vh] lg:max-h-none">
-                <div className="px-3 sm:px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-2">
-                  <p className="text-sm font-bold text-gray-900">Order history</p>
-                  <span className="text-xs text-gray-500 tabular-nums">{historyOrders.length} orders</span>
-                </div>
                 <div className="flex-1 overflow-y-auto min-h-0 p-2 space-y-2 hide-scrollbar">
+                  {loading && (
+                    <div className="flex justify-center py-8 text-gray-500">
+                      <Loader2 className="animate-spin" size={24} />
+                    </div>
+                  )}
                   {!loading && historyOrders.length === 0 && (
-                    <p className="text-sm text-gray-500 text-center py-8">No orders found.</p>
+                    <p className="text-sm text-gray-500 text-center py-8">No orders in this range.</p>
                   )}
                   {historyOrders.map((o) => {
+                    const { time, date } = formatListTime(o.created_at);
                     const active = selectedOrder?.id === o.id;
                     return (
                       <button
@@ -1573,70 +1752,47 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                         }`}
                       >
                         <div className="flex items-start justify-between gap-2 mb-1">
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-700 text-white">
-                            {(STATUS_LABEL[norm(o.order_status)] || norm(o.order_status)).toUpperCase()}
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${historyBadgeClass(o.order_status || '')}`}>
+                            {historyStatusLabel(o.order_status || '')}
                           </span>
                           <span className="text-[10px] text-gray-500 text-right shrink-0">
-                            {new Date(o.created_at).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true })}{' '}
-                            | {new Date(o.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                            {time} | {date}
                           </span>
                         </div>
                         <p className="text-xs font-semibold text-gray-900">ID: {o.formatted_order_id || o.order_id}</p>
                         {o.customer_name && <p className="text-xs text-gray-600 mt-0.5">By {o.customer_name}</p>}
+                        <p className="text-xs text-gray-500 mt-1 line-clamp-2">{formatItemsSummary(o)}</p>
                         <p className="text-sm font-bold text-gray-900 text-right mt-2">
-                          ₹{Number((o as any).food_items_total_value || (o as any).total_amount || 0).toFixed(0)}
+                          ₹{Number((o as any).food_items_total_value || (o as any).total_amount || 0).toFixed(2)}
                         </p>
                       </button>
                     );
                   })}
                 </div>
               </aside>
-              <main className="flex-1 min-w-0 overflow-y-auto min-h-0 bg-gray-50 p-3 sm:p-5">
+              <main className="flex-1 min-w-0 overflow-y-auto min-h-0 bg-gray-50 p-3 sm:p-5 hide-scrollbar">
                 {!selectedOrder ? (
-                  <div className="h-full flex items-center justify-center">
+                  <div className="h-full flex flex-col items-center justify-center text-gray-500 text-sm gap-2">
                     {orderIdSearch.trim() ? (
                       <FoodOrdersEmptyState variant="search" />
                     ) : historyOrders.length === 0 ? (
-                      <div className="flex flex-col items-center justify-center py-12 sm:py-20 px-4 text-center">
-                        <p className="text-base sm:text-lg font-medium text-slate-700">No orders in this range.</p>
-                        <p className="mt-1 text-sm sm:text-base text-slate-500">Try changing date range or filters.</p>
-                      </div>
+                      <>
+                        <span className="text-4xl opacity-40" aria-hidden>
+                          🍽
+                        </span>
+                        <p>No orders in this range.</p>
+                      </>
                     ) : (
-                      <div className="flex flex-col items-center justify-center py-12 sm:py-20 px-4 text-center">
-                        <p className="text-base sm:text-lg font-medium text-slate-700">No order selected</p>
-                        <p className="mt-1 text-sm sm:text-base text-slate-500">Select an order from the left list to view details.</p>
-                      </div>
+                      <>
+                        <span className="text-4xl opacity-40" aria-hidden>
+                          🍽
+                        </span>
+                        No order selected
+                      </>
                     )}
                   </div>
                 ) : (
-                  <div className="max-w-3xl mx-auto bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-                    <div className="border-b border-gray-200 px-4 py-3 flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-base font-bold text-gray-900">
-                          ID: {selectedOrder.formatted_order_id || selectedOrder.order_id}
-                        </p>
-                        <p className="text-xs text-gray-500 mt-0.5">{new Date(selectedOrder.created_at).toLocaleString('en-IN')}</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={closeOrderPanel}
-                        className="p-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600"
-                        aria-label="Close"
-                      >
-                        <X size={18} />
-                      </button>
-                    </div>
-                    <div className="p-4 text-sm text-gray-700">
-                      <p className="font-semibold text-gray-900 mb-2">Status</p>
-                      <p className="mb-4">{STATUS_LABEL[norm(selectedOrder.order_status)] || norm(selectedOrder.order_status)}</p>
-                      {selectedOrder.customer_name && (
-                        <>
-                          <p className="font-semibold text-gray-900 mb-2">Customer</p>
-                          <p>{selectedOrder.customer_name}</p>
-                        </>
-                      )}
-                    </div>
-                  </div>
+                  <HistoryOrderDetailPanel order={selectedOrder} onClose={closeOrderPanel} storeId={storeId} />
                 )}
               </main>
             </div>

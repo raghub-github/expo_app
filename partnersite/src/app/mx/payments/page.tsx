@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
@@ -12,10 +12,14 @@ import {
   useMerchantWallet,
   useMerchantLedger,
   useMerchantBankAccounts,
+  useMerchantWalletAnalytics,
+  useMerchantPayoutRequests,
   usePayoutRequestMutation,
   useInvalidateBankAccounts,
   type BankAccount,
+  type WalletAnalyticsPeriod,
 } from '@/hooks/useMerchantApi'
+import { formatInr } from '@/lib/format-inr';
 import { RefundPolicyContent } from '@/components/RefundPolicyContent'
 import {
   Wallet,
@@ -45,6 +49,7 @@ import {
   Phone,
 } from 'lucide-react'
 import { PageSkeletonGeneric } from '@/components/PageSkeleton'
+import { PaymentsOverviewCharts } from '@/components/payments/PaymentsOverviewCharts'
 import { toast } from 'sonner'
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
 
@@ -77,6 +82,7 @@ interface WalletSummary {
   total_earned: number
   total_withdrawn: number
   pending_withdrawal_total: number
+  in_process_withdrawal_total: number
 }
 
 interface LedgerEntry {
@@ -126,6 +132,15 @@ function formatCategory(cat: string): string {
   return cat.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
+function pctChangeLabel(current: number, prior: number): { text: string; positive: boolean } {
+  if (prior === 0) {
+    if (current === 0) return { text: '0%', positive: true }
+    return { text: '+100%', positive: true }
+  }
+  const pct = Math.round(((current - prior) / prior) * 100)
+  return { text: `${pct > 0 ? '+' : ''}${pct}%`, positive: pct >= 0 }
+}
+
 function PaymentsContent() {
   const searchParams = useSearchParams()
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null)
@@ -144,8 +159,15 @@ function PaymentsContent() {
   const [filterSearch, setFilterSearch] = useState('')
 
   const [bankSectionExpanded, setBankSectionExpanded] = useState(false)
+  const [analyticsPeriod, setAnalyticsPeriod] = useState<WalletAnalyticsPeriod>('week')
+  const ledgerSectionRef = React.useRef<HTMLDivElement>(null)
 
   const { data: wallet, isLoading: walletLoading } = useMerchantWallet(storeId)
+  const { data: walletAnalytics, isLoading: analyticsLoading } = useMerchantWalletAnalytics(
+    storeId,
+    analyticsPeriod
+  )
+  const { data: payoutData, isLoading: payoutsLoading } = useMerchantPayoutRequests(storeId, 5)
   const ledgerParams = useMemo(() => ({
     limit: ledgerLimit,
     offset: ledgerOffset,
@@ -505,6 +527,54 @@ function PaymentsContent() {
 
   const displayName = (restaurant as { store_name?: string })?.store_name ?? (restaurant as Restaurant)?.restaurant_name
 
+  const todayVsYesterday = pctChangeLabel(wallet?.today_earning ?? 0, wallet?.yesterday_earning ?? 0)
+
+  const scrollToLedger = useCallback((opts?: { category?: string }) => {
+    if (opts?.category) setFilterCategory(opts.category)
+    setLedgerOffset(0)
+    requestAnimationFrame(() => {
+      ledgerSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }, [])
+
+  const downloadLedgerCsv = useCallback(async () => {
+    if (!storeId) return
+    try {
+      const search = new URLSearchParams({ storeId, limit: '2000', offset: '0' })
+      if (filterFrom) search.set('from', filterFrom)
+      if (filterTo) search.set('to', filterTo)
+      if (filterDirection !== 'all') search.set('direction', filterDirection)
+      if (filterCategory) search.set('category', filterCategory)
+      const res = await fetch(`/api/merchant/wallet/ledger?${search}`)
+      const data = await res.json()
+      if (!res.ok) {
+        toast.error(data.error || 'Could not export ledger')
+        return
+      }
+      const rows = (data.entries ?? []) as LedgerEntry[]
+      const header = ['Date', 'Category', 'Description', 'Direction', 'Amount', 'Balance after']
+      const lines = rows.map((r) => [
+        new Date(r.created_at).toISOString(),
+        r.category,
+        (r.description ?? '').replace(/"/g, '""'),
+        r.direction,
+        String(r.amount),
+        String(r.balance_after),
+      ])
+      const csv = [header, ...lines].map((line) => line.map((c) => `"${c}"`).join(',')).join('\n')
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `ledger-${storeId}-${new Date().toISOString().slice(0, 10)}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+      toast.success('Ledger downloaded')
+    } catch {
+      toast.error('Export failed')
+    }
+  }, [storeId, filterFrom, filterTo, filterDirection, filterCategory])
+
   if (isLoading) {
     return (
       <MXLayoutWhite restaurantName={displayName} restaurantId={storeId || ''}>
@@ -555,7 +625,7 @@ function PaymentsContent() {
                       <div className="h-7 w-20 mt-1.5 bg-gray-200 rounded animate-pulse" />
                     ) : (
                       <p className="text-xl font-bold text-gray-900 mt-1">
-                        ₹{(wallet?.available_balance ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {formatInr(wallet?.available_balance ?? 0)}
                       </p>
                     )}
                     <button className="text-xs font-medium text-emerald-700 hover:text-emerald-800 mt-1">View Details →</button>
@@ -575,10 +645,17 @@ function PaymentsContent() {
                       <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
                     ) : (
                       <p className="text-xl font-bold text-gray-900 mt-1">
-                        ₹{(wallet?.today_earning ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {formatInr(wallet?.today_earning ?? 0)}
                       </p>
                     )}
-                    <p className="text-[10px] text-gray-600 mt-1">vs yesterday <span className="text-emerald-600 font-semibold">0%</span></p>
+                    <p className="text-[10px] text-gray-600 mt-1">
+                      vs yesterday{' '}
+                      <span
+                        className={`font-semibold ${todayVsYesterday.positive ? 'text-emerald-600' : 'text-red-600'}`}
+                      >
+                        {todayVsYesterday.text}
+                      </span>
+                    </p>
                   </div>
                   <div className="p-2 rounded-lg bg-blue-100 flex-shrink-0">
                     <TrendingUp size={16} className="text-blue-700" />
@@ -595,10 +672,10 @@ function PaymentsContent() {
                       <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
                     ) : (
                       <p className="text-xl font-bold text-gray-900 mt-1">
-                        ₹{(wallet?.yesterday_earning ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {formatInr(wallet?.yesterday_earning ?? 0)}
                       </p>
                     )}
-                    <p className="text-[10px] text-gray-600 mt-1">vs previous day <span className="text-emerald-600 font-semibold">0%</span></p>
+                    <p className="text-[10px] text-gray-600 mt-1">Previous day earnings</p>
                   </div>
                   <div className="p-2 rounded-lg bg-purple-100 flex-shrink-0">
                     <TrendingDown size={16} className="text-purple-700" />
@@ -615,7 +692,7 @@ function PaymentsContent() {
                       <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
                     ) : (
                       <p className="text-xl font-bold text-gray-900 mt-1">
-                        ₹{(wallet?.pending_balance ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {formatInr(wallet?.pending_balance ?? 0)}
                       </p>
                     )}
                     <p className="text-[10px] text-gray-600 mt-1">Orders awaiting settlement</p>
@@ -635,7 +712,7 @@ function PaymentsContent() {
                       <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
                     ) : (
                       <p className="text-xl font-bold text-gray-900 mt-1">
-                        ₹{(wallet?.pending_withdrawal_total ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {formatInr(wallet?.pending_withdrawal_total ?? 0)}
                       </p>
                     )}
                     <p className="text-[10px] text-gray-600 mt-1">In process</p>
@@ -655,7 +732,7 @@ function PaymentsContent() {
                       <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
                     ) : (
                       <p className="text-xl font-bold text-gray-900 mt-1">
-                        ₹{(wallet?.pending_withdrawal_total ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {formatInr(wallet?.in_process_withdrawal_total ?? 0)}
                       </p>
                     )}
                     <p className="text-[10px] text-gray-600 mt-1">Being processed</p>
@@ -669,209 +746,14 @@ function PaymentsContent() {
           </div>
 
           <div className="px-4 sm:px-6 lg:px-8 py-4 max-w-7xl mx-auto w-full space-y-3">
-            {/* Analytics Section - Three Column Layout */}
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-              {/* Earnings Overview Chart */}
-              <div className="lg:col-span-2 bg-white rounded-lg shadow-sm p-4 border border-gray-200">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-semibold text-gray-900">Earnings Overview</h3>
-                  <select className="text-xs border border-gray-300 rounded px-2.5 py-1 bg-white text-gray-600 hover:border-gray-400">
-                    <option>This Week</option>
-                    <option>This Month</option>
-                    <option>Last 3 months</option>
-                  </select>
-                </div>
-                
-                <div className="flex gap-4">
-                  {/* Chart Section */}
-                  <div className="flex-1">
-                    <div className="h-40 flex items-center justify-center relative">
-                      <svg viewBox="0 0 280 160" className="w-full h-full" style={{maxWidth: '100%'}}>
-                        {/* Y-axis labels */}
-                        <text x="0" y="155" fontSize="11" fill="#9ca3af" textAnchor="end" dominantBaseline="middle">₹0</text>
-                        <text x="0" y="115" fontSize="11" fill="#9ca3af" textAnchor="end" dominantBaseline="middle">₹2,000</text>
-                        <text x="0" y="75" fontSize="11" fill="#9ca3af" textAnchor="end" dominantBaseline="middle">₹4,000</text>
-                        <text x="0" y="35" fontSize="11" fill="#9ca3af" textAnchor="end" dominantBaseline="middle">₹6,000</text>
-                        
-                        {/* Grid lines */}
-                        <line x1="30" y1="140" x2="270" y2="140" stroke="#e5e7eb" strokeWidth="1"/>
-                        <line x1="30" y1="100" x2="270" y2="100" stroke="#f3f4f6" strokeWidth="1"/>
-                        <line x1="30" y1="60" x2="270" y2="60" stroke="#f3f4f6" strokeWidth="1"/>
-                        <line x1="30" y1="20" x2="270" y2="20" stroke="#f3f4f6" strokeWidth="1"/>
-                        
-                        {/* Y-axis */}
-                        <line x1="30" y1="10" x2="30" y2="140" stroke="#d1d5db" strokeWidth="1.5"/>
-                        {/* X-axis */}
-                        <line x1="30" y1="140" x2="270" y2="140" stroke="#d1d5db" strokeWidth="1.5"/>
-                        
-                        {/* Earnings filled area (light green) */}
-                        <path
-                          d="M 50,110 L 80,80 L 110,85 L 140,60 L 170,70 L 200,50 L 230,30 L 260,25 L 260,140 L 230,140 L 200,140 L 170,140 L 140,140 L 110,140 L 80,140 L 50,140 Z"
-                          fill="#d1fae5"
-                          opacity="0.6"
-                        />
-                        
-                        {/* Withdrawals filled area (light orange) */}
-                        <path
-                          d="M 50,130 L 80,115 L 110,110 L 140,105 L 170,100 L 200,95 L 230,90 L 260,85 L 260,140 L 230,140 L 200,140 L 170,140 L 140,140 L 110,140 L 80,140 L 50,140 Z"
-                          fill="#fed7aa"
-                          opacity="0.6"
-                        />
-                        
-                        {/* Earnings line (emerald) */}
-                        <polyline
-                          points="50,110 80,80 110,85 140,60 170,70 200,50 230,30 260,25"
-                          fill="none"
-                          stroke="#10b981"
-                          strokeWidth="2.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                        
-                        {/* Withdrawals line (orange) */}
-                        <polyline
-                          points="50,130 80,115 110,110 140,105 170,100 200,95 230,90 260,85"
-                          fill="none"
-                          stroke="#f97316"
-                          strokeWidth="2.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                        
-                        {/* X-axis labels */}
-                        <text x="50" y="158" fontSize="10" fill="#9ca3af" textAnchor="middle" fontWeight="500">Mon</text>
-                        <text x="80" y="158" fontSize="10" fill="#9ca3af" textAnchor="middle" fontWeight="500">Tue</text>
-                        <text x="110" y="158" fontSize="10" fill="#9ca3af" textAnchor="middle" fontWeight="500">Wed</text>
-                        <text x="140" y="158" fontSize="10" fill="#9ca3af" textAnchor="middle" fontWeight="500">Thu</text>
-                        <text x="170" y="158" fontSize="10" fill="#9ca3af" textAnchor="middle" fontWeight="500">Fri</text>
-                        <text x="200" y="158" fontSize="10" fill="#9ca3af" textAnchor="middle" fontWeight="500">Sat</text>
-                        <text x="230" y="158" fontSize="10" fill="#9ca3af" textAnchor="middle" fontWeight="500">Sun</text>
-                      </svg>
-                    </div>
-                    <div className="flex items-center justify-start gap-4 mt-2">
-                      <div className="flex items-center gap-1.5">
-                        <div className="w-2.5 h-2.5 rounded-full bg-emerald-500"/>
-                        <span className="text-xs text-gray-600 font-medium">Earnings</span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <div className="w-2.5 h-2.5 rounded-full bg-orange-500"/>
-                        <span className="text-xs text-gray-600 font-medium">Withdrawals</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Right Sidebar - Stats */}
-                  <div className="flex flex-col gap-4 min-w-fit">
-                    {/* Total Earnings */}
-                    <div className="flex items-start gap-2.5">
-                      <div className="p-2 rounded-lg bg-emerald-100 flex-shrink-0">
-                        <TrendingUp size={16} className="text-emerald-600" />
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-600 font-medium">Total Earnings</p>
-                        <p className="text-lg font-bold text-gray-900 mt-0.5">₹0.00</p>
-                      </div>
-                    </div>
-
-                    {/* Total Withdrawals */}
-                    <div className="flex items-start gap-2.5">
-                      <div className="p-2 rounded-lg bg-orange-100 flex-shrink-0">
-                        <TrendingDown size={16} className="text-orange-600" />
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-600 font-medium">Total Withdrawals</p>
-                        <p className="text-lg font-bold text-gray-900 mt-0.5">₹0.00</p>
-                      </div>
-                    </div>
-
-                    {/* Total Transactions */}
-                    <div className="flex items-start gap-2.5">
-                      <div className="p-2 rounded-lg bg-blue-100 flex-shrink-0">
-                        <Package size={16} className="text-blue-600" />
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-600 font-medium">Total Transactions</p>
-                        <p className="text-lg font-bold text-gray-900 mt-0.5">0</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Payout Summary - Donut Chart */}
-              <div className="bg-white rounded-lg shadow-sm p-4 border border-gray-200 flex flex-col">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-semibold text-gray-900">Payout Summary</h3>
-                  <Link href={storeId ? `/mx/payouts?storeId=${encodeURIComponent(storeId)}` : '/mx/payouts'} className="text-xs font-medium text-blue-600 hover:text-blue-700">
-                    View Payouts →
-                  </Link>
-                </div>
-                <div className="flex items-center justify-start gap-6 flex-1">
-                  {/* Chart */}
-                  <div className="flex-shrink-0">
-                    <div className="relative w-32 h-32">
-                      <svg viewBox="0 0 120 120" className="w-full h-full transform -rotate-90">
-                        {/* Background circle */}
-                        <circle cx="60" cy="60" r="45" fill="none" stroke="#e5e7eb" strokeWidth="10"/>
-                      </svg>
-                      <div className="absolute inset-0 flex flex-col items-center justify-center">
-                        <p className="text-2xl font-bold text-gray-900">₹0.00</p>
-                        <p className="text-xs text-gray-500 font-medium">Total Payout</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Legend - Right side */}
-                  <div className="flex-1 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2.5 h-2.5 rounded-full bg-emerald-500"/>
-                        <span className="text-xs text-gray-600 font-medium">Paid</span>
-                      </div>
-                      <span className="text-xs font-semibold text-gray-900">₹0.00</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2.5 h-2.5 rounded-full bg-orange-500"/>
-                        <span className="text-xs text-gray-600 font-medium">In Process</span>
-                      </div>
-                      <span className="text-xs font-semibold text-gray-900">₹0.00</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2.5 h-2.5 rounded-full bg-red-500"/>
-                        <span className="text-xs text-gray-600 font-medium">Pending</span>
-                      </div>
-                      <span className="text-xs font-semibold text-gray-900">₹0.00</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2.5 h-2.5 rounded-full bg-purple-500"/>
-                        <span className="text-xs text-gray-600 font-medium">Failed</span>
-                      </div>
-                      <span className="text-xs font-semibold text-gray-900">₹0.00</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Recent Payout */}
-              <div className="bg-white rounded-lg shadow-sm p-4 border border-gray-200 flex flex-col">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-semibold text-gray-900">Recent Payout</h3>
-                  <Link href={storeId ? `/mx/payouts?storeId=${encodeURIComponent(storeId)}` : '/mx/payouts'} className="text-xs font-medium text-blue-600 hover:text-blue-700">
-                    View All →
-                  </Link>
-                </div>
-                <div className="flex-1 flex flex-col items-center justify-center text-center py-4">
-                  <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center mb-2">
-                    <FileImage size={24} className="text-gray-400"/>
-                  </div>
-                  <p className="text-sm font-medium text-gray-600">No payouts yet</p>
-                  <p className="text-xs text-gray-500 mt-1">Your payout history will appear here.</p>
-                </div>
-              </div>
-            </div>
+            <PaymentsOverviewCharts
+              analyticsPeriod={analyticsPeriod}
+              onAnalyticsPeriodChange={setAnalyticsPeriod}
+              analytics={walletAnalytics}
+              analyticsLoading={analyticsLoading}
+              payoutData={payoutData}
+              payoutsLoading={payoutsLoading}
+            />
 
             {/* Bank & UPI + Quick Actions Row */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -965,7 +847,7 @@ function PaymentsContent() {
                   </button>
                   
                   <button
-                    onClick={() => {}}
+                    type="button" onClick={() => scrollToLedger({ category: 'WITHDRAWAL' })}
                     className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 transition-colors group"
                   >
                     <div className="flex items-center gap-3">
@@ -981,7 +863,7 @@ function PaymentsContent() {
                   </button>
 
                   <button
-                    onClick={() => {}}
+                    type="button" onClick={() => scrollToLedger({ category: 'WITHDRAWAL' })}
                     className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 transition-colors group"
                   >
                     <div className="flex items-center gap-3">
@@ -997,7 +879,7 @@ function PaymentsContent() {
                   </button>
 
                   <button
-                    onClick={() => {}}
+                    type="button" onClick={() => void downloadLedgerCsv()}
                     className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 transition-colors group"
                   >
                     <div className="flex items-center gap-3">
@@ -1016,7 +898,11 @@ function PaymentsContent() {
             </div>
 
             {/* Recent Transactions */}
-            <div className="lg:col-span-3 bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
+            <div
+              id="payments-ledger-section"
+              ref={ledgerSectionRef}
+              className="lg:col-span-3 bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden"
+            >
               <div className="px-4 py-2.5 border-b border-gray-100">
                 <h3 className="text-sm font-semibold text-gray-900">Recent Transactions</h3>
               </div>
@@ -1138,7 +1024,7 @@ function PaymentsContent() {
                               <td className="py-3 px-4 text-gray-600 whitespace-nowrap">{new Date(row.created_at).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}</td>
                               <td className="py-3 px-4 text-gray-600 truncate max-w-xs" title={row.description ?? ''}>{row.description || '—'}</td>
                               <td className={`py-3 px-4 text-right font-semibold tabular-nums ${row.direction === 'CREDIT' ? 'text-emerald-600' : 'text-red-600'}`}>
-                                {row.direction === 'CREDIT' ? '+' : '-'}₹{row.amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                {row.direction === 'CREDIT' ? '+' : '-'}{formatInr(row.amount)}
                               </td>
                               <td className="py-3 px-4 text-center">
                                 {row.direction === 'CREDIT' ? (
@@ -1153,7 +1039,7 @@ function PaymentsContent() {
                                   </span>
                                 )}
                               </td>
-                              <td className="py-3 px-4 text-right text-gray-700 tabular-nums">₹{row.balance_after.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                              <td className="py-3 px-4 text-right text-gray-700 tabular-nums">{formatInr(row.balance_after)}</td>
                             </tr>
                             {expandedLedgerId === row.id && row.category === 'WITHDRAWAL' && row.reference_id != null && (
                               <tr className="bg-slate-50/60 border-b border-slate-200">
@@ -1178,8 +1064,8 @@ function PaymentsContent() {
                                             {payoutDetailsCache[row.reference_id]?.payout?.utr_reference && (
                                               <div className="flex justify-between"><dt className="text-slate-500">UTR / Ref</dt><dd className="font-mono text-xs">{payoutDetailsCache[row.reference_id].payout.utr_reference}</dd></div>
                                             )}
-                                            <div className="flex justify-between"><dt className="text-slate-500">Amount</dt><dd>₹{payoutDetailsCache[row.reference_id]?.payout?.amount?.toLocaleString('en-IN', { minimumFractionDigits: 2 }) ?? '—'}</dd></div>
-                                            <div className="flex justify-between"><dt className="text-slate-500">Net payout</dt><dd className="font-medium">₹{payoutDetailsCache[row.reference_id]?.payout?.net_payout_amount?.toLocaleString('en-IN', { minimumFractionDigits: 2 }) ?? '—'}</dd></div>
+                                            <div className="flex justify-between"><dt className="text-slate-500">Amount</dt><dd>{payoutDetailsCache[row.reference_id]?.payout?.amount != null ? formatInr(payoutDetailsCache[row.reference_id].payout.amount) : '—'}</dd></div>
+                                            <div className="flex justify-between"><dt className="text-slate-500">Net payout</dt><dd className="font-medium">{payoutDetailsCache[row.reference_id]?.payout?.net_payout_amount != null ? formatInr(payoutDetailsCache[row.reference_id].payout.net_payout_amount) : '—'}</dd></div>
                                             {payoutDetailsCache[row.reference_id]?.payout?.status === 'COMPLETED' && storeId && (
                                               <div className="pt-2 mt-2 border-t border-slate-100">
                                                 <dt className="text-slate-500 text-xs mb-1">Invoice</dt>
@@ -1260,7 +1146,7 @@ function PaymentsContent() {
                                                 {orderDetailsCache[row.order_id].items.map((item) => (
                                                   <li key={item.id} className="flex justify-between items-center py-2 px-2 text-sm">
                                                     <span className="font-medium text-slate-800 truncate pr-2">{item.item_name || item.item_title || '—'}</span>
-                                                    <span className="text-slate-600 shrink-0">×{item.quantity} · ₹{item.total_price.toLocaleString('en-IN')}</span>
+                                                    <span className="text-slate-600 shrink-0">×{item.quantity} · {formatInr(item.total_price)}</span>
                                                   </li>
                                                 ))}
                                               </ul>
@@ -1392,7 +1278,7 @@ function PaymentsContent() {
                   <TrendingUp size={18} className="text-emerald-600" />
                 </div>
                 <p className="text-3xl font-bold text-emerald-900 tracking-tight">
-                  ₹{(wallet?.available_balance ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  {formatInr(wallet?.available_balance ?? 0)}
                 </p>
                 <p className="text-xs text-emerald-600 mt-2">Ready to withdraw</p>
               </div>
@@ -1411,7 +1297,7 @@ function PaymentsContent() {
                     disabled={isWithdrawing}
                   />
                 </div>
-                <p className="text-xs text-gray-500 mt-2">Minimum ₹100 • Maximum ₹{(wallet?.available_balance ?? 0).toLocaleString('en-IN')}</p>
+                <p className="text-xs text-gray-500 mt-2">Minimum ₹100 • Maximum {formatInr(wallet?.available_balance ?? 0)}</p>
               </div>
 
               {/* Breakdown - Enhanced */}
@@ -1427,30 +1313,30 @@ function PaymentsContent() {
                     <div className="space-y-2.5 text-sm">
                       <div className="flex justify-between items-center">
                         <span className="text-gray-700">Requested</span>
-                        <span className="font-semibold text-gray-900">₹{payoutQuote.requested_amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                        <span className="font-semibold text-gray-900">{formatInr(payoutQuote.requested_amount)}</span>
                       </div>
                       <div className="border-t border-gray-200"></div>
                       {payoutQuote.commission_percentage > 0 && (
                         <div className="flex justify-between items-center">
                           <span className="text-gray-600">Commission ({payoutQuote.commission_percentage}%)</span>
-                          <span className="font-semibold text-amber-600">−₹{(payoutQuote.commission_amount ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          <span className="font-semibold text-amber-600">−{formatInr(payoutQuote.commission_amount ?? 0)}</span>
                         </div>
                       )}
                       {(payoutQuote.gst_on_commission ?? 0) > 0 && (
                         <div className="flex justify-between items-center">
                           <span className="text-gray-600">GST ({payoutQuote.gst_on_commission_percent ?? 18}%)</span>
-                          <span className="font-semibold text-amber-600">−₹{(payoutQuote.gst_on_commission ?? payoutQuote.tax_amount ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          <span className="font-semibold text-amber-600">−{formatInr(payoutQuote.gst_on_commission ?? payoutQuote.tax_amount ?? 0)}</span>
                         </div>
                       )}
                       {(payoutQuote.tds_amount ?? 0) > 0 && (
                         <div className="flex justify-between items-center">
                           <span className="text-gray-600">TDS Deducted</span>
-                          <span className="font-semibold text-red-600">−₹{(payoutQuote.tds_amount ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          <span className="font-semibold text-red-600">−{formatInr(payoutQuote.tds_amount ?? 0)}</span>
                         </div>
                       )}
                       <div className="border-t border-gray-300 pt-2.5 flex justify-between items-center bg-emerald-50 -mx-4 px-4 py-2.5 rounded-lg">
                         <span className="font-bold text-gray-900">You Get</span>
-                        <span className="text-xl font-bold text-emerald-700">₹{payoutQuote.net_payout_amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                        <span className="text-xl font-bold text-emerald-700">{formatInr(payoutQuote.net_payout_amount)}</span>
                       </div>
                     </div>
                   </div>

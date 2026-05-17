@@ -1,7 +1,8 @@
 /**
  * POST /api/merchant/stores/[id]/documents/verify
- * Mark a single document type as verified or rejected. Updates merchant_store_documents;
- * step 4 completion still uses the main "Mark as verified" flow when all required docs pass.
+ * Mark a single document type as verified or rejected. Updates merchant_store_documents.
+ * For already-approved stores, per-document verify is sufficient (no final store approval).
+ * During onboarding, step 4 may still use "Mark as verified" when all required docs pass.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
@@ -232,10 +233,16 @@ export async function POST(
       [verifiedBy, storeId]
     );
 
+    const storeApproved =
+      String(store.approval_status ?? "").toUpperCase() === "APPROVED";
+
     return NextResponse.json({
       success: true,
       docType,
-      message: "Document marked as verified.",
+      store_remains_approved: storeApproved,
+      message: storeApproved
+        ? "Document verified. Store approval unchanged."
+        : "Document marked as verified.",
     });
   } catch (e) {
     console.error("[POST /api/merchant/stores/[id]/documents/verify]", e);

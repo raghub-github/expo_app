@@ -35,7 +35,32 @@ import {
   type OrderRecord,
   type OrderStage,
   type DeliveryType,
+  type OrderCounts,
 } from "@/hooks/useOrders";
+import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { TerminalOrderCard } from "@/components/order/TerminalOrderCard";
+import { CustomerStoreOrdinalPill } from "@/components/order/CustomerStoreOrdinalPill";
+import { ItemVegMark } from "@/components/order/ItemVegMark";
+import { OrdersFilterSheet } from "@/components/order/OrdersFilterSheet";
+import {
+  EMPTY_ORDERS_FILTERS,
+  countActiveFilters,
+  orderMatchesSheetFilters,
+  type OrdersFilters,
+} from "@/components/order/ordersFilterTypes";
+import { PastOrdersBanner } from "@/components/order/PastOrdersBanner";
+import {
+  OrderDateRangeBar,
+  OrderDateRangeSheet,
+} from "@/components/order/OrderDateRangeSheet";
+import {
+  DEFAULT_HISTORY_DATE_RANGE,
+  isWithinLast24Hours,
+  orderInDateRange,
+  type OrderDateRange,
+} from "@/lib/orderDateRange";
+
+export type OrdersListMode = "live" | "history";
 
 const SEARCH_BG = "#F1F5F9";
 const TAB_TEXT_COLOR = GatiMitraMerchant.textSecondary;
@@ -71,15 +96,15 @@ const STATUS_TABS: { key: FilterKey; label: string }[] = [
 
 const STATUS_BADGE_COLORS: Record<
   OrderStage,
-  { bg: string; color: string }
+  { bg: string; color: string; border: string }
 > = {
-  created: { bg: "#DCFCE7", color: STATUS_GREEN },
-  preparing: { bg: "#DCFCE7", color: STATUS_GREEN },
-  ready: { bg: "#DCFCE7", color: STATUS_GREEN },
-  picked_up: { bg: "#DCFCE7", color: STATUS_GREEN },
-  delivered: { bg: "#E0F2FE", color: "#166534" },
-  rejected: { bg: "#FEE2E2", color: STATUS_RED },
-  rto: { bg: "#FFF7ED", color: STATUS_ORANGE },
+  created: { bg: "#22C55E", color: "#FFFFFF", border: "#16A34A" },
+  preparing: { bg: "#16A34A", color: "#FFFFFF", border: "#15803D" },
+  ready: { bg: "#0D9488", color: "#FFFFFF", border: "#0F766E" },
+  picked_up: { bg: "#2563EB", color: "#FFFFFF", border: "#1D4ED8" },
+  delivered: { bg: "#16A34A", color: "#FFFFFF", border: "#15803D" },
+  rejected: { bg: "#DC2626", color: "#FFFFFF", border: "#B91C1C" },
+  rto: { bg: "#EA580C", color: "#FFFFFF", border: "#C2410C" },
 };
 
 function formatTimeSince(createdAt: string, nowMs: number): string {
@@ -107,21 +132,52 @@ function formatTimerSince(createdAt: string, nowMs: number): string {
 function SearchBar({
   value,
   onChangeText,
+  filterCount,
+  onFilterPress,
+  showFilter,
 }: {
   value: string;
   onChangeText: (value: string) => void;
+  filterCount: number;
+  onFilterPress: () => void;
+  showFilter?: boolean;
 }) {
   return (
-    <View style={styles.searchWrap}>
-      <Ionicons name="search" size={20} color={GatiMitraMerchant.textTertiary} />
-      <TextInput
-        style={styles.searchInput}
-        placeholder="Search by order id"
-        placeholderTextColor={GatiMitraMerchant.textTertiary}
-        value={value}
-        onChangeText={onChangeText}
-        returnKeyType="search"
-      />
+    <View style={styles.searchRow}>
+      <View style={styles.searchWrap}>
+        <Ionicons name="search" size={20} color={GatiMitraMerchant.textTertiary} />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search by order id"
+          placeholderTextColor={GatiMitraMerchant.textTertiary}
+          value={value}
+          onChangeText={onChangeText}
+          returnKeyType="search"
+        />
+      </View>
+      {showFilter ? (
+        <Pressable
+          onPress={onFilterPress}
+          style={({ pressed }) => [
+            styles.filterBtn,
+            pressed && styles.pressed,
+            filterCount > 0 && styles.filterBtnActive,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Filters"
+        >
+          <Ionicons
+            name="options-outline"
+            size={20}
+            color={filterCount > 0 ? GatiMitraMerchant.primary : GatiMitraMerchant.textPrimary}
+          />
+          {filterCount > 0 ? (
+            <View style={styles.filterBadge}>
+              <Text style={styles.filterBadgeText}>{filterCount > 9 ? "9+" : filterCount}</Text>
+            </View>
+          ) : null}
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -254,9 +310,9 @@ function DeliveryBadge({ deliveryType }: { deliveryType: DeliveryType }) {
 }
 
 function StatusBadge({ status }: { status: OrderStage }) {
-  const { bg, color } = STATUS_BADGE_COLORS[status];
+  const { bg, color, border } = STATUS_BADGE_COLORS[status];
   return (
-    <View style={[styles.statusBadge, { backgroundColor: bg }]}>
+    <View style={[styles.statusBadge, { backgroundColor: bg, borderColor: border }]}>
       <Text style={[styles.statusBadgeText, { color }]} numberOfLines={1}>
         {status.replace("_", " ").toUpperCase()}
       </Text>
@@ -428,6 +484,25 @@ type OrderCardProps = {
   onViewDetail: () => void;
 };
 
+function isTerminalStatus(status: OrderStage): boolean {
+  return status === "rejected" || status === "rto" || status === "delivered";
+}
+
+/** Past orders shown on history page only. */
+function isHistoryTerminalOrder(order: OrderRecord): boolean {
+  return isTerminalStatus(order.status);
+}
+
+function historyOrderTimeIso(order: OrderRecord): string {
+  if (
+    (order.status === "rejected" || order.status === "rto") &&
+    order.cancelledAt
+  ) {
+    return order.cancelledAt;
+  }
+  return order.createdAt;
+}
+
 function OrderCard({
   order,
   nowMs,
@@ -436,6 +511,17 @@ function OrderCard({
   onAdvance,
   onViewDetail,
 }: OrderCardProps) {
+  if (isTerminalStatus(order.status)) {
+    return (
+      <TerminalOrderCard
+        order={order}
+        formattedOrderId={order.formattedOrderId}
+        rejectedReason={order.rejectedReason}
+        onPress={onViewDetail}
+      />
+    );
+  }
+
   const timeSince = formatTimeSince(order.createdAt, nowMs);
   const timer = formatTimerSince(order.createdAt, nowMs);
 
@@ -471,10 +557,18 @@ function OrderCard({
       <View style={styles.cardHeaderRow}>
         <View style={styles.cardHeaderLeft}>
           <Text style={styles.orderIdText}>
-            {order.orderNumber} <Text style={styles.dotSeparator}>•</Text>{" "}
-            {order.displayTime}
+            {order.formattedOrderId ?? order.orderNumber}{" "}
+            <Text style={styles.dotSeparator}>•</Text> {order.displayTime}
           </Text>
-          <Text style={styles.customerName}>{order.customerName}</Text>
+          <View style={styles.customerNameRow}>
+            <Text style={styles.customerName} numberOfLines={1}>
+              {order.customerName}
+            </Text>
+            <CustomerStoreOrdinalPill
+              ordinal={order.customerStoreOrderOrdinal}
+              variant="inline"
+            />
+          </View>
           <Text style={styles.timeSince}>{timeSince}</Text>
         </View>
         <View style={styles.cardHeaderRight}>
@@ -501,6 +595,7 @@ function OrderCard({
       <View style={styles.itemsSection}>
         {order.lineItems.slice(0, 2).map((item, idx) => (
           <View key={`${order.id}-${idx}`} style={styles.itemRow}>
+            <ItemVegMark vegNonveg={item.vegNonveg} name={item.name} size={14} />
             <Text style={styles.itemText} numberOfLines={1}>
               {item.qty} x {item.name}
             </Text>
@@ -508,10 +603,14 @@ function OrderCard({
           </View>
         ))}
         {order.lineItems.length > 2 && (
-          <Text style={styles.moreItemsText}>
-            +{order.lineItems.length - 2} more item
-            {order.lineItems.length - 2 > 1 ? "s" : ""}
-          </Text>
+          <View style={styles.moreItemsRow}>
+            <Text style={styles.moreItemsText}>
+              +{order.lineItems.length - 2} More
+            </Text>
+            <Text style={styles.moreItemsTotal}>
+              ₹{order.total.toLocaleString("en-IN")}
+            </Text>
+          </View>
         )}
       </View>
 
@@ -574,17 +673,23 @@ function OrderCard({
   );
 }
 
-export default function OrdersScreen() {
+export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
+  const isHistory = mode === "history";
   const router = useRouter();
   const params = useLocalSearchParams<{ tab?: string }>();
-  const scrollBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING;
+  const scrollBottomPadding = isHistory ? 24 : TAB_BAR_SCROLL_CONTENT_PADDING;
+  const { selectedStore } = useSelectedStore();
 
-  const { orders, loading, error, refetch, transitionOrder, counts } = useOrders();
+  const { orders, loading, error, refetch, transitionOrder } = useOrders();
 
   const [search, setSearch] = useState("");
+  const [sheetFilters, setSheetFilters] = useState<OrdersFilters>(EMPTY_ORDERS_FILTERS);
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false);
+  const [dateRange, setDateRange] = useState<OrderDateRange>(DEFAULT_HISTORY_DATE_RANGE);
+  const [dateSheetOpen, setDateSheetOpen] = useState(false);
   const initialTabParam = typeof params.tab === "string" ? params.tab.toLowerCase() : "";
   const [filterKey, setFilterKey] = useState<FilterKey>(
-    initialTabParam === "active" ? "preparing" : "created"
+    isHistory ? "all" : initialTabParam === "active" ? "preparing" : "created"
   );
   const [refreshing, setRefreshing] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
@@ -601,14 +706,52 @@ export default function OrdersScreen() {
   }, [refetch]);
 
   const filteredOrders = useMemo(() => {
-    return orders.filter((o) => {
+    const list = orders.filter((o) => {
+      const q = search.trim().toLowerCase();
       const matchesSearch =
-        !search.trim() ||
-        o.orderNumber.toLowerCase().includes(search.trim().toLowerCase());
+        !q ||
+        o.orderNumber.toLowerCase().includes(q) ||
+        (o.formattedOrderId ?? "").toLowerCase().includes(q) ||
+        o.customerName.toLowerCase().includes(q);
+
+      if (isHistory) {
+        if (!isHistoryTerminalOrder(o)) return false;
+        if (!orderInDateRange(historyOrderTimeIso(o), dateRange)) return false;
+        if (!orderMatchesSheetFilters(o, sheetFilters)) return false;
+        return matchesSearch;
+      }
+
       const matchesStatus = filterKey === "all" ? true : o.status === filterKey;
-      return matchesSearch && matchesStatus;
+      const matchesSheet = orderMatchesSheetFilters(o, sheetFilters);
+      const matchesTime = isWithinLast24Hours(o.createdAt, nowMs);
+      return matchesSearch && matchesStatus && matchesSheet && matchesTime;
     });
-  }, [orders, search, filterKey]);
+
+    if (isHistory) {
+      return [...list].sort(
+        (a, b) =>
+          new Date(historyOrderTimeIso(b)).getTime() -
+          new Date(historyOrderTimeIso(a)).getTime()
+      );
+    }
+    return list;
+  }, [orders, search, filterKey, sheetFilters, isHistory, dateRange, nowMs]);
+
+  const liveCounts = useMemo(() => {
+    const live = orders.filter((o) => isWithinLast24Hours(o.createdAt, nowMs));
+    const base = {
+      all: live.length,
+      created: 0,
+      preparing: 0,
+      ready: 0,
+      picked_up: 0,
+      delivered: 0,
+      rejected: 0,
+      rto: 0,
+    } as OrderCounts;
+    for (const o of live) base[o.status] += 1;
+    return base;
+  }, [orders, nowMs]);
 
   const handleAccept = useCallback(
     (order: OrderRecord) => {
@@ -656,25 +799,53 @@ export default function OrdersScreen() {
     [router]
   );
 
-  const renderOrder = ({ item }: { item: OrderRecord }) => (
-    <OrderCard
-      order={item}
-      nowMs={nowMs}
-      onAccept={() => handleAccept(item)}
-      onReject={() => handleReject(item)}
-      onAdvance={() => handleAdvance(item)}
-      onViewDetail={() => handleViewDetail(item)}
-    />
-  );
-
-  const listHeader = (
-    <>
-      <SearchBar value={search} onChangeText={setSearch} />
-      <StatusTabs
-        activeKey={filterKey}
-        counts={{ ...counts, all: counts.all }}
-        onChange={setFilterKey}
+  const renderOrder = ({ item }: { item: OrderRecord }) => {
+    if (isHistory) {
+      return (
+        <TerminalOrderCard
+          order={item}
+          formattedOrderId={item.formattedOrderId}
+          rejectedReason={item.rejectedReason}
+          onPress={() => handleViewDetail(item)}
+        />
+      );
+    }
+    return (
+      <OrderCard
+        order={item}
+        nowMs={nowMs}
+        onAccept={() => handleAccept(item)}
+        onReject={() => handleReject(item)}
+        onAdvance={() => handleAdvance(item)}
+        onViewDetail={() => handleViewDetail(item)}
       />
+    );
+  };
+
+  const activeFilterCount = countActiveFilters(sheetFilters);
+
+  const listHeader = isHistory ? (
+    <>
+      <SearchBar
+        value={search}
+        onChangeText={setSearch}
+        filterCount={activeFilterCount}
+        onFilterPress={() => setFilterSheetOpen(true)}
+        showFilter
+      />
+      <OrderDateRangeBar range={dateRange} onPress={() => setDateSheetOpen(true)} />
+    </>
+  ) : (
+    <>
+      <SearchBar
+        value={search}
+        onChangeText={setSearch}
+        filterCount={activeFilterCount}
+        onFilterPress={() => setFilterSheetOpen(true)}
+        showFilter
+      />
+      <PastOrdersBanner onPress={() => router.push("/order-history" as any)} />
+      <StatusTabs activeKey={filterKey} counts={liveCounts} onChange={setFilterKey} />
     </>
   );
 
@@ -703,6 +874,20 @@ export default function OrdersScreen() {
 
   return (
     <View style={styles.container}>
+      <OrdersFilterSheet
+        visible={filterSheetOpen}
+        value={sheetFilters}
+        onClose={() => setFilterSheetOpen(false)}
+        onApply={setSheetFilters}
+      />
+      {isHistory ? (
+        <OrderDateRangeSheet
+          visible={dateSheetOpen}
+          value={dateRange}
+          onClose={() => setDateSheetOpen(false)}
+          onApply={setDateRange}
+        />
+      ) : null}
       <FlatList
         data={filteredOrders}
         keyExtractor={(item) => item.id}
@@ -740,9 +925,13 @@ export default function OrdersScreen() {
               <Text style={styles.emptyText}>
                 {search.trim()
                   ? "No orders match your search"
-                  : filterKey === "all"
-                  ? "No orders yet"
-                  : `No orders in ${filterKey.replace("_", " ")}`}
+                  : isHistory
+                    ? activeFilterCount > 0
+                      ? "No orders match your filters in this date range"
+                      : "No completed, rejected, or RTO orders in this date range"
+                    : filterKey === "all"
+                      ? "No orders in the last 24 hours"
+                      : `No orders in ${filterKey.replace("_", " ")} (last 24h)`}
               </Text>
             </View>
           )
@@ -756,17 +945,21 @@ export default function OrdersScreen() {
   );
 }
 
+export default function OrdersTabScreen() {
+  return <OrdersListScreen mode="live" />;
+}
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: GatiMitraMerchant.background,
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
   },
   listContent: {
     paddingHorizontal: H_PADDING,
     paddingTop: 12,
   },
   separator: {
-    height: 12,
+    height: 14,
   },
   centered: {
     flex: 1,
@@ -804,7 +997,7 @@ const styles = StyleSheet.create({
   pressed: {
     opacity: 0.8,
   },
-  searchWrap: {
+  historySearchWrap: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: SEARCH_BG,
@@ -813,6 +1006,62 @@ const styles = StyleSheet.create({
     paddingVertical: Platform.OS === "ios" ? 12 : 10,
     gap: 10,
     marginBottom: 10,
+  },
+  historySearchInput: {
+    flex: 1,
+    fontSize: 15,
+    color: GatiMitraMerchant.textPrimary,
+    paddingVertical: 0,
+    ...(Platform.OS === "web" ? { outlineStyle: "none" } : {}),
+  },
+  searchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 10,
+  },
+  searchWrap: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: SEARCH_BG,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: Platform.OS === "ios" ? 12 : 10,
+    gap: 10,
+    minWidth: 0,
+  },
+  filterBtn: {
+    width: 40,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  filterBtnActive: {
+    borderColor: GatiMitraMerchant.primary,
+    backgroundColor: "#ECFDF5",
+  },
+  filterBadge: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: GatiMitraMerchant.primary,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  filterBadgeText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#FFFFFF",
   },
   searchInput: {
     flex: 1,
@@ -891,11 +1140,19 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textTertiary,
     fontWeight: "400",
   },
-  customerName: {
-    fontSize: 13,
-    fontWeight: "500",
-    color: STATUS_GREEN,
+  customerNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
     marginTop: 2,
+  },
+  customerName: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "600",
+    color: STATUS_GREEN,
+    minWidth: 0,
   },
   timeSince: {
     fontSize: 12,
@@ -913,12 +1170,14 @@ const styles = StyleSheet.create({
   },
   statusBadge: {
     paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1,
   },
   statusBadgeText: {
     fontSize: 11,
-    fontWeight: "700",
+    fontWeight: "800",
+    letterSpacing: 0.5,
   },
   moreBtn: {
     marginTop: 4,
@@ -931,8 +1190,10 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     marginBottom: 4,
+    gap: 8,
   },
   itemText: {
+    flex: 1,
     fontSize: 14,
     color: GatiMitraMerchant.textPrimary,
     flex: 1,
@@ -943,10 +1204,22 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textPrimary,
     fontWeight: "500",
   },
+  moreItemsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 4,
+    gap: 8,
+  },
   moreItemsText: {
     fontSize: 12,
-    color: GatiMitraMerchant.textTertiary,
-    marginTop: 2,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  moreItemsTotal: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
   },
   totalRow: {
     flexDirection: "row",

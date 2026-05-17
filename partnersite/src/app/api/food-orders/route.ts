@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
+import {
+  extractItemsArray,
+  mapCoreDbItemsToRaw,
+  normalizeOrderItems,
+  parseMerchantBillingBreakdown,
+} from '@/lib/orderLineItems';
+import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -20,47 +27,6 @@ async function resolveStoreId(db: ReturnType<typeof getSupabase>, storeIdParam: 
     .single();
   if (error || !data) return null;
   return { id: data.id as number };
-}
-
-function extractItemsArray(rawItems: unknown): unknown[] {
-  if (Array.isArray(rawItems)) return rawItems;
-  if (typeof rawItems === 'string') {
-    try {
-      const parsed = JSON.parse(rawItems) as unknown;
-      if (Array.isArray(parsed)) return parsed;
-      if (parsed && typeof parsed === 'object') {
-        const o = parsed as Record<string, unknown>;
-        if (Array.isArray(o.items)) return o.items;
-        if (Array.isArray(o.order_items)) return o.order_items;
-        if (Array.isArray(o.cart_items)) return o.cart_items;
-      }
-    } catch {
-      return [];
-    }
-  }
-  if (rawItems && typeof rawItems === 'object') {
-    const o = rawItems as Record<string, unknown>;
-    if (Array.isArray(o.items)) return o.items;
-    if (Array.isArray(o.order_items)) return o.order_items;
-    if (Array.isArray(o.cart_items)) return o.cart_items;
-  }
-  return [];
-}
-
-function normalizeOrderItems(
-  rawItems: unknown
-): Array<{ name: string; quantity: number; price: number; total: number; customizations?: string[] }> {
-  const arr = extractItemsArray(rawItems);
-  if (!Array.isArray(arr) || arr.length === 0) return [];
-  return arr.map((it, idx) => {
-    const row = (it && typeof it === 'object' ? it : {}) as Record<string, unknown>;
-    const qty = Number(row.quantity) ?? 1;
-    const unitPrice = Number(row.price ?? row.unit_price ?? 0);
-    const total = Number(row.total ?? row.total_price ?? unitPrice * qty);
-    const name = String(row.name ?? row.item_name ?? `Item ${idx + 1}`).trim();
-    const customizations = Array.isArray(row.customizations) ? (row.customizations as string[]) : undefined;
-    return { name, quantity: qty, price: unitPrice, total, customizations };
-  });
 }
 
 type CoreRow = Record<string, unknown>;
@@ -83,6 +49,7 @@ export async function GET(req: NextRequest) {
     const ordersCoreIdRaw = searchParams.get('orders_core_id');
     const ordersCoreId =
       ordersCoreIdRaw != null && ordersCoreIdRaw !== '' ? parseInt(ordersCoreIdRaw, 10) : NaN;
+    const formattedOrderId = (searchParams.get('formatted_order_id') || '').trim();
 
     if (!storeId) {
       return NextResponse.json({ error: 'store_id is required' }, { status: 400 });
@@ -132,6 +99,42 @@ export async function GET(req: NextRequest) {
         .maybeSingle();
       foodByCoreId = new Map();
       if (foodOne) foodByCoreId.set(ordersCoreId, foodOne as FoodRow);
+    } else if (formattedOrderId) {
+      const { data: coreOne } = await db
+        .from('orders_core')
+        .select('*')
+        .eq('merchant_store_id', store.id)
+        .eq('formatted_order_id', formattedOrderId)
+        .maybeSingle();
+      if (coreOne) {
+        const corePk = Number((coreOne as CoreRow).id);
+        coreRows = [coreOne as CoreRow];
+        const { data: foodOne } = await db
+          .from('orders_food')
+          .select('*')
+          .eq('order_id', corePk)
+          .maybeSingle();
+        foodByCoreId = new Map();
+        if (foodOne) foodByCoreId.set(corePk, foodOne as FoodRow);
+      } else {
+        const { data: foodOne, error: foodErr } = await db
+          .from('orders_food')
+          .select('*')
+          .eq('merchant_store_id', store.id)
+          .eq('formatted_order_id', formattedOrderId)
+          .maybeSingle();
+        if (foodErr || !foodOne) {
+          return NextResponse.json({ error: 'Order not found' }, { status: 404 });
+        }
+        const f = foodOne as FoodRow;
+        const corePk = Number(f.order_id);
+        const { data: coreFromFood } = await db.from('orders_core').select('*').eq('id', corePk).single();
+        if (!coreFromFood) {
+          return NextResponse.json({ error: 'Core order not found' }, { status: 404 });
+        }
+        coreRows = [coreFromFood as CoreRow];
+        foodByCoreId = new Map([[corePk, f]]);
+      }
     } else {
       let q = db
         .from('orders_core')
@@ -205,23 +208,131 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // For current page orders only: compute historical order count per customer (per store).
     const customerOrderCountById = new Map<number, number>();
+    const customerPlatformCountById = new Map<number, number>();
     if (customerIds.length > 0) {
       await Promise.all(
         customerIds.map(async (cid) => {
           try {
-            const { count } = await db
-              .from('orders_core')
-              .select('id', { count: 'exact', head: true })
-              .eq('merchant_store_id', store.id)
-              .eq('customer_id', cid);
-            customerOrderCountById.set(cid, typeof count === 'number' ? count : 0);
+            const [{ count: storeCount }, { count: platformCount }] = await Promise.all([
+              db
+                .from('orders_core')
+                .select('id', { count: 'exact', head: true })
+                .eq('merchant_store_id', store.id)
+                .eq('customer_id', cid),
+              db
+                .from('orders_core')
+                .select('id', { count: 'exact', head: true })
+                .eq('customer_id', cid),
+            ]);
+            customerOrderCountById.set(cid, typeof storeCount === 'number' ? storeCount : 0);
+            customerPlatformCountById.set(cid, typeof platformCount === 'number' ? platformCount : 0);
           } catch {
             customerOrderCountById.set(cid, 0);
+            customerPlatformCountById.set(cid, 0);
           }
         })
       );
+    }
+
+    const storeOrdinalByKey = new Map<string, number>();
+    const platformOrdinalByKey = new Map<string, number>();
+    await Promise.all(
+      coreRows
+        .filter((c) => c.customer_id != null && c.created_at)
+        .map(async (core) => {
+          const cid = Number(core.customer_id);
+          const createdAt = String(core.created_at);
+          const storeKey = `s:${cid}:${createdAt}`;
+          const platformKey = `p:${cid}:${createdAt}`;
+          if (!storeOrdinalByKey.has(storeKey)) {
+            try {
+              const { count } = await db
+                .from('orders_core')
+                .select('id', { count: 'exact', head: true })
+                .eq('merchant_store_id', store.id)
+                .eq('customer_id', cid)
+                .lte('created_at', createdAt);
+              storeOrdinalByKey.set(storeKey, typeof count === 'number' ? count : 0);
+            } catch {
+              storeOrdinalByKey.set(storeKey, 0);
+            }
+          }
+          if (!platformOrdinalByKey.has(platformKey)) {
+            try {
+              const { count } = await db
+                .from('orders_core')
+                .select('id', { count: 'exact', head: true })
+                .eq('customer_id', cid)
+                .lte('created_at', createdAt);
+              platformOrdinalByKey.set(platformKey, typeof count === 'number' ? count : 0);
+            } catch {
+              platformOrdinalByKey.set(platformKey, 0);
+            }
+          }
+        })
+    );
+
+    const orderIdTexts = [
+      ...new Set(
+        coreRows
+          .map((c) => String(c.order_id ?? '').trim())
+          .filter((s) => s.length > 0)
+      ),
+    ];
+    const rawItemsByOrderTextId = new Map<string, Record<string, unknown>[]>();
+    if (orderIdTexts.length > 0) {
+      const { data: coreItemRows, error: itemsErr } = await db
+        .from('orders_core_items')
+        .select(
+          'id, order_id, menu_item_id, item_name, variant_name, category_name, quantity, base_price, total_price, veg_nonveg, item_snapshot'
+        )
+        .in('order_id', orderIdTexts)
+        .order('id');
+      if (itemsErr) {
+        console.warn('[food-orders GET] orders_core_items:', itemsErr.message);
+      } else if (coreItemRows && coreItemRows.length > 0) {
+        const itemIds = coreItemRows
+          .map((r) => Number((r as { id: number }).id))
+          .filter((n) => Number.isFinite(n));
+        const addonsByItemId = new Map<number, { order_item_id: number; addon_name?: string | null; quantity: number }[]>();
+        if (itemIds.length > 0) {
+          const { data: addonRows } = await db
+            .from('orders_core_item_addons')
+            .select('order_item_id, addon_name, quantity, addon_price')
+            .in('order_item_id', itemIds);
+          for (const a of addonRows || []) {
+            const itemId = Number((a as { order_item_id: number }).order_item_id);
+            if (!Number.isFinite(itemId)) continue;
+            const list = addonsByItemId.get(itemId) ?? [];
+            list.push(a as { order_item_id: number; addon_name?: string | null; quantity: number });
+            addonsByItemId.set(itemId, list);
+          }
+        }
+        const grouped = new Map<string, Parameters<typeof mapCoreDbItemsToRaw>[0]>();
+        for (const row of coreItemRows) {
+          const r = row as {
+            id: number;
+            order_id: string;
+            menu_item_id?: number | null;
+            item_name: string;
+            variant_name?: string | null;
+            category_name?: string | null;
+            quantity: number;
+            base_price: string | number;
+            total_price: string | number;
+            veg_nonveg?: string | null;
+            item_snapshot?: Record<string, unknown> | null;
+          };
+          const oid = String(r.order_id);
+          const list = grouped.get(oid) ?? [];
+          list.push(r);
+          grouped.set(oid, list);
+        }
+        for (const [oid, rows] of grouped) {
+          rawItemsByOrderTextId.set(oid, mapCoreDbItemsToRaw(rows, addonsByItemId));
+        }
+      }
     }
 
     const riderIds = [
@@ -250,7 +361,7 @@ export async function GET(req: NextRequest) {
           currentSt
         );
 
-        const rawItems =
+        let rawItems: unknown =
           food != null &&
           food.items != null &&
           Array.isArray(food.items) &&
@@ -259,6 +370,11 @@ export async function GET(req: NextRequest) {
             : core.items != null && extractItemsArray(core.items).length > 0
               ? core.items
               : [];
+        if (extractItemsArray(rawItems).length === 0) {
+          const textOrderId = String(core.order_id ?? '').trim();
+          const fromDb = textOrderId ? rawItemsByOrderTextId.get(textOrderId) : undefined;
+          if (fromDb?.length) rawItems = fromDb;
+        }
         const items = normalizeOrderItems(rawItems);
 
         const riderId = core.rider_id != null ? Number(core.rider_id) : null;
@@ -275,8 +391,19 @@ export async function GET(req: NextRequest) {
               }
             : null;
 
-        const foodTotal = food != null ? food.food_items_total_value : null;
-        const coreGrand = core.grand_total ?? core.item_total;
+        const foodTotalRaw = food != null ? food.food_items_total_value : null;
+        const coreGrandRaw = core.grand_total ?? core.item_total;
+        const pricingTotal =
+          foodTotalRaw != null && foodTotalRaw !== ''
+            ? Number(foodTotalRaw)
+            : coreGrandRaw != null && coreGrandRaw !== ''
+              ? Number(coreGrandRaw)
+              : null;
+        const pricing = parseMerchantBillingBreakdown(core, pricingTotal);
+        const displayItemCount = computeOrderItemQuantityCount({
+          items,
+          food_items_count: food?.food_items_count != null ? Number(food.food_items_count) : null,
+        });
 
         const merged = {
           ...(food || {}),
@@ -294,8 +421,9 @@ export async function GET(req: NextRequest) {
           restaurant_phone: (food?.restaurant_phone as string | null) ?? null,
           preparation_time_minutes:
             food?.preparation_time_minutes != null ? Number(food.preparation_time_minutes) : null,
-          food_items_count: food?.food_items_count != null ? Number(food.food_items_count) : null,
-          food_items_total_value: foodTotal ?? coreGrand ?? 0,
+          food_items_count: displayItemCount,
+          display_item_count: displayItemCount,
+          food_items_total_value: pricingTotal ?? 0,
           requires_utensils: food?.requires_utensils ?? null,
           is_fragile: food?.is_fragile ?? false,
           is_high_value: food?.is_high_value ?? false,
@@ -312,6 +440,16 @@ export async function GET(req: NextRequest) {
           customer_phone: (food?.customer_phone as string | null) ?? cust?.primary_mobile ?? null,
           customer_email: (food?.customer_email as string | null) ?? null,
           customer_order_count: custId != null ? customerOrderCountById.get(custId) ?? null : null,
+          customer_platform_order_count:
+            custId != null ? customerPlatformCountById.get(custId) ?? null : null,
+          customer_store_order_ordinal:
+            custId != null && core.created_at
+              ? storeOrdinalByKey.get(`s:${custId}:${String(core.created_at)}`) ?? null
+              : null,
+          customer_platform_order_ordinal:
+            custId != null && core.created_at
+              ? platformOrdinalByKey.get(`p:${custId}:${String(core.created_at)}`) ?? null
+              : null,
           rider_id: riderId,
           rider_name: (riderDetails?.name as string | null) ?? (food?.rider_name as string | null) ?? null,
           rider_phone: (riderDetails?.mobile as string | null) ?? (food?.rider_phone as string | null) ?? null,
@@ -329,10 +467,19 @@ export async function GET(req: NextRequest) {
             : null,
           drop_address_raw: (core.drop_address_raw as string) ?? null,
           drop_address_normalized: (core.drop_address_normalized as string) ?? null,
+          distance_km:
+            core.distance_km != null && core.distance_km !== ''
+              ? Number(core.distance_km)
+              : null,
+          eta_seconds:
+            core.eta_seconds != null && core.eta_seconds !== ''
+              ? Number(core.eta_seconds)
+              : null,
           formatted_order_id: (core.formatted_order_id as string) ?? (food?.formatted_order_id as string) ?? null,
           is_bulk_order: Boolean((core as Record<string, unknown>).is_bulk_order),
           order_status: uiStatus,
           accepted_at: (food?.accepted_at as string | null) ?? null,
+          preparing_at: (food?.preparing_at as string | null) ?? null,
           prepared_at: (food?.prepared_at as string | null) ?? null,
           dispatched_at: (food?.dispatched_at as string | null) ?? null,
           delivered_at: (food?.delivered_at as string | null) ?? null,
@@ -344,6 +491,10 @@ export async function GET(req: NextRequest) {
           created_at: String(food?.created_at ?? core.created_at),
           updated_at: String(food?.updated_at ?? core.updated_at),
           items,
+          item_total: core.item_total != null ? Number(core.item_total) : null,
+          addon_total: core.addon_total != null ? Number(core.addon_total) : null,
+          grand_total: core.grand_total != null ? Number(core.grand_total) : null,
+          pricing,
           customer_scores: customerScores,
         };
 
