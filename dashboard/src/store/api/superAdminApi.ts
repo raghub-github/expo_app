@@ -77,6 +77,10 @@ export interface TicketTitleRow {
   priorityCode?: string | null;
   priorityDisplayName?: string | null;
   merchantSectionId?: string | null;
+  /** Customer-app section bucket (orders | payments | account | app | general). Drives /support help-sections grouping. */
+  customerSectionId?: string | null;
+  /** Order status codes this title is shown for (PG order_status_type values + 'NO_ORDER' sentinel). NULL = always show. */
+  applicableOrderStatuses?: string[] | null;
   intakeTicketType?: string | null;
   intakeUnifiedTitle?: string | null;
   intakeUnifiedCategory?: string | null;
@@ -313,6 +317,8 @@ export const superAdminApi = baseApi.injectEndpoints({
             | "tagId"
             | "priorityId"
             | "merchantSectionId"
+            | "customerSectionId"
+            | "applicableOrderStatuses"
             | "intakeTicketType"
             | "intakeUnifiedTitle"
             | "intakeUnifiedCategory"
@@ -360,6 +366,8 @@ export const superAdminApi = baseApi.injectEndpoints({
         tagId?: number | null;
         priorityId?: number | null;
         merchantSectionId?: string | null;
+        customerSectionId?: string | null;
+        applicableOrderStatuses?: string[] | null;
         intakeTicketType?: string | null;
         intakeUnifiedTitle?: string | null;
         intakeUnifiedCategory?: string | null;

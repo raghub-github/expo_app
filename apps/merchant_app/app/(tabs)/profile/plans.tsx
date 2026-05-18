@@ -41,6 +41,8 @@ export type MerchantPlan = {
   description: string | null;
   price: number;
   gst_percent?: number;
+  commission_percent_override?: number | null;
+  commission_benefit_active?: boolean;
   billing_cycle: string;
   max_menu_items: number | null;
   max_cuisines: number | null;
@@ -157,7 +159,12 @@ function computeTotalWithGst(price: number, gstPercent: number): number {
 
 /** All plan features — nothing missing on card. */
 function getAllPlanFeatures(plan: MerchantPlan): { label: string; value: string }[] {
+  const commissionLabel =
+    plan.commission_benefit_active && plan.commission_percent_override != null
+      ? `${plan.commission_percent_override}% (reduced)`
+      : "Platform default";
   return [
+    { label: "Platform commission", value: commissionLabel },
     { label: "Menu items", value: plan.max_menu_items != null ? `${plan.max_menu_items} max` : "—" },
     { label: "Cuisines", value: plan.max_cuisines != null ? `${plan.max_cuisines} max` : "—" },
     { label: "Menu categories", value: plan.max_menu_categories != null ? `${plan.max_menu_categories} max` : "—" },

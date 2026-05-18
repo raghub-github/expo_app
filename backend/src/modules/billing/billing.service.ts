@@ -4,6 +4,7 @@ import { customerAddresses } from "../../db/schema.js";
 import { getEnv } from "../../config/env.js";
 import { getStoreBillingRates, getStoreByIdForOrder, getStoreByStoreId } from "../merchants/merchant.service.js";
 import type { NormalizedOrderItem } from "../orders/orderNormalizer.js";
+import { rewriteCartPricesAuthoritatively } from "./serverAuthoritativePricing.js";
 import { loadBillingDatasetUncached, getRulesetVersion, listActiveCustomerCoupons, loadMerchantOfferUsagesByUser } from "./billing.repository.js";
 import { executeBillingPipeline } from "./executeBillingPipeline.js";
 import { listEligiblePlatformOffersForCheckout } from "./platformOffersApply.js";
@@ -189,6 +190,20 @@ export async function computeBillForOrder(
   const donationAmount = input.donationAmount ?? 0;
   const couponCode = input.couponCode?.trim() || null;
 
+  const resolved = await resolveMerchantStore(input.merchantId);
+  if (!resolved.ok) return resolved;
+
+  // Server-authoritative price re-validation: ignore whatever basePrice the
+  // client carried in the cart (it might be stale from before a price/commission
+  // change, or tampered with), and re-fetch the merchant's stored net price
+  // for each line, then apply the current commission. This guarantees the
+  // bill amount equals what the customer saw on the menu listing.
+  const authoritativeItems = await rewriteCartPricesAuthoritatively(
+    resolved.merchantStoreId,
+    input.items,
+  );
+  input = { ...input, items: authoritativeItems };
+
   const itemSubtotal = input.items.reduce((s, i) => s + i.basePrice * i.quantity, 0);
   const addonSubtotal = input.items.reduce((s, i) => {
     const lineAddon = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity * i.quantity, 0);
@@ -198,9 +213,6 @@ export async function computeBillForOrder(
     const lineQty = i.addons.reduce((a, ad) => a + ad.quantity * i.quantity, 0);
     return s + lineQty;
   }, 0);
-
-  const resolved = await resolveMerchantStore(input.merchantId);
-  if (!resolved.ok) return resolved;
 
   let dropLat: number;
   let dropLon: number;
@@ -368,6 +380,8 @@ export async function computeBillForOrder(
     tipAmount,
     donationAmount,
     subscriptionOptIn: input.subscriptionOptIn === true,
+    isSelfPickup: input.deliveryType === "self_pickup",
+    deliveryPricingEngine: quote.pricing_engine,
     checkoutAudience,
     couponRedemptionsByUser: input.couponRedemptionsByUser,
     merchantOfferUsagesByUser: undefined,
@@ -515,6 +529,8 @@ export async function listCheckoutBillOffers(
       coupons: CheckoutOfferCouponRow[];
       merchantOffers: CheckoutOfferMerchantRow[];
       platformOffers: CheckoutOfferPlatformRow[];
+      /** Offers filtered out for this cart, each with the rejection reason. */
+      platformOffersIneligible: Array<CheckoutOfferPlatformRow & { reason: string }>;
     }
   | { ok: false; code: string; message: string }
 > {
@@ -683,6 +699,21 @@ export async function listCheckoutBillOffers(
     summary: describePlatformOfferRow(o),
   }));
 
+  // Ineligible platform offers — surfaced so the customer sees "min cart ₹399"
+  // style hints (instead of the offer being hidden entirely).
+  const rejectionById = new Map<number, string>();
+  for (const r of platformRejections) rejectionById.set(r.id, r.reason);
+  const platformOffersIneligible: Array<CheckoutOfferPlatformRow & { reason: string }> =
+    dataset.platformOffers
+      .filter((o) => rejectionById.has(o.id))
+      .map((o) => ({
+        id: o.id,
+        name: o.name ?? null,
+        offerKind: String(o.offerKind ?? "DISCOUNT").toUpperCase(),
+        summary: describePlatformOfferRow(o),
+        reason: rejectionById.get(o.id) ?? "",
+      }));
+
   // Diagnostic logging — helps debug "no offers showing" issues by showing each filter step.
   // Logs are tagged so they're easy to grep: `grep checkout-offers` in server output.
   // eslint-disable-next-line no-console
@@ -717,7 +748,7 @@ export async function listCheckoutBillOffers(
     platformRejections,
   }));
 
-  return { ok: true, coupons, merchantOffers, platformOffers };
+  return { ok: true, coupons, merchantOffers, platformOffers, platformOffersIneligible };
 }
 
 /**

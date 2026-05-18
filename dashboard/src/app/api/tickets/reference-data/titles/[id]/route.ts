@@ -82,6 +82,10 @@ function mapTitleRow(r: Record<string, unknown>) {
     priorityCode: r.resolved_priority_code != null ? String(r.resolved_priority_code) : null,
     priorityDisplayName: r.resolved_priority_display_name != null ? String(r.resolved_priority_display_name) : null,
     merchantSectionId: r.merchant_section_id != null ? String(r.merchant_section_id) : null,
+    customerSectionId: r.customer_section_id != null ? String(r.customer_section_id) : null,
+    applicableOrderStatuses: Array.isArray(r.applicable_order_statuses)
+      ? (r.applicable_order_statuses as string[]).map((s) => String(s))
+      : null,
     intakeTicketType: r.intake_ticket_type != null ? String(r.intake_ticket_type) : null,
     intakeUnifiedTitle: r.intake_unified_title != null ? String(r.intake_unified_title) : null,
     intakeUnifiedCategory: r.intake_unified_category != null ? String(r.intake_unified_category) : null,
@@ -102,7 +106,8 @@ async function loadTitleFull(sqlClient: SqlClient, titleId: number) {
       `SELECT
         tt.id, tt.group_id, tt.service_type::text AS service_type, tt.ticket_section::text AS ticket_section, tt.source_role::text AS source_role,
         tt.title_code, tt.title_text, tt.description, tt.display_order, tt.is_active, tt.created_at, tt.updated_at,
-        tt.subtext, tt.default_quick_options, tt.tag_id, tt.priority_id, tt.merchant_section_id, tt.intake_ticket_type,
+        tt.subtext, tt.default_quick_options, tt.tag_id, tt.priority_id, tt.merchant_section_id,
+        tt.customer_section_id, tt.applicable_order_statuses, tt.intake_ticket_type,
         tt.intake_unified_title, tt.intake_unified_category, tt.intake_unified_priority, tt.intake_unified_service_type,
         tt.parent_title_id,
         tt.metadata,
@@ -231,6 +236,28 @@ export async function PATCH(
       idx++;
       updates.push(`merchant_section_id = $${idx}`);
       values.push(mid == null ? null : String(mid).trim() || null);
+    }
+    if (body.customerSectionId !== undefined || body.customer_section_id !== undefined) {
+      const cid = body.customerSectionId ?? body.customer_section_id;
+      idx++;
+      updates.push(`customer_section_id = $${idx}`);
+      values.push(cid == null ? null : String(cid).trim() || null);
+    }
+    if (
+      body.applicableOrderStatuses !== undefined ||
+      body.applicable_order_statuses !== undefined
+    ) {
+      const raw = body.applicableOrderStatuses ?? body.applicable_order_statuses;
+      let cleaned: string[] | null = null;
+      if (Array.isArray(raw)) {
+        cleaned = raw
+          .map((s: unknown) => String(s).trim())
+          .filter((s: string) => s.length > 0);
+        if (cleaned.length === 0) cleaned = null;
+      }
+      idx++;
+      updates.push(`applicable_order_statuses = $${idx}::text[]`);
+      values.push(cleaned);
     }
     if (body.intakeTicketType !== undefined || body.intake_ticket_type !== undefined) {
       const it = body.intakeTicketType ?? body.intake_ticket_type;

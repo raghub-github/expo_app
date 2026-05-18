@@ -62,7 +62,7 @@ export type StoreQuoteInput = {
   /** Either addressId (with customerId) OR explicit drop coords. */
   customerId?: number | null;
   addressId?: number | null;
-  drop?: { lat: number; lng: number; pincode?: string | null; city?: string | null } | null;
+  drop?: { lat: number; lng: number; pincode?: string | null; city?: string | null; state?: string | null } | null;
   /** Defaults to "customer". Rider uses progressive slab calc. */
   actor?: StoreQuoteActor;
   /** FOOD | PARCEL | RIDE — maps to DeliveryServiceType. Default FOOD. */
@@ -92,11 +92,22 @@ export type StoreQuoteResult =
         source: "mapbox" | "osrm" | "haversine";
         cached: boolean;
         approximate: boolean;
-        pricing_engine: "slab_geo" | "fallback_per_km" | "no_slab_configured" | "no_geo_match";
+        pricing_engine:
+          | "slab_geo"
+          | "fallback_per_km"
+          | "no_slab_configured"
+          | "no_geo_match"
+          | "slab_invalid";
         /** Geo level at which slabs were resolved (pincode/post_office/district/region/state). */
         applied_geo_level?: string | null;
         /** Raw slab quote for debugging / breakdowns. */
         slab_quote?: SelectedSlabQuote | null;
+        /**
+         * Populated when slabs WERE found at some geo level but `validateEffectiveSlabs`
+         * rejected them (overlap / gap / missing zero slab / etc). Lets the dashboard
+         * surface the exact reason so ops can fix the offending rate card immediately.
+         */
+        slab_validation_error?: { code: string; message: string } | null;
       };
     }
   | { ok: false; code: string; message: string };
@@ -159,7 +170,7 @@ async function resolveStore(
 async function resolveDrop(
   input: StoreQuoteInput
 ): Promise<
-  | { ok: true; lat: number; lng: number; pincode: string | null; city: string | null }
+  | { ok: true; lat: number; lng: number; pincode: string | null; city: string | null; state: string | null }
   | { ok: false; code: string; message: string }
 > {
   if (input.addressId != null && input.customerId != null && input.customerId > 0) {
@@ -169,6 +180,7 @@ async function resolveDrop(
         latitude: customerAddresses.latitude,
         longitude: customerAddresses.longitude,
         city: customerAddresses.city,
+        state: customerAddresses.state,
         postalCode: customerAddresses.postalCode,
       })
       .from(customerAddresses)
@@ -190,6 +202,11 @@ async function resolveDrop(
       lng,
       pincode: normalizePincode(row.postalCode),
       city: normalizeCity(row.city),
+      // State name (e.g. "West Bengal") used by resolveDropGeoRefsFromPincode
+      // as a fallback when pincode→state chain is broken in the geo tables.
+      // Without it, valid state-level slabs go un-applied and we drop to env
+      // defaults silently.
+      state: normalizeCity(row.state),
     };
   }
   if (input.drop?.lat != null && input.drop.lng != null) {
@@ -199,6 +216,7 @@ async function resolveDrop(
       lng: Number(input.drop.lng),
       pincode: normalizePincode(input.drop.pincode),
       city: normalizeCity(input.drop.city),
+      state: normalizeCity(input.drop.state ?? null),
     };
   }
   return { ok: false, code: "INVALID_INPUT", message: "addressId or drop coords required." };
@@ -241,13 +259,27 @@ export async function resolveStoreDeliveryQuote(
   const serviceRadiusKm = store.radiusKm ?? env.SERVICE_RADIUS_KM_DEFAULT;
   const outOfRange = distanceKm > serviceRadiusKm;
 
-  // Geo slab resolution (must run before serviceability is computed)
-  const dropGeoRefs = await resolveDropGeoRefsFromPincode(drop.pincode);
+  // Geo slab resolution (must run before serviceability is computed).
+  //
+  // Pass `drop.state` as the fallback so that when `pincode_post_offices` is
+  // incomplete for this pincode (e.g. a newly-onboarded area where the chain
+  // hasn't been seeded), state-level slabs still resolve via the state-name
+  // lookup. Without this, the engine silently drops to env defaults (₹25 base
+  // + ₹5/km) and the customer's bill shows that instead of the configured
+  // rate card.
+  const dropGeoRefs = await resolveDropGeoRefsFromPincode(drop.pincode, drop.state);
 
   let slabQuote: SelectedSlabQuote | null = null;
   let deliveryFee = 0;
-  let pricingEngine: "slab_geo" | "fallback_per_km" | "no_slab_configured" | "no_geo_match" = "fallback_per_km";
+  let pricingEngine:
+    | "slab_geo"
+    | "fallback_per_km"
+    | "no_slab_configured"
+    | "no_geo_match"
+    | "slab_invalid" = "fallback_per_km";
   let appliedGeoLevel: string | null = null;
+  /** Diagnostic — populated when slabs were found but rejected by validateEffectiveSlabs. */
+  let slabValidationError: { code: string; message: string } | null = null;
 
   if (dropGeoRefs && distanceKm > 0) {
     // Walk ancestor levels from most-specific to least-specific using UUIDs already resolved
@@ -264,6 +296,7 @@ export async function resolveStoreDeliveryQuote(
     if (dropGeoRefs.state)       geoLevelsToTry.push({ level: "state",       refId: dropGeoRefs.state });
 
     let slabs: DeliveryRateSlabRow[] = [];
+    const slabWalkAttempts: Array<{ level: string; refId: string; rows: number }> = [];
     try {
       const db = getDb();
       for (const geo of geoLevelsToTry) {
@@ -273,6 +306,7 @@ export async function resolveStoreDeliveryQuote(
           serviceType: serviceTypeSlab,
           actorType: (actor === "rider" ? "rider" : "customer") as DeliveryActorType,
         });
+        slabWalkAttempts.push({ level: geo.level, refId: geo.refId, rows: result.length });
         if (result.length > 0) {
           slabs = result;
           appliedGeoLevel = geo.level;
@@ -282,6 +316,25 @@ export async function resolveStoreDeliveryQuote(
     } catch {
       // fall through to no_slab_configured / fallback
     }
+    // One log line per quote so ops can see (1) which pincode/state UUIDs we
+    // resolved, (2) every level we tried, (3) how many rows each level returned.
+    // Tagged for easy grepping: `grep [delivery-slabs] server.log`.
+    // eslint-disable-next-line no-console
+    console.log(
+      "[delivery-slabs] walk",
+      JSON.stringify({
+        store_id: store.storeId,
+        actor,
+        service: serviceTypeSlab,
+        drop_pincode: drop.pincode,
+        drop_state: drop.state,
+        distance_km: distanceKm,
+        geo_refs: dropGeoRefs,
+        attempts: slabWalkAttempts,
+        matched_level: appliedGeoLevel,
+        matched_count: slabs.length,
+      })
+    );
 
     if (slabs.length > 0) {
       if (actor === "rider") {
@@ -328,6 +381,38 @@ export async function resolveStoreDeliveryQuote(
           };
           deliveryFee = calc.quote.finalAmount;
           pricingEngine = "slab_geo";
+        } else {
+          // Validation failed (overlap / gap / missing zero slab / etc).
+          // Record the reason and switch engine to `slab_invalid` so:
+          //   (a) the bill label doesn't lie to the customer ("(slabs)"),
+          //   (b) admins/devs see exactly why the slabs they edited didn't apply.
+          pricingEngine = "slab_invalid";
+          slabValidationError = { code: calc.code, message: calc.message };
+          // Log loudly — this is the most common cause of "I updated the rate
+          // card but nothing changed". Includes the slab IDs so the admin can
+          // open the offending row in the dashboard.
+          // eslint-disable-next-line no-console
+          console.warn(
+            "[delivery-slabs] validation failed — bill falling back to env defaults",
+            JSON.stringify({
+              store_id: store.storeId,
+              actor,
+              distance_km: distanceKm,
+              applied_geo_level: appliedGeoLevel,
+              error: slabValidationError,
+              slab_ids: slabs.map((s) => s.id),
+              slabs: slabs.map((s) => ({
+                id: s.id,
+                min: s.minKm,
+                max: s.maxKm,
+                base: s.baseFare,
+                perKm: s.perKmRate,
+                min_charge: s.minCharge,
+                priority: s.priority,
+                active: s.isActive,
+              })),
+            })
+          );
         }
       }
     } else {
@@ -340,9 +425,24 @@ export async function resolveStoreDeliveryQuote(
     // Pincode is completely unknown in the geo tables — use env defaults as a last resort
     // so existing stores in unmapped areas stay operational during data onboarding.
     pricingEngine = "no_geo_match";
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[delivery-slabs] no_geo_match — env defaults will be used",
+      JSON.stringify({
+        store_id: store.storeId,
+        drop_pincode: drop.pincode,
+        drop_state: drop.state,
+        hint:
+          "Either add this pincode to `pincodes` + `pincode_post_offices`, or save the state name on customer_addresses.state. The state-name fallback resolves to a state UUID and reuses your state-level slabs.",
+      })
+    );
   }
 
-  if (pricingEngine === "fallback_per_km" || pricingEngine === "no_geo_match") {
+  if (
+    pricingEngine === "fallback_per_km" ||
+    pricingEngine === "no_geo_match" ||
+    pricingEngine === "slab_invalid"
+  ) {
     const base = env.DELIVERY_DEFAULT_BASE_INR ?? 25;
     const perKm = env.DELIVERY_DEFAULT_PER_KM_INR ?? 5;
     const computed = round2(base + distanceKm * perKm);
@@ -387,6 +487,7 @@ export async function resolveStoreDeliveryQuote(
       approximate: route.approximate,
       pricing_engine: pricingEngine,
       slab_quote: slabQuote,
+      slab_validation_error: slabValidationError,
     },
   };
 }

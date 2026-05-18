@@ -66,6 +66,10 @@ function buildGstComponents(remAfter: FeeRem, remBefore: FeeRem, gmap: Record<st
     packaging: gstComponentLine(remAfter.packaging, remBefore.packaging, gmap, ["PACKAGING_FEE"]),
     small_order: gstComponentLine(remAfter.smallOrder, remBefore.smallOrder, gmap, ["SMALL_ORDER_FEE"]),
     convenience: gstComponentLine(remAfter.convenience, remBefore.convenience, gmap, ["CONVENIENCE_FEE"]),
+    // Subscription tax (applicable_base = SUBSCRIPTION_FEE) goes against the
+    // misc bucket. We mirror the per-fee shape so the customer app can render
+    // a "GST on subscription" row exactly like the others.
+    subscription: gstComponentLine(remAfter.misc, remBefore.misc, gmap, ["SUBSCRIPTION_FEE"]),
   };
 }
 
@@ -117,6 +121,11 @@ function baseForTax(
       return rem.smallOrder;
     case "CONVENIENCE_FEE":
       return rem.convenience;
+    case "SUBSCRIPTION_FEE":
+      // Subscription rules (e.g. GMitra Plus) land in the misc bucket. We tax
+      // that bucket directly so the rate (seeded at 18% in 0231) applies only
+      // to subscription/misc charges and not to other unrelated items.
+      return rem.misc;
     case "GRAND_BEFORE_TAX":
       return grandBeforeTaxFromRem(rem);
     default:
@@ -310,6 +319,8 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
 
   function runChargeBatch(batch: RuleRow[]): void {
     for (const rule of batch) {
+      // Self-pickup waives ALL delivery-class charges (rule-driven or fallback).
+      if (rule.type === "DELIVERY" && ctx.isSelfPickup) continue;
       if (rule.type === "DELIVERY" && state.deliveryFee > 0) continue;
       if (rule.type === "DONATION") continue;
       if (rule.type === "RIDER_TIP") continue;
@@ -332,8 +343,10 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
    * When delivery_fee is still zero:
    * slabs-v2 → geo → rate card → legacy per-km → env default max(base, per_km×km).
    * Runs even if a DELIVERY rule "applied" with ₹0 so we never silently skip delivery.
+   * For self-pickup we short-circuit: the customer is collecting from the store,
+   * so the delivery cost has to be exactly ₹0 regardless of fallback sources.
    */
-  if (state.deliveryFee <= 0) {
+  if (state.deliveryFee <= 0 && !ctx.isSelfPickup) {
     const fromSlabsRaw = ctx.deliveryFeeFromSlabsGeoV2;
     const fromSlabs =
       fromSlabsRaw != null && Number.isFinite(fromSlabsRaw) && fromSlabsRaw > 0 ? round2(fromSlabsRaw) : 0;
@@ -372,8 +385,14 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
               : defaultFormula;
     if (fallbackFee > 0) {
       state.deliveryFee = fallbackFee;
+      // Distinguish a genuine slab fee from an env-default fallback that came
+      // through the slab path because slab validation failed. The fromSlabs
+      // value is set by storeQuote regardless of engine; here we only show
+      // "(slabs)" when the engine ACTUALLY computed it from rate-card slabs.
+      const slabsAuthoritative =
+        fromSlabs > 0 && ctx.deliveryPricingEngine === "slab_geo";
       const label =
-        fromSlabs > 0
+        slabsAuthoritative
           ? "Delivery fee (slabs)"
           : fromGeo > 0
             ? "Delivery fee (location)"
@@ -381,7 +400,9 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
               ? "Delivery fee"
               : legacyPerKm > 0
                 ? "Delivery fee (distance)"
-                : "Delivery fee (default)";
+                : ctx.deliveryPricingEngine === "slab_invalid"
+                  ? "Delivery fee (default — slab config invalid)"
+                  : "Delivery fee (default)";
       const sourceMeta =
         fromSlabs > 0
           ? ({

@@ -3,9 +3,10 @@
  * Opened when partner taps a recent order card.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Platform } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { fetchOrderEta, minutesUntil, prepDeadlineIso, type OrderEtaResponse } from "@/services/etaApi";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -180,6 +181,24 @@ export default function OrderDetailScreen() {
   const fullOrder = getOrderDetail(orderId);
   const effectiveStatus = (status ?? fullOrder?.status ?? "Pending") as OrderStatus;
 
+  // Pull the platform's frozen promise + live snapshot for this order. We
+  // only call the API when the id looks like a real GM-* order id (mock data
+  // uses ids like "GM-2851" which won't resolve, so we short-circuit instead
+  // of spamming 404s in the console).
+  const [eta, setEta] = useState<OrderEtaResponse | null>(null);
+  useEffect(() => {
+    let alive = true;
+    if (!orderId || !/^GM\d+$/i.test(orderId)) return;
+    void fetchOrderEta(orderId).then((r) => {
+      if (alive) setEta(r);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [orderId]);
+  const prepByIso = prepDeadlineIso(eta);
+  const prepMinsLeft = minutesUntil(prepByIso);
+
   if (!orderId) {
     return (
       <View style={[styles.container, { paddingTop: insets.top + 16 }]}>
@@ -226,6 +245,50 @@ export default function OrderDetailScreen() {
               <View style={[styles.statusPill, { backgroundColor: statusStyle.bg }]}>
                 <Text style={[styles.statusPillText, { color: statusStyle.color }]}>{effectiveStatus}</Text>
               </View>
+
+              {/* Prep deadline — derived from the platform's promise time.
+                  Counts down so the merchant can pace the kitchen. */}
+              {prepByIso ? (
+                <View
+                  style={{
+                    marginTop: 12,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    backgroundColor: "#fff7ed",
+                    borderRadius: 10,
+                    paddingVertical: 8,
+                    paddingHorizontal: 10,
+                    borderWidth: 1,
+                    borderColor: "#fed7aa",
+                  }}
+                >
+                  <Ionicons name="alarm" size={18} color="#c2410c" />
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 12, fontWeight: "700", color: "#c2410c" }}>
+                      Hand to rider by{" "}
+                      {new Date(prepByIso).toLocaleTimeString(undefined, {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                      {prepMinsLeft != null
+                        ? prepMinsLeft <= 0
+                          ? " · OVERDUE"
+                          : ` · ${prepMinsLeft} min left`
+                        : ""}
+                    </Text>
+                    {eta?.promise.promisedDeliveryAt ? (
+                      <Text style={{ fontSize: 11, color: "#9a3412", marginTop: 2 }}>
+                        Customer was promised delivery by{" "}
+                        {new Date(eta.promise.promisedDeliveryAt).toLocaleTimeString(undefined, {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </Text>
+                    ) : null}
+                  </View>
+                </View>
+              ) : null}
             </View>
 
             <View style={styles.card}>

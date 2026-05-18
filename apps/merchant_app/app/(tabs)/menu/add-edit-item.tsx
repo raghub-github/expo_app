@@ -30,6 +30,7 @@ import {
 } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { useActiveCommission, customerVisibleFromBase } from "@/hooks/useActiveCommission";
 import {
   useMenuCategories,
   useMenuItem,
@@ -269,6 +270,8 @@ export default function AddEditItemScreen() {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.store_id ?? null;
+  const numericStoreId = selectedStore?.id ?? null;
+  const { data: activeCommission } = useActiveCommission(numericStoreId);
 
   // ── data loading (backend is source of truth; hooks provide cache) ──
   const { data: categories = [], refetch: refetchCategories } = useMenuCategories(storeId, token);
@@ -644,6 +647,8 @@ export default function AddEditItemScreen() {
     setCategoryId(itemData.category_id ?? null);
     setCuisineType(itemData.cuisine_type ?? "");
     setBasePrice(itemData.base_price ?? "");
+    // Selling price is recomputed from base + active commission on save anyway,
+    // so we seed it for preview but never trust the stored value for display.
     setSellingPrice(itemData.selling_price ?? "");
     setPrepTimeMinutes(itemData.preparation_time_minutes != null ? String(itemData.preparation_time_minutes) : "");
     const packRaw = (itemData as { packaging_charges?: number | string | null }).packaging_charges;
@@ -806,7 +811,11 @@ export default function AddEditItemScreen() {
     }
 
     const base = baseParsed ?? sellingParsed ?? 0;
-    const selling = sellingParsed ?? base;
+    // We write base_price = selling_price = merchant's NET menu price intent.
+    // The customer-facing markup is applied at read time on the server (single
+    // source of truth), so the form must NOT pre-compute commission here or it
+    // would double-apply when the customer menu API marks it up again.
+    const selling = base;
     const servesNumber = servesLabel ? parseServesFromLabel(servesLabel) : null;
 
     const categoryIdNumber =
@@ -1752,32 +1761,58 @@ export default function AddEditItemScreen() {
 
         {/* ── Item price ── */}
         <View style={styles.section}>
-          <Text style={styles.sectionHeading}>Item price</Text>
+          <Text style={styles.sectionHeading}>Your payout per item</Text>
+          <Text style={styles.sectionSubheading}>
+            Enter the amount you want to receive after the platform commission is applied. The customer
+            will see this price plus our commission on top — handled automatically.
+          </Text>
           <View style={styles.inputWithIcon}>
             <TextInput
               style={styles.textInput}
               value={basePrice}
-              onChangeText={setBasePrice}
-              placeholder="Base price"
+              onChangeText={(v) => {
+                setBasePrice(v);
+                // Keep selling_price computed so the server-side write has a sane cache value.
+                const base = parseFloat(v);
+                if (Number.isFinite(base) && base > 0 && activeCommission) {
+                  setSellingPrice(String(customerVisibleFromBase(base, activeCommission.percent)));
+                } else {
+                  setSellingPrice("");
+                }
+              }}
+              placeholder="₹0"
               placeholderTextColor={GatiMitraMerchant.textTertiary}
               keyboardType="decimal-pad"
             />
             <Ionicons name="pencil-outline" size={18} color={GatiMitraMerchant.textTertiary} />
           </View>
-        </View>
-
-        <View style={styles.section}>
-          <View style={styles.inputWithIcon}>
-            <TextInput
-              style={styles.textInput}
-              value={sellingPrice}
-              onChangeText={setSellingPrice}
-              placeholder="Selling price"
-              placeholderTextColor={GatiMitraMerchant.textTertiary}
-              keyboardType="decimal-pad"
-            />
-            <Ionicons name="pencil-outline" size={18} color={GatiMitraMerchant.textTertiary} />
-          </View>
+          {(() => {
+            const base = parseFloat(basePrice);
+            if (!Number.isFinite(base) || base <= 0 || !activeCommission) return null;
+            const customer = customerVisibleFromBase(base, activeCommission.percent);
+            return (
+              <View
+                style={{
+                  marginTop: 10,
+                  padding: 10,
+                  borderRadius: 8,
+                  backgroundColor: "rgba(99, 102, 241, 0.08)",
+                  borderWidth: 1,
+                  borderColor: "rgba(99, 102, 241, 0.2)",
+                }}
+              >
+                <Text style={{ fontSize: 12, color: GatiMitraMerchant.textSecondary }}>
+                  Customer will see
+                </Text>
+                <Text style={{ fontSize: 20, fontWeight: "700", color: GatiMitraMerchant.textPrimary }}>
+                  ₹{customer}
+                </Text>
+                <Text style={{ marginTop: 2, fontSize: 11, color: GatiMitraMerchant.textTertiary }}>
+                  Includes {activeCommission.percent}% platform commission ({activeCommission.sourceLabel})
+                </Text>
+              </View>
+            );
+          })()}
         </View>
 
         {/* ── Prep / ETA & packaging (store defaults; editable per item only) ── */}

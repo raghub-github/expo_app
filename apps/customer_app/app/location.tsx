@@ -547,17 +547,35 @@ export default function SelectLocationScreen() {
   const applySavedAddress = async (addr: Address) => {
     setSavedAddressLoading(addr.id);
     try {
-      await addressService.setActiveLocation({
-        latitude: addr.latitude,
-        longitude: addr.longitude,
-        address: addr.fullAddress,
-      });
+      // Three things must happen atomically (from the user's POV) when they
+      // pick a saved address from the home picker:
+      //  1. The active GPS-style pin updates so the home header shows it.
+      //  2. The customer's `is_default` flag flips on the server so checkout,
+      //     re-opens, and other screens see the same choice.
+      //  3. The local addresses cache is invalidated so the next read returns
+      //     the new `isDefault` value (otherwise checkout still picks the old
+      //     default and the user has to re-pick).
+      await Promise.all([
+        addressService.setActiveLocation({
+          latitude: addr.latitude,
+          longitude: addr.longitude,
+          address: addr.fullAddress,
+        }),
+        // setAddressDefault is idempotent and cheap; safe to fire on every pick.
+        addressService.setAddressDefault(addr.id).catch(() => {
+          // Non-fatal: the local store still updates so the home header is
+          // correct. Checkout will fall back to the old default but the user
+          // can re-pick in the address sheet.
+        }),
+      ]);
       const primary = addr.label ?? "Address";
       setAddressAndCoords(
         { primary, secondary: addr.fullAddress.slice(0, 80), fullAddress: addr.fullAddress },
         { latitude: addr.latitude, longitude: addr.longitude },
         { source: "selected" }
       );
+      queryClient.invalidateQueries({ queryKey: ["addresses"] });
+      queryClient.invalidateQueries({ queryKey: ["active-location"] });
       safeBack();
     } catch {
       safeBack();

@@ -15,6 +15,7 @@ import { Button } from "@/src/components/ui/Button";
 import { permissionManager } from "@/src/services/permissions/permissionManager";
 import { RiderMapView } from "@/src/components/RiderMapView";
 import { MapboxDebug } from "@/src/components/MapboxDebug";
+import { fetchOrderEta, pickupDeadlineIso, minutesUntil, type OrderEtaResponse } from "@/src/services/api/etaApi";
 
 export default function OrdersScreen() {
   const { t } = useTranslation();
@@ -33,6 +34,37 @@ export default function OrdersScreen() {
   const lastPingAtRef = useRef<number>(0);
   const locationCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const cameraRef = useRef<any>(null);
+
+  // Per-order ETA cache. Fetched once per order id when available_orders changes.
+  // Keeps the visible cards in sync with the platform's promise time so the
+  // rider always sees "Pickup by HH:MM" / "Deliver by HH:MM" on each card.
+  const [etaByOrderId, setEtaByOrderId] = useState<Record<string, OrderEtaResponse | null>>({});
+  useEffect(() => {
+    let cancelled = false;
+    const ids = (availableOrders ?? []).map((o) => o.id).filter((id) => /^GM\d+$/i.test(id));
+    if (ids.length === 0) return;
+    void Promise.all(
+      ids.map(async (id) => {
+        if (etaByOrderId[id]) return null;
+        const r = await fetchOrderEta(id);
+        return [id, r] as const;
+      }),
+    ).then((pairs) => {
+      if (cancelled) return;
+      const updates: Record<string, OrderEtaResponse | null> = {};
+      let changed = false;
+      for (const p of pairs) {
+        if (!p) continue;
+        updates[p[0]] = p[1];
+        changed = true;
+      }
+      if (changed) setEtaByOrderId((prev) => ({ ...prev, ...updates }));
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableOrders]);
 
   useEffect(() => tracker.subscribe(setState), [tracker]);
 
@@ -324,6 +356,39 @@ export default function OrdersScreen() {
                   {order.distanceKm && (
                     <Text style={{ fontSize: 12, color: colors.text.primary.light, marginTop: 4 }} className="text-xs text-text-light mt-1">{order.distanceKm.toFixed(1)} km away</Text>
                   )}
+                  {/* Pickup + delivery deadlines from the platform ETA snapshot. */}
+                  {(() => {
+                    const eta = etaByOrderId[order.id];
+                    if (!eta) return null;
+                    const pickupIso = pickupDeadlineIso(eta);
+                    const deliverIso = eta.live?.promisedDeliveryAt || eta.promise.promisedDeliveryAt;
+                    if (!pickupIso && !deliverIso) return null;
+                    const fmt = (iso: string) =>
+                      new Date(iso).toLocaleTimeString(undefined, {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      });
+                    const pickupLeft = minutesUntil(pickupIso);
+                    return (
+                      <View style={{ marginTop: 6, gap: 2 }}>
+                        {pickupIso ? (
+                          <Text style={{ fontSize: 11, color: "#c2410c", fontWeight: "600" }}>
+                            Pickup by {fmt(pickupIso)}
+                            {pickupLeft != null
+                              ? pickupLeft <= 0
+                                ? " · NOW"
+                                : ` · ${pickupLeft} min left`
+                              : ""}
+                          </Text>
+                        ) : null}
+                        {deliverIso ? (
+                          <Text style={{ fontSize: 11, color: "#0e7490", fontWeight: "600" }}>
+                            Deliver by {fmt(deliverIso)}
+                          </Text>
+                        ) : null}
+                      </View>
+                    );
+                  })()}
                 </View>
               </View>
               <View style={{ marginTop: 12, flexDirection: 'row', gap: 8 }} className="mt-3 flex-row gap-2">

@@ -46,6 +46,7 @@ import Animated, {
   createAnimatedComponent,
 } from "react-native-reanimated";
 import { merchantService, type MenuItem, type MerchantSummary } from "@/services/merchant.service";
+import { previewEtaRange, formatEtaRange } from "@/lib/etaPreview";
 import { offersService, type MerchantOfferItem, type PlatformOfferItem } from "@/services/offers.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { getRoute } from "@/services/distance.service";
@@ -817,6 +818,22 @@ export default function MerchantDetailScreen() {
   const updateQuantity = useCartStore((s) => s.updateQuantity);
   const cartItems = useCartStore((s) => s.items) ?? [];
   const cartMerchantId = useCartStore((s) => s.merchantId);
+  const syncCartPrices = useCartStore((s) => s.syncPricesFromMap);
+
+  // Keep the floating-cart total in sync with the live menu — if commission
+  // changed since the user added an item, the cart price for those items
+  // updates as soon as the menu fetch returns fresh values.
+  useEffect(() => {
+    if (!merchant?.menu || cartItems.length === 0 || cartMerchantId !== merchantId) return;
+    const priceById: Record<string, number> = {};
+    for (const m of merchant.menu) {
+      if (typeof m.price === "number" && Number.isFinite(m.price)) {
+        priceById[m.id] = m.price;
+      }
+    }
+    if (Object.keys(priceById).length > 0) syncCartPrices(priceById);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [merchant?.menu, syncCartPrices, cartMerchantId, merchantId]);
 
   useEffect(() => {
     const sec = Array.isArray(sections) ? sections : [];
@@ -1117,6 +1134,14 @@ export default function MerchantDetailScreen() {
   const prepMins = merchant.avgPreparationTimeMinutes != null && merchant.avgPreparationTimeMinutes > 0
     ? `${Math.round(merchant.avgPreparationTimeMinutes)} mins`
     : null;
+  // Canonical delivery-window range for this store at this address. Mirrors
+  // the server formula so the header here matches the value the customer
+  // sees on the restaurant list and on the checkout / bill summary.
+  const storeEtaRange = previewEtaRange({
+    distanceKm,
+    prepMinutes: merchant.avgPreparationTimeMinutes ?? null,
+  });
+  const storeEtaLabel = formatEtaRange(storeEtaRange);
   const hasOffers = Array.isArray((merchant as { offers?: unknown[] }).offers) && (merchant as { offers: unknown[] }).offers.length > 0;
 
   const merchantLiveStatus = (merchant as { liveStatus?: "OPEN" | "CLOSED" }).liveStatus;
@@ -1323,14 +1348,12 @@ export default function MerchantDetailScreen() {
                     {distanceKm != null ? (
                       <Text style={styles.headerMetaText}> · {distanceKm < 1 ? `${Math.round(distanceKm * 1000)} m` : `${distanceKm.toFixed(1)} km`}</Text>
                     ) : null}
-                    {etaMinutes != null ? (
-                      <Text style={styles.headerMetaText}> · ~{etaMinutes} min</Text>
-                    ) : null}
+                    {/* Single canonical "delivery in 45-55 mins" badge.
+                        Replaces the two-line "~Mapbox min · prep mins" pair
+                        that was showing inconsistent numbers. */}
+                    <Text style={styles.headerMetaText}> · {storeEtaLabel}</Text>
                     {merchant.city ? (
                       <Text style={styles.headerMetaText}> · {merchant.city}</Text>
-                    ) : null}
-                    {prepMins ? (
-                      <Text style={styles.headerMetaText}> · {prepMins}</Text>
                     ) : null}
                   </View>
                 </View>

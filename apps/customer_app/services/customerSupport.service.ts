@@ -37,6 +37,20 @@ export type HelpSection = {
   display_order: number | null;
   group_id: number | null;
   group_name: string | null;
+  /** Admin-curated list of order_status codes this title is relevant for. `["NO_ORDER"]` = show in "not about an order" flow. `null` = always show. */
+  applicable_order_statuses: string[] | null;
+};
+
+export type RecentOrder = {
+  id: number;
+  order_id: string | null;
+  status: string;
+  current_status: string | null;
+  grand_total: number | null;
+  placed_at: string | null;
+  delivered_at: string | null;
+  merchant_store_id: number | null;
+  merchant_store_name: string | null;
 };
 
 export type TicketListItem = {
@@ -107,10 +121,26 @@ export type TicketDetailResponse = {
 /* ────────────────────────────────────────────────────────────────────────── */
 
 export const customerSupportService = {
-  /** Title catalog grouped by `section_id` (orders / payments / account / app / general). */
-  async getHelpSections(): Promise<HelpSection[]> {
-    const { data } = await api.get<{ ok: boolean; sections: HelpSection[] }>(`${PREFIX}/help-sections`);
+  /**
+   * Title catalog. Optionally pass an `orderStatus` filter to get only
+   * status-relevant titles (e.g. "delivered" returns "Missing item / Wrong
+   * item / Damaged / Food quality / Refund request"). Pass `"NO_ORDER"` for
+   * the not-about-an-order flow. Omit for the full catalog (section picker).
+   */
+  async getHelpSections(orderStatus?: string): Promise<HelpSection[]> {
+    const { data } = await api.get<{ ok: boolean; sections: HelpSection[] }>(`${PREFIX}/help-sections`, {
+      params: orderStatus ? { order_status: orderStatus } : undefined,
+    });
     return data.sections ?? [];
+  },
+
+  /** Paginated recent orders for the order-picker step (3 at a time by default). */
+  async getRecentOrders(params?: { limit?: number; offset?: number }): Promise<{ orders: RecentOrder[]; hasMore: boolean }> {
+    const { data } = await api.get<{ ok: boolean; orders: RecentOrder[]; hasMore: boolean }>(
+      `${PREFIX}/recent-orders`,
+      { params }
+    );
+    return { orders: data.orders ?? [], hasMore: !!data.hasMore };
   },
 
   /** List the customer's tickets. */

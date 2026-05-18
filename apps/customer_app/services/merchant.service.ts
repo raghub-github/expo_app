@@ -15,6 +15,13 @@ export type MerchantSummary = {
   /** Banner from merchant_stores when API sends it; card falls back if displayImage empty. */
   banner_url?: string | null;
   deliveryTime?: string;
+  /**
+   * Canonical ETA range stamped server-side. Drives every customer-visible
+   * "delivery in X mins" copy on the list card so it stays in lock-step with
+   * the merchant detail header and checkout summary.
+   */
+  etaMinMinutes?: number;
+  etaMaxMinutes?: number;
   cuisines?: string[];
   isOpen?: boolean;
   /** Distance in km when returned from nearby API */

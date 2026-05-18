@@ -76,6 +76,8 @@ export type CalculateBillResponse = {
     packaging: GstComponentLine;
     small_order: GstComponentLine;
     convenience: GstComponentLine;
+    /** Tax on the misc bucket (subscription rules like GMitra Plus / Gold). */
+    subscription?: GstComponentLine;
   };
   totals: {
     total_discount: number;
@@ -131,6 +133,17 @@ export type CheckoutOffersResponse = {
   coupons: { code: string; discountType: string; description: string }[];
   merchantOffers: { id: number; title: string; summary: string }[];
   platformOffers: { id: number; name: string | null; offerKind: string; summary: string }[];
+  /**
+   * Offers the server filtered out for this cart. We render them disabled with
+   * the rejection reason so the customer can see what's available but locked.
+   */
+  platformOffersIneligible?: {
+    id: number;
+    name: string | null;
+    offerKind: string;
+    summary: string;
+    reason: string;
+  }[];
 };
 
 export const billingService = {

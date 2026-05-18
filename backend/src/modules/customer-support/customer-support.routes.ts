@@ -97,36 +97,61 @@ export async function customerSupportRoutes(app: FastifyInstance) {
 
   /**
    * GET /help-sections — Title catalog filtered to customer-facing intake.
-   * Group by `customer_section_id` (admin-curated) so the app can render a
-   * sectioned picker: General / Orders / Account / Payments / etc.
+   *
+   * Optional query: `?order_status=<code>` filters titles to ones whose
+   * `applicable_order_statuses` array includes that status (or is NULL =
+   * always-relevant). Pass `NO_ORDER` to get titles relevant when the
+   * customer chose "not about an order". Omit the param to get the full
+   * catalog (used for the section picker before an order is chosen).
    */
-  app.get("/help-sections", async (req, reply) => {
+  app.get<{ Querystring: { order_status?: string } }>("/help-sections", async (req, reply) => {
     if (req.auth?.role !== "customer" || !req.auth?.sub) {
       return reply.code(401).send({ error: "customer_required" });
     }
+    const filter = (req.query.order_status || "").toString().trim();
     const sql = getSql();
     try {
-      const rows = await sql`
-        SELECT
-          tt.id            AS ticket_title_id,
-          tt.title_code    AS title_code,
-          tt.title_text    AS title_text,
-          tt.customer_section_id AS section_id,
-          tt.display_order AS display_order,
-          tt.group_id      AS group_id,
-          tg.group_name    AS group_name,
-          tt.intake_unified_title    AS intake_title,
-          tt.intake_unified_category AS intake_category,
-          tt.intake_unified_priority AS intake_priority,
-          tt.intake_unified_service_type AS intake_service_type
-        FROM ticket_titles tt
-        LEFT JOIN ticket_groups tg ON tg.id = tt.group_id
-        WHERE tt.is_active = TRUE
-          AND tt.ticket_section::text = 'customer'
-          AND tt.customer_section_id IS NOT NULL
-          AND TRIM(tt.customer_section_id::text) <> ''
-        ORDER BY tt.customer_section_id ASC, tt.display_order ASC NULLS LAST, tt.id ASC
-      `;
+      const rows = filter
+        ? await sql`
+            SELECT
+              tt.id            AS ticket_title_id,
+              tt.title_code    AS title_code,
+              tt.title_text    AS title_text,
+              tt.customer_section_id AS section_id,
+              tt.display_order AS display_order,
+              tt.group_id      AS group_id,
+              tg.group_name    AS group_name,
+              tt.applicable_order_statuses AS applicable_order_statuses
+            FROM ticket_titles tt
+            LEFT JOIN ticket_groups tg ON tg.id = tt.group_id
+            WHERE tt.is_active = TRUE
+              AND tt.ticket_section::text = 'customer'
+              AND tt.customer_section_id IS NOT NULL
+              AND TRIM(tt.customer_section_id::text) <> ''
+              AND (
+                tt.applicable_order_statuses IS NULL
+                OR ${filter} = ANY(tt.applicable_order_statuses)
+              )
+            ORDER BY tt.customer_section_id ASC, tt.display_order ASC NULLS LAST, tt.id ASC
+          `
+        : await sql`
+            SELECT
+              tt.id            AS ticket_title_id,
+              tt.title_code    AS title_code,
+              tt.title_text    AS title_text,
+              tt.customer_section_id AS section_id,
+              tt.display_order AS display_order,
+              tt.group_id      AS group_id,
+              tg.group_name    AS group_name,
+              tt.applicable_order_statuses AS applicable_order_statuses
+            FROM ticket_titles tt
+            LEFT JOIN ticket_groups tg ON tg.id = tt.group_id
+            WHERE tt.is_active = TRUE
+              AND tt.ticket_section::text = 'customer'
+              AND tt.customer_section_id IS NOT NULL
+              AND TRIM(tt.customer_section_id::text) <> ''
+            ORDER BY tt.customer_section_id ASC, tt.display_order ASC NULLS LAST, tt.id ASC
+          `;
       const sections = (rows as Array<Record<string, unknown>>).map((r) => ({
         ticket_title_id: Number(r.ticket_title_id),
         title_code: r.title_code != null ? String(r.title_code) : null,
@@ -135,12 +160,55 @@ export async function customerSupportRoutes(app: FastifyInstance) {
         display_order: r.display_order != null ? Number(r.display_order) : null,
         group_id: r.group_id != null ? Number(r.group_id) : null,
         group_name: r.group_name != null ? String(r.group_name) : null,
+        applicable_order_statuses: Array.isArray(r.applicable_order_statuses)
+          ? (r.applicable_order_statuses as string[])
+          : null,
       }));
       return reply.send({ ok: true, sections });
     } catch (e) {
       req.log.error({ err: e }, "customer help-sections failed");
       return reply.code(500).send({ error: "help_sections_failed" });
     }
+  });
+
+  /**
+   * GET /recent-orders — paginated list of this customer's recent orders.
+   * Used by the raise-ticket wizard to let the customer pick which order
+   * the ticket is about. Returns 3 at a time by default.
+   */
+  app.get<{ Querystring: { limit?: string; offset?: string } }>("/recent-orders", async (req, reply) => {
+    if (req.auth?.role !== "customer" || !req.auth?.sub) {
+      return reply.code(401).send({ error: "customer_required" });
+    }
+    const me = await resolveCustomerInternalId(req.auth.sub);
+    if (!me) return reply.code(404).send({ error: "customer_not_found" });
+
+    const limit = Math.min(20, Math.max(1, Number(req.query.limit) || 3));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+    const sql = getSql();
+    const rows = await sql`
+      SELECT oc.id, oc.order_id, oc.status::text AS status, oc.current_status,
+             oc.grand_total, oc.placed_at, oc.delivered_at,
+             oc.merchant_store_id,
+             ms.store_name AS merchant_store_name
+      FROM orders_core oc
+      LEFT JOIN merchant_stores ms ON ms.id = oc.merchant_store_id
+      WHERE oc.customer_id = ${me.id}
+      ORDER BY oc.placed_at DESC NULLS LAST, oc.id DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+    const orders = (rows as Array<Record<string, unknown>>).map((r) => ({
+      id: Number(r.id),
+      order_id: r.order_id != null ? String(r.order_id) : null,
+      status: r.status != null ? String(r.status) : "assigned",
+      current_status: r.current_status != null ? String(r.current_status) : null,
+      grand_total: r.grand_total != null ? Number(r.grand_total) : null,
+      placed_at: toIsoOrNull(r.placed_at),
+      delivered_at: toIsoOrNull(r.delivered_at),
+      merchant_store_id: r.merchant_store_id != null ? Number(r.merchant_store_id) : null,
+      merchant_store_name: r.merchant_store_name != null ? String(r.merchant_store_name) : null,
+    }));
+    return reply.send({ ok: true, orders, hasMore: orders.length === limit });
   });
 
   /**

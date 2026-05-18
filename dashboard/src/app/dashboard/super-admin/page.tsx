@@ -67,6 +67,11 @@ const StoreOnboardingIcon = dynamic(async () => {
   return (props: { className?: string }) => <IndianRupee {...props} />;
 });
 
+const CommissionEngineIcon = dynamic(async () => {
+  const { Percent } = await import("lucide-react");
+  return (props: { className?: string }) => <Percent {...props} />;
+});
+
 const PushIcon = dynamic(async () => {
   const { BellRing } = await import("lucide-react");
   return (props: { className?: string }) => <BellRing {...props} />;
@@ -184,6 +189,14 @@ const adminOptions: AdminOption[] = [
     Icon: StoreOnboardingIcon,
     description: "Onboarding fee & commission config",
     color: "text-violet-600",
+    bgColor: "bg-violet-50 hover:bg-violet-100",
+  },
+  {
+    name: "Commission engine",
+    href: "/dashboard/super-admin/commission",
+    Icon: CommissionEngineIcon,
+    description: "Default %, plan benefits, per-store overrides, audit log",
+    color: "text-violet-700",
     bgColor: "bg-violet-50 hover:bg-violet-100",
   },
 ];

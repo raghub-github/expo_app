@@ -1,23 +1,20 @@
 /**
- * Raise a new general support ticket.
+ * Raise a new ticket — order-context-aware wizard.
  *
- * Flow:
- *  1. Fetch admin-curated catalog of titles (POST /help-sections), grouped by
- *     section_id (orders / payments / account / app / general).
- *  2. Customer picks a section → picks a title from that section → fills
- *     subject + description.
- *  3. POST /tickets → backend resolves group_id + tags from the title row and
- *     auto-routes to the right agent queue.
- *  4. Navigate to /support/[ticketId] to start the chat.
+ * Steps:
+ *   1. Context → "About an order" vs "Not about an order"
+ *   2. (if About an order) Order picker — 3 recent orders at a time + Load more
+ *   3. Concerns — server returns ONLY status-relevant titles for the picked
+ *      order (or NO_ORDER titles when not-about-an-order); user picks one or
+ *      taps "Show all topics" to browse the full catalog.
+ *   4. Subject + description → submit.
  *
- * Title list is purposefully driven entirely by `ticket_titles` rows seeded
- * in migration 0223. Adding new titles in the admin panel
- * (super-admin/ticket-settings → Titles → ticket_section=customer +
- * customer_section_id set) makes them appear here automatically — no client
- * change required.
+ * All status→concerns mapping is admin-curated via
+ * `ticket_titles.applicable_order_statuses`. Adding new entries in the
+ * super-admin Titles UI makes them appear here automatically.
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -28,63 +25,110 @@ import {
   StyleSheet,
   Alert,
 } from "react-native";
-import { useRouter, useLocalSearchParams } from "expo-router";
+import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import {
   customerSupportService,
   type HelpSection,
+  type RecentOrder,
 } from "@/services/customerSupport.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
-const SECTION_LABELS: Record<string, { label: string; icon: keyof typeof Ionicons.glyphMap; color: string }> = {
-  orders: { label: "Order issues", icon: "fast-food-outline", color: "#dc2626" },
-  payments: { label: "Payments & refunds", icon: "card-outline", color: "#0ea5e9" },
-  account: { label: "Account & profile", icon: "person-circle-outline", color: "#7c3aed" },
-  app: { label: "App problems", icon: "construct-outline", color: "#64748b" },
-  general: { label: "Something else", icon: "help-circle-outline", color: "#15803d" },
-};
+type Step = "context" | "pick_order" | "concerns" | "details";
+
+function statusLabel(status: string, current_status: string | null): { label: string; color: string; bg: string } {
+  const s = String(status || "").toLowerCase();
+  if (s === "delivered") return { label: "Delivered", color: "#15803d", bg: "#dcfce7" };
+  if (s === "cancelled") return { label: "Cancelled", color: "#b91c1c", bg: "#fee2e2" };
+  if (s === "failed") return { label: "Failed", color: "#b91c1c", bg: "#fee2e2" };
+  if (s === "picked_up" || s === "in_transit") return { label: current_status || "On the way", color: "#1d4ed8", bg: "#dbeafe" };
+  if (s === "accepted" || s === "reached_store") return { label: current_status || "Preparing", color: "#b45309", bg: "#fef3c7" };
+  if (s === "assigned") return { label: "Placed", color: "#7c3aed", bg: "#ede9fe" };
+  return { label: status, color: "#374151", bg: "#e5e7eb" };
+}
+
+function whenPlaced(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const diff = Date.now() - d.getTime();
+  const days = Math.floor(diff / 86400000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days < 7) return `${days} days ago`;
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
 
 export default function RaiseTicketScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
 
-  // Optional initial section from query (?section=orders etc.)
-  const { section: sectionParam } = useLocalSearchParams<{ section?: string | string[] }>();
-  const initialSection = Array.isArray(sectionParam) ? sectionParam[0] : sectionParam;
-
-  const [selectedSection, setSelectedSection] = useState<string | null>(initialSection ?? null);
+  const [step, setStep] = useState<Step>("context");
+  const [pickedOrder, setPickedOrder] = useState<RecentOrder | null>(null);
+  /** True once the user picked "not about an order" — drives concerns filter. */
+  const [noOrderMode, setNoOrderMode] = useState(false);
+  const [orderPage, setOrderPage] = useState(0);
+  const [accumulatedOrders, setAccumulatedOrders] = useState<RecentOrder[]>([]);
+  const [showAllTopics, setShowAllTopics] = useState(false);
   const [selectedTitle, setSelectedTitle] = useState<HelpSection | null>(null);
   const [subject, setSubject] = useState("");
   const [description, setDescription] = useState("");
 
-  const { data: catalog, isLoading: catalogLoading } = useQuery({
-    queryKey: ["customer-support-help-sections"],
-    queryFn: () => customerSupportService.getHelpSections(),
-    staleTime: 5 * 60_000,
+  // Recent orders — paginated 3 at a time
+  const PAGE = 3;
+  const recentOrdersQ = useQuery({
+    queryKey: ["customer-recent-orders", orderPage],
+    queryFn: () => customerSupportService.getRecentOrders({ limit: PAGE, offset: orderPage * PAGE }),
+    enabled: step === "pick_order",
+    staleTime: 30_000,
+  });
+  useEffect(() => {
+    if (recentOrdersQ.data && step === "pick_order") {
+      setAccumulatedOrders((prev) => {
+        if (orderPage === 0) return recentOrdersQ.data!.orders;
+        const seen = new Set(prev.map((o) => o.id));
+        return [...prev, ...recentOrdersQ.data!.orders.filter((o) => !seen.has(o.id))];
+      });
+    }
+  }, [recentOrdersQ.data, orderPage, step]);
+
+  /** Server-side status filter to return only relevant concerns. */
+  const concernsFilter = useMemo(() => {
+    if (noOrderMode) return "NO_ORDER";
+    if (pickedOrder) return pickedOrder.status;
+    return undefined;
+  }, [noOrderMode, pickedOrder]);
+
+  const concernsQ = useQuery({
+    queryKey: ["customer-support-help-sections", concernsFilter, showAllTopics],
+    queryFn: () =>
+      customerSupportService.getHelpSections(showAllTopics ? undefined : concernsFilter),
+    enabled: step === "concerns",
+    staleTime: 60_000,
   });
 
-  /** Group titles by section_id. */
-  const groupedSections = useMemo(() => {
+  // Group titles for the "show all" view
+  const groupedAll = useMemo(() => {
+    if (!showAllTopics || !concernsQ.data) return null;
     const map = new Map<string, HelpSection[]>();
-    for (const t of catalog ?? []) {
+    for (const t of concernsQ.data) {
       const k = t.section_id || "general";
       if (!map.has(k)) map.set(k, []);
       map.get(k)!.push(t);
     }
-    // Stable display order: orders → payments → account → app → general → others
-    const preferredOrder = ["orders", "payments", "account", "app", "general"];
-    const sorted: Array<{ key: string; items: HelpSection[] }> = [];
-    for (const k of preferredOrder) if (map.has(k)) sorted.push({ key: k, items: map.get(k)! });
-    for (const [k, v] of map) if (!preferredOrder.includes(k)) sorted.push({ key: k, items: v });
-    return sorted;
-  }, [catalog]);
+    const order = ["orders", "payments", "account", "app", "general"];
+    const out: Array<{ key: string; items: HelpSection[] }> = [];
+    for (const k of order) if (map.has(k)) out.push({ key: k, items: map.get(k)! });
+    for (const [k, v] of map) if (!order.includes(k)) out.push({ key: k, items: v });
+    return out;
+  }, [concernsQ.data, showAllTopics]);
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      if (!selectedTitle) throw new Error("Please pick what your issue is about.");
+      if (!selectedTitle) throw new Error("Please pick a topic.");
       const subj = subject.trim() || selectedTitle.title_text || "Support request";
       const desc = description.trim();
       if (desc.length < 10) throw new Error("Please describe the issue in at least 10 characters.");
@@ -93,10 +137,10 @@ export default function RaiseTicketScreen() {
         section_code: selectedTitle.section_id ?? undefined,
         subject: subj,
         description: desc,
+        order_id: pickedOrder?.id ?? null,
       });
     },
     onSuccess: (ticket) => {
-      // Invalidate list and navigate to chat.
       queryClient.invalidateQueries({ queryKey: ["customer-support-tickets"] });
       router.replace({ pathname: "/support/[ticketId]", params: { ticketId: String(ticket.id) } });
     },
@@ -105,70 +149,234 @@ export default function RaiseTicketScreen() {
     },
   });
 
-  if (catalogLoading && !catalog) {
+  /* ─────────────── Step rendering ─────────────── */
+
+  if (step === "context") {
     return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={GatiMitraColors.emerald} />
-      </View>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 60 }}
+      >
+        <Text style={styles.h1}>What's this about?</Text>
+        <Text style={styles.h2}>Tell us if your issue is about a specific order so we can pull up the details.</Text>
+        <View style={{ marginTop: 18, gap: 12 }}>
+          <TouchableOpacity
+            style={styles.bigChoice}
+            activeOpacity={0.85}
+            onPress={() => {
+              setNoOrderMode(false);
+              setStep("pick_order");
+            }}
+          >
+            <View style={[styles.bigIcon, { backgroundColor: "#FEE2E215" }]}>
+              <Ionicons name="receipt" size={26} color="#dc2626" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.bigTitle}>About an order</Text>
+              <Text style={styles.bigSub}>Cancel, refund, damaged, delay, missing item, wrong item, rider issue…</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.bigChoice}
+            activeOpacity={0.85}
+            onPress={() => {
+              setNoOrderMode(true);
+              setPickedOrder(null);
+              setStep("concerns");
+            }}
+          >
+            <View style={[styles.bigIcon, { backgroundColor: "#DBEAFE15" }]}>
+              <Ionicons name="help-circle" size={26} color="#1d4ed8" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.bigTitle}>Not about an order</Text>
+              <Text style={styles.bigSub}>Account, payments, app issues, feedback, general help…</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
     );
   }
 
-  return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 100 }}
-      keyboardShouldPersistTaps="handled"
-    >
-      <Text style={styles.h1}>What can we help you with?</Text>
-      <Text style={styles.h2}>Pick a category, then choose the exact issue.</Text>
+  if (step === "pick_order") {
+    const loading = recentOrdersQ.isLoading && accumulatedOrders.length === 0;
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 60 }}
+      >
+        <TouchableOpacity onPress={() => setStep("context")} style={styles.backRow}>
+          <Ionicons name="chevron-back" size={18} color={GatiMitraColors.emerald} />
+          <Text style={styles.backText}>Back</Text>
+        </TouchableOpacity>
+        <Text style={styles.h1}>Which order is this about?</Text>
+        <Text style={styles.h2}>Pick the order — the agent will see everything about it.</Text>
 
-      {!selectedSection ? (
-        // Step 1: pick section
-        <View style={{ marginTop: 16, gap: 10 }}>
-          {groupedSections.map((g) => {
-            const meta = SECTION_LABELS[g.key] ?? {
-              label: g.key.replace(/_/g, " "),
-              icon: "help-circle-outline" as keyof typeof Ionicons.glyphMap,
-              color: "#64748b",
-            };
-            return (
+        {loading ? (
+          <ActivityIndicator color={GatiMitraColors.emerald} style={{ marginTop: 30 }} />
+        ) : accumulatedOrders.length === 0 ? (
+          <View style={{ marginTop: 24 }}>
+            <Text style={styles.emptyText}>You haven't placed any orders yet.</Text>
+            <TouchableOpacity
+              onPress={() => {
+                setNoOrderMode(true);
+                setPickedOrder(null);
+                setStep("concerns");
+              }}
+              style={[styles.bigChoice, { marginTop: 12 }]}
+            >
+              <Text style={styles.bigTitle}>Raise a general ticket instead</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View style={{ marginTop: 14, gap: 10 }}>
+            {accumulatedOrders.map((o) => {
+              const sb = statusLabel(o.status, o.current_status);
+              return (
+                <TouchableOpacity
+                  key={o.id}
+                  onPress={() => {
+                    setPickedOrder(o);
+                    setNoOrderMode(false);
+                    setShowAllTopics(false);
+                    setSelectedTitle(null);
+                    setStep("concerns");
+                  }}
+                  style={styles.orderCard}
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.orderHeaderRow}>
+                    <Text style={styles.orderRef}>#{o.order_id ?? o.id}</Text>
+                    <View style={[styles.badge, { backgroundColor: sb.bg }]}>
+                      <Text style={[styles.badgeText, { color: sb.color }]}>{sb.label}</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.orderStore} numberOfLines={1}>
+                    {o.merchant_store_name ?? "Order"}
+                  </Text>
+                  <View style={styles.orderFooter}>
+                    <Text style={styles.orderWhen}>{whenPlaced(o.placed_at)}</Text>
+                    {o.grand_total != null ? (
+                      <Text style={styles.orderTotal}>₹{o.grand_total.toFixed(0)}</Text>
+                    ) : null}
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+            {recentOrdersQ.data?.hasMore ? (
               <TouchableOpacity
-                key={g.key}
-                onPress={() => setSelectedSection(g.key)}
-                style={styles.sectionCard}
-                activeOpacity={0.85}
+                onPress={() => setOrderPage((p) => p + 1)}
+                style={styles.loadMore}
+                disabled={recentOrdersQ.isFetching}
               >
-                <View style={[styles.sectionIcon, { backgroundColor: `${meta.color}15` }]}>
-                  <Ionicons name={meta.icon} size={22} color={meta.color} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.sectionTitle}>{meta.label}</Text>
-                  <Text style={styles.sectionCount}>{g.items.length} options</Text>
-                </View>
-                <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
+                {recentOrdersQ.isFetching ? (
+                  <ActivityIndicator color={GatiMitraColors.emerald} size="small" />
+                ) : (
+                  <>
+                    <Text style={styles.loadMoreText}>Load more orders</Text>
+                    <Ionicons name="chevron-down" size={16} color={GatiMitraColors.emerald} />
+                  </>
+                )}
               </TouchableOpacity>
-            );
-          })}
-          {groupedSections.length === 0 ? (
-            <Text style={styles.emptyText}>
-              No help topics configured yet. Please contact support directly.
+            ) : null}
+            <TouchableOpacity
+              onPress={() => {
+                setNoOrderMode(true);
+                setPickedOrder(null);
+                setShowAllTopics(false);
+                setSelectedTitle(null);
+                setStep("concerns");
+              }}
+              style={[styles.bigChoice, { marginTop: 8 }]}
+            >
+              <View style={[styles.bigIcon, { backgroundColor: "#F1F5F9" }]}>
+                <Ionicons name="help-circle-outline" size={22} color={GatiMitraColors.textSecondary} />
+              </View>
+              <Text style={[styles.bigTitle, { flex: 1 }]}>None of these — general help</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </ScrollView>
+    );
+  }
+
+  if (step === "concerns") {
+    const titles = concernsQ.data ?? [];
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 60 }}
+      >
+        <TouchableOpacity
+          onPress={() => setStep(noOrderMode ? "context" : "pick_order")}
+          style={styles.backRow}
+        >
+          <Ionicons name="chevron-back" size={18} color={GatiMitraColors.emerald} />
+          <Text style={styles.backText}>Back</Text>
+        </TouchableOpacity>
+
+        {pickedOrder ? (
+          <View style={styles.contextChip}>
+            <Ionicons name="receipt-outline" size={16} color="#15803d" />
+            <Text style={styles.contextChipText} numberOfLines={1}>
+              Order #{pickedOrder.order_id ?? pickedOrder.id} · {statusLabel(pickedOrder.status, pickedOrder.current_status).label}
             </Text>
-          ) : null}
-        </View>
-      ) : !selectedTitle ? (
-        // Step 2: pick title in section
-        <View style={{ marginTop: 8 }}>
-          <TouchableOpacity onPress={() => setSelectedSection(null)} style={styles.backRow}>
-            <Ionicons name="chevron-back" size={18} color={GatiMitraColors.emerald} />
-            <Text style={styles.backText}>Back</Text>
-          </TouchableOpacity>
-          <View style={{ marginTop: 10, gap: 8 }}>
-            {(groupedSections.find((g) => g.key === selectedSection)?.items ?? []).map((t) => (
+          </View>
+        ) : (
+          <View style={styles.contextChip}>
+            <Ionicons name="help-circle-outline" size={16} color="#15803d" />
+            <Text style={styles.contextChipText}>Not about a specific order</Text>
+          </View>
+        )}
+
+        <Text style={styles.h1}>{showAllTopics ? "All help topics" : "Common concerns"}</Text>
+        <Text style={styles.h2}>
+          {showAllTopics
+            ? "Browse the full list."
+            : pickedOrder
+              ? "These are the most likely issues for this order's stage."
+              : "Pick what best matches your issue."}
+        </Text>
+
+        {concernsQ.isLoading ? (
+          <ActivityIndicator color={GatiMitraColors.emerald} style={{ marginTop: 30 }} />
+        ) : showAllTopics && groupedAll ? (
+          <View style={{ marginTop: 12 }}>
+            {groupedAll.map((g) => (
+              <View key={g.key} style={{ marginBottom: 18 }}>
+                <Text style={styles.sectionHead}>{g.key.replace(/_/g, " ").toUpperCase()}</Text>
+                {g.items.map((t) => (
+                  <TouchableOpacity
+                    key={t.ticket_title_id}
+                    onPress={() => {
+                      setSelectedTitle(t);
+                      setSubject(t.title_text ?? "");
+                      setStep("details");
+                    }}
+                    style={styles.titleCard}
+                  >
+                    <Text style={styles.titleCardText}>{t.title_text}</Text>
+                    <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ))}
+          </View>
+        ) : titles.length > 0 ? (
+          <View style={{ marginTop: 12, gap: 8 }}>
+            {titles.map((t) => (
               <TouchableOpacity
                 key={t.ticket_title_id}
                 onPress={() => {
                   setSelectedTitle(t);
-                  setSubject(t.title_text ?? "");
+                  setSubject(
+                    pickedOrder && t.title_text
+                      ? `Order #${pickedOrder.order_id ?? pickedOrder.id} — ${t.title_text}`
+                      : t.title_text ?? ""
+                  );
+                  setStep("details");
                 }}
                 style={styles.titleCard}
                 activeOpacity={0.85}
@@ -178,73 +386,99 @@ export default function RaiseTicketScreen() {
               </TouchableOpacity>
             ))}
           </View>
-        </View>
-      ) : (
-        // Step 3: subject + description
-        <View style={{ marginTop: 8 }}>
-          <TouchableOpacity onPress={() => setSelectedTitle(null)} style={styles.backRow}>
-            <Ionicons name="chevron-back" size={18} color={GatiMitraColors.emerald} />
-            <Text style={styles.backText}>Change topic</Text>
-          </TouchableOpacity>
-          <View style={styles.selectedBox}>
-            <Text style={styles.selectedLabel}>You picked</Text>
-            <Text style={styles.selectedText}>{selectedTitle.title_text}</Text>
-            {selectedTitle.group_name ? (
-              <Text style={styles.selectedGroup}>Routed to: {selectedTitle.group_name}</Text>
-            ) : null}
-          </View>
+        ) : (
+          <Text style={styles.emptyText}>No matching topics. Tap "Show all topics" below.</Text>
+        )}
 
-          <Text style={styles.fieldLabel}>Subject</Text>
-          <TextInput
-            value={subject}
-            onChangeText={setSubject}
-            style={styles.input}
-            placeholder="Brief title for your issue"
-            placeholderTextColor={GatiMitraColors.textSecondary}
-            maxLength={500}
+        <TouchableOpacity
+          onPress={() => setShowAllTopics((s) => !s)}
+          style={styles.showAllBtn}
+        >
+          <Ionicons
+            name={showAllTopics ? "filter-circle" : "list"}
+            size={18}
+            color={GatiMitraColors.emerald}
           />
-
-          <Text style={styles.fieldLabel}>Describe the problem</Text>
-          <TextInput
-            value={description}
-            onChangeText={setDescription}
-            style={[styles.input, styles.textarea]}
-            placeholder="Tell us what happened. Include any order details or steps so the agent can help faster."
-            placeholderTextColor={GatiMitraColors.textSecondary}
-            multiline
-            maxLength={10000}
-          />
-          <Text style={styles.charCount}>{description.length}/10000</Text>
-
-          <TouchableOpacity
-            disabled={createMutation.isPending}
-            onPress={() => createMutation.mutate()}
-            style={[styles.submitBtn, createMutation.isPending && { opacity: 0.6 }]}
-          >
-            {createMutation.isPending ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <>
-                <Ionicons name="paper-plane" size={18} color="#fff" />
-                <Text style={styles.submitText}>Raise ticket</Text>
-              </>
-            )}
-          </TouchableOpacity>
-          <Text style={styles.note}>
-            An agent will be assigned automatically. You can chat with them in the next screen and attach photos if needed.
+          <Text style={styles.showAllText}>
+            {showAllTopics ? "Show only relevant topics" : "Show all topics"}
           </Text>
-        </View>
-      )}
+        </TouchableOpacity>
+      </ScrollView>
+    );
+  }
+
+  // step === "details"
+  return (
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 100 }}
+      keyboardShouldPersistTaps="handled"
+    >
+      <TouchableOpacity onPress={() => setStep("concerns")} style={styles.backRow}>
+        <Ionicons name="chevron-back" size={18} color={GatiMitraColors.emerald} />
+        <Text style={styles.backText}>Change topic</Text>
+      </TouchableOpacity>
+      <View style={styles.selectedBox}>
+        <Text style={styles.selectedLabel}>You picked</Text>
+        <Text style={styles.selectedText}>{selectedTitle?.title_text}</Text>
+        {pickedOrder ? (
+          <Text style={styles.selectedGroup}>For order #{pickedOrder.order_id ?? pickedOrder.id}</Text>
+        ) : null}
+        {selectedTitle?.group_name ? (
+          <Text style={styles.selectedGroup}>Routed to: {selectedTitle.group_name}</Text>
+        ) : null}
+      </View>
+
+      <Text style={styles.fieldLabel}>Subject</Text>
+      <TextInput
+        value={subject}
+        onChangeText={setSubject}
+        style={styles.input}
+        placeholder="Brief title for your issue"
+        placeholderTextColor={GatiMitraColors.textSecondary}
+        maxLength={500}
+      />
+
+      <Text style={styles.fieldLabel}>Describe the problem</Text>
+      <TextInput
+        value={description}
+        onChangeText={setDescription}
+        style={[styles.input, styles.textarea]}
+        placeholder="Tell us what happened. Photos can be attached in the chat after submission."
+        placeholderTextColor={GatiMitraColors.textSecondary}
+        multiline
+        maxLength={10000}
+      />
+      <Text style={styles.charCount}>{description.length}/10000</Text>
+
+      <TouchableOpacity
+        disabled={createMutation.isPending}
+        onPress={() => createMutation.mutate()}
+        style={[styles.submitBtn, createMutation.isPending && { opacity: 0.6 }]}
+      >
+        {createMutation.isPending ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <>
+            <Ionicons name="paper-plane" size={18} color="#fff" />
+            <Text style={styles.submitText}>Raise ticket</Text>
+          </>
+        )}
+      </TouchableOpacity>
+      <Text style={styles.note}>
+        An agent from the right team will be assigned automatically. You can chat and attach photos on the next screen.
+      </Text>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: GatiMitraColors.softBackground },
-  centered: { flex: 1, justifyContent: "center", alignItems: "center" },
   h1: { fontSize: 22, fontWeight: "800", color: GatiMitraColors.textPrimary },
   h2: { fontSize: 14, color: GatiMitraColors.textSecondary, marginTop: 4 },
-  sectionCard: {
+  backRow: { flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 8 },
+  backText: { color: GatiMitraColors.emerald, fontWeight: "700" },
+  bigChoice: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
@@ -254,11 +488,59 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: GatiMitraColors.border,
   },
-  sectionIcon: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
-  sectionTitle: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary },
-  sectionCount: { fontSize: 12, color: GatiMitraColors.textSecondary, marginTop: 2 },
-  backRow: { flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 8 },
-  backText: { color: GatiMitraColors.emerald, fontWeight: "700" },
+  bigIcon: { width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center" },
+  bigTitle: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  bigSub: { fontSize: 12, color: GatiMitraColors.textSecondary, marginTop: 2 },
+  orderCard: {
+    backgroundColor: "#fff",
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: GatiMitraColors.border,
+  },
+  orderHeaderRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  orderRef: { fontSize: 14, fontWeight: "800", color: GatiMitraColors.textPrimary },
+  badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  badgeText: { fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.4 },
+  orderStore: { fontSize: 13, color: GatiMitraColors.textSecondary, marginTop: 4 },
+  orderFooter: { flexDirection: "row", justifyContent: "space-between", marginTop: 8 },
+  orderWhen: { fontSize: 12, color: GatiMitraColors.textSecondary },
+  orderTotal: { fontSize: 13, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  loadMore: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: GatiMitraColors.border,
+    backgroundColor: "#fff",
+  },
+  loadMoreText: { color: GatiMitraColors.emerald, fontWeight: "700", fontSize: 14 },
+  emptyText: { color: GatiMitraColors.textSecondary, padding: 20, textAlign: "center", fontStyle: "italic" },
+  contextChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#ECFDF5",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#a7f3d0",
+    alignSelf: "flex-start",
+  },
+  contextChipText: { color: "#15803d", fontWeight: "700", fontSize: 12 },
+  sectionHead: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: GatiMitraColors.textSecondary,
+    letterSpacing: 0.6,
+    marginBottom: 6,
+    marginTop: 4,
+  },
   titleCard: {
     flexDirection: "row",
     alignItems: "center",
@@ -267,8 +549,22 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: GatiMitraColors.border,
+    marginBottom: 6,
   },
   titleCardText: { flex: 1, fontSize: 14, color: GatiMitraColors.textPrimary, fontWeight: "600" },
+  showAllBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    padding: 12,
+    marginTop: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: GatiMitraColors.emerald,
+    backgroundColor: "#fff",
+  },
+  showAllText: { color: GatiMitraColors.emerald, fontWeight: "700", fontSize: 13 },
   selectedBox: {
     backgroundColor: "#ECFDF5",
     padding: 12,
@@ -306,5 +602,4 @@ const styles = StyleSheet.create({
   },
   submitText: { color: "#fff", fontWeight: "800", fontSize: 16 },
   note: { fontSize: 12, color: GatiMitraColors.textSecondary, textAlign: "center", marginTop: 10, lineHeight: 18 },
-  emptyText: { color: GatiMitraColors.textSecondary, fontStyle: "italic", padding: 16, textAlign: "center" },
 });

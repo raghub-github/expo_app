@@ -72,6 +72,25 @@ export type BillContext = {
   /** User opted into a platform subscription add-on at checkout (SUBSCRIPTION pricing rules). */
   subscriptionOptIn?: boolean;
   /**
+   * True when the customer chose "self-pickup" at checkout. The engine must
+   * skip every DELIVERY-typed rule AND the delivery-fallback chain, otherwise
+   * a per-store DELIVERY rule (fixed or per-km) can re-introduce a fee even
+   * after the caller zeroed every delivery input.
+   */
+  isSelfPickup?: boolean;
+  /**
+   * Which engine produced `deliveryFeeFromSlabsGeoV2`. Lets the label logic
+   * distinguish a real "(slabs)" fee from an env-default fallback that fired
+   * because slab validation failed — without this, a fallback would lie and
+   * show up as "(slabs)" in the customer's bill.
+   */
+  deliveryPricingEngine?:
+    | "slab_geo"
+    | "fallback_per_km"
+    | "no_slab_configured"
+    | "no_geo_match"
+    | "slab_invalid";
+  /**
    * Who is checking out; must match `billing_discounts.offer_audience` for a coupon to apply.
    * Customer checkout should use CUSTOMER (default).
    */
@@ -133,6 +152,8 @@ export type GstComponentsBreakdown = {
   packaging: GstComponentLine;
   small_order: GstComponentLine;
   convenience: GstComponentLine;
+  /** Tax on `rem.misc` — captures subscription rules (GMitra Plus, Gold). */
+  subscription: GstComponentLine;
 };
 
 export type GstTotalsAudit = {

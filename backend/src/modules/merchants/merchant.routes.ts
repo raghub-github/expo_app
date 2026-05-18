@@ -12,6 +12,7 @@ import { listUserAppCategories } from "./userAppCategory.service.js";
 import type { NearbyStoreRow } from "./merchant.types.js";
 import { computeLiveStatus } from "./merchant.types.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
+import { previewEtaRange } from "../eta/eta.preview.js";
 
 const querySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).optional().default(20),
@@ -103,6 +104,8 @@ export async function merchantRoutes(app: FastifyInstance) {
                 displayImage: z.string().nullable(),
                 banner_url: z.string().nullable().optional(),
                 deliveryTime: z.string().optional(),
+                etaMinMinutes: z.number().optional(),
+                etaMaxMinutes: z.number().optional(),
                 cuisines: z.array(z.string()).optional(),
                 isOpen: z.boolean(),
                 liveStatus: z.enum(["OPEN", "CLOSED"]),
@@ -136,6 +139,13 @@ export async function merchantRoutes(app: FastifyInstance) {
         const displayImage = toAbsoluteClientMediaUrl(displayImageRaw);
         const bannerAbs = toAbsoluteClientMediaUrl(s.banner_url ?? null);
         const prepMin = nearby.avg_preparation_time_minutes ?? s.avg_preparation_time_minutes;
+        // ETA range: canonical "(prep + distance/18kmh) + 5..10 min buffer"
+        // formula stamped server-side so list, merchant detail header, and
+        // checkout all show the same numbers for one store.
+        const etaRange = previewEtaRange({
+          distanceKm: "distance_km" in s ? (nearby.distance_km as number) : null,
+          prepMinutes: prepMin,
+        });
         const rawLiveStatus = (s as NearbyStoreRow).live_status;
         const normalized =
           typeof rawLiveStatus === "string" ? rawLiveStatus.trim().toUpperCase() : "";
@@ -154,7 +164,9 @@ export async function merchantRoutes(app: FastifyInstance) {
           name: s.store_display_name ?? s.store_name,
           displayImage,
           banner_url: bannerAbs ?? displayImage ?? null,
-          deliveryTime: prepMin != null ? `${prepMin} min` : undefined,
+          deliveryTime: `${etaRange.etaMinMinutes}-${etaRange.etaMaxMinutes} min`,
+          etaMinMinutes: etaRange.etaMinMinutes,
+          etaMaxMinutes: etaRange.etaMaxMinutes,
           cuisines: s.cuisine_types ?? undefined,
           isOpen,
           liveStatus,
@@ -319,6 +331,8 @@ export async function merchantRoutes(app: FastifyInstance) {
             isOpen: z.boolean().optional(),
             acceptingOrders: z.boolean().optional(),
             avgPreparationTimeMinutes: z.number().nullable().optional(),
+            etaMinMinutes: z.number().optional(),
+            etaMaxMinutes: z.number().optional(),
             city: z.string().nullable().optional(),
             menu: z.array(
               z.object({

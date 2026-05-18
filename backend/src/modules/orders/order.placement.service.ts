@@ -28,6 +28,8 @@ import { verifyRazorpayPaymentDetails, verifyRazorpaySignature } from "../../ser
 import { computeBillForOrder } from "../billing/billing.service.js";
 import { normalizeOrderItems } from "./orderNormalizer.js";
 import { getRoute } from "../distance/distance.service.js";
+import { writeOrderItemCommissionSnapshots } from "../commission/writeOrderCommissionSnapshots.js";
+import { freezeEtaForPlacedOrder } from "../eta/eta.placement.js";
 
 const EM_DASH = "\u2014";
 
@@ -769,6 +771,27 @@ export async function finalizeOrder(
         );
       }
 
+      // Lock the resolved commission %, merchant payout, customer-visible price,
+      // and source rule onto each line so settlement is reproducible from a JOIN
+      // (no JSON parsing required) and future rule changes never affect this order.
+      const snapshotInputs = insertedItems
+        .map((row, idx) => {
+          if (row?.id == null) return null;
+          const it = items[idx]!;
+          return {
+            orderIdText,
+            orderItemId: Number(row.id),
+            customerVisiblePerUnitRupees: Number(it.basePrice),
+            quantity: it.quantity,
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => x != null);
+      await writeOrderItemCommissionSnapshots(
+        tx as unknown as PostgresJsDatabase<Record<string, unknown>>,
+        pending.merchantStoreId,
+        snapshotInputs,
+      );
+
       await tx.insert(ordersCorePayments).values({
         orderId: orderIdText,
         paymentGateway: "razorpay",
@@ -826,6 +849,21 @@ export async function finalizeOrder(
     // matches the schema in code. See order GM-* placement audit in
     // `payment_events` + `orders_core` itself for current observability.
     orderIdText = result.orderIdText;
+
+    // Freeze the ETA snapshot now that the order row exists. Runs OUTSIDE the
+    // transaction on purpose — the ETA write is a separate UPDATE and we
+    // don't want a transient Mapbox/OSRM failure to roll back a paid order.
+    // freezeEtaForPlacedOrder logs + swallows errors internally.
+    void freezeEtaForPlacedOrder({
+      orderIdText,
+      merchantStoreId: pending.merchantStoreId,
+      pickupLat: Number(pickupLat) || 0,
+      pickupLon: Number(pickupLon) || 0,
+      dropLat: Number(dropLat) || 0,
+      dropLon: Number(dropLon) || 0,
+      precomputedDistanceKm:
+        pending.distanceKm != null ? Number(pending.distanceKm) : null,
+    });
   } catch (err: unknown) {
     const e = err as {
       code?: string;
@@ -1164,6 +1202,25 @@ export async function finalizePendingOrderFromWebhook(
         );
       }
 
+      // Commission snapshot (webhook finalize path) — see writeOrderItemCommissionSnapshots for rationale.
+      const snapshotInputs = insertedItems
+        .map((row, idx) => {
+          if (row?.id == null) return null;
+          const it = items[idx]!;
+          return {
+            orderIdText,
+            orderItemId: Number(row.id),
+            customerVisiblePerUnitRupees: Number(it.basePrice),
+            quantity: it.quantity,
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => x != null);
+      await writeOrderItemCommissionSnapshots(
+        tx as unknown as PostgresJsDatabase<Record<string, unknown>>,
+        Number(pending.merchant_store_id),
+        snapshotInputs,
+      );
+
       await tx.insert(ordersCorePayments).values({
         orderId: orderIdText,
         paymentGateway: "razorpay",
@@ -1219,6 +1276,44 @@ export async function finalizePendingOrderFromWebhook(
         payload: gatewayPayload ?? {},
       });
       return { ok: true };
+    }
+
+    // Freeze ETA snapshot for the webhook-finalize path too. We don't have the
+    // pending coords in scope here (preflight is a sparse projection), so we
+    // re-read the just-finalized orders_core row for everything the engine
+    // needs. Fully best-effort: a failure inside freezeEtaForPlacedOrder
+    // doesn't roll back the placed order — it just leaves ETA columns NULL.
+    if (result.orderId) {
+      void (async () => {
+        try {
+          const [oc] = await db.execute(
+            sql`
+              SELECT merchant_store_id, pickup_lat::text AS pickup_lat,
+                     pickup_lon::text AS pickup_lon, drop_lat::text AS drop_lat,
+                     drop_lon::text AS drop_lon, distance_km::text AS distance_km
+              FROM orders_core
+              WHERE order_id = ${result.orderId}
+              LIMIT 1
+            `
+          ) as unknown as Array<Record<string, unknown>>;
+          if (!oc) return;
+          await freezeEtaForPlacedOrder({
+            orderIdText: result.orderId,
+            merchantStoreId: Number(oc.merchant_store_id),
+            pickupLat: Number(oc.pickup_lat ?? 0),
+            pickupLon: Number(oc.pickup_lon ?? 0),
+            dropLat: Number(oc.drop_lat ?? 0),
+            dropLon: Number(oc.drop_lon ?? 0),
+            precomputedDistanceKm:
+              oc.distance_km != null ? Number(oc.distance_km) : null,
+          });
+        } catch (e) {
+          console.warn("[eta] webhook-path ETA freeze failed (non-fatal)", {
+            orderId: result.orderId,
+            err: (e as Error).message,
+          });
+        }
+      })();
     }
 
     await logPaymentEvent(db, {

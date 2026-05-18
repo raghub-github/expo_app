@@ -40,7 +40,8 @@ import { useOrderStore } from "@/store/orderStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useEnsureStoreLiveStatus } from "@/hooks/useEnsureStoreLiveStatus";
 import { orderService } from "@/services/order.service";
-import { billingService, type CalculateBillResponse, type GstComponentLine } from "@/services/billing.service";
+import { billingService, type CalculateBillResponse } from "@/services/billing.service";
+import { previewEtaRange, formatEtaRange } from "@/lib/etaPreview";
 import { paymentService } from "@/services/payment.service";
 import { addressService, type Address } from "@/services/address.service";
 import { profileService } from "@/services/profile.service";
@@ -61,19 +62,42 @@ function roundBillAmount(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-/** Total for a fee supply line (taxable base + GST), server-rounded. */
-function gstComponentLineTotal(c: GstComponentLine): number {
-  return roundBillAmount(Math.max(0, c.taxable_value) + Math.max(0, c.gst));
-}
+// gstComponentLineTotal was used by the old inclusive-amount modal — removed
+// because the modal now shows only the tax portion (`.gst`) per line so we
+// don't duplicate the base values already displayed on the main bill rows.
 
 /**
- * Single "GST & other charges" bucket (Swiggy-style): everything in the payable subtotal
- * except item net (after discounts), delivery fee base, tip, and donation.
- * Matches backend: preFinal − rem.items − rem.delivery.
+ * Total for the "GST & other charges" row.
+ *
+ * The bill displays each fee-bucket BASE separately (packaging, platform,
+ * delivery, surge, small-order, convenience, subscription). This row is just
+ * the taxes + any non-displayed residual — so the math reconciles:
+ *
+ *   itemsNet + Σ(displayed fee bases) + "GST & other charges" = preFinal
+ *
+ * which means:
+ *
+ *   "GST & other charges" = preFinal − itemsNet − Σ(displayed fee bases)
+ *
+ * For a typical bill this equals `taxTotal` exactly. If a misc rule wasn't
+ * surfaced as its own row (rare), the difference appears here so the bill
+ * always sums to To-pay.
  */
-function computeGstAndOtherChargesTotal(bill: CalculateBillResponse): number {
+function computeGstAndOtherChargesTotal(
+  bill: CalculateBillResponse,
+  displayedMiscTotal: number,
+): number {
   const preTipDon = roundBillAmount(bill.finalAmount - bill.tipAmount - bill.donationAmount);
-  return Math.max(0, roundBillAmount(preTipDon - bill.itemsNetAfterDiscounts - bill.deliveryFee));
+  const accounted =
+    bill.itemsNetAfterDiscounts +
+    bill.packagingFee +
+    bill.platformFee +
+    bill.deliveryFee +
+    bill.surgeFee +
+    bill.smallOrderFee +
+    bill.convenienceFee +
+    displayedMiscTotal;
+  return Math.max(0, roundBillAmount(preTipDon - accounted));
 }
 
 const GRID = 6;
@@ -239,7 +263,7 @@ export default function CheckoutScreen() {
   );
   const queryClient = useQueryClient();
   const scrollRef = useRef<ScrollView>(null);
-  const { items, merchantId, merchantName, updateQuantity, clearCart } = useCartStore();
+  const { items, merchantId, merchantName, updateQuantity, clearCart, syncPricesFromMap } = useCartStore();
   useEnsureStoreLiveStatus(merchantId ?? null);
   const setActiveOrder = useOrderStore((s) => s.setActiveOrder);
   const storeStatus = useStoreStatusStore((s) => (merchantId ? s.getStatus(merchantId) : null));
@@ -281,6 +305,7 @@ export default function CheckoutScreen() {
   const [editingCartItemId, setEditingCartItemId] = useState<string | null>(null);
   const [paymentSheetVisible, setPaymentSheetVisible] = useState(false);
   const [billSummarySheetVisible, setBillSummarySheetVisible] = useState(false);
+  /** Modal showing the per-line GST + extras breakdown when the user taps the `i` chip. */
   const [gstBreakdownModalVisible, setGstBreakdownModalVisible] = useState(false);
   const [gmitraPlusSheetVisible, setGmitraPlusSheetVisible] = useState(false);
   const [couponSheetVisible, setCouponSheetVisible] = useState(false);
@@ -293,6 +318,9 @@ export default function CheckoutScreen() {
   const [razorpayModalVisible, setRazorpayModalVisible] = useState(false);
   const [razorpayCreating, setRazorpayCreating] = useState(false);
   const [simulatedPaymentOrder, setSimulatedPaymentOrder] = useState<{ orderId: string; amount: number; pendingId?: string } | null>(null);
+  /** Transient "₹X applied" toast shown when a platform offer kicks in. */
+  const [autoOfferToast, setAutoOfferToast] = useState<{ amount: number; label: string } | null>(null);
+  const prevDiscountTotalRef = useRef<number>(0);
   const currentLocationAddressCreatedRef = useRef(false);
   /**
    * Idempotency key for the current checkout attempt. Generated on first
@@ -338,11 +366,16 @@ export default function CheckoutScreen() {
     setScheduleSlotDraft(SCHEDULE_SLOT_OPTIONS[0]);
   }, [scheduleDayIndex, scheduleSheetVisible]);
 
+  // Address selection priority — explicit pick in this checkout session wins,
+  // then the customer's current default (set on the home picker or "Set as
+  // default" in profile), then the last-order fallback, then the first row.
+  // The default beats last-used so the user's most recent explicit choice on
+  // the home header propagates to checkout without an extra tap.
   const selectedAddress = useMemo(
     () =>
       addresses.find((a) => a.id === selectedAddressId) ??
-      addresses.find((a) => a.isLastUsed) ??
       addresses.find((a) => a.isDefault) ??
+      addresses.find((a) => a.isLastUsed) ??
       addresses[0],
     [addresses, selectedAddressId]
   );
@@ -523,7 +556,33 @@ export default function CheckoutScreen() {
     queryKey: ["merchant", merchantId],
     queryFn: () => merchantService.getMerchantById(merchantId!),
     enabled: !!merchantId,
+    // Always re-fetch on focus / mount so a commission rate change or a price
+    // edit in the merchant app propagates immediately to the open cart UI.
+    refetchOnWindowFocus: true,
+    refetchOnMount: "always",
+    staleTime: 0,
   });
+
+  // Whenever the menu refreshes, push the live per-item price into the cart
+  // store so the cart UI displays the same number the menu list shows. This
+  // matters for items added before a commission rate change or before a
+  // subscription benefit kicked in — without this the cart would keep showing
+  // the stale add-time price even though the bill is server-recalculated.
+  useEffect(() => {
+    if (!merchant?.menu || merchant.menu.length === 0 || items.length === 0) return;
+    const priceById: Record<string, number> = {};
+    for (const m of merchant.menu) {
+      if (typeof m.price === "number" && Number.isFinite(m.price)) {
+        priceById[m.id] = m.price;
+      }
+    }
+    if (Object.keys(priceById).length > 0) {
+      syncPricesFromMap(priceById);
+    }
+    // Intentionally omit `items` from deps — we react to menu changes only;
+    // syncPricesFromMap reads the latest items via the store getter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [merchant?.menu, syncPricesFromMap]);
 
   const checkoutCartBannerUrl = useMemo(() => {
     if (!merchant) return null;
@@ -558,11 +617,18 @@ export default function CheckoutScreen() {
       setAddressSheetBusyId(addr.id);
       try {
         idempotencyKeyRef.current = null;
-        await addressService.setActiveLocation({
-          latitude: addr.latitude,
-          longitude: addr.longitude,
-          address: addr.fullAddress,
-        });
+        // Mirror the home-page picker: update active-location, persist this
+        // pick as the customer's default (so re-opening any screen uses it),
+        // then invalidate the local cache. setAddressDefault is best-effort —
+        // local state still updates if the network call fails.
+        await Promise.all([
+          addressService.setActiveLocation({
+            latitude: addr.latitude,
+            longitude: addr.longitude,
+            address: addr.fullAddress,
+          }),
+          addressService.setAddressDefault(addr.id).catch(() => {}),
+        ]);
         const primary = addr.label ?? "Other";
         setAddressAndCoords(
           {
@@ -926,6 +992,28 @@ export default function CheckoutScreen() {
   });
 
   const serverBill = billingQuery.data ?? null;
+
+  // Auto-applied offer toast: fire when discountTotal increases from one bill
+  // calc to the next. Shows ₹X for ~2.5s. Initial mount with non-zero discount
+  // also fires once so the customer sees the saving the moment they open
+  // checkout with an eligible cart.
+  useEffect(() => {
+    if (!serverBill) return;
+    const newTotal = serverBill.discountTotal ?? 0;
+    const prev = prevDiscountTotalRef.current;
+    if (newTotal > prev + 0.005) {
+      const topDiscount = (serverBill.discounts ?? [])
+        .filter((d) => d.amount > 0.005)
+        .sort((a, b) => b.amount - a.amount)[0];
+      if (topDiscount) {
+        setAutoOfferToast({ amount: newTotal - prev, label: topDiscount.label });
+        const t = setTimeout(() => setAutoOfferToast(null), 2500);
+        prevDiscountTotalRef.current = newTotal;
+        return () => clearTimeout(t);
+      }
+    }
+    prevDiscountTotalRef.current = newTotal;
+  }, [serverBill]);
   /** Store→drop km from backend routing (authoritative for pricing); client route is for UI hint only. */
   const serverDistanceKm = serverBill?.distanceKm ?? null;
   /** Distance shown to user in checkout, always backend-computed. */
@@ -974,46 +1062,74 @@ export default function CheckoutScreen() {
 
   const gstAndOtherBreakdown = useMemo(() => {
     if (!serverBill) return null;
-    const total = computeGstAndOtherChargesTotal(serverBill);
     const comp = serverBill.components;
+
+    // Subscription rows the bill renders outside (label-matched from charges).
+    // Mirror that filter here so the modal total reconciles to the bill row.
+    const displayedMiscTotal = (serverBill.charges ?? [])
+      .filter((c) => {
+        const lbl = (c.label || "").toLowerCase();
+        return (
+          c.amount > 0.005 &&
+          (lbl.includes("gmitra") ||
+            lbl.includes("plus") ||
+            lbl.includes("gold") ||
+            lbl.includes("subscription"))
+        );
+      })
+      .reduce((s, c) => s + c.amount, 0);
+
+    const total = computeGstAndOtherChargesTotal(serverBill, displayedMiscTotal);
+
+    // Show ONLY the tax portion for each bucket — the base amounts are already
+    // displayed as their own line on the bill, so duplicating them inflates
+    // perceived charges and confuses the user.
     const lines: { key: string; label: string; amount: number; sub?: string }[] = [];
     const push = (key: string, label: string, amount: number, sub?: string) => {
       const a = roundBillAmount(amount);
       if (a > 0.005) lines.push({ key, label, amount: a, sub });
     };
-    push("packaging", "Restaurant packaging", gstComponentLineTotal(comp.packaging));
-    push(
-      "platform",
-      "Platform fee",
-      gstComponentLineTotal(comp.platform),
-      "This fee helps us operate and maintain the platform. GST is included where applicable as per billing rules."
-    );
     push(
       "food_gst",
       "GST on food",
       comp.items.gst,
-      "Taxes on food follow your merchant and government billing configuration."
+      "Tax on the food subtotal after discounts."
     );
     push("delivery_gst", "GST on delivery fee", comp.delivery.gst);
-    push("surge", "Surge fee", gstComponentLineTotal(comp.surge));
-    push("small_order", "Small order fee", gstComponentLineTotal(comp.small_order));
-    push("convenience", "Convenience fee", gstComponentLineTotal(comp.convenience));
+    push("packaging_gst", "GST on packaging", comp.packaging.gst);
+    push(
+      "platform_gst",
+      "GST on platform fee",
+      comp.platform.gst,
+      "Tax applied on the platform fee per billing rules."
+    );
+    push("surge_gst", "GST on surge fee", comp.surge.gst);
+    push("small_order_gst", "GST on small-order fee", comp.small_order.gst);
+    push("convenience_gst", "GST on convenience fee", comp.convenience.gst);
+    if (comp.subscription) {
+      push(
+        "subscription_gst",
+        "GST on subscription",
+        comp.subscription.gst,
+        "Tax on subscription add-ons (e.g. GMitra Plus)."
+      );
+    }
+
     const accounted = roundBillAmount(lines.reduce((s, l) => s + l.amount, 0));
     const remainder = roundBillAmount(total - accounted);
     if (remainder > 0.005) {
       lines.push({
         key: "other",
-        label: "Other fees & charges",
+        label: "Other taxes & charges",
         amount: remainder,
-        sub: "Includes subscription, store-specific fees, or taxes not split above (server billing pipeline).",
+        sub: "Any taxes or store-specific charges not split into a row above.",
       });
     }
     if (lines.length === 0 && total > 0.005) {
       lines.push({
         key: "aggregate",
-        label: "Charges & taxes",
+        label: "Taxes & charges",
         amount: total,
-        sub: "See billing rules in dashboard for how this total is computed.",
       });
     }
     return { total: roundBillAmount(total), lines };
@@ -1463,11 +1579,17 @@ export default function CheckoutScreen() {
     });
   }, [items, merchant?.menu]);
 
+  // Canonical delivery range — uses the SAME formula as the restaurant list
+  // and merchant detail header so the customer sees the same number on every
+  // screen for a given store + address.
   const deliveryEta = useMemo(() => {
-    if (!merchant?.avgPreparationTimeMinutes) return "15-25 mins";
-    const base = Math.round(Number(merchant.avgPreparationTimeMinutes));
-    return `${base + 15}-${base + 25} mins`;
-  }, [merchant?.avgPreparationTimeMinutes]);
+    return formatEtaRange(
+      previewEtaRange({
+        distanceKm: serverBill?.distanceKm ?? merchant?.distanceKm ?? null,
+        prepMinutes: merchant?.avgPreparationTimeMinutes ?? null,
+      }),
+    );
+  }, [merchant?.avgPreparationTimeMinutes, merchant?.distanceKm, serverBill?.distanceKm]);
 
   const scheduleDayTabs = useMemo(() => {
     const out: { id: string; line1: string; line2: string }[] = [];
@@ -1570,16 +1692,10 @@ export default function CheckoutScreen() {
     return { chipW, gap, radius };
   }, [windowWidth]);
 
-  if (!merchantId || items.length === 0) {
-    return (
-      <View style={[styles.center, { paddingBottom: insets.bottom }]}>
-        <Text style={styles.emptyText}>Cart is empty</Text>
-        <TouchableOpacity onPress={() => router.back()} style={styles.ctaSecondary}>
-          <Text style={styles.ctaSecondaryText}>Back to cart</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
+  // Note: early-return moved BELOW the next `useMemo` because React requires
+  // a stable number of hook calls per render. Returning before a useMemo
+  // changed the hook count when the cart emptied → "fewer hooks than expected".
+  const cartIsEmpty = !merchantId || items.length === 0;
 
   const showBillSkeleton =
     merchantLoading || (addressesLoading && addresses.length === 0) || billingQuery.isLoading;
@@ -1595,6 +1711,17 @@ export default function CheckoutScreen() {
     const relax = Platform.OS === "ios" ? 12 : 8;
     return Math.max(base - relax, 0);
   }, [insets.top]);
+
+  if (cartIsEmpty) {
+    return (
+      <View style={[styles.center, { paddingBottom: insets.bottom }]}>
+        <Text style={styles.emptyText}>Cart is empty</Text>
+        <TouchableOpacity onPress={() => router.back()} style={styles.ctaSecondary}>
+          <Text style={styles.ctaSecondaryText}>Back to cart</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -1642,6 +1769,37 @@ export default function CheckoutScreen() {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Auto-applied offer toast — fades in/out over ~2.5s when a platform
+          offer kicks in (or when checkout first loads with an eligible offer). */}
+      {autoOfferToast ? (
+        <Animated.View
+          entering={FadeInDown.duration(220)}
+          style={{
+            position: "absolute",
+            top: insets.top + 8,
+            alignSelf: "center",
+            zIndex: 50,
+            backgroundColor: GatiMitraColors.emerald,
+            paddingHorizontal: 14,
+            paddingVertical: 10,
+            borderRadius: 20,
+            shadowColor: "#000",
+            shadowOpacity: 0.18,
+            shadowRadius: 8,
+            shadowOffset: { width: 0, height: 4 },
+            elevation: 6,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <Ionicons name="pricetag" size={16} color="#fff" />
+          <Text style={{ color: "#fff", fontWeight: "700" }}>
+            {autoOfferToast.label} applied — you save ₹{autoOfferToast.amount.toFixed(0)}
+          </Text>
+        </Animated.View>
+      ) : null}
 
       {/* One-line distance banner — Zomato style ("Selected address is N km away from your location") */}
       {showDistanceBanner && (
@@ -2521,14 +2679,61 @@ export default function CheckoutScreen() {
                     <>
                       <Text style={styles.couponSectionTitle}>Platform offers</Text>
                       <Text style={styles.couponSectionHint}>Applied automatically when your cart qualifies.</Text>
-                      {checkoutOffersQuery.data!.platformOffers.map((o) => (
-                        <View key={`pf-${o.id}`} style={styles.couponListItem}>
-                          <View style={styles.couponListItemLeft}>
-                            <Text style={styles.couponListCode}>{o.name ?? o.offerKind}</Text>
-                            <Text style={styles.couponListDesc}>{o.summary}</Text>
+                      {checkoutOffersQuery.data!.platformOffers.map((o) => {
+                        // Look up the actual discount amount the engine applied for this offer.
+                        const applied = (serverBill?.discounts ?? []).find(
+                          (d) =>
+                            (d.label || "").toLowerCase() === String(o.name ?? "").toLowerCase() ||
+                            d.ruleId === o.id
+                        );
+                        const savings = applied ? applied.amount : 0;
+                        return (
+                          <View key={`pf-${o.id}`} style={styles.couponListItem}>
+                            <View style={styles.couponListItemLeft}>
+                              <Text style={styles.couponListCode}>{o.name ?? o.offerKind}</Text>
+                              <Text style={styles.couponListDesc}>{o.summary}</Text>
+                              {savings > 0.005 ? (
+                                <Text style={[styles.couponListDesc, { color: GatiMitraColors.emerald, marginTop: 2 }]}>
+                                  ✓ Applied — you save ₹{savings.toFixed(0)}
+                                </Text>
+                              ) : (
+                                <Text style={[styles.couponListDesc, { color: GatiMitraColors.textSecondary, marginTop: 2 }]}>
+                                  Auto-applies when eligible
+                                </Text>
+                              )}
+                            </View>
                           </View>
-                        </View>
-                      ))}
+                        );
+                      })}
+                    </>
+                  ) : null}
+
+                  {/* Ineligible platform offers — show greyed-out with the reason
+                      (e.g. "Min cart ₹399") so the customer can see what's available
+                      but locked. */}
+                  {(checkoutOffersQuery.data?.platformOffersIneligible?.length ?? 0) > 0 ? (
+                    <>
+                      <Text style={[styles.couponSectionTitle, { marginTop: 12 }]}>Unlock more savings</Text>
+                      <Text style={styles.couponSectionHint}>Add a few more items or meet the conditions below to unlock these.</Text>
+                      {checkoutOffersQuery.data!.platformOffersIneligible!.map((o) => {
+                        // Parse the rejection reason — server returns formats like
+                        // "minCart=399 cart=163.75" — we just surface the human bits.
+                        const reasonClean = o.reason
+                          .replace(/\|/g, " · ")
+                          .replace(/_/g, " ")
+                          .replace(/=([0-9.]+)/g, " ₹$1");
+                        return (
+                          <View key={`pf-ineligible-${o.id}`} style={[styles.couponListItem, { opacity: 0.6 }]}>
+                            <View style={styles.couponListItemLeft}>
+                              <Text style={styles.couponListCode}>{o.name ?? o.offerKind}</Text>
+                              <Text style={styles.couponListDesc}>{o.summary}</Text>
+                              <Text style={[styles.couponListDesc, { color: "#b45309", marginTop: 2 }]}>
+                                🔒 {reasonClean}
+                              </Text>
+                            </View>
+                          </View>
+                        );
+                      })}
                     </>
                   ) : null}
                   {(checkoutOffersQuery.data?.merchantOffers?.length ?? 0) > 0 ? (
@@ -3490,12 +3695,16 @@ export default function CheckoutScreen() {
           <View style={styles.gstModalCard}>
             <View style={styles.gstModalHeader}>
               <Text style={styles.gstModalTitle}>GST & other charges</Text>
-              <Pressable onPress={() => setGstBreakdownModalVisible(false)} hitSlop={12} accessibilityRole="button">
+              <Pressable
+                onPress={() => setGstBreakdownModalVisible(false)}
+                hitSlop={12}
+                accessibilityRole="button"
+              >
                 <Ionicons name="close" size={24} color={GatiMitraColors.textSecondary} />
               </Pressable>
             </View>
             <Text style={styles.gstModalSubtitle}>
-              Amounts come from the server bill. They match the single total on your bill.
+              Every GST and platform charge on this order, broken out one by one.
             </Text>
             <ScrollView style={styles.gstModalScroll} showsVerticalScrollIndicator={false}>
               {gstAndOtherBreakdown?.lines.map((row) => (
@@ -3579,26 +3788,78 @@ export default function CheckoutScreen() {
                   {serverBill.addonTotal > 0 && (
                     <BillRow label="Add-ons" value={`₹${serverBill.addonTotal.toFixed(2)}`} />
                   )}
-                  {serverBill.packagingFee > 0.005 && (
-                    <BillRow label="Packaging charges" value={`₹${serverBill.packagingFee.toFixed(2)}`} />
+
+                  {/* Fee bases (no GST baked in) — keeps the bill compact. */}
+                  {serverBill.components.packaging.taxable_value > 0.005 && (
+                    <BillRow
+                      label="Packaging charges"
+                      value={`₹${serverBill.components.packaging.taxable_value.toFixed(2)}`}
+                    />
                   )}
-                  {serverBill.platformFee > 0.005 && (
-                    <BillRow label="Platform fee" value={`₹${serverBill.platformFee.toFixed(2)}`} />
+                  {serverBill.components.platform.taxable_value > 0.005 && (
+                    <BillRow
+                      label="Platform fee"
+                      value={`₹${serverBill.components.platform.taxable_value.toFixed(2)}`}
+                    />
                   )}
+                  {serverBill.components.surge.taxable_value > 0.005 && (
+                    <BillRow
+                      label="Surge fee"
+                      value={`₹${serverBill.components.surge.taxable_value.toFixed(2)}`}
+                    />
+                  )}
+                  {serverBill.components.small_order.taxable_value > 0.005 && (
+                    <BillRow
+                      label="Small order fee"
+                      value={`₹${serverBill.components.small_order.taxable_value.toFixed(2)}`}
+                    />
+                  )}
+                  {serverBill.components.convenience.taxable_value > 0.005 && (
+                    <BillRow
+                      label="Convenience fee"
+                      value={`₹${serverBill.components.convenience.taxable_value.toFixed(2)}`}
+                    />
+                  )}
+
                   {visibleDiscounts.map((c, idx) => (
                     <BillRow key={`sheet-dsc-${idx}`} label={c.label} value={`-₹${c.amount.toFixed(2)}`} green />
                   ))}
-                  {serverBill.deliveryFee > 0.005 && (
-                    <BillRow label={deliveryFeeLabel} value={`₹${serverBill.deliveryFee.toFixed(2)}`} />
+
+                  {serverBill.components.delivery.taxable_value > 0.005 && (
+                    <BillRow
+                      label={deliveryFeeLabel}
+                      value={`₹${serverBill.components.delivery.taxable_value.toFixed(2)}`}
+                    />
                   )}
+
+                  {/* Subscription / misc charges — surface each subscription as its own line
+                      so the customer can see what they opted into. */}
+                  {(serverBill.charges ?? [])
+                    .filter((c) => {
+                      const lbl = (c.label || "").toLowerCase();
+                      return (
+                        c.amount > 0.005 &&
+                        (lbl.includes("gmitra") ||
+                          lbl.includes("plus") ||
+                          lbl.includes("gold") ||
+                          lbl.includes("subscription"))
+                      );
+                    })
+                    .map((c, idx) => (
+                      <BillRow
+                        key={`sheet-sub-${c.ruleId ?? idx}`}
+                        label={c.label}
+                        value={`₹${c.amount.toFixed(2)}`}
+                      />
+                    ))}
+
+                  {/* Single combined "GST & other charges" row. Tapping the i icon
+                      opens a modal that breaks down every GST + ungrouped extra. */}
                   {gstAndOtherBreakdown != null && gstAndOtherBreakdown.total > 0.005 && (
                     <GstOtherChargesRow
                       label="GST & other charges"
                       value={`₹${gstAndOtherBreakdown.total.toFixed(2)}`}
-                      onInfoPress={() => {
-                        setBillSummarySheetVisible(false);
-                        setGstBreakdownModalVisible(true);
-                      }}
+                      onInfoPress={() => setGstBreakdownModalVisible(true)}
                     />
                   )}
                   <View style={styles.billDivider} />
@@ -3718,6 +3979,11 @@ export default function CheckoutScreen() {
   );
 }
 
+/**
+ * The "GST & other charges" row exposes a single `i` chip that opens a modal
+ * listing every GST + ungrouped extra item individually. Keeps the bill itself
+ * compact while still being fully transparent.
+ */
 function GstOtherChargesRow({
   label,
   value,
@@ -3756,6 +4022,89 @@ function BillRow({
       <Text style={styles.billLabel}>{label}</Text>
       <Text style={[styles.billValue, bold && styles.billValueBold, green && styles.billValueGreen]}>{value}</Text>
     </View>
+  );
+}
+
+/**
+ * Bill row that exposes a per-line GST breakdown via an inline "i" affordance.
+ * Tapping the info chip toggles a small panel underneath with base/GST/total —
+ * matches Zomato/Swiggy's transparent fee disclosure.
+ *
+ * If `breakdown` is omitted the row renders exactly like a plain BillRow (no
+ * info icon, no toggle) — that way callers can pass conditional breakdowns
+ * without branching at the call site.
+ */
+function BillRowExpandable({
+  label,
+  total,
+  green,
+  bold,
+  breakdown,
+  note,
+}: {
+  label: string;
+  total: number;
+  green?: boolean;
+  bold?: boolean;
+  breakdown?: { base: number; gst: number; gstRateLabel?: string | null };
+  note?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const hasBreakdown =
+    breakdown != null &&
+    (Math.abs(breakdown.gst) > 0.005 || Math.abs(breakdown.base) > 0.005);
+  return (
+    <>
+      <View style={styles.billRow}>
+        <View style={styles.billRowLabelWithInfo}>
+          <Text style={styles.billLabel}>{label}</Text>
+          {hasBreakdown ? (
+            <Pressable
+              onPress={() => setOpen((s) => !s)}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel={open ? `Hide breakdown of ${label}` : `Show breakdown of ${label}`}
+            >
+              <Ionicons
+                name={open ? "chevron-up-circle" : "information-circle-outline"}
+                size={18}
+                color={GatiMitraColors.textSecondary}
+              />
+            </Pressable>
+          ) : null}
+        </View>
+        <Text
+          style={[
+            styles.billValue,
+            bold && styles.billValueBold,
+            green && styles.billValueGreen,
+          ]}
+        >
+          {green && total > 0 ? `-₹${total.toFixed(2)}` : `₹${Math.abs(total).toFixed(2)}`}
+        </Text>
+      </View>
+      {open && hasBreakdown && breakdown ? (
+        <View style={styles.billBreakdownPanel}>
+          <View style={styles.billBreakdownRow}>
+            <Text style={styles.billBreakdownLabel}>Base</Text>
+            <Text style={styles.billBreakdownValue}>₹{breakdown.base.toFixed(2)}</Text>
+          </View>
+          <View style={styles.billBreakdownRow}>
+            <Text style={styles.billBreakdownLabel}>
+              GST{breakdown.gstRateLabel ? ` (${breakdown.gstRateLabel})` : ""}
+            </Text>
+            <Text style={styles.billBreakdownValue}>₹{breakdown.gst.toFixed(2)}</Text>
+          </View>
+          <View style={[styles.billBreakdownRow, styles.billBreakdownTotalRow]}>
+            <Text style={styles.billBreakdownTotalLabel}>Total</Text>
+            <Text style={styles.billBreakdownTotalValue}>
+              ₹{(breakdown.base + breakdown.gst).toFixed(2)}
+            </Text>
+          </View>
+          {note ? <Text style={styles.billBreakdownNote}>{note}</Text> : null}
+        </View>
+      ) : null}
+    </>
   );
 }
 
@@ -4787,6 +5136,40 @@ const styles = StyleSheet.create({
   billValueBold: { fontWeight: "800", fontSize: 15 },
   billValueGreen: { color: GatiMitraColors.emerald, fontWeight: "600" },
   billDivider: { height: 1, backgroundColor: GatiMitraColors.border, marginVertical: 8 },
+  /** Inline GST breakdown panel revealed when the user taps the "i" chip on a bill row. */
+  billBreakdownPanel: {
+    backgroundColor: "#F8FAFC",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginTop: -2,
+    marginBottom: 6,
+    marginLeft: 12,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  billBreakdownRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 3,
+  },
+  billBreakdownLabel: { fontSize: 12, color: GatiMitraColors.textSecondary },
+  billBreakdownValue: { fontSize: 12, color: GatiMitraColors.textPrimary, fontWeight: "600" },
+  billBreakdownTotalRow: {
+    marginTop: 4,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: "#E5E7EB",
+  },
+  billBreakdownTotalLabel: { fontSize: 12, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  billBreakdownTotalValue: { fontSize: 12, fontWeight: "800", color: GatiMitraColors.textPrimary },
+  billBreakdownNote: {
+    marginTop: 6,
+    fontSize: 11,
+    fontStyle: "italic",
+    color: GatiMitraColors.textSecondary,
+  },
   contributionTitle: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary },
   contributionSub: { fontSize: 12, color: GatiMitraColors.textSecondary, marginTop: 4 },
   donationRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },

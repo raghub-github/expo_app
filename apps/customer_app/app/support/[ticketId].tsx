@@ -328,13 +328,23 @@ export default function TicketDetailScreen() {
             }}
           />
         ) : null}
-        {messages.map((m) => (
-          <MessageBubble
-            key={m.id}
-            mine={String(m.sender_type || "").toUpperCase() === "CUSTOMER"}
-            message={m}
-          />
-        ))}
+        {messages.map((m, idx) => {
+          const mine = String(m.sender_type || "").toUpperCase() === "CUSTOMER";
+          const prev = messages[idx - 1];
+          const prevType = prev ? String(prev.sender_type || "").toUpperCase() : "";
+          const curType = String(m.sender_type || "").toUpperCase();
+          // Show avatar/label only on the first message of a same-sender streak.
+          const isFirstOfStreak = !prev || prevType !== curType;
+          return (
+            <MessageBubble
+              key={m.id}
+              mine={mine}
+              message={m}
+              showSender={!mine && isFirstOfStreak}
+              tightTop={!isFirstOfStreak}
+            />
+          );
+        })}
         {isTerminal && (
           <View style={styles.resolvedBanner}>
             <Ionicons name="checkmark-circle" size={18} color="#15803d" />
@@ -449,9 +459,19 @@ export default function TicketDetailScreen() {
   );
 }
 
-function MessageBubble({ message, mine }: { message: TicketMessage; mine: boolean }) {
-  const isSystem = String(message.sender_type || "").toUpperCase() === "SYSTEM";
-  if (isSystem) {
+function MessageBubble({
+  message,
+  mine,
+  showSender = true,
+  tightTop = false,
+}: {
+  message: TicketMessage;
+  mine: boolean;
+  showSender?: boolean;
+  tightTop?: boolean;
+}) {
+  const senderType = String(message.sender_type || "").toUpperCase();
+  if (senderType === "SYSTEM") {
     return (
       <View style={styles.systemRow}>
         <Text style={styles.systemText}>{message.message_text}</Text>
@@ -463,11 +483,24 @@ function MessageBubble({ message, mine }: { message: TicketMessage; mine: boolea
     .filter((a): a is { name: string; url: string; isImage: boolean } => !!a);
 
   return (
-    <View style={[styles.row, mine ? styles.rowMine : styles.rowTheirs]}>
+    <View
+      style={[
+        styles.row,
+        mine ? styles.rowMine : styles.rowTheirs,
+        tightTop && styles.rowTight,
+      ]}
+    >
+      {!mine ? (
+        showSender ? (
+          <View style={styles.supportAvatar}>
+            <Ionicons name="headset" size={14} color="#fff" />
+          </View>
+        ) : (
+          <View style={styles.supportAvatarSpacer} />
+        )
+      ) : null}
       <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs]}>
-        {!mine && message.sender_name ? (
-          <Text style={styles.senderName}>{message.sender_name}</Text>
-        ) : null}
+        {!mine && showSender ? <Text style={styles.supportLabel}>Support</Text> : null}
         {message.message_text ? (
           <Text style={[styles.bubbleText, mine && styles.bubbleTextMine]}>{message.message_text}</Text>
         ) : null}
@@ -482,10 +515,23 @@ function MessageBubble({ message, mine }: { message: TicketMessage; mine: boolea
                 <TouchableOpacity
                   key={i}
                   onPress={() => Linking.openURL(a.url)}
-                  style={styles.attachmentInlineFile}
+                  style={[
+                    styles.attachmentInlineFile,
+                    mine && { backgroundColor: "rgba(255,255,255,0.18)" },
+                  ]}
                 >
-                  <Ionicons name="document-attach" size={18} color={GatiMitraColors.emerald} />
-                  <Text style={styles.attachmentInlineFileText} numberOfLines={1}>
+                  <Ionicons
+                    name="document-attach"
+                    size={18}
+                    color={mine ? "#fff" : GatiMitraColors.emerald}
+                  />
+                  <Text
+                    style={[
+                      styles.attachmentInlineFileText,
+                      mine && { color: "#fff" },
+                    ]}
+                    numberOfLines={1}
+                  >
                     {a.name}
                   </Text>
                 </TouchableOpacity>
@@ -530,11 +576,25 @@ const styles = StyleSheet.create({
   liveDotOff: { backgroundColor: "#9ca3af" },
   liveText: { fontSize: 11, color: GatiMitraColors.textSecondary, fontWeight: "600" },
   thread: { flex: 1 },
-  row: { width: "100%", marginBottom: 8, flexDirection: "row" },
+  row: { width: "100%", marginBottom: 10, flexDirection: "row", alignItems: "flex-end" },
   rowMine: { justifyContent: "flex-end" },
-  rowTheirs: { justifyContent: "flex-start" },
+  rowTheirs: { justifyContent: "flex-start", gap: 6 },
+  /** Pulls the bubble closer to the previous one when we suppress the avatar+label. */
+  rowTight: { marginBottom: 3 },
+  /** Small circular icon next to support replies — generic, never shows the agent's name. */
+  supportAvatar: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: GatiMitraColors.emerald,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
+  },
+  /** Invisible placeholder to keep follow-up bubbles aligned with the streak's first bubble. */
+  supportAvatarSpacer: { width: 26, height: 1 },
   bubble: {
-    maxWidth: "82%",
+    maxWidth: "78%",
     borderRadius: 14,
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -546,8 +606,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: GatiMitraColors.border,
   },
-  senderName: { fontSize: 11, fontWeight: "700", color: GatiMitraColors.textSecondary, marginBottom: 2 },
-  bubbleText: { fontSize: 14, color: GatiMitraColors.textPrimary, lineHeight: 19 },
+  /** Generic "Support" label above agent messages — never shows the agent's personal name. */
+  supportLabel: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: GatiMitraColors.emerald,
+    marginBottom: 3,
+    letterSpacing: 0.2,
+  },
+  bubbleText: { fontSize: 14, color: GatiMitraColors.textPrimary, lineHeight: 20 },
   bubbleTextMine: { color: "#fff" },
   timestamp: { fontSize: 10, color: GatiMitraColors.textSecondary, marginTop: 4, alignSelf: "flex-end" },
   timestampMine: { color: "#e0f2f1" },

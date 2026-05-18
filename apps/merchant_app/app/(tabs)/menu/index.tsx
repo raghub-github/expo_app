@@ -157,11 +157,12 @@ function MenuItemCard({
   const [toggling, setToggling] = useState(false);
   const [imageError, setImageError] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
-  const sellingNum = Number(item.selling_price);
+  // Merchant view: show the merchant's payout (base_price) — not the
+  // commission-included customer price. The customer-only view lives in the
+  // customer app; the merchant sees what they receive.
   const baseNum = Number(item.base_price);
-  const hasDiscount = baseNum > sellingNum && baseNum > 0;
-  const sellingFormatted = `₹${sellingNum.toFixed(0)}`;
-  const baseFormatted = baseNum > 0 ? `₹${baseNum.toFixed(0)}` : null;
+  const sellingNum = Number(item.selling_price);
+  const baseFormatted = baseNum > 0 ? `₹${baseNum.toFixed(0)}` : `₹${sellingNum.toFixed(0)}`;
   const prepMins = item.preparation_time_minutes != null ? item.preparation_time_minutes : null;
   const packNum = item.packaging_charges != null ? Number(item.packaging_charges) : NaN;
   const packShow = Number.isFinite(packNum) && packNum > 0;
@@ -310,10 +311,10 @@ function MenuItemCard({
             </View>
           ) : null}
           <View style={styles.priceRow}>
-            <Text style={styles.sellingPrice}>{sellingFormatted}</Text>
-            {hasDiscount && baseFormatted ? (
-              <Text style={styles.basePriceStrike}>{baseFormatted}</Text>
-            ) : null}
+            <Text style={styles.sellingPrice}>{baseFormatted}</Text>
+            <Text style={{ marginLeft: 6, fontSize: 11, color: GatiMitraMerchant.textTertiary }}>
+              your payout
+            </Text>
           </View>
           {hasAnyOptions && (
             <TouchableOpacity
@@ -2105,7 +2106,7 @@ export default function MenuScreen() {
                                 </TouchableOpacity>
                                 <View style={styles.treeRowRight}>
                                   <Text style={styles.treePrice}>
-                                    ₹{Number(item.selling_price).toFixed(0)}
+                                    ₹{Number(item.base_price ?? item.selling_price).toFixed(0)}
                                   </Text>
                                   <Switch
                                     value={effectiveInStock(item)}

@@ -36,6 +36,8 @@ const planSchema = z.object({
   description: z.string().nullable(),
   price: z.number(),
   gst_percent: z.number().optional(),
+  commission_percent_override: z.number().nullable().optional(),
+  commission_benefit_active: z.boolean().optional(),
   billing_cycle: z.string(),
   max_menu_items: z.number().nullable(),
   max_cuisines: z.number().nullable(),
@@ -156,6 +158,7 @@ export async function plansRoutes(app: FastifyInstance) {
         rows = await sql`
           SELECT id, plan_name, plan_code, description, price, billing_cycle,
                  gst_percent,
+                 commission_percent_override, commission_benefit_active,
                  max_menu_items, max_cuisines, max_menu_categories,
                  image_upload_allowed, max_image_uploads,
                  analytics_access, advanced_analytics, priority_support,
@@ -181,6 +184,9 @@ export async function plansRoutes(app: FastifyInstance) {
         description: r.description != null ? String(r.description) : null,
         price: Number(r.price ?? 0),
         gst_percent: r.gst_percent != null ? Number(r.gst_percent) : 0,
+        commission_percent_override:
+          r.commission_percent_override != null ? Number(r.commission_percent_override) : null,
+        commission_benefit_active: Boolean(r.commission_benefit_active),
         billing_cycle: String(r.billing_cycle ?? "MONTHLY"),
         max_menu_items: r.max_menu_items != null ? Number(r.max_menu_items) : null,
         max_cuisines: r.max_cuisines != null ? Number(r.max_cuisines) : null,

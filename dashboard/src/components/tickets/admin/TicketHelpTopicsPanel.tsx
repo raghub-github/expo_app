@@ -30,6 +30,34 @@ const MERCHANT_SECTION_OPTIONS: { value: string; label: string }[] = [
   { value: "other", label: "Other" },
 ];
 
+/** Matches customer_app /support help-sections grouping (see backend customer-support routes). */
+const CUSTOMER_SECTION_OPTIONS: { value: string; label: string }[] = [
+  { value: "orders", label: "Order issues" },
+  { value: "payments", label: "Payments & refunds" },
+  { value: "account", label: "Account & profile" },
+  { value: "app", label: "App problems" },
+  { value: "general", label: "Something else" },
+];
+
+/**
+ * Order status codes the title is shown for in the customer raise-ticket wizard.
+ * Matches Postgres enum `order_status_type` plus the 'NO_ORDER' sentinel for
+ * titles that should appear when the customer picks "not about an order".
+ * Leave the list EMPTY in the form (= NULL in DB) to make a title always show
+ * as a fallback.
+ */
+const ORDER_STATUS_OPTIONS: { value: string; label: string; group: string }[] = [
+  { value: "assigned", label: "Placed (not accepted yet)", group: "Before pickup" },
+  { value: "accepted", label: "Accepted by merchant", group: "Before pickup" },
+  { value: "reached_store", label: "Rider at store", group: "Before pickup" },
+  { value: "picked_up", label: "Picked up by rider", group: "In transit" },
+  { value: "in_transit", label: "On the way", group: "In transit" },
+  { value: "delivered", label: "Delivered", group: "After delivery" },
+  { value: "cancelled", label: "Cancelled", group: "Terminal" },
+  { value: "failed", label: "Failed", group: "Terminal" },
+  { value: "NO_ORDER", label: "Not about an order (general)", group: "Non-order" },
+];
+
 const INTAKE_TICKET_TYPES = [
   { value: "order_related", label: "Order related" },
   { value: "non_order", label: "Non-order related" },
@@ -131,6 +159,9 @@ type FormState = {
   tagIds: number[];
   priorityId: string;
   merchantSectionId: string;
+  customerSectionId: string;
+  /** Empty list = NULL in DB = always show. */
+  applicableOrderStatuses: string[];
   intakeTicketType: string;
   intakeUnifiedTitle: string;
   intakeUnifiedCategory: string;
@@ -151,6 +182,8 @@ const emptyForm = (): FormState => ({
   tagIds: [],
   priorityId: "",
   merchantSectionId: "",
+  customerSectionId: "",
+  applicableOrderStatuses: [],
   intakeTicketType: "",
   intakeUnifiedTitle: "",
   intakeUnifiedCategory: "",
@@ -236,7 +269,20 @@ function TitleTreeRows({
                 {t.titleText}
               </button>
               {t.subtext ? <span className="text-xs text-gray-500 max-w-[200px] truncate">{t.subtext}</span> : null}
-              <span className="text-[10px] text-gray-400 font-mono">{t.merchantSectionId || "—"}</span>
+              <span className="text-[10px] text-gray-400 font-mono" title="Merchant section">
+                M: {t.merchantSectionId || "—"}
+              </span>
+              <span className="text-[10px] text-gray-400 font-mono" title="Customer section">
+                C: {t.customerSectionId || "—"}
+              </span>
+              {t.applicableOrderStatuses && t.applicableOrderStatuses.length > 0 ? (
+                <span
+                  className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5 font-mono"
+                  title={`Shows for: ${t.applicableOrderStatuses.join(", ")}`}
+                >
+                  {t.applicableOrderStatuses.length}× status
+                </span>
+              ) : null}
               <ActiveSwitch
                 active={t.isActive}
                 busy={togglingId === t.id}
@@ -419,6 +465,8 @@ export function TicketHelpTopicsPanel({
             : [],
       priorityId: row.priorityId != null ? String(row.priorityId) : "",
       merchantSectionId: row.merchantSectionId ?? "",
+      customerSectionId: row.customerSectionId ?? "",
+      applicableOrderStatuses: Array.isArray(row.applicableOrderStatuses) ? [...row.applicableOrderStatuses] : [],
       intakeTicketType: row.intakeTicketType ?? "",
       intakeUnifiedTitle: row.intakeUnifiedTitle ?? "",
       intakeUnifiedCategory: row.intakeUnifiedCategory ?? "",
@@ -559,6 +607,8 @@ export function TicketHelpTopicsPanel({
             tagIds: form.tagIds,
             priorityId: Number.isFinite(priorityId!) ? priorityId : null,
             merchantSectionId: form.merchantSectionId.trim() || null,
+            customerSectionId: form.customerSectionId.trim() || null,
+            applicableOrderStatuses: form.applicableOrderStatuses.length > 0 ? form.applicableOrderStatuses : null,
             intakeTicketType: form.intakeTicketType.trim() || null,
             intakeUnifiedTitle: form.intakeUnifiedTitle.trim() || null,
             intakeUnifiedCategory: form.intakeUnifiedCategory.trim() || null,
@@ -594,6 +644,8 @@ export function TicketHelpTopicsPanel({
           tagIds: form.tagIds,
           priorityId: Number.isFinite(priorityId!) ? priorityId : null,
           merchantSectionId: form.merchantSectionId.trim() || null,
+          customerSectionId: form.customerSectionId.trim() || null,
+          applicableOrderStatuses: form.applicableOrderStatuses.length > 0 ? form.applicableOrderStatuses : null,
           intakeTicketType: form.intakeTicketType.trim() || null,
           intakeUnifiedTitle: form.intakeUnifiedTitle.trim() || null,
           intakeUnifiedCategory: form.intakeUnifiedCategory.trim() || null,
@@ -1098,6 +1150,90 @@ export function TicketHelpTopicsPanel({
                       </option>
                     ))}
                   </select>
+                </div>
+              </div>
+
+              {/* Customer app — drives /support help-sections grouping + status-aware concerns.
+                  Set `customerSectionId` to make a title appear under that section in the
+                  customer raise-ticket wizard. `applicableOrderStatuses` filters the title
+                  to specific order statuses (e.g. "Damaged item" only shows after delivery).
+                  Leave the status list empty for "always show" (fallback). Include
+                  'NO_ORDER' for titles that should appear in the not-about-an-order flow. */}
+              <div>
+                <h4 className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-2">Customer app</h4>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Customer help section id</label>
+                    <select
+                      value={form.customerSectionId}
+                      onChange={(e) => setForm((f) => f && { ...f, customerSectionId: e.target.value })}
+                      className="w-full max-w-md rounded border border-gray-300 px-3 py-2 text-sm"
+                    >
+                      <option value="">—</option>
+                      {CUSTOMER_SECTION_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-[10px] text-gray-500">
+                      Required to make this title visible in the customer support help hub. Leave blank to hide from customer app.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">
+                      Applicable order statuses
+                    </label>
+                    <div className="rounded border border-gray-200 bg-gray-50 p-2">
+                      {(() => {
+                        const groups = new Map<string, typeof ORDER_STATUS_OPTIONS>();
+                        for (const opt of ORDER_STATUS_OPTIONS) {
+                          if (!groups.has(opt.group)) groups.set(opt.group, []);
+                          groups.get(opt.group)!.push(opt);
+                        }
+                        const selected = new Set(form.applicableOrderStatuses);
+                        const toggle = (val: string) => {
+                          setForm((f) => {
+                            if (!f) return f;
+                            const next = new Set(f.applicableOrderStatuses);
+                            if (next.has(val)) next.delete(val);
+                            else next.add(val);
+                            return { ...f, applicableOrderStatuses: Array.from(next) };
+                          });
+                        };
+                        return Array.from(groups.entries()).map(([groupLabel, opts]) => (
+                          <div key={groupLabel} className="mb-2 last:mb-0">
+                            <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                              {groupLabel}
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {opts.map((o) => {
+                                const on = selected.has(o.value);
+                                return (
+                                  <button
+                                    key={o.value}
+                                    type="button"
+                                    onClick={() => toggle(o.value)}
+                                    className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                                      on
+                                        ? "border-emerald-500 bg-emerald-50 text-emerald-700"
+                                        : "border-gray-300 bg-white text-gray-600 hover:border-gray-400"
+                                    }`}
+                                  >
+                                    {on ? "✓ " : ""}
+                                    {o.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ));
+                      })()}
+                    </div>
+                    <p className="mt-1 text-[10px] text-gray-500">
+                      Empty = always show (fallback). Pick statuses to limit when this concern appears in the customer wizard. <strong>NO_ORDER</strong> = show in the "not about an order" flow.
+                    </p>
+                  </div>
                 </div>
               </div>
 

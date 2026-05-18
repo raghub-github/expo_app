@@ -66,6 +66,13 @@ type CartState = {
   updateQuantity: (menuItemId: string, delta: number) => void;
   removeItem: (menuItemId: string) => void;
   clearCart: () => void;
+  /**
+   * Replace stored per-unit prices for every line whose menuItemId matches.
+   * Used by the checkout screen to sync cart prices with the live menu API
+   * after a commission rate change or merchant price edit — so the cart UI
+   * stops showing a stale value the customer saw at add-time.
+   */
+  syncPricesFromMap: (pricesByMenuItemId: Record<string, number>) => void;
   getActiveCartContext: () => ActiveCartContext;
   hydrate: () => Promise<void>;
   persist: () => Promise<void>;
@@ -192,6 +199,24 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   removeItem: (menuItemId) => {
     get().updateQuantity(menuItemId, -999);
+  },
+
+  syncPricesFromMap: (pricesByMenuItemId) => {
+    const { items } = get();
+    if (items.length === 0) return;
+    let changed = false;
+    const next = items.map((i) => {
+      const fresh = pricesByMenuItemId[i.menuItemId];
+      // Tolerate minor float jitter; only update if the new price differs by >= 1 paise.
+      if (fresh != null && Number.isFinite(fresh) && Math.abs(fresh - i.price) > 0.005) {
+        changed = true;
+        return { ...i, price: fresh, basePrice: fresh };
+      }
+      return i;
+    });
+    if (!changed) return;
+    set({ items: next, lastUpdatedAt: Date.now() });
+    get().persist();
   },
 
   clearCart: () => {

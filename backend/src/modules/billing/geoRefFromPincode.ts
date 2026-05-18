@@ -1,5 +1,6 @@
 import { getSql } from "../../db/client.js";
 import type { DropGeoRefByLevel } from "./types.js";
+import { stateNameFromPincode } from "./pincodePrefixToState.js";
 
 /**
  * Treat em-dash, dash, and common "no value" placeholders as null.
@@ -7,6 +8,40 @@ import type { DropGeoRefByLevel } from "./types.js";
  * because the columns are NOT NULL — without sanitizing these here, geo lookups
  * would try to match "—" against real pincodes/states.
  */
+/**
+ * Common name + code variants for an Indian state. Tried in order against
+ * the `states` table so we can resolve regardless of how the row was seeded
+ * (long name, short name, code, local-language spelling).
+ */
+const STATE_VARIANTS: Record<string, string[]> = {
+  "West Bengal": ["West Bengal", "Paschim Banga", "Paschim Bangla", "WB"],
+  "Delhi": ["Delhi", "NCT of Delhi", "National Capital Territory of Delhi", "DL"],
+  "Haryana": ["Haryana", "HR"],
+  "Punjab": ["Punjab", "PB"],
+  "Himachal Pradesh": ["Himachal Pradesh", "HP"],
+  "Jammu and Kashmir": ["Jammu and Kashmir", "Jammu & Kashmir", "J&K", "JK"],
+  "Uttar Pradesh": ["Uttar Pradesh", "UP"],
+  "Uttarakhand": ["Uttarakhand", "Uttaranchal", "UK"],
+  "Rajasthan": ["Rajasthan", "RJ"],
+  "Gujarat": ["Gujarat", "GJ"],
+  "Maharashtra": ["Maharashtra", "MH"],
+  "Madhya Pradesh": ["Madhya Pradesh", "MP"],
+  "Chhattisgarh": ["Chhattisgarh", "Chattisgarh", "CG"],
+  "Andhra Pradesh": ["Andhra Pradesh", "AP"],
+  "Telangana": ["Telangana", "TG", "TS"],
+  "Karnataka": ["Karnataka", "KA"],
+  "Tamil Nadu": ["Tamil Nadu", "Tamilnadu", "TN"],
+  "Kerala": ["Kerala", "KL"],
+  "Odisha": ["Odisha", "Orissa", "OD", "OR"],
+  "Assam": ["Assam", "AS"],
+  "Arunachal Pradesh": ["Arunachal Pradesh", "AR"],
+  "Bihar": ["Bihar", "BR"],
+  "Jharkhand": ["Jharkhand", "JH"],
+};
+function stateVariantsFor(canonical: string): string[] {
+  return STATE_VARIANTS[canonical] ?? [canonical];
+}
+
 function sanitizeGeoText(v: string | null | undefined): string | null {
   if (v == null) return null;
   const t = String(v).trim();
@@ -50,6 +85,81 @@ export async function resolveDropGeoRefsFromPincode(
     return null;
   }
 
+  /**
+   * Fast path #1: deterministic pincode-prefix → state mapping. India Post
+   * assigns pincodes by region with a stable first-2-digits rule, so we can
+   * always resolve a state UUID from the pincode alone — even when the
+   * `pincodes` table doesn't yet have this code and `customer_addresses.state`
+   * was stored as "—". Without this, billing silently dropped to env defaults
+   * (₹25 base + ₹5/km) instead of using the merchant's state-level rate card.
+   *
+   * Runs FIRST so it's robust to the chain-incomplete / state-placeholder
+   * cases that broke production. The full pincode chain still runs below to
+   * populate pincode/post_office/division/district UUIDs for offer geo-binding
+   * when those tables ARE seeded — but state always resolves.
+   */
+  const pincodePrefixState = stateNameFromPincode(pc);
+  let stateIdFromPrefix: string | null = null;
+  let stateMatchedBy: string | null = null;
+  if (pincodePrefixState) {
+    const sql0 = getSql();
+    // Try increasingly loose matches so a state can resolve regardless of
+    // capitalization, abbreviation, or local-language spelling stored in the
+    // `states` table. The first match wins; we stop the moment we get a UUID.
+    const variants = stateVariantsFor(pincodePrefixState);
+    for (const v of variants) {
+      try {
+        // Exact case-insensitive match
+        const [exact] = await sql0<{ id: string }[]>`
+          SELECT id FROM states WHERE LOWER(TRIM(name)) = LOWER(${v}) LIMIT 1
+        `;
+        if (exact?.id) {
+          stateIdFromPrefix = exact.id;
+          stateMatchedBy = `name=${v}`;
+          break;
+        }
+        // Code column (e.g. "WB", "MH") — only valid for 2–3 char strings.
+        if (v.length <= 3) {
+          try {
+            const [byCode] = await sql0<{ id: string }[]>`
+              SELECT id FROM states WHERE UPPER(TRIM(code)) = UPPER(${v}) LIMIT 1
+            `;
+            if (byCode?.id) {
+              stateIdFromPrefix = byCode.id;
+              stateMatchedBy = `code=${v}`;
+              break;
+            }
+          } catch {
+            /* states.code column may not exist; ignore. */
+          }
+        }
+        // Substring match — last resort for "West Bengal " (trailing space) or
+        // "WEST_BENGAL" oddities. Restricted to >= 4 chars to avoid false hits.
+        if (v.length >= 4) {
+          const [byLike] = await sql0<{ id: string }[]>`
+            SELECT id FROM states WHERE LOWER(name) LIKE ${"%" + v.toLowerCase() + "%"} LIMIT 1
+          `;
+          if (byLike?.id) {
+            stateIdFromPrefix = byLike.id;
+            stateMatchedBy = `name~${v}`;
+            break;
+          }
+        }
+      } catch {
+        // best-effort — try next variant
+      }
+    }
+    // eslint-disable-next-line no-console
+    console.log("[geo] pincode-prefix lookup", {
+      pincode: pc,
+      prefix: pc.slice(0, 2),
+      candidate_state: pincodePrefixState,
+      variants_tried: variants,
+      matched_by: stateMatchedBy,
+      state_uuid: stateIdFromPrefix,
+    });
+  }
+
   const sql = getSql();
   // IMPORTANT: do not require the full hierarchy to be present.
   // A pincode may exist but not yet be linked to a post office; in that case we still must return pincode uuid
@@ -88,8 +198,15 @@ export async function resolveDropGeoRefsFromPincode(
 
   const x = rows[0];
 
-  // When pincode lookup yields nothing OR chain is incomplete (state_id null),
-  // try state-name fallback so state-bound offers still resolve.
+  /**
+   * State UUID resolution priority:
+   *   1. chain join result (most accurate when geo tables are fully seeded)
+   *   2. explicit `stateName` arg (e.g. "West Bengal" passed from the caller)
+   *   3. pincode-prefix lookup (always works for valid Indian pincodes)
+   *
+   * We resolve in this order so the BEST signal wins but billing never falls
+   * back to env defaults purely because of incomplete geo seeding.
+   */
   let stateId: string | null = x?.state_id ?? null;
   if (stateId == null) {
     const sn = sanitizeGeoText(stateName);
@@ -104,8 +221,11 @@ export async function resolveDropGeoRefsFromPincode(
       }
     }
   }
+  if (stateId == null && stateIdFromPrefix != null) {
+    stateId = stateIdFromPrefix;
+  }
 
-  // No pincode row AND no state via name fallback → nothing to return
+  // No pincode row AND no state via name/prefix fallback → nothing to return.
   if (!x?.pincode_id) {
     return stateId ? ({ state: stateId } as DropGeoRefByLevel) : null;
   }

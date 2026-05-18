@@ -117,6 +117,13 @@ export type NearbyStoreRow = MerchantStoreRow & {
   display_image?: string | null;
   avg_preparation_time_minutes?: number | null;
   live_status?: string | null;
+  /**
+   * Customer-facing ETA range stamped server-side so the list, the merchant
+   * detail header, and the bill all show the SAME numbers. Computed from
+   * `previewEtaRange({ distanceKm, prepMinutes })` — see eta.preview.ts.
+   */
+  eta_min_minutes?: number | null;
+  eta_max_minutes?: number | null;
 };
 
 export type MerchantMenuCategoryRow = {

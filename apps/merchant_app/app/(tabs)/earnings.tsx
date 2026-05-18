@@ -17,6 +17,7 @@ import {
   type WalletSummary, type LedgerEntry, type PayoutQuote,
 } from "@/services/walletApi";
 import { listBankAccounts, type BankAccount } from "@/services/bankAccountApi";
+import { useActiveCommission } from "@/hooks/useActiveCommission";
 
 const CATEGORIES = [
   "ORDER_EARNING", "ORDER_ADJUSTMENT", "WITHDRAWAL", "PENALTY",
@@ -69,6 +70,7 @@ export default function EarningsScreen() {
   const { selectedStore } = useSelectedStore();
   const { token } = useAuth();
   const storeId = selectedStore?.id ?? null;
+  const { data: activeCommission } = useActiveCommission(storeId);
 
   const [wallet, setWallet] = useState<WalletSummary | null>(null);
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
@@ -176,6 +178,29 @@ export default function EarningsScreen() {
           </View>
         ) : (
           <>
+            {/* Active commission rate badge — sourced from /commission/active. */}
+            {activeCommission ? (
+              <View
+                style={{
+                  marginBottom: 10,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 8,
+                  backgroundColor: "#ecfeff",
+                  paddingHorizontal: 12,
+                  paddingVertical: 8,
+                  borderRadius: 10,
+                  borderWidth: 1,
+                  borderColor: "#a5f3fc",
+                }}
+              >
+                <Ionicons name="receipt-outline" size={16} color="#0e7490" />
+                <Text style={{ flex: 1, fontSize: 12, color: "#155e75", fontWeight: "600" }}>
+                  Your platform commission: {activeCommission.percent}% — {activeCommission.sourceLabel}
+                </Text>
+              </View>
+            ) : null}
+
             {/* Balance hero */}
             <View style={s.heroCard}>
               <Text style={s.heroLabel}>Available Balance</Text>

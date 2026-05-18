@@ -669,7 +669,11 @@ export default function LocationAddressScreen() {
         country: "IN",
         latitude: selectedLat,
         longitude: selectedLon,
-        isDefault: fromOnboarding,
+        // Newly-added addresses are ALWAYS marked default — the customer just
+        // explicitly chose this location, so every consumer (home header,
+        // checkout) should immediately use it without an extra tap. The server
+        // automatically un-defaults the previous row in the same transaction.
+        isDefault: true,
         contactName: contactName.trim() || null,
         contactMobile: contactMobile.trim() || null,
       });

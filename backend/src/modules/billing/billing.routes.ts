@@ -412,6 +412,20 @@ export async function billingRoutes(app: FastifyInstance) {
                 summary: z.string(),
               })
             ),
+            // Ineligible — shown grayed-out in the app with the rejection reason
+            // (e.g. "minCart=399 cart=163"). Lets the customer see exactly which
+            // configured offers they could unlock by adjusting the cart.
+            platformOffersIneligible: z
+              .array(
+                z.object({
+                  id: z.number(),
+                  name: z.string().nullable(),
+                  offerKind: z.string(),
+                  summary: z.string(),
+                  reason: z.string(),
+                })
+              )
+              .optional(),
           }),
           400: z.object({ error: z.string(), message: z.string() }),
           403: z.object({ error: z.string() }),

@@ -76,6 +76,10 @@ function mapTitleRow(r: Record<string, unknown>) {
     priorityCode: r.resolved_priority_code != null ? String(r.resolved_priority_code) : null,
     priorityDisplayName: r.resolved_priority_display_name != null ? String(r.resolved_priority_display_name) : null,
     merchantSectionId: r.merchant_section_id != null ? String(r.merchant_section_id) : null,
+    customerSectionId: r.customer_section_id != null ? String(r.customer_section_id) : null,
+    applicableOrderStatuses: Array.isArray(r.applicable_order_statuses)
+      ? (r.applicable_order_statuses as string[]).map((s) => String(s))
+      : null,
     intakeTicketType: r.intake_ticket_type != null ? String(r.intake_ticket_type) : null,
     intakeUnifiedTitle: r.intake_unified_title != null ? String(r.intake_unified_title) : null,
     intakeUnifiedCategory: r.intake_unified_category != null ? String(r.intake_unified_category) : null,
@@ -112,6 +116,8 @@ async function fetchTitlesExtended(sqlClient: SqlClient) {
         tt.tag_id,
         tt.priority_id,
         tt.merchant_section_id,
+        tt.customer_section_id,
+        tt.applicable_order_statuses,
         tt.intake_ticket_type,
         tt.intake_unified_title,
         tt.intake_unified_category,
@@ -300,6 +306,27 @@ export async function POST(request: NextRequest) {
     const priorityId = body.priorityId != null ? Number(body.priorityId) : body.priority_id != null ? Number(body.priority_id) : null;
     const merchantSectionId =
       body.merchantSectionId != null ? String(body.merchantSectionId).trim() || null : body.merchant_section_id != null ? String(body.merchant_section_id).trim() || null : null;
+    const customerSectionId =
+      body.customerSectionId != null
+        ? String(body.customerSectionId).trim() || null
+        : body.customer_section_id != null
+          ? String(body.customer_section_id).trim() || null
+          : null;
+    // applicable_order_statuses: TEXT[] of order status codes the title is
+    // relevant for. NULL = always-relevant fallback.
+    const applicableOrderStatusesRaw =
+      body.applicableOrderStatuses !== undefined
+        ? body.applicableOrderStatuses
+        : body.applicable_order_statuses !== undefined
+          ? body.applicable_order_statuses
+          : undefined;
+    let applicableOrderStatuses: string[] | null = null;
+    if (Array.isArray(applicableOrderStatusesRaw)) {
+      applicableOrderStatuses = applicableOrderStatusesRaw
+        .map((s: unknown) => String(s).trim())
+        .filter((s: string) => s.length > 0);
+      if (applicableOrderStatuses.length === 0) applicableOrderStatuses = null;
+    }
     const intakeTicketType =
       body.intakeTicketType != null ? String(body.intakeTicketType).trim() || null : body.intake_ticket_type != null ? String(body.intake_ticket_type).trim() || null : null;
     const intakeUnifiedTitle =
@@ -359,11 +386,11 @@ export async function POST(request: NextRequest) {
           group_id, service_type, ticket_section, source_role, title_code, title_text, description, display_order, is_active,
           subtext, default_quick_options, tag_id, priority_id, merchant_section_id, intake_ticket_type, parent_title_id,
           intake_unified_title, intake_unified_category, intake_unified_priority, intake_unified_service_type,
-          metadata, merchant_help_icon_name
+          metadata, merchant_help_icon_name, customer_section_id, applicable_order_statuses
         ) VALUES (
           $1, $2::ticket_service_type, $3::ticket_section, $4::ticket_source_role, $5, $6, $7, $8, $9,
           $10, $11::text[], $12, $13, $14, $15, $16,
-          $17, $18, $19, $20, $21::jsonb, $22
+          $17, $18, $19, $20, $21::jsonb, $22, $23, $24::text[]
         )
         RETURNING id`,
         [
@@ -389,6 +416,8 @@ export async function POST(request: NextRequest) {
           intakeUnifiedServiceType,
           metadataJson,
           merchantHelpIconName,
+          customerSectionId,
+          applicableOrderStatuses,
         ]
       );
       insertedId = Number(ins?.[0]?.id);
@@ -468,7 +497,8 @@ export async function POST(request: NextRequest) {
         `SELECT
           tt.id, tt.group_id, tt.service_type::text AS service_type, tt.ticket_section::text AS ticket_section, tt.source_role::text AS source_role,
           tt.title_code, tt.title_text, tt.description, tt.display_order, tt.is_active, tt.created_at, tt.updated_at,
-          tt.subtext, tt.default_quick_options, tt.tag_id, tt.priority_id, tt.merchant_section_id, tt.intake_ticket_type,
+          tt.subtext, tt.default_quick_options, tt.tag_id, tt.priority_id, tt.merchant_section_id,
+          tt.customer_section_id, tt.applicable_order_statuses, tt.intake_ticket_type,
           tt.intake_unified_title, tt.intake_unified_category, tt.intake_unified_priority, tt.intake_unified_service_type,
           tt.parent_title_id, tt.metadata, tt.merchant_help_icon_name,
           tg.group_code, tg.group_name,

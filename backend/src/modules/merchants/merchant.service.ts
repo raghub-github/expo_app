@@ -12,6 +12,25 @@ import type {
   MenuItemAddonRow,
 } from "./merchant.types.js";
 import { computeLiveStatus } from "./merchant.types.js";
+import { resolveStoreCommission } from "../commission/commission.resolver.js";
+import { customerPriceFromBase } from "../commission/pricing.js";
+import { previewEtaRange } from "../eta/eta.preview.js";
+
+/**
+ * Stamps the canonical customer-facing ETA range on a store row using its
+ * `avg_preparation_time_minutes` + `distance_km`. Every list / detail / search
+ * payload runs through this so the customer app sees the SAME numbers on
+ * every screen for one store.
+ */
+function withEtaStamp<T extends { distance_km?: number | null; avg_preparation_time_minutes?: number | null }>(
+  row: T,
+): T & { eta_min_minutes: number; eta_max_minutes: number } {
+  const range = previewEtaRange({
+    distanceKm: row.distance_km ?? null,
+    prepMinutes: row.avg_preparation_time_minutes ?? null,
+  });
+  return { ...row, eta_min_minutes: range.etaMinMinutes, eta_max_minutes: range.etaMaxMinutes };
+}
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 50;
@@ -545,6 +564,26 @@ export async function getMenuByStoreId(
     category_name: m.category_id != null ? categoryMap.get(m.category_id) ?? null : null,
   }));
 
+  // The merchant's stored `selling_price` is treated as their NET intended
+  // menu price (what they want to receive per item). We mark it up at read
+  // time so the customer always sees `selling_price × 100/(100 − commission)`
+  // — that way the menu list, cart, checkout, and bill are all the same
+  // number, and a rate change propagates instantly without touching the menu.
+  //
+  // Important: this is the ONLY place where commission is added on the
+  // customer-facing read path. Don't bake markup at write time too — that
+  // double-applies for items saved through forms that already pre-compute.
+  const commission = await resolveStoreCommission(store.id);
+  for (const it of itemsWithCategory) {
+    const netRupees = parseFloat(it.selling_price);
+    if (!Number.isFinite(netRupees) || netRupees <= 0) continue;
+    const { customerPaise } = customerPriceFromBase(
+      Math.round(netRupees * 100),
+      commission.percent,
+    );
+    it.selling_price = (customerPaise / 100).toFixed(2);
+  }
+
   return { store, items: itemsWithCategory };
 }
 
@@ -658,12 +697,24 @@ export async function getMenuItemFullConfig(
     };
   });
 
+  // Mark up the merchant's stored prices to the customer-visible amount.
+  // Same rule as getMenuByStoreId: selling_price/variant_price/addon_price
+  // are the merchant's net intent; we add commission on top exactly once
+  // here on the read path so cart and bill stay consistent.
+  const commission = await resolveStoreCommission(store.id);
+  const markup = (rupees: number): number => {
+    if (!Number.isFinite(rupees) || rupees <= 0) return 0;
+    return (
+      customerPriceFromBase(Math.round(rupees * 100), commission.percent).customerPaise / 100
+    );
+  };
+
   return {
     item: {
       id: item.item_id,
       name: item.item_name,
       description: item.item_description ?? null,
-      price: parseFloat(item.selling_price),
+      price: markup(parseFloat(item.selling_price)),
       imageUrl: toAbsoluteClientMediaUrl(item.item_image_url ?? null),
       isVeg: (item.food_type ?? "").toLowerCase().startsWith("veg"),
       hasCustomizations: item.has_customizations === true,
@@ -674,11 +725,14 @@ export async function getMenuItemFullConfig(
       id: v.variant_id,
       name: v.variant_name,
       type: v.variant_type ?? null,
-      price: parseFloat(v.variant_price),
+      price: markup(parseFloat(v.variant_price)),
       isDefault: v.is_default === true,
       displayOrder: v.display_order ?? 0,
     })),
-    customizations: customizationsWithAddons,
+    customizations: customizationsWithAddons.map((c) => ({
+      ...c,
+      addons: c.addons.map((a) => ({ ...a, price: markup(a.price) })),
+    })),
   };
 }
 

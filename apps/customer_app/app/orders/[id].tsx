@@ -22,6 +22,7 @@ import MapView, { Marker, Polyline, Region } from "react-native-maps";
 import { customerMapProps } from "@/lib/mapViewProps";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { orderService } from "@/services/order.service";
+import { etaService, formatEtaRange, minutesUntil } from "@/services/eta.service";
 import { getRouteCoordinates } from "@/services/directions.service";
 import { ORDER_STATUS_LABELS } from "@/constants";
 import { useOrderStore } from "@/store/orderStore";
@@ -94,6 +95,16 @@ export default function OrderTrackingScreen() {
     enabled: !!orderId,
   });
 
+  // Frozen promise + latest live recalc snapshot. Refetched every 60s while
+  // the order is active so traffic / rider-pickup events propagate.
+  const { data: etaData } = useQuery({
+    queryKey: ["orderEta", orderId],
+    queryFn: () => etaService.getForOrder(orderId),
+    enabled: !!orderId,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  });
+
   const isActive =
     order &&
     order.status !== "DELIVERED" &&
@@ -164,13 +175,40 @@ export default function OrderTrackingScreen() {
     ]
   );
 
+  // ETA priority: live recalc snapshot (most recent server compute) → frozen
+  // placement promise → legacy in-cart estimate → status-derived fallback.
+  // The live snapshot already accounts for traffic / pickup / weather updates,
+  // so when the server has anything for us it's authoritative.
+  const liveEtaMins = (() => {
+    if (!etaData) return null;
+    if (etaData.live?.promisedDeliveryAt) {
+      const m = minutesUntil(etaData.live.promisedDeliveryAt);
+      if (m != null && m > 0) return m;
+    }
+    if (etaData.promise?.promisedDeliveryAt) {
+      const m = minutesUntil(etaData.promise.promisedDeliveryAt);
+      if (m != null && m > 0) return m;
+    }
+    if (etaData.live) return etaData.live.maxMinutes;
+    if (etaData.promise?.maxMinutes != null) return etaData.promise.maxMinutes;
+    return null;
+  })();
   const etaMinutes =
+    liveEtaMins ??
     activeOrderForThis?.etaMinutes ??
     (order?.status === "ON_THE_WAY" || order?.status === "OUT_FOR_DELIVERY"
       ? 15
       : order?.status === "PICKED_UP"
         ? 20
         : 27);
+  const promisedDeliveryAtIso =
+    etaData?.live?.promisedDeliveryAt || etaData?.promise?.promisedDeliveryAt || null;
+  const promisedRangeLabel = etaData
+    ? formatEtaRange(
+        etaData.live?.minMinutes ?? etaData.promise.minMinutes,
+        etaData.live?.maxMinutes ?? etaData.promise.maxMinutes,
+      )
+    : null;
 
   if (!orderId) {
     return (
@@ -203,19 +241,47 @@ export default function OrderTrackingScreen() {
     if (phone) Linking.openURL(`tel:${phone}`);
   };
 
+  /**
+   * Opens the order-linked ticket flow. Same screen the user can reach from
+   * the support hub, but pre-seeded with this order's internal id + GM…
+   * reference so the help-topic picker shows status-aware concerns (e.g.
+   * "Order not arrived" for an ON_THE_WAY order vs "Damaged item" for
+   * DELIVERED). The user can still switch orders inside that flow.
+   */
+  const handleOpenHelp = () => {
+    const orderInternalId = (order as { id?: number | string }).id;
+    const orderRef =
+      (order as { orderId?: string; order_id?: string }).orderId ??
+      (order as { order_id?: string }).order_id ??
+      orderId;
+    router.push({
+      pathname: "/orders/raise-ticket",
+      params: {
+        orderId: String(orderInternalId ?? ""),
+        orderRef: String(orderRef ?? ""),
+      },
+    });
+  };
+
+  const handleViewAllTickets = () => router.push("/support");
+
   return (
     <>
       <AndroidBackHandler />
       <StatusBar style="dark" backgroundColor="#fff" />
       <View style={[styles.container, { paddingTop: insets.top }]}>
-        {/* Header: restaurant name, order ID */}
+        {/* Header — back arrow, store name + order id, and a always-visible
+            help button so the customer can open the order-linked ticket flow
+            from any state of the order. Mirrors Zomato/Swiggy live order UI. */}
         <View style={styles.header}>
           <TouchableOpacity
             onPress={() => router.back()}
-            style={styles.backBtn}
+            style={styles.headerIconBtn}
             hitSlop={12}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
           >
-            <Ionicons name="arrow-back" size={24} color={GatiMitraColors.textPrimary} />
+            <Ionicons name="arrow-back" size={22} color={GatiMitraColors.textPrimary} />
           </TouchableOpacity>
           <View style={styles.headerCenter}>
             <Text style={styles.headerTitle} numberOfLines={1}>
@@ -223,7 +289,15 @@ export default function OrderTrackingScreen() {
             </Text>
             <Text style={styles.orderIdLabel}>#{order.orderId}</Text>
           </View>
-          <View style={styles.headerRight} />
+          <TouchableOpacity
+            onPress={handleOpenHelp}
+            style={styles.headerIconBtn}
+            hitSlop={12}
+            accessibilityRole="button"
+            accessibilityLabel="Get help on this order"
+          >
+            <Ionicons name="help-circle-outline" size={24} color={GatiMitraColors.emerald} />
+          </TouchableOpacity>
         </View>
 
         <ScrollView
@@ -285,13 +359,32 @@ export default function OrderTrackingScreen() {
                 </Marker>
               )}
             </MapView>
-            {/* ETA pill overlay */}
+            {/* ETA pill overlay — live countdown from the server snapshot. */}
             {!isDelivered && !isCancelled && (
               <View style={styles.etaPill}>
                 <Ionicons name="time-outline" size={20} color={GatiMitraColors.emerald} />
-                <Text style={styles.etaText}>
-                  Arriving in ~{etaMinutes} min
-                </Text>
+                <View style={{ marginLeft: 6 }}>
+                  <Text style={styles.etaText}>
+                    Arriving in ~{etaMinutes} min
+                  </Text>
+                  {promisedRangeLabel ? (
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        color: GatiMitraColors.textSecondary,
+                        fontWeight: "500",
+                      }}
+                    >
+                      Promised {promisedRangeLabel}
+                      {promisedDeliveryAtIso
+                        ? ` · by ${new Date(promisedDeliveryAtIso).toLocaleTimeString(undefined, {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}`
+                        : ""}
+                    </Text>
+                  ) : null}
+                </View>
               </View>
             )}
             {isDelivered && (
@@ -398,30 +491,76 @@ export default function OrderTrackingScreen() {
             )}
           </View>
 
-          {/* Help / Support — opens order-linked raise-ticket flow.
-              We pass both the internal numeric id (used by backend joins)
-              and the human-readable order ref (used in subject + display). */}
-          <TouchableOpacity
-            style={styles.helpBtn}
-            onPress={() => {
-              const orderInternalId = (order as { id?: number | string }).id;
-              const orderRef = (order as { orderId?: string; order_id?: string }).orderId
-                ?? (order as { order_id?: string }).order_id
-                ?? orderId;
-              router.push({
-                pathname: "/orders/raise-ticket",
-                params: {
-                  orderId: String(orderInternalId ?? ""),
-                  orderRef: String(orderRef ?? ""),
-                },
-              });
-            }}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="help-circle-outline" size={22} color={GatiMitraColors.textSecondary} />
-            <Text style={styles.helpBtnText}>Need help with this order?</Text>
-            <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
-          </TouchableOpacity>
+          {/* Help & Support — full-featured card with three actions.
+              Mirrors the support hub's options so the customer never has to
+              leave this page to raise a ticket. Order context is pre-loaded
+              into raise-ticket; user can switch orders inside that flow. */}
+          <View style={styles.helpCard}>
+            <View style={styles.helpHeader}>
+              <View style={styles.helpHeaderIcon}>
+                <Ionicons name="headset" size={20} color={GatiMitraColors.emerald} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.helpTitle}>Need help?</Text>
+                <Text style={styles.helpSubtitle}>
+                  Chat with our support team — we&apos;re here 24×7.
+                </Text>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={styles.helpActionPrimary}
+              onPress={handleOpenHelp}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Raise a ticket for this order"
+            >
+              <Ionicons name="chatbubbles" size={18} color="#fff" />
+              <Text style={styles.helpActionPrimaryText}>Raise ticket for this order</Text>
+              <Ionicons name="chevron-forward" size={18} color="#fff" />
+            </TouchableOpacity>
+
+            <View style={styles.helpActionRow}>
+              <TouchableOpacity
+                style={styles.helpActionSecondary}
+                onPress={handleViewAllTickets}
+                activeOpacity={0.85}
+              >
+                <Ionicons
+                  name="list-circle-outline"
+                  size={18}
+                  color={GatiMitraColors.emerald}
+                />
+                <Text style={styles.helpActionSecondaryText}>My tickets</Text>
+              </TouchableOpacity>
+              {order.rider?.phone ? (
+                <TouchableOpacity
+                  style={styles.helpActionSecondary}
+                  onPress={handleCallRider}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="call-outline" size={18} color={GatiMitraColors.emerald} />
+                  <Text style={styles.helpActionSecondaryText}>Call rider</Text>
+                </TouchableOpacity>
+              ) : (
+                <View style={[styles.helpActionSecondary, { opacity: 0.5 }]}>
+                  <Ionicons
+                    name="time-outline"
+                    size={18}
+                    color={GatiMitraColors.textSecondary}
+                  />
+                  <Text
+                    style={[
+                      styles.helpActionSecondaryText,
+                      { color: GatiMitraColors.textSecondary },
+                    ]}
+                  >
+                    Rider not assigned
+                  </Text>
+                </View>
+              )}
+            </View>
+          </View>
         </ScrollView>
       </View>
     </>
@@ -465,28 +604,31 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
     backgroundColor: "#fff",
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: GatiMitraColors.border,
   },
-  backBtn: { padding: 4 },
-  headerCenter: { flex: 1, marginLeft: 8, justifyContent: "center" },
+  headerIconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerCenter: { flex: 1, paddingHorizontal: 4, justifyContent: "center" },
   headerTitle: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: "700",
     color: GatiMitraColors.textPrimary,
-  },
-  headerRight: {
-    minWidth: 40,
-    alignItems: "flex-end",
+    letterSpacing: 0.1,
   },
   orderIdLabel: {
-    fontSize: 12,
+    fontSize: 11,
     color: GatiMitraColors.textSecondary,
-    marginTop: 2,
+    marginTop: 1,
+    letterSpacing: 0.3,
   },
   scroll: { flex: 1 },
   scrollContent: { padding: 16 },
@@ -696,5 +838,75 @@ const styles = StyleSheet.create({
   helpBtnText: {
     fontSize: 15,
     color: GatiMitraColors.textSecondary,
+  },
+  /** Rich help/support card — mirrors the support hub's actions inline. */
+  helpCard: {
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+    ...GatiMitraColors.elevationShadow,
+  },
+  helpHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 14,
+  },
+  helpHeaderIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: GatiMitraColors.mintSoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  helpTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+  },
+  helpSubtitle: {
+    fontSize: 12,
+    color: GatiMitraColors.textSecondary,
+    marginTop: 2,
+  },
+  helpActionPrimary: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: GatiMitraColors.emerald,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  helpActionPrimaryText: {
+    flex: 1,
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 14,
+  },
+  helpActionRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 10,
+  },
+  helpActionSecondary: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    borderRadius: 12,
+    paddingVertical: 11,
+    paddingHorizontal: 8,
+    backgroundColor: GatiMitraColors.mintSoft,
+    borderWidth: 1,
+    borderColor: "#d1fae5",
+  },
+  helpActionSecondaryText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: GatiMitraColors.emerald,
   },
 });
