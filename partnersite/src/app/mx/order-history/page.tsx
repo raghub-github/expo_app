@@ -6,12 +6,9 @@ import { useSearchParams } from 'next/navigation';
 import {
   Calendar,
   ChevronDown,
-  HelpCircle,
   Loader2,
-  Printer,
   Search,
   SlidersHorizontal,
-  Check,
   X,
   ChevronLeft,
   ChevronRight,
@@ -25,26 +22,25 @@ import { DEMO_RESTAURANT_ID } from '@/lib/constants';
 import { toast } from 'sonner';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
-import { normalizeOrderItems, type NormalizedOrderLineItem } from '@/lib/orderLineItems';
-import { OrderHistoryItemDetailsModal } from '@/components/OrderHistoryItemDetailsModal';
-import { openMxNeedHelp } from '@/lib/openMxNeedHelp';
+import { type OrderPricingBreakdown } from '@/lib/orderLineItems';
+import { FormattedOrderId } from '@/components/FormattedOrderId';
+import { OrderPanel } from '@/components/orders/OrderPanel';
+import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
+import { GatiMitraOrderPrintBill } from '@/components/orders/GatiMitraOrderPrintBill';
+import { prefetchOrderTimeline } from '@/lib/orderTimelineCache';
+import { OrderCustomerSidesheet } from '@/components/orders/OrderCustomerSidesheet';
+import { OrderTimelineModal } from '@/components/orders/OrderTimelineModal';
+import { OrderRiderTrackingModal } from '@/components/orders/OrderRiderTrackingModal';
+import { OrderRidersHistorySidesheet } from '@/components/orders/OrderRidersHistorySidesheet';
+import { resolveOrderOtps } from '@/lib/orderOtps';
 
-const FILTER_STATUS_OPTIONS = [
-  'CREATED',
-  'ACCEPTED',
-  'PREPARING',
-  'READY_FOR_PICKUP',
-  'OUT_FOR_DELIVERY',
-  'DELIVERED',
-  'RTO',
-  'CANCELLED',
-] as const;
+/** Order history shows completed terminal orders only (not live pipeline). */
+const HISTORY_TERMINAL_STATUSES = new Set(['DELIVERED', 'RTO', 'CANCELLED']);
 
-/** UI filter keys (reference modal) → DB statuses */
-const UI_STATUS_DEF: { key: string; label: string; statuses: string[] }[] = [
-  { key: 'preparing', label: 'Preparing', statuses: ['CREATED', 'ACCEPTED', 'PREPARING'] },
-  { key: 'ready', label: 'Ready', statuses: ['READY_FOR_PICKUP'] },
-  { key: 'picked_up', label: 'Picked up', statuses: ['OUT_FOR_DELIVERY'] },
+const HISTORY_STATUS_OPTIONS = ['DELIVERED', 'RTO', 'CANCELLED'] as const;
+
+/** UI filter keys → terminal DB statuses */
+const HISTORY_UI_STATUS_DEF: { key: string; label: string; statuses: string[] }[] = [
   { key: 'delivered', label: 'Delivered', statuses: ['DELIVERED'] },
   { key: 'timed_out', label: 'Timed out', statuses: ['RTO'] },
   { key: 'rejected', label: 'Rejected', statuses: ['CANCELLED'] },
@@ -141,13 +137,9 @@ function formatRangeSummary(fromYmd: string, toYmd: string) {
   return `${a.toLocaleDateString('en-IN', o)} to ${b.toLocaleDateString('en-IN', o)}`;
 }
 
-function normalizeItems(order: OrdersFoodRow): NormalizedOrderLineItem[] {
-  return normalizeOrderItems(order.items ?? []);
-}
-
 function statusSetFromUiKeys(keys: Set<string>): Set<string> {
   const s = new Set<string>();
-  for (const def of UI_STATUS_DEF) {
+  for (const def of HISTORY_UI_STATUS_DEF) {
     if (keys.has(def.key)) def.statuses.forEach((x) => s.add(x));
   }
   return s;
@@ -155,10 +147,38 @@ function statusSetFromUiKeys(keys: Set<string>): Set<string> {
 
 function uiKeysFromStatusSet(sf: Set<string>): Set<string> {
   const u = new Set<string>();
-  for (const def of UI_STATUS_DEF) {
+  for (const def of HISTORY_UI_STATUS_DEF) {
     if (def.statuses.some((st) => sf.has(st))) u.add(def.key);
   }
   return u;
+}
+
+function buildOrderPricing(order: OrdersFoodRow): OrderPricingBreakdown {
+  const lineSum = (order.items ?? []).reduce(
+    (acc, it) => acc + Number(it.total || (it.price || 0) * (it.quantity || 1)),
+    0
+  );
+  const p = order.pricing;
+  if (p) return p;
+  const total = Number(order.food_items_total_value ?? lineSum);
+  return {
+    subtotal: lineSum,
+    packaging: 0,
+    taxes: 0,
+    discount: 0,
+    total: Number.isFinite(total) ? total : lineSum,
+  };
+}
+
+function HistoryOrderStatusBadge({ status }: { status: string }) {
+  const label = historyStatusLabel(status);
+  return (
+    <div
+      className={`w-full rounded-xl px-4 py-3 text-center text-sm font-bold ${historyBadgeClass(status)}`}
+    >
+      {label}
+    </div>
+  );
 }
 
 function OrderHistoryInner() {
@@ -176,14 +196,18 @@ function OrderHistoryInner() {
   const [searchInput, setSearchInput] = useState('');
   const [searchApplied, setSearchApplied] = useState('');
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [statusFilter, setStatusFilter] = useState<Set<string>>(() => new Set(FILTER_STATUS_OPTIONS));
+  const [statusFilter, setStatusFilter] = useState<Set<string>>(
+    () => new Set(HISTORY_STATUS_OPTIONS)
+  );
 
   const [datePopoverOpen, setDatePopoverOpen] = useState(false);
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const [downloadOpen, setDownloadOpen] = useState(false);
 
   const [filterCategory, setFilterCategory] = useState<FilterCategory>('status');
-  const [draftUiStatus, setDraftUiStatus] = useState<Set<string>>(() => uiKeysFromStatusSet(new Set(FILTER_STATUS_OPTIONS)));
+  const [draftUiStatus, setDraftUiStatus] = useState<Set<string>>(() =>
+    uiKeysFromStatusSet(new Set(HISTORY_STATUS_OPTIONS))
+  );
   const [draftOrderType, setDraftOrderType] = useState<'all' | 'gatimitra' | 'self'>('all');
   const [draftRatingCap, setDraftRatingCap] = useState<number | null>(null);
 
@@ -195,7 +219,31 @@ function OrderHistoryInner() {
 
   const downloadBtnRef = useRef<HTMLButtonElement>(null);
   const [downloadMenuPos, setDownloadMenuPos] = useState<{ top: number; left: number } | null>(null);
-  const [itemDetailModal, setItemDetailModal] = useState<NormalizedOrderLineItem | null>(null);
+  const [billSheetOpen, setBillSheetOpen] = useState(false);
+  const [billSheetAllItemsOnly, setBillSheetAllItemsOnly] = useState(false);
+  const [customerSheetOpen, setCustomerSheetOpen] = useState(false);
+  const [timelineModalOpen, setTimelineModalOpen] = useState(false);
+  const [printBillOpen, setPrintBillOpen] = useState(false);
+  const [riderTrackingOpen, setRiderTrackingOpen] = useState(false);
+  const [ridersLogModalOrderId, setRidersLogModalOrderId] = useState<number | null>(null);
+  const [ridersLogModalOrderLabel, setRidersLogModalOrderLabel] = useState<string | null>(null);
+  const [ridersLogList, setRidersLogList] = useState<
+    Array<{
+      rider_id: number;
+      rider_name: string | null;
+      rider_mobile: string | null;
+      selfie_url: string | null;
+      assignment_status: string;
+      assigned_at: string | null;
+      accepted_at: string | null;
+      rejected_at: string | null;
+      reached_merchant_at: string | null;
+      picked_up_at: string | null;
+      delivered_at: string | null;
+      cancelled_at: string | null;
+    }>
+  >([]);
+  const [ridersLogLoading, setRidersLogLoading] = useState(false);
 
   useEffect(() => {
     let id = searchParams?.get('storeId') || searchParams?.get('store_id');
@@ -264,7 +312,7 @@ function OrderHistoryInner() {
 
   const applyFilterModal = () => {
     const next = statusSetFromUiKeys(draftUiStatus);
-    if (next.size === 0) setStatusFilter(new Set(FILTER_STATUS_OPTIONS));
+    if (next.size === 0) setStatusFilter(new Set(HISTORY_STATUS_OPTIONS));
     else setStatusFilter(next);
     setFilterModalOpen(false);
   };
@@ -299,6 +347,7 @@ function OrderHistoryInner() {
       const t = new Date(o.created_at).getTime();
       if (t < start.getTime() || t > end.getTime()) return false;
       const st = normStatus(o.order_status);
+      if (!HISTORY_TERMINAL_STATUSES.has(st)) return false;
       return statusFilter.has(st);
     });
     const q = searchApplied.trim().toLowerCase();
@@ -316,6 +365,55 @@ function OrderHistoryInner() {
     () => filteredOrders.find((o) => o.id === selectedId) || filteredOrders[0] || null,
     [filteredOrders, selectedId]
   );
+
+  const selectedOrderPricing = useMemo(
+    () => (selected ? buildOrderPricing(selected) : null),
+    [selected]
+  );
+
+  const selectedOrderLineSum = useMemo(() => {
+    if (!selected?.items?.length) return 0;
+    return selected.items.reduce(
+      (acc, it) => acc + Number(it.total || (it.price || 0) * (it.quantity || 1)),
+      0
+    );
+  }, [selected]);
+
+  useEffect(() => {
+    if (selected?.id) prefetchOrderTimeline(selected.id);
+  }, [selected?.id]);
+
+  useEffect(() => {
+    setBillSheetOpen(false);
+    setBillSheetAllItemsOnly(false);
+    setCustomerSheetOpen(false);
+    setTimelineModalOpen(false);
+    setRiderTrackingOpen(false);
+  }, [selected?.id]);
+
+  useEffect(() => {
+    if (!ridersLogModalOrderId) {
+      setRidersLogList([]);
+      return;
+    }
+    let cancelled = false;
+    setRidersLogLoading(true);
+    fetch(`/api/food-orders/${ridersLogModalOrderId}/riders-log`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        setRidersLogList(Array.isArray(data.riders) ? data.riders : []);
+      })
+      .catch(() => {
+        if (!cancelled) setRidersLogList([]);
+      })
+      .finally(() => {
+        if (!cancelled) setRidersLogLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ridersLogModalOrderId]);
 
   useEffect(() => {
     if (filteredOrders.length === 0) {
@@ -411,15 +509,6 @@ function OrderHistoryInner() {
       </MXLayoutWhite>
     );
   }
-
-  const lineItems = selected ? normalizeItems(selected) : [];
-  const lineSum = lineItems.reduce((acc, it) => acc + it.total, 0);
-  const pricing = selected?.pricing;
-  const subtotalItems = pricing?.subtotal ?? (lineSum > 0 ? lineSum : 0);
-  const packaging = pricing?.packaging ?? 0;
-  const taxes = pricing?.taxes ?? 0;
-  const discount = pricing?.discount ?? 0;
-  const orderTotal = pricing?.total ?? Number(selected?.food_items_total_value ?? lineSum);
 
   return (
     <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''}>
@@ -587,7 +676,7 @@ function OrderHistoryInner() {
                 <div className="flex-1 overflow-y-auto min-h-0 p-4 bg-white">
                   {filterCategory === 'status' && (
                     <div className="space-y-3">
-                      {UI_STATUS_DEF.map((def) => (
+                      {HISTORY_UI_STATUS_DEF.map((def) => (
                         <label key={def.key} className="flex items-center gap-3 text-sm text-gray-800 cursor-pointer">
                           <input
                             type="checkbox"
@@ -723,151 +812,128 @@ function OrderHistoryInner() {
             </div>
           </aside>
 
-          <main className="flex-1 min-w-0 overflow-y-auto min-h-0 bg-gray-50 p-3 sm:p-5 hide-scrollbar">
-            {!selected ? (
-              <div className="h-full flex flex-col items-center justify-center text-gray-500 text-sm gap-2">
+          <main className="flex-1 min-w-0 overflow-y-auto min-h-0 bg-gray-50/80 p-3 sm:p-4 hide-scrollbar">
+            {!selected || !selectedOrderPricing ? (
+              <div className="h-full flex flex-col items-center justify-center text-gray-500 text-sm gap-2 min-h-[280px]">
                 <span className="text-4xl opacity-40" aria-hidden>
                   🍽
                 </span>
-                No order selected
+                {filteredOrders.length === 0
+                  ? 'No completed orders in this date range'
+                  : 'Select an order to view details'}
               </div>
             ) : (
-              <div className="max-w-3xl mx-auto bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden print:shadow-none">
-                <div className="border-b border-gray-200 px-4 py-3 flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-base font-bold text-gray-900">
-                        ID: {selected.formatted_order_id || selected.order_id}
-                      </span>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${historyBadgeClass(selected.order_status || '')}`}>
-                        {historyStatusLabel(selected.order_status || '')}
-                      </span>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-1">
-                      {selected.customer_name ? `Order by ${selected.customer_name}` : 'Order details'}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-500 whitespace-nowrap">
-                      {new Date(selected.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
-                    </span>
-                    <button
-                      type="button"
-                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-blue-500 text-blue-600 text-xs font-semibold hover:bg-blue-50"
-                      onClick={() => {
-                        const formattedId =
-                          selected.formatted_order_id?.trim() ||
-                          (selected.order_id != null ? String(selected.order_id) : '');
-                        const coreId =
-                          selected.core_order_id ??
-                          (typeof selected.order_id === 'number' ? selected.order_id : null);
-                        openMxNeedHelp({
-                          formattedOrderId: formattedId || undefined,
-                          coreOrderId: coreId ?? undefined,
-                          prefillSubject: formattedId ? `Order ${formattedId}` : 'Order support',
-                          prefillDescription: formattedId
-                            ? `I need help with order ${formattedId}.`
-                            : undefined,
-                        });
-                      }}
-                    >
-                      <HelpCircle size={14} />
-                      Help
-                    </button>
-                  </div>
-                </div>
-
-                <div className="px-4 py-4 border-b border-gray-100">
-                  <p className="text-xs font-semibold text-gray-500 mb-3">Order timeline</p>
-                  <HistoryTimeline order={selected} />
-                  <p className="text-xs text-gray-500 mt-3">
-                    Placed{' '}
-                    {(() => {
-                      const mins = Math.floor((Date.now() - new Date(selected.created_at).getTime()) / 60000);
-                      if (mins < 1) return 'just now';
-                      if (mins < 60) return `${mins} minutes ago`;
-                      const h = Math.floor(mins / 60);
-                      return `${h} hour${h === 1 ? '' : 's'} ago`;
-                    })()}
-                  </p>
-                </div>
-
-                <div id="order-history-print" className="p-4">
-                  <div className="flex justify-end gap-2 mb-4 print:hidden">
-                    <button
-                      type="button"
-                      onClick={() => window.print()}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-blue-500 text-blue-600 text-xs font-semibold hover:bg-blue-50"
-                    >
-                      <Printer size={14} />
-                      ORDER
-                    </button>
-                  </div>
-                  <div className="mb-4">
-                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">
-                      Order details
-                    </p>
-                    {lineItems.length === 0 ? (
-                      <p className="text-sm text-gray-500">No line items</p>
-                    ) : (
-                      <ul className="space-y-2.5">
-                        {lineItems.map((it, i) => (
-                          <li key={i} className="flex justify-between items-start gap-3 text-sm">
-                            <p className="text-gray-800 min-w-0">
-                              <span className="text-gray-600">{it.quantity} × </span>
-                              <button
-                                type="button"
-                                onClick={() => setItemDetailModal(it)}
-                                className="font-medium text-gray-900 border-b border-dashed border-gray-400 hover:border-gray-700 hover:text-gray-700 text-left"
-                              >
-                                {it.name}
-                              </button>
-                            </p>
-                            <span className="font-medium text-gray-900 shrink-0 tabular-nums pt-0.5">
-                              ₹{it.total.toFixed(2)}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                  <div className="mt-4 pt-3 border-t border-gray-200 space-y-1.5 text-sm">
-                    <div className="flex justify-between text-gray-600">
-                      <span>Subtotal</span>
-                      <span>₹{subtotalItems.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between text-gray-600">
-                      <span>Restaurant packaging</span>
-                      <span className="tabular-nums">₹{packaging.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between text-gray-600">
-                      <span>Taxes</span>
-                      <span className="tabular-nums">₹{taxes.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between text-gray-600">
-                      <span>Discount</span>
-                      <span className="tabular-nums">
-                        {discount > 0 ? `−₹${discount.toFixed(2)}` : '₹0.00'}
-                      </span>
-                    </div>
-                    <div className="flex justify-between font-bold text-gray-900 pt-2">
-                      <span>Total</span>
-                      <span>₹{orderTotal.toFixed(2)}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <OrderPanel
+                className="w-full max-w-none h-auto max-h-none"
+                order={selected}
+                pricing={selectedOrderPricing}
+                formattedOrderId={
+                  <FormattedOrderId
+                    formattedOrderId={selected.formatted_order_id}
+                    fallbackOrderId={selected.order_id}
+                    size="lg"
+                  />
+                }
+                onOpenBill={() => {
+                  setBillSheetAllItemsOnly(false);
+                  setBillSheetOpen(true);
+                }}
+                onOpenCustomer={() => setCustomerSheetOpen(true)}
+                onOpenAllItems={() => {
+                  setBillSheetAllItemsOnly(true);
+                  setBillSheetOpen(true);
+                }}
+                onOpenTimeline={() => setTimelineModalOpen(true)}
+                onPrintBill={() => setPrintBillOpen(true)}
+                onViewPastRiders={() => {
+                  setRidersLogModalOrderId(selected.id);
+                  setRidersLogModalOrderLabel(
+                    selected.formatted_order_id || `#${selected.order_id}`
+                  );
+                }}
+                onTrackRider={() => setRiderTrackingOpen(true)}
+                otpCode={resolveOrderOtps(selected).pickup ?? undefined}
+                otpType="PICKUP"
+                primaryAction={
+                  <HistoryOrderStatusBadge status={selected.order_status || 'DELIVERED'} />
+                }
+              />
             )}
           </main>
         </div>
       </div>
 
-      <OrderHistoryItemDetailsModal
-        open={itemDetailModal != null}
-        onClose={() => setItemDetailModal(null)}
-        lineItem={itemDetailModal}
-        storeId={storeId}
+      <OrderBillSidesheet
+        open={billSheetOpen && !!selected}
+        onClose={() => {
+          setBillSheetOpen(false);
+          setBillSheetAllItemsOnly(false);
+        }}
+        order={selected}
+        pricing={
+          selectedOrderPricing ?? {
+            subtotal: 0,
+            packaging: 0,
+            taxes: 0,
+            discount: 0,
+            total: 0,
+          }
+        }
+        lineSum={selectedOrderLineSum}
+        allItemsOnly={billSheetAllItemsOnly}
       />
+      <OrderCustomerSidesheet
+        open={customerSheetOpen && !!selected}
+        onClose={() => setCustomerSheetOpen(false)}
+        order={selected}
+      />
+      <GatiMitraOrderPrintBill
+        open={printBillOpen && !!selected}
+        onClose={() => setPrintBillOpen(false)}
+        order={selected}
+        pricing={
+          selectedOrderPricing ?? {
+            subtotal: 0,
+            packaging: 0,
+            taxes: 0,
+            discount: 0,
+            total: 0,
+          }
+        }
+        store={
+          store
+            ? {
+                storeName: store.store_name,
+                city: store.city,
+                cuisineLabel: store.cuisine_types?.[0] ?? null,
+                fssaiNumber: store.fssai_number ?? null,
+              }
+            : null
+        }
+      />
+      <OrderTimelineModal
+        open={timelineModalOpen && !!selected}
+        onClose={() => setTimelineModalOpen(false)}
+        order={selected}
+        storeId={storeId}
+        layout="horizontal"
+      />
+      <OrderRiderTrackingModal
+        open={riderTrackingOpen && !!selected}
+        onClose={() => setRiderTrackingOpen(false)}
+        order={selected}
+      />
+      <OrderRidersHistorySidesheet
+        open={ridersLogModalOrderId != null}
+        orderLabel={ridersLogModalOrderLabel}
+        riders={ridersLogList}
+        loading={ridersLogLoading}
+        onClose={() => {
+          setRidersLogModalOrderId(null);
+          setRidersLogModalOrderLabel(null);
+        }}
+      />
+
     </MXLayoutWhite>
   );
 }
@@ -1018,48 +1084,6 @@ function DateRangePopover({
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-function HistoryTimeline({ order }: { order: OrdersFoodRow }) {
-  const steps = [
-    { key: 'placed', label: 'Placed', done: !!order.created_at },
-    { key: 'accepted', label: 'Accepted', done: !!order.accepted_at, showView: !!order.accepted_at },
-    {
-      key: 'pickup',
-      label: 'Estimated pickup',
-      done: !!(order.prepared_at || order.dispatched_at),
-    },
-    { key: 'delivery', label: 'Estimated delivery', done: !!order.delivered_at },
-  ];
-
-  return (
-    <div className="flex items-start justify-between gap-1 overflow-x-auto hide-scrollbar pb-1">
-      {steps.map((step, i) => {
-        const prevDone = i === 0 ? true : steps[i - 1].done;
-        const lineGreen = i > 0 && prevDone;
-        return (
-          <React.Fragment key={step.key}>
-            {i > 0 && (
-              <div
-                className={`shrink-0 flex-1 h-0.5 mt-3 min-w-[12px] max-w-[48px] ${lineGreen ? 'bg-green-500' : 'bg-gray-200'}`}
-              />
-            )}
-            <div className="flex flex-col items-center shrink-0 w-[72px]">
-              <div
-                className={`w-7 h-7 rounded-full flex items-center justify-center border-2 ${
-                  step.done ? 'bg-green-500 border-green-500 text-white' : 'border-green-400 bg-white text-green-600'
-                }`}
-              >
-                {step.done ? <Check size={14} strokeWidth={3} /> : <span className="text-[10px] font-bold">{i + 1}</span>}
-              </div>
-              <span className="text-[9px] font-medium text-gray-600 mt-1 text-center leading-tight">{step.label}</span>
-              {step.showView && <span className="text-[9px] text-blue-600 mt-0.5 print:hidden">View</span>}
-            </div>
-          </React.Fragment>
-        );
-      })}
     </div>
   );
 }

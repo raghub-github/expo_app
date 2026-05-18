@@ -834,8 +834,27 @@ export default function CheckoutScreen() {
           ?.packaging_charges ??
         (menuItem as { packagingCharges?: number } | undefined)?.packagingCharges;
       const packNum = rawPack != null ? Number(rawPack) : NaN;
+      const foodTypeRaw =
+        (menuItem as { food_type?: string } | undefined)?.food_type ??
+        (menuItem as { foodType?: string } | undefined)?.foodType;
+      const isVeg =
+        i.isVeg ??
+        (menuItem as { isVeg?: boolean } | undefined)?.isVeg ??
+        (typeof foodTypeRaw === "string" &&
+          foodTypeRaw.toLowerCase().replace(/_/g, "-").startsWith("veg") &&
+          !foodTypeRaw.toLowerCase().includes("non"));
       const snap: Record<string, unknown> = {};
       if (categoryName) snap.category_name = categoryName;
+      if (foodTypeRaw) {
+        snap.food_type = foodTypeRaw;
+        snap.veg_non_veg = foodTypeRaw;
+      } else if (isVeg === true) {
+        snap.food_type = "veg";
+        snap.veg_non_veg = "veg";
+      } else if (isVeg === false) {
+        snap.food_type = "non_veg";
+        snap.veg_non_veg = "non_veg";
+      }
       if (Number.isFinite(packNum) && packNum > 0) {
         snap.packaging_enabled = true;
         snap.packaging_charges = packNum;

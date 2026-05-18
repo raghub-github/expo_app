@@ -6,6 +6,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { MXLayoutWhite } from '@/components/MXLayoutWhite';
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
 import { toast } from 'sonner';
+import { showFoodOrderStatusToast } from '@/lib/showFoodOrderStatusToast';
 import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback';
 import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
 import {
@@ -52,15 +53,32 @@ import {
   type MerchantOrderActionRow,
 } from '@/lib/merchantOrderFoodActions';
 import { OrderPanel } from '@/components/orders/OrderPanel';
+import { OrderRidersHistorySidesheet } from '@/components/orders/OrderRidersHistorySidesheet';
 import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
+import { GatiMitraOrderPrintBill } from '@/components/orders/GatiMitraOrderPrintBill';
+import { prefetchOrderTimeline } from '@/lib/orderTimelineCache';
 import { OrderCustomerSidesheet } from '@/components/orders/OrderCustomerSidesheet';
 import { OrderTimelineModal } from '@/components/orders/OrderTimelineModal';
+import { OrderRiderTrackingModal } from '@/components/orders/OrderRiderTrackingModal';
+import { RejectOrderSidesheet } from '@/components/orders/RejectOrderSidesheet';
+import { OrderCancellationBanner } from '@/components/orders/OrderCancellationBanner';
+import { OrderOtpSection } from '@/components/orders/OrderOtpSection';
+import { resolveOrderOtps, type CachedOrderOtps } from '@/lib/orderOtps';
 import type { OrderPricingBreakdown } from '@/lib/orderLineItems';
 import {
   PARTNER_DEVICE_ORDER_ALERTS_EVENT,
   readPartnerDeviceOrderAlerts,
   writePartnerDeviceOrderAlerts,
 } from '@/lib/partner-device-order-alerts';
+import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
+import { MerchantPrepDelayModal } from '@/components/orders/MerchantPrepDelayModal';
+import { StoreClosedActiveOrdersNotice } from '@/components/orders/StoreClosedActiveOrdersNotice';
+import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';
+import {
+  isPrepCountdownExpired,
+  prepReadyCountdownLabel,
+} from '@/lib/order-prep-time';
+import { isActiveMerchantFoodOrderStatus } from '@/lib/merchantActiveOrders';
 
 // orders_food_status enum: CREATED, ACCEPTED, PREPARING, READY_FOR_PICKUP, OUT_FOR_DELIVERY, DELIVERED, RTO, CANCELLED
 const STATUS_LABEL: Record<string, string> = {
@@ -192,7 +210,6 @@ function OrdersPageContent() {
   const [selectedOrder, setSelectedOrder] = useState<OrdersFoodRow | null>(null);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [rejectModal, setRejectModal] = useState<OrdersFoodRow | null>(null);
-  const [rejectReason, setRejectReason] = useState('');
   const [dispatchModal, setDispatchModal] = useState<OrdersFoodRow | null>(null);
   const [rtoModalOrder, setRtoModalOrder] = useState<OrdersFoodRow | null>(null);
   const [ridersLogModalOrderId, setRidersLogModalOrderId] = useState<number | null>(null);
@@ -205,6 +222,8 @@ function OrdersPageContent() {
     alert_sound_slot_choice: number;
   } | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
+  const [prepDelayOrder, setPrepDelayOrder] = useState<OrdersFoodRow | null>(null);
+  const [prepDelayLoading, setPrepDelayLoading] = useState(false);
   const [riderImageModalUrl, setRiderImageModalUrl] = useState<string | null>(null);
   const [headerRtoMenuOpen, setHeaderRtoMenuOpen] = useState(false);
   const headerRtoMenuRef = useRef<HTMLDivElement>(null);
@@ -262,8 +281,9 @@ function OrdersPageContent() {
   }, [ridersLogModalOrderId]);
 
   const [otpInput, setOtpInput] = useState('');
-  const [otpVerified, setOtpVerified] = useState<Set<number>>(new Set());
-  const [otpCache, setOtpCache] = useState<Record<number, { otp_code: string; otp_type: string }>>({});
+  const [rtoOtpInput, setRtoOtpInput] = useState('');
+  const [otpVerified, setOtpVerified] = useState<Record<number, { pickup?: boolean; rto?: boolean }>>({});
+  const [otpCache, setOtpCache] = useState<Record<number, CachedOrderOtps>>({});
   const [loading, setLoading] = useState(true);
   const [notifyEnabled, setNotifyEnabled] = useState(() => {
     if (typeof window === 'undefined') return true;
@@ -277,6 +297,8 @@ function OrdersPageContent() {
   const [billSheetAllItemsOnly, setBillSheetAllItemsOnly] = useState(false);
   const [customerSheetOpen, setCustomerSheetOpen] = useState(false);
   const [timelineModalOpen, setTimelineModalOpen] = useState(false);
+  const [printBillOpen, setPrintBillOpen] = useState(false);
+  const [riderTrackingOpen, setRiderTrackingOpen] = useState(false);
   const [isStoreOpen, setIsStoreOpen] = useState<boolean | null>(null);
   const [showStoreCloseModal, setShowStoreCloseModal] = useState(false);
   const [closeClosureType, setCloseClosureType] = useState<'temporary' | 'today' | 'manual_hold' | null>(null);
@@ -356,7 +378,12 @@ function OrdersPageContent() {
     setSelectedOrder(order);
     setRightPanelOpen(true);
     updateUrlParams({ orderId: String(order.order_id || order.id) });
+    prefetchOrderTimeline(order.id);
   }, [updateUrlParams]);
+
+  useEffect(() => {
+    if (selectedOrder?.id) prefetchOrderTimeline(selectedOrder.id);
+  }, [selectedOrder?.id]);
 
   const closeOrderPanel = useCallback(() => {
     setRightPanelOpen(false);
@@ -673,10 +700,15 @@ function OrdersPageContent() {
       if (!storeId) return;
       try {
         const res = await fetch(`/api/food-orders/${orderId}/otp?store_id=${encodeURIComponent(storeId)}`);
-        const data = await res.json();
-        if (res.ok && data.otp_code) {
-          setOtpCache((prev) => ({ ...prev, [orderId]: { otp_code: data.otp_code, otp_type: data.otp_type || 'PICKUP' } }));
-        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) return;
+        setOtpCache((prev) => ({
+          ...prev,
+          [orderId]: {
+            pickup: data.pickup_otp ?? prev[orderId]?.pickup ?? null,
+            rto: data.rto_otp ?? prev[orderId]?.rto ?? null,
+          },
+        }));
       } catch {}
     },
     [storeId]
@@ -693,35 +725,62 @@ function OrdersPageContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orders.length, fetchOtp]);
 
-  // Auto-fetch OTP when order is selected (for header display)
+  // Seed OTP from list row + refresh when the open order changes
   useEffect(() => {
     if (!selectedOrder?.id || selectedOrder.core_only) return;
-    if (!otpCache[selectedOrder.id]) {
-      fetchOtp(selectedOrder.id);
+    if (selectedOrder.pickup_otp || selectedOrder.rto_otp) {
+      setOtpCache((prev) => ({
+        ...prev,
+        [selectedOrder.id]: {
+          pickup: selectedOrder.pickup_otp ?? prev[selectedOrder.id]?.pickup ?? null,
+          rto: selectedOrder.rto_otp ?? prev[selectedOrder.id]?.rto ?? null,
+        },
+      }));
     }
+    void fetchOtp(selectedOrder.id);
   }, [selectedOrder?.id, selectedOrder?.core_only, fetchOtp]);
 
   const validateOtp = useCallback(
-    async (orderId: number) => {
-      if (!storeId || !otpInput.trim()) return;
+    async (orderId: number, otpType: 'PICKUP' | 'RTO' = 'PICKUP', codeOverride?: string) => {
+      const code = (codeOverride ?? (otpType === 'RTO' ? rtoOtpInput : otpInput)).trim();
+      if (!storeId || !code) return false;
       try {
         const res = await fetch(`/api/food-orders/${orderId}/validate-otp`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ store_id: storeId, otp: otpInput.trim() }),
+          body: JSON.stringify({ store_id: storeId, otp: code, otp_type: otpType }),
         });
         const data = await res.json();
         if (data.valid) {
-          setOtpVerified((prev) => new Set(prev).add(orderId));
-          toast.success('OTP verified');
-        } else {
-          toast.error(data.error || 'Invalid OTP');
+          setOtpVerified((prev) => ({
+            ...prev,
+            [orderId]: {
+              ...prev[orderId],
+              ...(otpType === 'PICKUP' ? { pickup: true } : { rto: true }),
+            },
+          }));
+          if (otpType === 'PICKUP' && data.handed_over_to_rider_at) {
+            const handedIso = String(data.handed_over_to_rider_at);
+            setOrders((prev) =>
+              prev.map((o) =>
+                o.id === orderId ? { ...o, handed_over_to_rider_at: handedIso } : o
+              )
+            );
+            setSelectedOrder((prev) =>
+              prev?.id === orderId ? { ...prev, handed_over_to_rider_at: handedIso } : prev
+            );
+          }
+          toast.success(`${otpType === 'RTO' ? 'RTO' : 'Pickup'} OTP verified`);
+          return true;
         }
+        toast.error(data.error || 'Invalid OTP');
+        return false;
       } catch {
         toast.error('Validation failed');
+        return false;
       }
     },
-    [storeId, otpInput]
+    [storeId, otpInput, rtoOtpInput]
   );
 
   const handleStoreToggle = useCallback(() => {
@@ -866,7 +925,14 @@ function OrdersPageContent() {
         return;
       }
       setActionLoading(order.id);
-      const payload = { store_id: storeId, status: newStatus, action_source: 'website' as const, ...extra };
+      const payload = {
+        store_id: storeId,
+        status: newStatus,
+        action_source: 'website' as const,
+        ...(newStatus === 'ACCEPTED' ? { accept_mode: 'manual' as const } : {}),
+        ...(newStatus === 'CANCELLED' ? { cancel_mode: 'manual' as const } : {}),
+        ...extra,
+      };
 
       const safeReadBody = async (res: Response): Promise<unknown> => {
         try {
@@ -948,9 +1014,10 @@ function OrdersPageContent() {
           toast.error((result.data as { error?: string })?.error || 'Failed to update');
           return;
         }
+        window.dispatchEvent(new CustomEvent('partner-pending-orders-refresh'));
         if (coreOnly) {
           await fetchOrders();
-          toast.success(`Order status updated to ${newStatus}`);
+          showFoodOrderStatusToast(newStatus);
           // If the currently-open order moved out of this tab, auto-open next matching order.
           if (selectedOrder?.id === order.id && !orderMatchesFoodOrdersSidebar({ ...order, order_status: newStatus } as any, filter)) {
             setTimeout(() => {
@@ -979,7 +1046,7 @@ function OrdersPageContent() {
             }
             if (newStatus === 'OUT_FOR_DELIVERY') setDispatchModal(null);
           }
-          toast.success(`Order status updated to ${newStatus}`);
+          showFoodOrderStatusToast(newStatus);
           if (selectedOrder?.id === order.id && data?.order) {
             if (!orderMatchesFoodOrdersSidebar(data.order as OrdersFoodRow, filter)) {
               setTimeout(() => {
@@ -1011,6 +1078,51 @@ function OrdersPageContent() {
       }
     },
     [storeId, selectedOrder, closeOrderPanel, fetchOrders]
+  );
+
+  const extendPrepDelay = useCallback(
+    async (order: OrdersFoodRow, additionalMinutes: number) => {
+      if (!storeId) return false;
+      setPrepDelayLoading(true);
+      try {
+        const res = await fetch(
+          `/api/food-orders/${order.id}/prep-delay?store_id=${encodeURIComponent(storeId)}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ additional_minutes: additionalMinutes }),
+          }
+        );
+        const payload = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          prep_ready_by_at?: string;
+          prep_delay_minutes?: number;
+        };
+        if (!res.ok) {
+          toast.error(payload.error || 'Could not extend preparation time');
+          return false;
+        }
+        const patch = {
+          prep_ready_by_at: payload.prep_ready_by_at ?? order.prep_ready_by_at,
+          prep_delay_minutes: payload.prep_delay_minutes ?? order.prep_delay_minutes,
+        };
+        setOrders((prev) =>
+          prev.map((o) => (o.id === order.id ? { ...o, ...patch } : o))
+        );
+        if (selectedOrder?.id === order.id) {
+          setSelectedOrder((prev) => (prev ? { ...prev, ...patch } : prev));
+        }
+        toast.success(`+${additionalMinutes} min added for customer`);
+        setPrepDelayOrder(null);
+        return true;
+      } catch {
+        toast.error('Could not extend preparation time');
+        return false;
+      } finally {
+        setPrepDelayLoading(false);
+      }
+    },
+    [storeId, selectedOrder]
   );
 
   const selectedOrderPricing = useMemo((): OrderPricingBreakdown | null => {
@@ -1049,7 +1161,10 @@ function OrdersPageContent() {
   const acceptCountdown = useMemo(() => {
     if (!selectedOrder) return { label: undefined as string | undefined, disabled: false };
     const st = normOrderStatus(selectedOrder.order_status);
-    if (st !== 'CREATED') return { label: undefined, disabled: false };
+    if (st !== 'CREATED' && st !== 'NEW') return { label: undefined, disabled: false };
+    if (isStoreOpen === false) {
+      return { label: 'Store closed', disabled: true };
+    }
     const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
     const deadline = new Date(selectedOrder.created_at).getTime() + mins * 60_000;
     const secondsLeft = Math.max(0, Math.ceil((deadline - nowTick) / 1000));
@@ -1059,12 +1174,15 @@ function OrdersPageContent() {
       label: `Accept (${m}:${s.toString().padStart(2, '0')})`,
       disabled: secondsLeft <= 0,
     };
-  }, [selectedOrder, acceptanceSettings?.acceptance_window_minutes, nowTick]);
+  }, [selectedOrder, acceptanceSettings?.acceptance_window_minutes, nowTick, isStoreOpen]);
 
   const acceptCountdownFor = useCallback(
     (order: OrdersFoodRow) => {
       const st = normOrderStatus(order.order_status);
-      if (st !== 'CREATED') return { label: undefined as string | undefined, disabled: false };
+      if (st !== 'CREATED' && st !== 'NEW') return { label: undefined as string | undefined, disabled: false };
+      if (isStoreOpen === false) {
+        return { label: 'Store closed', disabled: true };
+      }
       const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
       const deadline = new Date(order.created_at).getTime() + mins * 60_000;
       const secondsLeft = Math.max(0, Math.ceil((deadline - nowTick) / 1000));
@@ -1075,7 +1193,7 @@ function OrdersPageContent() {
         disabled: secondsLeft <= 0,
       };
     },
-    [acceptanceSettings?.acceptance_window_minutes, nowTick]
+    [acceptanceSettings?.acceptance_window_minutes, nowTick, isStoreOpen]
   );
 
   const filteredOrders = orders.filter((o) => orderMatchesFoodOrdersSidebar(o, filter));
@@ -1104,6 +1222,13 @@ function OrdersPageContent() {
     }
     return list;
   }, [filteredOrders, orderIdSearch, orderSort]);
+
+  const hasActiveOrders = useMemo(
+    () => orders.some((o) => isActiveMerchantFoodOrderStatus(o.order_status)),
+    [orders]
+  );
+
+  const showFullStoreClosedBlankState = isStoreOpen === false && !hasActiveOrders;
 
   const sidebarFilterCounts: Record<FoodOrdersSidebarFilterId, number> = {
     NEW_ORDERS: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'NEW_ORDERS')).length,
@@ -1334,6 +1459,8 @@ function OrdersPageContent() {
           </div>
         </header>
 
+        <StoreClosedActiveOrdersNotice visible={isStoreOpen === false && hasActiveOrders} />
+
         <div
           id="food-orders-pills"
           className="shrink-0 z-30 border-t border-b border-gray-200 bg-white px-3 sm:px-4 lg:px-6 py-3 shadow-sm"
@@ -1386,16 +1513,17 @@ function OrdersPageContent() {
 
         <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
           <div className="flex flex-col lg:flex-row flex-1 min-h-0 overflow-hidden">
-            {/* Store closed/offline: show dedicated blank-state in the main area */}
-            {isStoreOpen === false ? (
+            {showFullStoreClosedBlankState ? (
               <StoreClosedOrdersState />
-            ) : rightPanelOpen && selectedOrder && selectedOrderBelongsToFilter ? (
+            ) : (
               <>
-                <div className="hidden lg:grid lg:grid-cols-[minmax(0,1fr)_16rem] flex-1 min-h-0 min-w-0 w-full overflow-hidden">
-                  <div className="min-h-0 overflow-hidden border-r border-gray-200 bg-gray-50/80 p-3">
+            {rightPanelOpen && selectedOrder && selectedOrderBelongsToFilter ? (
+              <>
+                <div className="hidden lg:grid lg:grid-cols-[minmax(0,1fr)_16rem] flex-1 min-h-0 min-w-0 w-full items-start overflow-y-auto overflow-x-hidden">
+                  <div className="min-w-0 border-r border-gray-200 bg-gray-50/80 p-3">
                       {selectedOrderPricing ? (
                         <OrderPanel
-                          className="h-full min-h-0"
+                          className="w-full"
                           order={selectedOrder}
                           pricing={selectedOrderPricing}
                           formattedOrderId={
@@ -1415,25 +1543,42 @@ function OrdersPageContent() {
                             setBillSheetOpen(true);
                           }}
                           onOpenTimeline={() => setTimelineModalOpen(true)}
+                          onPrintBill={() => setPrintBillOpen(true)}
                           onClose={closeOrderPanel}
-                          otpCode={otpCache[selectedOrder.id]?.otp_code}
-                          otpType={otpCache[selectedOrder.id]?.otp_type}
+                          onViewPastRiders={() => {
+                            setRidersLogModalOrderId(selectedOrder.id);
+                            setRidersLogModalOrderLabel(
+                              selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`
+                            );
+                          }}
+                          onTrackRider={() => setRiderTrackingOpen(true)}
+                          otpCache={otpCache[selectedOrder.id]}
+                          pickupVerified={!!otpVerified[selectedOrder.id]?.pickup}
+                          rtoVerified={!!otpVerified[selectedOrder.id]?.rto}
+                          otpCode={resolveOrderOtps(selectedOrder, otpCache[selectedOrder.id]).pickup ?? undefined}
+                          otpType="PICKUP"
                           primaryAction={
                             <ActionBtns
                               order={selectedOrder}
                               onAccept={() => updateStatus(selectedOrder, 'ACCEPTED')}
-                              onReject={() => { setRejectModal(selectedOrder); closeOrderPanel(); }}
+                              onReject={() => setRejectModal(selectedOrder)}
                               onPreparing={() => updateStatus(selectedOrder, 'PREPARING')}
                               onReady={() => updateStatus(selectedOrder, 'READY_FOR_PICKUP')}
+                              onNeedMoreTime={() => setPrepDelayOrder(selectedOrder)}
                               onDispatch={() => setDispatchModal(selectedOrder)}
                               onComplete={() => updateStatus(selectedOrder, 'DELIVERED')}
-                              onRto={() => setRtoModalOrder(selectedOrder)}
+                              onRto={() => {
+                                void fetchOtp(selectedOrder.id);
+                                setRtoOtpInput('');
+                                setRtoModalOrder(selectedOrder);
+                              }}
                               loading={actionLoading === selectedOrder.id}
-                              otpVerified={otpVerified.has(selectedOrder.id)}
+                              otpVerified={!!otpVerified[selectedOrder.id]?.pickup}
                               topRightLayout
                               hideRtoMenu
                               acceptLabel={acceptCountdown.label}
                               acceptDisabled={acceptCountdown.disabled}
+                              nowMs={nowTick}
                             />
                           }
                         />
@@ -1457,16 +1602,21 @@ function OrdersPageContent() {
                             setDispatchModal(order);
                             setOtpInput('');
                           }}
-                          onRto={() => setRtoModalOrder(order)}
+                          onRto={() => {
+                            void fetchOtp(order.id);
+                            setRtoOtpInput('');
+                            setRtoModalOrder(order);
+                          }}
                           onComplete={() => updateStatus(order, 'DELIVERED')}
                           loading={actionLoading === order.id}
-                          otpCode={otpCache[order.id]?.otp_code}
-                          otpType={otpCache[order.id]?.otp_type}
-                          otpVerified={otpVerified.has(order.id)}
+                          otpCode={resolveOrderOtps(order, otpCache[order.id]).pickup ?? undefined}
+                          otpType="PICKUP"
+                          otpVerified={!!otpVerified[order.id]?.pickup}
                           onFetchOtp={() => fetchOtp(order.id)}
                           statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
                           acceptLabel={acceptCountdownFor(order).label}
                           acceptDisabled={acceptCountdownFor(order).disabled}
+                          nowMs={nowTick}
                           hideDetails
                         />
                       ))}
@@ -1483,27 +1633,34 @@ function OrdersPageContent() {
                     statusLabel={STATUS_LABEL[selectedOrder.order_status || 'CREATED'] || selectedOrder.order_status || 'CREATED'}
                     formatVegNonVeg={formatVegNonVeg}
                     formatTimeAgo={formatTimeAgo}
-                    otpCode={otpCache[selectedOrder.id]?.otp_code}
-                    otpType={otpCache[selectedOrder.id]?.otp_type}
-                    otpVerified={otpVerified.has(selectedOrder.id)}
+                    otpCache={otpCache[selectedOrder.id]}
+                    pickupVerified={!!otpVerified[selectedOrder.id]?.pickup}
+                    rtoVerified={!!otpVerified[selectedOrder.id]?.rto}
                     onFetchOtp={() => fetchOtp(selectedOrder.id)}
                     onAccept={() => updateStatus(selectedOrder, 'ACCEPTED')}
-                    onReject={() => { setRejectModal(selectedOrder); closeOrderPanel(); }}
+                    onReject={() => setRejectModal(selectedOrder)}
                     onPreparing={() => updateStatus(selectedOrder, 'PREPARING')}
                     onReady={() => updateStatus(selectedOrder, 'READY_FOR_PICKUP')}
+                    onNeedMoreTime={() => setPrepDelayOrder(selectedOrder)}
                     onDispatch={() => setDispatchModal(selectedOrder)}
                     onComplete={() => updateStatus(selectedOrder, 'DELIVERED')}
-                    onRto={() => setRtoModalOrder(selectedOrder)}
+                    onRto={() => {
+                      void fetchOtp(selectedOrder.id);
+                      setRtoOtpInput('');
+                      setRtoModalOrder(selectedOrder);
+                    }}
                     actionLoading={actionLoading === selectedOrder.id}
                     onOpenRidersLog={() => { setRidersLogModalOrderId(selectedOrder.id); setRidersLogModalOrderLabel(selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`); }}
                     onOpenRiderImage={(url) => setRiderImageModalUrl(url)}
                     acceptLabel={acceptCountdown.label}
                     acceptDisabled={acceptCountdown.disabled}
+                    nowMs={nowTick}
                     onOpenBill={() => {
                       setBillSheetAllItemsOnly(false);
                       setBillSheetOpen(true);
                     }}
                     onOpenTimeline={() => setTimelineModalOpen(true)}
+                    onPrintBill={() => setPrintBillOpen(true)}
                   />
                 </div>
               </>
@@ -1534,13 +1691,14 @@ function OrdersPageContent() {
                         onRto={() => setRtoModalOrder(order)}
                         onComplete={() => updateStatus(order, 'DELIVERED')}
                         loading={actionLoading === order.id}
-                        otpCode={otpCache[order.id]?.otp_code}
-                        otpType={otpCache[order.id]?.otp_type}
-                        otpVerified={otpVerified.has(order.id)}
+                        otpCode={resolveOrderOtps(order, otpCache[order.id]).pickup ?? undefined}
+                        otpType="PICKUP"
+                        otpVerified={!!otpVerified[order.id]?.pickup}
                         onFetchOtp={() => fetchOtp(order.id)}
                         statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
                         acceptLabel={acceptCountdownFor(order).label}
                         acceptDisabled={acceptCountdownFor(order).disabled}
+                        nowMs={nowTick}
                       />
                     ))}
                   </div>
@@ -1564,19 +1722,22 @@ function OrdersPageContent() {
                         onRto={() => setRtoModalOrder(order)}
                         onComplete={() => updateStatus(order, 'DELIVERED')}
                         loading={actionLoading === order.id}
-                        otpCode={otpCache[order.id]?.otp_code}
-                        otpType={otpCache[order.id]?.otp_type}
-                        otpVerified={otpVerified.has(order.id)}
+                        otpCode={resolveOrderOtps(order, otpCache[order.id]).pickup ?? undefined}
+                        otpType="PICKUP"
+                        otpVerified={!!otpVerified[order.id]?.pickup}
                         onFetchOtp={() => fetchOtp(order.id)}
                         statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
                         acceptLabel={acceptCountdownFor(order).label}
                         acceptDisabled={acceptCountdownFor(order).disabled}
+                        nowMs={nowTick}
                       />
                     ))
                   )}
                 </div>
               )}
             </div>
+              </>
+            )}
               </>
             )}
           </div>
@@ -1607,62 +1768,69 @@ function OrdersPageContent() {
         onClose={() => setCustomerSheetOpen(false)}
         order={selectedOrder}
       />
+      <GatiMitraOrderPrintBill
+        open={printBillOpen && !!selectedOrder}
+        onClose={() => setPrintBillOpen(false)}
+        order={selectedOrder}
+        pricing={
+          selectedOrderPricing ?? {
+            subtotal: 0,
+            packaging: 0,
+            taxes: 0,
+            discount: 0,
+            total: 0,
+          }
+        }
+        store={
+          store
+            ? {
+                storeName: store.store_name,
+                city: store.city,
+                cuisineLabel: store.cuisine_types?.[0] ?? null,
+                fssaiNumber: store.fssai_number ?? null,
+              }
+            : selectedOrder
+              ? {
+                  storeName: selectedOrder.restaurant_name ?? 'Store',
+                  city: null,
+                  cuisineLabel: null,
+                  fssaiNumber: null,
+                }
+              : null
+        }
+      />
       <OrderTimelineModal
         open={timelineModalOpen && !!selectedOrder}
         onClose={() => setTimelineModalOpen(false)}
         order={selectedOrder}
+        storeId={storeId}
+        layout="horizontal"
+      />
+      <MerchantPrepDelayModal
+        open={!!prepDelayOrder}
+        loading={prepDelayLoading}
+        onClose={() => setPrepDelayOrder(null)}
+        onSelectMinutes={(mins) => {
+          if (prepDelayOrder) void extendPrepDelay(prepDelayOrder, mins);
+        }}
+      />
+      <OrderRiderTrackingModal
+        open={riderTrackingOpen && !!selectedOrder}
+        onClose={() => setRiderTrackingOpen(false)}
+        order={selectedOrder}
       />
 
-      {/* Reject modal – portaled so overlay is above sidebar (z-50); backdrop-blur covers full screen */}
-      {rejectModal && typeof document !== 'undefined' && createPortal(
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-md flex items-end sm:items-center justify-center z-[100] p-3 sm:p-4">
-          <div className="bg-white rounded-t-xl sm:rounded-xl shadow-xl max-w-md w-full p-4 sm:p-5 max-h-[90vh] overflow-y-auto">
-            <h3 className="font-semibold text-gray-900 mb-2">
-              Reject Order{' '}
-              {rejectModal.formatted_order_id ? (
-                <FormattedOrderId 
-                  formattedOrderId={rejectModal.formatted_order_id} 
-                  fallbackOrderId={rejectModal.order_id}
-                  size="base"
-                />
-              ) : (
-                `#${rejectModal.order_id}`
-              )}
-            </h3>
-            <p className="text-sm text-gray-600 mb-3">Provide a reason (optional):</p>
-            <textarea
-              value={rejectReason}
-              onChange={(e) => setRejectReason(e.target.value)}
-              className="w-full border border-gray-200 rounded-lg p-2 text-sm min-h-[80px]"
-              placeholder="e.g. Item unavailable, Store closed..."
-            />
-            <div className="flex gap-2 mt-3">
-              <button
-                onClick={() => {
-                  setRejectModal(null);
-                  setRejectReason('');
-                }}
-                className="flex-1 px-4 py-2 border border-gray-200 rounded-lg text-sm font-medium hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={async () => {
-                  await updateStatus(rejectModal, 'CANCELLED', {
-                    rejected_reason: rejectReason || 'No reason provided',
-                  });
-                  setRejectModal(null);
-                  setRejectReason('');
-                }}
-                className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700"
-              >
-                Reject
-              </button>
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
+      <RejectOrderSidesheet
+        open={!!rejectModal}
+        order={rejectModal}
+        loading={rejectModal != null && actionLoading === rejectModal.id}
+        onClose={() => setRejectModal(null)}
+        onConfirm={async (reason) => {
+          if (!rejectModal) return;
+          await updateStatus(rejectModal, 'CANCELLED', { rejected_reason: reason });
+          setRejectModal(null);
+        }}
+      />
 
       {/* Dispatch modal – warning only; no OTP. Portaled so sidebar blurs. */}
       {dispatchModal && typeof document !== 'undefined' && createPortal(
@@ -1725,20 +1893,49 @@ function OrdersPageContent() {
             </h3>
             <div className="mb-4 p-3 rounded-lg bg-orange-50 border border-orange-200">
               <p className="text-sm text-orange-800">
-                This will mark the order as Return to Origin. The order will be considered undelivered and may affect your metrics. Are you sure you want to continue?
+                This will mark the order as Return to Origin. The order will be considered undelivered and may affect your metrics.
               </p>
             </div>
+            {rtoModalOrder && (() => {
+              const rtoOtpVal = resolveOrderOtps(rtoModalOrder, otpCache[rtoModalOrder.id]).rto;
+              return rtoOtpVal ? (
+                <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-xs font-semibold text-slate-600 mb-1">RTO OTP (share with rider)</p>
+                  <p className="font-mono text-2xl font-bold tracking-widest text-slate-900">{rtoOtpVal}</p>
+                  <label className="block mt-3 text-xs text-slate-600">Verify OTP before confirming (optional)</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={4}
+                    value={rtoOtpInput}
+                    onChange={(e) => setRtoOtpInput(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                    className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm font-mono"
+                    placeholder="4-digit OTP"
+                  />
+                </div>
+              ) : null;
+            })()}
             <div className="flex gap-2">
               <button
-                onClick={() => setRtoModalOrder(null)}
+                onClick={() => {
+                  setRtoModalOrder(null);
+                  setRtoOtpInput('');
+                }}
                 className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium hover:bg-gray-50"
               >
                 Cancel
               </button>
               <button
-                onClick={() => {
-                  updateStatus(rtoModalOrder, 'RTO');
+                onClick={async () => {
+                  if (!rtoModalOrder) return;
+                  const rtoOtpVal = resolveOrderOtps(rtoModalOrder, otpCache[rtoModalOrder.id]).rto;
+                  if (rtoOtpVal && rtoOtpInput.trim() && !otpVerified[rtoModalOrder.id]?.rto) {
+                    const ok = await validateOtp(rtoModalOrder.id, 'RTO', rtoOtpInput);
+                    if (!ok) return;
+                  }
+                  await updateStatus(rtoModalOrder, 'RTO');
                   setRtoModalOrder(null);
+                  setRtoOtpInput('');
                 }}
                 className="flex-1 py-2.5 bg-orange-600 text-white rounded-lg text-sm font-semibold hover:bg-orange-700"
               >
@@ -1750,93 +1947,17 @@ function OrdersPageContent() {
         document.body
       )}
 
-      {/* Rider's log – right sheet (all riders assigned to this order) */}
-      {ridersLogModalOrderId != null && typeof document !== 'undefined' && createPortal(
-        <div className="fixed inset-0 z-[95] flex justify-end" role="presentation">
-          <button
-            type="button"
-            className="absolute inset-0 bg-black/40 backdrop-blur-[2px]"
-            aria-label="Close rider log"
-            onClick={() => { setRidersLogModalOrderId(null); setRidersLogModalOrderLabel(null); }}
-          />
-          <aside
-            className="relative flex h-dvh min-h-0 w-full max-w-md flex-col border-l border-gray-200 bg-white shadow-2xl"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="riders-log-title"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mx-sheet-header justify-between gap-3 !px-4">
-              <h3 id="riders-log-title" className="font-semibold text-gray-900 pr-2">
-                Rider&apos;s log
-                {ridersLogModalOrderLabel && (
-                  <span className="text-gray-500 font-medium ml-1.5">({ridersLogModalOrderLabel})</span>
-                )}
-              </h3>
-              <button
-                type="button"
-                onClick={() => { setRidersLogModalOrderId(null); setRidersLogModalOrderLabel(null); }}
-                className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors shrink-0"
-                aria-label="Close"
-              >
-                <X size={18} className="text-gray-500" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4 min-h-0">
-              {ridersLogLoading ? (
-                <p className="text-sm text-gray-500">Loading...</p>
-              ) : ridersLogList.length === 0 ? (
-                <p className="text-sm text-gray-500">No rider assignment history for this order.</p>
-              ) : (
-                <ul className="space-y-3">
-                  {ridersLogList.map((r, idx) => {
-                    const fmt = (s: string | null) =>
-                      s ? new Date(s).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' }) : '—';
-                    return (
-                      <li key={`${r.rider_id}-${idx}`} className="p-3 rounded-lg border border-gray-200 bg-gray-50/50">
-                        <div className="flex items-start gap-3">
-                          {r.selfie_url ? (
-                            <button
-                              type="button"
-                              onClick={() => setRiderImageModalUrl(r.selfie_url)}
-                              className="shrink-0 w-10 h-10 rounded-full overflow-hidden border-2 border-purple-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
-                            >
-                              <img src={r.selfie_url} alt={r.rider_name || 'Rider'} className="w-full h-full object-cover" />
-                            </button>
-                          ) : (
-                            <div className="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center shrink-0">
-                              <Bike size={18} className="text-purple-600" />
-                            </div>
-                          )}
-                          <div className="min-w-0 flex-1 text-sm">
-                            <p className="font-semibold text-gray-900">{r.rider_name || `Rider #${r.rider_id}`}</p>
-                            {r.rider_mobile && (
-                              <a href={`tel:${r.rider_mobile}`} className="text-purple-600 hover:underline">
-                                {r.rider_mobile}
-                              </a>
-                            )}
-                            <p className="text-[10px] text-gray-500 mt-1 capitalize">{r.assignment_status?.replace(/_/g, ' ')}</p>
-                            <div className="mt-2 text-[10px] text-gray-600 space-y-0.5">
-                              <p>Assigned: {fmt(r.assigned_at)}</p>
-                              {r.accepted_at && <p>Accepted: {fmt(r.accepted_at)}</p>}
-                              {r.reached_merchant_at && <p>Reached store: {fmt(r.reached_merchant_at)}</p>}
-                              {r.picked_up_at && <p>Picked up: {fmt(r.picked_up_at)}</p>}
-                              {r.delivered_at && <p>Delivered: {fmt(r.delivered_at)}</p>}
-                              {r.rejected_at && <p>Rejected: {fmt(r.rejected_at)}</p>}
-                              {r.cancelled_at && <p>Cancelled: {fmt(r.cancelled_at)}</p>}
-                            </div>
-                          </div>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </div>
-          </aside>
-        </div>,
-        document.body
-      )}
+      <OrderRidersHistorySidesheet
+        open={ridersLogModalOrderId != null}
+        orderLabel={ridersLogModalOrderLabel}
+        riders={ridersLogList}
+        loading={ridersLogLoading}
+        onClose={() => {
+          setRidersLogModalOrderId(null);
+          setRidersLogModalOrderLabel(null);
+        }}
+        onRiderPhotoClick={(url) => setRiderImageModalUrl(url)}
+      />
 
       {/* Rider image lightbox */}
       {riderImageModalUrl && typeof document !== 'undefined' && createPortal(
@@ -2360,14 +2481,15 @@ function OrderDetailMobile({
   statusLabel,
   formatVegNonVeg,
   formatTimeAgo,
-  otpCode,
-  otpType,
-  otpVerified,
+  otpCache,
+  pickupVerified,
+  rtoVerified,
   onFetchOtp,
   onAccept,
   onReject,
   onPreparing,
   onReady,
+  onNeedMoreTime,
   onDispatch,
   onComplete,
   onRto,
@@ -2376,22 +2498,25 @@ function OrderDetailMobile({
   onOpenRiderImage,
   acceptLabel,
   acceptDisabled,
+  nowMs,
   onOpenBill,
   onOpenTimeline,
+  onPrintBill,
 }: {
   order: OrdersFoodRow;
   onClose: () => void;
   statusLabel: string;
   formatVegNonVeg: (v: string | null) => string;
   formatTimeAgo: (s: string) => string;
-  otpCode?: string;
-  otpType?: string;
-  otpVerified?: boolean;
+  otpCache?: CachedOrderOtps;
+  pickupVerified?: boolean;
+  rtoVerified?: boolean;
   onFetchOtp: () => void;
   onAccept: () => void;
   onReject: () => void;
   onPreparing: () => void;
   onReady: () => void;
+  onNeedMoreTime?: () => void;
   onDispatch: () => void;
   onComplete: () => void;
   onRto: () => void;
@@ -2400,8 +2525,10 @@ function OrderDetailMobile({
   onOpenRiderImage?: (url: string) => void;
   acceptLabel?: string;
   acceptDisabled?: boolean;
+  nowMs?: number;
   onOpenBill?: () => void;
   onOpenTimeline?: () => void;
+  onPrintBill?: () => void;
 }) {
   const status = order.order_status || 'CREATED';
   const statusColor =
@@ -2418,6 +2545,7 @@ function OrderDetailMobile({
     order.is_fragile ||
     order.is_high_value ||
     (order.veg_non_veg && order.veg_non_veg !== 'na');
+  const otps = resolveOrderOtps(order, otpCache);
 
   return (
     <div
@@ -2432,19 +2560,24 @@ function OrderDetailMobile({
             fallbackOrderId={order.order_id}
             size="lg"
           />
-          {/* OTP always visible - bold and big */}
-          <div className="flex items-center gap-2 px-3 py-1 bg-gradient-to-r from-slate-100 to-slate-50 rounded-lg border border-slate-200">
-            <span className="text-xs font-semibold text-gray-700">OTP:</span>
-            {otpCode ? (
-              <>
-                <span className="font-mono font-bold text-lg text-gray-900 tracking-wider">{otpCode}</span>
-                {otpType && <span className="text-[10px] text-slate-600">({otpType})</span>}
-                {otpVerified && <span className="text-green-600 text-xs font-medium">✓</span>}
-              </>
-            ) : (
-              <span className="text-xs text-gray-500 animate-pulse">Loading...</span>
-            )}
-          </div>
+          {(otps.pickup || otps.rto) && (
+            <div className="flex flex-wrap items-center gap-2">
+              {otps.pickup && (
+                <div className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 rounded-lg border border-slate-200">
+                  <span className="text-[10px] font-semibold text-slate-600">Pickup</span>
+                  <span className="font-mono font-bold text-base text-gray-900 tracking-wider">{otps.pickup}</span>
+                  {pickupVerified && <span className="text-green-600 text-xs">✓</span>}
+                </div>
+              )}
+              {otps.rto && (
+                <div className="flex items-center gap-1.5 px-2.5 py-1 bg-orange-50 rounded-lg border border-orange-200">
+                  <span className="text-[10px] font-semibold text-orange-700">RTO</span>
+                  <span className="font-mono font-bold text-base text-orange-900 tracking-wider">{otps.rto}</span>
+                  {rtoVerified && <span className="text-green-600 text-xs">✓</span>}
+                </div>
+              )}
+            </div>
+          )}
           <span className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${statusColor}`}>{statusLabel}</span>
         </div>
         <button
@@ -2660,6 +2793,15 @@ function OrderDetailMobile({
           </div>
         )}
 
+        <OrderCancellationBanner order={order} />
+        <OrderOtpSection
+          status={status}
+          otps={otps}
+          pickupVerified={pickupVerified}
+          rtoVerified={rtoVerified}
+          compact
+        />
+
         {/* Order Status Timeline */}
         <div className="rounded-lg bg-white p-3 border border-gray-200 shadow-sm">
           <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-2.5">Order Status Timeline</p>
@@ -2674,13 +2816,15 @@ function OrderDetailMobile({
             onReject={onReject}
             onPreparing={onPreparing}
             onReady={onReady}
+            onNeedMoreTime={onNeedMoreTime}
             onDispatch={onDispatch}
             onComplete={onComplete}
             onRto={onRto}
             loading={actionLoading}
-            otpVerified={otpVerified}
+            otpVerified={pickupVerified}
             acceptLabel={acceptLabel}
             acceptDisabled={acceptDisabled}
+            nowMs={nowMs}
           />
         </div>
       </div>
@@ -2696,6 +2840,7 @@ function OrderCard({
   onReject,
   onPreparing,
   onReady,
+  onNeedMoreTime,
   onDispatch,
   onComplete,
   onRto,
@@ -2707,6 +2852,7 @@ function OrderCard({
   statusLabel,
   acceptLabel,
   acceptDisabled,
+  nowMs,
   hideDetails,
 }: {
   order: OrdersFoodRow;
@@ -2716,6 +2862,7 @@ function OrderCard({
   onReject?: () => void;
   onPreparing: () => void;
   onReady: () => void;
+  onNeedMoreTime?: () => void;
   onDispatch: () => void;
   onComplete: () => void;
   onRto: () => void;
@@ -2727,6 +2874,7 @@ function OrderCard({
   statusLabel?: string;
   acceptLabel?: string;
   acceptDisabled?: boolean;
+  nowMs?: number;
   /** Hide the "Details" CTA (used in right slider list) */
   hideDetails?: boolean;
 }) {
@@ -2836,6 +2984,7 @@ function OrderCard({
             onReject={onReject}
             onPreparing={onPreparing}
             onReady={onReady}
+            onNeedMoreTime={onNeedMoreTime}
             onDispatch={onDispatch}
             onComplete={onComplete}
             onRto={onRto}
@@ -2846,6 +2995,7 @@ function OrderCard({
             hideRtoMenu
             acceptLabel={acceptLabel}
             acceptDisabled={acceptDisabled}
+            nowMs={nowMs}
           />
         </div>
 
@@ -2884,6 +3034,7 @@ function OrderListRow({
   statusLabel,
   acceptLabel,
   acceptDisabled,
+  nowMs,
 }: {
   order: OrdersFoodRow;
   selected: boolean;
@@ -2903,6 +3054,7 @@ function OrderListRow({
   statusLabel?: string;
   acceptLabel?: string;
   acceptDisabled?: boolean;
+  nowMs?: number;
 }) {
   const status = order.order_status || 'CREATED';
   const value = Number(order.food_items_total_value || 0);
@@ -3000,6 +3152,7 @@ function OrderListRow({
           onReject={onReject}
           onPreparing={onPreparing}
           onReady={onReady}
+          onNeedMoreTime={onNeedMoreTime}
           onDispatch={onDispatch}
           onComplete={onComplete}
           onRto={onRto}
@@ -3008,6 +3161,7 @@ function OrderListRow({
           compact
           acceptLabel={acceptLabel}
           acceptDisabled={acceptDisabled}
+          nowMs={nowMs}
         />
       </div>
 
@@ -3032,6 +3186,7 @@ function ActionBtns({
   onReject,
   onPreparing,
   onReady,
+  onNeedMoreTime,
   onDispatch,
   onComplete,
   onRto,
@@ -3042,12 +3197,14 @@ function ActionBtns({
   hideRtoMenu,
   acceptLabel,
   acceptDisabled,
+  nowMs,
 }: {
   order: OrdersFoodRow;
   onAccept: () => void;
   onReject?: () => void;
   onPreparing: () => void;
   onReady: () => void;
+  onNeedMoreTime?: () => void;
   onDispatch: () => void;
   onComplete: () => void;
   onRto?: () => void;
@@ -3062,6 +3219,7 @@ function ActionBtns({
   acceptLabel?: string;
   /** Optional: disable accept when window expired */
   acceptDisabled?: boolean;
+  nowMs?: number;
 }) {
   const status = order.order_status || 'CREATED';
   const dis = loading;
@@ -3101,17 +3259,6 @@ function ActionBtns({
       </div>
     );
   }
-  if (status === 'ACCEPTED') {
-    return (
-      <button
-        onClick={(e) => { e.stopPropagation(); onPreparing(); }}
-        disabled={dis}
-        className={`${btnBase} ${topRightLayout ? 'w-full px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-amber-500 text-white hover:bg-amber-600 hover:shadow-md border-amber-600/20`}
-      >
-        Preparing
-      </button>
-    );
-  }
   const RtoMenu = () => {
     if (!onRto || hideRtoMenu || topRightLayout) return null;
     return (
@@ -3141,31 +3288,62 @@ function ActionBtns({
     );
   };
 
-  if (status === 'PREPARING') {
+  if (status === 'PREPARING' || status === 'ACCEPTED') {
+    const prepCountdown =
+      nowMs != null
+        ? prepReadyCountdownLabel(order, nowMs)
+        : { label: 'Mark as ready', secondsLeft: 0 };
+    const prepExpired =
+      nowMs != null &&
+      (isPrepCountdownExpired(order, nowMs) || !prepCountdown.label.includes('('));
     return (
       <div className={`flex gap-2 items-center ${topRightLayout ? 'w-full' : 'flex-wrap'}`}>
-        <button
-          onClick={(e) => { e.stopPropagation(); onReady(); }}
+        {prepExpired && onNeedMoreTime && !compact && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onNeedMoreTime();
+            }}
+            disabled={dis}
+            className={`${btnBase} ${topRightLayout ? 'flex-1 px-3 py-2.5 text-sm font-semibold' : ''} border-2 border-blue-500 bg-white text-blue-600 hover:bg-blue-50`}
+          >
+            Need more time
+          </button>
+        )}
+        <MarkAsReadyCountdownButton
+          order={order}
+          nowMs={nowMs}
           disabled={dis}
-          className={`${btnBase} ${topRightLayout ? 'w-full px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-emerald-600 text-white hover:bg-emerald-700 hover:shadow-md border-emerald-700/20`}
-        >
-          Ready
-        </button>
+          compact={compact}
+          fullWidth={!prepExpired || !onNeedMoreTime ? topRightLayout : false}
+          className={
+            prepExpired && onNeedMoreTime
+              ? topRightLayout
+                ? 'flex-[1.2] min-w-0'
+                : 'min-w-0'
+              : topRightLayout
+                ? 'flex-1 min-w-0'
+                : 'min-w-0'
+          }
+          onClick={(e) => {
+            e.stopPropagation();
+            onReady();
+          }}
+        />
         <RtoMenu />
       </div>
     );
   }
   if (status === 'READY_FOR_PICKUP') {
     return (
-      <div className={`flex gap-2 items-center ${topRightLayout ? 'w-full' : 'flex-wrap'}`}>
-        <button
-          onClick={(e) => { e.stopPropagation(); onDispatch(); }}
-          disabled={dis}
-          className={`${btnBase} ${topRightLayout ? 'w-full px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-purple-600 text-white hover:bg-purple-700 hover:shadow-md border-purple-700/20`}
-        >
-          Dispatch
-        </button>
-        <RtoMenu />
+      <div className={`flex flex-col gap-2 ${topRightLayout ? 'w-full' : ''}`}>
+        <ReadyHandoverRunningTimeline
+          order={order}
+          nowMs={nowMs ?? Date.now()}
+          compact={compact}
+        />
+        {!compact && !topRightLayout ? <RtoMenu /> : null}
       </div>
     );
   }

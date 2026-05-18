@@ -61,7 +61,7 @@ export async function GET(
 
     const { data: actions, error: actErr } = await db
       .from('merchant_order_food_actions')
-      .select('id, from_status, to_status, action_source, actor_label, created_at')
+      .select('id, from_status, to_status, action_source, actor_label, metadata, created_at')
       .eq('orders_food_id', orderIdNum)
       .order('created_at', { ascending: false })
       .limit(30);

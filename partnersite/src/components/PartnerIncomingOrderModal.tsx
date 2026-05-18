@@ -19,8 +19,10 @@ import {
   markPartnerOrderActionToastShown,
   type PartnerOrderActionToastKind,
 } from '@/lib/partner-order-action-toast';
+import { RejectOrderSidesheet } from '@/components/orders/RejectOrderSidesheet';
 
 const MUTE_KEY = 'partner_incoming_order_mute_sound';
+const DEFAULT_ALERT_SOUND = '/notification.wav';
 const FALLBACK_POLL_MS = 15_000;
 const FALLBACK_SCAN_LIMIT = 12;
 const DISMISS_KEY = 'partner_incoming_order_dismissed_v1';
@@ -69,8 +71,7 @@ async function playChimeSequential(
   }
 ) {
   if (typeof window === 'undefined') return;
-  const src = (url || '').trim();
-  // No hardcoded default sound: only play when admin configured a URL.
+  const src = (url || '').trim() || DEFAULT_ALERT_SOUND;
   if (!src) return;
 
   const safeRepeats = Math.max(1, Math.min(25, Math.floor(repeatCount || 1)));
@@ -161,7 +162,6 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const [muted, setMuted] = useState(false);
   const [modalOrder, setModalOrder] = useState<OrdersFoodRow | null>(null);
   const [rejectOpen, setRejectOpen] = useState(false);
-  const [rejectReason, setRejectReason] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [settings, setSettings] = useState<AcceptanceSettings>(DEFAULT_SETTINGS);
@@ -217,16 +217,23 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   useEffect(() => {
     const fromProp = (restaurantId || '').trim();
     const fromLs = typeof window !== 'undefined' ? (localStorage.getItem('selectedStoreId') || '').trim() : '';
-    setStoreId(fromProp || fromLs || DEMO_RESTAURANT_ID);
-  }, [restaurantId]);
-
-  useEffect(() => {
-    if (!storeId) return;
+    const raw = fromProp || fromLs || DEMO_RESTAURANT_ID;
+    if (!raw) {
+      setStoreId(null);
+      setStoreInternalId(null);
+      return;
+    }
     void (async () => {
-      const s = await fetchStoreById(storeId);
-      setStoreInternalId(s?.id ?? null);
+      const s = await fetchStoreById(raw);
+      if (s) {
+        setStoreInternalId(Number(s.id));
+        setStoreId(String(s.store_id ?? raw));
+        return;
+      }
+      setStoreId(raw);
+      setStoreInternalId(/^\d+$/.test(raw) ? parseInt(raw, 10) : null);
     })();
-  }, [storeId]);
+  }, [restaurantId]);
 
   const reloadAcceptanceSettings = useCallback(async () => {
     if (!storeId) return;
@@ -268,7 +275,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
         setStoreOpsSettings({
           auto_accept_orders: data.auto_accept_orders === true,
           auto_accept_time_seconds: typeof data.auto_accept_time_seconds === 'number' ? Math.max(0, Math.min(600, Math.floor(data.auto_accept_time_seconds))) : 30,
-          show_floating_orders: data.show_floating_orders === true,
+          show_floating_orders: data.show_floating_orders !== false,
         });
       } catch {
         setStoreOpsSettings(null);
@@ -327,9 +334,6 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const openIfNew = useCallback(
     async (full: OrdersFoodRow | null) => {
       if (!full) return;
-      // If floating UI is disabled, do not open modal or play sound.
-      if (storeOpsSettings?.show_floating_orders === false) return;
-      if (!readPartnerDeviceOrderAlerts(storeId).orderAlertsEnabled) return;
       const dismissed = getDismissed();
       if (dismissed.has(full.order_id)) return;
       const ext = full as OrdersFoodRow & { core_status?: string; current_status?: string | null };
@@ -364,7 +368,9 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
             string | null,
           ]);
         const chimeUrl =
-          resolveAlertUrlFromSlots(slots, device.alertSoundSlot) ?? settings.alert_sound_url;
+          resolveAlertUrlFromSlots(slots, device.alertSoundSlot) ??
+          settings.alert_sound_url ??
+          DEFAULT_ALERT_SOUND;
         chimeRunIdRef.current += 1;
         const myRun = chimeRunIdRef.current;
         void playChimeSequential(chimeUrl, settings.alert_sound_repeat_count, {
@@ -385,7 +391,6 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       settings.alert_sound_repeat_count,
       settings.alert_sound_url,
       settings.alert_sound_urls_by_slot,
-      storeOpsSettings?.show_floating_orders,
     ]
   );
 
@@ -517,7 +522,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     if (autoCancelFiredForOrderIdRef.current === modalOrder.order_id) return;
     autoCancelFiredForOrderIdRef.current = modalOrder.order_id;
     // Safety: auto-cancel when acceptance window finishes (once per order).
-    void patchStatus('CANCELLED', { rejected_reason: 'Auto Cancelled: acceptance timeout' });
+    void patchStatus('CANCELLED', { rejected_reason: 'Auto Cancelled' }, 'auto');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [secondsLeft, modalOrder, actionLoading]);
 
@@ -549,17 +554,29 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     if (modalOrder) addDismissed(modalOrder.order_id);
     setModalOrder(null);
     setRejectOpen(false);
-    setRejectReason('');
   };
 
   const showOrderActionToast = (kind: PartnerOrderActionToastKind, orderId: number) => {
     if (hasShownPartnerOrderActionToast(orderId, kind)) return;
     markPartnerOrderActionToastShown(orderId, kind);
-    const message = kind === 'accepted' ? 'Order accepted' : 'Order rejected';
-    toast.success(message, { id: `partner-order-${kind}-${orderId}` });
+    if (kind === 'accepted') {
+      toast.success('Order accepted', {
+        id: `partner-order-${kind}-${orderId}`,
+        classNames: { toast: 'mx-toast mx-toast--success' },
+      });
+    } else {
+      toast.error('Order cancelled', {
+        id: `partner-order-${kind}-${orderId}`,
+        classNames: { toast: 'mx-toast mx-toast--error' },
+      });
+    }
   };
 
-  const patchStatus = async (status: 'ACCEPTED' | 'CANCELLED', extra?: { rejected_reason?: string }) => {
+  const patchStatus = async (
+    status: 'ACCEPTED' | 'CANCELLED',
+    extra?: { rejected_reason?: string },
+    mode: 'auto' | 'manual' = 'manual'
+  ) => {
     if (!storeId || !modalOrder) return;
     const orderIdForToast = modalOrder.order_id;
     setActionLoading(true);
@@ -567,7 +584,14 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       const url = modalOrder.core_only
         ? `/api/merchant/orders-core/${modalOrder.order_id}`
         : `/api/food-orders/${modalOrder.id}`;
-      const payload = { store_id: storeId, status, action_source: 'website' as const, ...extra };
+      const payload = {
+        store_id: storeId,
+        status,
+        action_source: status === 'CANCELLED' && mode === 'auto' ? ('system' as const) : ('website' as const),
+        ...(status === 'ACCEPTED' ? { accept_mode: mode } : {}),
+        ...(status === 'CANCELLED' ? { cancel_mode: mode } : {}),
+        ...extra,
+      };
       console.debug('[partner-incoming-modal] PATCH start', {
         url,
         payload,
@@ -592,6 +616,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       }
       console.debug('[partner-incoming-modal] PATCH ok', { url, httpStatus: res.status });
       showOrderActionToast(status === 'ACCEPTED' ? 'accepted' : 'rejected', orderIdForToast);
+      window.dispatchEvent(new CustomEvent('partner-pending-orders-refresh'));
       close();
     } catch (e) {
       console.debug('[partner-incoming-modal] PATCH exception', {
@@ -622,7 +647,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       const cur = String(modalOrder.order_status || 'CREATED').toUpperCase();
       if (cur !== 'CREATED' && cur !== 'NEW') return;
       if (actionLoading) return;
-      void patchStatus('ACCEPTED');
+      void patchStatus('ACCEPTED', undefined, 'auto');
     }, secs * 1000);
     return () => {
       if (autoAcceptTimerRef.current != null) {
@@ -634,7 +659,6 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   }, [modalOrder?.order_id, storeOpsSettings?.auto_accept_orders, storeOpsSettings?.auto_accept_time_seconds, storeOpsSettings?.show_floating_orders]);
 
   if (typeof document === 'undefined') return null;
-  if (storeOpsSettings?.show_floating_orders === false) return null;
 
   const portal = (node: React.ReactNode) => createPortal(node, document.body);
 
@@ -771,7 +795,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                   type="button"
                   disabled={actionLoading || secondsLeft <= 0}
                   className="relative flex-[1.35] overflow-hidden rounded-xl bg-emerald-600 py-3 text-sm font-bold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
-                  onClick={() => void patchStatus('ACCEPTED')}
+                  onClick={() => void patchStatus('ACCEPTED', undefined, 'manual')}
                 >
                   <span
                     className="absolute inset-y-0 left-0 bg-orange-500/35"
@@ -798,46 +822,16 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
           </div>
         )}
 
-      {modalOrder &&
-        rejectOpen &&
-        portal(
-          <div className="fixed inset-0 z-[115] flex items-end justify-center bg-black/50 p-3 backdrop-blur-sm sm:items-center sm:p-4">
-            <div className="w-full max-w-md rounded-t-2xl bg-white p-4 shadow-xl sm:rounded-2xl">
-              <h3 className="font-semibold text-gray-900">Reject order</h3>
-              <p className="mt-1 text-sm text-gray-600">Optional reason for the customer:</p>
-              <textarea
-                value={rejectReason}
-                onChange={(e) => setRejectReason(e.target.value)}
-                className="mt-2 w-full rounded-lg border border-gray-200 p-2 text-sm min-h-[88px]"
-                placeholder="e.g. Item unavailable"
-              />
-              <div className="mt-3 flex gap-2">
-                <button
-                  type="button"
-                  className="flex-1 rounded-lg border border-gray-200 py-2.5 text-sm font-medium hover:bg-gray-50"
-                  onClick={() => {
-                    setRejectOpen(false);
-                    setRejectReason('');
-                  }}
-                >
-                  Back
-                </button>
-                <button
-                  type="button"
-                  disabled={actionLoading}
-                  className="flex-1 rounded-lg bg-red-600 py-2.5 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
-                  onClick={() =>
-                    void patchStatus('CANCELLED', {
-                      rejected_reason: rejectReason.trim() || 'Rejected from incoming order',
-                    })
-                  }
-                >
-                  Confirm reject
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+      <RejectOrderSidesheet
+        open={!!modalOrder && rejectOpen}
+        order={modalOrder}
+        loading={actionLoading}
+        onClose={() => setRejectOpen(false)}
+        onConfirm={async (reason) => {
+          await patchStatus('CANCELLED', { rejected_reason: reason }, 'manual');
+          setRejectOpen(false);
+        }}
+      />
     </>
   );
 }

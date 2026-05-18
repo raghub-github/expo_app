@@ -1,7 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
-import { normalizeActionSource } from '@/lib/merchantOrderFoodActions';
+import {
+  labelsForStatusUpdate,
+  normalizeActionMode,
+  normalizeActionSource,
+} from '@/lib/merchantOrderFoodActions';
+import { appendAcceptanceTimeline } from '@/lib/orderAcceptanceTimeline';
+import { appendCancellationTimeline } from '@/lib/orderCancellationTimeline';
+import { appendReadyTimeline } from '@/lib/orderFoodStatusTimeline';
+import {
+  PLATFORM_DEFAULT_PREP_MINUTES,
+  resolveAcceptPrepCommitment,
+  resolveStoreDefaultPrepMinutes,
+} from '@/lib/order-prep-time';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -32,7 +44,7 @@ function normalizeOrderStatusForTransition(raw: string | null | undefined): stri
 const VALID_TRANSITIONS: Record<string, string[]> = {
   CREATED: ['ACCEPTED', 'CANCELLED'],
   NEW: ['ACCEPTED', 'CANCELLED'], // backward compat
-  ACCEPTED: ['PREPARING', 'CANCELLED'],
+  ACCEPTED: ['PREPARING', 'READY_FOR_PICKUP', 'CANCELLED'],
   PREPARING: ['READY_FOR_PICKUP', 'CANCELLED', 'RTO'],
   READY_FOR_PICKUP: ['OUT_FOR_DELIVERY', 'CANCELLED', 'RTO'],
   OUT_FOR_DELIVERY: ['DELIVERED', 'RTO'],
@@ -57,6 +69,13 @@ export async function PATCH(
     const newStatus = (body.status || '').toUpperCase();
     const rejectedReason = body.rejected_reason || null;
     const actionSource = normalizeActionSource(body.action_source);
+    const actionMode = normalizeActionMode(body.accept_mode ?? body.cancel_mode);
+    const actionLabels = labelsForStatusUpdate({
+      newStatus,
+      actionSource,
+      actionMode,
+      rejectedReason,
+    });
 
     if (!storeId || !newStatus) {
       return NextResponse.json({ error: 'store_id and status are required' }, { status: 400 });
@@ -75,7 +94,9 @@ export async function PATCH(
 
     const { data: existing, error: fetchErr } = await db
       .from('orders_food')
-      .select('id, order_id, order_status, merchant_store_id, food_items_total_value')
+      .select(
+        'id, order_id, order_status, merchant_store_id, food_items_total_value, preparation_time_minutes, preparing_at, prep_ready_by_at'
+      )
       .eq('id', orderIdNum)
       .single();
 
@@ -113,18 +134,71 @@ export async function PATCH(
       }, { status: 400 });
     }
 
+    if (
+      newStatus === 'ACCEPTED' &&
+      (currentStatus === 'CREATED' || currentStatus === 'NEW')
+    ) {
+      const { data: storeGate } = await db
+        .from('merchant_stores')
+        .select('is_accepting_orders')
+        .eq('id', storeInternalId)
+        .maybeSingle();
+      const { data: avail } = await db
+        .from('merchant_store_availability')
+        .select('is_accepting_orders')
+        .eq('store_id', storeInternalId)
+        .maybeSingle();
+      const accepting =
+        avail?.is_accepting_orders ?? storeGate?.is_accepting_orders ?? true;
+      if (accepting === false) {
+        return NextResponse.json(
+          { error: 'Store is closed for new orders. Finish your active orders first.' },
+          { status: 403 }
+        );
+      }
+    }
+
     const now = new Date().toISOString();
     const updates: Record<string, unknown> = {
       order_status: newStatus,
       updated_at: now,
     };
 
-    if (newStatus === 'ACCEPTED') updates.accepted_at = now;
+    let acceptPrepReadyByAt: string | null = null;
+    let acceptPrepMinutes: number | null = null;
+
+    if (newStatus === 'ACCEPTED') {
+      updates.accepted_at = now;
+      if (actionLabels.accepted_by_label) updates.accepted_by_label = actionLabels.accepted_by_label;
+
+      const { data: storeRow } = await db
+        .from('merchant_stores')
+        .select('avg_preparation_time_minutes')
+        .eq('id', storeInternalId)
+        .maybeSingle();
+      const storeDefault = resolveStoreDefaultPrepMinutes(
+        storeRow?.avg_preparation_time_minutes ?? PLATFORM_DEFAULT_PREP_MINUTES
+      );
+      const prep = resolveAcceptPrepCommitment({
+        acceptedAtIso: now,
+        storeDefaultMinutes: storeDefault,
+        bodyPrepMinutes: body.preparation_time_minutes,
+        existingOrderPrepMinutes: existing.preparation_time_minutes,
+      });
+      acceptPrepReadyByAt = prep.prepReadyByAt;
+      acceptPrepMinutes = prep.prepMinutes;
+      updates.preparation_time_minutes = prep.prepMinutes;
+      updates.prep_ready_by_at = prep.prepReadyByAt;
+      updates.prep_time_source = prep.prepTimeSource;
+    }
     else if (newStatus === 'PREPARING') {
       updates.preparing_at = now;
       updates.prepared_at = null;
     }
-    else if (newStatus === 'READY_FOR_PICKUP') updates.prepared_at = now;
+    else if (newStatus === 'READY_FOR_PICKUP') {
+      updates.prepared_at = now;
+      if (!existing.preparing_at) updates.preparing_at = now;
+    }
     else if (newStatus === 'OUT_FOR_DELIVERY') {
       // Store can mark as dispatched from portal without OTP validation (OTP is for rider handover only).
       updates.dispatched_at = now;
@@ -132,6 +206,7 @@ export async function PATCH(
     else if (newStatus === 'CANCELLED') {
       updates.cancelled_at = now;
       if (rejectedReason) updates.rejected_reason = rejectedReason;
+      if (actionLabels.cancelled_by_label) updates.cancelled_by_label = actionLabels.cancelled_by_label;
     } else if (newStatus === 'RTO') {
       updates.is_rto = true;
       updates.rto_at = now;
@@ -156,12 +231,60 @@ export async function PATCH(
     }
 
     try {
+      const corePatch: Record<string, unknown> = { current_status: newStatus, updated_at: now };
+      if (newStatus === 'ACCEPTED' && acceptPrepReadyByAt && acceptPrepMinutes != null) {
+        corePatch.prep_ready_by_at = acceptPrepReadyByAt;
+        corePatch.prep_time_minutes = acceptPrepMinutes;
+      }
       await db
         .from('orders_core')
-        .update({ current_status: newStatus, updated_at: now })
+        .update(corePatch)
         .eq('id', existing.order_id as number);
     } catch (coreErr) {
       console.warn('[food-orders PATCH] orders_core sync failed:', coreErr);
+    }
+
+    if (newStatus === 'ACCEPTED') {
+      try {
+        await appendAcceptanceTimeline(db, {
+          orderCorePk: existing.order_id as number,
+          previousStatus: currentStatus,
+          actionSource,
+          acceptMode: actionMode,
+          acceptedByLabel: actionLabels.accepted_by_label,
+          expectedByAt: acceptPrepReadyByAt,
+        });
+      } catch (tlErr) {
+        console.warn('[food-orders PATCH] acceptance timeline failed:', tlErr);
+      }
+    }
+
+    if (newStatus === 'CANCELLED') {
+      try {
+        await appendCancellationTimeline(db, {
+          orderCorePk: existing.order_id as number,
+          previousStatus: currentStatus,
+          rejectedReason: rejectedReason ?? null,
+          actorType: actionSource === 'admin' ? 'admin' : actionSource === 'system' ? 'system' : 'store',
+          cancelMode: actionMode,
+        });
+      } catch (tlErr) {
+        console.warn('[food-orders PATCH] cancellation timeline failed:', tlErr);
+      }
+    }
+
+    if (newStatus === 'READY_FOR_PICKUP') {
+      try {
+        await appendReadyTimeline(db, {
+          orderCorePk: existing.order_id as number,
+          previousStatus: currentStatus,
+          actionSource,
+          preparedAt: (updates.prepared_at as string) ?? now,
+          prepReadyByAt: (existing as { prep_ready_by_at?: string | null }).prep_ready_by_at ?? null,
+        });
+      } catch (tlErr) {
+        console.warn('[food-orders PATCH] ready timeline failed:', tlErr);
+      }
     }
 
     try {
@@ -173,7 +296,12 @@ export async function PATCH(
         to_status: newStatus,
         action_source: actionSource,
         actor_type: 'merchant',
-        metadata: rejectedReason ? { rejected_reason: rejectedReason } : {},
+        actor_label: actionLabels.actor_label,
+        metadata: {
+          ...(rejectedReason ? { rejected_reason: rejectedReason } : {}),
+          accept_mode: newStatus === 'ACCEPTED' ? actionMode : undefined,
+          cancel_mode: newStatus === 'CANCELLED' ? actionMode : undefined,
+        },
       });
     } catch (logErr) {
       console.warn('[food-orders PATCH] action log failed (run migration 0146?):', logErr);

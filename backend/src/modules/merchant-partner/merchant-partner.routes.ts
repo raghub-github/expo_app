@@ -6662,7 +6662,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           (settingsRows[0] as
             | { show_floating_orders?: boolean; platform_delivery?: boolean; self_delivery?: boolean }
             | undefined) ?? null;
-        const showFloating = row?.show_floating_orders === true;
+        const showFloating = row?.show_floating_orders !== false;
         const platformDelivery = row?.platform_delivery !== false;
         const selfDelivery = row?.self_delivery === true;
 
@@ -6726,7 +6726,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               }
             | undefined;
 
-          const oldShowFloating = existing?.show_floating_orders === true;
+          const oldShowFloating =
+            existing == null ? true : existing.show_floating_orders !== false;
           const oldPlatform = existing?.platform_delivery !== false;
           const oldSelf = existing?.self_delivery === true;
 
@@ -6780,6 +6781,33 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             platform_delivery: nextPlatform,
             self_delivery: nextSelf,
           });
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/order-acceptance-settings — alert sound + acceptance window. */
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/stores/:storeId/order-acceptance-settings",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const { loadMerchantOrderAcceptanceSettings } = await import(
+            "../../lib/merchant-order-acceptance-settings.js"
+          );
+          const settings = await loadMerchantOrderAcceptanceSettings(sql, storeId);
+          return reply.send({ settings });
         }
       );
 
@@ -6844,10 +6872,68 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
+      /** GET /merchant-partner/stores/:storeId/food-orders/:orderId/timeline */
+      protectedApp.get<{ Params: { storeId: string; orderId: string } }>(
+        "/stores/:storeId/food-orders/:orderId/timeline",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          const ordersFoodId = parseInt(req.params.orderId, 10);
+          if (!Number.isInteger(storeId) || storeId < 1 || !Number.isFinite(ordersFoodId)) {
+            return reply.code(400).send({ error: "invalid_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const { loadMerchantFoodOrderTimeline } = await import("./merchant-food-orders.service.js");
+          const timeline = await loadMerchantFoodOrderTimeline(sql, storeId, ordersFoodId);
+          return reply.send({ timeline });
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/food-orders/:orderId/riders-log */
+      protectedApp.get<{ Params: { storeId: string; orderId: string } }>(
+        "/stores/:storeId/food-orders/:orderId/riders-log",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          const ordersFoodId = parseInt(req.params.orderId, 10);
+          if (!Number.isInteger(storeId) || storeId < 1 || !Number.isFinite(ordersFoodId)) {
+            return reply.code(400).send({ error: "invalid_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const { loadMerchantFoodOrderRidersLog } = await import("./merchant-food-orders.service.js");
+          const riders = await loadMerchantFoodOrderRidersLog(sql, storeId, ordersFoodId);
+          return reply.send({ riders });
+        }
+      );
+
       /** PATCH /merchant-partner/stores/:storeId/food-orders/:orderId — status transition (Partner Site rules). */
       protectedApp.patch<{
         Params: { storeId: string; orderId: string };
-        Body: { status?: string; rejected_reason?: string };
+        Body: {
+          status?: string;
+          rejected_reason?: string;
+          action_source?: string;
+          accept_mode?: string;
+          cancel_mode?: string;
+        };
       }>(
         "/stores/:storeId/food-orders/:orderId",
         async (req, reply) => {
@@ -6870,12 +6956,26 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
 
           const { patchMerchantFoodOrderStatus } = await import("./merchant-food-orders.service.js");
           try {
+            const { normalizeActionMode, normalizeActionSource } = await import(
+              "../../lib/merchant-order-food-action-labels.js"
+            );
+            const actionMode = normalizeActionMode(
+              newStatus === "ACCEPTED"
+                ? req.body?.accept_mode
+                : newStatus === "CANCELLED"
+                  ? req.body?.cancel_mode
+                  : req.body?.cancel_mode ?? req.body?.accept_mode
+            );
             const order = await patchMerchantFoodOrderStatus(
               sql,
               storeId,
               ordersFoodId,
               newStatus,
-              req.body?.rejected_reason ?? null
+              req.body?.rejected_reason ?? null,
+              {
+                actionSource: normalizeActionSource(req.body?.action_source ?? "app"),
+                actionMode,
+              }
             );
             return reply.send({ order });
           } catch (e) {

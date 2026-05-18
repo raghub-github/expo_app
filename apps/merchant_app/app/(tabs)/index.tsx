@@ -3,7 +3,7 @@
  * All Orders with New/Active tabs, recent orders. Main area only; header/status card untouched.
  */
 
-import { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import {
   View,
   Text,
@@ -25,11 +25,13 @@ import {
   FONT_LABEL,
   TAB_BAR_SCROLL_CONTENT_PADDING,
 } from "@/constants/theme";
-import { SwipeableOrderCard } from "@/components/SwipeableOrderCard";
 import { useStoreStatus } from "@/context/StoreStatusContext";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
-import { useOrders, type OrderStage } from "@/hooks/useOrders";
+import { useOrders, type OrderRecord } from "@/hooks/useOrders";
+import { LiveOrderCard } from "@/components/order/LiveOrderCard";
+import { RejectOrderSheet } from "@/components/order/RejectOrderSheet";
+import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
 import { fetchGrowthSummary } from "@/services/growthApi";
 import { fetchWalletSummary } from "@/services/walletApi";
 import { getActiveOrdersCount } from "@/services/storeSettingsApi";
@@ -42,23 +44,6 @@ type OrderFilterTab = "New" | "Active";
 
 function formatCurrency(n: number): string {
   return `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
-}
-
-function cardStatusForStage(stage: OrderStage): "Preparing" | "Pending" | "Completed" {
-  if (stage === "created") return "Pending";
-  if (stage === "delivered" || stage === "rejected" || stage === "rto") return "Completed";
-  return "Preparing";
-}
-
-function relativeTime(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime();
-  if (!Number.isFinite(ms) || ms < 0) return "";
-  const mins = Math.floor(ms / 60000);
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins} min ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs} hr ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
 }
 
 // GatiMitra brand only: white/surface cards + primary green or navy for accent
@@ -95,9 +80,6 @@ function KpiCard({
     </Pressable>
   );
 }
-
-const TOAST_DURATION_MS = 2500;
-const TOAST_MSG = "Removed. See Orders.";
 
 function formatTodayDate(): string {
   const d = new Date();
@@ -144,7 +126,7 @@ export default function DashboardScreen() {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
-  const { orders, refetch: refetchOrders } = useOrders(12000);
+  const { orders, refetch: refetchOrders, transitionOrder } = useOrders(12000);
   const {
     isOnline,
     manualCloseUntil,
@@ -155,11 +137,10 @@ export default function DashboardScreen() {
     statusReason,
     refresh,
   } = useStoreStatus();
-  const [dismissedRecentIds, setDismissedRecentIds] = useState<Set<string>>(new Set());
-  const [toastVisible, setToastVisible] = useState(false);
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const [refreshing, setRefreshing] = useState(false);
+  const [nowMs, setNowMs] = useState(Date.now());
+  const [rejectTarget, setRejectTarget] = useState<OrderRecord | null>(null);
+  const [rejectLoading, setRejectLoading] = useState(false);
 
   const [orderTab, setOrderTab] = useState<OrderFilterTab>("New");
   const [todayEarning, setTodayEarning] = useState(0);
@@ -188,6 +169,11 @@ export default function DashboardScreen() {
     void loadDashboardStats();
   }, [loadDashboardStats]);
 
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       void refresh();
@@ -215,36 +201,67 @@ export default function DashboardScreen() {
   const showClosedBanner = !isOnline && hasManualOrScheduledClosure;
 
   const recentOrders = useMemo(() => {
-    let list = orders
-      .filter((o) => !dismissedRecentIds.has(o.id))
-      .map((o) => ({
-        id: o.id,
-        displayId: `#${o.formattedOrderId ?? o.orderNumber}`,
-        items: o.lineItems.map((li) => `${li.qty}× ${li.name}`).join(", ") || "Order items",
-        amount: formatCurrency(o.total),
-        status: cardStatusForStage(o.status),
-        time: relativeTime(o.createdAt),
-        stage: o.status,
-      }));
+    let list = orders;
     if (orderTab === "New") {
-      list = list.filter((o) => o.stage === "created");
+      list = list.filter((o) => o.status === "created");
     } else {
-      list = list.filter((o) => o.stage === "preparing" || o.stage === "ready" || o.stage === "picked_up");
+      list = list.filter(
+        (o) =>
+          o.status === "preparing" ||
+          o.status === "ready" ||
+          o.status === "picked_up"
+      );
     }
     return list.slice(0, MAX_RECENT_ORDERS);
-  }, [dismissedRecentIds, orderTab, orders]);
+  }, [orderTab, orders]);
 
-  const handleDismissRecent = (id: string) => {
-    setDismissedRecentIds((prev) => new Set(prev).add(id));
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToastVisible(true);
-    toastTimer.current = setTimeout(() => {
-      setToastVisible(false);
-      toastTimer.current = null;
-    }, TOAST_DURATION_MS);
-  };
+  const handleAccept = useCallback(
+    (order: OrderRecord) => {
+      if (order.status === "created") {
+        transitionOrder(order.id, "preparing");
+      }
+    },
+    [transitionOrder]
+  );
 
-  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
+  const handleReject = useCallback((order: OrderRecord) => {
+    if (order.status === "created") setRejectTarget(order);
+  }, []);
+
+  const confirmReject = useCallback(
+    async (reason: MerchantCancellationReason) => {
+      if (!rejectTarget) return;
+      setRejectLoading(true);
+      try {
+        await transitionOrder(rejectTarget.id, "rejected", { rejectedReason: reason });
+        setRejectTarget(null);
+      } catch {
+        /* useOrders surfaces error */
+      } finally {
+        setRejectLoading(false);
+      }
+    },
+    [rejectTarget, transitionOrder]
+  );
+
+  const handleAdvance = useCallback(
+    (order: OrderRecord) => {
+      switch (order.status) {
+        case "preparing":
+          transitionOrder(order.id, "ready");
+          break;
+        case "ready":
+          transitionOrder(order.id, "picked_up");
+          break;
+        case "picked_up":
+          transitionOrder(order.id, "delivered");
+          break;
+        default:
+          break;
+      }
+    },
+    [transitionOrder]
+  );
 
   const scrollBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING;
 
@@ -363,26 +380,32 @@ export default function DashboardScreen() {
             </View>
           ) : (
             recentOrders.map((order) => (
-              <SwipeableOrderCard
+              <LiveOrderCard
                 key={order.id}
-                id={order.displayId}
-                items={order.items}
-                amount={order.amount}
-                status={order.status}
-                time={order.time}
-                onPress={() => router.push(`/order/${order.id}`)}
-                onDismiss={() => handleDismissRecent(order.id)}
+                order={order}
+                nowMs={nowMs}
+                onAccept={() => handleAccept(order)}
+                onReject={() => handleReject(order)}
+                onAdvance={() => handleAdvance(order)}
+                onViewDetail={() => router.push(`/order/${order.id}`)}
               />
             ))
           )}
         </View>
       </View>
     </ScrollView>
-    {toastVisible && (
-      <View style={[styles.toast, { bottom: TAB_BAR_SCROLL_CONTENT_PADDING + 8 }]}>
-        <Text style={styles.toastText}>{TOAST_MSG}</Text>
-      </View>
-    )}
+      <RejectOrderSheet
+        visible={!!rejectTarget}
+        formattedOrderId={rejectTarget?.formattedOrderId}
+        fallbackOrderId={
+          rejectTarget
+            ? Number(rejectTarget.id) || rejectTarget.ordersCoreId
+            : 0
+        }
+        loading={rejectLoading}
+        onClose={() => !rejectLoading && setRejectTarget(null)}
+        onConfirm={confirmReject}
+      />
     </View>
   );
 }
@@ -488,7 +511,7 @@ const styles = StyleSheet.create({
   tabTextActive: {
     color: "#fff",
   },
-  orderList: {},
+  orderList: { gap: 12 },
   emptyOrders: {
     paddingVertical: 24,
     alignItems: "center",
@@ -500,21 +523,5 @@ const styles = StyleSheet.create({
   cardPressed: {
     opacity: 0.95,
     transform: [{ scale: 0.98 }],
-  },
-  toast: {
-    position: "absolute",
-    left: H_PADDING,
-    right: H_PADDING,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    backgroundColor: GatiMitraMerchant.textPrimary,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  toastText: {
-    fontSize: FONT_LABEL,
-    fontWeight: "500",
-    color: "#FFFFFF",
   },
 });

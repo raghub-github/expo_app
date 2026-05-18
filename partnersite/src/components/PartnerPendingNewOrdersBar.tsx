@@ -8,7 +8,7 @@ import { fetchStoreById } from '@/lib/database';
 import { DEMO_RESTAURANT_ID } from '@/lib/constants';
 import { createClient } from '@/lib/supabase/client';
 
-const POLL_MS = 15_000;
+const POLL_MS = 12_000;
 
 const INVALID_STORE_PLACEHOLDERS = new Set([
   '',
@@ -32,17 +32,34 @@ function resolveStoreIdFromEnv(restaurantIdProp?: string): string {
   return DEMO_RESTAURANT_ID;
 }
 
+function ordersHref(pathname: string, storeId: string): string {
+  const q = `filter=NEW_ORDERS&store_id=${encodeURIComponent(storeId)}`;
+  if (pathname.startsWith('/mx')) return `/mx/food-orders?${q}`;
+  return `/partners/orders?${q}`;
+}
+
+function isOnNewOrdersSection(pathname: string, filterParam: string | null): boolean {
+  const onOrdersPage =
+    pathname.startsWith('/mx/food-orders') || pathname.startsWith('/partners/orders');
+  if (!onOrdersPage) return false;
+  const f = (filterParam || '').toUpperCase();
+  return f === 'NEW_ORDERS' || f === 'CREATED' || f === 'NEW';
+}
+
 /**
- * Zomato-style bottom bar when there are unaccepted orders (New orders pipeline).
- * Hidden only while user is already on Food orders with filter NEW_ORDERS.
+ * Global floating badge when pending orders exist, unless user is on New orders list
+ * or has disabled "Show floating orders" in settings.
  */
 function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: string }) {
   const pathname = usePathname() || '';
   const searchParams = useSearchParams();
+  const filterParam = searchParams?.get('filter') ?? null;
+  const onNewOrdersList = isOnNewOrdersSection(pathname, filterParam);
+
   const [storeId, setStoreId] = useState<string | null>(null);
   const [internalId, setInternalId] = useState<number | null>(null);
   const [pending, setPending] = useState<number>(0);
-  const [showFloatingOrders, setShowFloatingOrders] = useState<boolean>(true);
+  const [showFloatingOrders, setShowFloatingOrders] = useState(true);
 
   useEffect(() => {
     setStoreId(resolveStoreIdFromEnv(restaurantId));
@@ -56,21 +73,7 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
     })();
   }, [storeId]);
 
-  useEffect(() => {
-    const sid = resolveStoreIdFromEnv(restaurantId);
-    if (!sid) return;
-    void (async () => {
-      try {
-        const res = await fetch(`/api/merchant/store-settings?storeId=${encodeURIComponent(sid)}`, { credentials: 'include' });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok) setShowFloatingOrders(data.show_floating_orders !== false);
-      } catch {
-        /* ignore */
-      }
-    })();
-  }, [restaurantId]);
-
-  const load = useCallback(async () => {
+  const loadPending = useCallback(async () => {
     const sid = resolveStoreIdFromEnv(restaurantId);
     if (!sid) return;
     try {
@@ -84,24 +87,56 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
     }
   }, [restaurantId]);
 
+  const loadFloatingSetting = useCallback(async () => {
+    const sid = resolveStoreIdFromEnv(restaurantId);
+    if (!sid) return;
+    try {
+      const res = await fetch(`/api/merchant/store-settings?storeId=${encodeURIComponent(sid)}`, {
+        credentials: 'include',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setShowFloatingOrders(data.show_floating_orders !== false);
+      } else {
+        setShowFloatingOrders(true);
+      }
+    } catch {
+      setShowFloatingOrders(true);
+    }
+  }, [restaurantId]);
+
   useEffect(() => {
-    load();
-    const t = window.setInterval(load, POLL_MS);
+    void loadPending();
+    const t = window.setInterval(() => void loadPending(), POLL_MS);
     return () => window.clearInterval(t);
-  }, [load]);
+  }, [loadPending]);
+
+  useEffect(() => {
+    void loadFloatingSetting();
+  }, [loadFloatingSetting]);
 
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
-      if (e.key === 'selectedStoreId') void load();
+      if (e.key === 'selectedStoreId') void loadPending();
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
-  }, [load]);
+  }, [loadPending]);
+
+  useEffect(() => {
+    const onRefresh = () => void loadPending();
+    window.addEventListener('partner-pending-orders-refresh', onRefresh);
+    return () => window.removeEventListener('partner-pending-orders-refresh', onRefresh);
+  }, [loadPending]);
+
+  useEffect(() => {
+    const onSettings = () => void loadFloatingSetting();
+    window.addEventListener('partner-store-settings-changed', onSettings);
+    return () => window.removeEventListener('partner-store-settings-changed', onSettings);
+  }, [loadFloatingSetting]);
 
   useEffect(() => {
     if (!internalId) return;
-    const sid = resolveStoreIdFromEnv(restaurantId);
-    if (!sid) return;
     const supabase = createClient();
     const ch = supabase
       .channel(`pending_new_badge:${internalId}`)
@@ -114,7 +149,7 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
           filter: `merchant_store_id=eq.${internalId}`,
         },
         () => {
-          void load();
+          void loadPending();
         }
       )
       .on(
@@ -126,51 +161,44 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
           filter: `merchant_store_id=eq.${internalId}`,
         },
         () => {
-          void load();
+          void loadPending();
         }
       )
       .subscribe();
     return () => {
       ch.unsubscribe();
     };
-  }, [internalId, restaurantId, load]);
+  }, [internalId, loadPending]);
 
-  const isFoodOrders =
-    pathname.includes('/partners/orders') ||
-    pathname.includes('/partners/food-orders') ||
-    pathname.includes('/mx/food-orders');
-  const filter = (searchParams?.get('filter') || '').toUpperCase();
-  /** Already viewing the New orders list — hide floating strip to avoid duplicate UI */
-  const onNewOrdersList = isFoodOrders && filter === 'NEW_ORDERS';
-
-  if (!showFloatingOrders) return null;
-  if (onNewOrdersList || pending <= 0) return null;
+  if (!showFloatingOrders || onNewOrdersList || pending <= 0) return null;
 
   const sid = storeId || resolveStoreIdFromEnv(restaurantId);
   if (!sid) return null;
 
-  const label = pending === 1 ? 'You have 1 new order' : `You have ${pending} new orders`;
+  const label =
+    pending === 1 ? '1 new order — tap to accept' : `${pending} new orders — tap to accept`;
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-4 z-[160] flex justify-center px-3">
+    <div className="pointer-events-none fixed inset-x-0 bottom-4 z-[200] flex justify-center px-3 sm:bottom-5">
       <Link
-        href={`/partners/orders?filter=NEW_ORDERS&store_id=${encodeURIComponent(sid)}`}
-        className="pointer-events-auto flex max-w-lg items-center gap-3 rounded-lg bg-emerald-600 px-4 py-3 text-white shadow-lg shadow-emerald-900/25 transition hover:bg-emerald-700"
+        href={ordersHref(pathname, sid)}
+        className="pointer-events-auto flex max-w-lg items-center gap-3 rounded-full bg-emerald-600 px-5 py-3.5 text-white shadow-xl shadow-emerald-900/30 ring-2 ring-white/20 transition hover:bg-emerald-700 hover:scale-[1.02] active:scale-[0.98]"
+        aria-label={label}
       >
-        <ChevronUp className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
-        <span className="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold">
-          <span className="inline-flex h-7 min-w-[1.75rem] items-center justify-center rounded-full bg-white/20 px-2 text-xs font-bold tabular-nums">
-            {pending}
+        <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white text-emerald-700">
+          <Bell className="h-5 w-5" aria-hidden />
+          <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white tabular-nums">
+            {pending > 99 ? '99+' : pending}
           </span>
-          <span className="truncate">{label}</span>
         </span>
-        <Bell className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
+        <span className="min-w-0 flex-1 text-sm font-bold leading-tight sm:text-base">{label}</span>
+        <ChevronUp className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
       </Link>
     </div>
   );
 }
 
-/** Use in layout with Suspense (useSearchParams). */
+/** Use in layout with Suspense (needs useSearchParams). */
 export function PartnerPendingNewOrdersBar(props: { restaurantId?: string }) {
   return (
     <Suspense fallback={null}>

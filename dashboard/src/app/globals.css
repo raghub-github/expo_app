@@ -136,3 +136,16 @@ select option {
     transform: translateX(0);
   }
 }
+
+@keyframes store-closed-marquee {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-store-closed-marquee {
+  animation: store-closed-marquee 28s linear infinite;
+}

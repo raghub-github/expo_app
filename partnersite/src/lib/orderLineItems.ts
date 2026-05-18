@@ -47,6 +47,33 @@ export function extractItemsArray(rawItems: unknown): unknown[] {
   return [];
 }
 
+function itemSnapshot(row: Record<string, unknown>): Record<string, unknown> | null {
+  const snap = row.item_snapshot ?? row.itemSnapshot;
+  return snap && typeof snap === 'object' ? (snap as Record<string, unknown>) : null;
+}
+
+/** True when JSON items lack real names (placeholders like "Item 1") — prefer orders_core_items. */
+export function orderRawItemsMissingDisplayNames(rawItems: unknown): boolean {
+  const arr = extractItemsArray(rawItems);
+  if (arr.length === 0) return true;
+  return arr.every((it, idx) => {
+    const row = (it && typeof it === 'object' ? it : {}) as Record<string, unknown>;
+    const snap = itemSnapshot(row);
+    const n = String(
+      row.name ??
+        row.item_name ??
+        row.title ??
+        row.product_name ??
+        snap?.name ??
+        snap?.item_name ??
+        snap?.title ??
+        ''
+    ).trim();
+    if (!n) return true;
+    return /^item(\s*\d+)?$/i.test(n) || n === `Item ${idx + 1}`;
+  });
+}
+
 export function normalizeOrderItems(rawItems: unknown): NormalizedOrderLineItem[] {
   const arr = extractItemsArray(rawItems);
   if (!Array.isArray(arr) || arr.length === 0) return [];
@@ -55,18 +82,24 @@ export function normalizeOrderItems(rawItems: unknown): NormalizedOrderLineItem[
     const qty = Number(row.quantity) || 1;
     const unitPrice = Number(row.price ?? row.unit_price ?? row.base_price ?? 0);
     const total = Number(row.total ?? row.total_price ?? unitPrice * qty);
-    const baseName = String(row.name ?? row.item_name ?? `Item ${idx + 1}`).trim();
-    const variant = String(row.variant_name ?? row.variantName ?? '').trim();
+    const snap = itemSnapshot(row);
+    const baseName = String(
+      row.name ??
+        row.item_name ??
+        row.title ??
+        row.product_name ??
+        snap?.name ??
+        snap?.item_name ??
+        snap?.title ??
+        `Item ${idx + 1}`
+    ).trim();
+    const variant = String(
+      row.variant_name ?? row.variantName ?? snap?.variant_name ?? ''
+    ).trim();
     const name = variant ? `${baseName} (${variant})` : baseName;
-    const menuItemIdRaw = row.menu_item_id ?? row.menuItemId;
+    const menuItemIdRaw = row.menu_item_id ?? row.menuItemId ?? snap?.menu_item_id;
     const menuItemId =
       menuItemIdRaw != null && menuItemIdRaw !== '' ? Number(menuItemIdRaw) : null;
-    const snap =
-      row.item_snapshot && typeof row.item_snapshot === 'object'
-        ? (row.item_snapshot as Record<string, unknown>)
-        : row.itemSnapshot && typeof row.itemSnapshot === 'object'
-          ? (row.itemSnapshot as Record<string, unknown>)
-          : null;
     let customizations: string[] | undefined;
     if (Array.isArray(row.customizations)) {
       customizations = (row.customizations as unknown[]).map((c) => String(c)).filter(Boolean);

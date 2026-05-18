@@ -11,7 +11,7 @@ type StoreSettingsState = {
 };
 
 const DEFAULT_STATE: StoreSettingsState = {
-  show_floating_orders: false,
+  show_floating_orders: true,
   platform_delivery: true,
   self_delivery: false,
 };
@@ -54,7 +54,7 @@ export function StoreSettingsProvider({ children }: { children: React.ReactNode 
         selfDelivery = false;
       }
       setSettings({
-        show_floating_orders: s.show_floating_orders === true,
+        show_floating_orders: s.show_floating_orders !== false,
         platform_delivery: platformDelivery,
         self_delivery: selfDelivery,
       });
@@ -83,7 +83,7 @@ export function StoreSettingsProvider({ children }: { children: React.ReactNode 
         };
         const updated = await updateStoreSettings(selectedStore.id, body, token);
         setSettings({
-          show_floating_orders: updated.show_floating_orders === true,
+          show_floating_orders: updated.show_floating_orders !== false,
           platform_delivery: updated.platform_delivery,
           self_delivery: updated.self_delivery,
         });

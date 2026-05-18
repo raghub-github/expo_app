@@ -22,6 +22,10 @@ export interface OrdersFoodRow {
   restaurant_name: string | null;
   restaurant_phone: string | null;
   preparation_time_minutes: number | null;
+  prep_ready_by_at?: string | null;
+  prep_time_source?: string | null;
+  prep_delay_minutes?: number | null;
+  prepared_late_minutes?: number | null;
   food_items_count: number | null;
   display_item_count?: number | null;
   food_items_total_value: string | number | null;
@@ -95,13 +99,19 @@ export interface OrdersFoodRow {
   accepted_at?: string | null;
   preparing_at?: string | null;
   prepared_at?: string | null;
+  handed_over_to_rider_at?: string | null;
+  rider_picked_up_at?: string | null;
   dispatched_at?: string | null;
   delivered_at?: string | null;
   cancelled_at?: string | null;
   rejected_reason?: string | null;
+  accepted_by_label?: string | null;
+  cancelled_by_label?: string | null;
   cancelled_by?: string | null;
   cancelled_by_type?: string | null;
   cancellation_details?: any; // JSONB
+  pickup_otp?: string | null;
+  rto_otp?: string | null;
   created_at: string;
   updated_at: string;
   /** True when this pipeline row is backed only by orders_core (e.g. parcel / before kitchen row exists). */

@@ -26,8 +26,12 @@ import { getEnv } from "../../config/env.js";
 import { getStoreByStoreId, getStoreByIdForOrder } from "../merchants/merchant.service.js";
 import { verifyRazorpayPaymentDetails, verifyRazorpaySignature } from "../../services/payment/razorpayService.js";
 import { computeBillForOrder } from "../billing/billing.service.js";
-import { normalizeOrderItems } from "./orderNormalizer.js";
+import { normalizeOrderItems, type NormalizedOrderItem } from "./orderNormalizer.js";
 import { getRoute } from "../distance/distance.service.js";
+import { buildFoodOrderItemsPayload } from "../../lib/food-order-payload.js";
+import { enrichFoodOrderAfterPlacement } from "../../lib/food-order-enrichment.js";
+import { resolveItemsWithFoodTypes } from "../../lib/food-order-veg.js";
+import { recordPlacementTimelines } from "../../lib/order-placement-timeline.js";
 
 const EM_DASH = "\u2014";
 
@@ -420,7 +424,168 @@ export type PendingOrderInput = {
   subscriptionOptIn?: boolean;
   /** 'delivery' (default) or 'self_pickup'. Self-pickup waives delivery fee in billing. */
   deliveryType?: "delivery" | "self_pickup";
+  checkoutMetadata?: Record<string, unknown> | null;
 };
+
+type PendingRowLike = {
+  customerId: number;
+  merchantStoreId: number;
+  merchantParentId: number | null;
+  itemTotal: string;
+  addonTotal: string | null;
+  grandTotal: string;
+  tipAmount: string | null;
+  donationAmount?: string | null;
+  currency: string | null;
+  deliveryAddress: string | null;
+  pickupAddressNormalized: string | null;
+  pickupLat: string | null;
+  pickupLon: string | null;
+  dropLat: string | null;
+  dropLon: string | null;
+  distanceKm: string | null;
+  billingSnapshot: unknown;
+  billingRulesetVersion: number | null;
+  deliveryType: string | null;
+  checkoutMetadata?: unknown;
+  pendingId?: string;
+  /** Drizzle `createdAt` on pending_orders (= checkout / bill ready). */
+  createdAt?: Date;
+  pendingCreatedAt?: Date;
+  paymentStartedAt?: Date | null;
+  razorpayOrderId?: string | null;
+  razorpayPaymentId?: string | null;
+};
+
+async function persistPlacedFoodOrderInTx(
+  tx: PostgresJsDatabase<Record<string, unknown>>,
+  args: {
+    pending: PendingRowLike;
+    orderIdText: string;
+    items: NormalizedOrderItem[];
+    paymentMethodEnum: "upi" | "card" | "wallet" | "online" | "cod" | "other";
+    pickupRaw: string;
+    dropRaw: string;
+    pickupLat: string;
+    pickupLon: string;
+    dropLat: string;
+    dropLon: string;
+  }
+): Promise<number> {
+  const { pending, orderIdText, items, paymentMethodEnum, pickupRaw, dropRaw, pickupLat, pickupLon, dropLat, dropLon } =
+    args;
+  const itemsWithVeg = await resolveItemsWithFoodTypes(tx, pending.merchantStoreId, items);
+  const itemsPayload = buildFoodOrderItemsPayload(itemsWithVeg);
+  const checkoutMeta =
+    pending.checkoutMetadata != null && typeof pending.checkoutMetadata === "object"
+      ? (pending.checkoutMetadata as Record<string, unknown>)
+      : null;
+
+  const [insertedCore] = await tx
+    .insert(ordersCore)
+    .values({
+      orderId: orderIdText,
+      orderType: "food" as const,
+      orderSource: "internal" as const,
+      customerId: pending.customerId,
+      merchantStoreId: pending.merchantStoreId,
+      merchantParentId: pending.merchantParentId ?? undefined,
+      status: "assigned" as const,
+      currentStatus: "PLACED",
+      itemTotal: pending.itemTotal,
+      addonTotal: pending.addonTotal ?? "0",
+      grandTotal: pending.grandTotal,
+      tipAmount: pending.tipAmount ?? "0",
+      donationAmount: pending.donationAmount ?? "0",
+      placedAt: new Date(),
+      pickupAddressRaw: pickupRaw || " ",
+      pickupLat,
+      pickupLon,
+      dropAddressRaw: dropRaw || " ",
+      dropLat,
+      dropLon,
+      deliveryAddress: sanitizeStringForDb(pending.deliveryAddress ?? undefined) ?? undefined,
+      distanceKm: pending.distanceKm ?? undefined,
+      paymentStatus: "completed" as const,
+      paymentMethod: paymentMethodEnum,
+      deliveryType: pending.deliveryType ?? "delivery",
+      billingSnapshot: (pending.billingSnapshot as Record<string, unknown> | null) ?? undefined,
+      billingRulesetVersion: pending.billingRulesetVersion ?? undefined,
+      items: itemsPayload as unknown as Record<string, unknown>,
+      checkoutMetadata: checkoutMeta ?? undefined,
+    })
+    .returning({ id: ordersCore.id, formattedOrderId: ordersCore.formattedOrderId });
+
+  const corePk = insertedCore?.id;
+  if (corePk == null) {
+    throw new Error("orders_core insert did not return id");
+  }
+
+  const itemInserts = itemsWithVeg.map((i, idx) => {
+    const addonPerUnit = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity, 0);
+    const lineTotal = i.basePrice * i.quantity + addonPerUnit * i.quantity;
+    const linePayload = itemsPayload[idx];
+    return {
+      orderId: orderIdText,
+      menuItemId: i.menuItemId,
+      itemName: i.itemName,
+      categoryName: null,
+      vegNonveg: linePayload?.veg_non_veg ?? null,
+      variantId: i.variantId != null ? i.variantId : undefined,
+      variantName: sanitizeOptional(i.variantName ?? "") ?? undefined,
+      quantity: i.quantity,
+      basePrice: sanitizeNumeric(i.basePrice),
+      addonPrice: sanitizeNumeric(addonPerUnit),
+      totalPrice: sanitizeNumeric(lineTotal),
+      itemSnapshot: i.itemSnapshot ?? undefined,
+    };
+  });
+
+  const insertedItems = await tx.insert(ordersCoreItems).values(itemInserts).returning({ id: ordersCoreItems.id });
+  for (let idx = 0; idx < itemsWithVeg.length; idx++) {
+    const row = itemsWithVeg[idx]!;
+    const addons = row.addons;
+    if (addons.length === 0) continue;
+    const orderItemId = insertedItems[idx]?.id;
+    if (orderItemId == null) continue;
+    await tx.insert(ordersCoreItemAddons).values(
+      addons.map((ad) => ({
+        orderItemId,
+        addonId: ad.addonId > 0 ? ad.addonId : undefined,
+        addonName: ad.addonName || undefined,
+        addonPrice: sanitizeNumeric(ad.addonPrice),
+        quantity: ad.quantity,
+      }))
+    );
+  }
+
+  await enrichFoodOrderAfterPlacement(tx, {
+    ordersCorePk: corePk,
+    orderIdText,
+    customerId: pending.customerId,
+    merchantStoreId: pending.merchantStoreId,
+    merchantParentId: pending.merchantParentId,
+    items: itemsWithVeg,
+    grandTotal: pending.grandTotal,
+    checkoutMetadata: checkoutMeta,
+    formattedOrderId: insertedCore.formattedOrderId ?? null,
+  });
+
+  const finalizedAt = new Date();
+  await recordPlacementTimelines(tx, {
+    orderCorePk: corePk,
+    customerId: pending.customerId,
+    pendingId: pending.pendingId ?? "unknown",
+    pendingCreatedAt: pending.pendingCreatedAt ?? pending.createdAt ?? finalizedAt,
+    paymentStartedAt: pending.paymentStartedAt ?? null,
+    finalizedAt,
+    razorpayOrderId: pending.razorpayOrderId ?? null,
+    razorpayPaymentId: pending.razorpayPaymentId ?? null,
+    orderIdText,
+  });
+
+  return corePk;
+}
 
 export type CreatePendingResult =
   | { ok: true; pendingId: string; amount: number; currency: string }
@@ -592,6 +757,7 @@ export async function createPendingOrder(
     billingSnapshot: billingSnapshot ?? undefined,
     billingRulesetVersion: billingRulesetVersion ?? undefined,
     couponCode: couponStored ?? undefined,
+    checkoutMetadata: input.checkoutMetadata ?? undefined,
     expiresAt,
   });
 
@@ -703,71 +869,44 @@ export async function finalizeOrder(
         throw new Error(`Failed to generate order_id: got ${JSON.stringify(seqResult)}`);
       }
 
-      await tx.insert(ordersCore).values({
-        orderId: orderIdText,
-        orderType: ORDER_TYPE_FOOD,
-        orderSource: ORDER_SOURCE_INTERNAL,
-        customerId: pending.customerId,
-        merchantStoreId: pending.merchantStoreId,
-        merchantParentId: pending.merchantParentId ?? undefined,
-        status: ORDER_STATUS_ASSIGNED,
-        currentStatus: "PLACED",
-        itemTotal: pending.itemTotal,
-        addonTotal: pending.addonTotal ?? "0",
-        grandTotal: pending.grandTotal,
-        tipAmount: pending.tipAmount ?? "0",
-        placedAt: new Date(),
-        pickupAddressRaw: pickupRaw || " ",
+      await persistPlacedFoodOrderInTx(tx as unknown as PostgresJsDatabase<Record<string, unknown>>, {
+        pending: {
+          customerId: pending.customerId,
+          merchantStoreId: pending.merchantStoreId,
+          merchantParentId: pending.merchantParentId,
+          itemTotal: pending.itemTotal,
+          addonTotal: pending.addonTotal,
+          grandTotal: pending.grandTotal,
+          tipAmount: pending.tipAmount,
+          donationAmount: pending.donationAmount,
+          currency: pending.currency,
+          deliveryAddress: pending.deliveryAddress,
+          pickupAddressNormalized: pending.pickupAddressNormalized,
+          pickupLat: pending.pickupLat,
+          pickupLon: pending.pickupLon,
+          dropLat: pending.dropLat,
+          dropLon: pending.dropLon,
+          distanceKm: pending.distanceKm,
+          billingSnapshot: pending.billingSnapshot,
+          billingRulesetVersion: pending.billingRulesetVersion,
+          deliveryType: pending.deliveryType,
+          checkoutMetadata: pending.checkoutMetadata,
+          pendingId: pending.pendingId,
+          createdAt: pending.createdAt,
+          paymentStartedAt: pending.paymentStartedAt,
+          razorpayOrderId: pending.razorpayOrderId ?? razorpayOrderId,
+          razorpayPaymentId,
+        },
+        orderIdText,
+        items,
+        paymentMethodEnum,
+        pickupRaw,
+        dropRaw,
         pickupLat,
         pickupLon,
-        dropAddressRaw: dropRaw || " ",
         dropLat,
         dropLon,
-        deliveryAddress: sanitizeStringForDb(pending.deliveryAddress ?? undefined) ?? undefined,
-        distanceKm: pending.distanceKm ?? undefined,
-        paymentStatus: PAYMENT_STATUS_COMPLETED,
-        paymentMethod: paymentMethodEnum,
-        deliveryType: pending.deliveryType ?? "delivery",
-        billingSnapshot: pending.billingSnapshot ?? undefined,
-        billingRulesetVersion: pending.billingRulesetVersion ?? undefined,
       });
-
-      const itemInserts = items.map((i) => {
-        const addonPerUnit = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity, 0);
-        const lineTotal = i.basePrice * i.quantity + addonPerUnit * i.quantity;
-        return {
-          orderId: orderIdText,
-          menuItemId: i.menuItemId,
-          itemName: i.itemName,
-          categoryName: null,
-          vegNonveg: null,
-          variantId: i.variantId != null ? i.variantId : undefined,
-          variantName: sanitizeOptional(i.variantName ?? "") ?? undefined,
-          quantity: i.quantity,
-          basePrice: sanitizeNumeric(i.basePrice),
-          addonPrice: sanitizeNumeric(addonPerUnit),
-          totalPrice: sanitizeNumeric(lineTotal),
-          itemSnapshot: i.itemSnapshot ?? undefined,
-        };
-      });
-
-      const insertedItems = await tx.insert(ordersCoreItems).values(itemInserts).returning({ id: ordersCoreItems.id });
-      for (let idx = 0; idx < items.length; idx++) {
-        const row = items[idx]!;
-        const addons = row.addons;
-        if (addons.length === 0) continue;
-        const orderItemId = insertedItems[idx]?.id;
-        if (orderItemId == null) continue;
-        await tx.insert(ordersCoreItemAddons).values(
-          addons.map((ad) => ({
-            orderItemId,
-            addonId: ad.addonId > 0 ? ad.addonId : undefined,
-            addonName: ad.addonName || undefined,
-            addonPrice: sanitizeNumeric(ad.addonPrice),
-            quantity: ad.quantity,
-          }))
-        );
-      }
 
       await tx.insert(ordersCorePayments).values({
         orderId: orderIdText,
@@ -1022,13 +1161,17 @@ export async function finalizePendingOrderFromWebhook(
         finalized_order_id: string | null;
         payment_state: string | null;
         delivery_type: string | null;
+        checkout_metadata: unknown;
+        donation_amount: string | null;
       }>(sql`
         SELECT id, pending_id, customer_id, merchant_store_id, merchant_parent_id,
                item_total, addon_total, grand_total, tip_amount, currency,
                items_snapshot, billing_snapshot, billing_ruleset_version,
                pickup_address_normalized, delivery_address,
                pickup_lat, pickup_lon, drop_lat, drop_lon, distance_km,
-               finalized_order_id, payment_state, delivery_type
+               finalized_order_id, payment_state, delivery_type,
+               checkout_metadata, donation_amount,
+               created_at, payment_started_at, razorpay_order_id, razorpay_payment_id
         FROM pending_orders
         WHERE razorpay_order_id = ${razorpayOrderId}
         FOR UPDATE
@@ -1060,6 +1203,12 @@ export async function finalizePendingOrderFromWebhook(
             finalized_order_id: string | null;
             payment_state: string | null;
             delivery_type: string | null;
+            checkout_metadata: unknown;
+            donation_amount: string | null;
+            created_at: Date | string;
+            payment_started_at: Date | string | null;
+            razorpay_order_id: string | null;
+            razorpay_payment_id: string | null;
           }
         | undefined;
 
@@ -1099,70 +1248,51 @@ export async function finalizePendingOrderFromWebhook(
         throw new Error(`order_id generation failed: ${JSON.stringify(seqResult)}`);
       }
 
-      await tx.insert(ordersCore).values({
-        orderId: orderIdText,
-        orderType: "food" as const,
-        orderSource: "internal" as const,
-        customerId: pending.customer_id,
-        merchantStoreId: pending.merchant_store_id,
-        merchantParentId: pending.merchant_parent_id ?? undefined,
-        status: "assigned" as const,
-        currentStatus: "PLACED",
-        itemTotal: pending.item_total,
-        addonTotal: pending.addon_total ?? "0",
-        grandTotal: pending.grand_total,
-        tipAmount: pending.tip_amount ?? "0",
-        placedAt: new Date(),
-        pickupAddressRaw: pickupRaw || " ",
+      await persistPlacedFoodOrderInTx(tx as unknown as PostgresJsDatabase<Record<string, unknown>>, {
+        pending: {
+          customerId: pending.customer_id,
+          merchantStoreId: pending.merchant_store_id,
+          merchantParentId: pending.merchant_parent_id,
+          itemTotal: pending.item_total,
+          addonTotal: pending.addon_total,
+          grandTotal: pending.grand_total,
+          tipAmount: pending.tip_amount,
+          donationAmount: pending.donation_amount,
+          currency: pending.currency,
+          deliveryAddress: pending.delivery_address,
+          pickupAddressNormalized: pending.pickup_address_normalized,
+          pickupLat: pending.pickup_lat,
+          pickupLon: pending.pickup_lon,
+          dropLat: pending.drop_lat,
+          dropLon: pending.drop_lon,
+          distanceKm: pending.distance_km,
+          billingSnapshot: pending.billing_snapshot,
+          billingRulesetVersion: pending.billing_ruleset_version,
+          deliveryType: pending.delivery_type,
+          checkoutMetadata: pending.checkout_metadata,
+          pendingId: pending.pending_id,
+          createdAt:
+            pending.created_at instanceof Date
+              ? pending.created_at
+              : new Date(pending.created_at),
+          paymentStartedAt: pending.payment_started_at
+            ? pending.payment_started_at instanceof Date
+              ? pending.payment_started_at
+              : new Date(pending.payment_started_at)
+            : null,
+          razorpayOrderId: pending.razorpay_order_id ?? razorpayOrderId,
+          razorpayPaymentId: pending.razorpay_payment_id ?? razorpayPaymentId,
+        },
+        orderIdText,
+        items,
+        paymentMethodEnum,
+        pickupRaw,
+        dropRaw,
         pickupLat,
         pickupLon,
-        dropAddressRaw: dropRaw || " ",
         dropLat,
         dropLon,
-        deliveryAddress: sanitizeStringForDb(pending.delivery_address ?? undefined) ?? undefined,
-        distanceKm: pending.distance_km ?? undefined,
-        paymentStatus: "completed" as const,
-        paymentMethod: paymentMethodEnum,
-        deliveryType: pending.delivery_type ?? "delivery",
-        billingSnapshot: (pending.billing_snapshot as Record<string, unknown> | null) ?? undefined,
-        billingRulesetVersion: pending.billing_ruleset_version ?? undefined,
       });
-
-      const itemInserts = items.map((i) => {
-        const addonPerUnit = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity, 0);
-        const lineTotal = i.basePrice * i.quantity + addonPerUnit * i.quantity;
-        return {
-          orderId: orderIdText,
-          menuItemId: i.menuItemId,
-          itemName: i.itemName,
-          categoryName: null as string | null,
-          vegNonveg: null as string | null,
-          variantId: i.variantId != null ? i.variantId : undefined,
-          variantName: sanitizeOptional(i.variantName ?? "") ?? undefined,
-          quantity: i.quantity,
-          basePrice: sanitizeNumeric(i.basePrice),
-          addonPrice: sanitizeNumeric(addonPerUnit),
-          totalPrice: sanitizeNumeric(lineTotal),
-          itemSnapshot: i.itemSnapshot ?? undefined,
-        };
-      });
-
-      const insertedItems = await tx.insert(ordersCoreItems).values(itemInserts).returning({ id: ordersCoreItems.id });
-      for (let idx = 0; idx < items.length; idx++) {
-        const addons = items[idx]!.addons;
-        if (addons.length === 0) continue;
-        const orderItemId = insertedItems[idx]?.id;
-        if (orderItemId == null) continue;
-        await tx.insert(ordersCoreItemAddons).values(
-          addons.map((ad) => ({
-            orderItemId,
-            addonId: ad.addonId > 0 ? ad.addonId : undefined,
-            addonName: ad.addonName || undefined,
-            addonPrice: sanitizeNumeric(ad.addonPrice),
-            quantity: ad.quantity,
-          }))
-        );
-      }
 
       await tx.insert(ordersCorePayments).values({
         orderId: orderIdText,

@@ -178,6 +178,7 @@ export async function merchantRoutes(app: FastifyInstance) {
           200: z.object({
             item: z.object({
               id: z.string(),
+              menuItemId: z.number().optional(),
               name: z.string(),
               description: z.string().nullable(),
               price: z.number(),

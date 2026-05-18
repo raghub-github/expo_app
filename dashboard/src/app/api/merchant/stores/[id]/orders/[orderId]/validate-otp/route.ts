@@ -4,6 +4,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/server";
 import { ensureMerchantStoreDashboardAccess } from "@/lib/merchant-food-orders/store-access";
+import { resolveMerchantFoodOrder } from "@/lib/merchant-food-orders/resolve-order-food-row";
 
 export const runtime = "nodejs";
 
@@ -17,8 +18,8 @@ export async function POST(
   try {
     const { id, orderId } = await params;
     const storeId = parseInt(id, 10);
-    const foodId = parseInt(orderId, 10);
-    if (!Number.isFinite(storeId) || !Number.isFinite(foodId)) {
+    const orderIdParam = parseInt(orderId, 10);
+    if (!Number.isFinite(storeId) || !Number.isFinite(orderIdParam)) {
       return NextResponse.json({ valid: false, error: "Invalid id" }, { status: 400 });
     }
     const access = await ensureMerchantStoreDashboardAccess(storeId);
@@ -31,27 +32,28 @@ export async function POST(
 
     const body = await request.json().catch(() => ({}));
     const inputOtp = String(body?.otp || "").trim();
+    const otpType = String(body?.otp_type || body?.otpType || "PICKUP").toUpperCase();
     if (!inputOtp) {
       return NextResponse.json({ valid: false, error: "otp required" }, { status: 400 });
+    }
+    if (otpType !== "PICKUP" && otpType !== "RTO") {
+      return NextResponse.json({ valid: false, error: "otp_type must be PICKUP or RTO" }, { status: 400 });
     }
 
     const db = supabaseAdmin;
     const storeInternalId = access.store.id;
 
-    const { data: food, error: fe } = await db
-      .from("orders_food")
-      .select("order_id, merchant_store_id")
-      .eq("id", foodId)
-      .single();
-    if (fe || !food || food.merchant_store_id !== storeInternalId) {
+    const resolved = await resolveMerchantFoodOrder(db, storeInternalId, orderIdParam);
+    if (!resolved) {
       return NextResponse.json({ valid: false, error: "Order not found" }, { status: 404 });
     }
 
     const { data: otpRow, error: oe } = await db
       .from("order_food_otps")
       .select("id, otp_code, otp_type, verified_at, attempt_count, locked_until")
-      .eq("order_id", food.order_id)
-      .single();
+      .eq("order_id", resolved.coreOrderId)
+      .eq("otp_type", otpType)
+      .maybeSingle();
     if (oe || !otpRow) {
       return NextResponse.json({ valid: false, error: "OTP not found" }, { status: 404 });
     }

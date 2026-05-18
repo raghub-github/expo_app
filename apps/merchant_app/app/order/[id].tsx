@@ -11,6 +11,8 @@ import {
   Pressable,
   ActivityIndicator,
   Platform,
+  Modal,
+  FlatList,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -30,9 +32,15 @@ import {
 } from "@/hooks/useOrders";
 import {
   fetchFoodOrder,
+  fetchFoodOrderTimeline,
+  fetchFoodOrderRidersLog,
   patchFoodOrderStatus,
+  type FoodOrderTimelineEntry,
   type ApiFoodOrder,
+  type FoodOrderRiderLogEntry,
 } from "@/services/ordersApi";
+import { getUtensilsCustomerLabel } from "@/lib/orderUtensilsLabel";
+import { formatRtoOtpDisplay } from "@/lib/orderOtps";
 import {
   formatOrderDateTime,
   formatOrderIdDisplay,
@@ -40,6 +48,8 @@ import {
 } from "@/components/order/orderFormatters";
 import { CustomerStoreOrdinalPill } from "@/components/order/CustomerStoreOrdinalPill";
 import { ItemVegMark } from "@/components/order/ItemVegMark";
+import { RejectOrderSheet } from "@/components/order/RejectOrderSheet";
+import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
 
 const DETAIL_SECTION_GAP = 12;
 
@@ -111,11 +121,13 @@ function InfoChip({
 function TimelineStepRow({
   label,
   time,
+  subtitle,
   state,
   isLast,
 }: {
   label: string;
   time: string;
+  subtitle?: string;
   state: "done" | "rejected" | "pending";
   isLast: boolean;
 }) {
@@ -139,6 +151,11 @@ function TimelineStepRow({
         <Text style={[styles.timelineLabel, state !== "pending" && styles.timelineLabelActive]}>
           {label}
         </Text>
+        {subtitle ? (
+          <Text style={styles.timelineSubtitle} numberOfLines={3}>
+            {subtitle}
+          </Text>
+        ) : null}
         {time !== "—" ? <Text style={styles.timelineTime}>{time}</Text> : null}
       </View>
     </View>
@@ -159,6 +176,11 @@ export default function OrderDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ridersLogOpen, setRidersLogOpen] = useState(false);
+  const [ridersLog, setRidersLog] = useState<FoodOrderRiderLogEntry[]>([]);
+  const [ridersLogLoading, setRidersLogLoading] = useState(false);
+  const [rejectSheetOpen, setRejectSheetOpen] = useState(false);
+  const [timelineEntries, setTimelineEntries] = useState<FoodOrderTimelineEntry[]>([]);
 
   const load = useCallback(async () => {
     if (!token || !storeId || !Number.isFinite(ordersFoodId)) {
@@ -167,11 +189,16 @@ export default function OrderDetailScreen() {
     }
     setError(null);
     try {
-      const data = await fetchFoodOrder(storeId, ordersFoodId, token);
+      const [data, timeline] = await Promise.all([
+        fetchFoodOrder(storeId, ordersFoodId, token),
+        fetchFoodOrderTimeline(storeId, ordersFoodId, token),
+      ]);
       setOrder(data);
+      setTimelineEntries(timeline);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load order");
       setOrder(null);
+      setTimelineEntries([]);
     } finally {
       setLoading(false);
     }
@@ -203,9 +230,22 @@ export default function OrderDetailScreen() {
 
   const timeline = useMemo(() => {
     if (!order) return [];
+
+    if (timelineEntries.length > 0) {
+      return timelineEntries.map((entry) => ({
+        label: entry.status,
+        subtitle: entry.status_message?.trim() || undefined,
+        time: formatOrderDateTime(entry.occurred_at),
+        state: (/cancel|reject|rto/i.test(entry.status)
+          ? "rejected"
+          : "done") as "done" | "rejected" | "pending",
+      }));
+    }
+
     const steps: Array<{
       label: string;
       time: string;
+      subtitle?: string;
       state: "done" | "rejected" | "pending";
     }> = [
       {
@@ -248,23 +288,69 @@ export default function OrderDetailScreen() {
       });
     }
     return steps;
-  }, [order, stage, isDelivered]);
+  }, [order, stage, isDelivered, timelineEntries]);
 
-  const applyTransition = async (nextStage: OrderStage) => {
+  const patchOpts = {
+    action_source: "app" as const,
+    accept_mode: "manual" as const,
+    cancel_mode: "manual" as const,
+  };
+
+  const applyTransition = async (
+    nextStage: OrderStage,
+    opts?: { rejectedReason?: string }
+  ) => {
     if (!token || !storeId || !order || !Number.isFinite(ordersFoodId)) return;
     const apiStatus = stageTransitionToApi(stage, nextStage);
+    const rejectedReason =
+      nextStage === "rejected" ? opts?.rejectedReason?.trim() : undefined;
+    if (nextStage === "rejected" && !rejectedReason) {
+      setRejectSheetOpen(true);
+      return;
+    }
     setUpdating(true);
+    setError(null);
     try {
-      const updated = await patchFoodOrderStatus(storeId, ordersFoodId, token, apiStatus);
+      const pipeline = String(order.order_status || "CREATED").toUpperCase();
+      if (apiStatus === "READY_FOR_PICKUP" && pipeline === "ACCEPTED") {
+        try {
+          await patchFoodOrderStatus(
+            storeId,
+            ordersFoodId,
+            token,
+            "PREPARING",
+            undefined,
+            patchOpts
+          );
+        } catch (prepErr) {
+          const msg = prepErr instanceof Error ? prepErr.message : "";
+          if (!/invalid transition/i.test(msg)) throw prepErr;
+        }
+      }
+      const updated = await patchFoodOrderStatus(
+        storeId,
+        ordersFoodId,
+        token,
+        apiStatus,
+        rejectedReason,
+        patchOpts
+      );
       setOrder(updated);
+      if (nextStage === "rejected") setRejectSheetOpen(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Update failed");
+      throw e;
     } finally {
       setUpdating(false);
     }
   };
 
+  const confirmReject = async (reason: MerchantCancellationReason) => {
+    await applyTransition("rejected", { rejectedReason: reason });
+  };
+
   const showAccept = stage === "created";
+  const showReject = stage === "created";
   const showMarkReady = stage === "preparing";
   const showDispatch = stage === "ready" && order?.delivery_type !== "GATIMITRA_RIDER";
   const showDeliver = stage === "picked_up" && order?.delivery_type !== "GATIMITRA_RIDER";
@@ -273,8 +359,38 @@ export default function OrderDetailScreen() {
   const total = Number(order?.grand_total) || itemSubtotal;
 
   const rejection = order && isRejected
-    ? splitRejectionMessage(order.rejected_reason, stage === "rto" ? "rto" : "rejected")
+    ? splitRejectionMessage(
+        order.rejected_reason,
+        stage === "rto" ? "rto" : "rejected",
+        order.cancelled_by_label
+      )
     : null;
+
+  const acceptanceLabel = order?.accepted_by_label?.trim() || null;
+  const utensilsLabel = order ? getUtensilsCustomerLabel(order) : null;
+  const rtoDisplay = order
+    ? formatRtoOtpDisplay(order.order_status, order.rto_otp)
+    : null;
+  const showRiderSection =
+    !!order &&
+    (order.delivery_type === "GATIMITRA_RIDER" ||
+      !!order.pickup_otp ||
+      !!order.rto_otp ||
+      order.rider_id != null);
+
+  const openRidersLog = useCallback(async () => {
+    if (!token || !storeId || !Number.isFinite(ordersFoodId)) return;
+    setRidersLogOpen(true);
+    setRidersLogLoading(true);
+    try {
+      const rows = await fetchFoodOrderRidersLog(storeId, ordersFoodId, token);
+      setRidersLog(rows);
+    } catch {
+      setRidersLog([]);
+    } finally {
+      setRidersLogLoading(false);
+    }
+  }, [token, storeId, ordersFoodId]);
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
@@ -371,11 +487,19 @@ export default function OrderDetailScreen() {
                 <Text style={styles.heroTotalAmount}>₹{total.toLocaleString("en-IN")}</Text>
               </View>
 
+              {acceptanceLabel ? (
+                <View style={styles.acceptanceBox}>
+                  <Text style={styles.acceptanceLabel}>{acceptanceLabel}</Text>
+                </View>
+              ) : null}
+
               {rejection ? (
                 <View style={styles.rejectionBox}>
                   <Text style={styles.rejectionLine}>
                     <Text style={styles.rejectionPrefix}>{rejection.prefix} </Text>
-                    <Text style={styles.rejectionDetail}>{rejection.detail}</Text>
+                    {rejection.detail ? (
+                      <Text style={styles.rejectionDetail}>{rejection.detail}</Text>
+                    ) : null}
                   </Text>
                 </View>
               ) : null}
@@ -393,6 +517,55 @@ export default function OrderDetailScreen() {
                 value={formatPayment(order.payment_method)}
               />
             </View>
+
+            {utensilsLabel ? (
+              <Card style={styles.utensilsCard}>
+                <View style={styles.utensilsRow}>
+                  <Ionicons name="restaurant-outline" size={18} color="#16A34A" />
+                  <Text style={styles.utensilsText}>{utensilsLabel}</Text>
+                </View>
+              </Card>
+            ) : null}
+
+            {(order.pickup_otp || rtoDisplay) && (
+              <>
+                <SectionHeader icon="key-outline" title="Order OTPs" />
+                <Card>
+                  {order.pickup_otp ? (
+                    <View style={styles.otpRow}>
+                      <Text style={styles.otpLabel}>Pickup OTP</Text>
+                      <Text style={styles.otpValue}>{order.pickup_otp}</Text>
+                    </View>
+                  ) : null}
+                  {rtoDisplay ? (
+                    <View style={[styles.otpRow, order.pickup_otp && styles.otpRowBorder]}>
+                      <Text style={styles.otpLabel}>RTO OTP</Text>
+                      <Text style={styles.otpValueRto}>{rtoDisplay}</Text>
+                    </View>
+                  ) : null}
+                </Card>
+              </>
+            )}
+
+            {showRiderSection && (
+              <>
+                <SectionHeader icon="bicycle-outline" title="Delivery partner" />
+                <Card style={styles.riderCard}>
+                  <View style={styles.riderCardHeader}>
+                    <Text style={styles.riderCardTitle}>Delivery partner</Text>
+                    <Pressable onPress={() => void openRidersLog()} hitSlop={8}>
+                      <Text style={styles.viewPastRiders}>View past riders</Text>
+                    </Pressable>
+                  </View>
+                  <Text style={styles.riderOtpLine}>
+                    {order.pickup_otp ? `Pickup: ${order.pickup_otp}` : ""}
+                    {order.pickup_otp && rtoDisplay ? "  |  " : ""}
+                    {rtoDisplay ? `RTO: ${rtoDisplay}` : ""}
+                    {!order.pickup_otp && !rtoDisplay ? "Awaiting rider assignment" : ""}
+                  </Text>
+                </Card>
+              </>
+            )}
 
             <SectionHeader icon="restaurant-outline" title="Items" />
             <Card>
@@ -436,8 +609,9 @@ export default function OrderDetailScreen() {
             <Card>
               {timeline.map((step, i) => (
                 <TimelineStepRow
-                  key={step.label}
+                  key={`${step.label}-${i}`}
                   label={step.label}
+                  subtitle={step.subtitle}
                   time={step.time}
                   state={step.state}
                   isLast={i === timeline.length - 1}
@@ -445,7 +619,7 @@ export default function OrderDetailScreen() {
               ))}
             </Card>
 
-            {(showAccept || showMarkReady || showDispatch || showDeliver) && (
+            {(showAccept || showReject || showMarkReady || showDispatch || showDeliver) && (
               <View style={styles.actions}>
                 {showAccept && (
                   <Pressable
@@ -454,6 +628,15 @@ export default function OrderDetailScreen() {
                     onPress={() => void applyTransition("preparing")}
                   >
                     <Text style={styles.primaryBtnText}>Accept order</Text>
+                  </Pressable>
+                )}
+                {showReject && (
+                  <Pressable
+                    style={[styles.rejectBtn, updating && { opacity: 0.6 }]}
+                    disabled={updating}
+                    onPress={() => setRejectSheetOpen(true)}
+                  >
+                    <Text style={styles.rejectBtnText}>Reject order</Text>
                   </Pressable>
                 )}
                 {showMarkReady && (
@@ -492,6 +675,61 @@ export default function OrderDetailScreen() {
           </Card>
         )}
       </ScrollView>
+
+      <RejectOrderSheet
+        visible={rejectSheetOpen}
+        formattedOrderId={order?.formatted_order_id}
+        fallbackOrderId={order?.orders_core_id ?? ordersFoodId}
+        loading={updating}
+        onClose={() => !updating && setRejectSheetOpen(false)}
+        onConfirm={confirmReject}
+      />
+
+      <Modal
+        visible={ridersLogOpen}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setRidersLogOpen(false)}
+      >
+        <View style={[styles.ridersModal, { paddingTop: insets.top + 8 }]}>
+          <View style={styles.ridersModalHeader}>
+            <Text style={styles.ridersModalTitle}>Past riders</Text>
+            <Pressable onPress={() => setRidersLogOpen(false)} hitSlop={8}>
+              <Ionicons name="close" size={26} color={GatiMitraMerchant.textPrimary} />
+            </Pressable>
+          </View>
+          {ridersLogLoading ? (
+            <ActivityIndicator style={{ marginTop: 24 }} color={GatiMitraMerchant.primary} />
+          ) : (
+            <FlatList
+              data={ridersLog}
+              keyExtractor={(item, idx) => `${item.rider_id}-${idx}`}
+              contentContainerStyle={{ padding: H_PADDING, paddingBottom: insets.bottom + 24 }}
+              ListEmptyComponent={
+                <Text style={styles.ridersEmpty}>No rider assignment history for this order.</Text>
+              }
+              renderItem={({ item }) => (
+                <View style={styles.riderLogRow}>
+                  <Text style={styles.riderLogName}>
+                    {item.rider_name || `Rider #${item.rider_id}`}
+                  </Text>
+                  {item.rider_mobile ? (
+                    <Text style={styles.riderLogMobile}>{item.rider_mobile}</Text>
+                  ) : null}
+                  <Text style={styles.riderLogStatus}>
+                    {(item.assignment_status ?? "pending").replace(/_/g, " ")}
+                  </Text>
+                  {item.assigned_at ? (
+                    <Text style={styles.riderLogTime}>
+                      Assigned: {formatOrderDateTime(item.assigned_at)}
+                    </Text>
+                  ) : null}
+                </View>
+              )}
+            />
+          )}
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -660,6 +898,19 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: GatiMitraMerchant.textPrimary,
   },
+  acceptanceBox: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1,
+    borderColor: "#A7F3D0",
+  },
+  acceptanceLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#047857",
+  },
   rejectionBox: {
     marginTop: 12,
     padding: 12,
@@ -767,7 +1018,115 @@ const styles = StyleSheet.create({
   timelineContent: { flex: 1, paddingBottom: 12, paddingLeft: 4 },
   timelineLabel: { fontSize: 14, color: GatiMitraMerchant.textTertiary },
   timelineLabelActive: { color: GatiMitraMerchant.textPrimary, fontWeight: "600" },
+  timelineSubtitle: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+    marginTop: 2,
+  },
   timelineTime: { fontSize: 12, color: GatiMitraMerchant.textSecondary, marginTop: 2 },
+  utensilsCard: { marginBottom: DETAIL_SECTION_GAP },
+  utensilsRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  utensilsText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  otpRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 6,
+  },
+  otpRowBorder: {
+    borderTopWidth: 1,
+    borderTopColor: GatiMitraMerchant.border,
+    marginTop: 8,
+    paddingTop: 12,
+  },
+  otpLabel: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  otpValue: {
+    fontSize: 20,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
+    color: GatiMitraMerchant.textPrimary,
+    letterSpacing: 2,
+  },
+  otpValueRto: {
+    fontSize: 20,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
+    color: "#C2410C",
+    letterSpacing: 2,
+  },
+  riderCard: { minHeight: 120, marginBottom: DETAIL_SECTION_GAP },
+  riderCardHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  riderCardTitle: {
+    fontSize: 12,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    color: GatiMitraMerchant.textTertiary,
+  },
+  viewPastRiders: { fontSize: 12, fontWeight: "700", color: GatiMitraMerchant.primary },
+  riderOtpLine: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+    lineHeight: 20,
+  },
+  ridersModal: { flex: 1, backgroundColor: "#FFFFFF" },
+  ridersModalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: H_PADDING,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: GatiMitraMerchant.border,
+  },
+  ridersModalTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  ridersEmpty: {
+    fontSize: 14,
+    color: GatiMitraMerchant.textSecondary,
+    textAlign: "center",
+    marginTop: 32,
+  },
+  riderLogRow: {
+    padding: CARD_PADDING,
+    borderRadius: CARD_RADIUS,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    backgroundColor: "#F8FAFC",
+    marginBottom: 10,
+  },
+  riderLogName: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  riderLogMobile: { fontSize: 14, color: GatiMitraMerchant.primary, marginTop: 4 },
+  riderLogStatus: {
+    fontSize: 11,
+    fontWeight: "600",
+    textTransform: "capitalize",
+    color: GatiMitraMerchant.textTertiary,
+    marginTop: 6,
+  },
+  riderLogTime: { fontSize: 11, color: GatiMitraMerchant.textSecondary, marginTop: 4 },
   actions: { gap: 10, marginBottom: 16 },
   primaryBtn: {
     backgroundColor: GatiMitraMerchant.primary,
@@ -777,5 +1136,14 @@ const styles = StyleSheet.create({
     ...GatiMitraMerchant.shadowSm,
   },
   primaryBtnText: { color: "#FFFFFF", fontSize: 16, fontWeight: "700" },
+  rejectBtn: {
+    backgroundColor: "#FFFFFF",
+    paddingVertical: 15,
+    borderRadius: CARD_RADIUS,
+    alignItems: "center",
+    borderWidth: 1.5,
+    borderColor: REJECTED_BG,
+  },
+  rejectBtnText: { color: REJECTED_BG, fontSize: 16, fontWeight: "700" },
   errorText: { fontSize: 15, color: GatiMitraMerchant.textSecondary, textAlign: "center" },
 });

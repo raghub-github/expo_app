@@ -21,6 +21,8 @@ export type OrderDetail = OrderSummary & {
   statusHistory?: { status: string; at: string }[];
   rider?: { name: string; phone?: string };
   deliveryAddress?: string;
+  /** 4-digit code shown on customer tracking for delivery handoff. */
+  deliveryOtp?: string | null;
   /** Optional: for map – when available from backend */
   deliveryLat?: number | null;
   deliveryLng?: number | null;

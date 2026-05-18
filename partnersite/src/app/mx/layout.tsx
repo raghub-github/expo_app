@@ -6,8 +6,8 @@ import { PartnerIncomingOrderModal } from "@/components/PartnerIncomingOrderModa
 import { GlobalToaster } from "@/components/GlobalToaster";
 
 /**
- * Global shell for /mx/* — pending new-order strip shows on every merchant page (except when
- * already on New orders list). Store id comes from localStorage when page passes placeholders.
+ * Global shell for /mx/* — floating pending-order badge on every merchant page.
+ * Store id comes from localStorage when page passes placeholders.
  */
 export default function MXLayout({ children }: { children: React.ReactNode }) {
   return (
