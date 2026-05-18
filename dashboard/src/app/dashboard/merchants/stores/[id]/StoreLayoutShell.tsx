@@ -4,6 +4,8 @@ import { useState, useEffect } from "react";
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { StoreQueryHydrator } from "./StoreQueryHydrator";
 import { StoreProvider, type StoreContextStore } from "./StoreContext";
+import { MerchantIncomingOrderModal } from "@/components/merchant/MerchantIncomingOrderModal";
+import { MerchantPendingNewOrdersBar } from "@/components/merchant/MerchantPendingNewOrdersBar";
 import { useStore } from "@/hooks/useStore";
 import type { StoreProfile } from "@/hooks/useStore";
 
@@ -64,7 +66,16 @@ function StoreLayoutFallback({
     <StoreProvider storeId={storeId} store={store as StoreContextStore}>
       <div className="w-full max-w-full overflow-x-hidden">
         <StoreQueryHydrator storeId={storeId} store={store as StoreProfile} />
-        <div className="w-full">{children}</div>
+        <MerchantIncomingOrderModal />
+        <MerchantPendingNewOrdersBar />
+        <div
+          className="w-full"
+          style={{
+            paddingBottom: "max(5.5rem, calc(env(safe-area-inset-bottom, 0px) + 5.5rem))",
+          }}
+        >
+          {children}
+        </div>
       </div>
     </StoreProvider>
   );
@@ -184,8 +195,17 @@ export function StoreLayoutShell({
         </div>
       )}
 
+        <MerchantIncomingOrderModal />
+        <MerchantPendingNewOrdersBar />
         {/* Main content — store name, address, and store ID are shown in the right sidebar Store Information Card */}
-        <div className="w-full">{children}</div>
+        <div
+          className="w-full"
+          style={{
+            paddingBottom: "max(5.5rem, calc(env(safe-area-inset-bottom, 0px) + 5.5rem))",
+          }}
+        >
+          {children}
+        </div>
       </div>
     </StoreProvider>
   );

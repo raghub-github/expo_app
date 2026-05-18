@@ -1,0 +1,480 @@
+'use client';
+
+import React from 'react';
+import {
+  Bike,
+  Clock,
+  HelpCircle,
+  MapPin,
+  MessageCircle,
+  Phone,
+  Printer,
+  UtensilsCrossed,
+  User,
+} from 'lucide-react';
+import type { OrdersFoodRow } from '@/lib/types/food-orders';
+import { FormattedOrderId, formatTimeAgo } from '@/components/merchant/merchant-incoming-order-ui';
+import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
+import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
+import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';
+import {
+  deliveryEtaMinutesLabel,
+  isPrepCountdownExpired,
+  prepReadyCountdownLabel,
+} from '@/lib/order-prep-time';
+
+function vegDot(veg?: string | null) {
+  const v = String(veg || '').toLowerCase();
+  if (v.includes('non')) return 'bg-red-600';
+  if (v === 'veg') return 'bg-green-600';
+  return 'bg-gray-400';
+}
+
+function formatPlacedAt(createdAt: string) {
+  try {
+    return new Date(createdAt).toLocaleTimeString('en-IN', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+  } catch {
+    return '—';
+  }
+}
+
+export function MerchantOrderPipelineCard({
+  order,
+  selected,
+  onClick,
+  onPrintKot,
+  onPrintOrder,
+  onTimeline,
+  onAccept,
+  onReject,
+  onReady,
+  onNeedMoreTime,
+  onDispatch,
+  onComplete,
+  onRto,
+  acceptLabel,
+  acceptDisabled,
+  onCallCustomer,
+  onCallRider,
+  onTrackRider,
+  onUniformFeedback,
+  uniformFeedback,
+  loading,
+  nowMs,
+}: {
+  order: OrdersFoodRow;
+  selected?: boolean;
+  onClick?: () => void;
+  onPrintKot?: () => void;
+  onPrintOrder?: () => void;
+  onTimeline?: () => void;
+  onReady: () => void;
+  onNeedMoreTime: () => void;
+  onDispatch?: () => void;
+  onCallCustomer?: () => void;
+  onCallRider?: () => void;
+  onTrackRider?: () => void;
+  onUniformFeedback?: (inUniform: boolean) => void;
+  uniformFeedback?: boolean | null;
+  loading?: boolean;
+  nowMs: number;
+}) {
+  const status = String(order.order_status || '').toUpperCase();
+  const isNew = status === 'CREATED' || status === 'NEW';
+  const isPreparing = status === 'PREPARING' || status === 'ACCEPTED';
+  const isReady = status === 'READY_FOR_PICKUP';
+  const isPickedUp = status === 'OUT_FOR_DELIVERY';
+  const isRto = status === 'RTO';
+
+  const pricing = order.pricing;
+  const total = pricing?.total ?? Number(order.food_items_total_value || 0);
+  const itemCount = computeOrderItemQuantityCount(order);
+  const riderName =
+    order.rider_details?.name || order.rider_name || 'Delivery partner';
+  const riderPhone = order.rider_details?.mobile || order.rider_phone;
+  const lateMins = Number(order.prepared_late_minutes) || 0;
+  const deliveryLabel = deliveryEtaMinutesLabel(order.eta_seconds);
+  const prepCountdown = prepReadyCountdownLabel(order, nowMs);
+  const prepExpired =
+    isPreparing &&
+    (isPrepCountdownExpired(order, nowMs) || !prepCountdown.label.includes('('));
+  const addressLine =
+    order.drop_address_normalized || order.drop_address_raw || '';
+  const distanceLabel =
+    order.distance_km != null
+      ? `${Number(order.distance_km).toFixed(0)} kms${order.eta_seconds ? `, ${Math.max(1, Math.round(Number(order.eta_seconds) / 60))} mins away` : ''}`
+      : null;
+
+  return (
+    <div
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
+      className={`overflow-hidden rounded-xl border bg-white shadow-sm transition-all ${
+        selected ? 'border-violet-500 ring-2 ring-violet-200' : 'border-gray-200 hover:border-gray-300'
+      } ${onClick ? 'cursor-pointer' : ''}`}
+    >
+      <div className="bg-violet-100 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-violet-800">
+        GatiMitra · Delivery
+      </div>
+
+      <div className="grid grid-cols-1 gap-0 lg:grid-cols-[minmax(220px,1fr)_minmax(260px,1.2fr)_minmax(220px,1fr)] lg:divide-x lg:divide-dashed lg:divide-gray-200">
+        {/* Left — order & customer */}
+        <div className="p-4" onClick={(e) => e.stopPropagation()}>
+          <FormattedOrderId
+            formattedOrderId={order.formatted_order_id}
+            fallbackOrderId={order.order_id}
+            size="base"
+          />
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={onPrintKot}
+              className="inline-flex items-center gap-1 rounded-md border border-blue-200 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50"
+            >
+              <Printer size={12} /> KOT
+            </button>
+            <button
+              type="button"
+              onClick={onPrintOrder}
+              className="inline-flex items-center gap-1 rounded-md border border-blue-200 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50"
+            >
+              <Printer size={12} /> ORDER
+            </button>
+          </div>
+
+          <div className="mt-3 space-y-1">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="flex items-center gap-1 text-sm font-semibold text-blue-700">
+                  <User size={14} className="shrink-0" />
+                  <span className="truncate">{order.customer_name || 'Customer'}</span>
+                </p>
+                {order.customer_store_order_ordinal != null && (
+                  <p className="text-xs text-gray-500">
+                    {order.customer_store_order_ordinal}
+                    {order.customer_store_order_ordinal === 1
+                      ? 'st'
+                      : order.customer_store_order_ordinal === 2
+                        ? 'nd'
+                        : order.customer_store_order_ordinal === 3
+                          ? 'rd'
+                          : 'th'}{' '}
+                    order
+                  </p>
+                )}
+                {addressLine && (
+                  <p className="mt-1 text-xs leading-relaxed text-gray-600">
+                    {addressLine}
+                    {distanceLabel ? ` (${distanceLabel})` : ''}
+                  </p>
+                )}
+              </div>
+              {order.customer_phone && (
+                <a
+                  href={`tel:${order.customer_phone}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCallCustomer?.();
+                  }}
+                  className="shrink-0 text-xs font-medium text-blue-600 hover:underline"
+                >
+                  <Phone size={12} className="inline mr-0.5" />
+                  Call
+                </a>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+            <span>Placed: {formatPlacedAt(order.created_at)}</span>
+            <span>·</span>
+            <span>{formatTimeAgo(order.created_at)}</span>
+            {onTimeline && (
+              <button
+                type="button"
+                onClick={onTimeline}
+                className="inline-flex items-center gap-0.5 font-medium text-blue-600 hover:underline"
+              >
+                <Clock size={12} /> Timeline
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Middle — items & actions */}
+        <div className="border-t border-dashed border-gray-200 p-4 lg:border-t-0" onClick={(e) => e.stopPropagation()}>
+          {order.requires_utensils && (
+            <p className="mb-2 flex items-center gap-1.5 text-sm font-medium text-green-700">
+              <UtensilsCrossed size={14} /> Send cutlery
+            </p>
+          )}
+          <div className="space-y-2 border-b border-gray-100 pb-3">
+            {order.items && order.items.length > 0 ? (
+              order.items.map((item, idx) => {
+                const qty = item.quantity || 1;
+                const amount = Number(item.total || Number(item.price || 0) * qty);
+                return (
+                  <div key={idx} className="flex items-start justify-between gap-2 text-sm">
+                    <div className="flex min-w-0 items-start gap-2">
+                      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-sm ${vegDot(item.vegNonveg)}`} />
+                      <span className="font-medium text-gray-900">
+                        {qty} × {item.name || `Item ${idx + 1}`}
+                      </span>
+                    </div>
+                    <span className="shrink-0 text-gray-800">₹{amount.toFixed(2)}</span>
+                  </div>
+                );
+              })
+            ) : (
+              <p className="text-sm text-gray-600">
+                {itemCount} item{itemCount !== 1 ? 's' : ''}
+              </p>
+            )}
+          </div>
+          <div className="mt-3 flex items-center justify-between">
+            <span className="text-sm font-medium text-gray-700">Total Bill</span>
+            <div className="flex items-center gap-2">
+              <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold text-sky-800">PAID</span>
+              <span className="text-lg font-bold text-gray-900">₹{Number(total).toFixed(2)}</span>
+            </div>
+          </div>
+
+          {isNew && onAccept && (
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                disabled={loading || acceptDisabled}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onAccept();
+                }}
+                className="flex-[2] rounded-lg bg-green-600 py-2.5 text-sm font-bold text-white hover:bg-green-700 disabled:opacity-50"
+              >
+                {acceptLabel || 'Accept'}
+              </button>
+              {onReject && (
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onReject();
+                  }}
+                  className="flex-1 rounded-lg border-2 border-red-200 bg-red-50 py-2.5 text-sm font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50"
+                >
+                  Reject
+                </button>
+              )}
+            </div>
+          )}
+
+          {isPreparing && (
+            <div className="mt-4 flex gap-2">
+              {prepExpired ? (
+                <>
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={onNeedMoreTime}
+                    className="flex-1 rounded-lg border-2 border-blue-500 bg-white py-2.5 text-sm font-semibold text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+                  >
+                    Need more time
+                  </button>
+                  <MarkAsReadyCountdownButton
+                    order={order}
+                    nowMs={nowMs}
+                    disabled={loading}
+                    className="flex-[1.2] rounded-lg"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onReady();
+                    }}
+                  />
+                </>
+              ) : (
+                <MarkAsReadyCountdownButton
+                  order={order}
+                  nowMs={nowMs}
+                  disabled={loading}
+                  fullWidth
+                  className="rounded-lg"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onReady();
+                  }}
+                />
+              )}
+            </div>
+          )}
+
+          {isReady && (
+            <div className="mt-4">
+              <ReadyHandoverRunningTimeline order={order} nowMs={nowMs} />
+            </div>
+          )}
+
+          {isPickedUp && onComplete && (
+            <button
+              type="button"
+              disabled={loading}
+              onClick={(e) => {
+                e.stopPropagation();
+                onComplete();
+              }}
+              className="mt-4 w-full rounded-lg bg-green-600 py-2.5 text-sm font-bold text-white hover:bg-green-700 disabled:opacity-50"
+            >
+              Mark delivered
+            </button>
+          )}
+
+          {isRto && (
+            <p className="mt-4 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2.5 text-sm font-medium text-orange-800">
+              Return to origin in progress
+            </p>
+          )}
+        </div>
+
+        {/* Right — rider / delivery */}
+        <div className="border-t border-dashed border-gray-200 p-4 lg:border-t-0" onClick={(e) => e.stopPropagation()}>
+          {isPickedUp && lateMins > 0 && (
+            <div className="mb-3 rounded-lg border border-pink-200 bg-pink-50 px-3 py-2.5 text-sm">
+              <p className="font-semibold text-gray-900">
+                Order was prepared late by {lateMins} minute{lateMins === 1 ? '' : 's'}
+              </p>
+              <p className="mt-0.5 text-xs text-gray-600">might get delayed to the customer</p>
+            </div>
+          )}
+
+          {(isReady || isPickedUp) && (riderName || riderPhone) && (
+            <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+              <div className="flex items-start gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gray-200">
+                  {order.rider_details?.selfie_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={order.rider_details.selfie_url}
+                      alt=""
+                      className="h-10 w-10 rounded-full object-cover"
+                    />
+                  ) : (
+                    <Bike size={20} className="text-gray-500" />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-gray-900">
+                    {isPickedUp
+                      ? `${riderName} has picked up your order`
+                      : `${riderName} has arrived`}
+                  </p>
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                    {riderPhone && (
+                      <a
+                        href={`tel:${riderPhone}`}
+                        onClick={() => onCallRider?.()}
+                        className="font-medium text-blue-600 hover:underline"
+                      >
+                        Call
+                      </a>
+                    )}
+                    {isReady && order.pickup_otp && (
+                      <span className="font-mono font-semibold text-gray-800">
+                        OTP: {order.pickup_otp}
+                      </span>
+                    )}
+                    {onTrackRider && (
+                      <button
+                        type="button"
+                        onClick={onTrackRider}
+                        className="inline-flex items-center gap-0.5 font-medium text-blue-600 hover:underline"
+                      >
+                        <MapPin size={12} /> Track location
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {isPickedUp && deliveryLabel && (
+            <div className="mb-3">
+              <p className="mb-1 text-xs font-medium text-gray-600">{deliveryLabel}</p>
+              <div className="h-2 overflow-hidden rounded-full bg-gray-200">
+                <div className="h-full w-2/3 rounded-full bg-green-500 transition-all" />
+              </div>
+            </div>
+          )}
+
+          {isPickedUp && onUniformFeedback && (
+            <div className="mb-3">
+              <p className="mb-2 text-sm text-gray-800">
+                Was {riderName} in uniform?
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => onUniformFeedback(false)}
+                  className={`flex-1 rounded-lg border-2 py-2 text-sm font-semibold ${
+                    uniformFeedback === false
+                      ? 'border-red-500 bg-red-50 text-red-700'
+                      : 'border-red-300 bg-white text-red-600 hover:bg-red-50'
+                  }`}
+                >
+                  No
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onUniformFeedback(true)}
+                  className={`flex-1 rounded-lg border-2 py-2 text-sm font-semibold ${
+                    uniformFeedback === true
+                      ? 'border-green-600 bg-green-50 text-green-700'
+                      : 'border-green-400 bg-white text-green-600 hover:bg-green-50'
+                  }`}
+                >
+                  Yes
+                </button>
+              </div>
+            </div>
+          )}
+
+          {(isReady || isPickedUp) && !riderName && !riderPhone && (
+            <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-4 text-center text-sm text-gray-600">
+              <Bike size={24} className="mx-auto mb-2 text-gray-400" />
+              Assigning delivery partner…
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-50"
+            >
+              <MessageCircle size={14} /> Live order chat support
+            </button>
+            <button
+              type="button"
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-50"
+            >
+              <HelpCircle size={14} /> Order help
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -23,6 +23,24 @@
   opacity: 0.95 !important;
 }
 
+.mx-toast--success {
+  background: #ecfdf5 !important;
+  border-color: #86efac !important;
+  color: #14532d !important;
+}
+.mx-toast--success [data-icon] {
+  color: #16a34a !important;
+}
+
+.mx-toast--error {
+  background: #fef2f2 !important;
+  border-color: #fca5a5 !important;
+  color: #7f1d1d !important;
+}
+.mx-toast--error [data-icon] {
+  color: #dc2626 !important;
+}
+
 @keyframes mxToastSlideIn {
   from { transform: translateY(-10px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
@@ -193,6 +211,19 @@ body.modal-open-blur aside * {
 
 .animate-pulse-subtle {
   animation: pulse-subtle 2s ease-in-out infinite;
+}
+
+@keyframes store-closed-marquee {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-store-closed-marquee {
+  animation: store-closed-marquee 28s linear infinite;
 }
 
 /* Merchant shell: one band height for left sidebar store row + primary page headers + panel headers */

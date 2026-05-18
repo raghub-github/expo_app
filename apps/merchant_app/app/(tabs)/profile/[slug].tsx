@@ -24,6 +24,7 @@ import MyTicketsScreen from "./MyTicketsScreen";
 import StoreStatusScreen from "./StoreStatusScreen";
 import OffersScreen from "./OffersScreen";
 import ActivityFeedScreen from "./ActivityFeedScreen";
+import AutoAcceptScreen from "./AutoAcceptScreen";
 import { useProfileNav } from "@/context/ProfileNavContext";
 
 const SLUG_TITLES: Record<string, string> = {
@@ -101,6 +102,10 @@ export default function ProfileSlugScreen() {
 
   if (slug === "preparation-time") {
     return <PreparationTimeScreen />;
+  }
+
+  if (slug === "auto-accept") {
+    return <AutoAcceptScreen />;
   }
 
   if (slug === "vacation") {

@@ -454,6 +454,61 @@ export async function getStoreBillingRates(
   };
 }
 
+export type StoreDetailsForFoodOrder = {
+  parentId: number | null;
+  storeName: string;
+  storeDisplayName: string | null;
+  storePhones: string[];
+  avgPreparationTimeMinutes: number | null;
+  fullAddress: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  is_accepting_orders: boolean;
+  isPureVeg: boolean;
+};
+
+export async function getStoreDetailsForFoodOrder(
+  merchantStoreId: number
+): Promise<StoreDetailsForFoodOrder | null> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("merchant_stores")
+    .select(
+      "parent_id, store_name, store_display_name, store_phones, avg_preparation_time_minutes, full_address, latitude, longitude, is_accepting_orders, is_pure_veg"
+    )
+    .eq("id", merchantStoreId)
+    .single();
+  if (error || !data) return null;
+  const row = data as {
+    parent_id?: number | null;
+    store_name?: string;
+    store_display_name?: string | null;
+    store_phones?: string[] | null;
+    avg_preparation_time_minutes?: number | null;
+    full_address?: string | null;
+    latitude?: number | string | null;
+    longitude?: number | string | null;
+    is_accepting_orders?: boolean | null;
+    is_pure_veg?: boolean | null;
+  };
+  const phones = Array.isArray(row.store_phones)
+    ? row.store_phones.map((p) => String(p).trim()).filter(Boolean)
+    : [];
+  return {
+    parentId: row.parent_id != null ? Number(row.parent_id) : null,
+    storeName: String(row.store_name ?? "Restaurant"),
+    storeDisplayName: row.store_display_name ?? null,
+    storePhones: phones,
+    avgPreparationTimeMinutes:
+      row.avg_preparation_time_minutes != null ? Number(row.avg_preparation_time_minutes) : null,
+    fullAddress: row.full_address ?? null,
+    latitude: row.latitude != null ? Number(row.latitude) : null,
+    longitude: row.longitude != null ? Number(row.longitude) : null,
+    is_accepting_orders: row.is_accepting_orders === true,
+    isPureVeg: row.is_pure_veg === true,
+  };
+}
+
 export async function getStoreByIdForOrder(
   merchantStoreId: number
 ): Promise<{ parentId: number | null; fullAddress: string | null; latitude: number | null; longitude: number | null; is_accepting_orders: boolean } | null> {
@@ -551,6 +606,7 @@ export async function getMenuByStoreId(
 export type MenuItemFullConfig = {
   item: {
     id: string;
+    menuItemId?: number;
     name: string;
     description: string | null;
     price: number;
@@ -598,29 +654,52 @@ export async function getMenuItemFullConfig(
   const store = await getStoreByStoreId(storeId);
   if (!store) return null;
 
-  const { data: itemRow, error: itemError } = await supabase
+  const itemIdTrim = itemId.trim();
+  const numericPk = parseInt(itemIdTrim, 10);
+  const itemSelect =
+    "id, item_id, item_name, item_description, item_image_url, food_type, base_price, selling_price, packaging_charges, has_customizations, has_addons, has_variants";
+
+  let itemRow: MerchantMenuItemRow | null = null;
+  const byItemId = await supabase
     .from("merchant_menu_items")
-    .select("id, item_id, item_name, item_description, item_image_url, food_type, base_price, selling_price, packaging_charges, has_customizations, has_addons, has_variants")
+    .select(itemSelect)
     .eq("store_id", store.id)
-    .eq("item_id", itemId)
+    .eq("item_id", itemIdTrim)
     .eq("is_active", true)
     .eq("approval_status", "APPROVED")
-    .single();
+    .maybeSingle();
+  if (byItemId.data) itemRow = byItemId.data as MerchantMenuItemRow;
+  else if (!Number.isNaN(numericPk) && numericPk > 0) {
+    const byPk = await supabase
+      .from("merchant_menu_items")
+      .select(itemSelect)
+      .eq("store_id", store.id)
+      .eq("id", numericPk)
+      .eq("is_active", true)
+      .eq("approval_status", "APPROVED")
+      .maybeSingle();
+    if (byPk.data) itemRow = byPk.data as MerchantMenuItemRow;
+  }
 
-  if (itemError || !itemRow) return null;
-  const item = itemRow as MerchantMenuItemRow & { has_customizations?: boolean; has_addons?: boolean; has_variants?: boolean };
+  if (!itemRow) return null;
+  const item = itemRow as MerchantMenuItemRow & {
+    has_customizations?: boolean;
+    has_addons?: boolean;
+    has_variants?: boolean;
+  };
+  const menuItemPk = Number(item.id);
 
   const [variantsRes, customizationsRes] = await Promise.all([
     supabase
       .from("merchant_menu_item_variants")
       .select("variant_id, variant_name, variant_type, variant_price, is_default, display_order")
-      .eq("menu_item_id", item.id)
+      .eq("menu_item_id", menuItemPk)
       .eq("in_stock", true)
       .order("display_order", { ascending: true }),
     supabase
       .from("merchant_menu_item_customizations")
       .select("id, customization_id, customization_title, customization_type, is_required, min_selection, max_selection, display_order")
-      .eq("menu_item_id", item.id)
+      .eq("menu_item_id", menuItemPk)
       .order("display_order", { ascending: true }),
   ]);
 
@@ -631,36 +710,107 @@ export async function getMenuItemFullConfig(
     customizations.map((c) =>
       supabase
         .from("merchant_menu_item_addons")
-        .select("addon_id, addon_name, addon_price, addon_image_url, display_order")
+        .select("addon_id, addon_name, addon_price, addon_image_url, display_order, in_stock")
         .eq("customization_id", c.id)
-        .eq("in_stock", true)
         .order("display_order", { ascending: true })
     )
   );
 
-  const customizationsWithAddons = customizations.map((c, i) => {
-    const addons = (addonsByCustomization[i].data ?? []) as MenuItemAddonRow[];
-    return {
-      id: c.customization_id,
-      title: c.customization_title,
-      type: c.customization_type ?? null,
-      isRequired: c.is_required === true,
-      minSelection: c.min_selection ?? 0,
-      maxSelection: c.max_selection ?? 1,
-      displayOrder: c.display_order ?? 0,
-      addons: addons.map((a) => ({
-        id: a.addon_id,
-        name: a.addon_name,
-        price: parseFloat(a.addon_price ?? "0"),
-        imageUrl: a.addon_image_url ?? null,
-        displayOrder: a.display_order ?? 0,
-      })),
-    };
-  });
+  const customizationsWithAddons = customizations
+    .map((c, i) => {
+      const addons = ((addonsByCustomization[i].data ?? []) as (MenuItemAddonRow & { in_stock?: boolean })[]).filter(
+        (a) => a.in_stock !== false
+      );
+      return {
+        id: c.customization_id,
+        title: c.customization_title,
+        type: c.customization_type ?? null,
+        isRequired: c.is_required === true,
+        minSelection: c.min_selection ?? 0,
+        maxSelection: c.max_selection ?? 1,
+        displayOrder: c.display_order ?? 0,
+        addons: addons.map((a) => ({
+          id: a.addon_id,
+          name: a.addon_name,
+          price: parseFloat(a.addon_price ?? "0"),
+          imageUrl: a.addon_image_url ?? null,
+          displayOrder: a.display_order ?? 0,
+        })),
+      };
+    })
+    .filter((c) => c.addons.length > 0);
+
+  /** Reusable modifier groups (merchant_item_modifier_groups) — common source for has_addons. */
+  const modifierCustomizations: MenuItemFullConfig["customizations"] = [];
+  try {
+    const { data: linkRows } = await supabase
+      .from("merchant_item_modifier_groups")
+      .select("id, modifier_group_id, display_order")
+      .eq("menu_item_id", menuItemPk)
+      .order("display_order", { ascending: true });
+
+    for (const link of linkRows ?? []) {
+      const linkRow = link as { id: number; modifier_group_id: number; display_order: number | null };
+      const { data: group } = await supabase
+        .from("merchant_modifier_groups")
+        .select("id, title, description, is_required, min_selection, max_selection")
+        .eq("id", linkRow.modifier_group_id)
+        .maybeSingle();
+      if (!group) continue;
+      const g = group as {
+        id: number;
+        title: string;
+        description: string | null;
+        is_required: boolean | null;
+        min_selection: number | null;
+        max_selection: number | null;
+      };
+      const { data: opts } = await supabase
+        .from("merchant_modifier_options")
+        .select("option_id, name, price_delta, display_order, in_stock")
+        .eq("modifier_group_id", linkRow.modifier_group_id)
+        .order("display_order", { ascending: true });
+      const addons = (opts ?? [])
+        .filter((o) => (o as { in_stock?: boolean }).in_stock !== false)
+        .map((o) => {
+          const row = o as {
+            option_id: string;
+            name: string;
+            price_delta: number | string;
+            display_order: number | null;
+          };
+          return {
+            id: row.option_id,
+            name: row.name,
+            price: parseFloat(String(row.price_delta ?? "0")),
+            imageUrl: null as string | null,
+            displayOrder: row.display_order ?? 0,
+          };
+        });
+      if (addons.length === 0) continue;
+      modifierCustomizations.push({
+        id: `mg_${g.id}`,
+        title: g.title,
+        type: "modifier_group",
+        isRequired: g.is_required === true,
+        minSelection: g.min_selection ?? 0,
+        maxSelection: g.max_selection ?? 1,
+        displayOrder: (linkRow.display_order ?? 0) + 1000,
+        addons,
+      });
+    }
+  } catch {
+    /* modifier tables optional in some envs */
+  }
+
+  const allCustomizations = [...customizationsWithAddons, ...modifierCustomizations].sort(
+    (a, b) => a.displayOrder - b.displayOrder
+  );
 
   return {
     item: {
       id: item.item_id,
+      menuItemId: menuItemPk,
       name: item.item_name,
       description: item.item_description ?? null,
       price: parseFloat(item.selling_price),
@@ -678,7 +828,7 @@ export async function getMenuItemFullConfig(
       isDefault: v.is_default === true,
       displayOrder: v.display_order ?? 0,
     })),
-    customizations: customizationsWithAddons,
+    customizations: allCustomizations,
   };
 }
 

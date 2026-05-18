@@ -15,6 +15,11 @@ import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import type { OrderPricingBreakdown } from '@/lib/orderLineItems';
 import { openMxNeedHelp } from '@/lib/openMxNeedHelp';
 import { OrderItemDetailModal, type OrderLineItem } from '@/components/orders/OrderItemDetailModal';
+import { OrderCancellationBanner } from '@/components/orders/OrderCancellationBanner';
+import { OrderOtpSection } from '@/components/orders/OrderOtpSection';
+import { formatRtoOtpDisplay, resolveOrderOtps, type CachedOrderOtps } from '@/lib/orderOtps';
+import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
+import { formatOrderDropAddress } from '@/lib/formatOrderAddress';
 
 const ITEMS_PREVIEW_MAX = 10;
 
@@ -129,10 +134,17 @@ export type OrderPanelProps = {
   onOpenCustomer: () => void;
   onOpenAllItems: () => void;
   onOpenTimeline: () => void;
+  onPrintBill: () => void;
   onClose?: () => void;
   primaryAction: React.ReactNode;
   otpCode?: string;
   otpType?: string;
+  otpCache?: CachedOrderOtps;
+  pickupVerified?: boolean;
+  rtoVerified?: boolean;
+  onViewPastRiders?: () => void;
+  onTrackRider?: () => void;
+  onOrderHelp?: () => void;
   className?: string;
 };
 
@@ -144,10 +156,17 @@ export function OrderPanel({
   onOpenCustomer,
   onOpenAllItems,
   onOpenTimeline,
+  onPrintBill,
   onClose,
   primaryAction,
   otpCode,
   otpType,
+  otpCache,
+  pickupVerified,
+  rtoVerified,
+  onViewPastRiders,
+  onTrackRider,
+  onOrderHelp,
   className,
 }: OrderPanelProps) {
   const items = order.items ?? [];
@@ -158,34 +177,45 @@ export function OrderPanel({
 
   const storeOrdinalLabel = customerOrdinalLabel(order.customer_store_order_ordinal);
   const dropProximity = formatDropProximity(order.distance_km, order.eta_seconds);
-  const addressText = order.drop_address_normalized || order.drop_address_raw;
+  const addressText = formatOrderDropAddress(order.drop_address_normalized, order.drop_address_raw);
 
   const riderName =
     order.rider_details?.name || order.rider_name || (order.rider_id ? `Rider #${order.rider_id}` : null);
   const riderMobile = order.rider_details?.mobile || order.rider_phone;
   const riderPhoto = order.rider_details?.selfie_url;
+  const status = order.order_status || 'CREATED';
+  const otps = resolveOrderOtps(order, otpCache);
+  const legacyOtp = otpCode && !otps.pickup && !otps.rto ? { pickup: otpCode, rto: null as string | null } : otps;
+  const displayOtps =
+    legacyOtp.pickup || legacyOtp.rto
+      ? { pickup: legacyOtp.pickup ?? otps.pickup, rto: legacyOtp.rto ?? otps.rto }
+      : otps;
+  const utensilsLabel = getUtensilsCustomerLabel(order);
+  const rtoDisplay = formatRtoOtpDisplay(status, displayOtps.rto);
+  const showRiderCard =
+    !!riderName || !!displayOtps.pickup || !!displayOtps.rto || !!otpCode || !!onViewPastRiders;
 
   return (
     <div
-      className={`relative flex flex-col h-full min-h-0 bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden ${className ?? ''}`}
+      className={`relative flex flex-col h-auto max-h-[calc(100dvh-10rem)] bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden ${className ?? ''}`}
     >
-      {onClose && (
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute top-2 right-2 z-10 p-1.5 rounded-lg hover:bg-gray-100 text-gray-500"
-          aria-label="Close order"
-        >
-          <X size={18} />
-        </button>
-      )}
-      <div className="flex flex-col xl:flex-row flex-1 min-h-0 overflow-hidden divide-y xl:divide-y-0 xl:divide-x divide-dashed divide-gray-200">
-        <div className="flex flex-col p-4 xl:w-[32%] min-w-0 shrink-0 xl:overflow-y-auto">
-          <span className="inline-flex w-fit items-center rounded-md bg-violet-100 px-2.5 py-1 text-[10px] font-bold tracking-wide text-violet-800">
-            GatiMitra - LiveOps
-          </span>
+      <div className="flex flex-col xl:flex-row divide-y xl:divide-y-0 xl:divide-x divide-dashed divide-gray-200 overflow-y-auto hide-scrollbar flex-1 min-h-0">
+        <div className="flex flex-col p-4 xl:w-[32%] min-w-0 shrink-0">
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <span className="inline-flex w-fit items-center rounded-md bg-violet-100 px-2.5 py-1 text-[10px] font-bold tracking-wide text-violet-800">
+              GatiMitra - LiveOps
+            </span>
+            <button
+              type="button"
+              onClick={onPrintBill}
+              className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-50 shrink-0"
+            >
+              <Printer size={13} />
+              Print bill
+            </button>
+          </div>
 
-          <div className="mt-3 mb-2 pr-8">
+          <div className="mb-2 pr-6">
             {formattedOrderId ?? (
               <p className="text-2xl font-bold text-gray-900 tracking-tight">
                 ID: {order.formatted_order_id || order.order_id}
@@ -193,33 +223,22 @@ export function OrderPanel({
             )}
           </div>
 
-          <div className="flex flex-wrap gap-2 mb-4">
-            <button
-              type="button"
-              onClick={() => window.print()}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50"
-            >
-              <Printer size={14} />
-              Print ORDER
-            </button>
-          </div>
-
           {order.customer_name && (
             <div className="space-y-1 mb-3">
-              <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center justify-between gap-2">
                 <button
                   type="button"
                   onClick={onOpenCustomer}
-                  className="inline-flex items-center gap-0.5 text-sm font-semibold text-blue-600 hover:text-blue-800"
+                  className="inline-flex items-center gap-0.5 text-sm font-semibold text-blue-600 hover:text-blue-800 min-w-0"
                 >
-                  {order.customer_name}
-                  <ChevronRight size={14} />
+                  <span className="truncate">{order.customer_name}</span>
+                  <ChevronRight size={14} className="shrink-0" />
                 </button>
                 {order.customer_phone && (
                   <button
                     type="button"
                     onClick={() => setShowPhone((v) => !v)}
-                    className="inline-flex items-center gap-1 text-sm font-semibold text-blue-600 hover:text-blue-800"
+                    className="inline-flex items-center gap-1 text-sm font-semibold text-blue-600 hover:text-blue-800 shrink-0"
                   >
                     <Phone size={14} />
                     {showPhone ? order.customer_phone : 'Call'}
@@ -243,7 +262,18 @@ export function OrderPanel({
             <p className="text-xs text-gray-600 leading-relaxed mb-4">{dropProximity}</p>
           ) : null}
 
-          <div className="mt-auto pt-3 border-t border-dashed border-gray-200 flex items-center justify-between text-xs text-gray-600 gap-2">
+          <div className="mb-3 space-y-2">
+            <OrderCancellationBanner order={order} />
+            <OrderOtpSection
+              status={status}
+              otps={displayOtps}
+              pickupVerified={pickupVerified}
+              rtoVerified={rtoVerified}
+              compact
+            />
+          </div>
+
+          <div className="mt-3 pt-3 border-t border-dashed border-gray-200 flex items-center justify-between text-xs text-gray-600 gap-2">
             <PlacedTimeToggle createdAt={order.created_at} />
             <button
               type="button"
@@ -256,15 +286,17 @@ export function OrderPanel({
           </div>
         </div>
 
-        <div className="flex flex-col p-4 flex-1 min-w-0 min-h-0 overflow-hidden">
-          {order.requires_utensils && (
-            <div className="flex items-center gap-2 text-sm text-emerald-700 mb-3">
-              <UtensilsCrossed size={16} className="text-emerald-600" />
-              <span>Send cutlery</span>
+        <div className="flex flex-col p-4 flex-1 min-w-0">
+          {utensilsLabel ? (
+            <div className="mb-3 flex items-start gap-2 rounded-lg border border-emerald-100 bg-emerald-50/80 px-3 py-2.5 text-sm text-emerald-900">
+              <UtensilsCrossed size={16} className="mt-0.5 shrink-0 text-emerald-600" />
+              <span className="font-medium leading-snug">{utensilsLabel}</span>
             </div>
-          )}
+          ) : null}
 
-          <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar space-y-3">
+          <div
+            className={`space-y-3 ${items.length > 8 ? 'max-h-[min(50vh,420px)] overflow-y-auto hide-scrollbar pr-1' : ''}`}
+          >
             {previewItems.length > 0 ? (
               <>
                 {previewItems.map((item, idx) => {
@@ -332,15 +364,29 @@ export function OrderPanel({
           </div>
         </div>
 
-        <div className="flex flex-col p-4 xl:w-[28%] min-w-[220px] shrink-0 gap-3">
-          {(riderName || otpCode) && (
-            <div className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+        <div className="relative flex flex-col p-4 xl:w-[28%] min-w-[240px] shrink-0 gap-3">
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="absolute top-2 right-2 z-20 rounded-lg p-1.5 text-gray-500 hover:bg-gray-100"
+              aria-label="Close order"
+            >
+              <X size={18} />
+            </button>
+          )}
+          {showRiderCard && (
+            <div className="mt-8 flex min-h-[180px] flex-col rounded-xl border border-gray-200 bg-gradient-to-b from-slate-50 to-white p-4 shadow-sm">
+              <div className="mb-3">
+                <p className="text-xs font-bold uppercase tracking-wide text-gray-500">Delivery partner</p>
+              </div>
+              <div className="flex flex-1 flex-col gap-3">
               <div className="flex gap-3">
                 {riderPhoto ? (
                   <img
                     src={riderPhoto}
                     alt=""
-                    className="w-12 h-12 rounded-full object-cover border border-gray-200 shrink-0"
+                    className="h-14 w-14 shrink-0 rounded-full border-2 border-white object-cover shadow-sm ring-1 ring-gray-200"
                   />
                 ) : (
                   <div className="w-12 h-12 rounded-full bg-gray-100 shrink-0" />
@@ -353,7 +399,19 @@ export function OrderPanel({
                     {riderMobile && (
                       <span className="font-semibold text-gray-800 tabular-nums">{riderMobile}</span>
                     )}
-                    {otpCode && (
+                    {displayOtps.pickup && (
+                      <>
+                        {riderMobile && <span className="text-gray-300">|</span>}
+                        <span className="font-mono font-bold text-gray-900">Pickup: {displayOtps.pickup}</span>
+                      </>
+                    )}
+                    {rtoDisplay && (
+                      <>
+                        {(riderMobile || displayOtps.pickup) && <span className="text-gray-300">|</span>}
+                        <span className="font-mono font-bold text-orange-800">RTO: {rtoDisplay}</span>
+                      </>
+                    )}
+                    {!displayOtps.pickup && !displayOtps.rto && otpCode && (
                       <>
                         {riderMobile && <span className="text-gray-300">|</span>}
                         <span className="font-mono font-bold text-gray-900">OTP: {otpCode}</span>
@@ -363,24 +421,38 @@ export function OrderPanel({
                   </div>
                   <button
                     type="button"
-                    className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:underline"
+                    onClick={onTrackRider}
+                    className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:underline disabled:opacity-50"
+                    disabled={!onTrackRider}
                   >
                     <MapPin size={12} />
                     Track location
                   </button>
                 </div>
               </div>
+              </div>
             </div>
           )}
 
-          <div className="mt-auto flex flex-col gap-2">
+          <div className="mt-auto flex flex-col gap-2 pt-2">
+            {onViewPastRiders ? (
+              <button
+                type="button"
+                onClick={onViewPastRiders}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
+              >
+                View past riders
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() =>
-                openMxNeedHelp({
-                  formattedOrderId: order.formatted_order_id ?? undefined,
-                  coreOrderId: order.order_id,
-                })
+                onOrderHelp
+                  ? onOrderHelp()
+                  : openMxNeedHelp({
+                      formattedOrderId: order.formatted_order_id ?? undefined,
+                      coreOrderId: order.order_id,
+                    })
               }
               className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-white px-3 py-2.5 text-xs font-semibold text-blue-700 hover:bg-blue-50"
             >

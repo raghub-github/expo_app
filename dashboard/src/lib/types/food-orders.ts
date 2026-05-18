@@ -14,6 +14,8 @@ export type OrdersFoodRow = {
   accepted_at?: string | null;
   preparing_at?: string | null;
   prepared_at?: string | null;
+  handed_over_to_rider_at?: string | null;
+  rider_picked_up_at?: string | null;
   dispatched_at?: string | null;
   delivered_at?: string | null;
   cancelled_at?: string | null;
@@ -31,6 +33,11 @@ export type OrdersFoodRow = {
   display_item_count?: number | null;
   food_items_total_value?: number | string | null;
   preparation_time_minutes?: number | null;
+  prep_ready_by_at?: string | null;
+  prep_time_source?: 'merchant' | 'store_default' | string | null;
+  prep_delay_minutes?: number | null;
+  prepared_late_minutes?: number | null;
+  estimated_delivery_time?: string | null;
   items?: Array<{
     name?: string;
     quantity?: number;
@@ -50,6 +57,8 @@ export type OrdersFoodRow = {
   is_fragile?: boolean | null;
   is_high_value?: boolean | null;
   rejected_reason?: string | null;
+  accepted_by_label?: string | null;
+  cancelled_by_label?: string | null;
   rider_id?: number | null;
   rider_name?: string | null;
   rider_phone?: string | null;
@@ -63,6 +72,10 @@ export type OrdersFoodRow = {
     lat?: number | null;
     lon?: number | null;
   } | null;
+  customer_order_count?: number | null;
+  customer_platform_order_count?: number | null;
+  customer_store_order_ordinal?: number | null;
+  customer_platform_order_ordinal?: number | null;
   customer_scores?: {
     trust_score?: number | null;
     fraud_score?: number | null;
@@ -77,6 +90,8 @@ export type OrdersFoodRow = {
   distance_km?: number | null;
   eta_seconds?: number | null;
   merchant_store_id?: number | null;
+  pickup_otp?: string | null;
+  rto_otp?: string | null;
 };
 
 export interface FoodOrderStats {

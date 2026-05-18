@@ -32,6 +32,8 @@ export type ApiFoodOrder = {
   items: ApiFoodOrderItem[];
   pickup_otp: string | null;
   rto_otp: string | null;
+  requires_utensils?: boolean | null;
+  delivery_instructions?: string | null;
   payment_method: string | null;
   accepted_at: string | null;
   preparing_at: string | null;
@@ -40,6 +42,8 @@ export type ApiFoodOrder = {
   delivered_at: string | null;
   cancelled_at: string | null;
   rejected_reason: string | null;
+  accepted_by_label: string | null;
+  cancelled_by_label: string | null;
 };
 
 export async function fetchFoodOrders(
@@ -80,13 +84,73 @@ export async function fetchFoodOrder(
   return data.order;
 }
 
+export type FoodOrderRiderLogEntry = {
+  rider_id: number;
+  rider_name: string | null;
+  rider_mobile: string | null;
+  selfie_url: string | null;
+  assignment_status: string;
+  assigned_at: string | null;
+  accepted_at: string | null;
+  rejected_at: string | null;
+  reached_merchant_at: string | null;
+  picked_up_at: string | null;
+  delivered_at: string | null;
+  cancelled_at: string | null;
+};
+
+export type FoodOrderTimelineEntry = {
+  id: number;
+  status: string;
+  previous_status: string | null;
+  status_message: string | null;
+  actor_type: string | null;
+  occurred_at: string;
+  expected_by_at: string | null;
+  metadata: Record<string, unknown> | null;
+};
+
+export async function fetchFoodOrderTimeline(
+  storeId: number,
+  ordersFoodId: number,
+  token: string
+): Promise<FoodOrderTimelineEntry[]> {
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}/timeline`,
+    token
+  );
+  if (!res.ok) return [];
+  const data = (await res.json()) as { timeline?: FoodOrderTimelineEntry[] };
+  return Array.isArray(data.timeline) ? data.timeline : [];
+}
+
+export async function fetchFoodOrderRidersLog(
+  storeId: number,
+  ordersFoodId: number,
+  token: string
+): Promise<FoodOrderRiderLogEntry[]> {
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}/riders-log`,
+    token
+  );
+  if (!res.ok) return [];
+  const data = (await res.json()) as { riders?: FoodOrderRiderLogEntry[] };
+  return Array.isArray(data.riders) ? data.riders : [];
+}
+
 export async function patchFoodOrderStatus(
   storeId: number,
   ordersFoodId: number,
   token: string,
   status: string,
-  rejectedReason?: string
+  rejectedReason?: string,
+  opts?: {
+    action_source?: string;
+    accept_mode?: "auto" | "manual";
+    cancel_mode?: "auto" | "manual";
+  }
 ): Promise<ApiFoodOrder> {
+  const st = status.toUpperCase();
   const res = await authFetch(
     `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}`,
     token,
@@ -95,6 +159,9 @@ export async function patchFoodOrderStatus(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         status,
+        action_source: opts?.action_source ?? "app",
+        ...(st === "ACCEPTED" ? { accept_mode: opts?.accept_mode ?? "manual" } : {}),
+        ...(st === "CANCELLED" ? { cancel_mode: opts?.cancel_mode ?? "manual" } : {}),
         ...(rejectedReason ? { rejected_reason: rejectedReason } : {}),
       }),
     }

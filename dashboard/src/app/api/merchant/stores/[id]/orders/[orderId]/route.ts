@@ -4,9 +4,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/server";
 import { resolvePartnerPipeline } from "@/lib/partner-orders-unify";
-import { normalizeActionSource } from "@/lib/merchantOrderFoodActions";
+import {
+  labelsForStatusUpdate,
+  normalizeActionMode,
+  normalizeActionSource,
+} from "@/lib/merchantOrderFoodActions";
 import { ensureMerchantStoreDashboardAccess } from "@/lib/merchant-food-orders/store-access";
 import { loadMerchantStoreFoodOrders } from "@/lib/merchant-food-orders/load-store-food-orders";
+import { appendAcceptanceTimeline } from "@/lib/orderAcceptanceTimeline";
+import { appendCancellationTimeline } from "@/lib/orderCancellationTimeline";
+import { appendReadyTimeline } from "@/lib/orderFoodStatusTimeline";
+import { resolveMerchantFoodOrder } from "@/lib/merchant-food-orders/resolve-order-food-row";
+import {
+  PLATFORM_DEFAULT_PREP_MINUTES,
+  resolveAcceptPrepCommitment,
+  resolveStoreDefaultPrepMinutes,
+  computePreparedLateMinutes,
+} from "@/lib/order-prep-time";
 
 export const runtime = "nodejs";
 
@@ -24,7 +38,7 @@ function normalizeOrderStatusForTransition(raw: string | null | undefined): stri
 const VALID_TRANSITIONS: Record<string, string[]> = {
   CREATED: ["ACCEPTED", "CANCELLED"],
   NEW: ["ACCEPTED", "CANCELLED"],
-  ACCEPTED: ["PREPARING", "CANCELLED"],
+  ACCEPTED: ["PREPARING", "READY_FOR_PICKUP", "CANCELLED"],
   PREPARING: ["READY_FOR_PICKUP", "CANCELLED", "RTO"],
   READY_FOR_PICKUP: ["OUT_FOR_DELIVERY", "CANCELLED", "RTO"],
   OUT_FOR_DELIVERY: ["DELIVERED", "RTO"],
@@ -54,6 +68,13 @@ export async function PATCH(
     const newStatus = String(body?.status || "").toUpperCase();
     const rejectedReason = body?.rejected_reason ?? null;
     const actionSource = normalizeActionSource(body?.action_source ?? "admin");
+    const actionMode = normalizeActionMode(body?.accept_mode ?? body?.cancel_mode);
+    const actionLabels = labelsForStatusUpdate({
+      newStatus,
+      actionSource,
+      actionMode,
+      rejectedReason,
+    });
 
     if (!newStatus) {
       return NextResponse.json({ error: "status required" }, { status: 400 });
@@ -61,16 +82,31 @@ export async function PATCH(
 
     const db = getDb();
 
+    const resolved = await resolveMerchantFoodOrder(db, storeInternalId, orderIdNum);
+    if (!resolved?.foodRowId) {
+      return NextResponse.json({ error: "Food order row not found" }, { status: 404 });
+    }
+
+    const foodRowId = resolved.foodRowId;
+
     const { data: existing, error: fetchErr } = await db
       .from("orders_food")
-      .select("id, order_id, order_status, merchant_store_id, food_items_total_value")
-      .eq("id", orderIdNum)
+      .select(
+        "id, order_id, order_status, merchant_store_id, food_items_total_value, preparation_time_minutes, prep_ready_by_at, preparing_at"
+      )
+      .eq("id", foodRowId)
       .single();
 
     if (fetchErr || !existing) {
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
     }
-    if (existing.merchant_store_id !== storeInternalId) {
+
+    const { data: coreRow } = await db
+      .from("orders_core")
+      .select("merchant_store_id")
+      .eq("id", existing.order_id as number)
+      .maybeSingle();
+    if (!coreRow || Number(coreRow.merchant_store_id) !== storeInternalId) {
       return NextResponse.json({ error: "Order does not belong to this store" }, { status: 403 });
     }
 
@@ -107,16 +143,51 @@ export async function PATCH(
       updated_at: now,
     };
 
-    if (newStatus === "ACCEPTED") updates.accepted_at = now;
+    let acceptPrepReadyByAt: string | null = null;
+    let acceptPrepMinutes: number | null = null;
+
+    if (newStatus === "ACCEPTED") {
+      updates.accepted_at = now;
+      if (actionLabels.accepted_by_label) updates.accepted_by_label = actionLabels.accepted_by_label;
+
+      const { data: storeRow } = await db
+        .from("merchant_stores")
+        .select("avg_preparation_time_minutes")
+        .eq("id", storeInternalId)
+        .maybeSingle();
+      const storeDefault = resolveStoreDefaultPrepMinutes(
+        storeRow?.avg_preparation_time_minutes ?? PLATFORM_DEFAULT_PREP_MINUTES
+      );
+      const prep = resolveAcceptPrepCommitment({
+        acceptedAtIso: now,
+        storeDefaultMinutes: storeDefault,
+        bodyPrepMinutes: body?.preparation_time_minutes,
+        existingOrderPrepMinutes: existing.preparation_time_minutes,
+      });
+      acceptPrepReadyByAt = prep.prepReadyByAt;
+      acceptPrepMinutes = prep.prepMinutes;
+      updates.preparation_time_minutes = prep.prepMinutes;
+      updates.prep_ready_by_at = prep.prepReadyByAt;
+      updates.prep_time_source = prep.prepTimeSource;
+    }
     else if (newStatus === "PREPARING") {
       updates.preparing_at = now;
       updates.prepared_at = null;
-    } else if (newStatus === "READY_FOR_PICKUP") updates.prepared_at = now;
+    } else if (newStatus === "READY_FOR_PICKUP") {
+      updates.prepared_at = now;
+      if (!existing.preparing_at) updates.preparing_at = now;
+      const lateMins = computePreparedLateMinutes(
+        now,
+        (existing.prep_ready_by_at as string | null) ?? null
+      );
+      updates.prepared_late_minutes = lateMins;
+    }
     else if (newStatus === "OUT_FOR_DELIVERY") updates.dispatched_at = now;
     else if (newStatus === "DELIVERED") updates.delivered_at = now;
     else if (newStatus === "CANCELLED") {
       updates.cancelled_at = now;
       if (rejectedReason) updates.rejected_reason = rejectedReason;
+      if (actionLabels.cancelled_by_label) updates.cancelled_by_label = actionLabels.cancelled_by_label;
     } else if (newStatus === "RTO") {
       updates.is_rto = true;
       updates.rto_at = now;
@@ -127,35 +198,100 @@ export async function PATCH(
       }
     }
 
-    const { error } = await db
+    const { data: updatedRow, error } = await db
       .from("orders_food")
       .update(updates)
-      .eq("id", orderIdNum)
-      .eq("merchant_store_id", storeInternalId);
+      .eq("id", foodRowId)
+      .select()
+      .single();
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
+    if (!updatedRow) {
+      return NextResponse.json({ error: "Order not updated" }, { status: 404 });
+    }
 
     try {
+      const corePatch: Record<string, unknown> = { current_status: newStatus, updated_at: now };
+      if (newStatus === "ACCEPTED" && acceptPrepReadyByAt && acceptPrepMinutes != null) {
+        corePatch.prep_ready_by_at = acceptPrepReadyByAt;
+        corePatch.prep_time_minutes = acceptPrepMinutes;
+      }
+      if (newStatus === "READY_FOR_PICKUP" && updates.prepared_late_minutes != null) {
+        corePatch.prepared_late_minutes = updates.prepared_late_minutes;
+      }
       await db
         .from("orders_core")
-        .update({ current_status: newStatus, updated_at: now })
+        .update(corePatch)
         .eq("id", existing.order_id as number);
     } catch (coreErr) {
       console.warn("[orders PATCH] orders_core sync failed:", coreErr);
     }
 
+    if (newStatus === "ACCEPTED") {
+      try {
+        await appendAcceptanceTimeline({
+          orderCorePk: existing.order_id as number,
+          previousStatus: currentStatus,
+          actionSource,
+          acceptMode: actionMode,
+          acceptedByLabel: actionLabels.accepted_by_label,
+          expectedByAt: acceptPrepReadyByAt,
+        });
+      } catch (tlErr) {
+        console.warn("[orders PATCH] acceptance timeline failed:", tlErr);
+      }
+    }
+
+    if (newStatus === "CANCELLED") {
+      try {
+        await appendCancellationTimeline({
+          orderCorePk: existing.order_id as number,
+          previousStatus: currentStatus,
+          rejectedReason: rejectedReason ?? null,
+          actorType: actionSource === "admin" ? "admin" : actionSource === "system" ? "system" : "store",
+          cancelMode: actionMode,
+        });
+      } catch (tlErr) {
+        console.warn("[orders PATCH] cancellation timeline failed:", tlErr);
+      }
+    }
+
+    if (newStatus === "READY_FOR_PICKUP") {
+      try {
+        await appendReadyTimeline({
+          orderCorePk: existing.order_id as number,
+          previousStatus: currentStatus,
+          actionSource,
+          preparedAt: (updates.prepared_at as string) ?? now,
+        });
+      } catch (tlErr) {
+        console.warn("[orders PATCH] ready timeline failed:", tlErr);
+      }
+    }
+
     try {
       await db.from("merchant_order_food_actions").insert({
-        orders_food_id: orderIdNum,
+        orders_food_id: foodRowId,
         orders_core_id: existing.order_id as number,
         merchant_store_id: storeInternalId,
         from_status: currentStatus,
         to_status: newStatus,
         action_source: actionSource,
         actor_type: "merchant",
-        metadata: rejectedReason ? { rejected_reason: rejectedReason } : {},
+        actor_label: actionLabels.actor_label,
+        metadata: {
+          ...(rejectedReason ? { rejected_reason: rejectedReason } : {}),
+          ...(newStatus === "ACCEPTED"
+            ? {
+                accept_mode: actionMode,
+                ...(acceptPrepMinutes != null ? { preparation_time_minutes: acceptPrepMinutes } : {}),
+                ...(acceptPrepReadyByAt ? { prep_ready_by_at: acceptPrepReadyByAt } : {}),
+              }
+            : {}),
+          ...(newStatus === "CANCELLED" ? { cancel_mode: actionMode } : {}),
+        },
       });
     } catch (logErr) {
       console.warn("[orders PATCH] action log failed:", logErr);
@@ -176,8 +312,8 @@ export async function PATCH(
               p_category: "ORDER_EARNING",
               p_balance_type: "AVAILABLE",
               p_reference_type: "ORDER",
-              p_reference_id: orderIdNum,
-              p_idempotency_key: `order_earning_${orderIdNum}`,
+              p_reference_id: foodRowId,
+              p_idempotency_key: `order_earning_${foodRowId}`,
               p_description: `Order #${existing.order_id} delivered`,
               p_metadata: {},
             });
@@ -189,7 +325,7 @@ export async function PATCH(
     }
 
     const merged = await loadMerchantStoreFoodOrders(storeInternalId, {
-      ordersFoodId: orderIdNum,
+      ordersFoodId: foodRowId,
       limit: 1,
     });
     const order = merged[0];

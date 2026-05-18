@@ -4,6 +4,7 @@ import {
   extractItemsArray,
   mapCoreDbItemsToRaw,
   normalizeOrderItems,
+  orderRawItemsMissingDisplayNames,
   parseMerchantBillingBreakdown,
 } from "@/lib/orderLineItems";
 import { computeOrderItemQuantityCount } from "@/lib/merchantOrderFoodActions";
@@ -344,6 +345,8 @@ export async function loadMerchantStoreFoodOrders(
           currentSt
         );
 
+        const textOrderId = String(core.order_id ?? '').trim();
+        const fromDb = textOrderId ? rawItemsByOrderTextId.get(textOrderId) : undefined;
         let rawItems: unknown =
           food != null &&
           food.items != null &&
@@ -353,10 +356,11 @@ export async function loadMerchantStoreFoodOrders(
             : core.items != null && extractItemsArray(core.items).length > 0
               ? core.items
               : [];
-        if (extractItemsArray(rawItems).length === 0) {
-          const textOrderId = String(core.order_id ?? '').trim();
-          const fromDb = textOrderId ? rawItemsByOrderTextId.get(textOrderId) : undefined;
-          if (fromDb?.length) rawItems = fromDb;
+        if (
+          (extractItemsArray(rawItems).length === 0 || orderRawItemsMissingDisplayNames(rawItems)) &&
+          fromDb?.length
+        ) {
+          rawItems = fromDb;
         }
         const items = normalizeOrderItems(rawItems);
 
@@ -404,6 +408,13 @@ export async function loadMerchantStoreFoodOrders(
           restaurant_phone: (food?.restaurant_phone as string | null) ?? null,
           preparation_time_minutes:
             food?.preparation_time_minutes != null ? Number(food.preparation_time_minutes) : null,
+          prep_ready_by_at: (food?.prep_ready_by_at as string | null) ?? null,
+          prep_time_source: (food?.prep_time_source as string | null) ?? null,
+          prep_delay_minutes:
+            food?.prep_delay_minutes != null ? Number(food.prep_delay_minutes) : 0,
+          prepared_late_minutes:
+            food?.prepared_late_minutes != null ? Number(food.prepared_late_minutes) : null,
+          estimated_delivery_time: (core.estimated_delivery_time as string | null) ?? null,
           food_items_count: displayItemCount,
           display_item_count: displayItemCount,
           food_items_total_value: pricingTotal ?? 0,
@@ -468,6 +479,8 @@ export async function loadMerchantStoreFoodOrders(
           delivered_at: (food?.delivered_at as string | null) ?? null,
           cancelled_at: (food?.cancelled_at as string | null) ?? (core.cancelled_at as string | null) ?? null,
           rejected_reason: (food?.rejected_reason as string | null) ?? null,
+          accepted_by_label: (food?.accepted_by_label as string | null) ?? null,
+          cancelled_by_label: (food?.cancelled_by_label as string | null) ?? null,
           cancelled_by: (food?.cancelled_by as string | null) ?? (core.cancelled_by as string | null) ?? null,
           cancelled_by_type: (food?.cancelled_by_type as string | null) ?? (core.cancelled_by_type as string | null) ?? null,
           cancellation_details: food?.cancellation_details ?? core.cancellation_details ?? null,

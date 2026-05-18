@@ -2,7 +2,7 @@
  * Orders hook — loads food orders from merchant-partner API (Partner Site pipeline).
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import {
@@ -10,6 +10,7 @@ import {
   patchFoodOrderStatus,
   type ApiFoodOrder,
 } from "@/services/ordersApi";
+import { getStoreSettings } from "@/services/storeSettingsApi";
 
 export type DeliveryType = "GATIMITRA_RIDER" | "SELF_DELIVERY" | "SELF_PICKUP";
 
@@ -40,10 +41,14 @@ export type OrderRecord = {
   lineItems: LineItem[];
   total: number;
   status: OrderStage;
+  /** Raw API status (CREATED, ACCEPTED, PREPARING, …) for valid transitions. */
+  pipelineStatus: string;
   deliveryType: DeliveryType;
   pickupOtp?: string;
   rtoOtp?: string;
   rejectedReason?: string | null;
+  acceptedByLabel?: string | null;
+  cancelledByLabel?: string | null;
   cancelledAt?: string | null;
   customerPhone?: string | null;
   customerEmail?: string | null;
@@ -135,10 +140,13 @@ function mapApiOrder(o: ApiFoodOrder): OrderRecord {
     })),
     total: Number(o.grand_total) || 0,
     status: apiStatusToStage(o.order_status),
+    pipelineStatus: String(o.order_status || "CREATED").toUpperCase(),
     deliveryType,
     pickupOtp: o.pickup_otp ?? undefined,
     rtoOtp: o.rto_otp ?? undefined,
     rejectedReason: o.rejected_reason ?? null,
+    acceptedByLabel: o.accepted_by_label ?? null,
+    cancelledByLabel: o.cancelled_by_label ?? null,
     cancelledAt,
     customerPhone: o.customer_phone?.trim() || null,
     customerEmail: o.customer_email?.trim() || null,
@@ -175,6 +183,8 @@ export function useOrders(pollIntervalMs = 8000) {
   const [orders, setOrders] = useState<OrderRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const autoAcceptedRef = useRef<Set<number>>(new Set());
+  const autoAcceptTimersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
 
   const refetch = useCallback(async () => {
     if (!token || !storeId) {
@@ -184,8 +194,41 @@ export function useOrders(pollIntervalMs = 8000) {
     }
     setError(null);
     try {
-      const list = await fetchFoodOrders(storeId, token, { limit: 200 });
-      setOrders(list.map(mapApiOrder));
+      const [list, storeSettings] = await Promise.all([
+        fetchFoodOrders(storeId, token, { limit: 200 }),
+        getStoreSettings(storeId, token).catch(() => null),
+      ]);
+      const mapped = list.map(mapApiOrder);
+      setOrders(mapped);
+
+      if (storeSettings?.auto_accept_orders) {
+        const delayMs = Math.max(0, Math.min(600, storeSettings.auto_accept_time_seconds || 0)) * 1000;
+        for (const row of list) {
+          const st = apiStatusToStage(row.order_status);
+          if (st !== "created" || row.core_only) continue;
+          const fid = row.orders_food_id;
+          if (autoAcceptedRef.current.has(fid)) continue;
+          if (autoAcceptTimersRef.current.has(fid)) continue;
+          const timer = setTimeout(() => {
+            autoAcceptTimersRef.current.delete(fid);
+            if (autoAcceptedRef.current.has(fid)) return;
+            autoAcceptedRef.current.add(fid);
+            void patchFoodOrderStatus(storeId, fid, token, "ACCEPTED", undefined, {
+              action_source: "app",
+              accept_mode: "auto",
+            })
+              .then((updated) => {
+                setOrders((prev) =>
+                  prev.map((o) => (o.id === String(fid) ? mapApiOrder(updated) : o))
+                );
+              })
+              .catch(() => {
+                autoAcceptedRef.current.delete(fid);
+              });
+          }, delayMs);
+          autoAcceptTimersRef.current.set(fid, timer);
+        }
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load orders");
     } finally {
@@ -207,7 +250,11 @@ export function useOrders(pollIntervalMs = 8000) {
   }, [pollIntervalMs, refetch]);
 
   const transitionOrder = useCallback(
-    async (orderId: string, nextStatus: OrderStage) => {
+    async (
+      orderId: string,
+      nextStatus: OrderStage,
+      opts?: { rejectedReason?: string }
+    ) => {
       if (!token || !storeId) return;
       if (orderId.startsWith("core-")) {
         setError("Order is still syncing; refresh in a moment or use Partner Site.");
@@ -217,24 +264,57 @@ export function useOrders(pollIntervalMs = 8000) {
       if (!order || !canTransition(order, nextStatus)) return;
 
       const apiStatus = stageTransitionToApi(order.status, nextStatus);
+      const rejectedReason =
+        nextStatus === "rejected" ? opts?.rejectedReason?.trim() : undefined;
+      if (nextStatus === "rejected" && !rejectedReason) {
+        setError("Select a cancellation reason.");
+        return;
+      }
+
       const prev = orders;
       setOrders((list) =>
         list.map((o) => (o.id === orderId ? { ...o, status: nextStatus } : o))
       );
 
+      const patchOpts = {
+        action_source: "app" as const,
+        accept_mode: "manual" as const,
+        cancel_mode: "manual" as const,
+      };
+
       try {
+        if (apiStatus === "READY_FOR_PICKUP" && order.pipelineStatus === "ACCEPTED") {
+          try {
+            await patchFoodOrderStatus(
+              storeId,
+              Number(orderId),
+              token,
+              "PREPARING",
+              undefined,
+              patchOpts
+            );
+          } catch (prepErr) {
+            const msg = prepErr instanceof Error ? prepErr.message : "";
+            if (!/invalid transition/i.test(msg)) throw prepErr;
+          }
+        }
+
         const updated = await patchFoodOrderStatus(
           storeId,
           Number(orderId),
           token,
-          apiStatus
+          apiStatus,
+          rejectedReason,
+          patchOpts
         );
         setOrders((list) =>
           list.map((o) => (o.id === orderId ? mapApiOrder(updated) : o))
         );
+        setError(null);
       } catch (e) {
         setOrders(prev);
         setError(e instanceof Error ? e.message : "Failed to update order");
+        throw e;
       }
     },
     [token, storeId, orders]

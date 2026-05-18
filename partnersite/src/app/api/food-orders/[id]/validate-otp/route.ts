@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { appendHandoverTimeline } from '@/lib/orderFoodStatusTimeline';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -29,8 +30,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const body = await req.json();
     const storeId = body.store_id;
     const inputOtp = String(body.otp || '').trim();
+    const otpType = String(body.otp_type || body.otpType || 'PICKUP').toUpperCase();
     if (!storeId || !inputOtp) {
       return NextResponse.json({ error: 'store_id and otp required' }, { status: 400 });
+    }
+    if (otpType !== 'PICKUP' && otpType !== 'RTO') {
+      return NextResponse.json({ error: 'otp_type must be PICKUP or RTO' }, { status: 400 });
     }
 
     const db = getSupabase();
@@ -53,7 +58,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .from('order_food_otps')
       .select('id, otp_code, otp_type, verified_at, attempt_count, locked_until')
       .eq('order_id', food.order_id)
-      .single();
+      .eq('otp_type', otpType)
+      .maybeSingle();
     if (oe || !otpRow) return NextResponse.json({ error: 'OTP not found' }, { status: 404 });
 
     const now = new Date();
@@ -67,9 +73,37 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const match = otpRow.otp_code === inputOtp;
     if (match) {
-      await db.from('order_food_otps').update({ verified_at: now.toISOString(), verified_by: 'merchant', attempt_count: 0, locked_until: null, updated_at: now.toISOString() }).eq('id', otpRow.id);
+      const verifiedIso = now.toISOString();
+      await db.from('order_food_otps').update({ verified_at: verifiedIso, verified_by: 'merchant', attempt_count: 0, locked_until: null, updated_at: verifiedIso }).eq('id', otpRow.id);
       await db.from('order_food_otp_audit').insert({ order_id: food.order_id, action: 'VALIDATE_SUCCESS', otp_type: otpRow.otp_type });
-      return NextResponse.json({ valid: true });
+
+      if (otpType === 'PICKUP') {
+        await db
+          .from('orders_food')
+          .update({ handed_over_to_rider_at: verifiedIso, updated_at: verifiedIso })
+          .eq('id', foodId)
+          .is('handed_over_to_rider_at', null);
+        await db
+          .from('orders_core')
+          .update({ handed_over_to_rider_at: verifiedIso, updated_at: verifiedIso })
+          .eq('id', food.order_id as number)
+          .is('handed_over_to_rider_at', null);
+
+        try {
+          await appendHandoverTimeline(db, {
+            orderCorePk: food.order_id as number,
+            handedOverAt: verifiedIso,
+            verifiedBy: 'merchant',
+          });
+        } catch (tlErr) {
+          console.warn('[validate-otp] handover timeline failed:', tlErr);
+        }
+      }
+
+      return NextResponse.json({
+        valid: true,
+        ...(otpType === 'PICKUP' ? { handed_over_to_rider_at: verifiedIso } : {}),
+      });
     }
 
     const newAttempts = (otpRow.attempt_count || 0) + 1;

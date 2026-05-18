@@ -13,6 +13,7 @@ import { ProfileNavProvider } from "@/context/ProfileNavContext";
 import { NotificationProvider } from "@/context/NotificationContext";
 import { SubscriptionProvider } from "@/context/SubscriptionContext";
 import FloatingOrdersManager from "../components/FloatingOrdersManager";
+import IncomingOrderModal from "../components/IncomingOrderModal";
 import { SessionRevokedGate } from "@/components/SessionRevokedGate";
 import NotificationSetup from "../components/NotificationSetup";
 
@@ -45,6 +46,7 @@ export default function RootLayout() {
                         />
                         <NotificationSetup />
                         <FloatingOrdersManager />
+                        <IncomingOrderModal />
                         <SessionRevokedGate />
                         <Stack
                           screenOptions={{

@@ -28,13 +28,21 @@ export function formatOrderDateTime(iso: string): string {
 
 export function splitRejectionMessage(
   reason: string | null | undefined,
-  status: "rejected" | "rto"
+  status: "rejected" | "rto",
+  cancelledByLabel?: string | null
 ): { prefix: string; detail: string } {
+  const label = (cancelledByLabel ?? "").trim();
   const r = (reason ?? "").trim();
   if (status === "rto") {
     return r
-      ? { prefix: "RTO:", detail: r }
-      : { prefix: "Return to origin", detail: "" };
+      ? { prefix: label || "RTO:", detail: r }
+      : { prefix: label || "Return to origin", detail: "" };
+  }
+  if (label) {
+    return { prefix: label, detail: r || "" };
+  }
+  if (/^auto cancelled/i.test(r)) {
+    return { prefix: "Auto Cancelled", detail: r.replace(/^auto cancelled:\s*/i, "").trim() };
   }
   if (r) {
     return { prefix: "Rejected by Restaurant:", detail: r };

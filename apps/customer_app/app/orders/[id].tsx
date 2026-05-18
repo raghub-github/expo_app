@@ -374,6 +374,13 @@ export default function OrderTrackingScreen() {
                 <Ionicons name="location-outline" size={20} color={GatiMitraColors.textSecondary} />
                 <Text style={styles.addressText}>{order.deliveryAddress}</Text>
               </View>
+              {order.deliveryOtp && !["DELIVERED", "CANCELLED"].includes(order.status) && (
+                <View style={styles.otpBox}>
+                  <Text style={styles.otpLabel}>Delivery OTP</Text>
+                  <Text style={styles.otpCode}>{order.deliveryOtp}</Text>
+                  <Text style={styles.otpHint}>Share this code only when you receive the order.</Text>
+                </View>
+              )}
             </View>
           )}
 
@@ -635,6 +642,33 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: GatiMitraColors.textSecondary,
     flex: 1,
+  },
+  otpBox: {
+    marginTop: 14,
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: GatiMitraColors.emerald + "14",
+    borderWidth: 1,
+    borderColor: GatiMitraColors.emerald + "40",
+  },
+  otpLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraColors.emerald,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  otpCode: {
+    fontSize: 28,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+    letterSpacing: 6,
+    marginTop: 4,
+  },
+  otpHint: {
+    fontSize: 12,
+    color: GatiMitraColors.textSecondary,
+    marginTop: 6,
   },
   summaryRow: {
     flexDirection: "row",

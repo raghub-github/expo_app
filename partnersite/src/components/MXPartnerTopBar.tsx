@@ -517,7 +517,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           : phonesArr[0] ?? null;
       setStorePrimaryPhoneDisplay(primaryFromApi);
       setStoreSettings({
-        show_floating_orders: data.show_floating_orders === true,
+        show_floating_orders: data.show_floating_orders !== false,
         communication_settings: {
           whatsapp_notifications: comm.whatsapp_notifications === true,
           reports: {
@@ -586,6 +586,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         if (!res.ok) {
           toast.error(data.error || 'Could not save settings');
           await loadStoreSettings();
+        } else {
+          window.dispatchEvent(new CustomEvent('partner-store-settings-changed'));
         }
       } catch {
         toast.error('Could not save settings');

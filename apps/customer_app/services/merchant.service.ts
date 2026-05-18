@@ -57,6 +57,7 @@ export type MenuItem = {
 export type MenuItemFullConfig = {
   item: {
     id: string;
+    /** Numeric PK from merchant_menu_items (when API sends it). */
     menuItemId?: number;
     name: string;
     description: string | null;

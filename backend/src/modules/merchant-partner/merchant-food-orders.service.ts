@@ -1,5 +1,15 @@
 import type { Sql } from "postgres";
 import { resolvePartnerPipeline } from "../../lib/partner-orders-unify.js";
+import {
+  labelsForStatusUpdate,
+  normalizeActionMode,
+  normalizeActionSource,
+  type MerchantOrderActionMode,
+  type MerchantOrderActionSource,
+} from "../../lib/merchant-order-food-action-labels.js";
+import { recordAcceptanceTimeline } from "../../lib/order-acceptance-timeline.js";
+import { recordCancellationTimeline } from "../../lib/order-cancellation-timeline.js";
+import { recordReadyTimeline } from "../../lib/order-food-status-timeline.js";
 
 export type MerchantFoodOrderItem = {
   qty: number;
@@ -31,6 +41,8 @@ export type MerchantFoodOrderDto = {
   delivered_at: string | null;
   cancelled_at: string | null;
   rejected_reason: string | null;
+  accepted_by_label: string | null;
+  cancelled_by_label: string | null;
   customer_email: string | null;
   drop_address: string | null;
   distance_km: number | null;
@@ -39,6 +51,8 @@ export type MerchantFoodOrderDto = {
   customer_store_orders_total: number | null;
   is_bulk_order: boolean;
   veg_non_veg: string | null;
+  requires_utensils: boolean | null;
+  delivery_instructions: string | null;
 };
 
 function num(v: unknown): number {
@@ -137,7 +151,28 @@ type FoodRow = {
   delivered_at: string | null;
   cancelled_at: string | null;
   rejected_reason: string | null;
+  accepted_by_label: string | null;
+  cancelled_by_label: string | null;
   veg_non_veg: string | null;
+  pickup_otp: string | null;
+  rto_otp: string | null;
+  requires_utensils: boolean | null;
+  delivery_instructions: string | null;
+};
+
+export type MerchantFoodOrderRiderLogEntry = {
+  rider_id: number;
+  rider_name: string | null;
+  rider_mobile: string | null;
+  selfie_url: string | null;
+  assignment_status: string;
+  assigned_at: string | null;
+  accepted_at: string | null;
+  rejected_at: string | null;
+  reached_merchant_at: string | null;
+  picked_up_at: string | null;
+  delivered_at: string | null;
+  cancelled_at: string | null;
 };
 
 /** orders_core.customer_id → customers (join + map); then orders_food.customer_name. */
@@ -285,7 +320,13 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.delivered_at,
         of.cancelled_at,
         of.rejected_reason,
-        of.veg_non_veg
+        of.accepted_by_label,
+        of.cancelled_by_label,
+        of.veg_non_veg,
+        of.pickup_otp,
+        of.rto_otp,
+        of.requires_utensils,
+        of.delivery_instructions
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
         AND (of.order_id IN ${sql(corePks)} OR of.core_order_id IN ${sql(textIds)})
@@ -311,7 +352,13 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.delivered_at,
         of.cancelled_at,
         of.rejected_reason,
-        of.veg_non_veg
+        of.accepted_by_label,
+        of.cancelled_by_label,
+        of.veg_non_veg,
+        of.pickup_otp,
+        of.rto_otp,
+        of.requires_utensils,
+        of.delivery_instructions
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
         AND of.order_id IN ${sql(corePks)}
@@ -337,7 +384,13 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.delivered_at,
         of.cancelled_at,
         of.rejected_reason,
-        of.veg_non_veg
+        of.accepted_by_label,
+        of.cancelled_by_label,
+        of.veg_non_veg,
+        of.pickup_otp,
+        of.rto_otp,
+        of.requires_utensils,
+        of.delivery_instructions
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
         AND of.core_order_id IN ${sql(textIds)}
@@ -415,8 +468,8 @@ function buildOrderDto(
     rider_id: core.rider_id,
     grand_total: total,
     items,
-    pickup_otp: otps?.pickup ?? null,
-    rto_otp: otps?.rto ?? null,
+    pickup_otp: food?.pickup_otp ?? otps?.pickup ?? null,
+    rto_otp: food?.rto_otp ?? otps?.rto ?? null,
     payment_method: core.payment_method,
     accepted_at: food?.accepted_at ?? null,
     preparing_at: null,
@@ -425,6 +478,8 @@ function buildOrderDto(
     delivered_at: food?.delivered_at ?? null,
     cancelled_at: resolveCancelledAt(food, core),
     rejected_reason: food?.rejected_reason ?? null,
+    accepted_by_label: food?.accepted_by_label ?? null,
+    cancelled_by_label: food?.cancelled_by_label ?? null,
     drop_address:
       (core.drop_address_normalized as string | null)?.trim() ||
       (core.drop_address_raw as string | null)?.trim() ||
@@ -438,7 +493,73 @@ function buildOrderDto(
         : null,
     is_bulk_order: Boolean(core.is_bulk_order),
     veg_non_veg: food?.veg_non_veg != null ? String(food.veg_non_veg) : null,
+    requires_utensils: food?.requires_utensils ?? null,
+    delivery_instructions: food?.delivery_instructions ?? null,
   };
+}
+
+export async function loadMerchantFoodOrderRidersLog(
+  sql: Sql,
+  storeId: number,
+  ordersFoodId: number
+): Promise<MerchantFoodOrderRiderLogEntry[]> {
+  const foodRows = await sql<{ order_id: number | null }[]>`
+    SELECT order_id FROM orders_food
+    WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
+    LIMIT 1
+  `;
+  const coreOrderId = foodRows[0]?.order_id;
+  if (coreOrderId == null || !Number.isFinite(Number(coreOrderId))) return [];
+
+  const assignments = await sql<
+    Array<{
+      rider_id: number;
+      rider_name: string | null;
+      rider_mobile: string | null;
+      assignment_status: string | null;
+      assigned_at: string | null;
+      accepted_at: string | null;
+      rejected_at: string | null;
+      reached_merchant_at: string | null;
+      picked_up_at: string | null;
+      delivered_at: string | null;
+      cancelled_at: string | null;
+    }>
+  >`
+    SELECT rider_id, rider_name, rider_mobile, assignment_status,
+      assigned_at, accepted_at, rejected_at, reached_merchant_at,
+      picked_up_at, delivered_at, cancelled_at
+    FROM order_rider_assignments
+    WHERE order_id = ${Number(coreOrderId)}
+    ORDER BY assigned_at DESC NULLS LAST
+  `;
+  if (!assignments.length) return [];
+
+  const riderIds = [...new Set(assignments.map((a) => a.rider_id))];
+  const riders = await sql<
+    Array<{ id: number; name: string | null; mobile: string | null; selfie_url: string | null }>
+  >`
+    SELECT id, name, mobile, selfie_url FROM riders WHERE id IN ${sql(riderIds)}
+  `;
+  const riderMap = new Map(riders.map((r) => [r.id, r]));
+
+  return assignments.map((a) => {
+    const r = riderMap.get(a.rider_id);
+    return {
+      rider_id: a.rider_id,
+      rider_name: a.rider_name ?? r?.name ?? null,
+      rider_mobile: a.rider_mobile ?? r?.mobile ?? null,
+      selfie_url: r?.selfie_url ?? null,
+      assignment_status: a.assignment_status ?? "pending",
+      assigned_at: a.assigned_at,
+      accepted_at: a.accepted_at,
+      rejected_at: a.rejected_at,
+      reached_merchant_at: a.reached_merchant_at,
+      picked_up_at: a.picked_up_at,
+      delivered_at: a.delivered_at,
+      cancelled_at: a.cancelled_at,
+    };
+  });
 }
 
 export async function loadMerchantFoodOrders(
@@ -535,9 +656,9 @@ export async function loadMerchantFoodOrders(
     for (const o of otpRows as unknown as Array<{ order_id: number; otp_code: string; otp_type: string }>) {
       const cid = Number(o.order_id);
       const entry = otpByCoreId.get(cid) ?? { pickup: null, rto: null };
-      const t = String(o.otp_type ?? "").toLowerCase();
-      if (t.includes("rto")) entry.rto = String(o.otp_code);
-      else entry.pickup = String(o.otp_code);
+      const t = String(o.otp_type ?? "").toUpperCase();
+      if (t === "RTO") entry.rto = String(o.otp_code);
+      else if (t === "PICKUP") entry.pickup = String(o.otp_code);
       otpByCoreId.set(cid, entry);
     }
   } catch {
@@ -606,7 +727,7 @@ function normalizeOrderStatusForTransition(raw: string | null | undefined): stri
 const VALID_TRANSITIONS: Record<string, string[]> = {
   CREATED: ["ACCEPTED", "CANCELLED"],
   NEW: ["ACCEPTED", "CANCELLED"],
-  ACCEPTED: ["PREPARING", "CANCELLED"],
+  ACCEPTED: ["PREPARING", "READY_FOR_PICKUP", "CANCELLED"],
   PREPARING: ["READY_FOR_PICKUP", "CANCELLED", "RTO"],
   READY_FOR_PICKUP: ["OUT_FOR_DELIVERY", "CANCELLED", "RTO"],
   OUT_FOR_DELIVERY: ["DELIVERED", "RTO"],
@@ -634,7 +755,11 @@ export async function patchMerchantFoodOrderStatus(
   storeId: number,
   ordersFoodId: number,
   newStatus: string,
-  rejectedReason?: string | null
+  rejectedReason?: string | null,
+  opts?: {
+    actionSource?: MerchantOrderActionSource;
+    actionMode?: MerchantOrderActionMode;
+  }
 ): Promise<MerchantFoodOrderDto> {
   const status = String(newStatus || "").toUpperCase();
   if (!status) throw new Error("status_required");
@@ -678,13 +803,33 @@ export async function patchMerchantFoodOrderStatus(
   }
 
   const now = new Date().toISOString();
+  const actionSource = normalizeActionSource(opts?.actionSource ?? "app");
+  const actionMode = normalizeActionMode(opts?.actionMode);
+  const actionLabels = labelsForStatusUpdate({
+    newStatus: status,
+    actionSource,
+    actionMode,
+    rejectedReason,
+  });
 
   if (status === "ACCEPTED") {
     await sql`
       UPDATE orders_food
-      SET order_status = ${status}, updated_at = ${now}::timestamptz, accepted_at = ${now}::timestamptz
+      SET order_status = ${status}, updated_at = ${now}::timestamptz, accepted_at = ${now}::timestamptz,
+          accepted_by_label = ${actionLabels.accepted_by_label ?? null}
       WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
     `;
+    try {
+      await recordAcceptanceTimeline(sql, {
+        orderCorePk: corePk,
+        previousStatus: currentStatus,
+        actionSource,
+        acceptMode: actionMode,
+        acceptedByLabel: actionLabels.accepted_by_label ?? null,
+      });
+    } catch {
+      /* non-fatal */
+    }
   } else if (status === "PREPARING") {
     await sql`
       UPDATE orders_food
@@ -694,9 +839,21 @@ export async function patchMerchantFoodOrderStatus(
   } else if (status === "READY_FOR_PICKUP") {
     await sql`
       UPDATE orders_food
-      SET order_status = ${status}, updated_at = ${now}::timestamptz, prepared_at = ${now}::timestamptz
+      SET order_status = ${status}, updated_at = ${now}::timestamptz,
+          preparing_at = COALESCE(preparing_at, ${now}::timestamptz),
+          prepared_at = ${now}::timestamptz
       WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
     `;
+    try {
+      await recordReadyTimeline(sql, {
+        orderCorePk: corePk,
+        previousStatus: currentStatus,
+        preparedAt: now,
+        actionSource,
+      });
+    } catch {
+      /* non-fatal */
+    }
   } else if (status === "OUT_FOR_DELIVERY") {
     await sql`
       UPDATE orders_food
@@ -710,19 +867,32 @@ export async function patchMerchantFoodOrderStatus(
       WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
     `;
   } else if (status === "CANCELLED") {
+    const cancelLabel = actionLabels.cancelled_by_label ?? null;
     if (rejectedReason) {
       await sql`
         UPDATE orders_food
         SET order_status = ${status}, updated_at = ${now}::timestamptz, cancelled_at = ${now}::timestamptz,
-            rejected_reason = ${rejectedReason}
+            rejected_reason = ${rejectedReason}, cancelled_by_label = ${cancelLabel}
         WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
       `;
     } else {
       await sql`
         UPDATE orders_food
-        SET order_status = ${status}, updated_at = ${now}::timestamptz, cancelled_at = ${now}::timestamptz
+        SET order_status = ${status}, updated_at = ${now}::timestamptz, cancelled_at = ${now}::timestamptz,
+            cancelled_by_label = ${cancelLabel}
         WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
       `;
+    }
+    try {
+      await recordCancellationTimeline(sql, {
+        orderCorePk: corePk,
+        previousStatus: currentStatus,
+        rejectedReason: rejectedReason ?? null,
+        actorType: actionSource === "admin" ? "admin" : actionSource === "system" ? "system" : "store",
+        cancelMode: actionMode,
+      });
+    } catch {
+      /* non-fatal */
     }
   } else if (status === "RTO") {
     try {
@@ -753,14 +923,19 @@ export async function patchMerchantFoodOrderStatus(
   }
 
   try {
-    const meta = rejectedReason ? JSON.stringify({ rejected_reason: rejectedReason }) : "{}";
+    const meta = JSON.stringify({
+      ...(rejectedReason ? { rejected_reason: rejectedReason } : {}),
+      ...(status === "ACCEPTED" ? { accept_mode: actionMode } : {}),
+      ...(status === "CANCELLED" ? { cancel_mode: actionMode } : {}),
+    });
     await sql`
       INSERT INTO merchant_order_food_actions (
         orders_food_id, orders_core_id, merchant_store_id,
-        from_status, to_status, action_source, actor_type, metadata
+        from_status, to_status, action_source, actor_type, actor_label, metadata
       ) VALUES (
         ${ordersFoodId}, ${corePk}, ${storeId},
-        ${currentStatus}, ${status}, ${"merchant_app"}, ${"merchant"}, ${meta}::jsonb
+        ${currentStatus}, ${status}, ${actionSource}, ${"merchant"}, ${actionLabels.actor_label},
+        ${meta}::jsonb
       )
     `;
   } catch {
@@ -793,4 +968,47 @@ export async function patchMerchantFoodOrderStatus(
   const order = loaded[0];
   if (!order) throw new Error("order_not_found_after_update");
   return order;
+}
+
+export type MerchantOrderTimelineEntry = {
+  id: number;
+  status: string;
+  previous_status: string | null;
+  status_message: string | null;
+  actor_type: string | null;
+  occurred_at: string;
+  expected_by_at: string | null;
+  metadata: Record<string, unknown> | null;
+};
+
+/** Timeline rows from order_timelines for a store food order. */
+export async function loadMerchantFoodOrderTimeline(
+  sql: Sql,
+  storeId: number,
+  ordersFoodId: number
+): Promise<MerchantOrderTimelineEntry[]> {
+  const owner = await sql`
+    SELECT order_id AS core_id
+    FROM orders_food
+    WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
+    LIMIT 1
+  `;
+  const coreId = Number((owner[0] as { core_id?: number } | undefined)?.core_id);
+  if (!Number.isFinite(coreId) || coreId < 1) return [];
+
+  const rows = await sql`
+    SELECT
+      id,
+      status,
+      previous_status,
+      status_message,
+      actor_type,
+      occurred_at,
+      expected_by_at,
+      metadata
+    FROM order_timelines
+    WHERE order_id = ${coreId}
+    ORDER BY occurred_at ASC, id ASC
+  `;
+  return rows as MerchantOrderTimelineEntry[];
 }
