@@ -24,6 +24,7 @@ export interface WalletSummary {
   today_earning: number;
   yesterday_earning: number;
   pending_withdrawal_total: number;
+  in_process_withdrawal_total?: number;
 }
 
 export interface LedgerEntry {

@@ -53,9 +53,9 @@ export function useTicketRoomRealtime(options: {
   const [distinctRoleCount, setDistinctRoleCount] = useState(0);
   const [otherAgentViewers, setOtherAgentViewers] = useState<TicketOtherAgentViewer[]>([]);
   const otherAgentsSerializedRef = useRef(serializeOtherAgentViewers([]));
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debounceRef = useRef<number | null>(null);
   const subscribedRef = useRef(false);
-  const probeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const probeRef = useRef<number | null>(null);
 
   const scheduleInvalidate = useCallback(() => {
     if (debounceRef.current) window.clearTimeout(debounceRef.current);

@@ -715,7 +715,8 @@ export function RightSidebar({
             ) : isTicketsDashboard ? (
               <div className="min-h-0" aria-hidden />
             ) : (
-              <nav className="space-y-1.5 px-2 pb-2 pt-0" dir="ltr">
+              <div className="flex min-h-0 flex-1 flex-col">
+              <nav className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain space-y-1.5 px-2 pb-2 pt-0" dir="ltr">
               {(() => {
                 // Wallet & Earnings sub-pages (wallet-history, earnings) should highlight "Wallet & Earnings", not Rider Information
                 const isWalletOrEarningsPath =
@@ -887,26 +888,26 @@ export function RightSidebar({
                         </Link>
                       )
                     )}
-                    {/* Store Information Card: merchant portal — only on orders/* or merchants/*; unmounts immediately on other routes (no CSS hide). */}
-                    {isOpen && portal === "merchant" && showRightSidebarStoreCard ? (
-                      <div className="mt-6 mb-5 min-w-0">
-                        {showMerchantSearchSkeleton ? (
-                          <StoreInfoCardSkeleton />
-                        ) : isMerchantsSearchListRoot ? (
-                          merchantSearchResultStore ? (
-                            <StoreInfoCard store={merchantSearchResultStore} />
-                          ) : null
-                        ) : sidebarStore ? (
-                          <StoreInfoCard store={sidebarStore} />
-                        ) : merchantSearchResultStore ? (
-                          <StoreInfoCard store={merchantSearchResultStore} />
-                        ) : null}
-                      </div>
-                    ) : null}
                   </>
                 );
               })()}
               </nav>
+              {isOpen && portal === "merchant" && showRightSidebarStoreCard ? (
+                <div className="shrink-0 border-t border-gray-300/50 bg-[#E8F0F2] px-2 py-2 min-h-0 max-h-[34vh] overflow-y-auto overscroll-y-contain">
+                  {showMerchantSearchSkeleton ? (
+                    <StoreInfoCardSkeleton />
+                  ) : isMerchantsSearchListRoot ? (
+                    merchantSearchResultStore ? (
+                      <StoreInfoCard store={merchantSearchResultStore} compact />
+                    ) : null
+                  ) : sidebarStore ? (
+                    <StoreInfoCard store={sidebarStore} compact />
+                  ) : merchantSearchResultStore ? (
+                    <StoreInfoCard store={merchantSearchResultStore} compact />
+                  ) : null}
+                </div>
+              ) : null}
+              </div>
             )}
           </div>
         </div>

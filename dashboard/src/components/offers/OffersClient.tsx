@@ -217,7 +217,10 @@ export function OffersClient() {
   const [togglingId, setTogglingId] = useState<number | null>(null);
 
   const limit = 20;
-  const planType = tab === "merchant" ? "MERCHANT" : tab === "rider" ? "RIDER" : "CUSTOMER";
+  const planType = (tab === "merchant" ? "MERCHANT" : tab === "rider" ? "RIDER" : "CUSTOMER") as
+    | "MERCHANT"
+    | "RIDER"
+    | "CUSTOMER";
   const filters = useMemo(
     () => ({ type: planType, search: searchApplied, status: statusFilter, limit, offset: (page - 1) * limit }),
     [planType, searchApplied, statusFilter, page, limit]

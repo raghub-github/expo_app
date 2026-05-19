@@ -55,6 +55,11 @@ export type CalculateBillResponse = {
   addonTotal: number;
   discountTotal: number;
   deliveryFee: number;
+  /**
+   * Delivery fee from store→drop quote before self-pickup waiver.
+   * When `deliveryType` is self_pickup, `deliveryFee` is 0 but this shows what would have applied (for UI strikethrough).
+   */
+  deliveryFeeQuotedInr?: number | null;
   platformFee: number;
   packagingFee: number;
   surgeFee: number;

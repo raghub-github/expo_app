@@ -50,6 +50,8 @@ const orderDetailResponseSchema = z.object({
   totalAmount: z.number().optional().nullable(),
   createdAt: z.string(),
   deliveryAddress: z.string().optional().nullable(),
+  /** 4-digit delivery OTP — customer tracking only. */
+  deliveryOtp: z.string().optional().nullable(),
   statusHistory: z.array(z.object({ status: z.string(), at: z.string() })).optional(),
   rider: z.object({ name: z.string(), phone: z.string().optional() }).optional().nullable(),
   items: z.array(z.object({ name: z.string(), quantity: z.number(), price: z.number() })).optional(),
@@ -213,6 +215,7 @@ export async function orderRoutes(app: FastifyInstance) {
     subscriptionOptIn: z.boolean().optional(),
     /** 'delivery' (default) or 'self_pickup' — waives delivery fee, skips rider dispatch. */
     deliveryType: z.enum(["delivery", "self_pickup"]).optional(),
+    checkoutMetadata: z.record(z.string(), z.unknown()).optional(),
   });
 
   app.post(
@@ -262,6 +265,7 @@ export async function orderRoutes(app: FastifyInstance) {
         pickupLon: body.pickupLon,
         subscriptionOptIn: body.subscriptionOptIn,
         deliveryType: body.deliveryType,
+        checkoutMetadata: body.checkoutMetadata ?? null,
       });
       if (!result.ok) {
         return reply.status(400).send({ error: result.code, message: result.message });
@@ -463,6 +467,7 @@ export async function orderRoutes(app: FastifyInstance) {
           currentStatus: ordersCore.currentStatus,
           grandTotal: ordersCore.grandTotal,
           deliveryAddress: ordersCore.deliveryAddress,
+          deliveryOtp: ordersCore.deliveryOtp,
           items: ordersCore.items,
           createdAt: ordersCore.createdAt,
           placedAt: ordersCore.placedAt,
@@ -533,6 +538,7 @@ export async function orderRoutes(app: FastifyInstance) {
         totalAmount,
         createdAt: (createdAt instanceof Date ? createdAt : new Date(createdAt)).toISOString(),
         deliveryAddress: coreRow.deliveryAddress ?? null,
+        deliveryOtp: coreRow.deliveryOtp ?? null,
         statusHistory: [{ status: appStatus, at: (createdAt instanceof Date ? createdAt : new Date(createdAt)).toISOString() }],
         rider: null,
         items: items.length > 0 ? items : undefined,

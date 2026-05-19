@@ -123,6 +123,9 @@ export interface MenuItem {
   discount_percentage: number;
   tax_percentage?: number;
   in_stock?: boolean;
+  out_of_stock_manual?: boolean;
+  out_of_stock_until?: string | null;
+  out_of_stock_updated_at?: string | null;
   has_customizations?: boolean;
   has_addons?: boolean;
   has_variants?: boolean;
@@ -183,6 +186,9 @@ export interface MenuCategory {
   cuisine_id?: number | null;
   display_order?: number | null;
   is_active?: boolean;
+  out_of_stock_manual?: boolean;
+  out_of_stock_until?: string | null;
+  out_of_stock_updated_at?: string | null;
   created_at?: string;
   updated_at?: string;
 }

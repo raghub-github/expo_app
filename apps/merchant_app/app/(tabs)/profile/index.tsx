@@ -109,9 +109,8 @@ export default function ProfileScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
 
-  // Do not prefetch nested profile routes here: router.prefetch() for paths like
-  // /(tabs)/profile/tickets dispatches a PRELOAD action that is not handled when
-  // the profile tab is unmounted (unmountOnBlur), causing "PRELOAD was not handled" errors.
+  // Do not prefetch nested profile routes here: router.prefetch() can dispatch PRELOAD
+  // actions that are not always handled by the profile stack navigator.
 
   useEffect(() => {
     let cancelled = false;
@@ -286,7 +285,7 @@ export default function ProfileScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Orders</Text>
         <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
-          <GridCard icon="list-outline" label="Order history" onPress={() => router.push("/(tabs)/orders")} tileWidth={tileWidth} />
+          <GridCard icon="list-outline" label="Order history" onPress={() => router.push("/order-history")} tileWidth={tileWidth} />
           <GridCard icon="alert-circle-outline" label="Complaints" onPress={() => router.push("/(tabs)/profile/complaints")} tileWidth={tileWidth} />
           <GridCard icon="chatbubble-outline" label="Reviews" onPress={() => router.push("/(tabs)/profile/reviews")} tileWidth={tileWidth} />
         </View>

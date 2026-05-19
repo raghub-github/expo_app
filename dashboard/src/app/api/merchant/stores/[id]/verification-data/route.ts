@@ -11,6 +11,7 @@ import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { resolveAssignedAreaManagersForStoreVerification } from "@/lib/db/operations/parent-area-managers";
 import { getSql } from "@/lib/db/client";
 import { mapRowToMenuMediaFile, type MenuMediaFile } from "@/lib/merchant-menu-media";
+import { normalizeMerchantDocumentUrls } from "@/lib/attachments/resolve-attachment-proxy-url";
 
 export const runtime = "nodejs";
 
@@ -123,7 +124,7 @@ export async function GET(
           const value = d[key];
           if (value instanceof Date) d[key] = value.toISOString();
         });
-        documents = d;
+        documents = normalizeMerchantDocumentUrls(d);
       }
     } catch (e) {
       console.warn("[verification-data] merchant_store_documents:", e);

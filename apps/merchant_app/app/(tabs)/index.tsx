@@ -3,7 +3,7 @@
  * All Orders with New/Active tabs, recent orders. Main area only; header/status card untouched.
  */
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import {
   View,
   Text,
@@ -13,7 +13,6 @@ import {
   Dimensions,
   RefreshControl,
 } from "react-native";
-import { useEffect, useRef } from "react";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -26,8 +25,16 @@ import {
   FONT_LABEL,
   TAB_BAR_SCROLL_CONTENT_PADDING,
 } from "@/constants/theme";
-import { SwipeableOrderCard } from "@/components/SwipeableOrderCard";
 import { useStoreStatus } from "@/context/StoreStatusContext";
+import { useAuth } from "@/context/AuthContext";
+import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { useOrders, type OrderRecord } from "@/hooks/useOrders";
+import { LiveOrderCard } from "@/components/order/LiveOrderCard";
+import { RejectOrderSheet } from "@/components/order/RejectOrderSheet";
+import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
+import { fetchGrowthSummary } from "@/services/growthApi";
+import { fetchWalletSummary } from "@/services/walletApi";
+import { getActiveOrdersCount } from "@/services/storeSettingsApi";
 
 const { width } = Dimensions.get("window");
 const CARD_WIDTH = (width - H_PADDING * 2 - CARD_GAP) / 2;
@@ -35,19 +42,9 @@ const MAX_RECENT_ORDERS = 5;
 
 type OrderFilterTab = "New" | "Active";
 
-const DUMMY_ORDERS: Array<{
-  id: string;
-  items: string;
-  amount: string;
-  status: "Preparing" | "Pending" | "Completed";
-  time: string;
-}> = [
-  { id: "GM-2851", items: "2× Burger, 1× Fries", amount: "₹349", status: "Preparing", time: "5 min ago" },
-  { id: "GM-2850", items: "1× Margherita Pizza", amount: "₹499", status: "Pending", time: "12 min ago" },
-  { id: "GM-2849", items: "3× Biryani, 2× Raita", amount: "₹720", status: "Completed", time: "28 min ago" },
-  { id: "GM-2848", items: "1× Cold Coffee, 2× Sandwich", amount: "₹385", status: "Completed", time: "1 hr ago" },
-  { id: "GM-2847", items: "4× Samosa, 2× Chai", amount: "₹220", status: "Completed", time: "1 hr 15 min ago" },
-];
+function formatCurrency(n: number): string {
+  return `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+}
 
 // GatiMitra brand only: white/surface cards + primary green or navy for accent
 function KpiCard({
@@ -83,9 +80,6 @@ function KpiCard({
     </Pressable>
   );
 }
-
-const TOAST_DURATION_MS = 2500;
-const TOAST_MSG = "Removed. See Orders.";
 
 function formatTodayDate(): string {
   const d = new Date();
@@ -129,6 +123,10 @@ function formatScheduledOffDateAndTime(value: string | null | undefined): string
 
 export default function DashboardScreen() {
   const router = useRouter();
+  const { token } = useAuth();
+  const { selectedStore } = useSelectedStore();
+  const storeId = selectedStore?.id ?? null;
+  const { orders, refetch: refetchOrders, transitionOrder } = useOrders(12000);
   const {
     isOnline,
     manualCloseUntil,
@@ -139,13 +137,42 @@ export default function DashboardScreen() {
     statusReason,
     refresh,
   } = useStoreStatus();
-  const [dismissedRecentIds, setDismissedRecentIds] = useState<Set<string>>(new Set());
-  const [toastVisible, setToastVisible] = useState(false);
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const [refreshing, setRefreshing] = useState(false);
+  const [nowMs, setNowMs] = useState(Date.now());
+  const [rejectTarget, setRejectTarget] = useState<OrderRecord | null>(null);
+  const [rejectLoading, setRejectLoading] = useState(false);
 
   const [orderTab, setOrderTab] = useState<OrderFilterTab>("New");
+  const [todayEarning, setTodayEarning] = useState(0);
+  const [deliveredToday, setDeliveredToday] = useState(0);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [walletBalance, setWalletBalance] = useState(0);
+
+  const loadDashboardStats = useCallback(async () => {
+    if (!token || !storeId) return;
+    try {
+      const [growth, wallet, active] = await Promise.all([
+        fetchGrowthSummary(storeId, token, "today"),
+        fetchWalletSummary(storeId, token),
+        getActiveOrdersCount(storeId, token),
+      ]);
+      setTodayEarning(Number(growth.total_sales) || 0);
+      setDeliveredToday(Number(growth.total_orders) || 0);
+      setWalletBalance(Number(wallet.available_balance ?? 0) || 0);
+      setPendingCount(Number(active) || 0);
+    } catch {
+      /* keep previous values */
+    }
+  }, [token, storeId]);
+
+  useEffect(() => {
+    void loadDashboardStats();
+  }, [loadDashboardStats]);
+
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -174,26 +201,67 @@ export default function DashboardScreen() {
   const showClosedBanner = !isOnline && hasManualOrScheduledClosure;
 
   const recentOrders = useMemo(() => {
-    let list = DUMMY_ORDERS.filter((o) => !dismissedRecentIds.has(o.id));
+    let list = orders;
     if (orderTab === "New") {
-      list = list.filter((o) => o.status === "Pending");
+      list = list.filter((o) => o.status === "created");
     } else {
-      list = list.filter((o) => o.status === "Preparing" || o.status === "Pending");
+      list = list.filter(
+        (o) =>
+          o.status === "preparing" ||
+          o.status === "ready" ||
+          o.status === "picked_up"
+      );
     }
     return list.slice(0, MAX_RECENT_ORDERS);
-  }, [dismissedRecentIds, orderTab]);
+  }, [orderTab, orders]);
 
-  const handleDismissRecent = (id: string) => {
-    setDismissedRecentIds((prev) => new Set(prev).add(id));
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToastVisible(true);
-    toastTimer.current = setTimeout(() => {
-      setToastVisible(false);
-      toastTimer.current = null;
-    }, TOAST_DURATION_MS);
-  };
+  const handleAccept = useCallback(
+    (order: OrderRecord) => {
+      if (order.status === "created") {
+        transitionOrder(order.id, "preparing");
+      }
+    },
+    [transitionOrder]
+  );
 
-  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
+  const handleReject = useCallback((order: OrderRecord) => {
+    if (order.status === "created") setRejectTarget(order);
+  }, []);
+
+  const confirmReject = useCallback(
+    async (reason: MerchantCancellationReason) => {
+      if (!rejectTarget) return;
+      setRejectLoading(true);
+      try {
+        await transitionOrder(rejectTarget.id, "rejected", { rejectedReason: reason });
+        setRejectTarget(null);
+      } catch {
+        /* useOrders surfaces error */
+      } finally {
+        setRejectLoading(false);
+      }
+    },
+    [rejectTarget, transitionOrder]
+  );
+
+  const handleAdvance = useCallback(
+    (order: OrderRecord) => {
+      switch (order.status) {
+        case "preparing":
+          transitionOrder(order.id, "ready");
+          break;
+        case "ready":
+          transitionOrder(order.id, "picked_up");
+          break;
+        case "picked_up":
+          transitionOrder(order.id, "delivered");
+          break;
+        default:
+          break;
+      }
+    },
+    [transitionOrder]
+  );
 
   const scrollBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING;
 
@@ -205,14 +273,14 @@ export default function DashboardScreen() {
       setRefreshing(false);
     }, REFRESH_TIMEOUT_MS);
     try {
-      await refresh();
+      await Promise.all([refresh(), refetchOrders(), loadDashboardStats()]);
     } catch {
       // Keep spinner stop on error; finally will clear it
     } finally {
       clearTimeout(timeoutId);
       setRefreshing(false);
     }
-  }, [refresh]);
+  }, [refresh, refetchOrders, loadDashboardStats]);
 
   return (
     <View style={styles.screenWrap}>
@@ -258,14 +326,14 @@ export default function DashboardScreen() {
         <View style={styles.kpiRow}>
           <KpiCard
             title="Today's earning"
-            value="₹2,000"
+            value={formatCurrency(todayEarning)}
             icon="cash-outline"
             accent="primary"
             onPress={() => router.push("/(tabs)/earnings")}
           />
           <KpiCard
             title="Delivered"
-            value="08"
+            value={String(deliveredToday).padStart(2, "0")}
             icon="cube-outline"
             accent="navy"
             onPress={() => router.push("/(tabs)/orders")}
@@ -274,14 +342,14 @@ export default function DashboardScreen() {
         <View style={styles.kpiRow}>
           <KpiCard
             title="Pending deliveries"
-            value="6"
+            value={String(pendingCount)}
             icon="time-outline"
             accent="primary"
             onPress={() => router.push("/(tabs)/orders")}
           />
           <KpiCard
             title="Overall wallet balance"
-            value="₹1,24,200"
+            value={formatCurrency(walletBalance)}
             icon="wallet-outline"
             accent="navy"
             onPress={() => router.push("/(tabs)/earnings")}
@@ -312,26 +380,32 @@ export default function DashboardScreen() {
             </View>
           ) : (
             recentOrders.map((order) => (
-              <SwipeableOrderCard
+              <LiveOrderCard
                 key={order.id}
-                id={order.id}
-                items={order.items}
-                amount={order.amount}
-                status={order.status}
-                time={order.time}
-                onPress={() => router.push(`/order/${order.id}`)}
-                onDismiss={() => handleDismissRecent(order.id)}
+                order={order}
+                nowMs={nowMs}
+                onAccept={() => handleAccept(order)}
+                onReject={() => handleReject(order)}
+                onAdvance={() => handleAdvance(order)}
+                onViewDetail={() => router.push(`/order/${order.id}`)}
               />
             ))
           )}
         </View>
       </View>
     </ScrollView>
-    {toastVisible && (
-      <View style={[styles.toast, { bottom: TAB_BAR_SCROLL_CONTENT_PADDING + 8 }]}>
-        <Text style={styles.toastText}>{TOAST_MSG}</Text>
-      </View>
-    )}
+      <RejectOrderSheet
+        visible={!!rejectTarget}
+        formattedOrderId={rejectTarget?.formattedOrderId}
+        fallbackOrderId={
+          rejectTarget
+            ? Number(rejectTarget.id) || rejectTarget.ordersCoreId
+            : 0
+        }
+        loading={rejectLoading}
+        onClose={() => !rejectLoading && setRejectTarget(null)}
+        onConfirm={confirmReject}
+      />
     </View>
   );
 }
@@ -437,7 +511,7 @@ const styles = StyleSheet.create({
   tabTextActive: {
     color: "#fff",
   },
-  orderList: {},
+  orderList: { gap: 12 },
   emptyOrders: {
     paddingVertical: 24,
     alignItems: "center",
@@ -449,21 +523,5 @@ const styles = StyleSheet.create({
   cardPressed: {
     opacity: 0.95,
     transform: [{ scale: 0.98 }],
-  },
-  toast: {
-    position: "absolute",
-    left: H_PADDING,
-    right: H_PADDING,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    backgroundColor: GatiMitraMerchant.textPrimary,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  toastText: {
-    fontSize: FONT_LABEL,
-    fontWeight: "500",
-    color: "#FFFFFF",
   },
 });

@@ -17,6 +17,7 @@ import {
   Bell,
   Calendar,
   Camera,
+  ChefHat,
   ChevronRight,
   ChevronDown,
   ChevronUp,
@@ -33,12 +34,19 @@ import {
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { formatStoreActionSourceLabel } from '@/lib/storeActionSource';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 import { useMerchantSession } from '@/context/MerchantSessionContext';
 import { usePartnerShellHeader } from '@/context/PartnerShellHeaderContext';
 import LogoutConfirmModal from '@/components/LogoutConfirmModal';
 import { PartnerToggleConfirmModal } from '@/components/PartnerToggleConfirmModal';
 import { StoreOperationalFlowModals } from '@/components/StoreOperationalFlowModals';
+import { LicenseExpiredModal } from '@/components/LicenseExpiredModal';
+import {
+  MANUAL_LOCK_LICENSE_BLOCKED_MESSAGE,
+  type LicenseDocumentStatus,
+  type MerchantDocumentPrefix,
+} from '@/lib/merchantLicenseExpiry';
 import { RadarLiveIndicator } from '@/components/RadarLiveIndicator';
 import {
   PartnerWaitingOrderSync,
@@ -49,6 +57,8 @@ import { clientStoreOpsDebugLog } from '@/lib/store-ops-client-debug';
 import { toStoredDocumentUrl } from '@/lib/r2';
 import NeedHelpBadge from '@/components/NeedHelpBadge';
 import { usePartnerDeviceOrderAlerts } from '@/hooks/usePartnerDeviceOrderAlerts';
+import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
+import { emitPartnerStoreOperationsRefresh } from '@/lib/partnerStoreOperationsRefresh';
 import {
   migrateDeviceOrderAlertsFromServer,
   syncFoodOrdersUiNotifyFromDevice,
@@ -97,6 +107,45 @@ const SCHEDULE_OFF_REASONS = [
   'Going out of station',
   'Other',
 ] as const;
+
+const RUSH_DURATION_OPTIONS = [
+  { minutes: 30, label: '30 minutes' },
+  { minutes: 60, label: '1 hour' },
+  { minutes: 90, label: '1 hour 30 minutes' },
+  { minutes: 120, label: '2 hours' },
+] as const;
+
+type ScheduleClosureRow = {
+  id: number;
+  reason: string | null;
+  starts_at: string;
+  ends_at: string;
+  status: string;
+  marked_from?: string | null;
+};
+
+function isoUtcToLocalDateTimeInputs(iso: string): { ymd: string; hm: string } | null {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  return { ymd: `${y}-${mo}-${day}`, hm: `${hh}:${mi}` };
+}
+
+function formatClosureRangeFriendly(startsIso: string, endsIso: string): string {
+  try {
+    const a = new Date(startsIso);
+    const b = new Date(endsIso);
+    if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return '';
+    const o: Intl.DateTimeFormatOptions = { dateStyle: 'medium', timeStyle: 'short' };
+    return `${a.toLocaleString('en-IN', o)} – ${b.toLocaleString('en-IN', o)}`;
+  } catch {
+    return '';
+  }
+}
 
 function combineLocalDateTime(dateStr: string, timeStr: string): Date | null {
   if (!dateStr || !timeStr) return null;
@@ -250,14 +299,18 @@ function ScheduleOffTimeField({
 }
 
 type StoreOpRow = {
+  /** Effective “live” indicator: OPEN **and** inside an accepting slot (not break / outside hours). */
   open: boolean | null;
   autoOpen: boolean;
   manualLock: boolean;
   /** From GET /api/store-operations — current time inside an active slot (or 24h). */
   withinOperatingHours?: boolean | null;
+  /** OFF_DAY | BREAK | PRE_BREAK | WITHIN_SLOT | OUTSIDE_HOURS | NO_HOURS */
+  schedulePhase?: string | null;
   /** From GET — today is a scheduled closed day or has no valid slots while "open" in DB. */
   todayScheduledClosed?: boolean | null;
 };
+
 
 function WhatsappBrandIcon({ className }: { className?: string }) {
   return (
@@ -370,7 +423,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const profilePhotoInputRef = useRef<HTMLInputElement>(null);
   const partnerShellHeader = usePartnerShellHeader();
   const topbarRef = useRef<HTMLElement | null>(null);
-  const [statusTab, setStatusTab] = useState<'manage' | 'schedule'>('manage');
+  const [statusTab, setStatusTab] = useState<'manage' | 'schedule' | 'rush'>('manage');
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [storeOpen, setStoreOpen] = useState<boolean | null>(null);
@@ -378,9 +431,9 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const [manualLock, setManualLock] = useState(false);
   const [storeOpsById, setStoreOpsById] = useState<Record<string, StoreOpRow>>({});
   const prevSheetRef = useRef<PartnerHeaderSheet | null>(null);
-  const [scheduleClosures, setScheduleClosures] = useState<
-    Array<{ id: number; reason: string; starts_at: string; ends_at: string; status: string }>
-  >([]);
+  const [scheduleClosures, setScheduleClosures] = useState<ScheduleClosureRow[]>([]);
+  const [scheduleMassCancelModalOpen, setScheduleMassCancelModalOpen] = useState(false);
+  const [schedEditingClosureId, setSchedEditingClosureId] = useState<number | null>(null);
   const [scheduleStorePick, setScheduleStorePick] = useState('');
   const [schedStartDate, setSchedStartDate] = useState('');
   const [schedStartTime, setSchedStartTime] = useState('');
@@ -388,6 +441,11 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const [schedEndTime, setSchedEndTime] = useState('');
   const [schedReason, setSchedReason] = useState('');
   const [schedSaving, setSchedSaving] = useState(false);
+  const [rushStorePick, setRushStorePick] = useState('');
+  const [rushActive, setRushActive] = useState(false);
+  const [rushRemaining, setRushRemaining] = useState(0);
+  const [rushPick, setRushPick] = useState(60);
+  const [rushSaving, setRushSaving] = useState(false);
   const [pendingToggle, setPendingToggle] = useState<PendingOutletToggle | null>(null);
   const [toggleConfirmLoading, setToggleConfirmLoading] = useState(false);
   const [parentPhotoBusy, setParentPhotoBusy] = useState(false);
@@ -402,6 +460,15 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     null
   );
   const [operationalOpenModal, setOperationalOpenModal] = useState<{ storeId: string; storeName: string } | null>(null);
+  const [licenseBlocked, setLicenseBlocked] = useState(false);
+  const [licenseExpiredDocs, setLicenseExpiredDocs] = useState<LicenseDocumentStatus[]>([]);
+  const [licensePendingDocs, setLicensePendingDocs] = useState<LicenseDocumentStatus[]>([]);
+  const [licenseModalOpen, setLicenseModalOpen] = useState(false);
+  const [licenseModalStoreId, setLicenseModalStoreId] = useState<string | null>(null);
+  const licenseModalAutoOpenedRef = useRef(false);
+  const [licenseModalInitialPrefix, setLicenseModalInitialPrefix] = useState<MerchantDocumentPrefix | null>(
+    null
+  );
 
   const [partnerNotifications, setPartnerNotifications] = useState<
     Array<{ id: string; title: string; body: string; read: boolean; created_at?: string }>
@@ -450,7 +517,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           : phonesArr[0] ?? null;
       setStorePrimaryPhoneDisplay(primaryFromApi);
       setStoreSettings({
-        show_floating_orders: data.show_floating_orders === true,
+        show_floating_orders: data.show_floating_orders !== false,
         communication_settings: {
           whatsapp_notifications: comm.whatsapp_notifications === true,
           reports: {
@@ -519,6 +586,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         if (!res.ok) {
           toast.error(data.error || 'Could not save settings');
           await loadStoreSettings();
+        } else {
+          window.dispatchEvent(new CustomEvent('partner-store-settings-changed'));
         }
       } catch {
         toast.error('Could not save settings');
@@ -680,12 +749,27 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     return () => document.removeEventListener('mousedown', onDoc);
   }, [profileDropdownOpen]);
 
+  const applyLicenseFieldsFromStoreOps = useCallback((data: Record<string, unknown>) => {
+    const blocked = data.license_blocked === true;
+    const expired = Array.isArray(data.license_expired_documents)
+      ? (data.license_expired_documents as LicenseDocumentStatus[])
+      : [];
+    const pending = Array.isArray(data.license_pending_verification)
+      ? (data.license_pending_verification as LicenseDocumentStatus[])
+      : [];
+    setLicenseBlocked(blocked);
+    setLicenseExpiredDocs(expired);
+    setLicensePendingDocs(pending);
+    // Modal opens only when user tries to go online or uploads from profile — not on every poll.
+  }, []);
+
   const refreshStoreOperations = useCallback(async () => {
     if (!resolvedStoreId) return;
     try {
       const res = await fetch(`/api/store-operations?store_id=${encodeURIComponent(resolvedStoreId)}`);
       const data = await res.json().catch(() => ({}));
       if (res.ok && data && typeof data.operational_status === 'string') {
+        applyLicenseFieldsFromStoreOps(data as Record<string, unknown>);
         const withinH =
           typeof (data as { within_operating_hours?: boolean }).within_operating_hours === 'boolean'
             ? (data as { within_operating_hours: boolean }).within_operating_hours
@@ -694,6 +778,9 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           typeof (data as { is_today_scheduled_closed?: boolean }).is_today_scheduled_closed === 'boolean'
             ? (data as { is_today_scheduled_closed: boolean }).is_today_scheduled_closed
             : null;
+        const schedulePhaseRaw = (data as { schedule_phase?: string }).schedule_phase;
+        const schedulePhase = typeof schedulePhaseRaw === 'string' ? schedulePhaseRaw : null;
+        const surfOnline = partnerSurfaceOnlineFromStoreOperationsBody(data as Record<string, unknown>);
         clientStoreOpsDebugLog('refreshStoreOperations', {
           storeId: resolvedStoreId,
           operational_status: data.operational_status,
@@ -701,18 +788,22 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           within_hours_but_restricted: (data as { within_hours_but_restricted?: boolean })
             .within_hours_but_restricted,
           within_operating_hours: withinH,
+          schedule_phase: schedulePhase,
+          surface_online: surfOnline,
           is_today_scheduled_closed: todayClosed,
         });
-        setStoreOpen(data.operational_status === 'OPEN');
-        setAutoOpenFromSchedule(data.auto_open_from_schedule !== false);
+        const autoOpenEnabled = data.auto_open_from_schedule !== false;
+        setStoreOpen(surfOnline);
+        setAutoOpenFromSchedule(autoOpenEnabled);
         setManualLock(data.block_auto_open === true);
         setStoreOpsById((prev) => ({
           ...prev,
           [resolvedStoreId]: {
-            open: data.operational_status === 'OPEN',
-            autoOpen: data.auto_open_from_schedule !== false,
+            open: surfOnline,
+            autoOpen: autoOpenEnabled,
             manualLock: data.block_auto_open === true,
             withinOperatingHours: withinH,
+            schedulePhase,
             todayScheduledClosed: todayClosed,
           },
         }));
@@ -722,7 +813,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     } catch {
       setStoreOpen(null);
     }
-  }, [resolvedStoreId]);
+  }, [resolvedStoreId, applyLicenseFieldsFromStoreOps]);
 
   const refetchStoreOp = useCallback(async (storeId: string): Promise<boolean> => {
     if (!storeId) return false;
@@ -738,6 +829,9 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           typeof (data as { is_today_scheduled_closed?: boolean }).is_today_scheduled_closed === 'boolean'
             ? (data as { is_today_scheduled_closed: boolean }).is_today_scheduled_closed
             : null;
+        const schedulePhaseRaw = (data as { schedule_phase?: string }).schedule_phase;
+        const schedulePhase = typeof schedulePhaseRaw === 'string' ? schedulePhaseRaw : null;
+        const surfOnline = partnerSurfaceOnlineFromStoreOperationsBody(data as Record<string, unknown>);
         clientStoreOpsDebugLog('refetchStoreOp', {
           storeId,
           operational_status: data.operational_status,
@@ -745,13 +839,16 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           last_toggled_at: (data as { last_toggled_at?: string }).last_toggled_at,
           restriction_type: (data as { restriction_type?: string }).restriction_type,
           within_operating_hours: withinH,
+          schedule_phase: schedulePhase,
+          surface_online: surfOnline,
           is_today_scheduled_closed: todayClosed,
         });
         const row: StoreOpRow = {
-          open: data.operational_status === 'OPEN',
+          open: surfOnline,
           autoOpen: data.auto_open_from_schedule !== false,
           manualLock: data.block_auto_open === true,
           withinOperatingHours: withinH,
+          schedulePhase,
           todayScheduledClosed: todayClosed,
         };
         setStoreOpsById((prev) => ({ ...prev, [storeId]: row }));
@@ -759,14 +856,51 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           setStoreOpen(row.open);
           setAutoOpenFromSchedule(row.autoOpen);
           setManualLock(row.manualLock);
+          applyLicenseFieldsFromStoreOps(data as Record<string, unknown>);
         }
+        emitPartnerStoreOperationsRefresh(storeId);
         return true;
       }
     } catch {
       /* ignore */
     }
     return false;
-  }, [resolvedStoreId]);
+  }, [resolvedStoreId, applyLicenseFieldsFromStoreOps]);
+
+  const tryOpenStoreAfterLicenseCheck = useCallback(
+    async (storeId: string, storeName: string) => {
+      try {
+        const res = await fetch(
+          `/api/merchant/store-documents/status?storeId=${encodeURIComponent(storeId)}`,
+          { credentials: 'include' }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && (data as { license_blocked?: boolean }).license_blocked) {
+          setLicenseModalStoreId(storeId);
+          setLicenseExpiredDocs(
+            Array.isArray((data as { license_expired_documents?: LicenseDocumentStatus[] }).license_expired_documents)
+              ? ((data as { license_expired_documents: LicenseDocumentStatus[] }).license_expired_documents)
+              : []
+          );
+          setLicensePendingDocs(
+            Array.isArray(
+              (data as { license_pending_verification?: LicenseDocumentStatus[] }).license_pending_verification
+            )
+              ? ((data as { license_pending_verification: LicenseDocumentStatus[] }).license_pending_verification)
+              : []
+          );
+          setLicenseBlocked(true);
+          setLicenseModalStoreId(storeId);
+          setLicenseModalOpen(true);
+          return;
+        }
+      } catch {
+        /* fall through to open flow */
+      }
+      setOperationalOpenModal({ storeId, storeName });
+    },
+    []
+  );
 
   const refetchAllStoreOps = useCallback(async () => {
     const ids =
@@ -783,9 +917,21 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   useEffect(() => {
     if (!resolvedStoreId) return;
     refreshStoreOperations();
-    const t = window.setInterval(refreshStoreOperations, 60_000);
+    const t = window.setInterval(refreshStoreOperations, 30_000);
     return () => window.clearInterval(t);
   }, [refreshStoreOperations, resolvedStoreId]);
+
+  useEffect(() => {
+    licenseModalAutoOpenedRef.current = false;
+  }, [resolvedStoreId]);
+
+  /** Show licence renewal modal once per page load when store is licence-blocked (reappears after refresh). */
+  useEffect(() => {
+    if (!resolvedStoreId || !licenseBlocked || licenseModalAutoOpenedRef.current) return;
+    licenseModalAutoOpenedRef.current = true;
+    setLicenseModalStoreId(resolvedStoreId);
+    setLicenseModalOpen(true);
+  }, [resolvedStoreId, licenseBlocked]);
 
   useEffect(() => {
     if (!resolvedStoreId) return;
@@ -851,31 +997,128 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       setPendingStoreSwitch(null);
       setOperationalCloseModal(null);
       setOperationalOpenModal(null);
+      setScheduleMassCancelModalOpen(false);
     }
   }, [sheet]);
 
-  useEffect(() => {
-    if (sheet !== 'status') return;
+  const refreshScheduleOffList = useCallback(async () => {
     const sid = (scheduleStorePick || resolvedStoreId || '').trim();
-    if (!sid) return;
-    void (async () => {
-      try {
-        const res = await fetch(`/api/merchant/schedule-off?store_id=${encodeURIComponent(sid)}`, {
-          credentials: 'include',
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && Array.isArray((data as any).closures)) {
-          setScheduleClosures((data as any).closures);
-        } else setScheduleClosures([]);
-      } catch {
+    if (!sid) {
+      setScheduleClosures([]);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/merchant/schedule-off?store_id=${encodeURIComponent(sid)}`, {
+        credentials: 'include',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray((data as { closures?: unknown }).closures)) {
+        setScheduleClosures((data as { closures: ScheduleClosureRow[] }).closures);
+      } else {
         setScheduleClosures([]);
       }
-    })();
-  }, [sheet, scheduleStorePick, resolvedStoreId]);
+    } catch {
+      setScheduleClosures([]);
+    }
+  }, [scheduleStorePick, resolvedStoreId]);
+
+  useEffect(() => {
+    if (sheet !== 'status') return;
+    void refreshScheduleOffList();
+  }, [sheet, statusTab, refreshScheduleOffList]);
 
   useEffect(() => {
     if (resolvedStoreId) setScheduleStorePick(resolvedStoreId);
   }, [resolvedStoreId]);
+
+  useEffect(() => {
+    if (resolvedStoreId) setRushStorePick(resolvedStoreId);
+  }, [resolvedStoreId]);
+
+  const refreshRushStatus = useCallback(async () => {
+    const sid = (rushStorePick || resolvedStoreId || '').trim();
+    if (!sid) {
+      setRushActive(false);
+      setRushRemaining(0);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/merchant/rush?store_id=${encodeURIComponent(sid)}`, {
+        credentials: 'include',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const active = data.is_active === true && Number(data.remaining_minutes) > 0;
+        setRushActive(active);
+        setRushRemaining(active ? Number(data.remaining_minutes) || 0 : 0);
+      } else {
+        setRushActive(false);
+        setRushRemaining(0);
+      }
+    } catch {
+      setRushActive(false);
+      setRushRemaining(0);
+    }
+  }, [rushStorePick, resolvedStoreId]);
+
+  useEffect(() => {
+    if (sheet !== 'status' || statusTab !== 'rush') return;
+    void refreshRushStatus();
+  }, [sheet, statusTab, refreshRushStatus]);
+
+  const startRushHour = useCallback(async () => {
+    const sid = (rushStorePick || resolvedStoreId || '').trim();
+    if (!sid) return;
+    setRushSaving(true);
+    try {
+      const res = await fetch('/api/merchant/rush', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ store_id: sid, duration_minutes: rushPick }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(typeof data.error === 'string' ? data.error : 'Failed to start rush hour');
+        return;
+      }
+      toast.success('Rush hour started');
+      await refreshRushStatus();
+      await refreshStoreOperations();
+      if (sid !== resolvedStoreId) await refetchStoreOp(sid);
+    } catch {
+      toast.error('Failed to start rush hour');
+    } finally {
+      setRushSaving(false);
+    }
+  }, [rushStorePick, resolvedStoreId, rushPick, refreshRushStatus, refreshStoreOperations, refetchStoreOp]);
+
+  const stopRushHour = useCallback(async () => {
+    const sid = (rushStorePick || resolvedStoreId || '').trim();
+    if (!sid) return;
+    setRushSaving(true);
+    try {
+      const res = await fetch('/api/merchant/rush', {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ store_id: sid, is_active: false }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(typeof data.error === 'string' ? data.error : 'Failed to end rush hour');
+        return;
+      }
+      toast.success('Rush hour ended');
+      await refreshRushStatus();
+      await refreshStoreOperations();
+      if (sid !== resolvedStoreId) await refetchStoreOp(sid);
+    } catch {
+      toast.error('Failed to end rush hour');
+    } finally {
+      setRushSaving(false);
+    }
+  }, [rushStorePick, resolvedStoreId, refreshRushStatus, refreshStoreOperations, refetchStoreOp]);
 
   const switchToStore = (id: string) => {
     if (typeof localStorage !== 'undefined') localStorage.setItem('selectedStoreId', id);
@@ -948,6 +1191,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         autoOpen: enabled,
         manualLock: p[storeId]?.manualLock ?? false,
         withinOperatingHours: p[storeId]?.withinOperatingHours ?? null,
+        schedulePhase: p[storeId]?.schedulePhase ?? null,
         todayScheduledClosed: p[storeId]?.todayScheduledClosed ?? null,
       },
     }));
@@ -970,6 +1214,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
             autoOpen: prev,
             manualLock: p[storeId]?.manualLock ?? false,
             withinOperatingHours: p[storeId]?.withinOperatingHours ?? null,
+            schedulePhase: p[storeId]?.schedulePhase ?? null,
             todayScheduledClosed: p[storeId]?.todayScheduledClosed ?? null,
           },
         }));
@@ -987,6 +1232,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           autoOpen: prev,
           manualLock: p[storeId]?.manualLock ?? false,
           withinOperatingHours: p[storeId]?.withinOperatingHours ?? null,
+          schedulePhase: p[storeId]?.schedulePhase ?? null,
           todayScheduledClosed: p[storeId]?.todayScheduledClosed ?? null,
         },
       }));
@@ -997,6 +1243,10 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
   const persistManualLockFor = async (storeId: string, enabled: boolean) => {
     if (!storeId) return;
+    if (storeId === resolvedStoreId && licenseBlocked) {
+      toast.error(MANUAL_LOCK_LICENSE_BLOCKED_MESSAGE);
+      return;
+    }
     const prevRow = storeOpsById[storeId];
     const prev = prevRow?.manualLock ?? false;
     setStoreOpsById((p) => ({
@@ -1006,6 +1256,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         autoOpen: p[storeId]?.autoOpen ?? true,
         manualLock: enabled,
         withinOperatingHours: p[storeId]?.withinOperatingHours ?? null,
+        schedulePhase: p[storeId]?.schedulePhase ?? null,
         todayScheduledClosed: p[storeId]?.todayScheduledClosed ?? null,
       },
     }));
@@ -1028,6 +1279,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
             autoOpen: p[storeId]?.autoOpen ?? true,
             manualLock: prev,
             withinOperatingHours: p[storeId]?.withinOperatingHours ?? null,
+            schedulePhase: p[storeId]?.schedulePhase ?? null,
             todayScheduledClosed: p[storeId]?.todayScheduledClosed ?? null,
           },
         }));
@@ -1045,6 +1297,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           autoOpen: p[storeId]?.autoOpen ?? true,
           manualLock: prev,
           withinOperatingHours: p[storeId]?.withinOperatingHours ?? null,
+          schedulePhase: p[storeId]?.schedulePhase ?? null,
           todayScheduledClosed: p[storeId]?.todayScheduledClosed ?? null,
         },
       }));
@@ -1092,34 +1345,47 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     try {
       const startsAt = combineLocalDateTime(schedStartDate, schedStartTime)!.toISOString();
       const endsAt = combineLocalDateTime(schedEndDate, schedEndTime)!.toISOString();
-      const res = await fetch('/api/merchant/schedule-off', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          store_id: sid,
-          reason: schedReason,
-          permanent: false,
-          starts_at: startsAt,
-          ends_at: endsAt,
-        }),
-      });
+      const editingId = schedEditingClosureId;
+
+      const res =
+        editingId != null
+          ? await fetch('/api/merchant/schedule-off', {
+              method: 'PATCH',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                store_id: sid,
+                closure_id: editingId,
+                reason: schedReason,
+                starts_at: startsAt,
+                ends_at: endsAt,
+              }),
+            })
+          : await fetch('/api/merchant/schedule-off', {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                store_id: sid,
+                reason: schedReason,
+                permanent: false,
+                starts_at: startsAt,
+                ends_at: endsAt,
+              }),
+            });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         toast.error((data as any).message || (data as any).error || 'Schedule failed');
         return;
       }
-      toast.success('Scheduled time-off set');
+      toast.success(editingId != null ? 'Scheduled time-off updated' : 'Scheduled time-off set');
+      setSchedEditingClosureId(null);
       setSchedReason('');
       setSchedStartDate('');
       setSchedStartTime('');
       setSchedEndDate('');
       setSchedEndTime('');
-      const r = await fetch(`/api/merchant/schedule-off?store_id=${encodeURIComponent(sid)}`, {
-        credentials: 'include',
-      });
-      const d = await r.json().catch(() => ({}));
-      if (r.ok && Array.isArray((d as any).closures)) setScheduleClosures((d as any).closures);
+      await refreshScheduleOffList();
       await refetchStoreOp(sid);
     } catch {
       toast.error('Schedule failed');
@@ -1141,14 +1407,71 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         toast.error('Could not cancel schedule');
         return;
       }
-      toast.success('Scheduled closure cancelled');
-      setScheduleClosures([]);
+      toast.success('All scheduled time-offs cancelled');
+      setSchedEditingClosureId(null);
+      setSchedReason('');
+      setSchedStartDate('');
+      setSchedStartTime('');
+      setSchedEndDate('');
+      setSchedEndTime('');
+      setScheduleMassCancelModalOpen(false);
+      await refreshScheduleOffList();
       await refetchStoreOp(sid);
     } catch {
       toast.error('Could not cancel schedule');
     } finally {
       setSchedSaving(false);
     }
+  };
+
+  const removeScheduledClosureRow = async (closureId: number) => {
+    const sid = scheduleStorePick || resolvedStoreId;
+    if (!sid) return;
+    setSchedSaving(true);
+    try {
+      const res = await fetch(
+        `/api/merchant/schedule-off?store_id=${encodeURIComponent(sid)}&closure_id=${encodeURIComponent(String(closureId))}`,
+        { method: 'DELETE', credentials: 'include' }
+      );
+      if (!res.ok) {
+        toast.error('Could not remove this schedule');
+        return;
+      }
+      toast.success('Scheduled time-off removed');
+      setSchedEditingClosureId((cur) => (cur === closureId ? null : cur));
+      await refreshScheduleOffList();
+      await refetchStoreOp(sid);
+    } catch {
+      toast.error('Could not remove schedule');
+    } finally {
+      setSchedSaving(false);
+    }
+  };
+
+  const beginEditScheduleClosure = (row: ScheduleClosureRow) => {
+    const s = isoUtcToLocalDateTimeInputs(row.starts_at);
+    const e = isoUtcToLocalDateTimeInputs(row.ends_at);
+    if (!s || !e) {
+      toast.error('Could not read this schedule');
+      return;
+    }
+    setSchedEditingClosureId(row.id);
+    setSchedStartDate(s.ymd);
+    setSchedStartTime(s.hm);
+    setSchedEndDate(e.ymd);
+    setSchedEndTime(e.hm);
+    const r =
+      typeof row.reason === 'string' && row.reason.trim().length > 0 ? row.reason.trim() : '';
+    setSchedReason(r);
+  };
+
+  const cancelScheduleDraft = () => {
+    setSchedEditingClosureId(null);
+    setSchedReason('');
+    setSchedStartDate('');
+    setSchedStartTime('');
+    setSchedEndDate('');
+    setSchedEndTime('');
   };
 
   const toggleConfirmCopy = pendingToggle
@@ -1207,9 +1530,11 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         ? 'Online'
         : resolvedOpsRow?.todayScheduledClosed === true
           ? 'Offline · Closed today'
-          : resolvedOpsRow?.withinOperatingHours === false
-            ? 'Offline · Outside hours'
-            : 'Offline';
+          : resolvedOpsRow?.schedulePhase === 'BREAK'
+            ? 'Offline · Break'
+            : resolvedOpsRow?.withinOperatingHours === false
+              ? 'Offline · Outside hours'
+              : 'Offline';
   const onlineGreen = storeOpen === true;
 
   const q = resolvedStoreId ? `?storeId=${encodeURIComponent(resolvedStoreId)}` : '';
@@ -1805,7 +2130,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
             <div className="flex rounded-2xl bg-slate-100/90 p-1 ring-1 ring-slate-200/70">
               <button
                 type="button"
-                className={`flex-1 rounded-xl py-2.5 text-sm font-semibold transition-all ${
+                className={`flex-1 rounded-xl py-2 text-[11px] sm:text-sm font-semibold transition-all ${
                   statusTab === 'manage'
                     ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/60'
                     : 'text-slate-500 hover:text-slate-800'
@@ -1816,14 +2141,25 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
               </button>
               <button
                 type="button"
-                className={`flex-1 rounded-xl py-2.5 text-sm font-semibold transition-all ${
+                className={`flex-1 rounded-xl py-2 text-[11px] sm:text-sm font-semibold transition-all ${
                   statusTab === 'schedule'
                     ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/60'
                     : 'text-slate-500 hover:text-slate-800'
                 }`}
                 onClick={() => setStatusTab('schedule')}
               >
-                Schedule time-off
+                Time-off
+              </button>
+              <button
+                type="button"
+                className={`flex-1 rounded-xl py-2 text-[11px] sm:text-sm font-semibold transition-all ${
+                  statusTab === 'rush'
+                    ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/60'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+                onClick={() => setStatusTab('rush')}
+              >
+                Rush hour
               </button>
             </div>
 
@@ -1870,18 +2206,37 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                   {outletsOrderedForStatus.length === 0 ? (
                     <p className="py-4 text-center text-xs text-gray-500">No approved stores yet.</p>
                   ) : (
-                    <ul className="max-h-[min(48vh,300px)] space-y-1 overflow-y-auto pr-0.5">
+                    <ul className="scrollbar-hide max-h-[min(48vh,300px)] space-y-1.5 overflow-y-auto">
                       {outletsOrderedForStatus.map((s) => {
                         const row = storeOpsById[s.store_id];
                         const isOn = row?.open;
                         const isCurrent = s.store_id === resolvedStoreId;
-                        const city =
+                        const locality =
                           s.full_address?.split(',').pop()?.trim() ||
-                          (s.full_address ? s.full_address.slice(0, 28) : '');
+                          s.full_address ||
+                          '';
+                        const statusLabel =
+                          isOn == null
+                            ? 'Unknown'
+                            : isOn
+                              ? 'Online'
+                              : row?.todayScheduledClosed === true
+                                ? 'Closed today'
+                                : row?.schedulePhase === 'BREAK'
+                                  ? 'Break'
+                                  : row?.withinOperatingHours === false
+                                    ? 'Outside hours'
+                                    : 'Offline';
+                        const statusDotClass =
+                          isOn == null
+                            ? 'bg-gray-400'
+                            : isOn
+                              ? 'bg-emerald-500'
+                              : 'bg-rose-400';
                         return (
                           <li
                             key={s.store_id}
-                            className={`flex items-center gap-3 rounded-lg border bg-white px-4 py-3 shadow-sm transition-colors ${
+                            className={`flex items-center gap-2.5 rounded-lg border bg-white px-2.5 py-2 shadow-sm transition-colors ${
                               isCurrent
                                 ? 'border-sky-200/90 ring-1 ring-sky-100'
                                 : 'border-gray-200 hover:border-gray-300'
@@ -1889,15 +2244,29 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                           >
                             <OutletBannerThumb url={s.banner_url} />
                             <div className="min-w-0 flex-1">
-                              <p className="text-sm font-semibold leading-snug text-gray-900 sm:text-[15px]">
+                              <p
+                                className="truncate text-[13px] font-semibold leading-tight text-gray-900"
+                                title={s.store_name}
+                              >
                                 {s.store_name}
                               </p>
-                              <p className="mt-0.5 text-xs leading-snug text-gray-500">
+                              <p
+                                className="mt-0.5 truncate text-[11px] leading-snug text-gray-500"
+                                title={`${s.store_id}${locality ? ` · ${locality}` : ''}`}
+                              >
                                 <span className="font-medium text-gray-500">ID:</span>{' '}
-                                <span className="font-mono text-[12px] text-gray-600">{s.store_id}</span>
-                                {city ? <span className="text-gray-300"> | </span> : null}
-                                {city ? <span className="text-gray-500">{city}</span> : null}
+                                <span className="font-mono text-gray-600">{s.store_id}</span>
+                                {locality ? <span className="text-gray-300"> · </span> : null}
+                                {locality ? <span className="text-gray-500">{locality}</span> : null}
                               </p>
+                              {!switchStoreMode ? (
+                                <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 py-0.5">
+                                  <span className={`h-1.5 w-1.5 rounded-full ${statusDotClass}`} />
+                                  <span className="text-[10px] font-semibold text-slate-600">
+                                    {statusLabel}
+                                  </span>
+                                </span>
+                              ) : null}
                             </div>
                             {switchStoreMode ? (
                               <div className="flex shrink-0 items-center">
@@ -1921,45 +2290,29 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                                 )}
                               </div>
                             ) : (
-                              <div className="flex shrink-0 items-center gap-3">
-                                <span
-                                  className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                                    isOn == null
-                                      ? 'bg-gray-200 text-gray-600'
-                                      : isOn
-                                        ? 'bg-emerald-500 text-white'
-                                        : 'bg-gray-200 text-gray-700'
-                                  }`}
-                                >
-                                  {isOn == null
-                                    ? '—'
-                                    : isOn
-                                      ? 'Online'
-                                      : row?.todayScheduledClosed === true
-                                        ? 'Offline · Closed today'
-                                        : row?.withinOperatingHours === false
-                                          ? 'Offline · Outside hours'
-                                          : 'Offline'}
-                                </span>
-                                <CompactSwitch
-                                  on={isOn === true}
-                                  disabled={isOn === null}
-                                  ariaLabel={`${isOn === true ? 'Turn off' : 'Turn on'} ${s.store_name}`}
-                                  onToggle={() => {
-                                    if (isOn === true) {
-                                      setOperationalCloseModal({
-                                        storeId: s.store_id,
-                                        storeName: s.store_name,
-                                      });
-                                    } else {
-                                      setOperationalOpenModal({
-                                        storeId: s.store_id,
-                                        storeName: s.store_name,
-                                      });
-                                    }
-                                  }}
-                                />
-                              </div>
+                              <CompactSwitch
+                                on={isOn === true}
+                                disabled={isOn === null}
+                                ariaLabel={`${isOn === true ? 'Turn off' : 'Turn on'} ${s.store_name}`}
+                                onToggle={() => {
+                                  if (isOn === true) {
+                                    setOperationalCloseModal({
+                                      storeId: s.store_id,
+                                      storeName: s.store_name,
+                                    });
+                                  } else if (s.store_id === resolvedStoreId && licenseBlocked) {
+                                    setLicenseModalStoreId(s.store_id);
+                                    setLicenseModalOpen(true);
+                                  } else if (s.store_id !== resolvedStoreId) {
+                                    void tryOpenStoreAfterLicenseCheck(s.store_id, s.store_name);
+                                  } else {
+                                    setOperationalOpenModal({
+                                      storeId: s.store_id,
+                                      storeName: s.store_name,
+                                    });
+                                  }
+                                }}
+                              />
                             )}
                           </li>
                         );
@@ -1968,7 +2321,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                   )}
                 </div>
               </div>
-            ) : (
+            ) : statusTab === 'schedule' ? (
               <div className="space-y-5 pb-1">
                 <div>
                   <label className="mb-2 block text-sm font-bold tracking-tight text-slate-900">Select a restaurant</label>
@@ -1995,16 +2348,74 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                   </div>
                 </div>
 
-                {scheduleClosures.length > 0 && (
-                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                    <p className="font-medium">Scheduled closure active or upcoming</p>
+                {scheduleClosures.length > 0 ? (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-950 space-y-2">
+                    <p className="text-[13px] font-semibold tracking-tight">Scheduled time-off</p>
+                    <ul className="space-y-2">
+                      {scheduleClosures.map((c) => (
+                        <li
+                          key={c.id}
+                          className="rounded-lg border border-amber-200/80 bg-white/70 px-2.5 py-2 shadow-sm"
+                        >
+                          <p className="text-[13px] font-semibold text-amber-950 leading-snug">
+                            {typeof c.reason === 'string' && c.reason.trim() !== ''
+                              ? c.reason.trim()
+                              : 'Scheduled closure'}
+                          </p>
+                          <p className="mt-1 text-[11px] font-medium leading-relaxed text-amber-900/90">
+                            {formatClosureRangeFriendly(c.starts_at, c.ends_at)}
+                          </p>
+                          {c.marked_from ? (
+                            <p className="mt-1 text-[10px] font-medium text-amber-800/90">
+                              Set via {formatStoreActionSourceLabel(c.marked_from) ?? c.marked_from}
+                            </p>
+                          ) : null}
+                          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <button
+                              type="button"
+                              disabled={schedSaving}
+                              className="inline-flex items-center gap-1 text-[12px] font-semibold text-amber-950 underline decoration-amber-800/70 underline-offset-2 hover:text-black disabled:opacity-50"
+                              onClick={() => beginEditScheduleClosure(c)}
+                            >
+                              <Pencil className="h-3 w-3" aria-hidden />
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              disabled={schedSaving}
+                              className="inline-flex items-center gap-1 text-[12px] font-semibold text-rose-800 underline underline-offset-2 hover:text-rose-950 disabled:opacity-50"
+                              onClick={() => void removeScheduledClosureRow(c.id)}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
                     <button
                       type="button"
                       disabled={schedSaving}
-                      className="mt-2 text-sm font-semibold text-amber-950 underline"
-                      onClick={() => void cancelScheduledOff()}
+                      className="text-[12px] font-semibold text-amber-950 underline underline-offset-2 hover:text-black disabled:opacity-50"
+                      onClick={() => {
+                        void refreshScheduleOffList();
+                        setScheduleMassCancelModalOpen(true);
+                      }}
                     >
-                      Cancel scheduled off
+                      Cancel all schedules
+                    </button>
+                  </div>
+                ) : null}
+
+                {schedEditingClosureId != null && (
+                  <div className="flex items-center justify-between gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-[11px] text-sky-950">
+                    <span className="font-medium">Editing a scheduled closure — save or cancel.</span>
+                    <button
+                      type="button"
+                      disabled={schedSaving}
+                      className="shrink-0 font-semibold text-sky-900 underline underline-offset-2 disabled:opacity-50"
+                      onClick={cancelScheduleDraft}
+                    >
+                      Cancel edit
                     </button>
                   </div>
                 )}
@@ -2043,6 +2454,10 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                       onChange={(e) => setSchedReason(e.target.value)}
                     >
                       <option value="">Select a reason</option>
+                      {schedReason &&
+                      !SCHEDULE_OFF_REASONS.some((r) => r === schedReason) ? (
+                        <option value={schedReason}>{schedReason}</option>
+                      ) : null}
                       {SCHEDULE_OFF_REASONS.map((r) => (
                         <option key={r} value={r}>
                           {r}
@@ -2064,11 +2479,92 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                     }`}
                     onClick={() => void submitScheduleOff()}
                   >
-                    {schedSaving ? 'Saving…' : 'Set this schedule'}
+                    {schedSaving ? 'Saving…' : schedEditingClosureId != null ? 'Save changes' : 'Set this schedule'}
                   </button>
                   <p className="text-center text-xs leading-relaxed text-gray-500">
                     You will not receive any orders in this duration
                   </p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-5 pb-1">
+                <div>
+                  <label className="mb-2 block text-sm font-bold tracking-tight text-slate-900">
+                    Select a restaurant
+                  </label>
+                  <div className="relative">
+                    <MapPin
+                      className="pointer-events-none absolute left-3 top-1/2 z-[1] h-[18px] w-[18px] -translate-y-1/2 text-gray-400"
+                      aria-hidden
+                    />
+                    <select
+                      className="w-full min-w-0 appearance-none truncate rounded-xl border border-gray-300 bg-white py-3 pl-10 pr-10 text-left text-sm font-normal text-gray-900 shadow-sm outline-none focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
+                      value={rushStorePick}
+                      onChange={(e) => setRushStorePick(e.target.value)}
+                    >
+                      {storeList.map((s) => (
+                        <option key={s.store_id} value={s.store_id}>
+                          {s.store_name}
+                        </option>
+                      ))}
+                      {!storeList.length && resolvedStoreId ? (
+                        <option value={resolvedStoreId}>{restaurantName}</option>
+                      ) : null}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 z-[1] h-4 w-4 -translate-y-1/2 text-gray-400" />
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-orange-200/80 bg-orange-50/50 p-4 ring-1 ring-orange-100">
+                  <div className="flex items-center gap-2 text-orange-950">
+                    <ChefHat className="h-5 w-5 shrink-0" aria-hidden />
+                    <p className="text-sm font-bold">Rush hour</p>
+                  </div>
+                  <p className="mt-2 text-xs leading-relaxed text-orange-900/90">
+                    Adds extra preparation time for new orders. Same as the merchant app Preparation Time screen.
+                  </p>
+                  {rushActive ? (
+                    <div className="mt-4 space-y-3">
+                      <p className="text-sm font-semibold text-orange-900">
+                        Active · ~{rushRemaining} minutes remaining
+                      </p>
+                      <button
+                        type="button"
+                        disabled={rushSaving}
+                        className="w-full rounded-xl border border-orange-300 bg-white py-3 text-sm font-semibold text-orange-900 disabled:opacity-50"
+                        onClick={() => void stopRushHour()}
+                      >
+                        {rushSaving ? 'Ending…' : 'End rush hour'}
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="mt-4 grid grid-cols-2 gap-2">
+                        {RUSH_DURATION_OPTIONS.map((o) => (
+                          <button
+                            key={o.minutes}
+                            type="button"
+                            onClick={() => setRushPick(o.minutes)}
+                            className={`rounded-xl border py-2.5 text-sm font-semibold ${
+                              rushPick === o.minutes
+                                ? 'border-orange-500 bg-white text-orange-900 shadow-sm'
+                                : 'border-orange-200/80 bg-white/60 text-orange-950 hover:bg-white'
+                            }`}
+                          >
+                            {o.label}
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        disabled={rushSaving}
+                        className="mt-3 w-full rounded-xl bg-orange-600 py-3.5 text-sm font-semibold text-white shadow-sm disabled:opacity-50"
+                        onClick={() => void startRushHour()}
+                      >
+                        {rushSaving ? 'Starting…' : 'Start rush hour'}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -2556,6 +3052,23 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           document.body
         )}
 
+      <LicenseExpiredModal
+        storeId={licenseModalStoreId || resolvedStoreId || ''}
+        open={licenseModalOpen && !!(licenseModalStoreId || resolvedStoreId)}
+        expired={licenseExpiredDocs}
+        pendingVerification={licensePendingDocs}
+        initialStepPrefix={licenseModalInitialPrefix}
+        onClose={() => {
+          setLicenseModalOpen(false);
+          setLicenseModalInitialPrefix(null);
+        }}
+        onUploaded={async () => {
+          const sid = licenseModalStoreId || resolvedStoreId;
+          if (sid) await refetchStoreOp(sid);
+          await refreshStoreOperations();
+        }}
+      />
+
       <StoreOperationalFlowModals
         closeTarget={operationalCloseModal}
         openTarget={operationalOpenModal}
@@ -2601,6 +3114,110 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         onConfirm={handleLogout}
         isLoading={isLoggingOut}
       />
+
+      {scheduleMassCancelModalOpen &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div className="fixed inset-0 z-[1250] flex items-end justify-center p-0 sm:items-center sm:p-4">
+            <button
+              type="button"
+              className="absolute inset-0 bg-black/45 backdrop-blur-[1px]"
+              aria-label="Close dialog"
+              disabled={schedSaving}
+              onClick={() => {
+                if (!schedSaving) setScheduleMassCancelModalOpen(false);
+              }}
+            />
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="schedule-mass-cancel-title"
+              className="relative flex max-h-[min(560px,88dvh)] w-full max-w-md flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl ring-1 ring-black/10 sm:rounded-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 px-4 py-3.5">
+                <div className="min-w-0">
+                  <h2 id="schedule-mass-cancel-title" className="text-base font-bold text-slate-900">
+                    Cancel scheduled time-offs
+                  </h2>
+                  <p className="mt-1 text-xs leading-snug text-slate-600">
+                    Remove individual slots or clear every schedule. The outlet then follows normal opening hours again.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={schedSaving}
+                  className="shrink-0 rounded-lg p-2 text-slate-500 hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 disabled:opacity-50"
+                  aria-label="Close"
+                  onClick={() => {
+                    if (!schedSaving) setScheduleMassCancelModalOpen(false);
+                  }}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className="shrink-0 border-b border-amber-200/80 bg-amber-50 px-4 py-3">
+                <button
+                  type="button"
+                  disabled={schedSaving || scheduleClosures.length === 0}
+                  className="w-full rounded-xl border border-rose-200 bg-white px-3 py-2.5 text-center text-sm font-semibold text-rose-800 shadow-sm transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => void cancelScheduledOff()}
+                >
+                  {schedSaving ? 'Working…' : 'Remove all scheduled'}
+                </button>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+                {scheduleClosures.length === 0 ? (
+                  <p className="py-6 text-center text-sm text-slate-500">No scheduled time-offs for this outlet.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {scheduleClosures.map((c) => (
+                      <li
+                        key={c.id}
+                        className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[13px] font-semibold text-slate-900">
+                            {typeof c.reason === 'string' && c.reason.trim() !== ''
+                              ? c.reason.trim()
+                              : 'Scheduled closure'}
+                          </p>
+                          <p className="mt-0.5 text-[11px] font-medium leading-relaxed text-slate-600">
+                            {formatClosureRangeFriendly(c.starts_at, c.ends_at)}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={schedSaving}
+                          className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-800 shadow-sm hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                          onClick={() => void removeScheduledClosureRow(c.id)}
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="shrink-0 border-t border-slate-200 px-4 py-3">
+                <button
+                  type="button"
+                  disabled={schedSaving}
+                  className="w-full rounded-xl bg-slate-100 py-2.5 text-sm font-semibold text-slate-800 hover:bg-slate-200 disabled:opacity-50"
+                  onClick={() => {
+                    if (!schedSaving) setScheduleMassCancelModalOpen(false);
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
     </>
   );
 };

@@ -3,13 +3,14 @@ import { authFetch } from "@/services/authFetch";
 
 const getBase = () => getConfig().apiBaseUrl;
 
-type RushStatus = {
+export type RushStatus = {
   store_id: number;
   is_active: boolean;
   duration_minutes: number | null;
   started_at: string | null;
   ends_at: string | null;
   remaining_minutes: number;
+  marked_from?: string | null;
 };
 
 export async function getRushStatus(

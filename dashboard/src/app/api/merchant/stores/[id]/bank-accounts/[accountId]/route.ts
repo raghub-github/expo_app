@@ -16,6 +16,7 @@ import {
   updateStoreBankAccount,
 } from "@/lib/db/operations/merchant-store-bank-accounts";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
+import { syncStep6FromBankAccounts } from "@/lib/db/operations/store-verification-steps";
 
 export const runtime = "nodejs";
 
@@ -110,6 +111,9 @@ export async function PATCH(
         actorType: "agent",
         source: "dashboard",
       });
+      if (patch.is_verified === true) {
+        await syncStep6FromBankAccounts(store.id).catch(() => {});
+      }
       return NextResponse.json({ success: true, account: updated });
     }
 

@@ -1,6 +1,13 @@
 import { useEffect, useState, useCallback } from "react";
 import {
-  View, Text, StyleSheet, FlatList, ActivityIndicator, Pressable, RefreshControl,
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  ScrollView,
+  ActivityIndicator,
+  Pressable,
+  RefreshControl,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";

@@ -1,0 +1,162 @@
+/**
+ * Razorpay checkout via hosted backend page (expo-web-browser) — same as customer app.
+ */
+
+import { useEffect, useRef, useState } from "react";
+import * as WebBrowser from "expo-web-browser";
+import { getConfig } from "@/config/env";
+
+export type RazorpayPaymentResult = {
+  razorpayPaymentId: string;
+  razorpayOrderId: string;
+  razorpaySignature: string;
+};
+
+export type RazorpayOrderParams = {
+  orderId: string;
+  keyId: string;
+  amount: number;
+};
+
+export type RazorpayPrefill = {
+  contact?: string | null;
+  email?: string | null;
+  name?: string | null;
+};
+
+type Props = {
+  visible: boolean;
+  orderParams: RazorpayOrderParams | null;
+  prefill?: RazorpayPrefill;
+  themeColor?: string;
+  onSuccess: (result: RazorpayPaymentResult) => void;
+  onCancel: () => void;
+};
+
+const SUCCESS_PREFIX = "gatimitra-merchant://pay-success";
+const CANCEL_PREFIX = "gatimitra-merchant://pay-cancel";
+const REDIRECT_INTERCEPT = "gatimitra-merchant://";
+
+function normalizeContact(raw: string | null | undefined): string {
+  if (!raw) return "";
+  const digits = String(raw).replace(/\D/g, "");
+  return digits.length >= 10 ? digits.slice(-10) : digits;
+}
+
+function buildHostedCheckoutUrl(params: {
+  orderParams: RazorpayOrderParams;
+  prefill?: RazorpayPrefill;
+  themeColor?: string;
+}): string {
+  const base = getConfig().apiBaseUrl.replace(/\/+$/, "");
+  const qs = new URLSearchParams({
+    order_id: params.orderParams.orderId,
+    key_id: params.orderParams.keyId,
+    amount: String(params.orderParams.amount),
+    success_url: SUCCESS_PREFIX,
+    cancel_url: CANCEL_PREFIX,
+    prefill_contact: normalizeContact(params.prefill?.contact),
+    prefill_email: params.prefill?.email ?? "",
+    prefill_name: params.prefill?.name ?? "",
+    theme_color: params.themeColor ?? "#16a34a",
+  });
+  return `${base}/v1/razorpay-checkout?${qs.toString()}`;
+}
+
+function parseRazorpayTokensFromUrl(url: string): RazorpayPaymentResult {
+  const idx = url.indexOf("?");
+  const qs = idx >= 0 ? url.slice(idx + 1) : "";
+  const params = new URLSearchParams(qs);
+  return {
+    razorpayPaymentId: params.get("razorpay_payment_id") ?? "",
+    razorpayOrderId: params.get("razorpay_order_id") ?? "",
+    razorpaySignature: params.get("razorpay_signature") ?? "",
+  };
+}
+
+async function openBrowserCheckout(args: {
+  orderParams: RazorpayOrderParams;
+  prefill?: RazorpayPrefill;
+  themeColor?: string;
+  onSuccess: (r: RazorpayPaymentResult) => void;
+  onCancel: () => void;
+}): Promise<void> {
+  const url = buildHostedCheckoutUrl(args);
+  try {
+    await WebBrowser.warmUpAsync();
+  } catch {
+    /* noop */
+  }
+  try {
+    const result = await WebBrowser.openAuthSessionAsync(url, REDIRECT_INTERCEPT, {
+      showInRecents: false,
+      toolbarColor: args.themeColor ?? "#16a34a",
+    });
+    WebBrowser.coolDownAsync().catch(() => undefined);
+    if (result.type !== "success" || !("url" in result) || !result.url) {
+      args.onCancel();
+      return;
+    }
+    const returnedUrl = String(result.url);
+    if (returnedUrl.startsWith(SUCCESS_PREFIX)) {
+      const tokens = parseRazorpayTokensFromUrl(returnedUrl);
+      if (tokens.razorpayPaymentId && tokens.razorpayOrderId && tokens.razorpaySignature) {
+        args.onSuccess(tokens);
+        return;
+      }
+    }
+    args.onCancel();
+  } catch {
+    args.onCancel();
+  }
+}
+
+export function RazorpayCheckoutModal({
+  visible,
+  orderParams,
+  prefill,
+  themeColor,
+  onSuccess,
+  onCancel,
+}: Props) {
+  const inFlightRef = useRef(false);
+  const [, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!visible || !orderParams) {
+      inFlightRef.current = false;
+      return;
+    }
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+
+    let cancelled = false;
+    void openBrowserCheckout({
+      orderParams,
+      prefill,
+      themeColor,
+      onSuccess: (r) => {
+        if (!cancelled) {
+          inFlightRef.current = false;
+          onSuccess(r);
+        }
+      },
+      onCancel: () => {
+        if (!cancelled) {
+          inFlightRef.current = false;
+          onCancel();
+        }
+      },
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, orderParams?.orderId, orderParams?.keyId, orderParams?.amount, prefill, themeColor, onSuccess, onCancel]);
+
+  return null;
+}

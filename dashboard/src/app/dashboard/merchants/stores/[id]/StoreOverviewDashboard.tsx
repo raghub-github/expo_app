@@ -32,6 +32,11 @@ import {
   useStoreOperationsQuery,
   useStoreStatsQuery,
 } from "@/hooks/queries/useMerchantStoreQueries";
+import { MerchantStoreStatusCard } from "@/components/merchant/MerchantStoreStatusCard";
+import { MerchantStoreOperationsModals } from "@/components/merchant/MerchantStoreOperationsModals";
+import { useMerchantStoreOperations } from "@/hooks/useMerchantStoreOperations";
+import { useStoreStatusCardModel, type StoreOperationsSnapshot } from "@/hooks/useStoreStatusCardModel";
+import { useInvalidateMerchantStoreQueries } from "@/hooks/queries/useMerchantStoreQueries";
 
 function StatCard({
   title,
@@ -74,8 +79,39 @@ function StatCard({
 export function StoreOverviewDashboard({ storeId }: { storeId: string }) {
   const [statsDate, setStatsDate] = useState("");
   const { store: storeFromHook, isLoading: storeLoading } = useStore(storeId);
+  const invalidateStoreQueries = useInvalidateMerchantStoreQueries();
   const walletQuery = useStoreWalletQuery(storeId);
   const operationsQuery = useStoreOperationsQuery(storeId);
+  const storeOps = useMerchantStoreOperations({ storeId, poll: true, syncEngine: false });
+  const {
+    showClosePopup,
+    closeConfirmLoading,
+    toggleClosureType,
+    setToggleClosureType,
+    closureDate,
+    setClosureDate,
+    closureTime,
+    setClosureTime,
+    closeReason,
+    setCloseReason,
+    closeReasonOther,
+    setCloseReasonOther,
+    showToggleOnWarning,
+    setShowToggleOnWarning,
+    toggleOnLoading,
+    handleStoreToggle,
+    handleConfirmToggleOn,
+    handleClosePopupConfirm,
+    handleCancelClosePopup,
+    saveManualActivationLock,
+  } = storeOps;
+  const isDelisted = ((storeFromHook?.approval_status || "").toUpperCase() === "DELISTED");
+
+  const statusCard = useStoreStatusCardModel(operationsQuery.data as StoreOperationsSnapshot | undefined, {
+    storeTimezone: (storeFromHook as { timezone?: string | null } | null)?.timezone,
+    storeIdLabel: storeFromHook?.store_id ?? null,
+    onCountdownExpired: () => invalidateStoreQueries(storeId),
+  });
   const statsQuery = useStoreStatsQuery(storeId, statsDate || undefined, {
     refetchInterval: 15000,
   });
@@ -159,7 +195,6 @@ export function StoreOverviewDashboard({ storeId }: { storeId: string }) {
     );
   }
 
-  const isOpen = operations?.operational_status === "OPEN";
   const pendingOrders = stats?.pendingCount ?? 0;
   const acceptedCount = stats?.acceptedTodayCount ?? 0;
   const preparingOrders = stats?.preparingCount ?? 0;
@@ -174,11 +209,6 @@ export function StoreOverviewDashboard({ storeId }: { storeId: string }) {
   const walletToday = wallet?.today_earning ?? 0;
   const walletYesterday = wallet?.yesterday_earning ?? 0;
   const walletPending = wallet?.pending_balance ?? 0;
-
-  const slots = operations?.today_slots ?? [];
-  const slotText = slots.length
-    ? slots.map((slot) => `${slot.start} – ${slot.end}`).join(", ")
-    : "Closed";
 
   const ordersTrend = [
     { day: "Mon", orders: 0 },
@@ -201,6 +231,27 @@ export function StoreOverviewDashboard({ storeId }: { storeId: string }) {
 
   return (
     <div className="space-y-5">
+      <MerchantStoreOperationsModals
+        isDelisted={isDelisted}
+        showClosePopup={showClosePopup}
+        closeConfirmLoading={closeConfirmLoading}
+        toggleClosureType={toggleClosureType}
+        setToggleClosureType={setToggleClosureType}
+        closureDate={closureDate}
+        setClosureDate={setClosureDate}
+        closureTime={closureTime}
+        setClosureTime={setClosureTime}
+        closeReason={closeReason}
+        setCloseReason={setCloseReason}
+        closeReasonOther={closeReasonOther}
+        setCloseReasonOther={setCloseReasonOther}
+        showToggleOnWarning={showToggleOnWarning}
+        setShowToggleOnWarning={setShowToggleOnWarning}
+        toggleOnLoading={toggleOnLoading}
+        handleConfirmToggleOn={handleConfirmToggleOn}
+        handleClosePopupConfirm={handleClosePopupConfirm}
+        handleCancelClosePopup={handleCancelClosePopup}
+      />
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="rounded-xl border border-emerald-200/80 bg-gradient-to-br from-emerald-50/90 to-green-50/70 p-4 shadow-sm">
           <div className="flex items-center gap-2 mb-3">
@@ -237,43 +288,44 @@ export function StoreOverviewDashboard({ storeId }: { storeId: string }) {
           </div>
         </div>
 
-        <div
-          className={`rounded-xl border-2 p-4 shadow-sm ${
-            isOpen
-              ? "bg-gradient-to-br from-emerald-50/90 to-green-50/70 border-emerald-200"
-              : "bg-gradient-to-br from-red-50/90 to-rose-50/70 border-red-200"
-          }`}
-        >
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <p className="text-[10px] font-semibold text-gray-500 uppercase">Store Status</p>
-              <p className="text-xs font-bold text-gray-900">
-                {slotText}
-              </p>
-            </div>
-            <div
-              className={`p-2 rounded-xl ${
-                isOpen ? "bg-emerald-500 text-white" : "bg-red-500 text-white"
-              }`}
-            >
-              <Power className="h-4 w-4" />
-            </div>
-          </div>
-          <div
-            className={`flex items-center gap-1.5 mt-2 p-2 rounded-lg border ${
-              isOpen ? "bg-emerald-100/40 border-emerald-300" : "bg-red-100/40 border-red-300"
-            }`}
-          >
-            <div
-              className={`w-2 h-2 rounded-full ${isOpen ? "bg-emerald-500 animate-pulse" : "bg-red-500"}`}
-            />
-            <span
-              className={`text-xs font-bold ${isOpen ? "text-emerald-700" : "text-red-700"}`}
-            >
-              {isOpen ? "Open" : "Closed"}
-            </span>
-          </div>
-        </div>
+        <section className="min-w-0 flex flex-col h-full">
+          <MerchantStoreStatusCard
+            isStoreOpen={statusCard.isStoreOpen}
+            restrictionType={statusCard.restrictionType}
+            storeStatusBadge={statusCard.storeStatusBadge}
+            cardDisplaySlots={statusCard.cardDisplaySlots}
+            cardBreakGapLabel={statusCard.cardBreakGapLabel}
+            scheduledTimeOffs={statusCard.scheduledTimeOffs}
+            activeRush={statusCard.activeRush}
+            formatScheduledTimeOffWindow={statusCard.formatScheduledTimeOffWindow}
+            isTodayScheduledClosed={statusCard.isTodayScheduledClosed}
+            scheduleStatusLabel={statusCard.scheduleStatusLabel}
+            schedulePhase={statusCard.schedulePhase}
+            showScheduleCountdown={statusCard.showScheduleCountdown}
+            activeCountdownAt={statusCard.activeCountdownAt}
+            countdownTick={statusCard.countdownTick}
+            opensCountdownLabel={statusCard.opensCountdownLabel}
+            countdownKind={statusCard.countdownKind}
+            countdownSubtitleWallLabel={statusCard.countdownSubtitleWallLabel}
+            closeReasonDisplay={statusCard.closeReasonDisplay}
+            lastToggledByName={statusCard.lastToggledByName}
+            lastToggleBy={statusCard.lastToggleBy}
+            lastToggleType={statusCard.lastToggleType}
+            lastToggledAt={statusCard.lastToggledAt}
+            storeIdLabel={storeFromHook?.store_id ?? null}
+            manualActivationLock={statusCard.manualActivationLock}
+            showScheduledOffStartsCountdown={statusCard.showScheduledOffStartsCountdown}
+            scheduledOffStartsInMs={statusCard.scheduledOffStartsInMs}
+            onStoreToggle={() => storeOps.handleStoreToggle({ isDelisted })}
+            onManualLockChange={(enabled) => {
+              statusCard.setManualActivationLock(enabled);
+              void storeOps.saveManualActivationLock(enabled);
+            }}
+            storeInternalId={storeId}
+            onOperationsRefresh={() => storeOps.refreshOperations()}
+          />
+        </section>
+
 
         <div className="rounded-xl border border-gray-200/80 bg-white p-4 shadow-sm">
           <p className="text-[10px] font-semibold text-gray-500 uppercase mb-2">Delivery mode</p>

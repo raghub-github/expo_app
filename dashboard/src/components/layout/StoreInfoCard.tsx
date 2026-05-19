@@ -2,7 +2,9 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { CheckCircle, Clock, X, XCircle, Loader2, ExternalLink } from "lucide-react";
+import { CheckCircle, Clock, X, XCircle, Loader2, ExternalLink, ChevronRight } from "lucide-react";
+import { useStoreVerificationSheet } from "@/context/StoreVerificationSheetContext";
+import { useCanStoreVerify } from "@/hooks/useCanStoreVerify";
 import { MenuReferenceReviewBlock } from "@/components/verification/MenuReferenceReviewBlock";
 import { summarizeMenuRejectionDetail } from "@/lib/store-verification-menu-rejection-detail-shared";
 import type { MenuMediaFile } from "@/lib/merchant-menu-media";
@@ -22,8 +24,9 @@ const VERIFICATION_STEP_LABELS: Record<number, string> = {
   3: "Menu setup",
   4: "Restaurant documents",
   5: "Operational details",
-  6: "Commission plan",
-  7: "Sign & submit",
+  6: "Bank account",
+  7: "Commission plan",
+  8: "Sign & submit",
 };
 
 type StepVerification = {
@@ -46,6 +49,8 @@ type StepVerification = {
 interface StoreInfoCardProps {
   store: StoreInfoCardData;
   className?: string;
+  /** Tighter layout for the merchant store right rail */
+  compact?: boolean;
 }
 
 // ----- Step details modal: render verified content per step (from verification-data) -----
@@ -326,7 +331,9 @@ export function StoreInfoCardSkeleton({ className = "" }: { className?: string }
  * Card displayed in the right sidebar below Profile when a store is selected.
  * Shows store info plus Verified/Pending button; click opens modal with verification details.
  */
-export function StoreInfoCard({ store, className = "" }: StoreInfoCardProps) {
+export function StoreInfoCard({ store, className = "", compact = false }: StoreInfoCardProps) {
+  const { openVerificationSheet } = useStoreVerificationSheet();
+  const { canStoreVerify } = useCanStoreVerify();
   const [modalOpen, setModalOpen] = useState(false);
   const [steps, setSteps] = useState<Record<number, StepVerification> | null>(null);
   const [loading, setLoading] = useState(false);
@@ -414,26 +421,37 @@ export function StoreInfoCard({ store, className = "" }: StoreInfoCardProps) {
     setViewDetailsStep(null);
   }, []);
 
+  const openStepVerification = useCallback(
+    (stepNum: number) => {
+      setModalOpen(false);
+      setViewDetailsStep(null);
+      openVerificationSheet(store.storeId, stepNum);
+    },
+    [openVerificationSheet, store.storeId]
+  );
+
   return (
     <>
       <div
-        className={`rounded-xl border border-gray-100 bg-white p-2.5 shadow-[0_2px_8px_rgba(0,0,0,0.06)] min-w-0 ${className}`}
+        className={`border border-gray-100 bg-white min-w-0 ${
+          compact ? "rounded-lg p-2 shadow-sm" : "rounded-xl p-2.5 shadow-[0_2px_8px_rgba(0,0,0,0.06)]"
+        } ${className}`}
         role="region"
         aria-label="Store information"
       >
-        <span className="block text-[9px] font-medium uppercase tracking-widest text-gray-400 mb-1.5">Store</span>
-        <div className="space-y-1.5 min-w-0">
-          <p className="text-xs font-semibold text-gray-900 truncate leading-tight" title={store.name}>{store.name}</p>
+        <span className={`block font-medium uppercase tracking-widest text-gray-400 ${compact ? "text-[8px] mb-1" : "text-[9px] mb-1.5"}`}>Store</span>
+        <div className={`min-w-0 ${compact ? "space-y-1" : "space-y-1.5"}`}>
+          <p className={`font-semibold text-gray-900 truncate leading-tight ${compact ? "text-[11px]" : "text-xs"}`} title={store.name}>{store.name}</p>
           {store.full_address && (
-            <p className="text-[10px] text-gray-600 break-words leading-snug line-clamp-2" title={store.full_address}>{store.full_address}</p>
+            <p className={`text-gray-600 break-words leading-snug ${compact ? "text-[9px] line-clamp-1" : "text-[10px] line-clamp-2"}`} title={store.full_address}>{store.full_address}</p>
           )}
-          <p className="text-[10px] font-mono text-gray-500 truncate pt-0.5" title={store.store_id}>{store.store_id}</p>
-          {store.created_at && (
+          <p className={`font-mono text-gray-500 truncate ${compact ? "text-[9px]" : "text-[10px] pt-0.5"}`} title={store.store_id}>{store.store_id}</p>
+          {!compact && store.created_at && (
             <p className="text-[10px] text-gray-500 pt-0.5">
               Created: {new Date(store.created_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
             </p>
           )}
-          <div className="flex flex-wrap gap-1.5 pt-1.5">
+          <div className={`flex flex-wrap gap-1.5 ${compact ? "pt-0.5" : "pt-1.5"}`}>
             <button
               type="button"
               onClick={openModal}
@@ -538,9 +556,26 @@ export function StoreInfoCard({ store, className = "" }: StoreInfoCardProps) {
                                 ? summarizeMenuRejectionDetail(rejection?.rejection_detail ?? null)
                                 : null;
                             return (
-                            <li key={stepNum} className="flex flex-wrap items-center gap-2 text-sm text-gray-700">
+                            <li key={stepNum}>
+                              <div className="flex flex-wrap items-center gap-2 text-sm text-gray-700">
+                              <button
+                                type="button"
+                                onClick={() => openStepVerification(stepNum)}
+                                className="flex min-w-0 flex-1 flex-wrap items-center gap-2 rounded-lg px-1 py-1 text-left hover:bg-amber-50/80 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                              >
                               <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700 text-xs font-medium">{stepNum}</span>
-                              {VERIFICATION_STEP_LABELS[stepNum] ?? `Step ${stepNum}`}
+                              <span className="font-medium">{VERIFICATION_STEP_LABELS[stepNum] ?? `Step ${stepNum}`}</span>
+                              <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-amber-600" aria-hidden />
+                              </button>
+                              {canStoreVerify && (
+                                <button
+                                  type="button"
+                                  onClick={() => openStepVerification(stepNum)}
+                                  className="shrink-0 rounded-md bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                >
+                                  Verify
+                                </button>
+                              )}
                               {rejection && (
                                 <span
                                   className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-800"
@@ -562,6 +597,7 @@ export function StoreInfoCard({ store, className = "" }: StoreInfoCardProps) {
                                   Resubmitted
                                 </span>
                               )}
+                              </div>
                             </li>
                             );
                           })}

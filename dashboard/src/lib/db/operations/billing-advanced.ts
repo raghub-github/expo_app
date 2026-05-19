@@ -63,7 +63,7 @@ export type InsertDeliveryRateCardInput = {
 export async function insertDeliveryRateCard(input: InsertDeliveryRateCardInput): Promise<DeliveryRateCardAdminRow> {
   const sql = getSql();
   const st = (input.service_type ?? "FOOD").trim().toUpperCase();
-  const [row] = await sql<DeliveryRateCardAdminRow[]>`
+  const rows = await sql`
     INSERT INTO billing_delivery_rate_cards (
       name, service_type, city_name, time_slot,
       base_fare, per_km_rate, surge_multiplier,
@@ -81,7 +81,7 @@ export async function insertDeliveryRateCard(input: InsertDeliveryRateCardInput)
       ${input.free_delivery_above ?? null},
       ${input.priority ?? 0},
       ${input.is_active ?? true},
-      ${input.metadata ?? null}
+      ${sqlJsonb(input.metadata)}::jsonb
     )
     RETURNING id, name, service_type, city_name, time_slot,
       base_fare::text AS base_fare, per_km_rate::text AS per_km_rate, surge_multiplier::text AS surge_multiplier,
@@ -89,6 +89,7 @@ export async function insertDeliveryRateCard(input: InsertDeliveryRateCardInput)
       free_delivery_above::text AS free_delivery_above,
       priority, is_active, metadata
   `;
+  const row = rows[0] as DeliveryRateCardAdminRow | undefined;
   if (!row) throw new Error("insertDeliveryRateCard failed");
   await bumpBillingRulesetVersion();
   return row;
@@ -100,7 +101,7 @@ export async function updateDeliveryRateCard(
 ): Promise<DeliveryRateCardAdminRow | null> {
   const sql = getSql();
   const st = (input.service_type ?? "FOOD").trim().toUpperCase();
-  const [row] = await sql<DeliveryRateCardAdminRow[]>`
+  const rows = await sql`
     UPDATE billing_delivery_rate_cards SET
       name = ${input.name ?? null},
       service_type = ${st},
@@ -114,7 +115,7 @@ export async function updateDeliveryRateCard(
       free_delivery_above = ${input.free_delivery_above ?? null},
       priority = ${input.priority ?? 0},
       is_active = ${input.is_active ?? true},
-      metadata = ${input.metadata ?? null},
+      metadata = ${sqlJsonb(input.metadata)}::jsonb,
       updated_at = now()
     WHERE id = ${id}
     RETURNING id, name, service_type, city_name, time_slot,
@@ -123,6 +124,7 @@ export async function updateDeliveryRateCard(
       free_delivery_above::text AS free_delivery_above,
       priority, is_active, metadata
   `;
+  const row = rows[0] as DeliveryRateCardAdminRow | undefined;
   if (!row) return null;
   await bumpBillingRulesetVersion();
   return row;

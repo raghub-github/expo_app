@@ -6,7 +6,6 @@
 
 /** Default matches backend `store-schedule-engine.ts` (`STORE_TIMEZONE`). */
 export const DEFAULT_STORE_TIMEZONE = "Asia/Kolkata";
-const GRACE_BUFFER_SECONDS = 30;
 
 const DAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
 
@@ -24,13 +23,12 @@ function parseTimeToMinutes(t: string | null | undefined): number | null {
 }
 
 function getSlotsForDay(row: Record<string, unknown>, dayKey: string, sameForAll: boolean): Slot[] {
-  const day = sameForAll ? "monday" : dayKey;
-  const open = row[`${day}_open`] === true;
-  if (!open) return [];
-  const s1Start = parseTimeToMinutes(row[`${day}_slot1_start`] as string);
-  const s1End = parseTimeToMinutes(row[`${day}_slot1_end`] as string);
-  const s2Start = parseTimeToMinutes(row[`${day}_slot2_start`] as string);
-  const s2End = parseTimeToMinutes(row[`${day}_slot2_end`] as string);
+  if (row[`${dayKey}_open`] !== true) return [];
+  const slotDay = sameForAll ? "monday" : dayKey;
+  const s1Start = parseTimeToMinutes(row[`${slotDay}_slot1_start`] as string);
+  const s1End = parseTimeToMinutes(row[`${slotDay}_slot1_end`] as string);
+  const s2Start = parseTimeToMinutes(row[`${slotDay}_slot2_start`] as string);
+  const s2End = parseTimeToMinutes(row[`${slotDay}_slot2_end`] as string);
   const slots: Slot[] = [];
   if (s1Start != null && s1End != null && s1End > s1Start) slots.push({ startMin: s1Start, endMin: s1End });
   if (s2Start != null && s2End != null && s2End > s2Start) slots.push({ startMin: s2Start, endMin: s2End });
@@ -126,16 +124,28 @@ export function isWithinOperatingHours(
   dayOfWeek: number,
   minutesSinceMidnight: number
 ): boolean {
+  const dayKey = DAY_NAMES[dayOfWeek];
+  const closedDays = (row.closed_days as string[] | null) ?? [];
+  if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) return false;
+  if (row[`${dayKey}_open`] !== true) return false;
+  const sameForAll = row.same_for_all_days === true;
   const is24 = row.is_24_hours === true;
   if (is24) return true;
-  const closedDays = (row.closed_days as string[] | null) ?? [];
-  const dayKey = DAY_NAMES[dayOfWeek];
-  if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) return false;
-  const sameForAll = row.same_for_all_days === true;
-  const slots = getSlotsForDay(row, dayKey, sameForAll);
-  const endGrace = GRACE_BUFFER_SECONDS / 60;
+  const slots = getSlotsForDay(row, dayKey, sameForAll).sort((a, b) => a.startMin - b.startMin);
+  for (let i = 0; i < slots.length - 1; i++) {
+    const gapStart = slots[i].endMin;
+    const gapEnd = slots[i + 1].startMin;
+    if (gapEnd > gapStart && minutesSinceMidnight >= gapStart && minutesSinceMidnight < gapEnd) {
+      return false;
+    }
+  }
   for (const slot of slots) {
-    if (minutesSinceMidnight >= slot.startMin && minutesSinceMidnight <= slot.endMin + endGrace) return true;
+    // Strict half-open interval [startMin, endMin): store comes ONLINE at exactly startMin and
+    // transitions OFFLINE at exactly endMin (e.g. 10:00 → ONLINE, 14:00 → OFFLINE, 17:00 → ONLINE,
+    // 23:00 → OFFLINE). No end-of-slot grace buffer.
+    if (minutesSinceMidnight >= slot.startMin && minutesSinceMidnight < slot.endMin) {
+      return true;
+    }
   }
   return false;
 }
@@ -163,10 +173,9 @@ export function getNextOpenClose(
   }
   const sameForAll = row.same_for_all_days === true;
   const slots = getSlotsForDay(row, dayKey, sameForAll).sort((a, b) => a.startMin - b.startMin);
-  const endGrace = GRACE_BUFFER_SECONDS / 60;
   let withinSlot: Slot | null = null;
   for (const slot of slots) {
-    if (minutesSinceMidnight >= slot.startMin && minutesSinceMidnight <= slot.endMin + endGrace) {
+    if (minutesSinceMidnight >= slot.startMin && minutesSinceMidnight < slot.endMin) {
       withinSlot = slot;
       break;
     }

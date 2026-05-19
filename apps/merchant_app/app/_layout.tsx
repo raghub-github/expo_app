@@ -13,6 +13,7 @@ import { ProfileNavProvider } from "@/context/ProfileNavContext";
 import { NotificationProvider } from "@/context/NotificationContext";
 import { SubscriptionProvider } from "@/context/SubscriptionContext";
 import FloatingOrdersManager from "../components/FloatingOrdersManager";
+import IncomingOrderModal from "../components/IncomingOrderModal";
 import { SessionRevokedGate } from "@/components/SessionRevokedGate";
 import NotificationSetup from "../components/NotificationSetup";
 
@@ -45,6 +46,7 @@ export default function RootLayout() {
                         />
                         <NotificationSetup />
                         <FloatingOrdersManager />
+                        <IncomingOrderModal />
                         <SessionRevokedGate />
                         <Stack
                           screenOptions={{
@@ -57,6 +59,7 @@ export default function RootLayout() {
                           <Stack.Screen name="(auth)" />
                           <Stack.Screen name="(tabs)" />
                           <Stack.Screen name="order/[id]" options={{ headerShown: false }} />
+                          <Stack.Screen name="order-history" options={{ headerShown: false }} />
                           <Stack.Screen name="notifications" options={{ headerShown: false }} />
                         </Stack>
                       </SubscriptionProvider>

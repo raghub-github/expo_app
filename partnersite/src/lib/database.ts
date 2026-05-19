@@ -150,19 +150,33 @@ export const deleteMenuCategory = async (categoryId: number) => {
 
 export const fetchStoreById = async (storeId: string): Promise<MerchantStore | null> => {
   try {
-    if (!storeId || String(storeId).trim() === '') {
+    const trimmed = String(storeId ?? '').trim();
+    if (!trimmed) {
       return null;
     }
-    const { data, error } = await supabase
+    const { data: byPublicId, error: publicErr } = await supabase
       .from('merchant_stores')
       .select('*')
-      .eq('store_id', String(storeId).trim())
+      .eq('store_id', trimmed)
       .maybeSingle();
-    if (error) {
-      console.error('Error fetching store:', error.message ?? error, error.code ?? '', error.details ?? '');
-      return null;
+    if (publicErr) {
+      console.error('Error fetching store:', publicErr.message ?? publicErr, publicErr.code ?? '', publicErr.details ?? '');
     }
-    return data as MerchantStore | null;
+    if (byPublicId) return byPublicId as MerchantStore;
+
+    if (/^\d+$/.test(trimmed)) {
+      const { data: byInternalId, error: internalErr } = await supabase
+        .from('merchant_stores')
+        .select('*')
+        .eq('id', parseInt(trimmed, 10))
+        .maybeSingle();
+      if (internalErr) {
+        console.error('Error fetching store by internal id:', internalErr.message ?? internalErr);
+      }
+      if (byInternalId) return byInternalId as MerchantStore;
+    }
+
+    return null;
   } catch (error: unknown) {
     const err = error as { message?: string; code?: string };
     console.error('Error fetching store:', err?.message ?? err?.code ?? error);
@@ -422,6 +436,8 @@ export interface Offer {
   updated_by_name?: string | null;
   /** Audit: when last updated by a user */
   updated_by_at?: string | null;
+  created_source_platform?: string | null;
+  updated_source_platform?: string | null;
 }
 
 // Fetch active offers for a store

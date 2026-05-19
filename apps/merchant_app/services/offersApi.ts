@@ -1,4 +1,5 @@
 import { getConfig } from "@/config/env";
+import { normalizeOfferFromApi } from "@/lib/offers/offer-utils";
 import { authFetch } from "@/services/authFetch";
 
 const getBase = () => getConfig().apiBaseUrl;
@@ -48,9 +49,15 @@ export interface Offer {
   max_uses_total: number | null;
   max_uses_per_user: number | null;
   current_uses: number;
+  applicable_on_days: string[] | null;
+  applicable_time_start: string | null;
+  applicable_time_end: string | null;
   offer_metadata: Record<string, unknown> | null;
   created_source_platform: string | null;
+  updated_source_platform?: string | null;
   created_by_role: string | null;
+  created_by_name?: string | null;
+  updated_by_name?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -93,7 +100,8 @@ export async function listOffers(storeId: number, token: string): Promise<Offer[
     throw new Error((err as any).error || "Failed to load offers");
   }
   const data = await res.json();
-  return (data as any).offers ?? [];
+  const rows = (data as any).offers ?? [];
+  return rows.map((r: Record<string, unknown>) => normalizeOfferFromApi(r));
 }
 
 export async function createOffer(
@@ -115,7 +123,7 @@ export async function createOffer(
     throw new Error((err as any).error || "Failed to create offer");
   }
   const data = await res.json();
-  return (data as any).offer;
+  return normalizeOfferFromApi((data as any).offer ?? {});
 }
 
 export async function updateOffer(
@@ -138,7 +146,7 @@ export async function updateOffer(
     throw new Error((err as any).error || "Failed to update offer");
   }
   const data = await res.json();
-  return (data as any).offer;
+  return normalizeOfferFromApi((data as any).offer ?? {});
 }
 
 export async function deleteOffer(
@@ -155,6 +163,53 @@ export async function deleteOffer(
     const err = await res.json().catch(() => ({}));
     throw new Error((err as any).error || "Failed to delete offer");
   }
+}
+
+export type OfferInsightsApiResponse = {
+  gross: number;
+  discount: number;
+  orders: number;
+  total_store_orders: number;
+  total_store_sales: number;
+  monthly: Array<{
+    key: string;
+    label: string;
+    offer_gross: number;
+    offer_discount: number;
+    offer_orders: number;
+    store_gross: number;
+    store_orders: number;
+  }>;
+  discount_types: Array<{
+    offer_type: string;
+    gross: number;
+    discount: number;
+    orders: number;
+  }>;
+  customers: { new_orders: number; repeat_orders: number; lapsed_orders: number };
+};
+
+export async function fetchOfferInsights(
+  storeId: number,
+  token: string,
+  range: { startMs: number; endMs: number }
+): Promise<OfferInsightsApiResponse> {
+  const q = new URLSearchParams({
+    start: new Date(range.startMs).toISOString(),
+    end: new Date(range.endMs).toISOString(),
+  });
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/offers/insights?${q.toString()}`,
+    token
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any).error || "Failed to load offer insights");
+  }
+  const data = await res.json();
+  const insights = (data as { insights?: OfferInsightsApiResponse }).insights;
+  if (!insights) throw new Error("Invalid insights response");
+  return insights;
 }
 
 export async function uploadOfferImage(

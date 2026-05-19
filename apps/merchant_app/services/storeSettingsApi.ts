@@ -8,6 +8,8 @@ export type StoreSettings = {
   show_floating_orders: boolean;
   platform_delivery: boolean;
   self_delivery: boolean;
+  auto_accept_orders: boolean;
+  auto_accept_time_seconds: number;
 };
 
 export async function getStoreSettings(
@@ -22,15 +24,25 @@ export async function getStoreSettings(
   const data = (await res.json()) as Partial<StoreSettings>;
   return {
     store_id: Number(data.store_id ?? storeId),
-    show_floating_orders: data.show_floating_orders === true,
+    show_floating_orders: data.show_floating_orders !== false,
     platform_delivery: data.platform_delivery !== false,
     self_delivery: data.self_delivery === true,
+    auto_accept_orders: data.auto_accept_orders === true,
+    auto_accept_time_seconds:
+      typeof data.auto_accept_time_seconds === "number"
+        ? Math.max(0, Math.min(600, Math.floor(data.auto_accept_time_seconds)))
+        : 30,
   };
 }
 
 export async function updateStoreSettings(
   storeId: number,
-  body: Partial<Pick<StoreSettings, "show_floating_orders" | "platform_delivery" | "self_delivery">>,
+  body: Partial<
+    Pick<
+      StoreSettings,
+      "show_floating_orders" | "platform_delivery" | "self_delivery" | "auto_accept_orders" | "auto_accept_time_seconds"
+    >
+  >,
   token: string
 ): Promise<StoreSettings> {
   const res = await authFetch(`${getBase()}/v1/merchant-partner/stores/${storeId}/settings`, token, {
@@ -44,9 +56,14 @@ export async function updateStoreSettings(
   const data = (await res.json()) as Partial<StoreSettings> & { ok?: boolean };
   return {
     store_id: Number(data.store_id ?? storeId),
-    show_floating_orders: data.show_floating_orders === true,
+    show_floating_orders: data.show_floating_orders !== false,
     platform_delivery: data.platform_delivery !== false,
     self_delivery: data.self_delivery === true,
+    auto_accept_orders: data.auto_accept_orders === true,
+    auto_accept_time_seconds:
+      typeof data.auto_accept_time_seconds === "number"
+        ? Math.max(0, Math.min(600, Math.floor(data.auto_accept_time_seconds)))
+        : 30,
   };
 }
 

@@ -118,3 +118,34 @@ textarea::placeholder {
 select option {
   color: rgb(17, 24, 39) !important; /* text-gray-900 */
 }
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes store-closed-marquee {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-store-closed-marquee {
+  animation: store-closed-marquee 28s linear infinite;
+}

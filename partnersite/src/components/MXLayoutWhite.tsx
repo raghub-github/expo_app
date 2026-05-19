@@ -5,8 +5,6 @@ import { PartnerShellHeaderProvider } from '@/context/PartnerShellHeaderContext'
 import { MXSidebarWhite } from './MXSidebarWhite'
 import { MXPartnerTopBar } from './MXPartnerTopBar'
 import { ParentBlockedBanner } from './ParentBlockedBanner'
-import { PartnerIncomingOrderModal } from './PartnerIncomingOrderModal'
-
 interface MXLayoutWhiteProps {
   children: React.ReactNode
   restaurantName?: string
@@ -85,7 +83,6 @@ export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
           </main>
         </div>
         </Suspense>
-        <PartnerIncomingOrderModal restaurantId={restaurantId} />
       </div>
     </PartnerShellHeaderProvider>
   )

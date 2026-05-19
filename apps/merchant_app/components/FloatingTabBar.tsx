@@ -35,7 +35,18 @@ type MainTabName = (typeof MAIN_TAB_ORDER)[number];
 const ICON_SIZE = 22;
 const LABEL_FONT_SIZE = 11;
 const ICON_LABEL_GAP = 2;
-const PROFILE_PRESS_DEBOUNCE_MS = 600;
+const MAIN_TAB_PRESS_DEBOUNCE_MS = 450;
+
+/** True when the profile stack is showing the home screen (index), not a pushed child route. */
+function isProfileStackAtRoot(tabState: BottomTabBarProps["state"]): boolean {
+  const profileRoute = tabState.routes.find((r) => r.name === "profile");
+  const stack = profileRoute?.state;
+  if (!stack || typeof stack.index !== "number") return true;
+  if (stack.index > 0) return false;
+  const first = stack.routes[0];
+  const name = first?.name ?? "index";
+  return name === "index";
+}
 /** Same active treatment for every main tab (matches Home): mint pill + white icon/label. */
 const TAB_ACTIVE_BG = GatiMitraMerchant.primary;
 const TAB_ACTIVE_FG = "#FFFFFF";
@@ -82,7 +93,7 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   const { setActiveTab } = useActiveTab();
   const { setOpenProfileRootOnNextFocus } = useProfileNav();
   const bottomInset = insets.bottom;
-  const lastProfilePressAt = useRef(0);
+  const lastMainTabPressAt = useRef(0);
   const keyboardShown = useIsKeyboardShown();
   const focusedOptions = descriptors[state.routes[state.index].key].options;
   const hideTabBarOnKeyboard = focusedOptions.tabBarHideOnKeyboard === true;
@@ -129,43 +140,54 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   const navigateToMainTab = useCallback(
     (routeName: MainTabName) => {
       setActiveTab(routeName);
-      if (routeName === "profile") {
-        setOpenProfileRootOnNextFocus(true);
-        router.replace("/(tabs)/profile");
-        navigation.dispatch(CommonActions.navigate({ name: "profile" } as never));
-      } else {
-        navigation.dispatch(CommonActions.navigate({ name: routeName } as never));
-      }
+      navigation.dispatch(CommonActions.navigate({ name: routeName } as never));
       lastMainRoute.current = routeName;
     },
-    [navigation, router, setActiveTab, setOpenProfileRootOnNextFocus]
+    [navigation, setActiveTab]
   );
 
   const onPressMainTab = useCallback(
     (routeName: MainTabName, isActive: boolean) => {
-      if (routeName === "profile" && isActive) {
-        const now = Date.now();
-        if (now - lastProfilePressAt.current < PROFILE_PRESS_DEBOUNCE_MS) return;
-        lastProfilePressAt.current = now;
+      const now = Date.now();
+      if (now - lastMainTabPressAt.current < MAIN_TAB_PRESS_DEBOUNCE_MS) return;
+      lastMainTabPressAt.current = now;
+
+      if (isActive) {
+        if (routeName === "profile" && !isProfileStackAtRoot(state)) {
+          setOpenProfileRootOnNextFocus(true);
+          router.replace("/(tabs)/profile");
+        }
+        return;
       }
+
       navigateToMainTab(routeName);
     },
-    [navigateToMainTab]
+    [navigateToMainTab, state, router, setOpenProfileRootOnNextFocus]
   );
 
+  const lastHubTabPressAt = useRef(0);
+
   const goHub = useCallback(() => {
+    const now = Date.now();
+    if (now - lastHubTabPressAt.current < MAIN_TAB_PRESS_DEBOUNCE_MS) return;
+    lastHubTabPressAt.current = now;
+    if (dock === "hub") return;
     runDockSwitch("hub", "flow", () => {
       setActiveTab("earnings");
       navigation.dispatch(CommonActions.navigate({ name: "earnings" } as never));
     });
-  }, [navigation, runDockSwitch, setActiveTab]);
+  }, [navigation, runDockSwitch, setActiveTab, dock]);
 
   const goMainDock = useCallback(() => {
+    const now = Date.now();
+    if (now - lastHubTabPressAt.current < MAIN_TAB_PRESS_DEBOUNCE_MS) return;
+    lastHubTabPressAt.current = now;
+    if (dock === "main") return;
     const target = lastMainRoute.current;
     runDockSwitch("main", "home", () => {
       navigateToMainTab(target);
     });
-  }, [navigateToMainTab, runDockSwitch]);
+  }, [navigateToMainTab, runDockSwitch, dock]);
 
   const orderedMain = MAIN_TAB_ORDER.map((name) => {
     const route = state.routes.find((r) => r.name === name);
@@ -349,6 +371,10 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
                     <Pressable
                       key={routeName}
                       onPress={() => {
+                        const now = Date.now();
+                        if (now - lastHubTabPressAt.current < MAIN_TAB_PRESS_DEBOUNCE_MS) return;
+                        lastHubTabPressAt.current = now;
+                        if (isFocused) return;
                         setActiveTab(routeName);
                         navigation.dispatch(CommonActions.navigate({ name: routeName } as never));
                       }}

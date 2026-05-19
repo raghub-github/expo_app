@@ -4,6 +4,10 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { X, Loader2, ChevronRight, ChevronLeft, CheckCircle2, Headphones } from "lucide-react";
 import { useMerchantSession, type MerchantSessionContextValue } from "@/context/MerchantSessionContext";
+import {
+  MX_OPEN_NEED_HELP_EVENT,
+  type MxNeedHelpOpenDetail,
+} from "@/lib/openMxNeedHelp";
 
 const SESSION_OUTSIDE_PROVIDER: MerchantSessionContextValue = {
   user: null,
@@ -56,6 +60,7 @@ const NeedHelpBadge: React.FC<{
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [createdTicket, setCreatedTicket] = useState<CreatedTicketSummary | null>(null);
+  const [orderHelpContext, setOrderHelpContext] = useState<MxNeedHelpOpenDetail | null>(null);
 
   const readCachedSections = useCallback((): HelpSection[] | null => {
     if (typeof window === "undefined") return null;
@@ -144,14 +149,20 @@ const NeedHelpBadge: React.FC<{
   }, [open, session.isAuthenticated, loadSections]);
 
   useEffect(() => {
-    if (open) {
-      setSheetStep("topics");
-      setSelectedTopic(null);
-      setComposeText("");
-      setMessage(null);
-      setCreatedTicket(null);
+    if (!open) {
+      setOrderHelpContext(null);
+      return;
     }
+    setSheetStep("topics");
+    setSelectedTopic(null);
+    setMessage(null);
+    setCreatedTicket(null);
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    setComposeText(orderHelpContext?.prefillDescription?.trim() ?? "");
+  }, [open, orderHelpContext]);
 
   useEffect(() => {
     if (!open) return;
@@ -167,11 +178,27 @@ const NeedHelpBadge: React.FC<{
     };
   }, [open]);
 
-  // Allow other UI (e.g. offline "help centre" link) to open this sheet.
+  // Allow other UI (e.g. order history Help) to open this sheet with optional order context.
   useEffect(() => {
-    const onOpen = () => setOpen(true);
-    window.addEventListener("mx-open-need-help", onOpen as EventListener);
-    return () => window.removeEventListener("mx-open-need-help", onOpen as EventListener);
+    const onOpen = (ev: Event) => {
+      const detail = (ev as CustomEvent<MxNeedHelpOpenDetail>).detail;
+      if (detail && typeof detail === "object") {
+        setOrderHelpContext({
+          formattedOrderId: detail.formattedOrderId?.trim() || undefined,
+          coreOrderId:
+            detail.coreOrderId != null && Number.isFinite(Number(detail.coreOrderId))
+              ? Number(detail.coreOrderId)
+              : undefined,
+          prefillSubject: detail.prefillSubject?.trim() || undefined,
+          prefillDescription: detail.prefillDescription?.trim() || undefined,
+        });
+      } else {
+        setOrderHelpContext(null);
+      }
+      setOpen(true);
+    };
+    window.addEventListener(MX_OPEN_NEED_HELP_EVENT, onOpen);
+    return () => window.removeEventListener(MX_OPEN_NEED_HELP_EVENT, onOpen);
   }, []);
 
   const rootSections = useMemo(() => {
@@ -210,14 +237,29 @@ const NeedHelpBadge: React.FC<{
       setLoading(true);
       setMessage(null);
       try {
+        const formattedOid = orderHelpContext?.formattedOrderId?.trim();
+        const coreOid = orderHelpContext?.coreOrderId;
+        const orderPrefix =
+          formattedOid != null && formattedOid !== ""
+            ? `Order ID: ${formattedOid}`
+            : null;
+        const descriptionWithOrder = orderPrefix ? `${orderPrefix}\n\n${desc}` : desc;
+        const subjectBase = subject.trim().slice(0, 500);
+        const subjectWithOrder =
+          orderHelpContext?.prefillSubject?.trim() ||
+          (formattedOid && subjectBase ? `${subjectBase} · ${formattedOid}` : subjectBase) ||
+          (formattedOid ? `Order ${formattedOid}` : undefined);
+
         const res = await fetch("/api/merchant/partner-store-tickets", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             store_id: storeId,
             ticket_title_id: ticketTitleId,
-            subject: subject.trim().slice(0, 500) || undefined,
-            description: desc.slice(0, 5000),
+            subject: subjectWithOrder,
+            description: descriptionWithOrder.slice(0, 5000),
+            formatted_order_id: formattedOid || undefined,
+            core_order_id: coreOid,
           }),
         });
         const data = await res.json().catch(() => ({}));
@@ -248,7 +290,7 @@ const NeedHelpBadge: React.FC<{
         setLoading(false);
       }
     },
-    [session.isAuthenticated]
+    [session.isAuthenticated, orderHelpContext]
   );
 
   const onTopicClick = (topic: HelpSection) => {
@@ -377,6 +419,12 @@ const NeedHelpBadge: React.FC<{
                 </div>
               ) : (
                 <>
+                  {orderHelpContext?.formattedOrderId ? (
+                    <p className="mb-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-900">
+                      Order ID:{" "}
+                      <span className="font-mono font-semibold">{orderHelpContext.formattedOrderId}</span>
+                    </p>
+                  ) : null}
                   {readSelectedStoreId() ? (
                     <p className="mb-3 text-xs text-slate-500">
                       Store: <span className="font-mono font-medium text-slate-700">{readSelectedStoreId()}</span>

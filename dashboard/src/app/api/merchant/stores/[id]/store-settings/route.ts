@@ -72,14 +72,24 @@ export async function GET(
     }
     let platform_delivery = true;
     let self_delivery = false;
+    let show_floating_orders = true;
+    let auto_accept_orders = false;
+    let auto_accept_time_seconds = 30;
     const settingsRows = await sql`
-      SELECT platform_delivery, self_delivery FROM merchant_store_settings WHERE store_id = ${storeId} LIMIT 1
+      SELECT platform_delivery, self_delivery, show_floating_orders, auto_accept_orders, auto_accept_time_seconds
+      FROM merchant_store_settings WHERE store_id = ${storeId} LIMIT 1
     `;
     const settingsRow = Array.isArray(settingsRows) ? settingsRows[0] : settingsRows;
     if (settingsRow) {
       const s = settingsRow as Record<string, unknown>;
       platform_delivery = s.platform_delivery !== false;
       self_delivery = s.self_delivery === true;
+      if (s.show_floating_orders === false) show_floating_orders = false;
+      auto_accept_orders = s.auto_accept_orders === true;
+      const secs = Number(s.auto_accept_time_seconds);
+      if (Number.isFinite(secs)) {
+        auto_accept_time_seconds = Math.max(0, Math.min(600, Math.floor(secs)));
+      }
     }
     const lat = store.latitude != null ? Number(store.latitude) : null;
     const lng = store.longitude != null ? Number(store.longitude) : null;
@@ -88,7 +98,9 @@ export async function GET(
       platform_delivery,
       self_delivery,
       delivery_radius_km,
-      auto_accept_orders: store.is_accepting_orders ?? false,
+      show_floating_orders,
+      auto_accept_orders,
+      auto_accept_time_seconds,
       preparation_buffer_minutes: store.avg_preparation_time_minutes ?? 15,
       address: {
         full_address: store.full_address ?? null,

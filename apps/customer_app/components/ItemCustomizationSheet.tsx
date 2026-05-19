@@ -72,8 +72,10 @@ export function ItemCustomizationSheet({
 
   const hasConfig = item.hasVariants || item.hasAddons || item.hasCustomizations;
 
+  const configItemKey = String(item.id ?? item.menuItemId ?? "").trim();
+
   useEffect(() => {
-    if (!visible || !storeId || !item.id || !hasConfig) {
+    if (!visible || !storeId || !configItemKey || !hasConfig) {
       setConfig(null);
       return;
     }
@@ -82,7 +84,7 @@ export function ItemCustomizationSheet({
     setQuantity(1);
     setSelectedVariantId(null);
     merchantService
-      .getMenuItemFullConfig(storeId, item.id)
+      .getMenuItemFullConfig(storeId, configItemKey)
       .then((c) => {
         setConfig(c);
         if (c?.variants?.length) {
@@ -91,7 +93,7 @@ export function ItemCustomizationSheet({
         }
       })
       .finally(() => setLoading(false));
-  }, [visible, storeId, item.id, hasConfig]);
+  }, [visible, storeId, configItemKey, hasConfig]);
 
   const variantPrice = useMemo(() => {
     if (!config?.variants?.length) return config?.item?.price ?? item.price;
@@ -262,6 +264,16 @@ export function ItemCustomizationSheet({
                           </View>
                         </View>
                       )}
+
+                      {!loading &&
+                        (!config?.variants?.length) &&
+                        (!config?.customizations?.length) && (
+                          <View style={styles.section}>
+                            <Text style={styles.sectionSub}>
+                              No customization options are available for this item right now.
+                            </Text>
+                          </View>
+                        )}
 
                       {config?.customizations?.map((c) => (
                         <View key={c.id} style={styles.section}>

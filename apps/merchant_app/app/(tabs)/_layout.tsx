@@ -1,10 +1,11 @@
-import { Platform } from "react-native";
+import { Platform, View } from "react-native";
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GatiMitraMerchant, TAB_BAR_HEIGHT, TAB_BAR_FLOATING_GAP } from "@/constants/theme";
 import { MerchantCustomHeader } from "@/components/MerchantHeader";
 import { FloatingTabBar } from "@/components/FloatingTabBar";
+import { FloatingPendingOrdersBar } from "@/components/FloatingPendingOrdersBar";
 import { ActiveTabProvider } from "@/context/ActiveTabContext";
 
 const LABEL_FONT_SIZE = 12;
@@ -35,6 +36,7 @@ export default function TabsLayout() {
 
   return (
     <ActiveTabProvider>
+      <View style={{ flex: 1 }}>
       <Tabs
         tabBar={(props) => <FloatingTabBar {...props} />}
       screenOptions={{
@@ -140,13 +142,14 @@ export default function TabsLayout() {
         name="profile"
         options={{
           title: "Profile",
-          unmountOnBlur: true,
           tabBarIcon: ({ color, focused, size }) => (
             <TabIcon name={focused ? "person" : "person-outline"} color={color} size={size} />
           ),
         }}
       />
     </Tabs>
+      <FloatingPendingOrdersBar />
+      </View>
     </ActiveTabProvider>
   );
 }

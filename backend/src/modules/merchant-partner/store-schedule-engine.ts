@@ -41,6 +41,7 @@ export async function syncMerchantStoresOnlineTriple(
           WHEN ${online} THEN 'OPEN'::store_operational_status
           ELSE 'CLOSED'::store_operational_status
         END,
+        last_activity_at = NOW(),
         updated_at = NOW()
       WHERE id = ${storeId} AND parent_id = ${parentId}
     `;
@@ -55,12 +56,17 @@ export async function syncMerchantStoresOnlineTriple(
           WHEN ${online} THEN 'OPEN'::store_operational_status
           ELSE 'CLOSED'::store_operational_status
         END,
+        last_activity_at = NOW(),
         updated_at = NOW()
       WHERE id = ${storeId}
     `;
   }
 }
-const GRACE_BUFFER_SECONDS = 30;
+/**
+ * No slot-end grace buffer: store comes ONLINE at exactly `startMin` and transitions OFFLINE
+ * at exactly `endMin` (strict half-open interval `[startMin, endMin)`). Mirrors Partner Site
+ * `isWithinOperatingHours` in `partnersite/src/lib/merchantStoreNextOpenIso.ts`.
+ */
 const DAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
 const SCHEDULE_END_PROMPT_GRACE_MS = 5 * 60 * 1000; // X minutes fallback → AUTO OFF
 
@@ -460,13 +466,12 @@ function getSlotsForDay(
   dayKey: string,
   sameForAll: boolean
 ): Slot[] {
-  const day = sameForAll ? "monday" : dayKey;
-  const open = row[`${day}_open`] === true;
-  if (!open) return [];
-  const s1Start = parseTimeToMinutes(row[`${day}_slot1_start`] as string);
-  const s1End = parseTimeToMinutes(row[`${day}_slot1_end`] as string);
-  const s2Start = parseTimeToMinutes(row[`${day}_slot2_start`] as string);
-  const s2End = parseTimeToMinutes(row[`${day}_slot2_end`] as string);
+  if (row[`${dayKey}_open`] !== true) return [];
+  const slotDay = sameForAll ? "monday" : dayKey;
+  const s1Start = parseTimeToMinutes(row[`${slotDay}_slot1_start`] as string);
+  const s1End = parseTimeToMinutes(row[`${slotDay}_slot1_end`] as string);
+  const s2Start = parseTimeToMinutes(row[`${slotDay}_slot2_start`] as string);
+  const s2End = parseTimeToMinutes(row[`${slotDay}_slot2_end`] as string);
   const slots: Slot[] = [];
   if (s1Start != null && s1End != null && s1End > s1Start) slots.push({ startMin: s1Start, endMin: s1End });
   if (s2Start != null && s2End != null && s2End > s2Start) slots.push({ startMin: s2Start, endMin: s2End });
@@ -504,21 +509,102 @@ function nowInStoreTz(timeZone: string = STORE_TIMEZONE_DEFAULT): { dayOfWeek: n
 }
 
 /** True if current time (IST) is within any operating slot for today. Uses grace buffer at slot end. */
+/** Mid-day gap between slot1 end and slot2 start (rush-hour break). */
+function isInBreakBetweenSlots(
+  row: Record<string, unknown>,
+  dayOfWeek: number,
+  minutesSinceMidnight: number
+): boolean {
+  const closedDays = (row.closed_days as string[] | null) ?? [];
+  const dayKey = DAY_NAMES[dayOfWeek];
+  if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) return false;
+  if (row[`${dayKey}_open`] !== true) return false;
+  const sameForAll = row.same_for_all_days === true;
+  const day = sameForAll ? "monday" : dayKey;
+  const s1End = parseTimeToMinutes(row[`${day}_slot1_end`] as string);
+  const s2Start = parseTimeToMinutes(row[`${day}_slot2_start`] as string);
+  if (s1End == null || s2Start == null || s2Start <= s1End) return false;
+  return minutesSinceMidnight >= s1End && minutesSinceMidnight < s2Start;
+}
+
+export function isBeforeFirstSlotToday(
+  row: Record<string, unknown>,
+  dayOfWeek: number,
+  minutesSinceMidnight: number
+): boolean {
+  const dayKey = DAY_NAMES[dayOfWeek];
+  const closedDays = (row.closed_days as string[] | null) ?? [];
+  if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) return false;
+  if (row[`${dayKey}_open`] !== true) return false;
+  const sameForAll = row.same_for_all_days === true;
+  const slots = getSlotsForDay(row, dayKey, sameForAll).sort((a, b) => a.startMin - b.startMin);
+  if (slots.length === 0) return false;
+  return minutesSinceMidnight < slots[0].startMin;
+}
+
+function isPastLastSlotEndToday(
+  row: Record<string, unknown>,
+  dayOfWeek: number,
+  minutesSinceMidnight: number
+): boolean {
+  const dayKey = DAY_NAMES[dayOfWeek];
+  const closedDays = (row.closed_days as string[] | null) ?? [];
+  if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) return false;
+  if (row[`${dayKey}_open`] !== true) return false;
+  const sameForAll = row.same_for_all_days === true;
+  const slots = getSlotsForDay(row, dayKey, sameForAll).sort((a, b) => a.startMin - b.startMin);
+  if (slots.length === 0) return false;
+  const last = slots[slots.length - 1];
+  return minutesSinceMidnight >= last.endMin;
+}
+
+/**
+ * Always returns true: the store closes IMMEDIATELY at every outside-hours boundary
+ * (break, before first slot, mid-day gap, after final slot). No 5-minute end-of-day prompt.
+ *
+ * Matches partner-stated behaviour: "At exactly 11:00 PM → Store should automatically
+ * become OFFLINE again." All slot boundaries are read from `merchant_store_operating_hours`
+ * via `getSlotsForDay` — no time literals are hardcoded.
+ *
+ * The arguments are kept so the function signature stays symmetric with helpers it sits
+ * next to and so future per-store policy can be introduced without a refactor.
+ */
+function shouldCloseOutsideHoursImmediately(
+  _row: Record<string, unknown>,
+  _dayOfWeek: number,
+  _minutesSinceMidnight: number
+): boolean {
+  return true;
+}
+
 export function isWithinOperatingHours(
   row: Record<string, unknown>,
   dayOfWeek: number,
   minutesSinceMidnight: number
 ): boolean {
+  const dayKey = DAY_NAMES[dayOfWeek];
+  const closedDays = (row.closed_days as string[] | null) ?? [];
+  if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) return false;
+  if (row[`${dayKey}_open`] !== true) return false;
+  const sameForAll = row.same_for_all_days === true;
   const is24 = row.is_24_hours === true;
   if (is24) return true;
-  const closedDays = (row.closed_days as string[] | null) ?? [];
-  const dayKey = DAY_NAMES[dayOfWeek];
-  if (closedDays.some((d) => String(d).toLowerCase() === dayKey)) return false;
-  const sameForAll = row.same_for_all_days === true;
-  const slots = getSlotsForDay(row, dayKey, sameForAll);
-  const endGrace = GRACE_BUFFER_SECONDS / 60;
+  const slots = getSlotsForDay(row, dayKey, sameForAll).sort((a, b) => a.startMin - b.startMin);
+  // Mid-day gap (e.g. 14:00–17:00 between slot 1 and slot 2): outside hours.
+  for (let i = 0; i < slots.length - 1; i++) {
+    const gapStart = slots[i].endMin;
+    const gapEnd = slots[i + 1].startMin;
+    if (gapEnd > gapStart && minutesSinceMidnight >= gapStart && minutesSinceMidnight < gapEnd) {
+      return false;
+    }
+  }
+  // Strict half-open interval [startMin, endMin) so the store comes ONLINE at exactly startMin
+  // and transitions OFFLINE at exactly endMin (e.g. 10:00 → ONLINE, 14:00 → OFFLINE,
+  // 17:00 → ONLINE, 23:00 → OFFLINE).
   for (const slot of slots) {
-    if (minutesSinceMidnight >= slot.startMin && minutesSinceMidnight <= slot.endMin + endGrace) return true;
+    if (minutesSinceMidnight >= slot.startMin && minutesSinceMidnight < slot.endMin) {
+      return true;
+    }
   }
   return false;
 }
@@ -553,10 +639,9 @@ export function getNextOpenClose(
   }
   const sameForAll = row.same_for_all_days === true;
   const slots = getSlotsForDay(row, dayKey, sameForAll).sort((a, b) => a.startMin - b.startMin);
-  const endGrace = GRACE_BUFFER_SECONDS / 60;
   let withinSlot: Slot | null = null;
   for (const slot of slots) {
-    if (minutesSinceMidnight >= slot.startMin && minutesSinceMidnight <= slot.endMin + endGrace) {
+    if (minutesSinceMidnight >= slot.startMin && minutesSinceMidnight < slot.endMin) {
       withinSlot = slot;
       break;
     }
@@ -757,6 +842,9 @@ export { nowInStoreTz };
 type StoreRow = {
   store_id: number;
   timezone?: string | null;
+  operational_status?: string | null;
+  /** `merchant_stores.is_available` (distinct from joined `msa.is_available` → `StoreRow.is_available`) */
+  ms_is_available?: boolean | null;
   is_accepting_orders: boolean | null;
   is_active: boolean | null;
   auto_open_from_schedule: boolean | null;
@@ -769,6 +857,20 @@ type StoreRow = {
   is_manual_override: boolean | null;
   schedule_end_prompt_expires_at: Date | string | null;
 };
+
+/** When `operational_status` is already CLOSED but an orphan boolean stayed TRUE, strict `currentlyOpen` misses — still run close/repair. */
+function storeRowShowsStaleOnlineSignals(store: StoreRow): boolean {
+  return (
+    String(store.operational_status ?? "").trim().toUpperCase() === "OPEN" ||
+    store.is_active === true ||
+    store.is_accepting_orders === true ||
+    store.ms_is_available === true
+  );
+}
+
+function shouldForceScheduleClose(currentlyOpen: boolean, store: StoreRow): boolean {
+  return currentlyOpen || storeRowShowsStaleOnlineSignals(store);
+}
 
 export async function runStoreScheduleTick(log: { info: (o: object, msg?: string) => void; error: (o: object, msg?: string) => void }): Promise<void> {
   const maxAttempts = 3;
@@ -802,8 +904,10 @@ async function runStoreScheduleTickOnce(
   const storeRows = await sql`
       SELECT
         ms.id AS store_id,
+        ms.operational_status,
         ms.is_accepting_orders,
         ms.is_active,
+        ms.is_available AS ms_is_available,
         msa.auto_open_from_schedule,
         msa.block_auto_open,
         msa.manual_close_until,
@@ -904,15 +1008,25 @@ async function runStoreScheduleTickOnce(
         (store.is_active !== false);
 
       let withinHours = false;
+        let isTodayScheduledClosed = false;
       if (hoursRow) {
-        withinHours = isWithinOperatingHours(hoursRow, dayOfWeek, minutesSinceMidnight);
+        const dayKey = DAY_NAMES[dayOfWeek];
+        const closedDays = (hoursRow.closed_days as string[] | null) ?? [];
+        if (closedDays.some((d) => String(d).trim().toLowerCase() === dayKey)) {
+          isTodayScheduledClosed = true;
+        } else if (hoursRow[`${dayKey}_open`] !== true) {
+          isTodayScheduledClosed = true;
+        }
+        withinHours = isTodayScheduledClosed
+          ? false
+          : isWithinOperatingHours(hoursRow, dayOfWeek, minutesSinceMidnight);
       }
 
       try {
         // Vacation mode (scheduled closure active): force OFFLINE and ignore manual toggles/schedule.
         const closureEndsAtIso = activeClosureEndByStore.get(storeId) ?? null;
         if (closureEndsAtIso) {
-          if (currentlyOpen) {
+          if (shouldForceScheduleClose(currentlyOpen, store as StoreRow)) {
             await syncMerchantStoresOnlineTriple(sql, storeId, false);
           }
           await sql`
@@ -940,15 +1054,23 @@ async function runStoreScheduleTickOnce(
 
         // Fail-safe: no hours config => treat as closed (1. Schedule closed)
         if (!hoursRow) {
-          if (currentlyOpen && autoOpen) {
+          if (shouldForceScheduleClose(currentlyOpen, store as StoreRow) && autoOpen) {
             await syncMerchantStoresOnlineTriple(sql, storeId, false);
             await applyScheduleExpired(sql, storeId, log);
           }
           continue;
         }
+
+        // Scheduled off day: force CLOSED (manual override cannot keep store online)
+        if (isTodayScheduledClosed && shouldForceScheduleClose(currentlyOpen, store as StoreRow)) {
+          await syncMerchantStoresOnlineTriple(sql, storeId, false);
+          await applyScheduleClosed(sql, storeId, log);
+          continue;
+        }
+
         // 5. Forced lock
         if (blockAutoOpen) {
-          if (currentlyOpen) {
+          if (shouldForceScheduleClose(currentlyOpen, store as StoreRow)) {
             await syncMerchantStoresOnlineTriple(sql, storeId, false);
             await applyForcedLock(sql, storeId, log);
           }
@@ -971,11 +1093,28 @@ async function runStoreScheduleTickOnce(
             await (manualCloseJustExpired ? applyAutoReopen(sql, storeId, log) : applyScheduleOpen(sql, storeId, log));
           }
         } else {
-          // 3. Schedule end: show prompt then AUTO OFF (unless manual override / rush hours)
-          if (currentlyOpen) {
-            if (isManualOverride) continue;
+          // 3. Outside hours (break, before first slot, mid-day gap, after final slot):
+          //
+          //    Priority order:
+          //      a. `is_manual_override = true` → skip auto-close (override sticks), except
+          //         before today's first operating slot (`isBeforeFirstSlotToday`), where OPEN
+          //         stays disallowed until the slot starts when auto-open is enabled.
+          //      b. Active `merchant_store_rush_windows` row → skip auto-close.
+          //      c. Otherwise → close IMMEDIATELY at the slot boundary (no 5-minute end-of-
+          //         day prompt). Slot boundaries come from `merchant_store_operating_hours`.
+          if (shouldForceScheduleClose(currentlyOpen, store as StoreRow)) {
+            if (isManualOverride && !isBeforeFirstSlotToday(hoursRow, dayOfWeek, minutesSinceMidnight)) continue;
             if (rushActiveStoreIds.has(storeId)) continue;
 
+            if (shouldCloseOutsideHoursImmediately(hoursRow, dayOfWeek, minutesSinceMidnight)) {
+              await syncMerchantStoresOnlineTriple(sql, storeId, false);
+              await applyScheduleClosed(sql, storeId, log);
+              continue;
+            }
+
+            // Unreachable today (`shouldCloseOutsideHoursImmediately` always returns true).
+            // Kept so that any future per-store policy that brings the end-of-day prompt
+            // back can fall through here without restructuring the branch.
             if (!promptExpiresMs) {
               const nowIso = new Date().toISOString();
               await applyScheduleEndPromptStart(sql, storeId, nowIso);
@@ -1028,8 +1167,10 @@ export async function runStoreScheduleTickForStore(
     const storeRows = await sql`
       SELECT
         ms.id AS store_id,
+        ms.operational_status,
         ms.is_accepting_orders,
         ms.is_active,
+        ms.is_available AS ms_is_available,
         msa.auto_open_from_schedule,
         msa.block_auto_open,
         msa.manual_close_until,
@@ -1084,7 +1225,9 @@ export async function runStoreScheduleTickForStore(
       const endsAt = new Date(endsAtRaw instanceof Date ? endsAtRaw.toISOString() : String(endsAtRaw));
       const endsAtIso = Number.isNaN(endsAt.getTime()) ? null : endsAt.toISOString();
       if (endsAtIso) {
-        if (currentlyOpen) await syncMerchantStoresOnlineTriple(sql, storeId, false);
+        if (shouldForceScheduleClose(currentlyOpen, store as StoreRow)) {
+          await syncMerchantStoresOnlineTriple(sql, storeId, false);
+        }
         await sql`
           UPDATE merchant_store_availability
           SET
@@ -1110,14 +1253,14 @@ export async function runStoreScheduleTickForStore(
     }
 
     if (!hoursRow) {
-      if (currentlyOpen && autoOpen) {
+      if (shouldForceScheduleClose(currentlyOpen, store as StoreRow) && autoOpen) {
         await syncMerchantStoresOnlineTriple(sql, storeId, false);
         await applyScheduleExpired(sql, storeId, log);
       }
       return;
     }
     if (blockAutoOpen) {
-      if (currentlyOpen) {
+      if (shouldForceScheduleClose(currentlyOpen, store as StoreRow)) {
         await syncMerchantStoresOnlineTriple(sql, storeId, false);
         await applyForcedLock(sql, storeId, log);
       }
@@ -1134,8 +1277,16 @@ export async function runStoreScheduleTickForStore(
         await (manualCloseJustExpired ? applyAutoReopen(sql, storeId, log) : applyScheduleOpen(sql, storeId, log));
       }
     } else {
-      if (currentlyOpen) {
-        if (isManualOverride) return;
+      // Outside hours: same priority as `runStoreScheduleTickOnce` — manual override + rush
+      // window first, then immediate close at the slot boundary read from
+      // `merchant_store_operating_hours`. No 5-minute end-of-day prompt.
+      if (shouldForceScheduleClose(currentlyOpen, store as StoreRow)) {
+        if (
+          isManualOverride &&
+          !isBeforeFirstSlotToday(hoursRow, dayOfWeek, minutesSinceMidnight)
+        ) {
+          return;
+        }
         const rushRows = await sql`
           SELECT 1
           FROM merchant_store_rush_windows
@@ -1146,6 +1297,14 @@ export async function runStoreScheduleTickForStore(
         `;
         if (rushRows.length > 0) return;
 
+        if (shouldCloseOutsideHoursImmediately(hoursRow, dayOfWeek, minutesSinceMidnight)) {
+          await syncMerchantStoresOnlineTriple(sql, storeId, false);
+          await applyScheduleClosed(sql, storeId, log);
+          return;
+        }
+
+        // Unreachable today (`shouldCloseOutsideHoursImmediately` always returns true).
+        // Left in place for future per-store prompt policy.
         if (!promptExpiresMs) {
           const nowIso = new Date().toISOString();
           await applyScheduleEndPromptStart(sql, storeId, nowIso);

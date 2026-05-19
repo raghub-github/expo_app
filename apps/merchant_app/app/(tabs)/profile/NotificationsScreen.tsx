@@ -115,8 +115,8 @@ export default function NotificationsScreen() {
       await update({ show_floating_orders: next });
       showToast(
         next
-          ? "Floating live order count enabled."
-          : "Floating live order count disabled."
+          ? "Floating new-order count enabled."
+          : "Floating new-order count disabled."
       );
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to update preference";
@@ -319,7 +319,7 @@ export default function NotificationsScreen() {
                 Floating live order count
               </Text>
               <Text style={styles.cardSubtitle}>
-                Display a floating counter on your home screen to track live orders in real-time.
+                Show the in-app new-order pill and Android overlay bubble when you have orders waiting to accept. Off hides both.
               </Text>
             </View>
             <Switch

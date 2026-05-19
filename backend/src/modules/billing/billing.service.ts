@@ -405,6 +405,14 @@ export async function computeBillForOrder(
   const serviceable = quote.serviceable;
   const serviceRadiusKm = quote.service_radius_km;
 
+  const rawQuotedFee = quote.delivery_fee as unknown;
+  const deliveryFeeQuotedInr =
+    typeof rawQuotedFee === "number" && Number.isFinite(rawQuotedFee)
+      ? Math.max(0, rawQuotedFee)
+      : typeof rawQuotedFee === "string" && String(rawQuotedFee).trim() !== ""
+        ? Math.max(0, parseFloat(String(rawQuotedFee)))
+        : 0;
+
   const snapshot = {
     ...billing,
     merchantStoreId: resolved.merchantStoreId,
@@ -422,6 +430,8 @@ export async function computeBillForOrder(
     unserviceableReason: quote.unserviceable_reason ?? (serviceable ? null : "out_of_range"),
     computedAt: (input.now ?? new Date()).toISOString(),
     deliveryType: input.deliveryType ?? "delivery",
+    /** Store→drop delivery fee from routing/geo before self-pickup waiver (for UI strikethrough). */
+    deliveryFeeQuotedInr,
   } as Record<string, unknown>;
 
   return { ok: true, billing, snapshot };

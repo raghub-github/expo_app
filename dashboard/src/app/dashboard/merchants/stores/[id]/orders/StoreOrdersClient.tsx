@@ -20,7 +20,6 @@ import {
   Printer,
   Calendar,
   ChevronLeft,
-  Sparkles,
   LayoutGrid,
   List,
   Phone,
@@ -47,6 +46,48 @@ import {
   merchantPortalCloseReasonWithSuffix,
 } from '@/lib/merchantPortalCloseReasons';
 import { FoodOrdersEmptyState, type FoodOrdersEmptyVariant } from '@/components/orders/FoodOrdersEmptyState';
+import { mapStateMachineStatusToPartnerUi, normFoodStatus } from '@/lib/partner-orders-unify';
+import {
+  PARTNER_DEVICE_ORDER_ALERTS_EVENT,
+  readPartnerDeviceOrderAlerts,
+  resolveAlertUrlFromSlots,
+  volumeStepTo01,
+  writePartnerDeviceOrderAlerts,
+} from '@/lib/partner-device-order-alerts';
+import {
+  formatItemsSummary,
+  formatListTime,
+  historyBadgeClass,
+  historyStatusLabel,
+} from './orders-page-ui';
+import { OrderPanel } from '@/components/orders/OrderPanel';
+import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
+import { GatiMitraOrderPrintBill } from '@/components/orders/GatiMitraOrderPrintBill';
+import { OrderCustomerSidesheet } from '@/components/orders/OrderCustomerSidesheet';
+import { RejectOrderSidesheet } from '@/components/orders/RejectOrderSidesheet';
+import { OrderRidersHistorySidesheet } from '@/components/orders/OrderRidersHistorySidesheet';
+import { OrderTimelineModal } from '@/components/orders/OrderTimelineModal';
+import { OrderRiderTrackingModal } from '@/components/orders/OrderRiderTrackingModal';
+import type { OrderPricingBreakdown } from '@/lib/orderLineItems';
+import { resolveOrderOtps, type CachedOrderOtps } from '@/lib/orderOtps';
+import { prefetchOrderTimeline } from '@/lib/orderTimelineCache';
+import { merchantFoodRowId, merchantOrderApiId, merchantOrderTimelineUrl } from '@/lib/merchantOrderApiId';
+import {
+  useInvalidateMerchantStoreQueries,
+  useStoreOperationsQuery,
+} from '@/hooks/queries/useMerchantStoreQueries';
+import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
+import {
+  isPrepCountdownExpired,
+  prepReadyCountdownLabel,
+  prepReadyDeadlineMs,
+} from '@/lib/order-prep-time';
+import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
+import { MerchantOrderPipelineCard } from '@/components/merchant/MerchantOrderPipelineCard';
+import { MerchantPrepDelayModal } from '@/components/merchant/MerchantPrepDelayModal';
+import { StoreClosedActiveOrdersNotice } from '@/components/orders/StoreClosedActiveOrdersNotice';
+import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';
+import { isActiveMerchantFoodOrderStatus } from '@/lib/merchantActiveOrders';
 
 // orders_food_status enum: CREATED, ACCEPTED, PREPARING, READY_FOR_PICKUP, OUT_FOR_DELIVERY, DELIVERED, RTO, CANCELLED
 const STATUS_LABEL: Record<string, string> = {
@@ -72,14 +113,33 @@ const STATUS_FILTERS = [
   { id: 'CANCELLED', label: 'Cancelled', color: 'bg-gray-100 text-gray-700 border-gray-200' },
 ];
 
-// Tabs shown in the Orders page header (matches the portal UI).
-const ORDERS_TABS = [
-  { id: 'CREATED', label: 'New orders' },
+const PREPARING_PIPELINE = new Set(['ACCEPTED', 'PREPARING']);
+
+const FOOD_ORDERS_SIDEBAR_FILTERS = [
+  { id: 'NEW_ORDERS', label: 'New orders' },
   { id: 'PREPARING', label: 'Preparing' },
   { id: 'READY_FOR_PICKUP', label: 'Ready' },
   { id: 'OUT_FOR_DELIVERY', label: 'Picked up' },
   { id: 'RTO', label: 'RTO' },
 ] as const;
+
+type FoodOrdersSidebarFilterId = (typeof FOOD_ORDERS_SIDEBAR_FILTERS)[number]['id'];
+
+function normOrderStatus(s: string | null | undefined) {
+  const mapped = mapStateMachineStatusToPartnerUi(s);
+  if (mapped) return mapped;
+  return normFoodStatus(s);
+}
+
+function orderMatchesFoodOrdersSidebar(order: OrdersFoodRow, filterId: string): boolean {
+  const st = normOrderStatus(order.order_status);
+  if (filterId === 'NEW_ORDERS') return st === 'CREATED';
+  if (filterId === 'PREPARING') return PREPARING_PIPELINE.has(st);
+  if (filterId === 'READY_FOR_PICKUP') return st === 'READY_FOR_PICKUP';
+  if (filterId === 'OUT_FOR_DELIVERY') return st === 'OUT_FOR_DELIVERY';
+  if (filterId === 'RTO') return st === 'RTO';
+  return false;
+}
 
 const FILTER_STATUS_OPTIONS = [
   'CREATED',
@@ -102,22 +162,47 @@ const UI_STATUS_DEF: { key: string; label: string; statuses: string[] }[] = [
   { key: 'rejected', label: 'Rejected', statuses: ['CANCELLED'] },
 ];
 
+const HISTORY_TERMINAL_STATUSES = new Set(['DELIVERED', 'RTO', 'CANCELLED']);
+const HISTORY_STATUS_OPTIONS = ['DELIVERED', 'RTO', 'CANCELLED'] as const;
+const HISTORY_UI_STATUS_DEF: { key: string; label: string; statuses: string[] }[] = [
+  { key: 'delivered', label: 'Delivered', statuses: ['DELIVERED'] },
+  { key: 'timed_out', label: 'Timed out', statuses: ['RTO'] },
+  { key: 'rejected', label: 'Rejected', statuses: ['CANCELLED'] },
+];
+
 type FilterCategory = 'status' | 'type' | 'ratings';
 
-function statusSetFromUiKeys(keys: Set<string>): Set<string> {
+function statusSetFromUiKeys(
+  keys: Set<string>,
+  defs: { key: string; label: string; statuses: string[] }[] = UI_STATUS_DEF
+): Set<string> {
   const s = new Set<string>();
-  for (const def of UI_STATUS_DEF) {
+  for (const def of defs) {
     if (keys.has(def.key)) def.statuses.forEach((x) => s.add(x));
   }
   return s;
 }
 
-function uiKeysFromStatusSet(sf: Set<string>): Set<string> {
+function uiKeysFromStatusSet(
+  sf: Set<string>,
+  defs: { key: string; label: string; statuses: string[] }[] = UI_STATUS_DEF
+): Set<string> {
   const u = new Set<string>();
-  for (const def of UI_STATUS_DEF) {
+  for (const def of defs) {
     if (def.statuses.some((st) => sf.has(st))) u.add(def.key);
   }
   return u;
+}
+
+function HistoryOrderStatusBadge({ status }: { status: string }) {
+  const label = historyStatusLabel(status);
+  return (
+    <div
+      className={`w-full rounded-xl px-4 py-3 text-center text-sm font-bold ${historyBadgeClass(status)}`}
+    >
+      {label}
+    </div>
+  );
 }
 
 function storeOrdersTitle(storeType: string | null | undefined) {
@@ -318,15 +403,43 @@ function formatTimeAgo(dateStr: string): string {
   return d.toLocaleDateString();
 }
 
-function useNewOrderSound(enabled: boolean) {
+type OrderAcceptanceSettings = {
+  acceptance_window_minutes: number;
+  alert_sound_enabled: boolean;
+  alert_sound_url: string | null;
+  alert_sound_repeat_count: number;
+  alert_sound_urls_by_slot?: [string | null, string | null, string | null];
+  alert_sound_slot_choice: number;
+};
+
+function useNewOrderSound(
+  enabled: boolean,
+  publicStoreId: string | null,
+  acceptanceSettings: OrderAcceptanceSettings | null
+) {
   const play = useCallback(() => {
     if (!enabled || typeof window === 'undefined') return;
+    if (acceptanceSettings && acceptanceSettings.alert_sound_enabled === false) return;
+
+    const device = publicStoreId ? readPartnerDeviceOrderAlerts(publicStoreId) : null;
+    if (device && !device.soundAlertsEnabled) return;
+
+    const slots = acceptanceSettings?.alert_sound_urls_by_slot ?? [null, null, null];
+    const choice =
+      acceptanceSettings?.alert_sound_slot_choice ??
+      device?.alertSoundSlot ??
+      0;
+    const url =
+      resolveAlertUrlFromSlots(slots, choice) ||
+      acceptanceSettings?.alert_sound_url ||
+      null;
+
     try {
-      const audio = new Audio('/notification.wav');
-      audio.volume = 0.8;
+      const audio = new Audio(url || '/notification.wav');
+      audio.volume = volumeStepTo01(device?.volumeStep ?? 5);
       audio.play().catch(() => {});
     } catch {}
-  }, [enabled]);
+  }, [enabled, publicStoreId, acceptanceSettings]);
 
   return play;
 }
@@ -334,9 +447,7 @@ function useNewOrderSound(enabled: boolean) {
 const ORDERS_STORAGE_KEY = 'food-orders-ui';
 
 function prepDeadlineMs(order: OrdersFoodRow): number {
-  const base = order.accepted_at || order.created_at;
-  const mins = Number(order.preparation_time_minutes) || 30;
-  return new Date(base).getTime() + mins * 60 * 1000;
+  return prepReadyDeadlineMs(order);
 }
 
 // Helper function to format order ID display with last 4 digits in increasing size
@@ -362,7 +473,7 @@ function FormattedOrderId({
     const lastFour = formattedOrderId.slice(-4);
     
     return (
-      <div className="flex items-baseline gap-0.5">
+      <span className="inline-flex items-baseline gap-0.5">
         <span className={`font-bold text-gray-900 ${classes.base}`}>
           {prefix}
         </span>
@@ -375,7 +486,7 @@ function FormattedOrderId({
             {digit}
           </span>
         ))}
-      </div>
+      </span>
     );
   }
   
@@ -388,12 +499,17 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const storeInternalId = parseInt(storeId, 10);
   const [orders, setOrders] = useState<OrdersFoodRow[]>([]);
   const [stats, setStats] = useState<FoodOrderStats | null>(null);
-  const [filter, setFilter] = useState<string>('CREATED');
+  const [filter, setFilter] = useState<string>('PREPARING');
   const [selectedOrder, setSelectedOrder] = useState<OrdersFoodRow | null>(null);
   // Partnersite-style: show full-width list by default, open details panel only after selecting an order.
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [rejectModal, setRejectModal] = useState<OrdersFoodRow | null>(null);
-  const [rejectReason, setRejectReason] = useState('');
+  const [billSheetOpen, setBillSheetOpen] = useState(false);
+  const [billSheetAllItemsOnly, setBillSheetAllItemsOnly] = useState(false);
+  const [customerSheetOpen, setCustomerSheetOpen] = useState(false);
+  const [printBillOpen, setPrintBillOpen] = useState(false);
+  const [timelineModalOpen, setTimelineModalOpen] = useState(false);
+  const [riderTrackingOpen, setRiderTrackingOpen] = useState(false);
   const [dispatchModal, setDispatchModal] = useState<OrdersFoodRow | null>(null);
   const [rtoModalOrder, setRtoModalOrder] = useState<OrdersFoodRow | null>(null);
   const [ridersLogModalOrderId, setRidersLogModalOrderId] = useState<number | null>(null);
@@ -404,6 +520,18 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const [headerRtoMenuOpen, setHeaderRtoMenuOpen] = useState(false);
   const headerRtoMenuRef = useRef<HTMLDivElement>(null);
   const [walletAdjustmentOrder, setWalletAdjustmentOrder] = useState<OrdersFoodRow | null>(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const [prepDelayOrder, setPrepDelayOrder] = useState<OrdersFoodRow | null>(null);
+  const [prepDelayLoading, setPrepDelayLoading] = useState(false);
+  const [uniformFeedbackByOrderId, setUniformFeedbackByOrderId] = useState<
+    Record<number, boolean | null>
+  >({});
+
+  useEffect(() => {
+    const t = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+
   useEffect(() => {
     if (!headerRtoMenuOpen) return;
     const close = (e: MouseEvent) => {
@@ -428,7 +556,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
 
   const [otpInput, setOtpInput] = useState('');
   const [otpVerified, setOtpVerified] = useState<Set<number>>(new Set());
-  const [otpCache, setOtpCache] = useState<Record<number, { otp_code: string; otp_type: string }>>({});
+  const [otpCache, setOtpCache] = useState<Record<number, CachedOrderOtps>>({});
   const [loading, setLoading] = useState(true);
   const [notifyEnabled, setNotifyEnabled] = useState(() => {
     if (typeof window === 'undefined') return true;
@@ -438,7 +566,8 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     } catch { return true; }
   });
   const [actionLoading, setActionLoading] = useState<number | null>(null);
-  const [isStoreOpen, setIsStoreOpen] = useState<boolean | null>(null);
+  const operationsQuery = useStoreOperationsQuery(storeId);
+  const invalidateStoreQueries = useInvalidateMerchantStoreQueries();
   const [showStoreCloseModal, setShowStoreCloseModal] = useState(false);
   const [closeClosureType, setCloseClosureType] = useState<'temporary' | 'today' | 'manual_hold' | null>(null);
   const [closeClosureDate, setCloseClosureDate] = useState('');
@@ -466,6 +595,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     const sec = searchParams?.get('section');
     return sec === 'history' ? 'history' : 'live';
   });
+  const usePipelineListLayout = ordersSection === 'live';
   const [historyDateFrom, setHistoryDateFrom] = useState(() => {
     const t = new Date();
     t.setDate(t.getDate() - 1);
@@ -473,7 +603,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   });
   const [historyDateTo, setHistoryDateTo] = useState(() => toYmd(new Date()));
   const [historyStatuses, setHistoryStatuses] = useState<Set<string>>(
-    () => new Set(['CREATED', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'DELIVERED', 'RTO', 'CANCELLED'])
+    () => new Set(HISTORY_STATUS_OPTIONS)
   );
   const [datePopoverOpen, setDatePopoverOpen] = useState(false);
   const [calMonth, setCalMonth] = useState(() => {
@@ -495,8 +625,25 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const hasNotifiedNew = useRef<Set<number>>(new Set());
 
   const { store: storeMeta } = useStore(storeId);
+  const merchantPublicStoreId =
+    (storeMeta as { store_id?: string } | null)?.store_id?.trim() || null;
+  const [acceptanceSettings, setAcceptanceSettings] = useState<OrderAcceptanceSettings | null>(null);
   const isDelisted =
     ((storeMeta as { approval_status?: string } | null)?.approval_status || '').toUpperCase() === 'DELISTED';
+
+  const isStoreOpen = useMemo(() => {
+    if (isDelisted) return false;
+    const data = operationsQuery.data as
+      | { operational_status?: string; within_operating_hours?: boolean }
+      | undefined;
+    if (!data || data.operational_status === undefined) return null;
+    const surface = partnerSurfaceOnlineFromStoreOperationsBody(data as Record<string, unknown>);
+    if (surface !== null) return surface;
+    const opOpen = data.operational_status === 'OPEN';
+    const wh = data.within_operating_hours;
+    return typeof wh === 'boolean' ? opOpen && wh : opOpen;
+  }, [operationsQuery.data, isDelisted]);
+  const storeStatusLoading = operationsQuery.isLoading && operationsQuery.data == null;
 
   const updateUrlParams = useCallback((updates: { filter?: string; orderId?: string | null; section?: 'live' | 'history' }) => {
     if (typeof window === 'undefined') return;
@@ -538,21 +685,30 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     }
   }, [viewMode]);
 
-  const persistLocal = useCallback((key: 'viewMode' | 'notifyEnabled', value: unknown) => {
-    if (typeof window === 'undefined') return;
-    try {
-      const s = localStorage.getItem(ORDERS_STORAGE_KEY);
-      const prev = s ? JSON.parse(s) : {};
-      const next = { ...prev, [key]: value };
-      localStorage.setItem(ORDERS_STORAGE_KEY, JSON.stringify(next));
-    } catch {}
-  }, []);
+  const persistLocal = useCallback(
+    (key: 'viewMode' | 'notifyEnabled', value: unknown) => {
+      if (typeof window === 'undefined') return;
+      try {
+        const s = localStorage.getItem(ORDERS_STORAGE_KEY);
+        const prev = s ? JSON.parse(s) : {};
+        const next = { ...prev, [key]: value };
+        localStorage.setItem(ORDERS_STORAGE_KEY, JSON.stringify(next));
+        if (key === 'notifyEnabled' && merchantPublicStoreId) {
+          writePartnerDeviceOrderAlerts(merchantPublicStoreId, {
+            soundAlertsEnabled: value === true,
+          });
+        }
+      } catch {}
+    },
+    [merchantPublicStoreId]
+  );
 
   const openOrder = useCallback((order: OrdersFoodRow) => {
     setSelectedOrder(order);
     setRightPanelOpen(true);
     updateUrlParams({ orderId: String(order.order_id || order.id) });
-  }, [updateUrlParams]);
+    prefetchOrderTimeline(merchantOrderTimelineUrl(storeId, order));
+  }, [updateUrlParams, storeId]);
 
   const closeOrderPanel = useCallback(() => {
     setRightPanelOpen(false);
@@ -616,8 +772,10 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     setDatePopoverOpen(false);
   };
 
+  const historyStatusDefs = ordersSection === 'history' ? HISTORY_UI_STATUS_DEF : UI_STATUS_DEF;
+
   const openFilterModal = () => {
-    setDraftUiStatus(uiKeysFromStatusSet(historyStatuses));
+    setDraftUiStatus(uiKeysFromStatusSet(historyStatuses, historyStatusDefs));
     setDraftOrderType('all');
     setDraftRatingCap(null);
     setFilterCategory('status');
@@ -625,8 +783,12 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   };
 
   const applyFilterModal = () => {
-    const next = statusSetFromUiKeys(draftUiStatus);
-    setHistoryStatuses(next.size === 0 ? new Set(FILTER_STATUS_OPTIONS) : next);
+    const next = statusSetFromUiKeys(draftUiStatus, historyStatusDefs);
+    const fallback =
+      ordersSection === 'history'
+        ? new Set<string>(HISTORY_STATUS_OPTIONS)
+        : new Set<string>(FILTER_STATUS_OPTIONS);
+    setHistoryStatuses(next.size === 0 ? fallback : next);
     setFilterModalOpen(false);
   };
 
@@ -646,12 +808,83 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   };
   const { toast } = useToast();
   const { subscribe } = useStoreFoodOrders(storeId, storeInternalId);
-  const playNewOrderSound = useNewOrderSound(notifyEnabled);
+  const playNewOrderSound = useNewOrderSound(notifyEnabled, merchantPublicStoreId, acceptanceSettings);
+
+  useEffect(() => {
+    if (!merchantPublicStoreId) return;
+    setNotifyEnabled(readPartnerDeviceOrderAlerts(merchantPublicStoreId).soundAlertsEnabled);
+  }, [merchantPublicStoreId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !merchantPublicStoreId) return;
+    const syncFromDevice = () => {
+      setNotifyEnabled(readPartnerDeviceOrderAlerts(merchantPublicStoreId).soundAlertsEnabled);
+    };
+    window.addEventListener(PARTNER_DEVICE_ORDER_ALERTS_EVENT, syncFromDevice);
+    return () => window.removeEventListener(PARTNER_DEVICE_ORDER_ALERTS_EVENT, syncFromDevice);
+  }, [merchantPublicStoreId]);
+
+  useEffect(() => {
+    if (!storeId || ordersSection !== 'live') return;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/merchant/stores/${storeId}/order-acceptance-settings`, {
+          credentials: 'include',
+        });
+        const data = (await res.json().catch(() => ({}))) as { settings?: OrderAcceptanceSettings };
+        if (res.ok && data.settings) setAcceptanceSettings(data.settings);
+      } catch {
+        setAcceptanceSettings(null);
+      }
+    })();
+  }, [storeId, ordersSection]);
+
+  const notificationSoundOptions = useMemo(() => {
+    const slots = acceptanceSettings?.alert_sound_urls_by_slot ?? [null, null, null];
+    const out: { slot: number; label: string }[] = [];
+    slots.forEach((u, i) => {
+      if (u && String(u).trim()) out.push({ slot: i, label: `Gmitra Notification - ${i + 1}` });
+    });
+    return out;
+  }, [acceptanceSettings?.alert_sound_urls_by_slot]);
+
+  const notificationSoundSelectValue = useMemo(() => {
+    const choice = acceptanceSettings?.alert_sound_slot_choice ?? 0;
+    if (notificationSoundOptions.some((o) => o.slot === choice)) return choice;
+    return notificationSoundOptions[0]?.slot ?? 0;
+  }, [acceptanceSettings?.alert_sound_slot_choice, notificationSoundOptions]);
+
+  const patchNotificationSoundSlot = useCallback(
+    async (slot: number) => {
+      if (!storeId) return;
+      try {
+        const res = await fetch(`/api/merchant/stores/${storeId}/order-acceptance-settings`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ platform_food_alert_sound_slot: slot }),
+        });
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) {
+          toast('Error: ' + (data.error || 'Could not update notification sound'));
+          return;
+        }
+        setAcceptanceSettings((prev) => (prev ? { ...prev, alert_sound_slot_choice: slot } : prev));
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('partner-order-acceptance-settings-changed'));
+        }
+        toast('Notification sound updated');
+      } catch {
+        toast('Error: Could not update notification sound');
+      }
+    },
+    [storeId, toast]
+  );
 
   useEffect(() => {
     const f = searchParams?.get('filter');
-    if (f && ['all', 'active', 'CREATED', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'DELIVERED', 'RTO', 'CANCELLED'].includes(f)) {
-      setFilter(f === 'NEW' ? 'CREATED' : f);
+    if (f && ['NEW_ORDERS', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO', 'CREATED'].includes(f)) {
+      setFilter(f === 'CREATED' || f === 'NEW' ? 'NEW_ORDERS' : f);
     }
   }, [searchParams]);
 
@@ -669,55 +902,44 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     }
   }, [loading, orderIdFromUrl, orders]);
 
-  const fetchStoreStatus = useCallback(async () => {
-    if (!storeId) return;
-    try {
-      const res = await fetch(`/api/merchant/stores/${storeId}/store-operations`);
-      const data = await res.json();
-      if (data.operational_status !== undefined) {
-        if (isDelisted) {
-          setIsStoreOpen(false);
-        } else {
-          setIsStoreOpen(data.operational_status === 'OPEN');
-        }
-      }
-    } catch {}
-  }, [storeId, isDelisted]);
-
-  useEffect(() => {
-    fetchStoreStatus();
-  }, [fetchStoreStatus]);
-
-  // Realtime: auto-update store status when it changes in DB (merchant_stores, merchant_store_availability, merchant_store_operating_hours)
+  // Realtime: refresh cached store-operations (no duplicate fetch / Loading flicker)
   useEffect(() => {
     if (!storeInternalId || !storeId) return;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const refreshOps = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        invalidateStoreQueries(storeId);
+      }, 1200);
+    };
     const ch = supabase
       .channel(`store_status:${storeInternalId}`)
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'merchant_stores', filter: `id=eq.${storeInternalId}` },
-        () => { fetchStoreStatus(); }
+        refreshOps
       )
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'merchant_store_availability', filter: `store_id=eq.${storeInternalId}` },
-        () => { fetchStoreStatus(); }
+        refreshOps
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'merchant_store_operating_hours', filter: `store_id=eq.${storeInternalId}` },
-        () => { fetchStoreStatus(); }
+        refreshOps
       )
       .subscribe();
     return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
       ch.unsubscribe();
     };
-  }, [storeInternalId, storeId, fetchStoreStatus]);
+  }, [storeInternalId, storeId, invalidateStoreQueries]);
 
   const fetchOrders = useCallback(async (signal?: AbortSignal) => {
     if (!storeId) return;
     try {
-      const res = await fetch(`/api/merchant/stores/${storeId}/orders?limit=200`, {
+      const res = await fetch(`/api/merchant/stores/${storeId}/orders?limit=500`, {
         credentials: 'include',
         signal: signal ?? null,
       });
@@ -777,6 +999,40 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
 
   useEffect(() => {
     if (!storeInternalId || !storeId) return;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const reload = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        void fetchOrders();
+        void fetchStats();
+        try {
+          window.dispatchEvent(new CustomEvent('merchant-incoming-order-scan'));
+        } catch {
+          /* ignore */
+        }
+      }, 900);
+    };
+    const ch = supabase
+      .channel(`partner_store_orders:${storeInternalId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders_core', filter: `merchant_store_id=eq.${storeInternalId}` },
+        reload
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders_food', filter: `merchant_store_id=eq.${storeInternalId}` },
+        reload
+      )
+      .subscribe();
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      ch.unsubscribe();
+    };
+  }, [storeInternalId, storeId, fetchOrders, fetchStats]);
+
+  useEffect(() => {
+    if (!storeInternalId || !storeId) return;
     const unsub = subscribe(
       (row) => {
         setOrders((prev) => {
@@ -808,20 +1064,29 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const fetchOtp = useCallback(
     async (orderId: number) => {
       if (!storeId) return;
+      const order = orders.find((o) => o.id === orderId);
+      const pathId = order ? merchantOrderApiId(order) : orderId;
       try {
-        const res = await fetch(`/api/merchant/stores/${storeId}/orders/${orderId}/otp`);
-        const data = await res.json();
-        if (res.ok && data.otp_code) {
-          setOtpCache((prev) => ({ ...prev, [orderId]: { otp_code: data.otp_code, otp_type: data.otp_type || 'PICKUP' } }));
-        }
+        const res = await fetch(`/api/merchant/stores/${storeId}/orders/${pathId}/otp`, {
+          credentials: 'include',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) return;
+        setOtpCache((prev) => ({
+          ...prev,
+          [orderId]: {
+            pickup: data.pickup_otp ?? prev[orderId]?.pickup ?? null,
+            rto: data.rto_otp ?? prev[orderId]?.rto ?? null,
+          },
+        }));
       } catch {}
     },
-    [storeId]
+    [storeId, orders]
   );
 
   // Auto-fetch OTP for all orders when they're loaded (always visible)
   useEffect(() => {
-    const orderIds = orders.map(o => o.id).filter(Boolean) as number[];
+    const orderIds = orders.filter((o) => !o.core_only).map((o) => o.id).filter(Boolean) as number[];
     orderIds.forEach((orderId) => {
       if (!otpCache[orderId]) {
         fetchOtp(orderId);
@@ -830,18 +1095,100 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orders.length, fetchOtp]);
 
-  // Auto-fetch OTP when order is selected (for header display)
   useEffect(() => {
-    if (selectedOrder?.id && !otpCache[selectedOrder.id]) {
-      fetchOtp(selectedOrder.id);
+    if (!selectedOrder?.id || selectedOrder.core_only) return;
+    if (selectedOrder.pickup_otp || selectedOrder.rto_otp) {
+      setOtpCache((prev) => ({
+        ...prev,
+        [selectedOrder.id]: {
+          pickup: selectedOrder.pickup_otp ?? prev[selectedOrder.id]?.pickup ?? null,
+          rto: selectedOrder.rto_otp ?? prev[selectedOrder.id]?.rto ?? null,
+        },
+      }));
     }
-  }, [selectedOrder?.id, fetchOtp]);
+    void fetchOtp(selectedOrder.id);
+  }, [selectedOrder?.id, selectedOrder?.core_only, fetchOtp]);
+
+  const selectedOrderLineSum = useMemo(() => {
+    if (!selectedOrder) return 0;
+    return (selectedOrder.items ?? []).reduce(
+      (acc, it) => acc + Number(it.total || (it.price || 0) * (it.quantity || 1)),
+      0
+    );
+  }, [selectedOrder]);
+
+  const selectedOrderPricing = useMemo((): OrderPricingBreakdown | null => {
+    if (!selectedOrder) return null;
+    if (selectedOrder.pricing) return selectedOrder.pricing;
+    const total = Number(selectedOrder.food_items_total_value ?? selectedOrderLineSum);
+    return {
+      subtotal: selectedOrderLineSum,
+      packaging: 0,
+      taxes: 0,
+      discount: 0,
+      total: Number.isFinite(total) ? total : selectedOrderLineSum,
+    };
+  }, [selectedOrder, selectedOrderLineSum]);
+
+  const printStoreInfo = useMemo(() => {
+    if (storeMeta) {
+      return {
+        storeName: storeMeta.store_name,
+        city: storeMeta.city ?? null,
+        cuisineLabel: storeMeta.cuisine_types?.[0] ?? null,
+        fssaiNumber: null as string | null,
+      };
+    }
+    if (selectedOrder) {
+      return {
+        storeName: selectedOrder.restaurant_name ?? 'Store',
+        city: null,
+        cuisineLabel: null,
+        fssaiNumber: null,
+      };
+    }
+    return null;
+  }, [storeMeta, selectedOrder]);
+
+  const acceptCountdown = useMemo(() => {
+    if (!selectedOrder) return { label: undefined as string | undefined, disabled: false };
+    const st = normOrderStatus(selectedOrder.order_status);
+    if (st !== 'CREATED') return { label: undefined, disabled: false };
+    const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
+    const deadline = new Date(selectedOrder.created_at).getTime() + mins * 60_000;
+    const secondsLeft = Math.max(0, Math.ceil((deadline - nowTick) / 1000));
+    const m = Math.floor(secondsLeft / 60);
+    const s = secondsLeft % 60;
+    return {
+      label: `Accept (${m}:${s.toString().padStart(2, '0')})`,
+      disabled: secondsLeft <= 0,
+    };
+  }, [selectedOrder, acceptanceSettings?.acceptance_window_minutes, nowTick]);
+
+  const acceptCountdownFor = useCallback(
+    (order: OrdersFoodRow) => {
+      const st = normOrderStatus(order.order_status);
+      if (st !== 'CREATED') return { label: undefined as string | undefined, disabled: false };
+      const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
+      const deadline = new Date(order.created_at).getTime() + mins * 60_000;
+      const secondsLeft = Math.max(0, Math.ceil((deadline - nowTick) / 1000));
+      const m = Math.floor(secondsLeft / 60);
+      const s = secondsLeft % 60;
+      return {
+        label: `Accept (${m}:${s.toString().padStart(2, '0')})`,
+        disabled: secondsLeft <= 0,
+      };
+    },
+    [acceptanceSettings?.acceptance_window_minutes, nowTick]
+  );
 
   const validateOtp = useCallback(
     async (orderId: number) => {
       if (!storeId || !otpInput.trim()) return;
+      const order = orders.find((o) => o.id === orderId);
+      const pathId = order ? merchantOrderApiId(order) : orderId;
       try {
-        const res = await fetch(`/api/merchant/stores/${storeId}/orders/${orderId}/validate-otp`, {
+        const res = await fetch(`/api/merchant/stores/${storeId}/orders/${pathId}/validate-otp`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ otp: otpInput.trim() }),
@@ -885,7 +1232,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        setIsStoreOpen(true);
+        invalidateStoreQueries(storeId);
         setShowTurnOnModal(false);
         toast('Store is now OPEN. Orders are being accepted!');
       } else {
@@ -896,7 +1243,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     } finally {
       setTurnOnLoading(false);
     }
-  }, [storeId, isDelisted, toast]);
+  }, [storeId, isDelisted, toast, invalidateStoreQueries]);
 
   // When store close modal opens: fetch opening time and set default date/time
   useEffect(() => {
@@ -958,7 +1305,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        setIsStoreOpen(false);
+        invalidateStoreQueries(storeId);
         setShowStoreCloseModal(false);
         setCloseClosureType(null);
         setCloseReason('');
@@ -976,7 +1323,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     } finally {
       setCloseConfirmLoading(false);
     }
-  }, [storeId, closeClosureType, closeClosureDate, closeClosureTime, closeReason, closeReasonOther, openingTimeForClose]);
+  }, [storeId, closeClosureType, closeClosureDate, closeClosureTime, closeReason, closeReasonOther, openingTimeForClose, invalidateStoreQueries]);
 
   const handleStoreCloseModalConfirm = useCallback(() => {
     if (!closeClosureType) {
@@ -1007,72 +1354,218 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
 
   const updateStatus = useCallback(
     async (order: OrdersFoodRow, newStatus: string, extra?: { rejected_reason?: string }) => {
+      if (!storeId) {
+        toast('Error: Store not loaded', 'error');
+        return false;
+      }
       setActionLoading(order.id);
-      const payload = { store_id: storeId, status: newStatus, ...extra };
+      const foodRowId = merchantFoodRowId(order) ?? order.id;
+      const coreId = merchantOrderApiId(order);
+      const pathIds =
+        order.core_only === true
+          ? [coreId]
+          : foodRowId === coreId
+            ? [foodRowId]
+            : [foodRowId, coreId];
 
-      const tryUpdate = async (): Promise<{ ok: boolean; data: unknown }> => {
-        const res = await fetch(`/api/merchant/stores/${storeId}/orders/${order.id}`, {
+      const payload = {
+        status: newStatus,
+        action_source: 'website' as const,
+        ...(newStatus === 'ACCEPTED' ? { accept_mode: 'manual' as const } : {}),
+        ...(newStatus === 'CANCELLED' ? { cancel_mode: 'manual' as const } : {}),
+        ...extra,
+      };
+
+      const tryUpdate = async (pathId: number): Promise<{ ok: boolean; data: unknown }> => {
+        const res = await fetch(`/api/merchant/stores/${storeId}/orders/${pathId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify(payload),
         });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         return { ok: res.ok, data };
       };
 
       try {
-        let result = await tryUpdate();
+        let result: { ok: boolean; data: unknown } = { ok: false, data: {} };
+        for (const pathId of pathIds) {
+          result = await tryUpdate(pathId);
+          if (result.ok) break;
+        }
         if (!result.ok) {
-          await new Promise((r) => setTimeout(r, 1500));
-          result = await tryUpdate();
+          await new Promise((r) => setTimeout(r, 1200));
+          for (const pathId of pathIds) {
+            result = await tryUpdate(pathId);
+            if (result.ok) break;
+          }
         }
         if (!result.ok) {
           const msg =
             (result.data as { error?: string } | null)?.error ?? 'Failed to update order';
-          toast('Error: ' + msg);          return;
+          toast('Error: ' + msg);
+          return false;
         }
         const data = result.data as { order?: OrdersFoodRow };
         if (data?.order) {
-          setOrders((prev) => prev.map((o) => (o.id === order.id ? (data.order as OrdersFoodRow) : o)));
-          if (selectedOrder?.id === order.id) {
-            setSelectedOrder(data.order);
+          const updated = data.order as OrdersFoodRow;
+          setOrders((prev) =>
+            prev.map((o) =>
+              o.id === order.id || o.order_id === order.order_id ? updated : o
+            )
+          );
+          if (selectedOrder && (selectedOrder.id === order.id || selectedOrder.order_id === order.order_id)) {
+            setSelectedOrder(updated);
             if (newStatus === 'DELIVERED') {
               closeOrderPanel();
             }
           }
           if (newStatus === 'OUT_FOR_DELIVERY') setDispatchModal(null);
+        } else {
+          void fetchOrders();
         }
-        toast(`Order status updated to ${newStatus}`);
+        try {
+          window.dispatchEvent(new CustomEvent('merchant-pending-orders-refresh'));
+          window.dispatchEvent(new CustomEvent('merchant-incoming-order-scan'));
+        } catch {
+          /* ignore */
+        }
+        void fetchStats();
+        if (newStatus === 'ACCEPTED') toast('Order accepted', 'success');
+        else if (newStatus === 'CANCELLED') toast('Order cancelled', 'error');
+        else toast(`Order status updated to ${newStatus}`, 'success');
+        return true;
       } catch {
         toast('Error: Failed to update order');
+        return false;
       } finally {
         setActionLoading(null);
       }
     },
-    [storeId, selectedOrder, closeOrderPanel]
+    [storeId, selectedOrder, closeOrderPanel, toast, fetchOrders, fetchStats]
   );
 
-  const norm = (s: string | null | undefined) => (s === 'NEW' ? 'CREATED' : s || 'CREATED');
-  const filteredOrders =
-    filter === 'all'
-      ? orders
-      : filter === 'active'
-        ? orders.filter((o) =>
-            ['CREATED', 'NEW', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO'].includes(o.order_status || 'CREATED')
-          )
-        : orders.filter((o) => norm(o.order_status) === filter);
+  const extendPrepDelay = useCallback(
+    async (order: OrdersFoodRow, additionalMinutes: number) => {
+      if (!storeId) return false;
+      setPrepDelayLoading(true);
+      const foodRowId = merchantFoodRowId(order) ?? order.id;
+      const coreId = merchantOrderApiId(order);
+      const pathIds =
+        order.core_only === true
+          ? [coreId]
+          : foodRowId === coreId
+            ? [foodRowId]
+            : [foodRowId, coreId];
+      try {
+        let ok = false;
+        let payload: { order?: OrdersFoodRow } = {};
+        for (const pathId of pathIds) {
+          const res = await fetch(
+            `/api/merchant/stores/${storeId}/orders/${pathId}/prep-delay`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'include',
+              body: JSON.stringify({ additional_minutes: additionalMinutes }),
+            }
+          );
+          payload = (await res.json().catch(() => ({}))) as { order?: OrdersFoodRow };
+          if (res.ok) {
+            ok = true;
+            break;
+          }
+        }
+        if (!ok) {
+          toast('Could not extend preparation time', 'error');
+          return false;
+        }
+        if (payload.order) {
+          const updated = payload.order;
+          setOrders((prev) =>
+            prev.map((o) =>
+              o.id === order.id || o.order_id === order.order_id ? updated : o
+            )
+          );
+          if (selectedOrder?.id === order.id || selectedOrder?.order_id === order.order_id) {
+            setSelectedOrder(updated);
+          }
+        } else {
+          void fetchOrders();
+        }
+        toast(`+${additionalMinutes} min added for customer`, 'success');
+        setPrepDelayOrder(null);
+        return true;
+      } catch {
+        toast('Could not extend preparation time', 'error');
+        return false;
+      } finally {
+        setPrepDelayLoading(false);
+      }
+    },
+    [storeId, fetchOrders, selectedOrder, toast]
+  );
+
+  const renderPipelineCard = (order: OrdersFoodRow) => (
+    <MerchantOrderPipelineCard
+      key={order.id}
+      order={order}
+      selected={(pipelineMainOrder ?? selectedOrder)?.id === order.id}
+      onClick={() => openOrder(order)}
+      onPrintOrder={() => {
+        setSelectedOrder(order);
+        setPrintBillOpen(true);
+      }}
+      onTimeline={() => {
+        setSelectedOrder(order);
+        setTimelineModalOpen(true);
+      }}
+      onAccept={() => updateStatus(order, 'ACCEPTED')}
+      onReject={() => setRejectModal(order)}
+      onReady={async () => {
+        const st = String(order.order_status || '').toUpperCase();
+        if (st === 'ACCEPTED') {
+          await updateStatus(order, 'PREPARING');
+        }
+        await updateStatus(order, 'READY_FOR_PICKUP');
+      }}
+      onNeedMoreTime={() => setPrepDelayOrder(order)}
+      onDispatch={() => {
+        fetchOtp(order.id);
+        setDispatchModal(order);
+        setOtpInput('');
+      }}
+      onComplete={() => updateStatus(order, 'DELIVERED')}
+      onRto={() => setRtoModalOrder(order)}
+      acceptLabel={acceptCountdownFor(order).label}
+      acceptDisabled={acceptCountdownFor(order).disabled}
+      onTrackRider={() => {
+        setSelectedOrder(order);
+        setRiderTrackingOpen(true);
+      }}
+      onUniformFeedback={(inUniform) =>
+        setUniformFeedbackByOrderId((prev) => ({ ...prev, [order.id]: inUniform }))
+      }
+      uniformFeedback={uniformFeedbackByOrderId[order.id] ?? null}
+      loading={actionLoading === order.id}
+      nowMs={nowTick}
+    />
+  );
+
+  const norm = (s: string | null | undefined) => normOrderStatus(s);
+
+  const filteredOrders = orders.filter((o) => orderMatchesFoodOrdersSidebar(o, filter));
 
   const displayOrders = useMemo(() => {
     let rows = [...filteredOrders];
-    const q = orderIdSearch.trim();
-    if (q) {
+    const digitsOnly = orderIdSearch.replace(/\D/g, '');
+    if (digitsOnly.length >= 4) {
+      const last4 = digitsOnly.slice(-4);
       rows = rows.filter((o) => {
-        const idStr = String(o.formatted_order_id ?? o.order_id ?? o.id ?? '').replace(/\s+/g, '');
-        const digits = idStr.replace(/\D/g, '');
-        if (!digits) return false;
-        // Match last 4 digits (partner UI behavior)
-        if (q.length <= 4) return digits.endsWith(q);
-        return digits.includes(q);
+        const fd = (o.formatted_order_id || '').replace(/\D/g, '');
+        if (fd.slice(-4) === last4) return true;
+        const oid = String(o.order_id).replace(/\D/g, '');
+        return oid.slice(-4) === last4;
       });
     }
     if (orderSort === 'newest') {
@@ -1085,12 +1578,29 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     return rows;
   }, [filteredOrders, orderIdSearch, orderSort]);
 
+  const pipelineMainOrder = useMemo(() => {
+    if (!usePipelineListLayout || displayOrders.length === 0) return null;
+    if (selectedOrder && displayOrders.some((o) => o.id === selectedOrder.id)) return selectedOrder;
+    return displayOrders[0];
+  }, [usePipelineListLayout, displayOrders, selectedOrder]);
+
+  useEffect(() => {
+    if (!usePipelineListLayout || displayOrders.length === 0) return;
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) return;
+    const inList = selectedOrder && displayOrders.some((o) => o.id === selectedOrder.id);
+    if (!inList) {
+      setSelectedOrder(displayOrders[0]);
+      setRightPanelOpen(true);
+    }
+  }, [usePipelineListLayout, displayOrders, filter, orderIdSearch, orderSort]);
+
   const historyOrders = useMemo(() => {
     const q = orderIdSearch.trim().replace(/\D/g, '');
     const from = startOfDay(parseYmd(historyDateFrom));
     const to = endOfDay(parseYmd(historyDateTo));
     let rows = [...orders].filter((o) => {
-      const st = norm(o.order_status);
+      const st = normOrderStatus(o.order_status);
+      if (!HISTORY_TERMINAL_STATUSES.has(st)) return false;
       if (!historyStatuses.has(st)) return false;
       const created = new Date(o.created_at);
       if (created < from || created > to) return false;
@@ -1164,24 +1674,116 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     setDownloadOpen(false);
   }, [historyOrders, historyDateFrom, historyDateTo, storeId]);
 
-  const counts: Record<string, number> = {};
-  orders.forEach((o) => {
-    const s = norm(o.order_status);
-    counts[s] = (counts[s] || 0) + 1;
-  });
+  const sidebarFilterCounts: Record<FoodOrdersSidebarFilterId, number> = {
+    NEW_ORDERS: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'NEW_ORDERS')).length,
+    PREPARING: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'PREPARING')).length,
+    READY_FOR_PICKUP: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'READY_FOR_PICKUP')).length,
+    OUT_FOR_DELIVERY: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'OUT_FOR_DELIVERY')).length,
+    RTO: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'RTO')).length,
+  };
+
+  const hasActiveOrders = useMemo(
+    () => orders.some((o) => isActiveMerchantFoodOrderStatus(o.order_status)),
+    [orders]
+  );
+
+  const showFullStoreClosedBlankState =
+    ordersSection === 'live' && isStoreOpen === false && !hasActiveOrders;
 
   const emptyVariant: FoodOrdersEmptyVariant = useMemo(() => {
-    if (orderIdSearch.trim() && displayOrders.length === 0) return 'search';
-    if (filter === 'CREATED') return 'NEW_ORDERS';
-    if (filter === 'PREPARING') return 'PREPARING';
-    if (filter === 'READY_FOR_PICKUP') return 'READY_FOR_PICKUP';
-    if (filter === 'OUT_FOR_DELIVERY') return 'OUT_FOR_DELIVERY';
-    if (filter === 'RTO') return 'RTO';
-    return 'NEW_ORDERS';
-  }, [displayOrders.length, filter, orderIdSearch]);
+    if (filteredOrders.length > 0 && displayOrders.length === 0) return 'search';
+    if (
+      filter === 'NEW_ORDERS' ||
+      filter === 'PREPARING' ||
+      filter === 'READY_FOR_PICKUP' ||
+      filter === 'OUT_FOR_DELIVERY' ||
+      filter === 'RTO'
+    ) {
+      return filter as FoodOrdersEmptyVariant;
+    }
+    return 'PREPARING';
+  }, [filteredOrders.length, displayOrders.length, filter]);
+
+  const renderLiveOrderSwitcher = () => (
+    <div className="hidden lg:flex w-64 shrink-0 flex-col overflow-hidden pl-4">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 hide-scrollbar">
+        <div className="space-y-3 pr-1">
+          {displayOrders.map((order) => (
+            <OrderCard
+              key={order.id}
+              order={order}
+              hideDetails
+              selected={pipelineMainOrder?.id === order.id}
+              onClick={() => openOrder(order)}
+              onAccept={() => updateStatus(order, 'ACCEPTED')}
+              onReject={() => setRejectModal(order)}
+              onPreparing={() => updateStatus(order, 'PREPARING')}
+              onReady={() => updateStatus(order, 'READY_FOR_PICKUP')}
+              onNeedMoreTime={() => setPrepDelayOrder(order)}
+              onDispatch={() => {
+                fetchOtp(order.id);
+                setDispatchModal(order);
+                setOtpInput('');
+              }}
+              onRto={() => setRtoModalOrder(order)}
+              onComplete={() => updateStatus(order, 'DELIVERED')}
+              onAddOrDeduct={() => setWalletAdjustmentOrder(order)}
+              loading={actionLoading === order.id}
+              otpCode={otpCache[order.id]?.pickup ?? undefined}
+              otpType="PICKUP"
+              otpVerified={otpVerified.has(order.id)}
+              onFetchOtp={() => fetchOtp(order.id)}
+              statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
+              acceptLabel={acceptCountdownFor(order).label}
+              acceptDisabled={acceptCountdownFor(order).disabled}
+              nowMs={nowTick}
+            />
+          ))}
+        </div>
+        {displayOrders.length === 0 && <FoodOrdersEmptyState variant={emptyVariant} />}
+      </div>
+    </div>
+  );
 
   if (loading && orders.length === 0) {
     return <><PageSkeletonOrders /></>;
+  }
+
+  function StoreClosedOrdersState() {
+    return (
+      <div className="flex flex-1 min-h-0 items-center justify-center bg-white">
+        <div className="mx-auto flex w-full max-w-xl flex-col items-center justify-center px-6 py-14 text-center">
+          <svg viewBox="0 0 360 220" className="h-auto w-full max-w-[520px]" aria-hidden>
+            <path
+              d="M120 48 L180 12 L240 48"
+              fill="none"
+              stroke="#cbd5e1"
+              strokeWidth="10"
+              strokeLinecap="round"
+            />
+            <circle cx="180" cy="12" r="10" fill="#34d399" />
+            <g transform="translate(0,0) rotate(-10 180 120)">
+              <rect x="92" y="62" width="176" height="112" rx="16" fill="#f8fafc" stroke="#cbd5e1" strokeWidth="6" />
+              <rect x="108" y="78" width="144" height="80" rx="12" fill="#ffffff" stroke="#e2e8f0" strokeWidth="3" />
+              <text
+                x="180"
+                y="128"
+                textAnchor="middle"
+                fill="#64748b"
+                fontSize="40"
+                fontWeight="800"
+                fontFamily="system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif"
+                letterSpacing="2"
+              >
+                CLOSED
+              </text>
+            </g>
+          </svg>
+          <p className="mt-6 text-sm font-semibold text-slate-700">You are offline</p>
+          <p className="mt-1 text-sm text-slate-500">Store is closed. Open the store to receive new orders.</p>
+        </div>
+      </div>
+    );
   }
 
   const mobileStatsExtra = stats ? (
@@ -1204,30 +1806,18 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   return (
     <>
       <div className="flex h-full min-h-0 bg-gray-50 relative flex-col">
-        <header id="food-orders-header" className="sticky top-0 z-20 bg-white border-b border-gray-200 shrink-0">
-          <div className="w-full min-w-0 px-3 sm:px-4 py-2 sm:py-3">
-            {/* Mobile: 2 rows (Row 1 = Today+Active, Row 2 = Filter + status + sound). Desktop: single row */}
+        {ordersSection === 'live' ? (
+        <header id="food-orders-header" className="shrink-0 z-20 bg-white border-b border-gray-200">
+          <div className="w-full min-w-0 px-3 sm:px-4 lg:px-6 py-2 sm:py-3">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-0 min-w-0">
-              {/* Row 1 (mobile) / Left (desktop): On mobile Today+Active on right. On desktop title + all stats on left */}
               <div className="flex items-center justify-end md:justify-start md:flex-1 md:items-center md:gap-3 min-w-0 overflow-x-auto hide-scrollbar shrink-0">
-                {/* Hamburger menu on left (mobile) */}
-                <div className="md:hidden mr-2">
-                  {null}
-                </div>
-                {/* Title - always visible on desktop */}
-                <div className="hidden md:flex items-center gap-2 shrink-0">
-                  <Sparkles className="w-5 h-5 text-orange-500 shrink-0" />
-                  <h1 className="text-lg font-bold text-gray-900 whitespace-nowrap">
-                    {ordersSection === 'history' ? 'Order History' : storeOrdersTitle((storeMeta as any)?.store_type)}
-                  </h1>
-                </div>
-                {ordersSection === 'live' && stats && (
+                {stats && (
                   <div className="flex items-center gap-2 shrink-0">
-                    <StatBadge label="Today" value={String(stats.ordersToday)} />
-                    <StatBadge label="Active" value={String(stats.activeOrders)} accent />
+                    <StatBadge label="Today" value={String(stats.ordersTodayActive ?? stats.ordersToday)} />
+                    <StatBadge label="Active" value={String(stats.activeOrders ?? stats.ordersTodayActive ?? 0)} accent />
                   </div>
                 )}
-                {ordersSection === 'live' && stats && (
+                {stats && (
                   <div className="hidden md:flex items-center gap-2 sm:gap-3 shrink-0">
                     <StatBadge label="Avg Prep" value={`${stats.avgPreparationTimeMinutes}m`} />
                     <StatBadge label="Revenue" value={`₹${stats.totalRevenueToday.toFixed(0)}`} />
@@ -1235,25 +1825,23 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                   </div>
                 )}
               </div>
-              {/* Row 2 (mobile) / Right (desktop): Filter, Store, grid/list, sound - shrink so never overlaps sidebar */}
               <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0 min-w-0 lg:pl-4">
               <button
                 onClick={handleStoreToggle}
-                disabled={isStoreOpen === null}
+                disabled={storeStatusLoading}
                 className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
-                  isStoreOpen === null
+                  storeStatusLoading
                     ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                     : isStoreOpen
                       ? 'bg-green-100 text-green-700 border border-green-200 hover:bg-green-200'
                       : 'bg-red-100 text-red-700 border border-red-200 hover:bg-red-200'
                 }`}
-                title={isStoreOpen === null ? 'Loading store status...' : isStoreOpen ? 'Click to close store' : 'Click to open store'}
+                title={storeStatusLoading ? 'Loading store status...' : isStoreOpen ? 'Click to close store' : 'Click to open store'}
               >
                 <Store size={14} className="shrink-0" />
-                <span className="hidden min-[400px]:inline">{isStoreOpen === null ? 'Loading...' : isStoreOpen ? 'Store Open' : 'Store Closed'}</span>
-                <span className="min-[400px]:hidden">{isStoreOpen === null ? '...' : isStoreOpen ? 'Open' : 'Closed'}</span>
+                <span className="hidden min-[400px]:inline">{storeStatusLoading ? 'Loading...' : isStoreOpen ? 'Store Open' : 'Store Closed'}</span>
+                <span className="min-[400px]:hidden">{storeStatusLoading ? '...' : isStoreOpen ? 'Open' : 'Closed'}</span>
               </button>
-              {/* View mode toggle - only visible on large screens (lg+) */}
               <div className="hidden lg:flex items-center gap-1 border border-gray-200 rounded-lg p-0.5 shrink-0">
                 <button
                   onClick={() => { setViewMode('card'); persistLocal('viewMode', 'card'); }}
@@ -1280,15 +1868,46 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                 {notifyEnabled ? <Bell size={14} /> : <BellOff size={14} />}
                 <span className="hidden sm:inline">{notifyEnabled ? 'Sound On' : 'Sound Off'}</span>
               </button>
+              {notificationSoundOptions.length > 1 ? (
+                <div className="relative shrink-0">
+                  <select
+                    value={notificationSoundSelectValue}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      if (!Number.isInteger(v) || v < 0 || v > 2) return;
+                      void patchNotificationSoundSlot(v);
+                    }}
+                    className="appearance-none pl-2 pr-7 py-1.5 rounded-lg border border-gray-200 bg-white text-xs font-medium text-gray-800 cursor-pointer max-w-[140px] sm:max-w-[180px] truncate"
+                    aria-label="Notification sound"
+                    title="Choose which uploaded notification sound plays"
+                  >
+                    {notificationSoundOptions.map(({ slot, label }) => (
+                      <option key={slot} value={slot}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-orange-500 pointer-events-none" aria-hidden />
+                </div>
+              ) : null}
               </div>
             </div>
           </div>
-          {/* Status pills + section + search (partnersite-style band) */}
-          <div className="border-t border-gray-200 bg-white px-3 sm:px-4 py-3">
+        </header>
+        ) : null}
+
+        {ordersSection === 'live' ? (
+          <StoreClosedActiveOrdersNotice visible={isStoreOpen === false && hasActiveOrders} />
+        ) : null}
+
+        <div
+          id="food-orders-pills"
+          className={`shrink-0 z-30 border-b border-gray-200 bg-white px-3 sm:px-4 lg:px-6 py-2 sm:py-3 shadow-sm${ordersSection === 'live' ? ' border-t' : ''}`}
+        >
             <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
               {ordersSection === 'live' ? (
                 <div className="flex flex-wrap items-center gap-2 min-w-0">
-                  {ORDERS_TABS.map(({ id, label }) => (
+                  {FOOD_ORDERS_SIDEBAR_FILTERS.map(({ id, label }) => (
                     <button
                       key={id}
                       type="button"
@@ -1297,7 +1916,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                         filter === id ? 'bg-orange-500 text-white border-orange-500 shadow-sm' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                       }`}
                     >
-                      {label} ({counts[id] || 0})
+                      {label} ({sidebarFilterCounts[id as FoodOrdersSidebarFilterId] || 0})
                     </button>
                   ))}
                 </div>
@@ -1367,8 +1986,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                 </div>
               </div>
             </div>
-          </div>
-        </header>
+        </div>
 
         {downloadOpen && downloadMenuPos && typeof document !== 'undefined' && createPortal(
           <>
@@ -1453,7 +2071,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                 <div className="flex-1 overflow-y-auto min-h-0 p-4 bg-white">
                   {filterCategory === 'status' && (
                     <div className="space-y-3">
-                      {UI_STATUS_DEF.map((def) => (
+                      {historyStatusDefs.map((def) => (
                         <label key={def.key} className="flex items-center gap-3 text-sm text-gray-800 cursor-pointer">
                           <input
                             type="checkbox"
@@ -1553,15 +2171,17 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
           {ordersSection === 'history' ? (
             <div className="flex flex-1 min-h-0 flex-col lg:flex-row overflow-hidden">
               <aside className="w-full lg:w-[380px] shrink-0 border-b lg:border-b-0 lg:border-r border-gray-200 bg-white flex flex-col min-h-0 max-h-[45vh] lg:max-h-none">
-                <div className="px-3 sm:px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-2">
-                  <p className="text-sm font-bold text-gray-900">Order history</p>
-                  <span className="text-xs text-gray-500 tabular-nums">{historyOrders.length} orders</span>
-                </div>
                 <div className="flex-1 overflow-y-auto min-h-0 p-2 space-y-2 hide-scrollbar">
+                  {loading && (
+                    <div className="flex justify-center py-8 text-gray-500">
+                      <Loader2 className="animate-spin" size={24} />
+                    </div>
+                  )}
                   {!loading && historyOrders.length === 0 && (
-                    <p className="text-sm text-gray-500 text-center py-8">No orders found.</p>
+                    <p className="text-sm text-gray-500 text-center py-8">No orders in this range.</p>
                   )}
                   {historyOrders.map((o) => {
+                    const { time, date } = formatListTime(o.created_at);
                     const active = selectedOrder?.id === o.id;
                     return (
                       <button
@@ -1573,387 +2193,212 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                         }`}
                       >
                         <div className="flex items-start justify-between gap-2 mb-1">
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-700 text-white">
-                            {(STATUS_LABEL[norm(o.order_status)] || norm(o.order_status)).toUpperCase()}
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${historyBadgeClass(o.order_status || '')}`}>
+                            {historyStatusLabel(o.order_status || '')}
                           </span>
                           <span className="text-[10px] text-gray-500 text-right shrink-0">
-                            {new Date(o.created_at).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true })}{' '}
-                            | {new Date(o.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                            {time} | {date}
                           </span>
                         </div>
                         <p className="text-xs font-semibold text-gray-900">ID: {o.formatted_order_id || o.order_id}</p>
                         {o.customer_name && <p className="text-xs text-gray-600 mt-0.5">By {o.customer_name}</p>}
+                        <p className="text-xs text-gray-500 mt-1 line-clamp-2">{formatItemsSummary(o)}</p>
                         <p className="text-sm font-bold text-gray-900 text-right mt-2">
-                          ₹{Number((o as any).food_items_total_value || (o as any).total_amount || 0).toFixed(0)}
+                          ₹{Number((o as any).food_items_total_value || (o as any).total_amount || 0).toFixed(2)}
                         </p>
                       </button>
                     );
                   })}
                 </div>
               </aside>
-              <main className="flex-1 min-w-0 overflow-y-auto min-h-0 bg-gray-50 p-3 sm:p-5">
+              <main className="flex-1 min-w-0 overflow-y-auto min-h-0 bg-gray-50 p-3 sm:p-5 hide-scrollbar">
                 {!selectedOrder ? (
-                  <div className="h-full flex items-center justify-center">
+                  <div className="h-full flex flex-col items-center justify-center text-gray-500 text-sm gap-2">
                     {orderIdSearch.trim() ? (
                       <FoodOrdersEmptyState variant="search" />
                     ) : historyOrders.length === 0 ? (
-                      <div className="flex flex-col items-center justify-center py-12 sm:py-20 px-4 text-center">
-                        <p className="text-base sm:text-lg font-medium text-slate-700">No orders in this range.</p>
-                        <p className="mt-1 text-sm sm:text-base text-slate-500">Try changing date range or filters.</p>
-                      </div>
+                      <>
+                        <span className="text-4xl opacity-40" aria-hidden>
+                          🍽
+                        </span>
+                        <p>No orders in this range.</p>
+                      </>
                     ) : (
-                      <div className="flex flex-col items-center justify-center py-12 sm:py-20 px-4 text-center">
-                        <p className="text-base sm:text-lg font-medium text-slate-700">No order selected</p>
-                        <p className="mt-1 text-sm sm:text-base text-slate-500">Select an order from the left list to view details.</p>
-                      </div>
+                      <>
+                        <span className="text-4xl opacity-40" aria-hidden>
+                          🍽
+                        </span>
+                        No order selected
+                      </>
                     )}
                   </div>
-                ) : (
-                  <div className="max-w-3xl mx-auto bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-                    <div className="border-b border-gray-200 px-4 py-3 flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-base font-bold text-gray-900">
-                          ID: {selectedOrder.formatted_order_id || selectedOrder.order_id}
-                        </p>
-                        <p className="text-xs text-gray-500 mt-0.5">{new Date(selectedOrder.created_at).toLocaleString('en-IN')}</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={closeOrderPanel}
-                        className="p-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600"
-                        aria-label="Close"
-                      >
-                        <X size={18} />
-                      </button>
-                    </div>
-                    <div className="p-4 text-sm text-gray-700">
-                      <p className="font-semibold text-gray-900 mb-2">Status</p>
-                      <p className="mb-4">{STATUS_LABEL[norm(selectedOrder.order_status)] || norm(selectedOrder.order_status)}</p>
-                      {selectedOrder.customer_name && (
-                        <>
-                          <p className="font-semibold text-gray-900 mb-2">Customer</p>
-                          <p>{selectedOrder.customer_name}</p>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                )}
+                ) : selectedOrderPricing ? (
+                  <OrderPanel
+                    className="w-full max-w-none h-auto max-h-none"
+                    order={selectedOrder}
+                    pricing={selectedOrderPricing}
+                    formattedOrderId={
+                      <FormattedOrderId
+                        formattedOrderId={selectedOrder.formatted_order_id}
+                        fallbackOrderId={selectedOrder.order_id}
+                        size="lg"
+                      />
+                    }
+                    onOpenBill={() => {
+                      setBillSheetAllItemsOnly(false);
+                      setBillSheetOpen(true);
+                    }}
+                    onOpenCustomer={() => setCustomerSheetOpen(true)}
+                    onOpenAllItems={() => {
+                      setBillSheetAllItemsOnly(true);
+                      setBillSheetOpen(true);
+                    }}
+                    onOpenTimeline={() => setTimelineModalOpen(true)}
+                    onPrintBill={() => setPrintBillOpen(true)}
+                    onViewPastRiders={() => {
+                      setRidersLogModalOrderId(merchantOrderApiId(selectedOrder));
+                      setRidersLogModalOrderLabel(
+                        selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`
+                      );
+                    }}
+                    onTrackRider={() => setRiderTrackingOpen(true)}
+                    otpCache={otpCache[selectedOrder.id]}
+                    pickupVerified={otpVerified.has(selectedOrder.id)}
+                    rtoVerified={false}
+                    otpCode={resolveOrderOtps(selectedOrder, otpCache[selectedOrder.id]).pickup ?? undefined}
+                    otpType="PICKUP"
+                    primaryAction={
+                      <HistoryOrderStatusBadge status={selectedOrder.order_status || 'DELIVERED'} />
+                    }
+                  />
+                ) : null}
               </main>
             </div>
+          ) : showFullStoreClosedBlankState ? (
+            <StoreClosedOrdersState />
           ) : (
           <div className="flex flex-col lg:flex-row flex-1 min-h-0 overflow-hidden">
             {/* Desktop (lg+): When panel open, split layout. Card shows placeholder until an order is selected. */}
-            {rightPanelOpen ? (
+            {usePipelineListLayout ? (
               <>
-                {/* Order details: single card, actions top-right, reject half width, space used evenly */}
+                <div className="hidden lg:flex flex-1 min-h-0 min-w-0 overflow-hidden">
+                  <div className="flex-1 min-w-0 overflow-y-auto p-3 sm:p-4 border-r border-gray-200 bg-gray-50/80 hide-scrollbar">
+                    {pipelineMainOrder ? (
+                      renderPipelineCard(pipelineMainOrder)
+                    ) : (
+                      <FoodOrdersEmptyState variant={emptyVariant} />
+                    )}
+                  </div>
+                  {renderLiveOrderSwitcher()}
+                </div>
+                {rightPanelOpen && selectedOrder ? (
+                  <div className="lg:hidden flex-1 min-w-0 flex flex-col overflow-hidden">
+                    <OrderDetailMobile
+                      storeId={storeId}
+                      order={selectedOrder}
+                      onClose={closeOrderPanel}
+                      statusLabel={STATUS_LABEL[selectedOrder.order_status || 'CREATED'] || selectedOrder.order_status || 'CREATED'}
+                      formatVegNonVeg={formatVegNonVeg}
+                      formatTimeAgo={formatTimeAgo}
+                      otpCode={otpCache[selectedOrder.id]?.pickup ?? undefined}
+                      otpType="PICKUP"
+                      otpVerified={otpVerified.has(selectedOrder.id)}
+                      onFetchOtp={() => fetchOtp(selectedOrder.id)}
+                      onAccept={() => updateStatus(selectedOrder, 'ACCEPTED')}
+                      onReject={() => setRejectModal(selectedOrder)}
+                      acceptLabel={acceptCountdown.label}
+                      acceptDisabled={acceptCountdown.disabled}
+                      nowMs={nowTick}
+                      onPreparing={() => updateStatus(selectedOrder, 'PREPARING')}
+                      onReady={() => updateStatus(selectedOrder, 'READY_FOR_PICKUP')}
+                      onDispatch={() => setDispatchModal(selectedOrder)}
+                      onComplete={() => updateStatus(selectedOrder, 'DELIVERED')}
+                      onRto={() => setRtoModalOrder(selectedOrder)}
+                      actionLoading={actionLoading === selectedOrder.id}
+                      onOpenRidersLog={() => {
+                        setRidersLogModalOrderId(merchantOrderApiId(selectedOrder));
+                        setRidersLogModalOrderLabel(selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`);
+                      }}
+                      onOpenRiderImage={(url) => setRiderImageModalUrl(url)}
+                    />
+                  </div>
+                ) : (
+                  <div className="lg:hidden flex-1 overflow-y-auto p-3 sm:p-4 min-w-0 min-h-0 hide-scrollbar space-y-3">
+                    {displayOrders.length === 0 ? (
+                      <FoodOrdersEmptyState variant={emptyVariant} />
+                    ) : (
+                      displayOrders.map((order) => renderPipelineCard(order))
+                    )}
+                  </div>
+                )}
+              </>
+            ) : rightPanelOpen ? (
+              <>
                 <div className="hidden lg:flex flex-1 min-w-0 border-r border-gray-200 bg-gray-50/80 flex-col overflow-hidden order-1 p-3">
                 <div className="flex-1 overflow-y-auto min-h-0 hide-scrollbar overflow-x-hidden">
-                  <div className="bg-white rounded-xl border border-gray-200/80 shadow-md overflow-hidden flex flex-col h-full min-h-[320px]">
-                    {selectedOrder ? (
-                    <>
-                    {/* Single header row: Order id + OTP + status + time | Compact timeline | Close */}
-                    <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 bg-gradient-to-r from-gray-50 to-white border-b border-gray-200/60">
-                      <div className="flex items-center gap-2.5 min-w-0 shrink-0">
-                        <FormattedOrderId 
-                          formattedOrderId={selectedOrder.formatted_order_id} 
+                  {selectedOrder && selectedOrderPricing ? (
+                    <OrderPanel
+                      className="w-full"
+                      order={selectedOrder}
+                      pricing={selectedOrderPricing}
+                      formattedOrderId={
+                        <FormattedOrderId
+                          formattedOrderId={selectedOrder.formatted_order_id}
                           fallbackOrderId={selectedOrder.order_id}
-                          size="base"
+                          size="lg"
                         />
-                        <div className="flex items-center gap-2 px-3 py-1 bg-gradient-to-r from-slate-100 to-slate-50 rounded-lg border border-slate-200">
-                          <span className="text-xs font-semibold text-gray-700">OTP:</span>
-                          {otpCache[selectedOrder.id] ? (
-                            <>
-                              <span className="font-mono font-bold text-lg text-gray-900 tracking-wider">{otpCache[selectedOrder.id].otp_code}</span>
-                              <span className="text-[10px] text-slate-600">({otpCache[selectedOrder.id].otp_type})</span>
-                              {otpVerified.has(selectedOrder.id) && <span className="text-green-600 text-xs font-medium">✓</span>}
-                            </>
-                          ) : (
-                            <span className="text-xs text-gray-500 animate-pulse">Loading...</span>
-                          )}
-                        </div>
-                        <span
-                          className={`shrink-0 px-2 py-0.5 rounded-md text-[10px] font-semibold tracking-wide ${
-                            (selectedOrder.order_status || 'CREATED') === 'CREATED' || (selectedOrder.order_status || '') === 'NEW'
-                              ? 'bg-red-100 text-red-700'
-                              : (selectedOrder.order_status || '') === 'DELIVERED'
-                                ? 'bg-green-100 text-green-700'
-                                : (selectedOrder.order_status || '') === 'CANCELLED' || (selectedOrder.order_status || '') === 'RTO'
-                                  ? 'bg-gray-100 text-gray-600'
-                                  : 'bg-blue-100 text-blue-700'
-                          }`}
-                        >
-                          {STATUS_LABEL[selectedOrder.order_status || 'CREATED'] || selectedOrder.order_status || 'CREATED'}
-                        </span>
-                        <span className="text-[10px] text-gray-500">{formatTimeAgo(selectedOrder.created_at)}</span>
-                      </div>
-                      <div className="flex-1 min-w-0 flex items-center justify-center px-2">
-                        <OrderStatusTimeline order={selectedOrder} compact />
-                      </div>
-                      {['PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY'].includes(selectedOrder.order_status || '') && (
-                        <div className="relative shrink-0" ref={headerRtoMenuRef}>
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); setHeaderRtoMenuOpen((o) => !o); }}
-                            disabled={actionLoading === selectedOrder.id}
-                            className="p-2 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 disabled:opacity-50 transition-colors"
-                            aria-label="More actions"
-                          >
-                            <MoreVertical size={18} />
-                          </button>
-                          {headerRtoMenuOpen && (
-                            <div className="absolute right-0 top-full mt-1 py-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 min-w-[100px]">
-                              <button
-                                type="button"
-                                onClick={(e) => { e.stopPropagation(); setRtoModalOrder(selectedOrder); setHeaderRtoMenuOpen(false); }}
-                                disabled={actionLoading === selectedOrder.id}
-                                className="w-full text-left px-3 py-2 text-sm font-medium text-orange-700 hover:bg-orange-50 rounded-none first:rounded-t-lg last:rounded-b-lg"
-                              >
-                                RTO
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      <button onClick={closeOrderPanel} className="p-1.5 hover:bg-gray-100 rounded-md shrink-0 transition-colors" aria-label="Close">
-                        <X size={16} className="text-gray-500" />
-                      </button>
-                    </div>
-                    {/* Card body: compact premium layout */}
-                    <div className="flex-1 overflow-y-auto p-4 min-h-0 overflow-x-hidden">
-                      <div className="flex flex-col lg:flex-row gap-4 items-start">
-                        {/* Left: Customer & Rider Details - auto width based on content */}
-                        <div className="flex flex-col gap-3 w-full lg:w-auto lg:min-w-[260px] lg:max-w-none lg:flex-shrink-0">
-                          {/* Customer - Full Details - auto width */}
-                          {selectedOrder.customer_name && (
-                            <div className="rounded-lg bg-gradient-to-br from-blue-50/50 to-blue-100/30 p-3 border border-blue-100/60 shadow-sm w-full">
-                              <div className="flex items-start gap-2.5">
-                                <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center shrink-0">
-                                  <User size={16} className="text-blue-600" />
-                                </div>
-                                <div className="min-w-0 flex-1 space-y-1.5">
-                                  <div className="flex items-center gap-2">
-                                    <p className="font-semibold text-gray-900 text-sm">{selectedOrder.customer_name}</p>
-                                    {selectedOrder.customer_scores && (
-                                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${
-                                        (selectedOrder.customer_scores.trust_score || 100) >= 80 
-                                          ? 'bg-green-100 text-green-700' 
-                                          : (selectedOrder.customer_scores.trust_score || 100) >= 50
-                                            ? 'bg-yellow-100 text-yellow-700'
-                                            : 'bg-red-100 text-red-700'
-                                      }`}>
-                                        {(selectedOrder.customer_scores.trust_score || 100).toFixed(0)}
-                                      </span>
-                                    )}
-                                  </div>
-                                  {selectedOrder.customer_phone && (
-                                    <a href={`tel:${selectedOrder.customer_phone}`} className="flex items-center gap-1.5 text-blue-600 text-xs font-medium hover:text-blue-700">
-                                      <Phone size={12} /> {selectedOrder.customer_phone}
-                                    </a>
-                                  )}
-                                  {(selectedOrder.drop_address_raw || selectedOrder.drop_address_normalized) && (
-                                    <div className="flex items-start gap-1.5 text-xs text-gray-700">
-                                      <MapPin size={12} className="shrink-0 mt-0.5 text-amber-600" />
-                                      <span className="leading-relaxed">{selectedOrder.drop_address_normalized || selectedOrder.drop_address_raw}</span>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          )}
-                          
-                          {/* Rider - Full Details with Timeline (always show if rider_id exists) - auto width */}
-                          {(selectedOrder.rider_id || selectedOrder.rider_name || selectedOrder.rider_details) ? (
-                            <div className="rounded-lg bg-gradient-to-br from-purple-50/50 to-purple-100/30 p-3 border border-purple-100/60 shadow-sm w-full relative">
-                              <button
-                                type="button"
-                                onClick={() => { setRidersLogModalOrderId(selectedOrder.id); setRidersLogModalOrderLabel(selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`); }}
-                                className="absolute top-2 right-2 text-[10px] font-semibold text-purple-600 hover:text-purple-800 hover:underline"
-                              >
-                                Rider&apos;s log
-                              </button>
-                              <div className="space-y-2.5">
-                                <div className="flex items-start gap-2.5">
-                                  {selectedOrder.rider_details?.selfie_url ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => setRiderImageModalUrl(selectedOrder.rider_details?.selfie_url || null)}
-                                      className="shrink-0 rounded-full border-2 border-purple-200 overflow-hidden focus:outline-none focus:ring-2 focus:ring-purple-400"
-                                    >
-                                      <img 
-                                        src={selectedOrder.rider_details.selfie_url} 
-                                        alt={selectedOrder.rider_name || 'Rider'} 
-                                        className="w-8 h-8 rounded-full object-cover"
-                                      />
-                                    </button>
-                                  ) : (
-                                    <div className="w-8 h-8 rounded-full bg-purple-100 flex items-center justify-center shrink-0">
-                                      <Bike size={16} className="text-purple-600" />
-                                    </div>
-                                  )}
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex items-center gap-2 mb-1">
-                                      <p className="font-semibold text-gray-900 text-sm">
-                                        {selectedOrder.rider_details?.name || selectedOrder.rider_name || `Rider #${selectedOrder.rider_id}`}
-                                      </p>
-                                      {selectedOrder.rider_details?.id && (
-                                        <span className="text-[9px] text-gray-500">ID: {selectedOrder.rider_details.id}</span>
-                                      )}
-                                      {selectedOrder.rider_details?.status && (
-                                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${
-                                          selectedOrder.rider_details.status === 'ACTIVE' 
-                                            ? 'bg-green-100 text-green-700' 
-                                            : 'bg-gray-100 text-gray-600'
-                                        }`}>
-                                          {selectedOrder.rider_details.status}
-                                        </span>
-                                      )}
-                                    </div>
-                                    {selectedOrder.rider_details?.mobile && (
-                                      <a href={`tel:${selectedOrder.rider_details.mobile}`} className="flex items-center gap-1.5 text-purple-600 text-xs font-medium hover:text-purple-700">
-                                        <Phone size={12} /> {selectedOrder.rider_details.mobile}
-                                      </a>
-                                    )}
-                                    {selectedOrder.rider_details?.city && (
-                                      <p className="text-xs text-gray-600 mt-0.5">{selectedOrder.rider_details.city}</p>
-                                    )}
-                                  </div>
-                                </div>
-                                {/* Rider Timeline */}
-                                {selectedOrder.rider_id && (
-                                  <div className="pt-2 border-t border-purple-100/60">
-                                    <RiderTimeline storeId={storeId} riderId={selectedOrder.rider_id} orderId={selectedOrder.order_id} />
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          ) : null}
-                          
-                          {/* Delivery Instructions */}
-                          {selectedOrder.delivery_instructions && (
-                            <div className="rounded-lg bg-amber-50/60 p-2.5 border border-amber-100">
-                              <div className="flex items-start gap-2">
-                                <MapPin size={12} className="shrink-0 mt-0.5 text-amber-600" />
-                                <p className="text-xs text-gray-700 leading-relaxed">{selectedOrder.delivery_instructions}</p>
-                              </div>
-                            </div>
-                          )}
-                          
-                          {/* Flags - compact */}
-                          {(selectedOrder.requires_utensils || (selectedOrder.veg_non_veg && selectedOrder.veg_non_veg !== 'na') || selectedOrder.is_fragile || selectedOrder.is_high_value) && (
-                            <div className="rounded-lg bg-gray-50/60 p-2.5 border border-gray-100">
-                              <div className="flex flex-wrap gap-1.5">
-                                {selectedOrder.requires_utensils && (
-                                  <span className="px-2 py-0.5 bg-gray-100 text-gray-700 text-[10px] rounded-md flex items-center gap-1 w-fit"><UtensilsCrossed size={10} /> Utensils</span>
-                                )}
-                                {selectedOrder.veg_non_veg && selectedOrder.veg_non_veg !== 'na' && (
-                                  <span className="px-2 py-0.5 bg-green-100 text-green-800 text-[10px] rounded-md w-fit">{formatVegNonVeg(selectedOrder.veg_non_veg)}</span>
-                                )}
-                                {selectedOrder.is_fragile && <span className="px-2 py-0.5 bg-amber-100 text-amber-800 text-[10px] rounded-md">Fragile</span>}
-                                {selectedOrder.is_high_value && <span className="px-2 py-0.5 bg-yellow-100 text-yellow-800 text-[10px] rounded-md">High value</span>}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                        
-                        {/* Center: Items & Amount - flexible width, uses remaining space */}
-                        <div className="flex-1 min-w-0 space-y-3 lg:max-w-none">
-                          {/* Action buttons - same width as items card; 3-dot RTO is in header */}
-                          <div className="w-full flex gap-2 items-center">
-                            <ActionBtns
-                              order={selectedOrder}
-                              onAccept={() => updateStatus(selectedOrder, 'ACCEPTED')}
-                              onReject={() => { setRejectModal(selectedOrder); closeOrderPanel(); }}
-                              onPreparing={() => updateStatus(selectedOrder, 'PREPARING')}
-                              onReady={() => updateStatus(selectedOrder, 'READY_FOR_PICKUP')}
-                              onDispatch={() => setDispatchModal(selectedOrder)}
-                              onComplete={() => updateStatus(selectedOrder, 'DELIVERED')}
-                              onRto={() => setRtoModalOrder(selectedOrder)}
-                              onAddOrDeduct={() => setWalletAdjustmentOrder(selectedOrder)}
-                              loading={actionLoading === selectedOrder.id}
-                              otpVerified={otpVerified.has(selectedOrder.id)}
-                              topRightLayout
-                              hideRtoMenu
-                            />
-                          </div>
-                          {/* Items - compact premium with QTY | Price | Amount */}
-                          <div className="rounded-lg bg-white p-3 border border-gray-200 shadow-sm w-full">
-                            <div className="flex items-center justify-between mb-2.5">
-                              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide">Items</p>
-                              <span className="text-xs text-gray-500">{selectedOrder.preparation_time_minutes ?? '—'}m prep</span>
-                            </div>
-                            {/* Header row */}
-                            {selectedOrder.items && Array.isArray(selectedOrder.items) && selectedOrder.items.length > 0 && (
-                              <div className="grid grid-cols-12 gap-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1.5 pb-1 border-b border-gray-200">
-                                <div className="col-span-5">Item</div>
-                                <div className="col-span-2 text-center">QTY</div>
-                                <div className="col-span-2 text-right">Price</div>
-                                <div className="col-span-3 text-right">Amount</div>
-                              </div>
-                            )}
-                            {selectedOrder.items && Array.isArray(selectedOrder.items) && selectedOrder.items.length > 0 ? (
-                              <div className="space-y-2">
-                                {selectedOrder.items.map((item: any, idx: number) => {
-                                  const qty = item.quantity || 1;
-                                  const itemPrice = Number(item.price || 0);
-                                  const amount = Number(item.total || itemPrice * qty);
-                                  return (
-                                    <div key={idx} className="grid grid-cols-12 gap-2 text-xs items-center py-1 border-b border-gray-100 last:border-0">
-                                      <div className="col-span-5 min-w-0">
-                                        <p className="font-medium text-gray-900 truncate">{item.name || `Item ${idx + 1}`}</p>
-                                        {item.customizations && Array.isArray(item.customizations) && item.customizations.length > 0 && (
-                                          <p className="text-[10px] text-gray-500 mt-0.5 truncate">{item.customizations.join(', ')}</p>
-                                        )}
-                                      </div>
-                                      <div className="col-span-2 text-center">
-                                        <p className="text-gray-600 font-medium">{qty}</p>
-                                      </div>
-                                      <div className="col-span-2 text-right">
-                                        <p className="text-gray-600">₹{itemPrice.toFixed(2)}</p>
-                                      </div>
-                                      <div className="col-span-3 text-right">
-                                        <p className="font-semibold text-gray-900">₹{amount.toFixed(2)}</p>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            ) : (
-                              <p className="text-xs text-gray-500">{selectedOrder.food_items_count ?? '—'} items</p>
-                            )}
-                            <div className="mt-2.5 pt-2.5 border-t border-gray-100 flex justify-between items-center">
-                              <span className="text-xs text-gray-600">Total</span>
-                              <span className="font-bold text-gray-900">₹{Number(selectedOrder.food_items_total_value || 0).toFixed(2)}</span>
-                            </div>
-                          </div>
-                          
-                        </div>
-                      </div>
-                      
-                      {/* Cancellation - compact */}
-                      {(selectedOrder.rejected_reason || selectedOrder.cancelled_by_type) && (
-                        <div className="mt-3 p-2.5 bg-red-50/80 rounded-lg border border-red-200/60">
-                          <p className="text-[10px] font-semibold text-red-600 uppercase tracking-wide mb-1.5">Cancellation</p>
-                          {selectedOrder.rejected_reason && (
-                            <p className="text-xs text-red-800 mb-1.5 leading-relaxed">{selectedOrder.rejected_reason}</p>
-                          )}
-                          {selectedOrder.cancelled_by_type && (
-                            <p className="text-[10px] text-red-700">
-                              <span className="font-medium capitalize">{selectedOrder.cancelled_by_type}</span>
-                              {selectedOrder.cancelled_at && (
-                                <span className="ml-1.5 text-red-600">• {formatTimeAgo(selectedOrder.cancelled_at)}</span>
-                              )}
-                            </p>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                    </>
+                      }
+                      onOpenBill={() => {
+                        setBillSheetAllItemsOnly(false);
+                        setBillSheetOpen(true);
+                      }}
+                      onOpenCustomer={() => setCustomerSheetOpen(true)}
+                      onOpenAllItems={() => {
+                        setBillSheetAllItemsOnly(true);
+                        setBillSheetOpen(true);
+                      }}
+                      onOpenTimeline={() => setTimelineModalOpen(true)}
+                      onPrintBill={() => setPrintBillOpen(true)}
+                      onTrackRider={() => setRiderTrackingOpen(true)}
+                      onClose={closeOrderPanel}
+                      onViewPastRiders={() => {
+                        setRidersLogModalOrderId(merchantOrderApiId(selectedOrder));
+                        setRidersLogModalOrderLabel(
+                          selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`
+                        );
+                      }}
+                      otpCache={otpCache[selectedOrder.id]}
+                      pickupVerified={otpVerified.has(selectedOrder.id)}
+                      rtoVerified={false}
+                      otpCode={resolveOrderOtps(selectedOrder, otpCache[selectedOrder.id]).pickup ?? undefined}
+                      otpType="PICKUP"
+                      primaryAction={
+                        <ActionBtns
+                          order={selectedOrder}
+                          onAccept={() => updateStatus(selectedOrder, "ACCEPTED")}
+                          onReject={() => setRejectModal(selectedOrder)}
+                          acceptLabel={acceptCountdown.label}
+                          acceptDisabled={acceptCountdown.disabled}
+                          onPreparing={() => updateStatus(selectedOrder, "PREPARING")}
+                          onReady={() => updateStatus(selectedOrder, "READY_FOR_PICKUP")}
+                          onNeedMoreTime={() => setPrepDelayOrder(selectedOrder)}
+                          onDispatch={() => setDispatchModal(selectedOrder)}
+                          onComplete={() => updateStatus(selectedOrder, "DELIVERED")}
+                          onRto={() => setRtoModalOrder(selectedOrder)}
+                          onAddOrDeduct={() => setWalletAdjustmentOrder(selectedOrder)}
+                          loading={actionLoading === selectedOrder.id}
+                          otpVerified={otpVerified.has(selectedOrder.id)}
+                          topRightLayout
+                          hideRtoMenu
+                          nowMs={nowTick}
+                        />
+                      }
+                    />
                   ) : (
-                    <div className="flex-1 flex items-center justify-center p-8 text-gray-500 text-sm text-center">
+                    <div className="flex min-h-[320px] items-center justify-center rounded-xl border border-gray-200/80 bg-white p-8 text-center text-sm text-gray-500">
                       Select an order from the list to view details
                     </div>
                   )}
-                  </div>
                 </div>
               </div>
                 {/* Mobile: Order details panel beside sidebar - card-based layout (only when order selected) */}
@@ -1966,19 +2411,25 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                     statusLabel={STATUS_LABEL[selectedOrder.order_status || 'CREATED'] || selectedOrder.order_status || 'CREATED'}
                     formatVegNonVeg={formatVegNonVeg}
                     formatTimeAgo={formatTimeAgo}
-                    otpCode={otpCache[selectedOrder.id]?.otp_code}
-                    otpType={otpCache[selectedOrder.id]?.otp_type}
+                    otpCode={otpCache[selectedOrder.id]?.pickup ?? undefined}
+                    otpType="PICKUP"
                     otpVerified={otpVerified.has(selectedOrder.id)}
                     onFetchOtp={() => fetchOtp(selectedOrder.id)}
                     onAccept={() => updateStatus(selectedOrder, 'ACCEPTED')}
-                    onReject={() => { setRejectModal(selectedOrder); closeOrderPanel(); }}
+                    onReject={() => setRejectModal(selectedOrder)}
+                    acceptLabel={acceptCountdown.label}
+                    acceptDisabled={acceptCountdown.disabled}
+                    nowMs={nowTick}
                     onPreparing={() => updateStatus(selectedOrder, 'PREPARING')}
                     onReady={() => updateStatus(selectedOrder, 'READY_FOR_PICKUP')}
                     onDispatch={() => setDispatchModal(selectedOrder)}
                     onComplete={() => updateStatus(selectedOrder, 'DELIVERED')}
                     onRto={() => setRtoModalOrder(selectedOrder)}
                     actionLoading={actionLoading === selectedOrder.id}
-                    onOpenRidersLog={() => { setRidersLogModalOrderId(selectedOrder.id); setRidersLogModalOrderLabel(selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`); }}
+                    onOpenRidersLog={() => {
+                      setRidersLogModalOrderId(merchantOrderApiId(selectedOrder));
+                      setRidersLogModalOrderLabel(selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`);
+                    }}
                     onOpenRiderImage={(url) => setRiderImageModalUrl(url)}
                   />
                 </div>
@@ -1992,12 +2443,14 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                         <OrderCard
                           key={order.id}
                           order={order}
+                          hideDetails
                           selected={selectedOrder?.id === order.id}
                           onClick={() => openOrder(order)}
                           onAccept={() => updateStatus(order, 'ACCEPTED')}
                           onReject={() => setRejectModal(order)}
                           onPreparing={() => updateStatus(order, 'PREPARING')}
                           onReady={() => updateStatus(order, 'READY_FOR_PICKUP')}
+                          onNeedMoreTime={() => setPrepDelayOrder(order)}
                           onDispatch={() => {
                             fetchOtp(order.id);
                             setDispatchModal(order);
@@ -2007,11 +2460,14 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                           onComplete={() => updateStatus(order, 'DELIVERED')}
                           onAddOrDeduct={() => setWalletAdjustmentOrder(order)}
                           loading={actionLoading === order.id}
-                          otpCode={otpCache[order.id]?.otp_code}
-                          otpType={otpCache[order.id]?.otp_type}
+                          otpCode={otpCache[order.id]?.pickup ?? undefined}
+                          otpType="PICKUP"
                           otpVerified={otpVerified.has(order.id)}
                           onFetchOtp={() => fetchOtp(order.id)}
                           statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
+                          acceptLabel={acceptCountdownFor(order).label}
+                          acceptDisabled={acceptCountdownFor(order).disabled}
+                          nowMs={nowTick}
                         />
                       ))}
                     </div>
@@ -2026,6 +2482,11 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
             {/* Main order cards / list - full width when no order open */}
             <div className="flex-1 overflow-y-auto p-3 sm:p-4 min-w-0 min-h-0 hide-scrollbar" style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}>
               {viewMode === 'card' ? (
+              usePipelineListLayout ? (
+              <div className="space-y-3">
+                {displayOrders.map((order) => renderPipelineCard(order))}
+              </div>
+              ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-3">
                 {displayOrders.map((order) => (
                   <OrderCard
@@ -2037,6 +2498,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                     onReject={() => setRejectModal(order)}
                     onPreparing={() => updateStatus(order, 'PREPARING')}
                     onReady={() => updateStatus(order, 'READY_FOR_PICKUP')}
+                    onNeedMoreTime={() => setPrepDelayOrder(order)}
                     onDispatch={() => {
                       fetchOtp(order.id);
                       setDispatchModal(order);
@@ -2046,16 +2508,25 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                     onComplete={() => updateStatus(order, 'DELIVERED')}
                     onAddOrDeduct={() => setWalletAdjustmentOrder(order)}
                     loading={actionLoading === order.id}
-                    otpCode={otpCache[order.id]?.otp_code}
-                    otpType={otpCache[order.id]?.otp_type}
+                    otpCode={otpCache[order.id]?.pickup ?? undefined}
+                    otpType="PICKUP"
                     otpVerified={otpVerified.has(order.id)}
                     onFetchOtp={() => fetchOtp(order.id)}
                     statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
+                    acceptLabel={acceptCountdownFor(order).label}
+                    acceptDisabled={acceptCountdownFor(order).disabled}
+                    nowMs={nowTick}
                   />
                 ))}
               </div>
+              )
               ) : (
               // List view - only shown on large screens (lg+)
+              usePipelineListLayout ? (
+              <div className="space-y-3">
+                {displayOrders.map((order) => renderPipelineCard(order))}
+              </div>
+              ) : (
               <div className="hidden lg:block space-y-2">
                 {displayOrders.map((order) => (
                   <OrderListRow
@@ -2072,17 +2543,21 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                     onComplete={() => updateStatus(order, 'DELIVERED')}
                     onAddOrDeduct={() => setWalletAdjustmentOrder(order)}
                     loading={actionLoading === order.id}
-                    otpCode={otpCache[order.id]?.otp_code}
-                    otpType={otpCache[order.id]?.otp_type}
+                    otpCode={otpCache[order.id]?.pickup ?? undefined}
+                    otpType="PICKUP"
                     otpVerified={otpVerified.has(order.id)}
                     onFetchOtp={() => fetchOtp(order.id)}
                     statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
+                    acceptLabel={acceptCountdownFor(order).label}
+                    acceptDisabled={acceptCountdownFor(order).disabled}
+                    nowMs={nowTick}
                   />
                 ))}
                 {displayOrders.length === 0 && (
                   <FoodOrdersEmptyState variant={emptyVariant} />
                 )}
               </div>
+              )
               )}
               {viewMode === 'card' && displayOrders.length === 0 && (
                 <FoodOrdersEmptyState variant={emptyVariant} />
@@ -2096,56 +2571,66 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         </div>
       </div>
 
-      {/* Reject modal – portaled so overlay is above sidebar (z-50); backdrop-blur covers full screen */}
-      {rejectModal && typeof document !== 'undefined' && createPortal(
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-md flex items-end sm:items-center justify-center z-[100] p-3 sm:p-4">
-          <div className="bg-white rounded-t-xl sm:rounded-xl shadow-xl max-w-md w-full p-4 sm:p-5 max-h-[90vh] overflow-y-auto">
-            <h3 className="font-semibold text-gray-900 mb-2">
-              Reject Order{' '}
-              {rejectModal.formatted_order_id ? (
-                <FormattedOrderId 
-                  formattedOrderId={rejectModal.formatted_order_id} 
-                  fallbackOrderId={rejectModal.order_id}
-                  size="base"
-                />
-              ) : (
-                `#${rejectModal.order_id}`
-              )}
-            </h3>
-            <p className="text-sm text-gray-600 mb-3">Provide a reason (optional):</p>
-            <textarea
-              value={rejectReason}
-              onChange={(e) => setRejectReason(e.target.value)}
-              className="w-full border border-gray-200 rounded-lg p-2 text-sm min-h-[80px]"
-              placeholder="e.g. Item unavailable, Store closed..."
-            />
-            <div className="flex gap-2 mt-3">
-              <button
-                onClick={() => {
-                  setRejectModal(null);
-                  setRejectReason('');
-                }}
-                className="flex-1 px-4 py-2 border border-gray-200 rounded-lg text-sm font-medium hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={async () => {
-                  await updateStatus(rejectModal, 'CANCELLED', {
-                    rejected_reason: rejectReason || 'No reason provided',
-                  });
-                  setRejectModal(null);
-                  setRejectReason('');
-                }}
-                className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700"
-              >
-                Reject
-              </button>
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
+      <MerchantPrepDelayModal
+        open={!!prepDelayOrder}
+        loading={prepDelayLoading}
+        onClose={() => setPrepDelayOrder(null)}
+        onSelectMinutes={(mins) => {
+          if (prepDelayOrder) void extendPrepDelay(prepDelayOrder, mins);
+        }}
+      />
+
+      <RejectOrderSidesheet
+        open={!!rejectModal}
+        order={rejectModal}
+        loading={rejectModal != null && actionLoading === rejectModal.id}
+        onClose={() => setRejectModal(null)}
+        onConfirm={async (reason) => {
+          if (!rejectModal) return;
+          const ok = await updateStatus(rejectModal, 'CANCELLED', { rejected_reason: reason });
+          if (ok) setRejectModal(null);
+        }}
+      />
+
+      <OrderBillSidesheet
+        open={billSheetOpen && !!selectedOrder}
+        onClose={() => {
+          setBillSheetOpen(false);
+          setBillSheetAllItemsOnly(false);
+        }}
+        order={selectedOrder}
+        pricing={
+          selectedOrderPricing ?? {
+            subtotal: 0,
+            packaging: 0,
+            taxes: 0,
+            discount: 0,
+            total: 0,
+          }
+        }
+        lineSum={selectedOrderLineSum}
+        allItemsOnly={billSheetAllItemsOnly}
+      />
+      <OrderCustomerSidesheet
+        open={customerSheetOpen && !!selectedOrder}
+        onClose={() => setCustomerSheetOpen(false)}
+        order={selectedOrder}
+      />
+      <GatiMitraOrderPrintBill
+        open={printBillOpen && !!selectedOrder}
+        onClose={() => setPrintBillOpen(false)}
+        order={selectedOrder}
+        pricing={
+          selectedOrderPricing ?? {
+            subtotal: 0,
+            packaging: 0,
+            taxes: 0,
+            discount: 0,
+            total: 0,
+          }
+        }
+        store={printStoreInfo}
+      />
 
       {/* Dispatch modal – warning only; no OTP. Portaled so sidebar blurs. */}
       {dispatchModal && typeof document !== 'undefined' && createPortal(
@@ -2242,80 +2727,34 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         />
       )}
 
-      {/* Rider's log modal – all riders assigned to this order */}
-      {ridersLogModalOrderId != null && typeof document !== 'undefined' && createPortal(
-        <div
-          className="fixed inset-0 bg-black/50 backdrop-blur-md flex items-end sm:items-center justify-center z-[100] p-3 sm:p-4"
-          onClick={() => { setRidersLogModalOrderId(null); setRidersLogModalOrderLabel(null); }}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Close modal"
-        >
-          <div
-            className="bg-white rounded-t-xl sm:rounded-xl shadow-xl max-w-md w-full max-h-[85vh] overflow-hidden flex flex-col"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="shrink-0 flex items-center justify-between p-4 border-b border-gray-200">
-              <h3 className="font-semibold text-gray-900">
-                Rider&apos;s log
-                {ridersLogModalOrderLabel && <span className="text-gray-500 font-medium ml-1.5">({ridersLogModalOrderLabel})</span>}
-              </h3>
-              <button type="button" onClick={() => { setRidersLogModalOrderId(null); setRidersLogModalOrderLabel(null); }} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors" aria-label="Close">
-                <X size={18} className="text-gray-500" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4">
-              {ridersLogLoading ? (
-                <p className="text-sm text-gray-500">Loading...</p>
-              ) : ridersLogList.length === 0 ? (
-                <p className="text-sm text-gray-500">No rider assignment history for this order.</p>
-              ) : (
-                <ul className="space-y-3">
-                  {ridersLogList.map((r, idx) => {
-                    const fmt = (s: string | null) => (s ? new Date(s).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' }) : '—');
-                    return (
-                      <li key={`${r.rider_id}-${idx}`} className="p-3 rounded-lg border border-gray-200 bg-gray-50/50">
-                        <div className="flex items-start gap-3">
-                          {r.selfie_url ? (
-                            <button
-                              type="button"
-                              onClick={() => setRiderImageModalUrl(r.selfie_url)}
-                              className="shrink-0 w-10 h-10 rounded-full overflow-hidden border-2 border-purple-200 focus:outline-none focus:ring-2 focus:ring-purple-400"
-                            >
-                              <img src={r.selfie_url} alt={r.rider_name || 'Rider'} className="w-full h-full object-cover" />
-                            </button>
-                          ) : (
-                            <div className="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center shrink-0">
-                              <Bike size={18} className="text-purple-600" />
-                            </div>
-                          )}
-                          <div className="min-w-0 flex-1 text-sm">
-                            <p className="font-semibold text-gray-900">{r.rider_name || `Rider #${r.rider_id}`}</p>
-                            {r.rider_mobile && (
-                              <a href={`tel:${r.rider_mobile}`} className="text-purple-600 hover:underline">{r.rider_mobile}</a>
-                            )}
-                            <p className="text-[10px] text-gray-500 mt-1 capitalize">{r.assignment_status?.replace(/_/g, ' ')}</p>
-                            <div className="mt-2 text-[10px] text-gray-600 space-y-0.5">
-                              <p>Assigned: {fmt(r.assigned_at)}</p>
-                              {r.accepted_at && <p>Accepted: {fmt(r.accepted_at)}</p>}
-                              {r.reached_merchant_at && <p>Reached store: {fmt(r.reached_merchant_at)}</p>}
-                              {r.picked_up_at && <p>Picked up: {fmt(r.picked_up_at)}</p>}
-                              {r.delivered_at && <p>Delivered: {fmt(r.delivered_at)}</p>}
-                              {r.rejected_at && <p>Rejected: {fmt(r.rejected_at)}</p>}
-                              {r.cancelled_at && <p>Cancelled: {fmt(r.cancelled_at)}</p>}
-                            </div>
-                          </div>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
+      <OrderTimelineModal
+        open={timelineModalOpen && !!selectedOrder}
+        onClose={() => setTimelineModalOpen(false)}
+        order={selectedOrder}
+        storeId={storeId}
+        layout="horizontal"
+      />
+      <OrderRiderTrackingModal
+        open={riderTrackingOpen && !!selectedOrder}
+        onClose={() => setRiderTrackingOpen(false)}
+        order={selectedOrder}
+        trackingUrl={
+          selectedOrder
+            ? `/api/merchant/stores/${storeId}/orders/${merchantOrderApiId(selectedOrder)}/rider-tracking`
+            : null
+        }
+      />
+      <OrderRidersHistorySidesheet
+        open={ridersLogModalOrderId != null}
+        orderLabel={ridersLogModalOrderLabel}
+        riders={ridersLogList}
+        loading={ridersLogLoading}
+        onClose={() => {
+          setRidersLogModalOrderId(null);
+          setRidersLogModalOrderLabel(null);
+        }}
+        onRiderPhotoClick={(url) => setRiderImageModalUrl(url)}
+      />
 
       {/* Rider image lightbox */}
       {riderImageModalUrl && typeof document !== 'undefined' && createPortal(
@@ -2758,6 +3197,9 @@ function OrderDetailMobile({
   actionLoading,
   onOpenRidersLog,
   onOpenRiderImage,
+  acceptLabel,
+  acceptDisabled,
+  nowMs,
 }: {
   storeId: string;
   order: OrdersFoodRow;
@@ -2771,6 +3213,9 @@ function OrderDetailMobile({
   onFetchOtp: () => void;
   onAccept: () => void;
   onReject: () => void;
+  acceptLabel?: string;
+  acceptDisabled?: boolean;
+  nowMs?: number;
   onPreparing: () => void;
   onReady: () => void;
   onDispatch: () => void;
@@ -3032,10 +3477,20 @@ function OrderDetailMobile({
           <OrderStatusTimeline order={order} />
         </div>
 
+        {order.accepted_by_label && (
+          <div className="mt-3 p-2.5 bg-emerald-50/80 rounded-lg border border-emerald-200/60">
+            <p className="text-[10px] font-semibold text-emerald-700 uppercase tracking-wide mb-1">Acceptance</p>
+            <p className="text-xs font-semibold text-emerald-900">{order.accepted_by_label}</p>
+          </div>
+        )}
+
         {/* Cancellation - compact */}
-        {(order.rejected_reason || order.cancelled_by_type) && (
+        {(order.rejected_reason || order.cancelled_by_label || order.cancelled_by_type) && (
           <div className="mt-3 p-2.5 bg-red-50/80 rounded-lg border border-red-200/60">
             <p className="text-[10px] font-semibold text-red-600 uppercase tracking-wide mb-1.5">Cancellation</p>
+            {order.cancelled_by_label && (
+              <p className="text-xs font-semibold text-red-800 mb-1">{order.cancelled_by_label}</p>
+            )}
             {order.rejected_reason && (
               <p className="text-xs text-red-800 mb-1.5 leading-relaxed break-words">{order.rejected_reason}</p>
             )}
@@ -3064,6 +3519,9 @@ function OrderDetailMobile({
             onRto={onRto}
             loading={actionLoading}
             otpVerified={otpVerified}
+            acceptLabel={acceptLabel}
+            acceptDisabled={acceptDisabled}
+            nowMs={nowMs}
           />
         </div>
       </div>
@@ -3079,6 +3537,7 @@ function OrderCard({
   onReject,
   onPreparing,
   onReady,
+  onNeedMoreTime,
   onDispatch,
   onComplete,
   onRto,
@@ -3089,6 +3548,10 @@ function OrderCard({
   otpVerified,
   onFetchOtp,
   statusLabel,
+  acceptLabel,
+  acceptDisabled,
+  hideDetails,
+  nowMs,
 }: {
   order: OrdersFoodRow;
   selected: boolean;
@@ -3097,6 +3560,7 @@ function OrderCard({
   onReject?: () => void;
   onPreparing: () => void;
   onReady: () => void;
+  onNeedMoreTime?: () => void;
   onDispatch: () => void;
   onComplete: () => void;
   onRto: () => void;
@@ -3107,6 +3571,10 @@ function OrderCard({
   otpVerified?: boolean;
   onFetchOtp?: () => void;
   statusLabel?: string;
+  acceptLabel?: string;
+  acceptDisabled?: boolean;
+  hideDetails?: boolean;
+  nowMs?: number;
 }) {
   const status = order.order_status || 'CREATED';
   const isNew = status === 'CREATED' || status === 'NEW';
@@ -3119,7 +3587,7 @@ function OrderCard({
       role="button"
       tabIndex={0}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
-      className={`rounded-lg border-2 p-3 sm:p-3.5 cursor-pointer transition-all overflow-hidden min-w-0 touch-manipulation active:scale-[0.99] ${
+      className={`rounded-lg border-2 p-2.5 sm:p-3 cursor-pointer transition-all overflow-hidden min-w-0 touch-manipulation active:scale-[0.99] ${
         selected
           ? 'border-orange-500 bg-orange-50 shadow-md'
           : isNew
@@ -3127,14 +3595,14 @@ function OrderCard({
             : 'border-gray-200 bg-white hover:border-gray-300 hover:shadow'
       }`}
     >
-      <div className="flex items-start justify-between gap-2 mb-2 min-w-0">
+      <div className="flex items-start justify-between gap-2 mb-1.5 min-w-0">
         <div className="min-w-0 flex-1">
           <FormattedOrderId 
             formattedOrderId={order.formatted_order_id} 
             fallbackOrderId={order.order_id}
             size="sm"
           />
-          <p className="text-xs text-gray-600 truncate">{order.restaurant_name || '—'}</p>
+          <p className="text-xs text-gray-600 truncate">{order.customer_name || order.restaurant_name || '—'}</p>
         </div>
         <span
           className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide ${
@@ -3205,30 +3673,40 @@ function OrderCard({
           {otpVerified && <span className="text-green-600 text-[10px]">✓ Verified</span>}
         </div>
       )}
-      <div className="flex items-center justify-between mt-2 pt-2 border-t border-gray-100">
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onClick();
-          }}
-          className="text-xs font-medium text-orange-600 hover:text-orange-700 flex items-center gap-0.5"
-        >
-          Details <ChevronRight size={14} />
-        </button>
-        <ActionBtns
-          order={order}
-          onAccept={onAccept}
-          onReject={onReject}
-          onPreparing={onPreparing}
-          onReady={onReady}
-          onDispatch={onDispatch}
-          onComplete={onComplete}
-          onRto={onRto}
-          onAddOrDeduct={onAddOrDeduct}
-          loading={loading}
-          otpVerified={otpVerified}
-          compact
-        />
+      <div className="mt-2 pt-2 border-t border-gray-100 flex flex-col gap-2">
+        <div className="w-full" onClick={(e) => e.stopPropagation()}>
+          <ActionBtns
+            order={order}
+            onAccept={onAccept}
+            onReject={onReject}
+            onPreparing={onPreparing}
+            onReady={onReady}
+            onNeedMoreTime={onNeedMoreTime}
+            onDispatch={onDispatch}
+            onComplete={onComplete}
+            onRto={onRto}
+            onAddOrDeduct={onAddOrDeduct}
+            loading={loading}
+            otpVerified={otpVerified}
+            compact
+            topRightLayout
+            hideRtoMenu
+            acceptLabel={acceptLabel}
+            acceptDisabled={acceptDisabled}
+            nowMs={nowMs}
+          />
+        </div>
+        {!hideDetails ? (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onClick();
+            }}
+            className="self-start text-xs font-medium text-orange-600 hover:text-orange-700 flex items-center gap-0.5"
+          >
+            Details <ChevronRight size={14} />
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -3252,6 +3730,9 @@ function OrderListRow({
   otpVerified,
   onFetchOtp,
   statusLabel,
+  acceptLabel,
+  acceptDisabled,
+  nowMs,
 }: {
   order: OrdersFoodRow;
   selected: boolean;
@@ -3270,6 +3751,9 @@ function OrderListRow({
   otpVerified?: boolean;
   onFetchOtp?: () => void;
   statusLabel?: string;
+  acceptLabel?: string;
+  acceptDisabled?: boolean;
+  nowMs?: number;
 }) {
   const status = order.order_status || 'CREATED';
   const value = Number(order.food_items_total_value || 0);
@@ -3374,6 +3858,9 @@ function OrderListRow({
           loading={loading}
           otpVerified={otpVerified}
           compact
+          acceptLabel={acceptLabel}
+          acceptDisabled={acceptDisabled}
+          nowMs={nowMs}
         />
       </div>
 
@@ -3398,6 +3885,7 @@ function ActionBtns({
   onReject,
   onPreparing,
   onReady,
+  onNeedMoreTime,
   onDispatch,
   onComplete,
   onRto,
@@ -3407,12 +3895,16 @@ function ActionBtns({
   otpVerified,
   topRightLayout,
   hideRtoMenu,
+  acceptLabel,
+  acceptDisabled,
+  nowMs,
 }: {
   order: OrdersFoodRow;
   onAccept: () => void;
   onReject?: () => void;
   onPreparing: () => void;
   onReady: () => void;
+  onNeedMoreTime?: () => void;
   onDispatch: () => void;
   onComplete: () => void;
   onRto?: () => void;
@@ -3420,10 +3912,11 @@ function ActionBtns({
   loading: boolean;
   compact?: boolean;
   otpVerified?: boolean;
-  /** When true: actions at top-right, primary button full width, Reject/secondary half width */
   topRightLayout?: boolean;
-  /** When true: do not render 3-dot RTO menu (e.g. when RTO is in header) */
   hideRtoMenu?: boolean;
+  acceptLabel?: string;
+  acceptDisabled?: boolean;
+  nowMs?: number;
 }) {
   const status = order.order_status || 'CREATED';
   const dis = loading;
@@ -3446,10 +3939,10 @@ function ActionBtns({
       <div className={`flex gap-2 items-center ${topRightLayout ? 'w-full flex-1' : 'flex-wrap'}`}>
         <button
           onClick={(e) => { e.stopPropagation(); onAccept(); }}
-          disabled={dis}
+          disabled={dis || acceptDisabled}
           className={`${btnBase} ${compact ? 'px-4 py-2 text-sm font-semibold' : 'px-5 py-2.5 text-base font-semibold'} ${primaryFull} bg-green-600 text-white hover:bg-green-700 hover:shadow-md border-green-700/20`}
         >
-          Accept
+          {acceptLabel || 'Accept'}
         </button>
         {onReject && (
           <button
@@ -3463,19 +3956,8 @@ function ActionBtns({
       </div>
     );
   }
-  if (status === 'ACCEPTED') {
-    return (
-      <button
-        onClick={(e) => { e.stopPropagation(); onPreparing(); }}
-        disabled={dis}
-        className={`${btnBase} ${topRightLayout ? 'w-full px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-amber-500 text-white hover:bg-amber-600 hover:shadow-md border-amber-600/20`}
-      >
-        Preparing
-      </button>
-    );
-  }
   const RtoMenu = () => {
-    if (!onRto || hideRtoMenu) return null;
+    if (!onRto || hideRtoMenu || topRightLayout) return null;
     return (
       <div className="relative shrink-0" ref={menuRef}>
         <button
@@ -3503,31 +3985,62 @@ function ActionBtns({
     );
   };
 
-  if (status === 'PREPARING') {
+  if (status === 'PREPARING' || status === 'ACCEPTED') {
+    const prepCountdown =
+      nowMs != null
+        ? prepReadyCountdownLabel(order, nowMs)
+        : { label: 'Mark as ready', secondsLeft: 0 };
+    const prepExpired =
+      nowMs != null &&
+      (isPrepCountdownExpired(order, nowMs) || !prepCountdown.label.includes('('));
     return (
       <div className={`flex gap-2 items-center ${topRightLayout ? 'w-full' : 'flex-wrap'}`}>
-        <button
-          onClick={(e) => { e.stopPropagation(); onReady(); }}
+        {prepExpired && onNeedMoreTime && !compact && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onNeedMoreTime();
+            }}
+            disabled={dis}
+            className={`${btnBase} ${topRightLayout ? 'flex-1 px-3 py-2.5 text-sm font-semibold' : ''} border-2 border-blue-500 bg-white text-blue-600 hover:bg-blue-50`}
+          >
+            Need more time
+          </button>
+        )}
+        <MarkAsReadyCountdownButton
+          order={order}
+          nowMs={nowMs}
           disabled={dis}
-          className={`${btnBase} ${topRightLayout ? 'flex-[2] px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-emerald-600 text-white hover:bg-emerald-700 hover:shadow-md border-emerald-700/20`}
-        >
-          Ready
-        </button>
+          compact={compact}
+          fullWidth={!prepExpired || !onNeedMoreTime ? topRightLayout : false}
+          className={
+            prepExpired && onNeedMoreTime
+              ? topRightLayout
+                ? 'flex-[1.2] min-w-0'
+                : 'min-w-0'
+              : topRightLayout
+                ? 'flex-[2] min-w-0'
+                : 'min-w-0'
+          }
+          onClick={(e) => {
+            e.stopPropagation();
+            onReady();
+          }}
+        />
         <RtoMenu />
       </div>
     );
   }
   if (status === 'READY_FOR_PICKUP') {
     return (
-      <div className={`flex gap-2 items-center ${topRightLayout ? 'w-full' : 'flex-wrap'}`}>
-        <button
-          onClick={(e) => { e.stopPropagation(); onDispatch(); }}
-          disabled={dis}
-          className={`${btnBase} ${topRightLayout ? 'flex-[2] px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-purple-600 text-white hover:bg-purple-700 hover:shadow-md border-purple-700/20`}
-        >
-          Dispatch
-        </button>
-        <RtoMenu />
+      <div className={`flex flex-col gap-2 ${topRightLayout ? 'w-full' : ''}`}>
+        <ReadyHandoverRunningTimeline
+          order={order}
+          nowMs={nowMs ?? Date.now()}
+          compact={compact}
+        />
+        {!compact && !topRightLayout ? <RtoMenu /> : null}
       </div>
     );
   }

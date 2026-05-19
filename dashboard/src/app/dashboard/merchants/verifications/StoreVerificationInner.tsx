@@ -46,6 +46,8 @@ import {
   profileMediaR2KeyFromUrl,
   maxGalleryImages,
 } from "@/lib/merchant/store-profile-media";
+import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
+import { DocumentAttachmentThumb } from "@/components/verification/DocumentAttachmentThumb";
 
 /** Console: filter `profile-media-gallery` (development-only). */
 function galleryProfileMediaDebug(...args: unknown[]) {
@@ -886,6 +888,7 @@ function DocVerifyButton({
   hasResubmittedAfterReject,
   step4RejectionDetailsRoot,
   adminOverrideMode,
+  canPerformVerify = true,
   onSuccess,
 }: {
   storeId: number;
@@ -895,6 +898,7 @@ function DocVerifyButton({
   hasResubmittedAfterReject: boolean;
   step4RejectionDetailsRoot: unknown;
   adminOverrideMode: boolean;
+  canPerformVerify?: boolean;
   onSuccess: (payload: { action: "verify"; docType: (typeof DOC_TYPES)[number] }) => void;
 }) {
   const [loading, setLoading] = useState(false);
@@ -922,6 +926,13 @@ function DocVerifyButton({
       <span className="inline-flex items-center gap-0.5 rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-800">
         <CheckCircle className="h-3 w-3" />
         Verified
+      </span>
+    );
+  }
+  if (!canPerformVerify) {
+    return (
+      <span className="inline-flex items-center gap-0.5 rounded bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800">
+        Pending review
       </span>
     );
   }
@@ -2267,9 +2278,15 @@ function FieldWithEditSave({
   onSave: () => void | Promise<void>;
   saving: boolean;
   editNode: React.ReactNode;
-  /** `row`: label and value on one line (compact grids). */
-  variant?: "default" | "row";
+  /** `row`: label and value on one line (compact grids). `document`: full-width ID numbers (step 4). */
+  variant?: "default" | "row" | "document";
 }) {
+  const displayStr =
+    displayValue == null || displayValue === ""
+      ? "—"
+      : typeof displayValue === "string" || typeof displayValue === "number"
+        ? String(displayValue)
+        : null;
   const actions = isEditing ? (
     <>
       <div className="min-w-0 flex-1">{editNode}</div>
@@ -2285,7 +2302,9 @@ function FieldWithEditSave({
     </>
   ) : (
     <>
-      <span className="min-w-0 flex-1 truncate text-gray-900">{displayValue ?? "—"}</span>
+      <span className="min-w-0 flex-1 break-all text-gray-900" title={displayStr ?? undefined}>
+        {displayValue ?? "—"}
+      </span>
       <button
         type="button"
         onClick={onStartEdit}
@@ -2297,11 +2316,52 @@ function FieldWithEditSave({
     </>
   );
 
+  if (variant === "document") {
+    return (
+      <div key={fieldKey} className="rounded-lg border border-gray-100 bg-white/90 px-2.5 py-2 text-xs">
+        <div className="mb-1.5 flex items-start justify-between gap-2">
+          <label className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">{label}</label>
+          {!isEditing ? (
+            <button
+              type="button"
+              onClick={onStartEdit}
+              className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-[10px] font-medium text-gray-700 hover:bg-gray-50"
+            >
+              <Pencil className="h-3 w-3" />
+              Edit
+            </button>
+          ) : null}
+        </div>
+        {isEditing ? (
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
+            <div className="min-w-0 flex-1">{editNode}</div>
+            <button
+              type="button"
+              onClick={() => void onSave()}
+              disabled={saving}
+              className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded border border-indigo-600 bg-indigo-600 px-2 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+              Save
+            </button>
+          </div>
+        ) : (
+          <p
+            className="break-all font-mono text-sm font-medium leading-snug tracking-tight text-gray-900"
+            title={displayStr ?? undefined}
+          >
+            {displayStr ?? displayValue ?? "—"}
+          </p>
+        )}
+      </div>
+    );
+  }
+
   if (variant === "row") {
     return (
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 py-1 text-xs">
         <span className="w-[6.75rem] shrink-0 font-medium text-gray-500">{label}</span>
-        <div className="flex min-w-0 min-h-[1.75rem] flex-1 items-center gap-2">{actions}</div>
+        <div className="flex min-w-0 min-h-[1.75rem] flex-1 flex-wrap items-center gap-2">{actions}</div>
       </div>
     );
   }
@@ -2309,7 +2369,7 @@ function FieldWithEditSave({
   return (
     <div key={fieldKey} className="flex flex-col gap-1 py-1.5 text-xs">
       <label className="font-medium text-gray-500">{label}</label>
-      <div className="flex items-center gap-2">{actions}</div>
+      <div className="flex flex-wrap items-start gap-2">{actions}</div>
     </div>
   );
 }
@@ -3134,6 +3194,8 @@ function StepDetailContentEditable({
   onProfileMediaUpdated,
   onProfileMediaSaved,
   onOperatingHoursUpdated,
+  canPerformVerify = true,
+  onStep4DocVerified,
 }: {
   stepNum: number;
   form: VerificationDataStore & { documents?: Record<string, unknown> | null };
@@ -3162,6 +3224,9 @@ function StepDetailContentEditable({
     payload: { kind: "banner"; proxyUrl: string } | { kind: "gallery"; proxyUrl: string }
   ) => void;
   onOperatingHoursUpdated?: () => void;
+  canPerformVerify?: boolean;
+  /** Approved store: per-document verify only (no step/final approval). */
+  onStep4DocVerified?: (docType: string, documents: Record<string, unknown>) => void;
 }) {
   const set = (key: keyof VerificationDataStore, value: unknown) => {
     onChange({ [key]: value });
@@ -3451,7 +3516,7 @@ function StepDetailContentEditable({
         {dynamicEntries.length === 0 ? (
           <p className="py-2 text-xs text-gray-500">No document records for this store yet. Add numbers or upload files to verify.</p>
         ) : (
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
             {dynamicEntries.map((entry) => {
               const { row, aadhaarSide } = entry;
               const isAadhaarBack = row.docType === "aadhaar" && aadhaarSide === "back";
@@ -3462,10 +3527,14 @@ function StepDetailContentEditable({
               const needsImageResubmission = rejectionRequiresNewFileUpload(rejectionStructured);
               const hasResubmittedAfterReject =
                 isRejected && step4DocResubmitted(doc.step4_resubmission_flags, row.docType);
-              const fileUrl = isAadhaarBack
+              const fileUrlRaw = isAadhaarBack
                 ? getAadhaarBackUrl(docRec)
                 : (doc[row.urlKey] as string) || "";
+              const fileUrl = resolveAttachmentProxyUrl(fileUrlRaw);
               const hasFile = !!String(fileUrl).trim();
+              const docFileName = docRec[`${row.docType}_document_name`];
+              const fileName =
+                typeof docFileName === "string" && docFileName.trim() ? docFileName.trim() : null;
               const listLabel = isAadhaarBack ? "Aadhaar (back)" : row.listLabel;
               const openPreview = () =>
                 onDocumentPreview?.({
@@ -3481,33 +3550,14 @@ function StepDetailContentEditable({
                   className="overflow-hidden rounded-xl border border-gray-200/90 bg-gradient-to-b from-white to-slate-50/80 shadow-sm ring-1 ring-gray-100"
                 >
                   <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-start">
-                    <div className="flex w-full flex-col items-center gap-2 sm:w-[8rem] sm:shrink-0">
-                      {hasFile ? (
-                      <button
-                        type="button"
-                        onClick={openPreview}
-                        className="group relative mx-auto h-28 w-full max-w-[7.5rem] shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-100 shadow-inner sm:mx-0"
-                        title="Open preview"
-                      >
-                        {docAttachmentLooksPdf(fileUrl) ? (
-                          <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-2 text-gray-500">
-                            <FileText className="h-8 w-8 text-indigo-400 transition group-hover:text-indigo-600" />
-                            <span className="text-[9px] font-medium uppercase tracking-wide">PDF</span>
-                          </div>
-                        ) : (
-                          <img
-                            src={fileUrl}
-                            alt=""
-                            className="h-full w-full object-cover transition group-hover:opacity-95"
-                          />
-                        )}
-                        <span className="absolute inset-x-0 bottom-0 bg-black/55 py-0.5 text-center text-[9px] font-medium text-white opacity-0 transition group-hover:opacity-100">
-                          Tap to preview
-                        </span>
-                      </button>
-                      ) : (
-                        <div className="mx-auto h-28 w-full max-w-[7.5rem] rounded-lg border border-gray-200 bg-gray-100" />
-                      )}
+                    <div className="flex w-full flex-col items-center gap-2 sm:w-[8.5rem] sm:shrink-0">
+                      <DocumentAttachmentThumb
+                        url={fileUrlRaw}
+                        fileName={fileName}
+                        label={listLabel}
+                        onImagePreview={hasFile ? openPreview : undefined}
+                        className="mx-auto sm:mx-0"
+                      />
 
                       {storeIdForDocUpload != null && (
                         <DocFileUpload
@@ -3573,8 +3623,10 @@ function StepDetailContentEditable({
                           <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">
                             {listLabel}
                           </span>
-                          <p className="text-xs text-gray-800">
-                            <span className="font-medium text-gray-500">Aadhaar number: </span>
+                          <p className="break-all font-mono text-sm font-medium leading-snug text-gray-900">
+                            <span className="block text-[10px] font-sans font-medium uppercase tracking-wide text-gray-500">
+                              Aadhaar number
+                            </span>
                             {(doc[row.numberKey] as string) ?? "—"}
                           </p>
                           <p className="text-[10px] leading-snug text-gray-500">
@@ -3587,6 +3639,7 @@ function StepDetailContentEditable({
                           fieldKey={row.numberKey}
                           label={row.listLabel}
                           displayValue={(doc[row.numberKey] as string) ?? "—"}
+                          variant="document"
                           isEditing={editingField === row.numberKey}
                           onStartEdit={() => onStartEdit(row.numberKey)}
                           onSave={() => onSaveField(row.numberKey)}
@@ -3626,6 +3679,7 @@ function StepDetailContentEditable({
                                 hasResubmittedAfterReject={hasResubmittedAfterReject}
                                 step4RejectionDetailsRoot={doc.step4_rejection_details}
                                 adminOverrideMode={adminOverrideMode}
+                                canPerformVerify={canPerformVerify}
                                 onSuccess={() => {
                                   const nextDocs: Record<string, unknown> = {
                                     ...(form.documents ?? {}),
@@ -3653,9 +3707,10 @@ function StepDetailContentEditable({
                                     nextDocs.step4_resubmission_flags = flags;
                                   }
                                   onChange({ documents: nextDocs } as Partial<VerificationDataStore>);
+                                  onStep4DocVerified?.(row.docType, nextDocs);
                                 }}
                               />
-                              {!isVerified && (
+                              {!isVerified && canPerformVerify && (
                                 <DocRejectButton
                                   storeId={storeIdForDocUpload}
                                   docType={row.docType}
@@ -3979,9 +4034,17 @@ function StepDetailContentEditable({
 export function StoreVerificationInner({
   storeId,
   returnTo,
+  embedded = false,
+  initialStep = null,
+  onClose,
+  canPerformVerify = true,
 }: {
   storeId: string;
   returnTo: string | null;
+  embedded?: boolean;
+  initialStep?: number | null;
+  onClose?: () => void;
+  canPerformVerify?: boolean;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -4012,8 +4075,9 @@ export function StoreVerificationInner({
     }[];
   } | null>(null);
   const [expandedStep, setExpandedStep] = useState<number | null>(null);
-  const [verifyModalStep, setVerifyModalStep] = useState<number | null>(null);
-  const [adminOverrideMode, setAdminOverrideMode] = useState(false);
+  const [verifyModalStep, setVerifyModalStep] = useState<number | null>(initialStep ?? null);
+  const [adminOverrideMode, setAdminOverrideMode] = useState(() => initialStep != null);
+  const reverifyDeepLink = embedded && initialStep != null;
   const [stepEditForm, setStepEditForm] = useState<(VerificationDataStore & { documents?: Record<string, unknown> | null }) | null>(null);
   const [editingField, setEditingField] = useState<string | null>(null);
   const [savingField, setSavingField] = useState<string | null>(null);
@@ -4042,11 +4106,12 @@ export function StoreVerificationInner({
     void queryClient.invalidateQueries({ queryKey: ["merchant-stores", "stats"], exact: false });
   };
 
-  // If we navigated here specifically to review a rejected store,
-  // keep admin override enabled even when no step modal is open.
+  // Keep override for rejected-store review or deep-linked re-verify (e.g. pending doc on approved store).
   useEffect(() => {
-    if (verifyModalStep == null && !reviewRejected) setAdminOverrideMode(false);
-  }, [verifyModalStep, reviewRejected]);
+    if (verifyModalStep == null && !reviewRejected && !reverifyDeepLink) {
+      setAdminOverrideMode(false);
+    }
+  }, [verifyModalStep, reviewRejected, reverifyDeepLink]);
 
   const handleProfileMediaSaved = (
     payload: { kind: "banner"; proxyUrl: string } | { kind: "gallery"; proxyUrl: string }
@@ -4288,6 +4353,20 @@ export function StoreVerificationInner({
     const isRejectedLikeNow = s === "REJECTED" || s === "BLOCKED" || s === "SUSPENDED";
     if (isRejectedLikeNow) setAdminOverrideMode(true);
   }, [reviewRejected, store?.approval_status]);
+
+  useEffect(() => {
+    if (initialStep == null || !store?.id) return;
+    setVerifyModalStep(initialStep);
+    const s = (store.approval_status || "").toUpperCase();
+    if (
+      s === "REJECTED" ||
+      s === "BLOCKED" ||
+      s === "SUSPENDED" ||
+      (s === "APPROVED" && canPerformVerify)
+    ) {
+      setAdminOverrideMode(true);
+    }
+  }, [initialStep, store?.id, store?.approval_status, canPerformVerify]);
 
   useEffect(() => {
     if (!store?.id) return;
@@ -4728,8 +4807,24 @@ export function StoreVerificationInner({
   const isRejectedLike =
     statusUpper === "REJECTED" || statusUpper === "BLOCKED" || statusUpper === "SUSPENDED";
   const isDelisted = statusUpper === "DELISTED";
-  // If store is rejected, allow admin to review/re-verify only after explicitly entering override mode.
-  const canVerify = !isApproved && !isDelisted && (!isRejectedLike || adminOverrideMode);
+  // Onboarding verify, rejected-store override, or approved-store doc/step re-verify (admin deep link).
+  const canVerify =
+    !isDelisted &&
+    ((!isApproved && (!isRejectedLike || adminOverrideMode)) ||
+      (isApproved && adminOverrideMode && canPerformVerify));
+  const canPerformVerifyActions = canVerify && canPerformVerify;
+  const isApprovedDocReverify = isApproved && adminOverrideMode && verifyModalStep != null;
+  const handleApprovedStoreStep4DocVerified = (
+    docType: string,
+    documents: Record<string, unknown>
+  ) => {
+    if (!isApproved) return;
+    const label = DOC_TYPE_LABELS[docType as (typeof DOC_TYPES)[number]] ?? docType;
+    toast.success(`${label} verified — store stays approved`);
+    if (allStep4DocumentsVerified(documents) && reverifyDeepLink) {
+      setTimeout(() => onClose?.(), 500);
+    }
+  };
   const onboardingStep = store.current_onboarding_step ?? 0;
   const step8Verified = !!(stepVerifications[8]?.verified_at);
   const canVerifyStep = (stepNum: number) =>
@@ -4763,25 +4858,40 @@ export function StoreVerificationInner({
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
         {verifyModalStep == null ? (
-          <Link
-            href={backHref}
-            className="inline-flex cursor-pointer items-center gap-1 text-xs font-medium text-gray-600 hover:text-gray-900"
-          >
-            <ArrowLeft className="h-3 w-3" />
-            Back to Verifications
-          </Link>
+          embedded ? (
+            <button
+              type="button"
+              onClick={() => onClose?.()}
+              className="inline-flex cursor-pointer items-center gap-1 text-xs font-medium text-gray-600 hover:text-gray-900"
+            >
+              <ArrowLeft className="h-3 w-3" />
+              Close
+            </button>
+          ) : (
+            <Link
+              href={backHref}
+              className="inline-flex cursor-pointer items-center gap-1 text-xs font-medium text-gray-600 hover:text-gray-900"
+            >
+              <ArrowLeft className="h-3 w-3" />
+              Back to Verifications
+            </Link>
+          )
         ) : (
           <div className="flex min-w-0 items-center gap-2">
             <button
               type="button"
               onClick={() => {
+                if (reverifyDeepLink) {
+                  onClose?.();
+                  return;
+                }
                 setAdminOverrideMode(false);
                 setVerifyModalStep(null);
               }}
               className="inline-flex cursor-pointer items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-700"
             >
               <ArrowLeft className="h-3 w-3" />
-              Back to all steps
+              {reverifyDeepLink ? "Close" : "Back to all steps"}
             </button>
             <span className="truncate text-xs font-medium text-gray-700">
               Verify step {verifyModalStep}:{" "}
@@ -4789,7 +4899,7 @@ export function StoreVerificationInner({
             </span>
           </div>
         )}
-        {step8Verified && canVerify && (
+        {step8Verified && canPerformVerifyActions && !isApproved && (
           <button
             type="button"
             onClick={() => setShowFinalDecisionModal(true)}
@@ -4829,10 +4939,16 @@ export function StoreVerificationInner({
                       Delisted
                     </span>
                   )}
-                  {canVerify && !isRejectedLike && (
+                  {canVerify && !isRejectedLike && !isApproved && (
                     <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
                       <FileText className="h-2.5 w-2.5" />
                       Pending
+                    </span>
+                  )}
+                  {isApproved && isApprovedDocReverify && (
+                    <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-900">
+                      <FileText className="h-2.5 w-2.5" />
+                      Doc review
                     </span>
                   )}
                 </div>
@@ -5116,7 +5232,7 @@ export function StoreVerificationInner({
                                   disabled={
                                     verifyingStep !== null ||
                                     unverifyingStep !== null ||
-                                    (!agentVerified && !showVerifyButton)
+                                    (canPerformVerify && !agentVerified && !showVerifyButton)
                                   }
                                   onClick={() => {
                                     // For rejected stores (REJECTED/BLOCKED/SUSPENDED), keep override enabled
@@ -5129,13 +5245,15 @@ export function StoreVerificationInner({
                                   <CheckCircle className="h-3.5 w-3.5" />
                                   {agentVerified
                                     ? "View"
-                                    : stepRejection?.merchant_resubmitted_at ||
-                                        (stepNum === 4 &&
-                                          step4AnyResubmittedAfterReject(verificationData?.documents))
-                                      ? "Verify again"
-                                      : stepRejection
-                                        ? "Edit & Approve"
-                                        : "View & verify"}
+                                    : !canPerformVerify
+                                      ? "View"
+                                      : stepRejection?.merchant_resubmitted_at ||
+                                          (stepNum === 4 &&
+                                            step4AnyResubmittedAfterReject(verificationData?.documents))
+                                        ? "Verify again"
+                                        : stepRejection
+                                          ? "Edit & Approve"
+                                          : "View & verify"}
                                 </button>
                               </div>
                             )}
@@ -5232,7 +5350,7 @@ export function StoreVerificationInner({
                               documents={verificationData.documents}
                               menuFiles={stepNum === 3 ? menuMediaFiles : undefined}
                               menuReviewStoreId={store?.id}
-                              menuReviewInteractive={canVerify}
+                              menuReviewInteractive={canPerformVerifyActions}
                               onMenuMediaUpdated={refetchMenuMedia}
                               operatingHours={verificationData.operatingHours ?? null}
                               onboardingPayments={verificationData.onboardingPayments}
@@ -5253,6 +5371,13 @@ export function StoreVerificationInner({
                 className="rounded-lg border border-gray-200 bg-white"
                 aria-labelledby="verify-step-panel-title"
               >
+                {isApprovedDocReverify && (
+                  <p className="mx-4 mt-3 text-[11px] leading-relaxed text-amber-900 bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-1.5">
+                    This store is already approved. Verify only the new or updated licence/document using each
+                    card&apos;s <span className="font-semibold">Verify</span> button — no final store approval or
+                    &quot;Mark step verified&quot; needed.
+                  </p>
+                )}
                 <div className="px-4 py-3">
                   {stepEditForm ? (
                     <StepDetailContentEditable
@@ -5269,7 +5394,7 @@ export function StoreVerificationInner({
                       menuFiles={verifyModalStep === 3 ? menuMediaFiles : undefined}
                       storeIdForUpload={store?.id}
                       onMenuUploadComplete={refetchMenuMedia}
-                      menuReviewInteractive={canVerify}
+                      menuReviewInteractive={canPerformVerifyActions}
                       onMenuMediaUpdated={refetchMenuMedia}
                       storeIdForDocUpload={store?.id}
                       onDocumentsUpdated={() => {}}
@@ -5279,7 +5404,11 @@ export function StoreVerificationInner({
                       agreementAcceptance={verificationData?.agreementAcceptance ?? null}
                       bankAccounts={verificationData?.bankAccounts}
                       storeIdForProfileMedia={profileMediaStoreId}
-                      profileMediaInteractive={canVerify}
+                      profileMediaInteractive={canPerformVerifyActions}
+                      canPerformVerify={canPerformVerify}
+                      onStep4DocVerified={
+                        isApproved ? handleApprovedStoreStep4DocVerified : undefined
+                      }
                       onProfileMediaUpdated={() => {}}
                       onProfileMediaSaved={handleProfileMediaSaved}
                       onOperatingHoursUpdated={() => void refetchOperatingHours()}
@@ -5290,6 +5419,7 @@ export function StoreVerificationInner({
                     <p className="text-sm text-gray-500">Loading step data...</p>
                   )}
                 </div>
+                {!isApprovedDocReverify && (
                 <div className="flex flex-nowrap items-center justify-between gap-3 border-t border-gray-100 bg-gray-50/50 px-4 py-3">
                 <div
                   className={
@@ -5332,7 +5462,8 @@ export function StoreVerificationInner({
                         </button>
                       ) : null;
                     })()}
-                    {verifyModalStep !== 8 &&
+                    {canPerformVerifyActions &&
+                      verifyModalStep !== 8 &&
                       (verifyModalStep !== 3 || !menuStepAllItemsAccepted(menuMediaFiles)) &&
                       (verifyModalStep !== 4 ||
                         !allStep4DocumentsVerified(stepEditForm?.documents ?? verificationData?.documents)) && (
@@ -5358,7 +5489,7 @@ export function StoreVerificationInner({
                       : "flex items-center justify-end gap-2"
                   }
                 >
-                    {verifyModalStep === 8 && (
+                    {canPerformVerifyActions && verifyModalStep === 8 && (
                         <button
                           type="button"
                           title="Reject step — email reason to store"
@@ -5373,7 +5504,9 @@ export function StoreVerificationInner({
                           Reject
                         </button>
                       )}
-                    {(verifyModalStep !== 3 || menuStepAllItemsAccepted(menuMediaFiles)) &&
+                    {canPerformVerifyActions &&
+                    !isApprovedDocReverify &&
+                    (verifyModalStep !== 3 || menuStepAllItemsAccepted(menuMediaFiles)) &&
                       (verifyModalStep !== 4 ||
                         allStep4DocumentsVerified(stepEditForm?.documents ?? verificationData?.documents)) &&
                       (verifyModalStep !== 6 || (verificationData?.bankAccounts?.length ?? 0) > 0) &&
@@ -5425,6 +5558,7 @@ export function StoreVerificationInner({
                       })()}
                   </div>
                 </div>
+                )}
               </section>
               )}
 
@@ -5432,17 +5566,19 @@ export function StoreVerificationInner({
             </>
           )}
 
-      {!canVerify && (
+      {!canVerify && verifyModalStep == null && (
         <p className="text-sm text-gray-500">
           {isDelisted
             ? "This store has been delisted and cannot be re-verified."
-            : `This store has already been ${isApproved ? "approved" : "rejected"}.`}
+            : isApproved && canPerformVerify
+              ? "This store is approved. Open a pending document or verification step to re-verify."
+              : `This store has already been ${isApproved ? "approved" : "rejected"}.`}
         </p>
       )}
         </div>
       </div>
 
-      {isRejectedLike && !adminOverrideMode && (
+      {canPerformVerify && isRejectedLike && !adminOverrideMode && (
         <div className="mt-3 flex justify-center">
           <button
             type="button"
@@ -5721,14 +5857,14 @@ export function StoreVerificationInner({
               <div className="min-h-0 min-w-0 flex-1">
                 {docAttachmentLooksPdf(docPreview.url) ? (
                   <iframe
-                    src={docPreview.url}
+                    src={resolveAttachmentProxyUrl(docPreview.url)}
                     className="h-[min(78vh,720px)] w-full rounded-lg border border-gray-200 bg-white"
                     title={docPreview.title}
                   />
                 ) : (
-                  <img
+                  <R2Image
                     src={docPreview.url}
-                    alt=""
+                    alt={docPreview.title}
                     className="mx-auto max-h-[min(78vh,720px)] w-auto max-w-full rounded-lg border border-gray-200 bg-white object-contain shadow-sm"
                   />
                 )}
@@ -5814,3 +5950,4 @@ export function StoreVerificationInner({
     </div>
   );
 }
+

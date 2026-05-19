@@ -149,7 +149,73 @@ export function mergeVerificationStepsWithRejections(
   return byStep;
 }
 
-export async function getStoreVerificationStepsApiRows(
+/**
+ * Step 6 (bank account) is verified when every active, non-disabled payout account is verified.
+ * Repairs missing step-6 rows when banks were verified individually via bank-accounts PATCH.
+ */
+export async function syncStep6FromBankAccounts(
+  storeId: number
+): Promise<Record<number, VerificationStepApiRow>> {
+  const byStep = await getStoreVerificationStepsApiRowsRaw(storeId);
+  const sql = getSql();
+
+  let activeRows: { is_verified: boolean; verified_at: string | null; verified_by: number | null }[] =
+    [];
+  try {
+    activeRows = await sql<
+      { is_verified: boolean; verified_at: string | null; verified_by: number | null }[]
+    >`
+      SELECT COALESCE(is_verified, false) AS is_verified,
+             verified_at::text AS verified_at,
+             verified_by
+      FROM merchant_store_bank_accounts
+      WHERE store_id = ${storeId}
+        AND COALESCE(is_active, true) = true
+        AND COALESCE(is_disabled, false) = false
+    `;
+  } catch {
+    return byStep;
+  }
+
+  const accounts = Array.isArray(activeRows) ? activeRows : [];
+  if (accounts.length === 0) return byStep;
+
+  const allVerified = accounts.every((a) => a.is_verified === true);
+  if (!allVerified) return byStep;
+
+  const latestVerifiedAt = accounts
+    .map((a) => a.verified_at)
+    .filter((v): v is string => !!v)
+    .sort()
+    .pop();
+
+  const verifiedBy = accounts.find((a) => a.verified_by != null)?.verified_by ?? null;
+
+  if (!byStep[6]?.verified_at) {
+    try {
+      await upsertStoreVerificationStep({
+        storeId,
+        stepNumber: 6,
+        verifiedBy,
+        verifiedByName: "System (bank accounts)",
+        notes: "SYNCED_FROM_BANK_ACCOUNTS",
+      });
+    } catch {
+      // non-fatal
+    }
+    byStep[6] = {
+      verified_at: latestVerifiedAt ?? new Date().toISOString(),
+      verified_by: verifiedBy,
+      verified_by_name: "System (bank accounts)",
+      notes: "SYNCED_FROM_BANK_ACCOUNTS",
+      rejection: byStep[6]?.rejection ?? null,
+    };
+  }
+
+  return byStep;
+}
+
+async function getStoreVerificationStepsApiRowsRaw(
   storeId: number
 ): Promise<Record<number, VerificationStepApiRow>> {
   const [steps, rejections] = await Promise.all([
@@ -157,6 +223,12 @@ export async function getStoreVerificationStepsApiRows(
     getStoreVerificationStepRejections(storeId),
   ]);
   return mergeVerificationStepsWithRejections(steps, rejections);
+}
+
+export async function getStoreVerificationStepsApiRows(
+  storeId: number
+): Promise<Record<number, VerificationStepApiRow>> {
+  return syncStep6FromBankAccounts(storeId);
 }
 
 async function insertStoreVerificationStepRejectionHistory(params: {
