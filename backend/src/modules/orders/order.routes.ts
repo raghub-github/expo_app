@@ -26,7 +26,7 @@ function sanitizeOptional<T>(v: T): T | null {
   }
   return v;
 }
-import { getDb } from "../../db/client.js";
+import { getDb, getSql } from "../../db/client.js";
 import { computeBillForOrder } from "../billing/billing.service.js";
 import { normalizeOrderItems } from "./orderNormalizer.js";
 import {
@@ -55,6 +55,8 @@ const orderDetailResponseSchema = z.object({
   statusHistory: z.array(z.object({ status: z.string(), at: z.string() })).optional(),
   rider: z.object({ name: z.string(), phone: z.string().optional() }).optional().nullable(),
   items: z.array(z.object({ name: z.string(), quantity: z.number(), price: z.number() })).optional(),
+  prepTimeMinutes: z.number().int().positive().optional().nullable(),
+  prepReadyByAt: z.string().optional().nullable(),
 });
 
 const orderSummarySchema = z.object({
@@ -216,6 +218,9 @@ export async function orderRoutes(app: FastifyInstance) {
     /** 'delivery' (default) or 'self_pickup' — waives delivery fee, skips rider dispatch. */
     deliveryType: z.enum(["delivery", "self_pickup"]).optional(),
     checkoutMetadata: z.record(z.string(), z.unknown()).optional(),
+    selectedPlatformOfferId: z.coerce.number().int().positive().optional().nullable(),
+    forceNoAutoOffer: z.boolean().optional(),
+    idempotencyKey: z.string().min(6).max(128).optional().nullable(),
   });
 
   app.post(
@@ -246,6 +251,11 @@ export async function orderRoutes(app: FastifyInstance) {
         return reply.status(403).send({ error: "Customer not found" });
       }
       const body = req.body as z.infer<typeof pendingOrderBodySchema>;
+      const headerIdem = req.headers["idempotency-key"];
+      const idempotencyKey =
+        (typeof headerIdem === "string" ? headerIdem.trim() : "") ||
+        body.idempotencyKey?.trim() ||
+        null;
       const addressIdNum = parseInt(body.addressId, 10);
       if (Number.isNaN(addressIdNum)) {
         return reply.status(400).send({ error: "INVALID_ADDRESS_DATA", message: "Invalid addressId." });
@@ -266,6 +276,9 @@ export async function orderRoutes(app: FastifyInstance) {
         subscriptionOptIn: body.subscriptionOptIn,
         deliveryType: body.deliveryType,
         checkoutMetadata: body.checkoutMetadata ?? null,
+        selectedPlatformOfferId: body.selectedPlatformOfferId ?? null,
+        forceNoAutoOffer: body.forceNoAutoOffer,
+        idempotencyKey,
       });
       if (!result.ok) {
         return reply.status(400).send({ error: result.code, message: result.message });
@@ -531,6 +544,31 @@ export async function orderRoutes(app: FastifyInstance) {
       const appStatus = coreRow.currentStatus === "PLACED" ? "ORDER_PLACED" : (coreRow.currentStatus ?? toAppStatus(coreRow.status));
       const createdAt = coreRow.placedAt ?? coreRow.createdAt ?? new Date();
 
+      let prepTimeMinutes: number | null = null;
+      let prepReadyByAt: string | null = null;
+      if (orderIdDisplay) {
+        const sql = getSql();
+        const prepRows = await sql<
+          Array<{ prep_time_minutes: number | null; prep_ready_by_at: Date | string | null }>
+        >`
+          SELECT prep_time_minutes, prep_ready_by_at
+          FROM orders_core
+          WHERE order_id = ${orderIdDisplay}
+          LIMIT 1
+        `;
+        if (prepRows[0]) {
+          const pm = prepRows[0].prep_time_minutes;
+          prepTimeMinutes = pm != null && Number(pm) > 0 ? Number(pm) : null;
+          const rawReady = prepRows[0].prep_ready_by_at;
+          prepReadyByAt =
+            rawReady instanceof Date
+              ? rawReady.toISOString()
+              : rawReady != null
+                ? String(rawReady)
+                : null;
+        }
+      }
+
       return {
         orderId: orderIdDisplay,
         status: appStatus,
@@ -542,6 +580,8 @@ export async function orderRoutes(app: FastifyInstance) {
         statusHistory: [{ status: appStatus, at: (createdAt instanceof Date ? createdAt : new Date(createdAt)).toISOString() }],
         rider: null,
         items: items.length > 0 ? items : undefined,
+        prepTimeMinutes,
+        prepReadyByAt,
       };
     }
   );

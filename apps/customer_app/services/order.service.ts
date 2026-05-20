@@ -4,6 +4,7 @@
  */
 
 import api from "./api";
+import { ORDER_PLACEMENT_TIMEOUT_MS } from "@/constants";
 
 const ORDERS_PREFIX = "/v1/orders";
 
@@ -19,6 +20,10 @@ export type OrderSummary = {
 
 export type OrderDetail = OrderSummary & {
   statusHistory?: { status: string; at: string }[];
+  /** Minutes the restaurant committed at accept. */
+  prepTimeMinutes?: number | null;
+  /** ISO timestamp when food should be ready (merchant accept). */
+  prepReadyByAt?: string | null;
   rider?: { name: string; phone?: string };
   deliveryAddress?: string;
   /** 4-digit code shown on customer tracking for delivery handoff. */
@@ -95,6 +100,8 @@ export type CreateOrderPayload = {
   /** 'delivery' (default) or 'self_pickup'. Self-pickup zeroes the delivery fee server-side. */
   deliveryType?: "delivery" | "self_pickup";
   checkoutMetadata?: CheckoutMetadataPayload;
+  selectedPlatformOfferId?: number | null;
+  forceNoAutoOffer?: boolean;
 };
 
 /** Payment-first: create pending order (lock cart). Returns pendingId + amount in paise for Razorpay. */
@@ -145,7 +152,9 @@ export type PendingOrderStatusResponse = {
 export const orderService = {
   /** Legacy: single-call create (payment params optional). Prefer createPending + finalize for reliability. */
   async createOrder(payload: CreateOrderPayload): Promise<OrderDetail> {
-    const { data } = await api.post<OrderDetail>(ORDERS_PREFIX, payload);
+    const { data } = await api.post<OrderDetail>(ORDERS_PREFIX, payload, {
+      timeout: ORDER_PLACEMENT_TIMEOUT_MS,
+    });
     return data;
   },
 
@@ -157,13 +166,18 @@ export const orderService = {
       `${ORDERS_PREFIX}/pending`,
       // Also echo idempotencyKey in body for servers / proxies that strip it.
       idempotencyKey ? { ...body, idempotencyKey } : body,
-      Object.keys(headers).length ? { headers } : undefined
+      {
+        timeout: ORDER_PLACEMENT_TIMEOUT_MS,
+        ...(Object.keys(headers).length ? { headers } : {}),
+      }
     );
     return data;
   },
 
   async finalizeOrder(payload: FinalizeOrderPayload): Promise<FinalizeOrderResponse> {
-    const { data } = await api.post<FinalizeOrderResponse>(`${ORDERS_PREFIX}/finalize`, payload);
+    const { data } = await api.post<FinalizeOrderResponse>(`${ORDERS_PREFIX}/finalize`, payload, {
+      timeout: ORDER_PLACEMENT_TIMEOUT_MS,
+    });
     return data;
   },
 

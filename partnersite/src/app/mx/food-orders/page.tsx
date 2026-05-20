@@ -93,6 +93,23 @@ const STATUS_LABEL: Record<string, string> = {
   CANCELLED: 'Cancelled',
 };
 
+/** Keep line items when PATCH/list refresh returns a row without items. */
+function mergeFoodOrderPatch(prev: OrdersFoodRow, patch: OrdersFoodRow): OrdersFoodRow {
+  const merged = { ...prev, ...patch };
+  const patchItems = Array.isArray(patch.items) ? patch.items : [];
+  const prevItems = Array.isArray(prev.items) ? prev.items : [];
+  if (patchItems.length === 0 && prevItems.length > 0) {
+    merged.items = prevItems;
+  }
+  const patchCount = Number(patch.food_items_count ?? patch.display_item_count ?? 0);
+  const prevCount = Number(prev.food_items_count ?? prev.display_item_count ?? 0);
+  if (patchCount <= 0 && prevCount > 0) {
+    merged.food_items_count = prev.food_items_count;
+    merged.display_item_count = prev.display_item_count;
+  }
+  return merged;
+}
+
 /** Accepted by merchant and in kitchen prep (excludes unaccepted “new” rows). */
 const PREPARING_PIPELINE = new Set(['ACCEPTED', 'PREPARING']);
 
@@ -154,6 +171,7 @@ function formatTimeAgo(dateStr: string): string {
 }
 
 const ORDERS_STORAGE_KEY = 'food-orders-ui';
+const ORDER_ITEMS_PREVIEW_MAX = 8;
 
 // Helper function to format order ID display with last 4 digits in increasing size
 function FormattedOrderId({ 
@@ -912,8 +930,14 @@ function OrdersPageContent() {
     void confirmStoreClose();
   }, [closeClosureType, closeClosureDate, closeClosureTime, closeReason, closeReasonOther, confirmStoreClose]);
 
+  const autoCancelFiredRef = useRef<Set<number>>(new Set());
+
   const updateStatus = useCallback(
-    async (order: OrdersFoodRow, newStatus: string, extra?: { rejected_reason?: string }) => {
+    async (
+      order: OrdersFoodRow,
+      newStatus: string,
+      extra?: { rejected_reason?: string; cancel_mode?: 'manual' | 'auto'; accept_mode?: 'manual' | 'auto' }
+    ) => {
       if (!storeId || !String(storeId).trim()) {
         console.debug('[food-orders-ui] updateStatus blocked: missing storeId', {
           order_id: order?.order_id,
@@ -925,13 +949,19 @@ function OrdersPageContent() {
         return;
       }
       setActionLoading(order.id);
+      const { rejected_reason, cancel_mode, accept_mode, ...restExtra } = extra ?? {};
       const payload = {
         store_id: storeId,
         status: newStatus,
         action_source: 'website' as const,
-        ...(newStatus === 'ACCEPTED' ? { accept_mode: 'manual' as const } : {}),
-        ...(newStatus === 'CANCELLED' ? { cancel_mode: 'manual' as const } : {}),
-        ...extra,
+        ...(newStatus === 'ACCEPTED' ? { accept_mode: accept_mode ?? ('manual' as const) } : {}),
+        ...(newStatus === 'CANCELLED'
+          ? {
+              cancel_mode: cancel_mode ?? ('manual' as const),
+              ...(rejected_reason ? { rejected_reason } : {}),
+            }
+          : {}),
+        ...restExtra,
       };
 
       const safeReadBody = async (res: Response): Promise<unknown> => {
@@ -1037,9 +1067,10 @@ function OrdersPageContent() {
         } else {
           const data = result.data as { order?: OrdersFoodRow };
           if (data?.order) {
-            setOrders((prev) => prev.map((o) => (o.id === order.id ? (data.order as OrdersFoodRow) : o)));
+            const nextOrder = mergeFoodOrderPatch(order, data.order as OrdersFoodRow);
+            setOrders((prev) => prev.map((o) => (o.id === order.id ? nextOrder : o)));
             if (selectedOrder?.id === order.id) {
-              setSelectedOrder(data.order);
+              setSelectedOrder(nextOrder);
               if (newStatus === 'DELIVERED') {
                 closeOrderPanel();
               }
@@ -1048,7 +1079,8 @@ function OrdersPageContent() {
           }
           showFoodOrderStatusToast(newStatus);
           if (selectedOrder?.id === order.id && data?.order) {
-            if (!orderMatchesFoodOrdersSidebar(data.order as OrdersFoodRow, filter)) {
+            const patched = mergeFoodOrderPatch(order, data.order as OrdersFoodRow);
+            if (!orderMatchesFoodOrdersSidebar(patched, filter)) {
               setTimeout(() => {
                 setOrders((prev) => {
                   const next = prev.find((o) => orderMatchesFoodOrdersSidebar(o, filter));
@@ -1195,6 +1227,31 @@ function OrdersPageContent() {
     },
     [acceptanceSettings?.acceptance_window_minutes, nowTick, isStoreOpen]
   );
+
+  useEffect(() => {
+    if (!storeId) return;
+    const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
+    for (const order of orders) {
+      const st = normOrderStatus(order.order_status);
+      if (st !== 'CREATED') continue;
+      const deadline = new Date(order.created_at).getTime() + mins * 60_000;
+      if (nowTick < deadline) continue;
+      if (autoCancelFiredRef.current.has(order.id)) continue;
+      if (actionLoading === order.id) continue;
+      autoCancelFiredRef.current.add(order.id);
+      void updateStatus(order, 'CANCELLED', {
+        rejected_reason: 'Auto Cancelled',
+        cancel_mode: 'auto',
+      });
+    }
+  }, [
+    nowTick,
+    orders,
+    storeId,
+    acceptanceSettings?.acceptance_window_minutes,
+    actionLoading,
+    updateStatus,
+  ]);
 
   const filteredOrders = orders.filter((o) => orderMatchesFoodOrdersSidebar(o, filter));
 
@@ -1552,6 +1609,7 @@ function OrdersPageContent() {
                             );
                           }}
                           onTrackRider={() => setRiderTrackingOpen(true)}
+                          nowMs={nowTick}
                           otpCache={otpCache[selectedOrder.id]}
                           pickupVerified={!!otpVerified[selectedOrder.id]?.pickup}
                           rtoVerified={!!otpVerified[selectedOrder.id]?.rto}
@@ -1657,6 +1715,10 @@ function OrdersPageContent() {
                     nowMs={nowTick}
                     onOpenBill={() => {
                       setBillSheetAllItemsOnly(false);
+                      setBillSheetOpen(true);
+                    }}
+                    onOpenAllItems={() => {
+                      setBillSheetAllItemsOnly(true);
                       setBillSheetOpen(true);
                     }}
                     onOpenTimeline={() => setTimelineModalOpen(true)}
@@ -2500,6 +2562,7 @@ function OrderDetailMobile({
   acceptDisabled,
   nowMs,
   onOpenBill,
+  onOpenAllItems,
   onOpenTimeline,
   onPrintBill,
 }: {
@@ -2527,6 +2590,7 @@ function OrderDetailMobile({
   acceptDisabled?: boolean;
   nowMs?: number;
   onOpenBill?: () => void;
+  onOpenAllItems?: () => void;
   onOpenTimeline?: () => void;
   onPrintBill?: () => void;
 }) {
@@ -2546,6 +2610,9 @@ function OrderDetailMobile({
     order.is_high_value ||
     (order.veg_non_veg && order.veg_non_veg !== 'na');
   const otps = resolveOrderOtps(order, otpCache);
+  const orderItems = Array.isArray(order.items) ? order.items : [];
+  const previewItems = orderItems.slice(0, ORDER_ITEMS_PREVIEW_MAX);
+  const moreItemsCount = Math.max(0, orderItems.length - ORDER_ITEMS_PREVIEW_MAX);
 
   return (
     <div
@@ -2720,9 +2787,9 @@ function OrderDetailMobile({
               <div className="col-span-3 text-right">Amount</div>
             </div>
           )}
-          {order.items && Array.isArray(order.items) && order.items.length > 0 ? (
+          {previewItems.length > 0 ? (
             <div className="space-y-2">
-              {order.items.map((item: any, idx: number) => {
+              {previewItems.map((item: any, idx: number) => {
                 const qty = item.quantity || 1;
                 const itemPrice = Number(item.price || 0);
                 const amount = Number(item.total || itemPrice * qty);
@@ -2746,6 +2813,15 @@ function OrderDetailMobile({
                   </div>
                 );
               })}
+              {moreItemsCount > 0 && onOpenAllItems ? (
+                <button
+                  type="button"
+                  onClick={onOpenAllItems}
+                  className="w-full pt-1 text-left text-xs font-semibold text-blue-600 hover:underline"
+                >
+                  +{moreItemsCount} more
+                </button>
+              ) : null}
             </div>
           ) : (
             <p className="text-xs text-gray-500">{computeOrderItemQuantityCount(order)} items</p>
@@ -3336,6 +3412,7 @@ function ActionBtns({
     );
   }
   if (status === 'READY_FOR_PICKUP') {
+    if (topRightLayout) return null;
     return (
       <div className={`flex flex-col gap-2 ${topRightLayout ? 'w-full' : ''}`}>
         <ReadyHandoverRunningTimeline

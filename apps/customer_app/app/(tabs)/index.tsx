@@ -1,7 +1,5 @@
 /**
- * Home – reference layout: location (2-line), search, cart, wallet balance, notifications.
- * Grid of category cards with pill tags. View More, promo banner, dismissible rewards.
- * Uses wallet icon for user balance (no coin).
+ * Home – GatiMitra reference UI: location header, hero offer, Services grid, branding.
  */
 
 import { useState, useEffect, useCallback } from "react";
@@ -19,6 +17,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 import { useLocationStore } from "@/store/locationStore";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { HEADER_PADDING_TOP, HEADER_VERTICAL_PADDING } from "@/constants/layout";
@@ -32,131 +31,159 @@ const CATEGORY_IMAGES: Record<string, ReturnType<typeof require>> = {
   "near-me": require("../../public/img/loc.png"),
 };
 
-const { width } = Dimensions.get("window");
+const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
-const GAP = 12;
-const COLS_DEFAULT = 2; // match image: 2 columns × N rows for ≤8 items
-const MAX_ITEMS_NO_SCROLL = 8; // when >8 items: 2 rows, horizontal scroll
+const GAP = 10;
+const COLS = 2;
+const CARD_W = (SCREEN_W - PAD * 2 - GAP) / COLS;
 
-const BG = "#F2F4F6";
+const BG = "#F3F4F6";
 const CARD_BG = "#FFFFFF";
-const TITLE_DARK = "#1A1A1A";
+const TITLE_DARK = "#111827";
 const TEXT_GRAY = "#6B7280";
-const TEAL = "#14b8a6";
-const PURPLE = "#7c3aed";
+const TEAL = "#14B8A6";
+const TEAL_DARK = "#0D9488";
 const BORDER = "#E5E7EB";
-const PILL_MINT = "#B8E4E0";
-const PILL_PURPLE = "#DDD6FE";
+
 const SHADOW_CARD = {
-  shadowColor: "#000",
-  shadowOffset: { width: 0, height: 1 },
-  shadowOpacity: 0.04,
-  shadowRadius: 6,
-  elevation: 2,
+  shadowColor: "#0f172a",
+  shadowOffset: { width: 0, height: 2 },
+  shadowOpacity: 0.06,
+  shadowRadius: 8,
+  elevation: 3,
 };
 
-/** Food-only launch: only these service tiles navigate; others are faded + disabled. */
+/** Food-only launch: faded + disabled; UI still matches reference. */
 const ACTIVE_SERVICE_IDS = new Set<string>(["food"]);
+
+type CategoryTheme = {
+  pillBg: string;
+  pillText: string;
+  arrowBg: string;
+  imageWash: string;
+  pillIcon?: keyof typeof Ionicons.glyphMap;
+};
+
+const CATEGORY_THEMES: Record<string, CategoryTheme> = {
+  food: {
+    pillBg: "#EDE9FE",
+    pillText: "#6D28D9",
+    arrowBg: "#7C3AED",
+    imageWash: "#F5F3FF",
+    pillIcon: "flash",
+  },
+  ride: {
+    pillBg: "#DCFCE7",
+    pillText: "#15803D",
+    arrowBg: "#16A34A",
+    imageWash: "#ECFDF5",
+  },
+  parcels: {
+    pillBg: "#DCFCE7",
+    pillText: "#15803D",
+    arrowBg: "#16A34A",
+    imageWash: "#ECFDF5",
+  },
+  ecom: {
+    pillBg: "#DBEAFE",
+    pillText: "#1D4ED8",
+    arrowBg: "#2563EB",
+    imageWash: "#EFF6FF",
+  },
+  vouchers: {
+    pillBg: "#FFEDD5",
+    pillText: "#C2410C",
+    arrowBg: "#EA580C",
+    imageWash: "#FFF7ED",
+  },
+  "near-me": {
+    pillBg: "#FCE7F3",
+    pillText: "#BE185D",
+    arrowBg: "#DB2777",
+    imageWash: "#FDF2F8",
+  },
+};
 
 const CATEGORIES = [
   {
     id: "food",
     title: "Order Food",
     pill: "Fresh & Fast Delivery",
-    pillColor: PILL_PURPLE,
-    icon: "restaurant" as const,
     route: "/home" as const,
   },
   {
     id: "ride",
     title: "Book a Ride",
     pill: "Going Out",
-    pillColor: PILL_MINT,
-    icon: "car" as const,
     route: "/home/service/ride" as const,
   },
   {
     id: "parcels",
     title: "Courier Service",
     pill: "Send Parcels",
-    pillColor: PILL_MINT,
-    icon: "cube" as const,
     route: "/home/service/parcels" as const,
   },
   {
     id: "ecom",
     title: "E-Commerce",
     pill: "Elect & Ecom",
-    pillColor: PILL_MINT,
-    icon: "phone-portrait" as const,
     route: "/home/shop" as const,
   },
   {
     id: "vouchers",
     title: "Online Vouchers",
     pill: "Offers",
-    pillColor: PILL_PURPLE,
-    icon: "pricetag" as const,
     route: "/home/service/vouchers" as const,
   },
   {
     id: "near-me",
     title: "Explore Nearby",
     pill: "Near Me",
-    pillColor: PILL_MINT,
-    icon: "location" as const,
     route: "/home/service/near-me" as const,
   },
 ] as const;
 
-type HomeServiceCategory = (typeof CATEGORIES)[number];
-
-function CategoryCard({
+function ServiceCard({
   title,
   pill,
-  pillColor,
-  icon,
+  theme,
   imageSource,
   onPress,
-  cardWidth,
   disabled,
 }: {
   title: string;
   pill: string;
-  pillColor: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  imageSource?: ReturnType<typeof require>;
+  theme: CategoryTheme;
+  imageSource: ReturnType<typeof require>;
   onPress: () => void;
-  cardWidth: number;
   disabled?: boolean;
 }) {
   return (
     <TouchableOpacity
       onPress={onPress}
       disabled={disabled}
-      activeOpacity={disabled ? 1 : 0.85}
-      style={[
-        styles.categoryCard,
-        { width: cardWidth },
-        disabled && styles.categoryCardDisabled,
-      ]}
+      activeOpacity={disabled ? 1 : 0.88}
+      style={[styles.serviceCard, disabled && styles.serviceCardDisabled]}
     >
-      {pill ? (
-        <View style={[styles.pill, { backgroundColor: pillColor }]}>
-          <Text style={styles.pillText} numberOfLines={1}>
-            {pill}
-          </Text>
-        </View>
-      ) : null}
-      <Text style={styles.categoryTitle} numberOfLines={2}>
+      <View style={[styles.servicePill, { backgroundColor: theme.pillBg }]}>
+        {theme.pillIcon ? (
+          <Ionicons name={theme.pillIcon} size={10} color={theme.pillText} style={styles.servicePillIcon} />
+        ) : null}
+        <Text style={[styles.servicePillText, { color: theme.pillText }]} numberOfLines={1}>
+          {pill}
+        </Text>
+      </View>
+
+      <Text style={styles.serviceTitle} numberOfLines={2}>
         {title}
       </Text>
-      <View style={styles.categoryIconWrap}>
-        {imageSource ? (
-          <Image source={imageSource} style={styles.categoryImage} resizeMode="contain" />
-        ) : (
-          <Ionicons name={icon} size={36} color={TEAL} />
-        )}
+
+      <View style={[styles.serviceArrowBtn, { backgroundColor: theme.arrowBg }]}>
+        <Ionicons name="chevron-forward" size={14} color="#fff" />
+      </View>
+
+      <View style={[styles.serviceImageWash, { backgroundColor: theme.imageWash }]}>
+        <Image source={imageSource} style={styles.serviceImage} resizeMode="contain" />
       </View>
     </TouchableOpacity>
   );
@@ -187,8 +214,6 @@ export default function HomeScreen() {
     }
   }, [queryClient, locationSource, refetchLocation]);
 
-  // After persisted location hydrates: one-time GPS when user has no coords yet.
-  // Do not re-run when source is already "current" (would loop: fetch → coords update → effect → fetch).
   useEffect(() => {
     if (!locationHydrated) return;
     if (locationSource === "selected" && coords) return;
@@ -224,20 +249,26 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Header – same status bar → header spacing as all app screens */}
-      <View style={[styles.header, { paddingTop: HEADER_PADDING_TOP, paddingBottom: HEADER_VERTICAL_PADDING }]}>
+      <View
+        style={[
+          styles.header,
+          { paddingTop: HEADER_PADDING_TOP, paddingBottom: HEADER_VERTICAL_PADDING },
+        ]}
+      >
         <TouchableOpacity
           style={styles.locationBlock}
           activeOpacity={0.8}
           onPress={() => router.push("/location")}
         >
-          <Ionicons name="location" size={22} color="#ec4899" />
+          <View style={styles.locationPinCircle}>
+            <Ionicons name="location" size={14} color="#FFFFFF" />
+          </View>
           <View style={styles.locationTextBlock}>
             <View style={styles.locationRow}>
               <Text style={styles.locationPrimary} numberOfLines={1}>
                 {locationPrimary}
               </Text>
-              <Ionicons name="chevron-down" size={18} color={TEXT_GRAY} />
+              <Ionicons name="chevron-down" size={16} color={TEXT_GRAY} />
             </View>
             <Text style={styles.locationSecondary} numberOfLines={1}>
               {locationSecondary}
@@ -245,16 +276,10 @@ export default function HomeScreen() {
           </View>
         </TouchableOpacity>
         <View style={styles.headerIcons}>
-          <TouchableOpacity
-            style={styles.iconBtn}
-            onPress={() => router.push("/search")}
-          >
+          <TouchableOpacity style={styles.iconBtn} onPress={() => router.push("/search")}>
             <Ionicons name="search" size={22} color={TITLE_DARK} />
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.iconBtn}
-            onPress={() => router.push("/notifications")}
-          >
+          <TouchableOpacity style={styles.iconBtn} onPress={() => router.push("/notifications")}>
             <Ionicons name="notifications-outline" size={22} color={TITLE_DARK} />
           </TouchableOpacity>
         </View>
@@ -262,99 +287,71 @@ export default function HomeScreen() {
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 100 }]}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 88 }]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={TEAL} colors={[TEAL]} />
         }
       >
-        {/* Hero offer card – compact */}
         <TouchableOpacity style={styles.promoCard} activeOpacity={0.92} onPress={() => {}}>
-          <View style={styles.promoContent}>
-            <Text style={styles.promoTitle}>Offers for you</Text>
-            <Text style={styles.promoSub}>Get 20% off on your first order</Text>
-            <View style={styles.promoBtn}>
-              <Text style={styles.promoBtnText}>Explore now</Text>
+          <LinearGradient
+            colors={[TEAL_DARK, TEAL, "#2DD4BF"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={StyleSheet.absoluteFill}
+          />
+          <View style={styles.promoDecorA} pointerEvents="none" />
+          <View style={styles.promoDecorB} pointerEvents="none" />
+          <View style={styles.promoInner}>
+            <View style={styles.promoContent}>
+              <View style={styles.promoLimitedBadge}>
+                <Text style={styles.promoLimitedText}>LIMITED TIME</Text>
+              </View>
+              <Text style={styles.promoTitle}>Offers for you</Text>
+              <Text style={styles.promoSub}>Get 20% off on your first order</Text>
+              <View style={styles.promoBtn}>
+                <Text style={styles.promoBtnText}>Explore now</Text>
+                <Ionicons name="chevron-forward" size={14} color={TEAL_DARK} />
+              </View>
             </View>
-          </View>
-          <View style={styles.promoIconWrap}>
-            <Image source={require("../../public/img/fav.png")} style={styles.promoImage} resizeMode="contain" />
+            <View style={styles.promoImageWrap}>
+              <Image
+                source={require("../../public/img/fav.png")}
+                style={styles.promoImage}
+                resizeMode="contain"
+              />
+            </View>
           </View>
         </TouchableOpacity>
 
-        {/* Section label */}
-        <Text style={styles.sectionLabel}>Services</Text>
+        <View style={styles.servicesTitleRow}>
+          <Ionicons name="sparkles" size={14} color={TEAL} />
+          <Text style={styles.servicesTitle}>Services</Text>
+          <Ionicons name="sparkles" size={14} color={TEAL} />
+        </View>
 
-        {/* Category grid – compact cards */}
-        {CATEGORIES.length <= MAX_ITEMS_NO_SCROLL ? (
-          <View style={styles.gridWrap}>
-            {CATEGORIES.map((c) => {
-              const active = ACTIVE_SERVICE_IDS.has(c.id);
-              return (
-                <CategoryCard
-                  key={c.id}
-                  title={c.title}
-                  pill={c.pill}
-                  pillColor={c.pillColor}
-                  icon={c.icon}
-                  imageSource={CATEGORY_IMAGES[c.id]}
-                  onPress={() => {
-                    if (!active) return;
-                    router.push(c.route as any);
-                  }}
-                  cardWidth={(width - PAD * 2 - GAP) / COLS_DEFAULT}
-                  disabled={!active}
-                />
-              );
-            })}
-          </View>
-        ) : (
-          (() => {
-            const rows = 2;
-            const cols = Math.ceil(CATEGORIES.length / rows);
-            const cardWidth = (width - PAD * 2 - (4 - 1) * GAP) / 4;
-            const contentWidth = cols * cardWidth + (cols - 1) * GAP;
-            const row0 = CATEGORIES.slice(0, cols);
-            const row1 = CATEGORIES.slice(cols, cols * 2);
-            const renderRow = (items: readonly HomeServiceCategory[]) => (
-              <View style={[styles.categoryRow, { marginBottom: items.length ? GAP : 0 }]}>
-                {items.map((c) => {
-                  const active = ACTIVE_SERVICE_IDS.has(c.id);
-                  return (
-                    <CategoryCard
-                      key={c.id}
-                      title={c.title}
-                      pill={c.pill}
-                      pillColor={c.pillColor}
-                      icon={c.icon}
-                      imageSource={CATEGORY_IMAGES[c.id]}
-                      onPress={() => {
-                        if (!active) return;
-                        router.push(c.route as any);
-                      }}
-                      cardWidth={cardWidth}
-                      disabled={!active}
-                    />
-                  );
-                })}
-              </View>
-            );
+        <View style={styles.gridWrap}>
+          {CATEGORIES.map((c) => {
+            const active = ACTIVE_SERVICE_IDS.has(c.id);
+            const theme = CATEGORY_THEMES[c.id];
             return (
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.categoryScrollContainer}
-              >
-                <View style={[styles.gridTwoRows, { width: contentWidth }]}>
-                  {renderRow(row0)}
-                  {renderRow(row1)}
-                </View>
-              </ScrollView>
+              <ServiceCard
+                key={c.id}
+                title={c.title}
+                pill={c.pill}
+                theme={theme}
+                imageSource={CATEGORY_IMAGES[c.id]}
+                onPress={() => {
+                  if (!active) return;
+                  router.push(c.route as never);
+                }}
+                disabled={!active}
+              />
             );
-          })()
-        )}
+          })}
+        </View>
 
-        <BrandingFooter />
+        <BrandingFooter variant="home" />
       </ScrollView>
     </View>
   );
@@ -371,195 +368,221 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     backgroundColor: CARD_BG,
     paddingHorizontal: PAD,
-    borderBottomWidth: 1,
-    borderBottomColor: BORDER,
   },
   locationBlock: {
     flexDirection: "row",
     alignItems: "center",
     flex: 1,
-    marginRight: 8,
+    marginRight: 6,
+  },
+  locationPinCircle: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#EC4899",
+    alignItems: "center",
+    justifyContent: "center",
   },
   locationTextBlock: {
-    marginLeft: 10,
+    marginLeft: 8,
     flex: 1,
   },
   locationRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
+    gap: 2,
   },
   locationPrimary: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "700",
     color: TITLE_DARK,
+    flexShrink: 1,
   },
   locationSecondary: {
-    fontSize: 13,
+    fontSize: 12,
     color: TEXT_GRAY,
-    marginTop: 2,
+    marginTop: 1,
   },
   headerIcons: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 2,
   },
   iconBtn: {
     padding: 8,
-    position: "relative",
-  },
-  badge: {
-    position: "absolute",
-    top: 4,
-    right: 4,
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: "#dc2626",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 4,
-  },
-  badgeText: {
-    color: "#fff",
-    fontSize: 10,
-    fontWeight: "700",
-  },
-  walletWrap: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  walletAmount: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: TITLE_DARK,
   },
   scroll: {
     flex: 1,
   },
   scrollContent: {
     paddingHorizontal: PAD,
-    paddingTop: 16,
+    paddingTop: 12,
   },
-  sectionLabel: {
+  promoCard: {
+    borderRadius: 16,
+    minHeight: 128,
+    overflow: "hidden",
+    marginBottom: 14,
+    ...SHADOW_CARD,
+  },
+  promoDecorA: {
+    position: "absolute",
+    top: -20,
+    right: 40,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: "rgba(255,255,255,0.12)",
+  },
+  promoDecorB: {
+    position: "absolute",
+    bottom: -16,
+    left: 24,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  promoInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    minHeight: 128,
+  },
+  promoContent: {
+    flex: 1,
+    paddingRight: 8,
+  },
+  promoLimitedBadge: {
+    alignSelf: "flex-start",
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    marginBottom: 8,
+  },
+  promoLimitedText: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: "#475569",
+    letterSpacing: 0.4,
+  },
+  promoTitle: {
+    fontSize: 20,
+    fontWeight: "800",
+    color: "#FFFFFF",
+    letterSpacing: -0.3,
+  },
+  promoSub: {
     fontSize: 13,
-    fontWeight: "700",
-    color: TEXT_GRAY,
-    letterSpacing: 0.3,
-    marginBottom: 12,
+    fontWeight: "500",
+    color: "rgba(255,255,255,0.95)",
     marginTop: 4,
   },
-  categoryScrollContainer: {
-    paddingHorizontal: PAD,
-    paddingTop: 4,
+  promoBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 4,
+    marginTop: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+  },
+  promoBtnText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: TEAL_DARK,
+  },
+  promoImageWrap: {
+    width: 88,
+    height: 88,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  promoImage: {
+    width: 80,
+    height: 80,
+  },
+  servicesTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    marginBottom: 10,
+  },
+  servicesTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: TITLE_DARK,
   },
   gridWrap: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: GAP,
   },
-  gridTwoRows: {
-    flexDirection: "column",
-  },
-  categoryRow: {
-    flexDirection: "row",
-    gap: GAP,
-  },
-  categoryCard: {
+  serviceCard: {
+    width: CARD_W,
     backgroundColor: CARD_BG,
-    borderRadius: 16,
-    padding: 12,
-    minHeight: 118,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingTop: 10,
+    paddingBottom: 10,
+    minHeight: 132,
     ...SHADOW_CARD,
   },
-  categoryCardDisabled: {
+  serviceCardDisabled: {
     opacity: 0.48,
   },
-  pill: {
-    alignSelf: "flex-start",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 12,
-    marginBottom: 6,
-    opacity: 1,
-  },
-  pillText: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: TITLE_DARK,
-  },
-  categoryTitle: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: TITLE_DARK,
-    marginBottom: 4,
-  },
-  categoryIconWrap: {
-    position: "absolute",
-    right: 8,
-    bottom: 8,
-    width: 58,
-    height: 58,
-    borderRadius: 14,
-    backgroundColor: PILL_MINT,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  categoryImage: {
-    width: 52,
-    height: 52,
-  },
-  promoImage: {
-    width: 36,
-    height: 36,
-  },
-  promoCard: {
+  servicePill: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: TEAL,
-    borderRadius: 16,
-    padding: 20,
-    minHeight: 132,
-    overflow: "hidden",
-    marginBottom: 16,
-    ...SHADOW_CARD,
-  },
-  promoContent: {
-    flex: 1,
-  },
-  promoTitle: {
-    fontSize: 17,
-    fontWeight: "700",
-    color: "#fff",
-  },
-  promoSub: {
-    fontSize: 13,
-    color: "rgba(255,255,255,0.92)",
-    marginTop: 2,
-  },
-  promoBtn: {
     alignSelf: "flex-start",
-    marginTop: 8,
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    backgroundColor: "rgba(255,255,255,0.28)",
-    borderRadius: 8,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 10,
+    maxWidth: "92%",
   },
-  promoBtnText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#fff",
+  servicePillIcon: {
+    marginRight: 3,
   },
-  promoIconWrap: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: "rgba(255,255,255,0.28)",
+  servicePillText: {
+    fontSize: 9,
+    fontWeight: "700",
+    flexShrink: 1,
+  },
+  serviceTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: TITLE_DARK,
+    marginTop: 6,
+    marginRight: 72,
+    lineHeight: 18,
+  },
+  serviceArrowBtn: {
+    position: "absolute",
+    left: 10,
+    bottom: 10,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     alignItems: "center",
     justifyContent: "center",
+  },
+  serviceImageWash: {
+    position: "absolute",
+    right: 6,
+    bottom: 6,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  serviceImage: {
+    width: 56,
+    height: 56,
   },
 });

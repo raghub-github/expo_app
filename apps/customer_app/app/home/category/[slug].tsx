@@ -38,6 +38,7 @@ import { EmptyRestaurantsNearby } from "@/components/EmptyRestaurantsNearby";
 import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
+import { filterAndSortMerchants } from "@/lib/merchantListing";
 
 const { width, height: WINDOW_HEIGHT } = Dimensions.get("window");
 /** Cuisines bottom sheet height (~72% screen): taller drawer, still leaves header/chips visible. */
@@ -386,29 +387,16 @@ export default function CategoryBrowseScreen() {
     return list;
   }, [filteredMerchants, activeCategory, selectedCategoryLabel]);
 
-  const displayMerchants = useMemo(() => {
-    return categoryScopedMerchants.filter((m) => {
-      const rawApi = ((m as { liveStatus?: string }).liveStatus ?? "").toString().trim().toUpperCase();
-      const apiStatus = rawApi === "OPEN" || rawApi === "CLOSED" ? rawApi : null;
-      const liveStatus = statusMap[m.id] ?? apiStatus ?? "CLOSED";
-      if (openNow && liveStatus !== "OPEN") return false;
-      if (filterHasOffers && !m.offerText) return false;
-      if (deliveryFilter !== "any" && m.deliveryTime) {
-        const mins = parseInt(m.deliveryTime.replace(/\D/g, ""), 10);
-        if (!Number.isNaN(mins)) {
-          const max = parseInt(deliveryFilter, 10);
-          if (mins > max) return false;
-        }
-      }
-      if (selectedCuisines.length > 0 && m.cuisines?.length) {
-        const hasMatch = selectedCuisines.some((c) =>
-          m.cuisines!.some((mc) => mc.toLowerCase().includes(c.toLowerCase()))
-        );
-        if (!hasMatch) return false;
-      } else if (selectedCuisines.length > 0) return false;
-      return true;
-    });
-  }, [categoryScopedMerchants, statusMap, openNow, deliveryFilter, selectedCuisines, filterHasOffers]);
+  const displayMerchants = useMemo(
+    () =>
+      filterAndSortMerchants(categoryScopedMerchants, statusMap, {
+        openNow,
+        filterHasOffers,
+        deliveryFilter,
+        selectedCuisines,
+      }),
+    [categoryScopedMerchants, statusMap, openNow, deliveryFilter, selectedCuisines, filterHasOffers]
+  );
 
   const isCategoryFocus = activeCategory !== "all";
   const recommended = displayMerchants.slice(0, 6);
@@ -931,7 +919,7 @@ export default function CategoryBrowseScreen() {
                     />
                   </View>
                   <Text style={[styles.filterSheetRowText, openNow && styles.filterSheetRowTextOnMint]}>
-                    Open restaurants only
+                    Open Now — open first, closed below
                   </Text>
                   {openNow ? (
                     <Ionicons name="checkmark-circle" size={22} color="#fff" style={styles.filterSheetRowTrailing} />

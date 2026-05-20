@@ -1,6 +1,6 @@
 /**
- * Auto-sliding promotional banner — fetches live platform offers from backend.
- * Falls back to static slides when no offers are available or the fetch fails.
+ * Auto-sliding promotional banner — live store/platform offers near customer.
+ * No static fallback; hidden when there are no active offers.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -17,10 +17,11 @@ import {
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useLocationStore } from "@/store/locationStore";
-import { offersService, type PlatformOfferItem } from "@/services/offers.service";
+import { offersService, type HomeBannerOffer } from "@/services/offers.service";
 
 const { width } = Dimensions.get("window");
 const PAD = 16;
@@ -38,29 +39,26 @@ const GRADIENT_SETS: [string, string, string][] = [
 
 type SlideData = {
   id: string;
+  storeId: string;
   title: string;
   sub: string;
   cta: string;
   gradientIndex: number;
 };
 
-function offerToSlide(o: PlatformOfferItem, idx: number): SlideData {
+function offerToSlide(o: HomeBannerOffer, idx: number): SlideData {
   return {
-    id: String(o.id),
-    title: o.label,
-    sub: o.sub_label || (o.name ?? "Platform offer"),
-    cta: "View Offer",
+    id: o.id,
+    storeId: o.store_id,
+    title: o.title,
+    sub: o.sub || o.store_name || "Offer",
+    cta: "View menu",
     gradientIndex: idx % GRADIENT_SETS.length,
   };
 }
 
-const FALLBACK_SLIDES: SlideData[] = [
-  { id: "f1", title: "Upto 40% OFF", sub: "On food & daily essentials", cta: "Order Now", gradientIndex: 0 },
-  { id: "f2", title: "Free Delivery", sub: "On orders above ₹299", cta: "Order Now", gradientIndex: 1 },
-  { id: "f3", title: "New Arrivals", sub: "Fresh deals every day", cta: "Explore", gradientIndex: 2 },
-];
-
 export function ShopPromoBanner() {
+  const router = useRouter();
   const scrollRef = useRef<ScrollView>(null);
   const [index, setIndex] = useState(0);
   const locationAddress = useLocationStore((s) => s.address);
@@ -72,7 +70,7 @@ export function ShopPromoBanner() {
   const lng = coords?.longitude ?? undefined;
 
   const { data, isLoading } = useQuery({
-    queryKey: ["featured-offers", pincode, state, lat, lng],
+    queryKey: ["featured-offers", pincode, state, city, lat, lng],
     queryFn: () =>
       offersService.getFeaturedOffers({
         pincode,
@@ -83,14 +81,12 @@ export function ShopPromoBanner() {
         serviceType: "FOOD",
         limit: 5,
       }),
+    enabled: lat != null && lng != null,
     staleTime: 5 * 60 * 1000,
     retry: 1,
   });
 
-  const slides: SlideData[] =
-    data && data.offers.length > 0
-      ? data.offers.map(offerToSlide)
-      : FALLBACK_SLIDES;
+  const slides: SlideData[] = data?.offers?.map(offerToSlide) ?? [];
 
   useEffect(() => {
     setIndex(0);
@@ -98,6 +94,7 @@ export function ShopPromoBanner() {
   }, [slides.length]);
 
   useEffect(() => {
+    if (slides.length < 2) return;
     const t = setInterval(() => {
       setIndex((i) => {
         const next = (i + 1) % slides.length;
@@ -125,6 +122,8 @@ export function ShopPromoBanner() {
     );
   }
 
+  if (slides.length === 0) return null;
+
   return (
     <View style={styles.wrap}>
       <ScrollView
@@ -144,6 +143,9 @@ export function ShopPromoBanner() {
             key={slide.id}
             activeOpacity={0.9}
             style={[styles.slideWrap, { width: BANNER_WIDTH, marginRight: SLIDE_GAP }]}
+            onPress={() =>
+              router.push({ pathname: "/home/merchant/[id]", params: { id: slide.storeId } })
+            }
           >
             <LinearGradient
               colors={GRADIENT_SETS[slide.gradientIndex]}
@@ -153,7 +155,9 @@ export function ShopPromoBanner() {
             >
               <View style={styles.bannerContent}>
                 <Text style={styles.bannerTitle}>{slide.title}</Text>
-                <Text style={styles.bannerSub}>{slide.sub}</Text>
+                <Text style={styles.bannerSub} numberOfLines={2}>
+                  {slide.sub}
+                </Text>
                 <View style={styles.ctaWrap}>
                   <Text style={styles.ctaText}>{slide.cta}</Text>
                   <Ionicons name="arrow-forward" size={18} color="#fff" />
@@ -166,11 +170,13 @@ export function ShopPromoBanner() {
           </TouchableOpacity>
         ))}
       </ScrollView>
-      <View style={styles.dots}>
-        {slides.map((_, i) => (
-          <View key={i} style={[styles.dot, i === index && styles.dotActive]} />
-        ))}
-      </View>
+      {slides.length > 1 ? (
+        <View style={styles.dots}>
+          {slides.map((_, i) => (
+            <View key={i} style={[styles.dot, i === index && styles.dotActive]} />
+          ))}
+        </View>
+      ) : null}
     </View>
   );
 }

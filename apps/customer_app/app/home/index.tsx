@@ -23,7 +23,7 @@ import Animated, { createAnimatedComponent } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { useRouter } from "expo-router";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { merchantService } from "@/services/merchant.service";
 import { addressService } from "@/services/address.service";
@@ -37,12 +37,26 @@ import { useLocationStore } from "@/store/locationStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useDebouncedCoords } from "@/hooks/useDebouncedCoords";
 import { BrandingFooter } from "@/components/BrandingFooter";
-import { RestaurantListSkeleton } from "@/components/ShimmerSkeleton";
+import {
+  CategoryRailSkeleton,
+  HomeOfferBannerSkeleton,
+  LovedMerchantsGridSkeleton,
+  RestaurantListSkeleton,
+} from "@/components/ShimmerSkeleton";
+import { HomeFeaturedOfferCard } from "@/components/home/HomeFeaturedOfferCard";
+import { MerchantGridCard } from "@/components/home/MerchantGridCard";
+import { pickLovedByCustomersMerchants } from "@/lib/lovedByCustomers";
 import { GMHeader } from "@/components/GMHeader";
+import { HEADER_TOP_PADDING_NONE } from "@/constants/layout";
 import { GMSearchBar } from "@/components/GMSearchBar";
 import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
 import { GMEmptyState } from "@/components/GMEmptyState";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import {
+  filterAndSortMerchants,
+  merchantListingStoreCountLabel,
+} from "@/lib/merchantListing";
+import { offersService } from "@/services/offers.service";
 
 const AnimatedScrollView = createAnimatedComponent(ScrollView);
 
@@ -54,15 +68,9 @@ const RAIL_ROW_GAP = 10;
 /** Target 4 category columns on screen (2 rows of pairs → 8 items visible before scroll). */
 const CATEGORY_RAIL_TARGET_COLUMNS = 4;
 
-const OFFERS_SECTION_PAD = 14;
-const OFFER_CARD_WIDTH = 260;
-const OFFER_CARD_HEIGHT = 120;
+const OFFERS_SECTION_PAD = 10;
+const OFFER_CARD_HEIGHT = 116;
 const OFFER_GAP = 12;
-
-const OFFERS = [
-  { id: "o1", title: "Flat 50% OFF", sub: "On First Order", cta: "Explore Now" },
-  { id: "o2", title: "MIN ₹120 OFF", sub: "Free Delivery above ₹99", cta: "Order now" },
-];
 
 type SortOption = "default" | "rating" | "distance";
 
@@ -100,10 +108,13 @@ function dedupeUserAppCategories(rows: UserAppCategoryItem[]): UserAppCategoryIt
 
 function HomeCategoryGridImage({ imageUrl, size }: { imageUrl: string | null; size: number }) {
   const [failed, setFailed] = useState(false);
-  const uri = imageUrl ? (toAbsoluteImageUrl(imageUrl) ?? imageUrl) : null;
+  const uri = useMemo(
+    () => (imageUrl ? (toAbsoluteImageUrl(imageUrl) ?? imageUrl) : null),
+    [imageUrl]
+  );
   useEffect(() => {
     setFailed(false);
-  }, [imageUrl]);
+  }, [uri]);
   if (uri && !failed) {
     return (
       <Image
@@ -254,13 +265,53 @@ export default function FoodMerchantsScreen() {
       }),
     // Industry-standard: only fetch restaurants once we have an active location (GPS or user-selected).
     enabled: merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null,
-    staleTime: 0,
-    refetchOnWindowFocus: true,
+    staleTime: 60 * 1000,
+    placeholderData: keepPreviousData,
+    refetchOnWindowFocus: false,
   });
+
+  const offerLocationParams = useMemo(() => {
+    const pincode = address?.pincode?.trim() || undefined;
+    const state = address?.state?.trim() || undefined;
+    const city = address?.city?.trim() || undefined;
+    return { pincode, state, city };
+  }, [address?.pincode, address?.state, address?.city]);
+
+  const {
+    data: featuredOffersData,
+    isLoading: featuredOffersLoading,
+    refetch: refetchFeaturedOffers,
+  } = useQuery({
+    queryKey: [
+      "featured-offers-home",
+      merchantsAnchorCoords?.latitude,
+      merchantsAnchorCoords?.longitude,
+      offerLocationParams.pincode,
+      offerLocationParams.state,
+      offerLocationParams.city,
+    ],
+    queryFn: () =>
+      offersService.getFeaturedOffers({
+        pincode: offerLocationParams.pincode,
+        state: offerLocationParams.state,
+        city: offerLocationParams.city,
+        lat: merchantsAnchorCoords?.latitude,
+        lng: merchantsAnchorCoords?.longitude,
+        serviceType: "FOOD",
+        limit: 6,
+      }),
+    enabled:
+      merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null,
+    staleTime: 2 * 60 * 1000,
+    retry: 1,
+  });
+
+  const homeFeaturedOffers = featuredOffersData?.offers ?? [];
 
   const {
     data: apiHomeCategories = [],
     isSuccess: homeCategoriesReady,
+    isLoading: homeCategoriesLoading,
     refetch: refetchHomeCategories,
   } = useQuery({
     queryKey: ["userAppCategories", HOME_CATEGORY_STORE_TYPE],
@@ -290,9 +341,20 @@ export default function FoodMerchantsScreen() {
     [windowWidth, insets.right]
   );
 
+  /** Full-bleed offer banners (same width as restaurant cards). */
+  const offerCardWidth = windowWidth - PAGE_PAD * 2;
+  const restaurantCardWidth = offerCardWidth;
+
+  const offersQueryEnabled =
+    merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null;
+  const showOfferSkeleton = offersQueryEnabled && featuredOffersLoading;
+  const showOffersBlock = showOfferSkeleton || homeFeaturedOffers.length > 0;
+
   const merchants = Array.isArray(merchantsData) ? merchantsData : [];
-  const showSkeleton = isLoading || isFetching;
-  const isServiceable = !showSkeleton && merchants.length > 0;
+  /** Only block the list on first load — background refetch must not swap cards for skeleton. */
+  const showSkeleton = isLoading && merchants.length === 0;
+  /** True when at least one ACTIVE store exists in the area (open or closed). Not tied to Open Now filter. */
+  const hasStoresInArea = merchants.length > 0;
   const setStatusFromApi = useStoreStatusStore((s) => s.setStatusFromApi);
   const statusMap = useStoreStatusStore((s) => s.statusMap);
 
@@ -336,43 +398,27 @@ export default function FoodMerchantsScreen() {
     });
   }, [merchants, setStatusFromApi]);
 
-  const filteredAndSortedMerchants = useMemo(() => {
-    let list = merchants.filter((m) => {
-      const rawApi = ((m as { liveStatus?: string }).liveStatus ?? "").toString().trim().toUpperCase();
-      const apiStatus = rawApi === "OPEN" || rawApi === "CLOSED" ? rawApi : null;
-      const liveStatus = statusMap[m.id] ?? apiStatus ?? "CLOSED";
-      if (openNow && liveStatus !== "OPEN") return false;
-      if (filterHasOffers && !m.offerText) return false;
-      if (deliveryFilter !== "any" && m.deliveryTime) {
-        const mins = parseInt(m.deliveryTime.replace(/\D/g, ""), 10);
-        if (!Number.isNaN(mins)) {
-          const max = parseInt(deliveryFilter, 10);
-          if (mins > max) return false;
-        }
-      }
-      if (selectedCuisines.length > 0 && m.cuisines?.length) {
-        const hasMatch = selectedCuisines.some((c) =>
-          m.cuisines!.some((mc) => mc.toLowerCase().includes(c.toLowerCase())))
-        if (!hasMatch) return false;
-      } else if (selectedCuisines.length > 0) return false;
-      return true;
-    });
-    // Open restaurants first, closed later; then by sort option (rating / distance / default)
-    const isOpen = (m: (typeof list)[0]) => {
-      const raw = ((m as { liveStatus?: string }).liveStatus ?? "").toString().trim().toUpperCase();
-      const st = raw === "OPEN" || raw === "CLOSED" ? raw : null;
-      return (statusMap[m.id] ?? st ?? "CLOSED") === "OPEN";
-    };
-    list = [...list].sort((a, b) => {
-      const aOpen = isOpen(a);
-      const bOpen = isOpen(b);
-      if (aOpen !== bOpen) return aOpen ? -1 : 1; // open first, closed later
-      if (sortBy === "rating") return (b.avgRating ?? 0) - (a.avgRating ?? 0);
-      if (sortBy === "distance") return (a.distanceKm ?? 999) - (b.distanceKm ?? 999);
-      return 0;
-    });
-    return list;
-  }, [merchants, statusMap, openNow, sortBy, deliveryFilter, selectedCuisines, filterHasOffers]);
+  const filteredAndSortedMerchants = useMemo(
+    () =>
+      filterAndSortMerchants(merchants, statusMap, {
+        openNow,
+        sortBy,
+        filterHasOffers,
+        deliveryFilter,
+        selectedCuisines,
+      }),
+    [merchants, statusMap, openNow, sortBy, deliveryFilter, selectedCuisines, filterHasOffers]
+  );
+
+  const lovedByCustomers = useMemo(
+    () => pickLovedByCustomersMerchants(filteredAndSortedMerchants),
+    [filteredAndSortedMerchants]
+  );
+
+  const storeCountLabel = useMemo(
+    () => merchantListingStoreCountLabel(filteredAndSortedMerchants, statusMap, openNow),
+    [filteredAndSortedMerchants, statusMap, openNow]
+  );
 
   const handleBack = () => router.back();
   const handleSearch = () => router.push("/search");
@@ -405,6 +451,7 @@ export default function FoodMerchantsScreen() {
       await Promise.all([
         refetch(),
         refetchHomeCategories(),
+        refetchFeaturedOffers(),
         permissionStatus === "granted" && locationSource !== "selected" ? refetchLocation() : Promise.resolve(),
       ]);
     } finally {
@@ -445,13 +492,13 @@ export default function FoodMerchantsScreen() {
     return address?.fullAddress ?? "Current location";
   }, [address?.fullAddress, address?.secondary, address?.primary, address?.state]);
 
-  // No-service: minimal header + empty state only when load complete and 0 stores. While loading, show full UI with skeleton (no blocking text).
-  if (!isServiceable && !showSkeleton) {
+  // No-service: only when there are zero stores listed for this location (not when all are closed).
+  if (!hasStoresInArea && !showSkeleton) {
     return (
       <View style={styles.container}>
         <StatusBar style="dark" />
         <GMHeader
-          topInset={Math.max(8, insets.top - 10)}
+          topInset={HEADER_TOP_PADDING_NONE}
           onBack={handleBack}
           minimal
           locationLabel={selectedLocationLabel}
@@ -470,7 +517,8 @@ export default function FoodMerchantsScreen() {
 
       {/* Header in flow – no absolute; content starts below */}
       <GMHeader
-        topInset={Math.max(8, insets.top - 10)}
+        topInset={HEADER_TOP_PADDING_NONE}
+        compact
         onBack={handleBack}
         onSearchPress={handleSearch}
         showActions={true}
@@ -494,48 +542,62 @@ export default function FoodMerchantsScreen() {
             />
           }
         >
-          {/* Offers carousel – above category, horizontal scroll, snap */}
-          <View style={styles.offersSection}>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.offersScrollContent}
-              snapToInterval={OFFER_CARD_WIDTH + OFFER_GAP}
-              snapToAlignment="start"
-              decelerationRate="fast"
-            >
-              {OFFERS.map((o) => (
-                <TouchableOpacity
-                  key={o.id}
-                  style={styles.offerCardWrap}
-                  activeOpacity={0.95}
-                >
-                  <LinearGradient
-                    colors={["#19c37d", "#00a86b"]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.offerCard}
+          {showOffersBlock ? (
+            <>
+              <View style={styles.offersSection}>
+                {showOfferSkeleton ? (
+                  <HomeOfferBannerSkeleton width={offerCardWidth} height={OFFER_CARD_HEIGHT} />
+                ) : (
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.offersScrollContent}
+                    snapToInterval={offerCardWidth + OFFER_GAP}
+                    snapToAlignment="start"
+                    decelerationRate="fast"
                   >
-                    <Text style={styles.offerCardTitle}>{o.title}</Text>
-                    <Text style={styles.offerCardSub}>{o.sub}</Text>
-                    <View style={styles.offerCardCta}>
-                      <Text style={styles.offerCardCtaText}>{o.cta}</Text>
-                      <Ionicons name="arrow-forward" size={16} color="#00a86b" />
-                    </View>
-                  </LinearGradient>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-
-          <View style={styles.sectionGap} />
+                    {homeFeaturedOffers.map((o) => (
+                      <TouchableOpacity
+                        key={o.id}
+                        style={[styles.offerCardWrap, { width: offerCardWidth }]}
+                        activeOpacity={0.92}
+                        onPress={() =>
+                          router.push({ pathname: "/home/merchant/[id]", params: { id: o.store_id } })
+                        }
+                      >
+                        <HomeFeaturedOfferCard
+                          title={o.title}
+                          sub={o.sub}
+                          width={offerCardWidth}
+                          height={OFFER_CARD_HEIGHT}
+                        />
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                )}
+              </View>
+              <View style={styles.sectionGap} />
+            </>
+          ) : null}
 
           {/* Category rail – all user_app_category (FOOD), horizontal scroll by display_order */}
-          <View style={styles.categoryRailSection}>
-            {homeCategoryRailItems.length === 0 && !homeCategoriesReady ? (
-              <View style={styles.categoryRailLoading}>
-                <Text style={styles.categoryRailLoadingText}>Loading categories…</Text>
-              </View>
+          <View
+            style={[
+              styles.categoryRailSection,
+              {
+                minHeight:
+                  categoryRailLayout.circle * 2 + RAIL_ROW_GAP + 38,
+              },
+            ]}
+          >
+            {homeCategoriesLoading || !homeCategoriesReady ? (
+              <CategoryRailSkeleton
+                columnCount={CATEGORY_RAIL_TARGET_COLUMNS}
+                itemW={categoryRailLayout.itemW}
+                columnGap={categoryRailLayout.columnGap}
+                circle={categoryRailLayout.circle}
+                rowGap={RAIL_ROW_GAP}
+              />
             ) : homeCategoryRailItems.length === 0 ? (
               <View style={styles.categoryRailLoading}>
                 <Text style={styles.categoryRailLoadingText}>No categories yet.</Text>
@@ -636,18 +698,42 @@ export default function FoodMerchantsScreen() {
                 <Text style={[styles.filterChipText, hasActiveFilters && styles.filterChipTextActive]}>Filters</Text>
               </TouchableOpacity>
             </View>
-            <Text style={styles.filterStoreCount}>
-              {filteredAndSortedMerchants.length} {filteredAndSortedMerchants.length === 1 ? "store" : "stores"}
-            </Text>
+            <Text style={styles.filterStoreCount}>{storeCountLabel}</Text>
           </View>
 
-          {/* Restaurant feed */}
+          {/* Loved by Customers — 2-col grid (Swiggy-style); same stores also in list below */}
+          {(showSkeleton || lovedByCustomers.length > 0) && (
+            <View style={styles.lovedSection}>
+              <Text style={styles.sectionHeading}>LOVED BY CUSTOMERS</Text>
+              {showSkeleton ? (
+                <LovedMerchantsGridSkeleton count={4} />
+              ) : (
+                <View style={styles.merchantGrid}>
+                  {lovedByCustomers.map((m) => (
+                    <MerchantGridCard
+                      key={`loved-${m.id}`}
+                      merchant={m}
+                      onPress={() =>
+                        router.push({ pathname: "/home/merchant/[id]", params: { id: m.id } })
+                      }
+                    />
+                  ))}
+                </View>
+              )}
+            </View>
+          )}
+
+          {/* All nearby restaurants (includes loved stores) */}
           <View style={[styles.section, styles.restaurantSection]}>
-            <Text style={styles.sectionTitle}>Restaurants near you</Text>
+            <Text style={styles.sectionHeading}>RESTAURANTS NEAR YOU</Text>
             {showSkeleton ? (
-              <RestaurantListSkeleton count={6} />
+              <RestaurantListSkeleton count={3} cardWidth={restaurantCardWidth} />
+            ) : filteredAndSortedMerchants.length === 0 ? (
+              <Text style={styles.restaurantEmptyHint}>No restaurants match your filters.</Text>
             ) : (
-              filteredAndSortedMerchants.map((m) => <GMRestaurantCardV2 key={m.id} merchant={m} />)
+              filteredAndSortedMerchants.map((m) => (
+                <GMRestaurantCardV2 key={`near-${m.id}`} merchant={m} />
+              ))
             )}
           </View>
 
@@ -838,7 +924,6 @@ const styles = StyleSheet.create({
     paddingRight: PAGE_PAD,
   },
   offerCardWrap: {
-    width: OFFER_CARD_WIDTH,
     height: OFFER_CARD_HEIGHT,
     borderRadius: 18,
     overflow: "hidden",
@@ -850,35 +935,11 @@ const styles = StyleSheet.create({
     }),
     elevation: 6,
   },
-  offerCard: {
-    flex: 1,
-    padding: 16,
-    justifyContent: "space-between",
-  },
-  offerCardTitle: {
-    fontSize: 20,
-    fontWeight: "800",
-    color: "#fff",
-    letterSpacing: 0.2,
-  },
-  offerCardSub: {
+  restaurantEmptyHint: {
     fontSize: 14,
-    color: "rgba(255,255,255,0.95)",
-  },
-  offerCardCta: {
-    flexDirection: "row",
-    alignItems: "center",
-    alignSelf: "flex-start",
-    gap: 6,
-    backgroundColor: "#fff",
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-  },
-  offerCardCtaText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#00a86b",
+    color: GatiMitraColors.textSecondary,
+    textAlign: "center",
+    paddingVertical: 24,
   },
   sectionGap: {
     height: SECTION_GAP_SM,
@@ -978,6 +1039,24 @@ const styles = StyleSheet.create({
   },
   restaurantSection: {
     borderTopWidth: 0,
+  },
+  lovedSection: {
+    marginBottom: SECTION_GAP,
+  },
+  merchantGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  sectionHeading: {
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+    color: GatiMitraColors.textSecondary,
+    marginBottom: 12,
+    paddingHorizontal: 16,
+    textTransform: "uppercase",
   },
   sectionTitle: {
     fontSize: 18,

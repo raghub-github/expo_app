@@ -21,10 +21,10 @@ import {
   BackHandler,
   Platform,
   Alert,
-  StatusBar,
   useWindowDimensions,
   KeyboardAvoidingView,
   PanResponder,
+  Animated as RNAnimated,
 } from "react-native";
 import * as Location from "expo-location";
 import * as Contacts from "expo-contacts";
@@ -49,6 +49,7 @@ import { RazorpayCheckoutModal, type RazorpayPaymentResult, type RazorpayOrderPa
 import { merchantService, type MerchantSummary } from "@/services/merchant.service";
 import { ItemCustomizationSheet } from "@/components/ItemCustomizationSheet";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { HEADER_PADDING_TOP } from "@/constants/layout";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import { haversineKm, SERVICE_RADIUS_KM } from "@/lib/billSummary";
 import { matchSavedAddressIdNearCoords } from "@/lib/deliveryDropResolution";
@@ -57,9 +58,27 @@ import { reverseGeocode } from "@/services/location.service";
 import { getRoute } from "@/services/distance.service";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { isNetworkError, getNetworkErrorMessage } from "@/utils/networkError";
+import { CouponApplyCelebration } from "@/components/checkout/CouponApplyCelebration";
+import { CheckoutOffersSheet } from "@/components/checkout/CheckoutOffersSheet";
 
 function roundBillAmount(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+function discountMatchesCoupon(
+  label: string | undefined | null,
+  code: string | null,
+  couponLabel: string | null
+): boolean {
+  if (!code) return false;
+  const lbl = (label ?? "").toLowerCase();
+  const c = code.toLowerCase();
+  if (lbl.includes(c)) return true;
+  if (couponLabel) {
+    const cl = couponLabel.toLowerCase();
+    if (cl.length > 2 && lbl.includes(cl)) return true;
+  }
+  return false;
 }
 
 // gstComponentLineTotal was used by the old inclusive-amount modal — removed
@@ -228,12 +247,90 @@ const PAYMENT_OPTIONS = [
   { id: "wallet", label: "Wallets (Paytm, Amazon Pay & more)", displayName: "Wallet" },
 ] as const;
 
-/** Tip slider labels / ticks (0–₹60 on track; drag is continuous). Custom field allows any amount. */
+/** Tip slider labels (0–₹60); default tip is ₹0 until user drags. */
 const TIP_SLIDER_LABELS = [0, 20, 40, 60] as const;
 const TIP_SLIDER_MAX = 60;
 const TIP_SLIDER_THUMB_R = 10;
-/** Half-width of each ₹ label (px) — centers text under tick at 0%, 33⅓%, 66⅔%, 100% of track. */
+/** Horizontal inset so thumb center sits on ₹0 and ₹60 (not past track ends). */
+const TIP_TRACK_PAD = TIP_SLIDER_THUMB_R;
+/** Half-width of each ₹ label (px) — centers text under tick on inner track. */
 const TIP_LABEL_HALF_WIDTH: readonly [number, number, number, number] = [12, 14, 14, 16];
+
+const FEEDING_INDIA_ART = require("../../public/img/fed.png");
+
+/** Horizontal marquee for restaurant note below utility pills. */
+function RestaurantNoteMarquee({ note }: { note: string }) {
+  const translateX = useRef(new RNAnimated.Value(0)).current;
+  const textW = useRef(0);
+  const viewW = useRef(0);
+  const loopRef = useRef<RNAnimated.CompositeAnimation | null>(null);
+
+  useEffect(() => {
+    loopRef.current?.stop();
+    translateX.setValue(0);
+    const overflow = textW.current - viewW.current;
+    if (overflow <= 4) return;
+    const scrollMs = Math.max(3500, overflow * 22);
+    loopRef.current = RNAnimated.loop(
+      RNAnimated.sequence([
+        RNAnimated.delay(600),
+        RNAnimated.timing(translateX, {
+          toValue: -overflow,
+          duration: scrollMs,
+          useNativeDriver: true,
+        }),
+        RNAnimated.delay(900),
+        RNAnimated.timing(translateX, {
+          toValue: 0,
+          duration: 350,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    loopRef.current.start();
+    return () => loopRef.current?.stop();
+  }, [note, translateX]);
+
+  return (
+    <View
+      style={restaurantNoteMarqueeStyles.wrap}
+      onLayout={(e) => {
+        viewW.current = e.nativeEvent.layout.width;
+      }}
+    >
+      <RNAnimated.View style={{ flexDirection: "row", transform: [{ translateX }] }}>
+        <Text
+          style={restaurantNoteMarqueeStyles.text}
+          onLayout={(e) => {
+            textW.current = e.nativeEvent.layout.width;
+          }}
+          numberOfLines={1}
+        >
+          {note}
+        </Text>
+      </RNAnimated.View>
+    </View>
+  );
+}
+
+const restaurantNoteMarqueeStyles = StyleSheet.create({
+  wrap: {
+    marginTop: 6,
+    overflow: "hidden",
+    borderRadius: 8,
+    backgroundColor: CX.mintSoft,
+    borderWidth: 1,
+    borderColor: "rgba(45, 181, 160, 0.25)",
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+  },
+  text: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: CX.mintDark,
+    flexShrink: 0,
+  },
+});
 
 /** Footer delivery / takeaway — active segment + shell border (mint, matches checkout CTAs). */
 const DELIVERY_TOGGLE_ACTIVE = CX.mint;
@@ -273,16 +370,14 @@ export default function CheckoutScreen() {
   const [paymentMethod, setPaymentMethod] = useState<string>("upi");
   /** Delivery / Self pickup toggle. Self pickup waives the delivery fee server-side. */
   const [deliveryType, setDeliveryType] = useState<"delivery" | "self_pickup">("delivery");
-  const [tipInputMode, setTipInputMode] = useState<"slider" | "custom">("slider");
   const [tipSliderValue, setTipSliderValue] = useState(0);
   const [tipSliderBlockW, setTipSliderBlockW] = useState(0);
-  const [customTip, setCustomTip] = useState("");
   const [donationEnabled, setDonationEnabled] = useState(false);
   const [subscriptionOptIn, setSubscriptionOptIn] = useState(false);
   const [donationAmount, setDonationAmount] = useState("");
   const [appliedCouponCode, setAppliedCouponCode] = useState<string | null>(null);
   const [appliedCouponLabel, setAppliedCouponLabel] = useState<string | null>(null);
-  const [leaveAtDoor, setLeaveAtDoor] = useState(false);
+  const [leaveAtDoor, setLeaveAtDoor] = useState(true);
   const [restaurantNote, setRestaurantNote] = useState("");
   const [restaurantNoteModalVisible, setRestaurantNoteModalVisible] = useState(false);
   const [skipCutlery, setSkipCutlery] = useState(false);
@@ -311,6 +406,10 @@ export default function CheckoutScreen() {
   const [couponSheetVisible, setCouponSheetVisible] = useState(false);
   const [couponCodeInput, setCouponCodeInput] = useState("");
   const [couponApplyError, setCouponApplyError] = useState<string | null>(null);
+  const [couponCelebrationVisible, setCouponCelebrationVisible] = useState(false);
+  const [couponCelebrationCode, setCouponCelebrationCode] = useState("");
+  const [selectedPlatformOfferId, setSelectedPlatformOfferId] = useState<number | null>(null);
+  const [forceNoAutoOffer, setForceNoAutoOffer] = useState(false);
   const [currentLocationDisplay, setCurrentLocationDisplay] = useState<{ label: string; fullAddress: string } | null>(null);
   const [currentLocationCoords, setCurrentLocationCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const [donationPreset, setDonationPreset] = useState<5 | 10 | 15 | 20 | "custom" | null>(null);
@@ -318,9 +417,6 @@ export default function CheckoutScreen() {
   const [razorpayModalVisible, setRazorpayModalVisible] = useState(false);
   const [razorpayCreating, setRazorpayCreating] = useState(false);
   const [simulatedPaymentOrder, setSimulatedPaymentOrder] = useState<{ orderId: string; amount: number; pendingId?: string } | null>(null);
-  /** Transient "₹X applied" toast shown when a platform offer kicks in. */
-  const [autoOfferToast, setAutoOfferToast] = useState<{ amount: number; label: string } | null>(null);
-  const prevDiscountTotalRef = useRef<number>(0);
   const currentLocationAddressCreatedRef = useRef(false);
   /**
    * Idempotency key for the current checkout attempt. Generated on first
@@ -820,22 +916,23 @@ export default function CheckoutScreen() {
     [items]
   );
 
-  const tipValue = useMemo(() => {
-    if (tipInputMode === "custom") return Math.max(0, parseFloat(customTip) || 0);
-    return Math.max(0, Math.min(TIP_SLIDER_MAX, tipSliderValue));
-  }, [tipInputMode, customTip, tipSliderValue]);
+  const tipValue = useMemo(
+    () => Math.max(0, Math.min(TIP_SLIDER_MAX, tipSliderValue)),
+    [tipSliderValue]
+  );
 
-  const tipSliderThumbPercent = useMemo(() => {
-    if (tipInputMode === "custom") {
-      const v = tipValue;
-      if (v <= TIP_SLIDER_MAX) return (v / TIP_SLIDER_MAX) * 100;
-      return 100;
-    }
-    return (tipSliderValue / TIP_SLIDER_MAX) * 100;
-  }, [tipInputMode, tipValue, tipSliderValue]);
+  /** Thumb position on inner track (₹0–₹60 only). */
+  const tipTrackGeometry = useMemo(() => {
+    const w = tipSliderBlockW;
+    const inner = Math.max(0, w - 2 * TIP_TRACK_PAD);
+    const center = TIP_TRACK_PAD + (tipValue / TIP_SLIDER_MAX) * inner;
+    return {
+      inner,
+      thumbLeft: center - TIP_SLIDER_THUMB_R,
+    };
+  }, [tipSliderBlockW, tipValue]);
 
   const tipNearestLabel = useMemo(() => {
-    if (tipInputMode !== "slider") return null;
     let best: (typeof TIP_SLIDER_LABELS)[number] = TIP_SLIDER_LABELS[0];
     let d = Infinity;
     for (const s of TIP_SLIDER_LABELS) {
@@ -846,34 +943,36 @@ export default function CheckoutScreen() {
       }
     }
     return best;
-  }, [tipInputMode, tipSliderValue]);
+  }, [tipSliderValue]);
 
   const setTipFromLocalX = useCallback((localX: number) => {
     const w = tipSliderTrackWRef.current;
-    if (w < 8) return;
-    setTipInputMode("slider");
-    setCustomTip("");
-    const r = Math.max(0, Math.min(1, localX / w));
-    setTipSliderValue(Math.round(r * TIP_SLIDER_MAX));
+    const inner = w - 2 * TIP_TRACK_PAD;
+    if (inner < 4) return;
+    const clampedX = Math.max(TIP_TRACK_PAD, Math.min(w - TIP_TRACK_PAD, localX));
+    const ratio = (clampedX - TIP_TRACK_PAD) / inner;
+    setTipSliderValue(Math.max(0, Math.min(TIP_SLIDER_MAX, Math.round(ratio * TIP_SLIDER_MAX))));
   }, []);
+
+  /** Reset tip when opening checkout for a store — never carry over from scroll glitches. */
+  useEffect(() => {
+    setTipSliderValue(0);
+  }, [merchantId]);
 
   const tipTrackPanResponder = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: () => true,
-        onPanResponderTerminationRequest: () => false,
+        /** Do not grab touches on scroll — only horizontal drags on the track. */
+        onStartShouldSetPanResponder: () => false,
+        onMoveShouldSetPanResponder: (_, gestureState) =>
+          Math.abs(gestureState.dx) > 8 &&
+          Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.25,
+        onPanResponderTerminationRequest: () => true,
         onPanResponderGrant: (e) => setTipFromLocalX(e.nativeEvent.locationX),
         onPanResponderMove: (e) => setTipFromLocalX(e.nativeEvent.locationX),
       }),
     [setTipFromLocalX]
   );
-
-  const clearCheckoutTip = useCallback(() => {
-    setTipSliderValue(0);
-    setCustomTip("");
-    setTipInputMode("slider");
-  }, []);
 
   const donationValue = donationEnabled
     ? (donationPreset !== "custom" && donationPreset != null ? Number(donationPreset) : parseFloat(donationAmount) || 0)
@@ -932,6 +1031,8 @@ export default function CheckoutScreen() {
       tipValue,
       donationValue,
       appliedCouponCode,
+      selectedPlatformOfferId,
+      forceNoAutoOffer,
       subscriptionOptIn,
       deliveryType,
     ],
@@ -943,6 +1044,8 @@ export default function CheckoutScreen() {
         tipAmount: tipValue,
         donationAmount: donationValue,
         couponCode: appliedCouponCode ?? undefined,
+        selectedPlatformOfferId,
+        forceNoAutoOffer,
         serviceType: "FOOD",
         subscriptionOptIn,
         deliveryType,
@@ -958,6 +1061,8 @@ export default function CheckoutScreen() {
     enabled: !!merchantId && !!selectedAddress && items.length > 0 && !merchantLoading,
     /** Keeps last bill on screen while cart/tip/donation refetch — avoids skeleton layout jump. */
     placeholderData: keepPreviousData,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
     retry: 2,
   });
 
@@ -993,27 +1098,6 @@ export default function CheckoutScreen() {
 
   const serverBill = billingQuery.data ?? null;
 
-  // Auto-applied offer toast: fire when discountTotal increases from one bill
-  // calc to the next. Shows ₹X for ~2.5s. Initial mount with non-zero discount
-  // also fires once so the customer sees the saving the moment they open
-  // checkout with an eligible cart.
-  useEffect(() => {
-    if (!serverBill) return;
-    const newTotal = serverBill.discountTotal ?? 0;
-    const prev = prevDiscountTotalRef.current;
-    if (newTotal > prev + 0.005) {
-      const topDiscount = (serverBill.discounts ?? [])
-        .filter((d) => d.amount > 0.005)
-        .sort((a, b) => b.amount - a.amount)[0];
-      if (topDiscount) {
-        setAutoOfferToast({ amount: newTotal - prev, label: topDiscount.label });
-        const t = setTimeout(() => setAutoOfferToast(null), 2500);
-        prevDiscountTotalRef.current = newTotal;
-        return () => clearTimeout(t);
-      }
-    }
-    prevDiscountTotalRef.current = newTotal;
-  }, [serverBill]);
   /** Store→drop km from backend routing (authoritative for pricing); client route is for UI hint only. */
   const serverDistanceKm = serverBill?.distanceKm ?? null;
   /** Distance shown to user in checkout, always backend-computed. */
@@ -1033,12 +1117,108 @@ export default function CheckoutScreen() {
     [serverBill?.discounts]
   );
 
+  const autoVisibleDiscounts = useMemo(
+    () =>
+      visibleDiscounts.filter(
+        (d) => !discountMatchesCoupon(d.label, appliedCouponCode, appliedCouponLabel)
+      ),
+    [visibleDiscounts, appliedCouponCode, appliedCouponLabel]
+  );
+
+  const couponDiscountAmount = useMemo(() => {
+    if (!appliedCouponCode) return 0;
+    const match = visibleDiscounts.find((d) =>
+      discountMatchesCoupon(d.label, appliedCouponCode, appliedCouponLabel)
+    );
+    return match?.amount ?? 0;
+  }, [visibleDiscounts, appliedCouponCode, appliedCouponLabel]);
+
+  const topAutoDiscount = useMemo(() => {
+    if (autoVisibleDiscounts.length === 0) return null;
+    return [...autoVisibleDiscounts].sort((a, b) => b.amount - a.amount)[0];
+  }, [autoVisibleDiscounts]);
+
+  /** Extra auto-offer rows above the coupon row (avoid duplicating the primary line). */
+  const autoDiscountsForList = useMemo(() => {
+    if (appliedCouponCode) return autoVisibleDiscounts;
+    if (!topAutoDiscount) return [];
+    if (autoVisibleDiscounts.length <= 1) return [];
+    return autoVisibleDiscounts.filter(
+      (d) => d.ruleId !== topAutoDiscount.ruleId || d.label !== topAutoDiscount.label
+    );
+  }, [autoVisibleDiscounts, appliedCouponCode, topAutoDiscount]);
+
+  const checkoutSavingsTotal =
+    serverBill && serverBill.discountTotal > 0.005 ? serverBill.discountTotal : 0;
+
   const featuredCoupon = useMemo(() => {
     const list = checkoutOffersQuery.data?.coupons?.filter((c) => c.code !== appliedCouponCode) ?? [];
     return list[0] ?? null;
   }, [checkoutOffersQuery.data?.coupons, appliedCouponCode]);
 
-  const hasAppliedDiscountRows = visibleDiscounts.length > 0 || !!appliedCouponCode;
+  const appliedPlatformOfferId = useMemo(() => {
+    for (const d of visibleDiscounts) {
+      const id = d.meta?.platformOfferId;
+      if (typeof id === "number" && id > 0) return id;
+    }
+    return null;
+  }, [visibleDiscounts]);
+
+  const appliedDiscountRows = useMemo(
+    () =>
+      visibleDiscounts.map((d) => ({
+        label: d.label,
+        amount: d.amount,
+        platformOfferId:
+          typeof d.meta?.platformOfferId === "number" ? (d.meta.platformOfferId as number) : null,
+      })),
+    [visibleDiscounts]
+  );
+
+  const applyCouponCode = useCallback((code: string, label?: string) => {
+    const trimmed = code.trim();
+    if (!trimmed) return;
+    setCouponApplyError(null);
+    setSelectedPlatformOfferId(null);
+    setForceNoAutoOffer(false);
+    setAppliedCouponCode(trimmed);
+    setAppliedCouponLabel(label ?? trimmed);
+    setCouponCodeInput("");
+    setCouponSheetVisible(false);
+    setCouponCelebrationCode(trimmed);
+    setCouponCelebrationVisible(true);
+  }, []);
+
+  const applyPlatformOfferById = useCallback((offerId: number, _name: string | null) => {
+    setAppliedCouponCode(null);
+    setAppliedCouponLabel(null);
+    setSelectedPlatformOfferId(offerId);
+    setForceNoAutoOffer(false);
+    setCouponSheetVisible(false);
+    setCouponCelebrationCode("");
+    setCouponCelebrationVisible(false);
+  }, []);
+
+  const removeAllCheckoutOffers = useCallback(() => {
+    setAppliedCouponCode(null);
+    setAppliedCouponLabel(null);
+    setSelectedPlatformOfferId(null);
+    setForceNoAutoOffer(true);
+    setCouponCelebrationVisible(false);
+  }, []);
+
+  const removeAppliedCoupon = useCallback(() => {
+    setAppliedCouponCode(null);
+    setAppliedCouponLabel(null);
+    if (!selectedPlatformOfferId) setForceNoAutoOffer(true);
+    setCouponCelebrationVisible(false);
+  }, [selectedPlatformOfferId]);
+
+  const removeAppliedPlatformOffer = useCallback(() => {
+    setSelectedPlatformOfferId(null);
+    setForceNoAutoOffer(true);
+    if (!appliedCouponCode) setCouponCelebrationVisible(false);
+  }, [appliedCouponCode]);
 
   const showItemTotalStrike = useMemo(() => {
     if (!serverBill || serverBill.discountTotal <= 0.005) return false;
@@ -1173,6 +1353,8 @@ export default function CheckoutScreen() {
       ...(tipValue > 0 && { tipAmount: tipValue }),
       ...(donationValue > 0 && { donationAmount: donationValue }),
       ...(appliedCouponCode && { couponCode: appliedCouponCode }),
+      ...(selectedPlatformOfferId != null && { selectedPlatformOfferId }),
+      ...(forceNoAutoOffer && { forceNoAutoOffer: true }),
       ...(subscriptionOptIn && { subscriptionOptIn: true }),
       checkoutMetadata: {
         leaveAtDoor,
@@ -1196,6 +1378,8 @@ export default function CheckoutScreen() {
     tipValue,
     donationValue,
     appliedCouponCode,
+    selectedPlatformOfferId,
+    forceNoAutoOffer,
     subscriptionOptIn,
     leaveAtDoor,
     deliveryPartnerNote,
@@ -1704,14 +1888,6 @@ export default function CheckoutScreen() {
     isDeliveryOutOfRange ||
     (currentVsSelectedDistanceKm != null && currentVsSelectedDistanceKm > 1.5);
 
-  /** Match reference: sit just under status bar without extra air */
-  const headerPaddingTop = useMemo(() => {
-    const statusBarH = Platform.OS === "android" ? StatusBar.currentHeight ?? 0 : 0;
-    const base = Math.max(insets.top, statusBarH);
-    const relax = Platform.OS === "ios" ? 12 : 8;
-    return Math.max(base - relax, 0);
-  }, [insets.top]);
-
   if (cartIsEmpty) {
     return (
       <View style={[styles.center, { paddingBottom: insets.bottom }]}>
@@ -1726,7 +1902,7 @@ export default function CheckoutScreen() {
   return (
     <View style={styles.container}>
       {/* Zomato-style header: back · merchant name (top, small) + eta + address (with chevron) · share icon */}
-      <View style={[styles.header, { paddingTop: headerPaddingTop }]}>
+      <View style={[styles.header, { paddingTop: HEADER_PADDING_TOP }]}>
         <View style={styles.headerRow}>
           <TouchableOpacity onPress={() => router.back()} style={styles.headerBack} hitSlop={12}>
             <Ionicons name="chevron-back" size={22} color="#1A1A1A" />
@@ -1770,37 +1946,6 @@ export default function CheckoutScreen() {
         </View>
       </View>
 
-      {/* Auto-applied offer toast — fades in/out over ~2.5s when a platform
-          offer kicks in (or when checkout first loads with an eligible offer). */}
-      {autoOfferToast ? (
-        <Animated.View
-          entering={FadeInDown.duration(220)}
-          style={{
-            position: "absolute",
-            top: insets.top + 8,
-            alignSelf: "center",
-            zIndex: 50,
-            backgroundColor: GatiMitraColors.emerald,
-            paddingHorizontal: 14,
-            paddingVertical: 10,
-            borderRadius: 20,
-            shadowColor: "#000",
-            shadowOpacity: 0.18,
-            shadowRadius: 8,
-            shadowOffset: { width: 0, height: 4 },
-            elevation: 6,
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 8,
-          }}
-        >
-          <Ionicons name="pricetag" size={16} color="#fff" />
-          <Text style={{ color: "#fff", fontWeight: "700" }}>
-            {autoOfferToast.label} applied — you save ₹{autoOfferToast.amount.toFixed(0)}
-          </Text>
-        </Animated.View>
-      ) : null}
-
       {/* One-line distance banner — Zomato style ("Selected address is N km away from your location") */}
       {showDistanceBanner && (
         <Animated.View entering={FadeIn.duration(ANIM_DURATION)} style={styles.distanceBannerOuter}>
@@ -1816,6 +1961,14 @@ export default function CheckoutScreen() {
           </View>
         </Animated.View>
       )}
+
+      {checkoutSavingsTotal > 0 ? (
+        <View style={styles.checkoutSavingsTag}>
+          <Text style={styles.checkoutSavingsTagText}>
+            🥳 You saved ₹{checkoutSavingsTotal.toFixed(0)} on this order
+          </Text>
+        </View>
+      ) : null}
 
       <ScrollView
         ref={scrollRef}
@@ -1931,6 +2084,11 @@ export default function CheckoutScreen() {
                 </View>
               </TouchableOpacity>
             </View>
+            {restaurantNote.trim().length > 0 ? (
+              <RestaurantNoteMarquee
+                note={`Note for restaurant: ${restaurantNote.trim()}`}
+              />
+            ) : null}
           </View>
         </Animated.View>
 
@@ -2072,75 +2230,80 @@ export default function CheckoutScreen() {
               </TouchableOpacity>
             </View>
 
-            {hasAppliedDiscountRows ? (
+            {autoDiscountsForList.length > 0 ? (
               <>
                 <View style={styles.offersDottedSep} />
-                {visibleDiscounts.map((d, idx) => (
-                  <Fragment key={`applied-disc-${idx}`}>
+                {autoDiscountsForList.map((d, idx) => (
+                  <Fragment key={`applied-disc-${d.ruleId ?? idx}`}>
                     {idx > 0 ? <View style={styles.offersDottedSep} /> : null}
-                    <View style={styles.offersBodyRow}>
+                    <View style={styles.offersAppliedRow}>
                       <View style={styles.offersGreenTick}>
                         <Ionicons name="checkmark" size={14} color="#fff" />
                       </View>
-                      <Text style={styles.offersAppliedLabel} numberOfLines={2}>
-                        {d.label} applied!
-                      </Text>
-                      <Text style={styles.offersSavingsBlue}>−₹{d.amount.toFixed(0)}</Text>
+                      <View style={styles.offersBodyTextCol}>
+                        <Text style={styles.offersAppliedHeadline} numberOfLines={2}>
+                          You saved ₹{d.amount.toFixed(0)} with {d.label}
+                        </Text>
+                        <TouchableOpacity onPress={() => setCouponSheetVisible(true)} activeOpacity={0.7} hitSlop={6}>
+                          <Text style={styles.offersLearnMore}>View all coupons ›</Text>
+                        </TouchableOpacity>
+                      </View>
+                      <TouchableOpacity onPress={removeAllCheckoutOffers} hitSlop={8} activeOpacity={0.7}>
+                        <Text style={styles.offersRemoveRed}>Remove</Text>
+                      </TouchableOpacity>
                     </View>
                   </Fragment>
                 ))}
-                {appliedCouponCode ? (
-                  <>
-                    {visibleDiscounts.length > 0 ? <View style={styles.offersDottedSep} /> : null}
-                    <View style={styles.offersBodyRow}>
-                      <View style={styles.offersGreenTick}>
-                        <Ionicons name="checkmark" size={14} color="#fff" />
-                      </View>
-                      <Text style={styles.offersAppliedLabel} numberOfLines={2}>
-                        {appliedCouponLabel ?? appliedCouponCode} applied
-                      </Text>
-                      <TouchableOpacity
-                        onPress={() => {
-                          setAppliedCouponCode(null);
-                          setAppliedCouponLabel(null);
-                        }}
-                        hitSlop={8}
-                      >
-                        <Text style={styles.offersRemovePink}>REMOVE</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </>
-                ) : null}
               </>
             ) : null}
 
             <View style={styles.offersDottedSep} />
 
-            <View style={styles.offersBodyRow}>
-              <View style={styles.offersCouponIconCircle}>
-                <Text style={styles.offersCouponIconPct}>%</Text>
-              </View>
+            <View style={styles.offersAppliedRow}>
+              {appliedCouponCode || topAutoDiscount ? (
+                <View style={styles.offersGreenTick}>
+                  <Ionicons name="checkmark" size={14} color="#fff" />
+                </View>
+              ) : (
+                <View style={styles.offersCouponIconCircle}>
+                  <Text style={styles.offersCouponIconPct}>%</Text>
+                </View>
+              )}
               <View style={styles.offersBodyTextCol}>
-                <Text style={styles.offersCouponHeadline} numberOfLines={2}>
-                  {featuredCoupon
-                    ? featuredCoupon.description ||
-                      `Save more with '${featuredCoupon.code}'`
-                    : "Apply a coupon to save on this order"}
+                <Text style={styles.offersAppliedHeadline} numberOfLines={2}>
+                  {appliedCouponCode
+                    ? couponDiscountAmount > 0.005
+                      ? `You saved ₹${couponDiscountAmount.toFixed(0)} with '${appliedCouponCode}'`
+                      : `${appliedCouponLabel ?? appliedCouponCode} applied`
+                    : topAutoDiscount
+                      ? topAutoDiscount.amount > 0.005
+                        ? `You saved ₹${topAutoDiscount.amount.toFixed(0)} with ${topAutoDiscount.label}`
+                        : `${topAutoDiscount.label} applied!`
+                      : featuredCoupon
+                        ? featuredCoupon.description ||
+                          `Save more with '${featuredCoupon.code}'`
+                        : "Apply a coupon to save on this order"}
                 </Text>
                 <TouchableOpacity onPress={() => setCouponSheetVisible(true)} activeOpacity={0.7} hitSlop={6}>
                   <Text style={styles.offersLearnMore}>View all coupons ›</Text>
                 </TouchableOpacity>
               </View>
-              <TouchableOpacity
-                style={styles.offersApplyOutline}
-                onPress={() => {
-                  if (featuredCoupon) setCouponCodeInput(featuredCoupon.code);
-                  setCouponSheetVisible(true);
-                }}
-                activeOpacity={0.85}
-              >
-                <Text style={styles.offersApplyOutlineText}>APPLY</Text>
-              </TouchableOpacity>
+              {appliedCouponCode || topAutoDiscount || appliedPlatformOfferId ? (
+                <TouchableOpacity onPress={removeAllCheckoutOffers} hitSlop={8} activeOpacity={0.7}>
+                  <Text style={styles.offersRemoveRed}>Remove</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={styles.offersApplyOutline}
+                  onPress={() => {
+                    if (featuredCoupon) setCouponCodeInput(featuredCoupon.code);
+                    setCouponSheetVisible(true);
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.offersApplyOutlineText}>APPLY</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </View>
         </Animated.View>
@@ -2148,15 +2311,6 @@ export default function CheckoutScreen() {
         {/* Delivery + bill — Zomato-style single card: savings banner, dashed rules, ETA, address, bill, GMitra bubble */}
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(60)} style={styles.section}>
           <View style={styles.zomatoCheckoutCard}>
-            {serverBill && serverBill.discountTotal > 0.005 ? (
-              <View style={styles.zomatoSavingsBanner}>
-                <Text style={styles.zomatoSavingsBannerEmoji}>🎉</Text>
-                <Text style={styles.zomatoSavingsBannerText}>
-                  You saved ₹{serverBill.discountTotal.toFixed(0)} on this order
-                </Text>
-              </View>
-            ) : null}
-
             <View style={styles.zomatoCardPad}>
               <View style={styles.deliveryEtaRow}>
                 <Ionicons name="timer-outline" size={20} color={GatiMitraColors.textSecondary} />
@@ -2291,13 +2445,6 @@ export default function CheckoutScreen() {
                     <Text style={styles.zomatoBillFinal}>
                       {toPayAmount != null ? `₹${toPayAmount.toFixed(2)}` : "—"}
                     </Text>
-                    {serverBill && serverBill.discountTotal > 0.005 ? (
-                      <View style={styles.zomatoSavedPill}>
-                        <Text style={styles.zomatoSavedPillText}>
-                          You saved ₹{serverBill.discountTotal.toFixed(0)}
-                        </Text>
-                      </View>
-                    ) : null}
                   </View>
                   <Ionicons name="chevron-forward" size={22} color={GatiMitraColors.textSecondary} />
                 </View>
@@ -2389,7 +2536,7 @@ export default function CheckoutScreen() {
                     hitSlop={10}
                     style={styles.feedingIndiaInfoHit}
                   >
-                    <Ionicons name="information-circle-outline" size={22} color="#1E3A8A" />
+                    <Ionicons name="information-circle-outline" size={18} color="#1E3A8A" />
                   </Pressable>
                 </View>
                 <Text style={styles.feedingIndiaTagline}>
@@ -2397,21 +2544,12 @@ export default function CheckoutScreen() {
                 </Text>
               </View>
               <View style={styles.feedingIndiaArt}>
-                <LinearGradient
-                  colors={["#BFDBFE", "#E0F2FE", "#F8FAFC"]}
-                  style={styles.feedingIndiaArtGradient}
+                <Image
+                  source={FEEDING_INDIA_ART}
+                  style={styles.feedingIndiaArtImage}
+                  resizeMode="contain"
+                  accessibilityLabel="Feeding India"
                 />
-                <View style={styles.feedingIndiaArtIconsRow}>
-                  <View style={styles.feedingArtIconRing}>
-                    <Ionicons name="restaurant-outline" size={16} color={CX.mintDark} />
-                  </View>
-                  <View style={styles.feedingArtIconRing}>
-                    <Ionicons name="heart-outline" size={16} color={CX.mintDark} />
-                  </View>
-                  <View style={styles.feedingArtIconRing}>
-                    <Ionicons name="people-outline" size={16} color={CX.mintDark} />
-                  </View>
-                </View>
               </View>
             </LinearGradient>
 
@@ -2499,13 +2637,42 @@ export default function CheckoutScreen() {
           </View>
         </Animated.View>
 
-        {/* Delivery partner tip — slider card (reference-style) */}
+        {/* Delivery partner tip — compact reference card */}
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(110)} style={styles.sectionContrib}>
-          <View style={[styles.donationCompactCard, styles.tipSliderCard]}>
-            <Text style={styles.tipSliderHeading}>{tipValue > 0 ? "Added a tip" : "Add a tip"}</Text>
-            <Text style={styles.tipSliderLead}>
-              Drag for up to ₹60 on the slider, or enter any amount below. Your partner keeps 100% of what you add.
-            </Text>
+          <View style={styles.tipSliderCard}>
+            <View style={styles.tipHeaderRow}>
+              <View style={styles.tipHeaderTextCol}>
+                <View style={styles.tipTitleRow}>
+                  <MaterialCommunityIcons name="hand-heart" size={15} color={CX.mintDark} />
+                  <Text style={styles.tipSliderHeading}>
+                    {tipValue > 0 ? "Added a tip" : "Add a tip"}
+                  </Text>
+                </View>
+                <Text style={styles.tipSliderLead}>Drag for up to ₹60 on the slider.</Text>
+                <Text style={styles.tipSliderLeadBold}>
+                  Your partner keeps <Text style={styles.tipSliderLead100}>100%</Text> of what you add.
+                </Text>
+              </View>
+              <View style={styles.tipHeroArt} pointerEvents="none">
+                <Ionicons name="sparkles" size={11} color="#111827" style={styles.tipSparkleA} />
+                <Ionicons name="sparkles" size={9} color="#111827" style={styles.tipSparkleB} />
+                <View style={styles.tipHeroArtCircle}>
+                  <MaterialCommunityIcons name="wallet-outline" size={18} color={CX.mintDark} />
+                  <View style={styles.tipHeroHeartBadge}>
+                    <Ionicons name="heart" size={11} color="#F97316" />
+                  </View>
+                </View>
+              </View>
+            </View>
+
+            {tipValue > 0 ? (
+              <View style={styles.tipSelectedRow}>
+                <Text style={styles.tipSelectedLabel}>Tip</Text>
+                <View style={styles.tipSelectedBadge}>
+                  <Text style={styles.tipSelectedValue}>₹{tipSliderValue}</Text>
+                </View>
+              </View>
+            ) : null}
 
             <View
               style={styles.tipSliderBlock}
@@ -2515,43 +2682,32 @@ export default function CheckoutScreen() {
                 setTipSliderBlockW(w);
               }}
             >
-              <View style={styles.tipSliderTrackMeasure} {...tipTrackPanResponder.panHandlers}>
-                <View style={styles.tipSliderTrackPressable}>
-                  <View style={styles.tipSliderTrackBg}>
-                    <View style={[styles.tipSliderFill, { width: `${tipSliderThumbPercent}%` }]} />
-                  </View>
-                  <View style={styles.tipSliderTicksRow} pointerEvents="none">
-                    {TIP_SLIDER_LABELS.map((_, tickIdx) => (
-                      <View
-                        key={`tick-${tickIdx}`}
-                        style={[
-                          styles.tipSliderTick,
-                          {
-                            left: `${(tickIdx / 3) * 100}%`,
-                            transform: [{ translateX: tickIdx === 3 ? -2 : -1 }],
-                          },
-                        ]}
-                      />
-                    ))}
+              <Pressable
+                style={styles.tipSliderTrackMeasure}
+                onPress={(e) => setTipFromLocalX(e.nativeEvent.locationX)}
+              >
+                <View style={styles.tipSliderTrackPressable} {...tipTrackPanResponder.panHandlers}>
+                  <View style={[styles.tipSliderTrackBg, { marginHorizontal: TIP_TRACK_PAD }]}>
+                    <View
+                      style={[
+                        styles.tipSliderFill,
+                        { width: `${(tipValue / TIP_SLIDER_MAX) * 100}%` },
+                      ]}
+                    />
                   </View>
                   <View
                     pointerEvents="none"
-                    style={[
-                      styles.tipSliderThumb,
-                      {
-                        left: `${tipSliderThumbPercent}%`,
-                        transform: [{ translateX: -TIP_SLIDER_THUMB_R }],
-                      },
-                    ]}
+                    style={[styles.tipSliderThumb, { left: tipTrackGeometry.thumbLeft }]}
                   />
                 </View>
-              </View>
+              </Pressable>
               <View style={styles.tipSliderLabelsRow}>
                 {TIP_SLIDER_LABELS.map((v, i) => {
                   const atStop = tipNearestLabel === v;
                   const w = tipSliderBlockW;
                   const half = TIP_LABEL_HALF_WIDTH[i];
-                  const cx = w > 0 ? (i / 3) * w : 0;
+                  const inner = Math.max(0, w - 2 * TIP_TRACK_PAD);
+                  const cx = w > 0 ? TIP_TRACK_PAD + (i / 3) * inner : 0;
                   let leftPx = w > 0 ? cx - half : 0;
                   if (i === 0) leftPx = Math.max(0, leftPx);
                   if (i === 3 && w > 0) leftPx = Math.min(w - half * 2, leftPx);
@@ -2560,8 +2716,6 @@ export default function CheckoutScreen() {
                       key={`tip-lbl-${v}`}
                       onPress={() => {
                         setTipSliderValue(v);
-                        setTipInputMode("slider");
-                        setCustomTip("");
                       }}
                       hitSlop={8}
                       style={[styles.tipSliderLabelHitAbs, { left: leftPx }]}
@@ -2572,44 +2726,6 @@ export default function CheckoutScreen() {
                 })}
               </View>
             </View>
-
-            <Pressable
-              onPress={() => {
-                if (tipInputMode === "custom") {
-                  clearCheckoutTip();
-                } else {
-                  setTipInputMode("custom");
-                  setCustomTip(tipSliderValue > 0 ? String(tipSliderValue) : "");
-                }
-              }}
-              hitSlop={6}
-              style={styles.tipCardOtherRow}
-            >
-              <Text style={styles.tipCardOtherText}>
-                {tipInputMode === "custom" ? "Use slider amounts" : "Enter a different amount"}
-              </Text>
-            </Pressable>
-
-            {tipInputMode === "custom" ? (
-              <View style={styles.tipCustomInputRow}>
-                <Text style={styles.tipCustomRupee}>₹</Text>
-                <TextInput
-                  style={styles.tipCustomInput}
-                  placeholder="Amount"
-                  placeholderTextColor={GatiMitraColors.textSecondary}
-                  keyboardType="numeric"
-                  value={customTip}
-                  onChangeText={setCustomTip}
-                />
-              </View>
-            ) : null}
-
-            {tipValue > 0 ? (
-              <View style={styles.tipCardFooterBar}>
-                <Text style={styles.tipCardFooterLabel}>Tip added</Text>
-                <Text style={styles.tipCardFooterValue}>+₹{tipValue.toFixed(0)}</Text>
-              </View>
-            ) : null}
           </View>
         </Animated.View>
 
@@ -2625,165 +2741,42 @@ export default function CheckoutScreen() {
         <BrandingFooter />
       </ScrollView>
 
-      {/* Coupons sheet: available coupons + apply code input */}
-      <Modal
-        visible={couponSheetVisible}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setCouponSheetVisible(false)}
-      >
-        <Pressable style={styles.couponModalOverlay} onPress={() => setCouponSheetVisible(false)}>
-          <Pressable style={[styles.couponModalContent, { paddingBottom: insets.bottom + 24 }]} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.couponModalHeader}>
-              <Text style={styles.couponModalTitle}>Available Coupons</Text>
-              <TouchableOpacity onPress={() => setCouponSheetVisible(false)} hitSlop={12}>
-                <Ionicons name="close" size={28} color={GatiMitraColors.textPrimary} />
-              </TouchableOpacity>
-            </View>
-            <View style={styles.couponApplyRow}>
-              <TextInput
-                style={styles.couponCodeInput}
-                placeholder="Enter coupon code"
-                placeholderTextColor={GatiMitraColors.textSecondary}
-                value={couponCodeInput}
-                onChangeText={(t) => { setCouponCodeInput(t); setCouponApplyError(null); }}
-                autoCapitalize="characters"
-              />
-              <TouchableOpacity
-                style={styles.couponApplyBtn}
-                onPress={() => {
-                  const code = couponCodeInput.trim();
-                  if (!code) { setCouponApplyError("Enter a coupon code"); return; }
-                  setCouponApplyError(null);
-                  setAppliedCouponCode(code);
-                  setAppliedCouponLabel(code);
-                  setCouponSheetVisible(false);
-                  setCouponCodeInput("");
-                }}
-              >
-                <Text style={styles.couponApplyBtnText}>Apply</Text>
-              </TouchableOpacity>
-            </View>
-            {couponApplyError && <Text style={styles.couponError}>{couponApplyError}</Text>}
-            <ScrollView style={styles.couponList} showsVerticalScrollIndicator={false}>
-              {checkoutOffersQuery.isLoading ? (
-                <View style={styles.couponLoadingWrap}>
-                  <ActivityIndicator color={GatiMitraColors.emerald} />
-                  <Text style={styles.couponLoadingText}>Loading offers for your area…</Text>
-                </View>
-              ) : checkoutOffersQuery.isError ? (
-                <Text style={styles.couponError}>Could not load offers. Pull to refresh or try again later.</Text>
-              ) : (
-                <>
-                  {(checkoutOffersQuery.data?.platformOffers?.length ?? 0) > 0 ? (
-                    <>
-                      <Text style={styles.couponSectionTitle}>Platform offers</Text>
-                      <Text style={styles.couponSectionHint}>Applied automatically when your cart qualifies.</Text>
-                      {checkoutOffersQuery.data!.platformOffers.map((o) => {
-                        // Look up the actual discount amount the engine applied for this offer.
-                        const applied = (serverBill?.discounts ?? []).find(
-                          (d) =>
-                            (d.label || "").toLowerCase() === String(o.name ?? "").toLowerCase() ||
-                            d.ruleId === o.id
-                        );
-                        const savings = applied ? applied.amount : 0;
-                        return (
-                          <View key={`pf-${o.id}`} style={styles.couponListItem}>
-                            <View style={styles.couponListItemLeft}>
-                              <Text style={styles.couponListCode}>{o.name ?? o.offerKind}</Text>
-                              <Text style={styles.couponListDesc}>{o.summary}</Text>
-                              {savings > 0.005 ? (
-                                <Text style={[styles.couponListDesc, { color: GatiMitraColors.emerald, marginTop: 2 }]}>
-                                  ✓ Applied — you save ₹{savings.toFixed(0)}
-                                </Text>
-                              ) : (
-                                <Text style={[styles.couponListDesc, { color: GatiMitraColors.textSecondary, marginTop: 2 }]}>
-                                  Auto-applies when eligible
-                                </Text>
-                              )}
-                            </View>
-                          </View>
-                        );
-                      })}
-                    </>
-                  ) : null}
+      <CouponApplyCelebration
+        visible={couponCelebrationVisible}
+        couponCode={couponCelebrationCode}
+        savedAmount={couponDiscountAmount}
+        onDismiss={() => setCouponCelebrationVisible(false)}
+      />
 
-                  {/* Ineligible platform offers — show greyed-out with the reason
-                      (e.g. "Min cart ₹399") so the customer can see what's available
-                      but locked. */}
-                  {(checkoutOffersQuery.data?.platformOffersIneligible?.length ?? 0) > 0 ? (
-                    <>
-                      <Text style={[styles.couponSectionTitle, { marginTop: 12 }]}>Unlock more savings</Text>
-                      <Text style={styles.couponSectionHint}>Add a few more items or meet the conditions below to unlock these.</Text>
-                      {checkoutOffersQuery.data!.platformOffersIneligible!.map((o) => {
-                        // Parse the rejection reason — server returns formats like
-                        // "minCart=399 cart=163.75" — we just surface the human bits.
-                        const reasonClean = o.reason
-                          .replace(/\|/g, " · ")
-                          .replace(/_/g, " ")
-                          .replace(/=([0-9.]+)/g, " ₹$1");
-                        return (
-                          <View key={`pf-ineligible-${o.id}`} style={[styles.couponListItem, { opacity: 0.6 }]}>
-                            <View style={styles.couponListItemLeft}>
-                              <Text style={styles.couponListCode}>{o.name ?? o.offerKind}</Text>
-                              <Text style={styles.couponListDesc}>{o.summary}</Text>
-                              <Text style={[styles.couponListDesc, { color: "#b45309", marginTop: 2 }]}>
-                                🔒 {reasonClean}
-                              </Text>
-                            </View>
-                          </View>
-                        );
-                      })}
-                    </>
-                  ) : null}
-                  {(checkoutOffersQuery.data?.merchantOffers?.length ?? 0) > 0 ? (
-                    <>
-                      <Text style={[styles.couponSectionTitle, { marginTop: 12 }]}>Store offers</Text>
-                      <Text style={styles.couponSectionHint}>From this restaurant — applied on the bill when eligible.</Text>
-                      {checkoutOffersQuery.data!.merchantOffers.map((o) => (
-                        <View key={`mo-${o.id}`} style={styles.couponListItem}>
-                          <View style={styles.couponListItemLeft}>
-                            <Text style={styles.couponListCode}>{o.title}</Text>
-                            <Text style={styles.couponListDesc}>{o.summary}</Text>
-                          </View>
-                        </View>
-                      ))}
-                    </>
-                  ) : null}
-                  {(checkoutOffersQuery.data?.coupons?.length ?? 0) > 0 ? (
-                    <>
-                      <Text style={[styles.couponSectionTitle, { marginTop: 12 }]}>Coupon codes</Text>
-                      <Text style={styles.couponSectionHint}>Tap to fill the code, then tap Apply.</Text>
-                      {checkoutOffersQuery.data!.coupons.map((c) => (
-                        <TouchableOpacity
-                          key={c.code}
-                          style={styles.couponListItem}
-                          onPress={() => {
-                            setCouponCodeInput(c.code);
-                            setCouponApplyError(null);
-                          }}
-                        >
-                          <View style={styles.couponListItemLeft}>
-                            <Text style={styles.couponListCode}>{c.code}</Text>
-                            <Text style={styles.couponListDesc}>{c.description}</Text>
-                          </View>
-                          <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
-                        </TouchableOpacity>
-                      ))}
-                    </>
-                  ) : null}
-                  {!checkoutOffersQuery.isLoading &&
-                  (checkoutOffersQuery.data?.coupons?.length ?? 0) === 0 &&
-                  (checkoutOffersQuery.data?.merchantOffers?.length ?? 0) === 0 &&
-                  (checkoutOffersQuery.data?.platformOffers?.length ?? 0) === 0 ? (
-                    <Text style={styles.couponEmptyText}>No coupons or offers for this address right now.</Text>
-                  ) : null}
-                </>
-              )}
-            </ScrollView>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <CheckoutOffersSheet
+        visible={couponSheetVisible}
+        onClose={() => setCouponSheetVisible(false)}
+        bottomInset={insets.bottom}
+        loading={checkoutOffersQuery.isLoading}
+        error={checkoutOffersQuery.isError}
+        data={checkoutOffersQuery.data}
+        couponInput={couponCodeInput}
+        onCouponInputChange={(t) => {
+          setCouponCodeInput(t);
+          setCouponApplyError(null);
+        }}
+        couponError={couponApplyError}
+        appliedCouponCode={appliedCouponCode}
+        appliedPlatformOfferId={appliedPlatformOfferId}
+        appliedDiscounts={appliedDiscountRows}
+        onApplyCouponCode={(code, description) => {
+          const trimmed = (code || couponCodeInput).trim();
+          if (!trimmed) {
+            setCouponApplyError("Enter a coupon code");
+            return;
+          }
+          applyCouponCode(trimmed, description);
+        }}
+        onApplyPlatformOffer={applyPlatformOfferById}
+        onRemoveCoupon={removeAppliedCoupon}
+        onRemovePlatformOffer={removeAppliedPlatformOffer}
+        onRemoveAllOffers={removeAllCheckoutOffers}
+      />
 
       {/* Payment method selector sheet */}
       {paymentSheetVisible && (
@@ -4174,6 +4167,26 @@ const styles = StyleSheet.create({
     marginLeft: 2,
     justifyContent: "center",
   },
+  /** Same height rhythm as distanceBannerCompact — below location warning. */
+  checkoutSavingsTag: {
+    width: "100%",
+    backgroundColor: "#EFF6FF",
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#BFDBFE",
+    borderBottomWidth: 1,
+    borderBottomColor: "#BFDBFE",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  checkoutSavingsTagText: {
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 15,
+    color: "#2563EB",
+    textAlign: "center",
+  },
   distanceBannerOuter: {
     width: "100%",
     alignItems: "center",
@@ -4298,6 +4311,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     gap: 12,
   },
+  offersAppliedRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    gap: 12,
+  },
   offersSubIcon: {},
   offersBodyTextCol: { flex: 1, minWidth: 0 },
   offersSubLineBold: {
@@ -4357,11 +4377,18 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#4A90E2",
   },
-  offersRemovePink: {
-    fontSize: 12,
+  offersRemoveRed: {
+    fontSize: 13,
     fontWeight: "700",
-    color: CX.mintDark,
-    letterSpacing: 0.4,
+    color: "#E23744",
+    letterSpacing: 0.2,
+    paddingTop: 2,
+  },
+  offersAppliedHeadline: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#111827",
+    lineHeight: 19,
   },
   offersCouponHeadline: {
     fontSize: 14,
@@ -4397,7 +4424,7 @@ const styles = StyleSheet.create({
   scroll: { flex: 1, backgroundColor: "#F5F6F8" },
   scrollContent: { paddingHorizontal: 12 },
   section: { marginTop: 0, marginBottom: 10 },
-  sectionContrib: { marginBottom: 18 },
+  sectionContrib: { marginBottom: 12 },
   sectionTitle: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary, marginBottom: 8 },
   sectionTitleSmall: {
     fontSize: 13,
@@ -5236,23 +5263,85 @@ const styles = StyleSheet.create({
   },
   donationCompactPillTextActive: { color: CX.mint },
   tipSliderCard: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 16,
+    backgroundColor: "#fff",
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 8,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: "#E8E8E8",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
   },
-  tipSliderHeading: { fontSize: 16, fontWeight: "800", color: "#111827" },
-  tipSliderLead: { fontSize: 12, color: "#6B7280", marginTop: 4, lineHeight: 17 },
-  tipSliderBlock: { marginTop: 10 },
+  tipHeaderRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 4,
+    marginBottom: 2,
+  },
+  tipHeaderTextCol: { flex: 1, minWidth: 0 },
+  tipTitleRow: { flexDirection: "row", alignItems: "center", gap: 5 },
+  tipSliderHeading: { fontSize: 14, fontWeight: "800", color: "#111827" },
+  tipSliderLead: { fontSize: 10, color: "#6B7280", marginTop: 1, lineHeight: 13 },
+  tipSliderLeadBold: { fontSize: 10, color: "#374151", marginTop: 1, lineHeight: 13 },
+  tipSliderLead100: { fontWeight: "800", color: "#111827" },
+  tipHeroArt: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+    marginTop: 0,
+  },
+  tipHeroArtCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#F0FDF4",
+    borderWidth: 1,
+    borderColor: "#DCFCE7",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tipHeroHeartBadge: {
+    position: "absolute",
+    top: 0,
+    right: 2,
+    backgroundColor: "#fff",
+    borderRadius: 6,
+    padding: 1,
+  },
+  tipSparkleA: { position: "absolute", top: 0, right: 0 },
+  tipSparkleB: { position: "absolute", bottom: 4, left: -2 },
+  tipSelectedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 4,
+    marginBottom: 2,
+  },
+  tipSelectedLabel: { fontSize: 10, fontWeight: "600", color: "#6B7280" },
+  tipSelectedBadge: {
+    backgroundColor: "#DCFCE7",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    minWidth: 44,
+    alignItems: "center",
+  },
+  tipSelectedValue: { fontSize: 13, fontWeight: "800", color: CX.mintDark },
+  tipSliderBlock: { marginTop: 0, marginBottom: 0 },
   tipSliderTrackMeasure: {
     width: "100%",
-    minHeight: 36,
+    minHeight: 28,
     justifyContent: "center",
-    paddingVertical: 2,
+    paddingVertical: 0,
   },
   tipSliderTrackPressable: {
-    height: 32,
+    height: 28,
     width: "100%",
     justifyContent: "center",
     position: "relative",
@@ -5273,24 +5362,9 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: CX.mint,
   },
-  tipSliderTicksRow: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    top: 0,
-    height: 32,
-  },
-  tipSliderTick: {
-    position: "absolute",
-    bottom: 9,
-    width: 2,
-    height: 9,
-    backgroundColor: "rgba(45, 181, 160, 0.45)",
-    borderRadius: 1,
-  },
   tipSliderThumb: {
     position: "absolute",
-    top: 6,
+    top: 4,
     width: 20,
     height: 20,
     borderRadius: 10,
@@ -5306,8 +5380,8 @@ const styles = StyleSheet.create({
   tipSliderLabelsRow: {
     position: "relative",
     width: "100%",
-    height: 22,
-    marginTop: 6,
+    height: 18,
+    marginTop: 4,
   },
   tipSliderLabelHitAbs: {
     position: "absolute",
@@ -5316,42 +5390,8 @@ const styles = StyleSheet.create({
     minWidth: 28,
     alignItems: "center",
   },
-  tipSliderLabel: { fontSize: 11, fontWeight: "600", color: "#64748B", textAlign: "center" },
+  tipSliderLabel: { fontSize: 11, fontWeight: "600", color: "#94A3B8", textAlign: "center" },
   tipSliderLabelActive: { color: CX.mintDark, fontWeight: "800" },
-  tipCardOtherRow: { marginTop: 6, alignSelf: "flex-start", paddingVertical: 0 },
-  tipCardOtherText: { fontSize: 12, fontWeight: "700", color: CX.mint },
-  tipCustomInputRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    backgroundColor: "#FAFAFA",
-  },
-  tipCustomRupee: { fontSize: 15, fontWeight: "800", marginRight: 4, color: "#111827" },
-  tipCustomInput: {
-    flex: 1,
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#111827",
-    paddingVertical: 0,
-    ...Platform.select({ android: { paddingVertical: 0 } }),
-  },
-  tipCardFooterBar: {
-    marginTop: 8,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    backgroundColor: "#EDE9FE",
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-  },
-  tipCardFooterLabel: { fontSize: 13, fontWeight: "700", color: "#374151" },
-  tipCardFooterValue: { fontSize: 15, fontWeight: "800", color: CX.mintDark },
   donationMealBadge: {
     position: "absolute",
     top: -6,
@@ -5366,7 +5406,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   feedingIndiaCard: {
-    borderRadius: 16,
+    borderRadius: 14,
     overflow: "hidden",
     borderWidth: 1,
     borderColor: "#E2E8F0",
@@ -5380,9 +5420,9 @@ const styles = StyleSheet.create({
   feedingIndiaHero: {
     flexDirection: "row",
     alignItems: "flex-start",
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 18,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 10,
     overflow: "hidden",
   },
   feedingIndiaHeroDecor: {
@@ -5409,64 +5449,46 @@ const styles = StyleSheet.create({
   feedingIndiaHeroTextWrap: { flex: 1, minWidth: 0, zIndex: 1, paddingRight: 6 },
   feedingIndiaTitleRow: { flexDirection: "row", alignItems: "flex-start", gap: 4 },
   feedingIndiaTitleTextBlock: { flex: 1, minWidth: 0 },
-  feedingIndiaHeadline: { lineHeight: 24 },
-  feedingIndiaJoin: { fontSize: 15, fontWeight: "600", color: "#1E293B" },
-  feedingIndiaBrand: { fontSize: 16, fontWeight: "800", color: "#0F172A" },
+  feedingIndiaHeadline: { lineHeight: 20 },
+  feedingIndiaJoin: { fontSize: 13, fontWeight: "600", color: "#1E293B" },
+  feedingIndiaBrand: { fontSize: 14, fontWeight: "800", color: "#0F172A" },
   feedingIndiaHeart: { fontSize: 14, color: "#EF4444" },
   feedingIndiaInfoHit: { padding: 2, marginTop: -2 },
   feedingIndiaTagline: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "500",
     color: "#475569",
-    marginTop: 8,
-    lineHeight: 17,
+    marginTop: 4,
+    lineHeight: 15,
   },
   feedingIndiaArt: {
-    width: 96,
-    height: 76,
-    marginLeft: 4,
-    borderRadius: 14,
-    overflow: "hidden",
-    position: "relative",
+    width: 72,
+    height: 58,
+    marginLeft: 0,
+    marginTop: -2,
+    alignItems: "center",
+    justifyContent: "center",
     zIndex: 1,
+    backgroundColor: "transparent",
   },
-  feedingIndiaArtGradient: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  feedingIndiaArtIconsRow: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    paddingHorizontal: 6,
-  },
-  feedingArtIconRing: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: "rgba(255,255,255,0.94)",
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#0f172a",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.07,
-    shadowRadius: 2,
-    elevation: 2,
+  feedingIndiaArtImage: {
+    width: 68,
+    height: 54,
+    backgroundColor: "transparent",
   },
   feedingIndiaWhite: {
     backgroundColor: "#FFFFFF",
-    paddingHorizontal: 14,
-    paddingTop: 14,
-    paddingBottom: 10,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 8,
   },
   feedingIndiaDonateLineRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    marginBottom: 12,
+    marginBottom: 8,
   },
-  feedingIndiaDonateLine: { fontSize: 14, fontWeight: "500", color: "#334155", flex: 1 },
+  feedingIndiaDonateLine: { fontSize: 13, fontWeight: "500", color: "#334155", flex: 1 },
   feedingIndiaDonateBold: { fontWeight: "800", color: "#0F172A" },
   feedingInrRowOuter: {
     width: "100%",
@@ -5483,9 +5505,9 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   feedingInrPresetBox: {
-    width: 54,
-    height: 46,
-    borderRadius: 10,
+    width: 48,
+    height: 38,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: "#D1D5DB",
     backgroundColor: "#FFFFFF",
@@ -5497,7 +5519,7 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     backgroundColor: "#FFFFFF",
   },
-  feedingInrPresetAmt: { fontSize: 14, fontWeight: "700", color: "#111827" },
+  feedingInrPresetAmt: { fontSize: 13, fontWeight: "700", color: "#111827" },
   feedingInrCustomSlot: {
     flexShrink: 0,
     marginLeft: "auto",
@@ -5561,20 +5583,20 @@ const styles = StyleSheet.create({
   feedingDonationConfirmRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    marginTop: 14,
-    paddingTop: 12,
+    gap: 6,
+    marginTop: 8,
+    paddingTop: 8,
     borderTopWidth: 1,
     borderTopColor: "#E5E7EB",
   },
   feedingDonationConfirmText: {
     flex: 1,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "500",
     color: "#111827",
   },
   feedingDonationClearText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "700",
     color: CX.mint,
   },

@@ -4,16 +4,15 @@
  * Data: merchant_stores (banner_url / logo_url), real distance, rating from API only.
  */
 
-import React, { useCallback, useState, useEffect, useMemo } from "react";
+import React, { useCallback, useState, useEffect, useMemo, useRef } from "react";
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
-  Image,
   Dimensions,
-  ActivityIndicator,
   Platform,
+  ActivityIndicator,
 } from "react-native";
 import Animated, {
   useAnimatedStyle,
@@ -30,6 +29,14 @@ import { setStoreBookmark } from "@/services/merchant.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
+import { StoreBannerCarousel } from "@/components/StoreBannerCarousel";
+import { NearFastDeliveryMeta } from "@/components/NearFastDeliveryMeta";
+import {
+  buildStoreOpenStatusLabel,
+  formatOpenStatusTagText,
+} from "@/lib/storeOpenStatusLabel";
+import { toTimestamp } from "@/lib/storeScheduleUi";
+import { useScheduleTick } from "@/hooks/useScheduleTick";
 
 const { width } = Dimensions.get("window");
 const PAGE_PAD = 16;
@@ -40,64 +47,15 @@ const CARD_GAP = 18;
 
 const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
 
-function formatDistance(km?: number): string | null {
-  if (km == null || !Number.isFinite(km)) return null;
-  if (km < 1) return `${Math.round(km * 1000)} m`;
-  return `${km.toFixed(1)} km`;
-}
-
 function formatReviewCount(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}K+`;
   return `${n}+`;
 }
 
-const CLOSING_SOON_MIN = 15;
-
-function toTimestamp(v: string | number | null | undefined): number | null {
-  if (v == null) return null;
-  if (typeof v === "number") return v > 1e12 ? v : v * 1000;
-  const t = Date.parse(v);
-  return Number.isNaN(t) ? null : t;
-}
-
-function formatCountdown(msLeft: number): { hr: number; min: number; sec: number } {
-  if (msLeft <= 0) return { hr: 0, min: 0, sec: 0 };
-  const sec = Math.floor((msLeft / 1000) % 60);
-  const min = Math.floor((msLeft / (1000 * 60)) % 60);
-  const hr = Math.floor(msLeft / (1000 * 60 * 60));
-  return { hr, min, sec };
-}
-
-function countdownString(msLeft: number, compact = false): string {
-  if (msLeft <= 0) return compact ? "0 min" : "0 sec";
-  const { hr, min, sec } = formatCountdown(msLeft);
-  if (compact) {
-    const totalMin = hr * 60 + min;
-    if (totalMin < 1) return "< 1 min";
-    if (totalMin <= 60) return `${totalMin} min`;
-    return `${hr} Hr ${min} min`;
-  }
-  const parts: string[] = [];
-  if (hr > 0) parts.push(`${hr} Hr`);
-  parts.push(`${min} min`);
-  parts.push(`${sec} sec`);
-  return parts.join(" ");
-}
-
-/** Format timestamp as "10:00 AM" for "Opens at" on closed tag. */
-function formatNextOpenTime(ts: number): string {
-  const d = new Date(ts);
-  const today = new Date();
-  const isTomorrow =
-    d.getDate() !== today.getDate() ||
-    d.getMonth() !== today.getMonth() ||
-    d.getFullYear() !== today.getFullYear();
-  const timeStr = d.toLocaleTimeString("en-IN", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
-  return isTomorrow ? `Opens tomorrow ${timeStr}` : `Opens at ${timeStr}`;
+function isFreeDeliveryOfferText(text: string | null | undefined): boolean {
+  if (!text?.trim()) return true;
+  const t = text.trim().toLowerCase();
+  return /\bfree\s*delivery\b/.test(t) || /\bfree\s*del\b/.test(t);
 }
 
 export type GMRestaurantCardV2Props = {
@@ -105,16 +63,61 @@ export type GMRestaurantCardV2Props = {
   initialSaved?: boolean;
 };
 
-export function GMRestaurantCardV2({ merchant, initialSaved = false }: GMRestaurantCardV2Props) {
+function StoreOpenStatusBadge({
+  isOpen,
+  nextOpenAt,
+  nextCloseAt,
+}: {
+  isOpen: boolean;
+  nextOpenAt?: string | number | null;
+  nextCloseAt?: string | number | null;
+}) {
+  const needsTick = toTimestamp(nextOpenAt) != null || toTimestamp(nextCloseAt) != null;
+  const now = useScheduleTick(needsTick);
+  const openStatus = buildStoreOpenStatusLabel({
+    isOpen,
+    nextOpenAt,
+    nextCloseAt,
+    nowMs: now,
+  });
+
+  const isOpenSoon = !isOpen && openStatus.label === "Open soon";
+  const isClosingSoon = isOpen && openStatus.isClosingSoon;
+
+  return (
+    <View
+      style={[
+        styles.openClosedTag,
+        isClosingSoon
+          ? styles.openClosedTagRed
+          : isOpenSoon
+            ? styles.openClosedTagOpenSoon
+            : openStatus.isGreen
+              ? styles.openClosedTagGreen
+              : styles.openClosedTagRed,
+      ]}
+    >
+      <Text
+        style={[
+          styles.openClosedTagText,
+          (isClosingSoon || !openStatus.isGreen) && styles.openClosedTagTextRed,
+        ]}
+        numberOfLines={2}
+      >
+        {formatOpenStatusTagText(openStatus)}
+      </Text>
+    </View>
+  );
+}
+
+function GMRestaurantCardV2Inner({ merchant, initialSaved = false }: GMRestaurantCardV2Props) {
   const router = useRouter();
   const [saved, setSaved] = useState(initialSaved);
   const [savedLoading, setSavedLoading] = useState(false);
-  const [imageLoaded, setImageLoaded] = useState(false);
-  const [imageError, setImageError] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
   const scale = useSharedValue(1);
   const enterOpacity = useSharedValue(0);
   const enterTranslateY = useSharedValue(12);
+  const didPlayEnter = useRef(false);
 
   const liveStatusFromStore = useStoreStatusStore((s) => s.getStatus(merchant.id));
   const rawApi = (merchant.liveStatus ?? "").toString().trim().toUpperCase();
@@ -122,71 +125,22 @@ export function GMRestaurantCardV2({ merchant, initialSaved = false }: GMRestaur
     rawApi === "OPEN" ? "OPEN" : rawApi === "CLOSED" ? "CLOSED" : null;
   const liveStatus = liveStatusFromStore ?? apiStatus ?? "CLOSED";
   const isOpen = liveStatus === "OPEN";
-  const nextCloseTs = toTimestamp(merchant.nextCloseAt);
-  const nextOpenTs = toTimestamp(merchant.nextOpenAt);
   useEffect(() => {
     if (apiStatus) {
       useStoreStatusStore.getState().setStatusFromApi(merchant.id, apiStatus === "OPEN", apiStatus);
     }
   }, [merchant.id, apiStatus]);
 
-  useEffect(() => {
-    if (nextCloseTs == null && nextOpenTs == null) return;
-    const tick = () => setNow(Date.now());
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, [nextCloseTs, nextOpenTs]);
-
-  const openStatus = (() => {
-    if (isOpen) {
-      if (nextCloseTs != null) {
-        const msLeft = nextCloseTs - now;
-        const minLeft = msLeft / (60 * 1000);
-        if (minLeft <= 0) {
-          const sub = nextOpenTs != null ? formatNextOpenTime(nextOpenTs) : null;
-          return { label: "Closed", isGreen: false, sub };
-        }
-        if (minLeft <= CLOSING_SOON_MIN) {
-          const m = Math.ceil(minLeft);
-          return {
-            label: m <= 1 ? "Closes in next 15 min" : `Closes in ${m} min`,
-            isGreen: false,
-            sub: null,
-          };
-        }
-        return {
-          label: "Open",
-          isGreen: true,
-          sub: `Closes in ${countdownString(msLeft)}`,
-        };
-      }
-      return { label: "Open", isGreen: true, sub: null };
-    }
-    if (nextOpenTs != null) {
-      const msLeft = nextOpenTs - now;
-      if (msLeft <= 0) {
-        return { label: "Closed", isGreen: false, sub: formatNextOpenTime(nextOpenTs) };
-      }
-      return {
-        label: "Opens in",
-        isGreen: true,
-        sub: countdownString(msLeft),
-      };
-    }
-    return { label: "Closed", isGreen: false, sub: null };
-  })();
-
-  const heroUri = useMemo(
-    () => toAbsoluteImageUrl(merchant.displayImage ?? merchant.banner_url ?? null),
-    [merchant.displayImage, merchant.banner_url]
+  const bannerUri = useMemo(
+    () => toAbsoluteImageUrl(merchant.banner_url ?? merchant.displayImage ?? null),
+    [merchant.banner_url, merchant.displayImage]
   );
 
-  useEffect(() => {
-    setImageLoaded(false);
-    setImageError(false);
-  }, [heroUri]);
+  const galleryUris = useMemo(() => merchant.galleryImages ?? [], [merchant.galleryImages]);
 
   useEffect(() => {
+    if (didPlayEnter.current) return;
+    didPlayEnter.current = true;
     enterOpacity.value = withTiming(1, { duration: 320, easing: Easing.out(Easing.cubic) });
     enterTranslateY.value = withSpring(0, { damping: 20, stiffness: 200 });
   }, [enterOpacity, enterTranslateY]);
@@ -227,18 +181,15 @@ export function GMRestaurantCardV2({ merchant, initialSaved = false }: GMRestaur
     scale.value = withSpring(1, { damping: 18, stiffness: 260 });
   };
 
-  const hasImage = Boolean(heroUri && !imageError);
-  const distanceStr = formatDistance(merchant.distanceKm);
   const hasRating = merchant.avgRating != null && merchant.avgRating >= 0;
-  const ratingLabel =
-    hasRating && merchant.totalReviews != null && merchant.totalReviews > 0
-      ? `${Number(merchant.avgRating).toFixed(1)} (${formatReviewCount(merchant.totalReviews)})`
-      : hasRating
-        ? `${Number(merchant.avgRating).toFixed(1)}`
-        : "New";
-  const offerChips = merchant.offerText
-    ? merchant.offerText.split(/\s*\|\s*/).filter(Boolean).slice(0, 3)
-    : [];
+  const ratingValue = hasRating ? Number(merchant.avgRating).toFixed(1) : null;
+  const reviewLabel =
+    merchant.totalReviews != null && merchant.totalReviews > 0
+      ? `By ${formatReviewCount(merchant.totalReviews)}`
+      : null;
+  const rawOffer = merchant.offerText?.trim() || null;
+  const primaryOffer =
+    rawOffer && !isFreeDeliveryOfferText(rawOffer) ? rawOffer : null;
 
   return (
     <AnimatedTouchable
@@ -250,37 +201,24 @@ export function GMRestaurantCardV2({ merchant, initialSaved = false }: GMRestaur
     >
       {/* Edge-to-edge image with gradient overlay */}
       <View style={styles.imageWrap}>
-        {hasImage ? (
-          <>
-            <Image
-              source={{ uri: heroUri! }}
-              style={[
-                styles.image,
-                !imageLoaded && styles.imageOpaque,
-                !isOpen && styles.imageClosed,
-              ]}
-              resizeMode="cover"
-              onLoad={() => setImageLoaded(true)}
-              onError={() => setImageError(true)}
-            />
-            {!imageLoaded && (
-              <View style={styles.imagePlaceholder}>
-                <ActivityIndicator size="small" color="#fff" />
-              </View>
-            )}
-          </>
-        ) : (
-          <LinearGradient
-            colors={["#374151", "#1f2937"]}
-            style={StyleSheet.absoluteFill}
-          />
-        )}
+        <StoreBannerCarousel
+          bannerUri={bannerUri}
+          galleryUris={galleryUris}
+          width={CARD_WIDTH}
+          height={IMAGE_HEIGHT}
+          borderRadius={CARD_RADIUS}
+          initialBannerHoldMs={3000}
+          slideIntervalMs={5000}
+          slideDurationMs={700}
+          dimmed={!isOpen}
+          showDots
+          hidePlaceholderIcon
+        />
         <LinearGradient
           colors={["rgba(0,0,0,0.5)", "transparent", "transparent"]}
           style={styles.gradientOverlay}
         />
-        {/* Closed: dim overlay (20–30%) so card looks inactive; bookmark and tap still work */}
-        {!isOpen && <View style={styles.closedOverlay} pointerEvents="none" />}
+        {!isOpen ? <View style={styles.closedOverlay} pointerEvents="none" /> : null}
         {/* Bookmark floating */}
         <TouchableOpacity
           onPress={toggleBookmark}
@@ -298,14 +236,6 @@ export function GMRestaurantCardV2({ merchant, initialSaved = false }: GMRestaur
             />
           )}
         </TouchableOpacity>
-        {/* Live offer badge on image */}
-        {offerChips.length > 0 && (
-          <View style={styles.offerBadge}>
-            <Text style={styles.offerBadgeText} numberOfLines={1}>
-              🎁 {offerChips[0]}
-            </Text>
-          </View>
-        )}
         {/* Cuisine tag bottom-left */}
         {merchant.cuisines && merchant.cuisines.length > 0 && (
           <View style={styles.cuisineTag}>
@@ -314,60 +244,65 @@ export function GMRestaurantCardV2({ merchant, initialSaved = false }: GMRestaur
             </Text>
           </View>
         )}
-        {/* Open / Closed tag top-left on image — RED when closed (#FF4D4F, 12px radius, 600). */}
-        <View style={[styles.openClosedTag, openStatus.isGreen ? styles.openClosedTagGreen : styles.openClosedTagRed]}>
-          <Text style={[styles.openClosedTagText, !openStatus.isGreen && styles.openClosedTagTextRed]} numberOfLines={2}>
-            {openStatus.sub
-              ? openStatus.label === "Opens in"
-                ? `${openStatus.label} ${openStatus.sub}`
-                : `${openStatus.label} • ${openStatus.sub}`
-              : openStatus.label}
-          </Text>
-        </View>
+        <StoreOpenStatusBadge
+          isOpen={isOpen}
+          nextOpenAt={merchant.nextOpenAt}
+          nextCloseAt={merchant.nextCloseAt}
+        />
       </View>
 
       {/* Restaurant info */}
-      <View style={styles.content}>
+      <View style={[styles.content, !isOpen && styles.contentClosed]}>
         <View style={styles.titleRow}>
           <Text style={styles.name} numberOfLines={1}>
             {merchant.name}
           </Text>
-          <View style={[styles.ratingCapsule, !hasRating && styles.ratingCapsuleNew]}>
-            {hasRating && <Ionicons name="star" size={12} color="#fff" />}
-            <Text style={styles.ratingText}>{ratingLabel}</Text>
+          <View style={styles.ratingCol}>
+            <View style={[styles.ratingCapsule, !hasRating && styles.ratingCapsuleNew]}>
+              {hasRating ? <Ionicons name="star" size={11} color="#fff" /> : null}
+              <Text style={styles.ratingText}>{ratingValue ?? "New"}</Text>
+            </View>
+            {reviewLabel ? <Text style={styles.ratingBy}>{reviewLabel}</Text> : null}
           </View>
         </View>
-        <View style={styles.metaRow}>
-          {merchant.cuisines && merchant.cuisines.length > 0 && (
-            <Text style={styles.metaText} numberOfLines={1}>{merchant.cuisines.slice(0, 2).join(" • ")}</Text>
-          )}
-          {distanceStr && (
-            <Text style={styles.metaDot}> · </Text>
-          )}
-          {distanceStr && <Text style={styles.metaText}>{distanceStr}</Text>}
-          {merchant.deliveryTime && (
-            <>
-              <Text style={styles.metaDot}> · </Text>
-              <Text style={styles.metaText}>{merchant.deliveryTime}</Text>
-            </>
-          )}
-        </View>
-        {/* Offer badges row */}
-        {offerChips.length > 0 && (
-          <View style={styles.offersRow}>
-            {offerChips.slice(0, 3).map((text, i) => (
-              <View key={i} style={styles.offerPill}>
-                <Text style={styles.offerPillText} numberOfLines={1}>
-                  {i === 0 ? "🔥" : i === 1 ? "⚡" : "🎁"} {text}
-                </Text>
-              </View>
-            ))}
+        <NearFastDeliveryMeta
+          deliveryTime={merchant.deliveryTime}
+          distanceKm={merchant.distanceKm}
+          compact
+        />
+        {primaryOffer ? (
+          <View style={styles.offerRow}>
+            <View style={styles.offerPctCircle}>
+              <Text style={styles.offerPctSymbol}>%</Text>
+            </View>
+            <Text style={styles.offerRowText} numberOfLines={2}>
+              {primaryOffer}
+            </Text>
           </View>
-        )}
+        ) : null}
       </View>
     </AnimatedTouchable>
   );
 }
+
+export const GMRestaurantCardV2 = React.memo(GMRestaurantCardV2Inner, (prev, next) => {
+  const a = prev.merchant;
+  const b = next.merchant;
+  return (
+    prev.initialSaved === next.initialSaved &&
+    a.id === b.id &&
+    a.name === b.name &&
+    a.liveStatus === b.liveStatus &&
+    a.nextOpenAt === b.nextOpenAt &&
+    a.nextCloseAt === b.nextCloseAt &&
+    a.displayImage === b.displayImage &&
+    a.banner_url === b.banner_url &&
+    a.offerText === b.offerText &&
+    a.avgRating === b.avgRating &&
+    a.deliveryTime === b.deliveryTime &&
+    a.distanceKm === b.distanceKm
+  );
+});
 
 const styles = StyleSheet.create({
   card: {
@@ -419,21 +354,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  offerBadge: {
-    position: "absolute",
-    bottom: 12,
-    right: 12,
-    backgroundColor: "rgba(0,0,0,0.7)",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 10,
-    maxWidth: "60%",
-  },
-  offerBadgeText: {
-    fontSize: 12,
-    color: "#fff",
-    fontWeight: "600",
-  },
   cuisineTag: {
     position: "absolute",
     bottom: 12,
@@ -461,6 +381,12 @@ const styles = StyleSheet.create({
   openClosedTagGreen: {
     backgroundColor: "#16A34A",
   },
+  /** Store still closed — softer green until countdown ends. */
+  openClosedTagOpenSoon: {
+    backgroundColor: "rgba(22, 163, 74, 0.58)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.35)",
+  },
   openClosedTagRed: {
     backgroundColor: "#FF4D4F",
     borderRadius: 12,
@@ -468,14 +394,17 @@ const styles = StyleSheet.create({
   openClosedTagTextRed: {
     fontWeight: "600",
   },
+  contentClosed: {
+    opacity: 0.78,
+  },
   closedOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.25)",
+    backgroundColor: "rgba(0,0,0,0.32)",
     borderTopLeftRadius: CARD_RADIUS,
     borderTopRightRadius: CARD_RADIUS,
   },
   imageClosed: {
-    opacity: 0.88,
+    opacity: 0.82,
   },
   openClosedTagText: {
     fontSize: 12,
@@ -499,14 +428,26 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: GatiMitraColors.textPrimaryNew,
   },
+  ratingCol: {
+    alignItems: "flex-end",
+    gap: 2,
+  },
   ratingCapsule: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: GatiMitraColors.primaryMint,
+    backgroundColor: "#24963f",
     paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 10,
+    borderRadius: 8,
     gap: 4,
+    minWidth: 46,
+    justifyContent: "center",
+  },
+  ratingBy: {
+    fontSize: 11,
+    color: GatiMitraColors.textSecondary,
+    fontWeight: "500",
+    marginTop: 1,
   },
   ratingCapsuleNew: {
     backgroundColor: GatiMitraColors.deepMintStart,
@@ -516,36 +457,31 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontWeight: "600",
   },
-  metaRow: {
+  offerRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 6,
-    flexWrap: "wrap",
-  },
-  metaText: {
-    fontSize: 13,
-    color: GatiMitraColors.textSecondary,
-  },
-  metaDot: {
-    fontSize: 13,
-    color: GatiMitraColors.textSecondary,
-  },
-  offersRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
     gap: 8,
-    marginTop: 10,
+    marginTop: 6,
   },
-  offerPill: {
-    backgroundColor: "#FFF7ED",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    maxWidth: "100%",
+  offerPctCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: "#2563eb",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  offerPillText: {
-    fontSize: 12,
-    color: GatiMitraColors.textPrimaryNew,
+  offerPctSymbol: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#fff",
+    lineHeight: 15,
+  },
+  offerRowText: {
+    flex: 1,
+    fontSize: 13,
     fontWeight: "600",
+    color: "#4b5563",
+    lineHeight: 18,
   },
 });

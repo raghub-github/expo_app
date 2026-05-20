@@ -136,6 +136,7 @@ export async function etaRoutes(app: FastifyInstance) {
           drop_lat: string;
           drop_lon: string;
           distance_km: string | null;
+          prep_time_minutes: number | null;
         }>
       >`
         SELECT merchant_store_id,
@@ -143,7 +144,8 @@ export async function etaRoutes(app: FastifyInstance) {
                pickup_lon::text AS pickup_lon,
                drop_lat::text   AS drop_lat,
                drop_lon::text   AS drop_lon,
-               distance_km::text AS distance_km
+               distance_km::text AS distance_km,
+               prep_time_minutes
         FROM orders_core
         WHERE order_id = ${orderIdText}
         LIMIT 1
@@ -171,7 +173,15 @@ export async function etaRoutes(app: FastifyInstance) {
 
       // After rider pickup, prep time is 0 — we've already left the store.
       const noPrep = body.reason === "RIDER_PICKED_UP";
-      const prepMinutes = noPrep ? 0 : await resolveStorePrepMinutes(Number(row.merchant_store_id));
+      const orderPrep =
+        row.prep_time_minutes != null && Number(row.prep_time_minutes) > 0
+          ? Math.round(Number(row.prep_time_minutes))
+          : null;
+      const prepMinutes = noPrep
+        ? 0
+        : orderPrep != null
+          ? orderPrep
+          : await resolveStorePrepMinutes(Number(row.merchant_store_id));
       const noAssignment = body.reason === "RIDER_PICKED_UP" || body.reason === "RIDER_ASSIGNED";
 
       const snap = computeEta({

@@ -123,74 +123,103 @@ function OperatingDaysCard({ hours, className = "" }: { hours: any[]; className?
 
   function formatSlot(start: string, end: string) {
     if (!start || !end) return null;
-    return `${start} - ${end}`;
+    return `${start}–${end}`;
   }
 
   function minutesToHours(minutes: number) {
     const h = Math.floor(minutes / 60);
     const m = minutes % 60;
-    return `${h}h ${m}m`;
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
   }
 
   function abbreviateDayLabel(dayLabel: string): string {
     const abbreviations: Record<string, string> = {
-      'Monday': 'Mon',
-      'Tuesday': 'Tue',
-      'Wednesday': 'Wed',
-      'Thursday': 'Thu',
-      'Friday': 'Fri',
-      'Saturday': 'Sat',
-      'Sunday': 'Sun'
+      Monday: "Mon",
+      Tuesday: "Tue",
+      Wednesday: "Wed",
+      Thursday: "Thu",
+      Friday: "Fri",
+      Saturday: "Sat",
+      Sunday: "Sun",
     };
-    return abbreviations[dayLabel] || dayLabel;
+    return abbreviations[dayLabel] || dayLabel.slice(0, 3);
   }
 
   return (
     <div
       className={`bg-gray-50 rounded-lg p-3 border border-gray-200 w-full min-w-0 h-full min-h-0 flex flex-col ${className}`}
     >
-      <div className="flex items-center justify-between mb-2 shrink-0">
-        <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
-          <Clock size={16} className="text-blue-600" />
+      <div className="flex items-center justify-between gap-2 mb-1.5 shrink-0">
+        <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2 m-0">
+          <Clock size={16} className="text-blue-600 shrink-0" />
           Operating Days
         </h3>
         {totalMinutes > 0 && (
-          <span className="text-xs font-semibold text-blue-700 bg-blue-100 px-2 py-0.5 rounded">
-            Total: {minutesToHours(totalMinutes)}
+          <span className="text-xs font-semibold text-blue-800 bg-blue-100 border border-blue-200/80 px-2 py-0.5 rounded-md shrink-0">
+            {minutesToHours(totalMinutes)} / week
           </span>
         )}
       </div>
       {hours.length === 0 ? (
-        <div className="flex-1 min-h-0 flex items-center justify-center py-4">
-          <p className="text-xs text-gray-500">No operating hours configured</p>
+        <div className="flex-1 min-h-0 flex items-center justify-center py-6">
+          <p className="text-sm text-gray-500">No operating hours configured</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-1.5 flex-1 min-h-0 overflow-y-auto pr-0.5">
-          {hours.map((day: any) => (
-            <div key={day.day_label} className="flex items-center justify-between text-xs py-1 px-2 rounded border border-gray-100 bg-white">
-              <span className="font-medium w-16 text-gray-900">{abbreviateDayLabel(day.day_label)}</span>
-              {day.open ? (
-                <span className="text-green-700 font-semibold">Open</span>
-              ) : (
-                <span className="text-red-500 font-semibold">Closed</span>
-              )}
-              <span className="text-gray-700 flex flex-col items-start min-w-[120px]">
-                {day.open && (
-                  <>
-                    {formatSlot(day.slot1_start, day.slot1_end) && (
-                      <span className="text-xs leading-tight">{formatSlot(day.slot1_start, day.slot1_end)}</span>
-                    )}
-                    {formatSlot(day.slot2_start, day.slot2_end) && (
-                      <span className="text-xs leading-tight mt-0.5">{formatSlot(day.slot2_start, day.slot2_end)}</span>
-                    )}
-                    {day.total_duration_minutes > 0 && (
-                      <span className="text-xs text-gray-500 mt-0.5">({minutesToHours(day.total_duration_minutes)})</span>
-                    )}
-                  </>
-                )}
-              </span>
+        <div className="flex-1 min-h-0 overflow-y-auto pr-0.5">
+          <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
+            <div className="grid grid-cols-[3.5rem_4.5rem_1fr_3.5rem] gap-x-3 px-3 py-2 bg-gray-50/90 border-b border-gray-200 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+              <span>Day</span>
+              <span>Status</span>
+              <span>Hours</span>
+              <span className="text-right">Total</span>
             </div>
-          ))}
+            <div className="divide-y divide-gray-100">
+          {hours.map((day: any) => {
+            const slot1 = formatSlot(day.slot1_start, day.slot1_end);
+            const slot2 = formatSlot(day.slot2_start, day.slot2_end);
+            const hoursText =
+              day.open && (slot1 || slot2)
+                ? [slot1, slot2].filter(Boolean).join("  ·  ")
+                : null;
+            const dayTotal =
+              day.open && day.total_duration_minutes > 0
+                ? minutesToHours(day.total_duration_minutes)
+                : null;
+            return (
+              <div
+                key={day.day_label}
+                className="grid grid-cols-[3.5rem_4.5rem_1fr_3.5rem] gap-x-3 items-center px-3 py-2.5 hover:bg-gray-50/80 transition-colors"
+              >
+                <span className="text-xs font-medium text-gray-700">
+                  {abbreviateDayLabel(day.day_label)}
+                </span>
+                <span
+                  className={`text-xs font-semibold ${
+                    day.open ? "text-green-700" : "text-red-600"
+                  }`}
+                >
+                  {day.open ? "Open" : "Closed"}
+                </span>
+                <span
+                  className={`text-sm font-medium truncate ${
+                    hoursText ? "text-gray-900" : "text-gray-400"
+                  }`}
+                  title={hoursText ?? undefined}
+                >
+                  {hoursText ?? "—"}
+                </span>
+                <span
+                  className={`text-xs text-right ${
+                    dayTotal ? "text-gray-600 font-medium" : "text-gray-300"
+                  }`}
+                >
+                  {dayTotal ?? "—"}
+                </span>
+              </div>
+            );
+          })}
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -1081,9 +1110,10 @@ export default function ProfilePage() {
                   <div className="p-3">
                     <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)] gap-3 lg:gap-4 lg:items-stretch">
                       
-                      {/* Left: row1 Store Details (2 cols) | Operating Days; row2 Location | Area Manager | Store Info */}
-                      <div className="min-w-0 grid grid-cols-1 lg:grid-cols-3 gap-3 lg:gap-4 lg:items-stretch">
-                        <div className="min-w-0 flex min-h-0 lg:h-full lg:col-span-2">
+                      {/* Left: row1 Store Details | Operating Days; row2 Location (full); row3 Area Manager | Store Info (50/50) */}
+                      <div className="min-w-0 flex flex-col gap-3 lg:gap-4">
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 lg:gap-4 lg:items-stretch">
+                        <div className="min-w-0 flex min-h-0 lg:h-full">
                         <div className="bg-gray-50 rounded-lg p-3 border border-gray-200 flex flex-col min-h-0 h-full w-full min-w-0">
                           <div className="flex items-center justify-between mb-1.5 shrink-0">
                             <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2 m-0">
@@ -1282,15 +1312,16 @@ export default function ProfilePage() {
                         <div className="min-w-0 flex min-h-0 lg:h-full">
                           <OperatingDaysCard hours={operatingHours} />
                         </div>
+                        </div>
 
-                        <div className="min-w-0 flex min-h-0 lg:h-full">
-                        <div className="bg-gray-50 rounded-lg p-2.5 border border-gray-200 flex flex-col min-h-0 h-full w-full min-w-0">
+                        <div className="min-w-0 w-full">
+                        <div className="bg-gray-50 rounded-lg p-3 border border-gray-200 flex flex-col min-h-0 w-full min-w-0">
                           <h3 className="text-sm font-semibold text-gray-900 mb-1.5 flex items-center gap-2 shrink-0">
                             <MapPin size={16} className="text-blue-600" />
                             Location
                           </h3>
-                          <div className="grid grid-cols-2 gap-x-2 gap-y-1 flex-1 min-h-0 overflow-y-auto content-start">
-                            <div className="col-span-2 min-w-0">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-1.5 flex-1 min-h-0 overflow-y-auto content-start">
+                            <div className="sm:col-span-2 lg:col-span-3 min-w-0">
                               <CompactEditableRow
                                 dense
                                 label="Full Address"
@@ -1353,7 +1384,7 @@ export default function ProfilePage() {
                               onCancel={revertFieldFromStore}
                               isSaving={savingField === 'postal_code'}
                             />
-                            <div className="col-span-2 grid grid-cols-2 gap-x-2 gap-y-1">
+                            <div className="sm:col-span-2 lg:col-span-3 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5">
                               <CompactEditableRow
                                 dense
                                 label="Latitude"
@@ -1383,8 +1414,9 @@ export default function ProfilePage() {
                         </div>
                         </div>
 
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 lg:gap-4 lg:items-stretch">
                         <div className="min-w-0 flex min-h-0 lg:h-full">
-                        <div className="bg-gray-50 rounded-lg p-2.5 border border-gray-200 w-full min-w-0 h-full flex flex-col min-h-0">
+                        <div className="bg-gray-50 rounded-lg p-3 border border-gray-200 w-full min-w-0 h-full flex flex-col min-h-0">
                           <h3 className="text-sm font-semibold text-gray-900 mb-1.5 flex items-center gap-2 shrink-0">
                             <User size={16} className="text-blue-600" />
                             Area Manager
@@ -1426,7 +1458,7 @@ export default function ProfilePage() {
                         </div>
 
                         <div className="min-w-0 flex min-h-0 lg:h-full">
-                        <div className="bg-gray-50 rounded-lg p-2.5 border border-gray-200 w-full min-w-0 h-full flex flex-col min-h-0">
+                        <div className="bg-gray-50 rounded-lg p-3 border border-gray-200 w-full min-w-0 h-full flex flex-col min-h-0">
                           <h3 className="text-sm font-semibold text-gray-900 mb-1.5 flex items-center gap-2 shrink-0">
                             <Activity size={16} className="text-blue-600" />
                             Store Info
@@ -1491,6 +1523,7 @@ export default function ProfilePage() {
                               </label>
                             </div>
                           </div>
+                        </div>
                         </div>
                         </div>
                       </div>

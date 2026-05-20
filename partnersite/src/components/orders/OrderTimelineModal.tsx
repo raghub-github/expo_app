@@ -80,6 +80,9 @@ export function OrderTimelineModal({
   const [error, setError] = useState<string | null>(null);
   const [riderReachedAt, setRiderReachedAt] = useState<string | null>(null);
   const [actions, setActions] = useState<MerchantOrderActionForTimeline[]>([]);
+  const [timelineEntries, setTimelineEntries] = useState<
+    Array<{ status: string; occurred_at: string; status_message?: string | null }>
+  >([]);
   const [actorDetail, setActorDetail] = useState<TimelineActorDetail | null>(null);
   const [actorOpen, setActorOpen] = useState(false);
 
@@ -90,8 +93,12 @@ export function OrderTimelineModal({
 
   const merchantSteps = useMemo(() => {
     if (!order || !isMerchant) return [];
-    return buildMerchantVisibleTimeline(order, { riderReachedAt });
-  }, [order, isMerchant, riderReachedAt]);
+    return buildMerchantVisibleTimeline(order, {
+      riderReachedAt,
+      actions,
+      timelineEntries,
+    });
+  }, [order, isMerchant, riderReachedAt, actions, timelineEntries]);
 
   useEffect(() => {
     if (!open) return;
@@ -145,7 +152,7 @@ export function OrderTimelineModal({
     return () => {
       cancelled = true;
     };
-  }, [open, isMerchant, orderFoodId, storeId]);
+  }, [open, isMerchant, orderFoodId, storeId, resolvedTimelineUrl]);
 
   useEffect(() => {
     if (isMerchant || !open || orderFoodId <= 0) {
@@ -179,14 +186,17 @@ export function OrderTimelineModal({
     };
   }, [open, orderFoodId, resolvedTimelineUrl, isMerchant]);
 
-  const handleView = (action: 'accepted' | 'ready') => {
+  const handleView = (action: 'accepted' | 'ready' | 'cancelled') => {
     if (!order) return;
     if (action === 'accepted') {
       const act = findActionForStep(actions, ['ACCEPTED']);
       setActorDetail(parseActorDetailFromAction(act, order.accepted_by_label));
-    } else {
+    } else if (action === 'ready') {
       const act = findActionForStep(actions, ['READY_FOR_PICKUP', 'READY', 'PREPARED']);
       setActorDetail(parseActorDetailFromAction(act));
+    } else {
+      const act = findActionForStep(actions, ['CANCELLED']);
+      setActorDetail(parseActorDetailFromAction(act, order.cancelled_by_label ?? order.rejected_reason));
     }
     setActorOpen(true);
   };

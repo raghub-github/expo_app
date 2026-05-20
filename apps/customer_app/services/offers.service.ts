@@ -39,8 +39,18 @@ export type StoreOffersResponse = {
   platform_offers: PlatformOfferItem[];
 };
 
+export type HomeBannerOffer = {
+  id: string;
+  store_id: string;
+  store_name: string | null;
+  title: string;
+  sub: string;
+  kind: "merchant" | "platform";
+  source_offer_id: number;
+};
+
 export type FeaturedOffersResponse = {
-  offers: PlatformOfferItem[];
+  offers: HomeBannerOffer[];
 };
 
 export const offersService = {

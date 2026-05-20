@@ -65,8 +65,8 @@ const genderSchema = z.enum(["male", "female", "prefer_not_to_say"]);
 const profileResponseSchema = z.object({
   profile_completed: z.boolean(),
   customer_id: z.string().nullable().optional(),
-  user_id: z.string().optional(),
-  mobile_number: z.string().optional(),
+  user_id: z.string().nullable().optional(),
+  mobile_number: z.string().nullable().optional(),
   full_name: z.string().nullable(),
   email: z.string().nullable(),
   age_group: z.string().nullable(),
@@ -112,8 +112,8 @@ const patchBodySchema = z.object({
 function toResponseFromUserProfile(row: typeof userProfiles.$inferSelect) {
   return {
     profile_completed: row.profileCompleted,
-    user_id: row.userId,
-    mobile_number: row.mobileNumber,
+    user_id: row.userId ?? null,
+    mobile_number: row.mobileNumber ?? null,
     full_name: row.fullName ?? null,
     email: row.email ?? null,
     age_group: row.ageGroup ?? null,
@@ -126,12 +126,18 @@ function toResponseFromUserProfile(row: typeof userProfiles.$inferSelect) {
   };
 }
 
+function safeCoord(v: string | number | null | undefined): number | null {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 function toResponseFromCustomer(row: typeof customers.$inferSelect) {
   const profileCompleted = row.profileCompleted ?? !!(row.fullName && row.email && row.fullName !== "Pending");
   return {
     profile_completed: profileCompleted,
-    customer_id: row.customerId,
-    user_id: row.customerId,
+    customer_id: row.customerId ?? null,
+    user_id: row.customerId ?? null,
     mobile_number: row.primaryMobile ?? null,
     full_name: row.fullName ?? null,
     email: row.email ?? null,
@@ -149,8 +155,8 @@ function toResponseFromCustomer(row: typeof customers.$inferSelect) {
     state: row.state ?? null,
     pincode: row.pincode ?? null,
     country: row.country ?? null,
-    latitude: row.latitude != null ? Number(row.latitude) : null,
-    longitude: row.longitude != null ? Number(row.longitude) : null,
+    latitude: safeCoord(row.latitude),
+    longitude: safeCoord(row.longitude),
     created_at: row.createdAt?.toISOString(),
     updated_at: row.updatedAt?.toISOString(),
   };
@@ -296,7 +302,11 @@ export async function meRoutes(app: FastifyInstance) {
           // Auto-generate unique referral code when user completes profile (redirect to home) and doesn't have one yet
           let referralCodeToSet: string | null = existing.referralCode ?? null;
           if (newProfileCompleted && !existing.referralCode && effectiveFullName && effectiveFullName.trim().toLowerCase() !== "pending") {
-            referralCodeToSet = await generateUniqueReferralCode(db, effectiveFullName.trim(), customerId);
+            try {
+              referralCodeToSet = await generateUniqueReferralCode(db, effectiveFullName.trim(), customerId);
+            } catch (refErr) {
+              req.log?.warn?.({ err: refErr }, "referral code generation skipped");
+            }
           }
 
           const [updated] = await db

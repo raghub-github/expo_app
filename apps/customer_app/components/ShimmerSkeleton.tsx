@@ -102,33 +102,55 @@ export function ShimmerView({
   );
 }
 
-const CARD_WIDTH = SCREEN_WIDTH - 24 * 2;
-const HERO_ASPECT = 9 / 16;
-const HERO_HEIGHT = CARD_WIDTH * HERO_ASPECT;
-const CARD_BORDER_RADIUS = 18;
+/** Matches GMRestaurantCardV2 (PAGE_PAD 16, image 220, radius 20). */
+const HOME_CARD_PAD = 16;
+const HOME_CARD_WIDTH = SCREEN_WIDTH - HOME_CARD_PAD * 2;
+const HOME_CARD_IMAGE_H = 220;
+const HOME_CARD_RADIUS = 20;
+const HOME_CARD_GAP = 18;
 
 const skeletonStyles = StyleSheet.create({
   card: {
-    width: CARD_WIDTH,
+    width: HOME_CARD_WIDTH,
     alignSelf: "center",
-    backgroundColor: "#FFF",
-    borderRadius: CARD_BORDER_RADIUS,
+    marginBottom: HOME_CARD_GAP,
+    borderRadius: HOME_CARD_RADIUS,
     overflow: "hidden",
-    marginHorizontal: 24,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: "#E8E8E8",
+    backgroundColor: "#fff",
   },
   heroPlc: {
     width: "100%",
-    height: HERO_HEIGHT,
-    borderTopLeftRadius: CARD_BORDER_RADIUS,
-    borderTopRightRadius: CARD_BORDER_RADIUS,
+    height: HOME_CARD_IMAGE_H,
+    borderTopLeftRadius: HOME_CARD_RADIUS,
+    borderTopRightRadius: HOME_CARD_RADIUS,
   },
-  content: { padding: 16 },
-  line1: { height: 18, borderRadius: 4, width: "70%", marginBottom: 8 },
-  line2: { height: 13, borderRadius: 4, width: "50%", marginBottom: 8 },
-  line3: { height: 12, borderRadius: 4, width: "40%" },
+  content: { padding: 16, gap: 10 },
+  line1: { height: 18, borderRadius: 8, width: "72%" },
+  line2: { height: 14, borderRadius: 8, width: "48%" },
+  line3: { height: 12, borderRadius: 8, width: "36%" },
+});
+
+const categoryRailSkeletonStyles = StyleSheet.create({
+  scroll: {
+    paddingLeft: HOME_CARD_PAD,
+    flexDirection: "row",
+    alignItems: "flex-start",
+  },
+  column: {
+    flexDirection: "column",
+    alignItems: "center",
+  },
+  label: {
+    marginTop: 6,
+    borderRadius: 6,
+  },
+});
+
+const offerBannerSkeletonStyles = StyleSheet.create({
+  wrap: {
+    borderRadius: 20,
+    overflow: "hidden",
+  },
 });
 
 const rowSkeletonStyles = StyleSheet.create({
@@ -146,29 +168,117 @@ const rowSkeletonStyles = StyleSheet.create({
   info: { flex: 1, padding: 16, justifyContent: "center" },
 });
 
-/** Restaurant card skeleton – hero + content matching new RestaurantCard layout. */
-export function RestaurantCardSkeleton() {
+/** Restaurant card skeleton — aligned with GMRestaurantCardV2 dimensions. */
+export function RestaurantCardSkeleton({ cardWidth = HOME_CARD_WIDTH }: { cardWidth?: number }) {
   return (
-    <ShimmerView style={skeletonStyles.card}>
-      <View style={skeletonStyles.heroPlc} />
+    <View style={[skeletonStyles.card, cardWidth != null ? { width: cardWidth } : null]}>
+      <GMSkeleton style={skeletonStyles.heroPlc} />
       <View style={skeletonStyles.content}>
-        <View style={skeletonStyles.line1} />
-        <View style={skeletonStyles.line2} />
-        <View style={skeletonStyles.line3} />
+        <GMSkeleton style={skeletonStyles.line1} />
+        <GMSkeleton style={skeletonStyles.line2} />
+        <GMSkeleton style={skeletonStyles.line3} />
       </View>
-    </ShimmerView>
+    </View>
   );
 }
 
 /** List of N restaurant skeletons for "Restaurants near you". */
-export function RestaurantListSkeleton({ count = 4 }: { count?: number }) {
+export function RestaurantListSkeleton({
+  count = 4,
+  cardWidth,
+}: {
+  count?: number;
+  cardWidth?: number;
+}) {
   return (
     <>
       {Array.from({ length: count }).map((_, i) => (
-        <RestaurantCardSkeleton key={i} />
+        <RestaurantCardSkeleton key={i} cardWidth={cardWidth} />
       ))}
     </>
   );
+}
+
+/** Category rail placeholder — same column/circle sizes as loaded rail. */
+export function CategoryRailSkeleton({
+  columnCount = 4,
+  itemW,
+  columnGap,
+  circle,
+  rowGap = 10,
+}: {
+  columnCount?: number;
+  itemW: number;
+  columnGap: number;
+  circle: number;
+  rowGap?: number;
+}) {
+  return (
+    <View style={[categoryRailSkeletonStyles.scroll, { gap: columnGap }]}>
+      {Array.from({ length: columnCount }).map((_, col) => (
+        <View key={col} style={[categoryRailSkeletonStyles.column, { gap: rowGap }]}>
+          {[0, 1].map((row) => (
+            <View key={row} style={{ alignItems: "center", width: itemW }}>
+              <GMSkeleton
+                style={{
+                  width: circle,
+                  height: circle,
+                  borderRadius: circle / 2,
+                }}
+              />
+              <GMSkeleton
+                style={[
+                  categoryRailSkeletonStyles.label,
+                  { width: Math.max(40, itemW * 0.75), height: 12 },
+                ]}
+              />
+            </View>
+          ))}
+        </View>
+      ))}
+      <View style={{ width: HOME_CARD_PAD }} />
+    </View>
+  );
+}
+
+const LOVED_GRID_PAD = 16;
+const LOVED_GRID_GAP = 12;
+const LOVED_GRID_COLS = 2;
+const LOVED_GRID_CARD_W = Math.floor(
+  (SCREEN_WIDTH - LOVED_GRID_PAD * 2 - LOVED_GRID_GAP * (LOVED_GRID_COLS - 1)) / LOVED_GRID_COLS
+);
+
+/** 2-column grid skeleton for Loved by Customers. */
+export function LovedMerchantsGridSkeleton({ count = 4 }: { count?: number }) {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        flexWrap: "wrap",
+        paddingHorizontal: LOVED_GRID_PAD,
+        gap: LOVED_GRID_GAP,
+      }}
+    >
+      {Array.from({ length: count }).map((_, i) => (
+        <View key={i} style={{ width: LOVED_GRID_CARD_W }}>
+          <GMSkeleton style={{ width: "100%", height: 132, borderRadius: 12 }} />
+          <GMSkeleton style={{ height: 14, width: "90%", marginTop: 8, borderRadius: 6 }} />
+          <GMSkeleton style={{ height: 12, width: "65%", marginTop: 6, marginBottom: 8, borderRadius: 6 }} />
+        </View>
+      ))}
+    </View>
+  );
+}
+
+/** Featured offer banner skeleton (full width home card). */
+export function HomeOfferBannerSkeleton({
+  width,
+  height = 116,
+}: {
+  width: number;
+  height?: number;
+}) {
+  return <GMSkeleton style={[offerBannerSkeletonStyles.wrap, { width, height, borderRadius: 20 }]} />;
 }
 
 const menuSkeletonStyles = StyleSheet.create({

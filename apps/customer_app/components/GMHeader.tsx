@@ -34,6 +34,8 @@ export type GMHeaderProps = {
   minimal?: boolean;
   /** Location line for minimal header (e.g. "Current location" or address.primary) */
   locationLabel?: string;
+  /** Tighter vertical padding (food home — root already reserves status bar). */
+  compact?: boolean;
 };
 
 export function GMHeader({
@@ -49,7 +51,9 @@ export function GMHeader({
   searchElement,
   minimal = false,
   locationLabel = "Current location",
+  compact = false,
 }: GMHeaderProps) {
+  const bottomPad = compact ? 8 : HEADER_VERTICAL_PADDING;
   if (minimal) {
     return (
       <View style={[styles.wrap, styles.wrapInFlow, { paddingTop: topInset + HEADER_PADDING_TOP, paddingBottom: 6 }]}>
@@ -66,7 +70,7 @@ export function GMHeader({
   }
 
   return (
-    <View style={[styles.wrap, styles.wrapInFlow, { paddingTop: topInset + HEADER_PADDING_TOP, paddingBottom: HEADER_VERTICAL_PADDING }]}>
+    <View style={[styles.wrap, styles.wrapInFlow, { paddingTop: topInset + HEADER_PADDING_TOP, paddingBottom: bottomPad }]}>
       <View style={[styles.inner, styles.innerSolid]}>
         <TouchableOpacity onPress={onBack} style={styles.backBtn} hitSlop={12}>
           <Ionicons name="arrow-back" size={24} color={GatiMitraColors.textPrimaryNew} />
