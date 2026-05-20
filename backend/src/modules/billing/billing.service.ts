@@ -76,6 +76,11 @@ export type ComputeBillInput = {
   checkoutAudience?: "CUSTOMER" | "MERCHANT" | "RIDER";
   /** Prior redemptions of this coupon by the current actor (per-user cap). Omitted = 0 for quotes. */
   couponRedemptionsByUser?: number;
+  /** Checkout UI: apply this platform offer instead of auto-picking the best. */
+  selectedPlatformOfferId?: number | null;
+  selectedMerchantOfferId?: number | null;
+  /** When true, skip auto platform/merchant offers (customer tapped Remove). */
+  forceNoAutoOffer?: boolean;
 };
 
 export type ComputeBillResult =
@@ -385,6 +390,9 @@ export async function computeBillForOrder(
     checkoutAudience,
     couponRedemptionsByUser: input.couponRedemptionsByUser,
     merchantOfferUsagesByUser: undefined,
+    selectedPlatformOfferId: input.selectedPlatformOfferId ?? null,
+    selectedMerchantOfferId: input.selectedMerchantOfferId ?? null,
+    forceNoAutoOffer: input.forceNoAutoOffer === true,
   };
 
   // Load per-user merchant offer usage counts outside the shared dataset cache.

@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Volume2, VolumeX, Clock } from 'lucide-react';
+import { X, Volume2, VolumeX, Clock, Minus, Plus, UtensilsCrossed } from 'lucide-react';
 import { toast } from 'sonner';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import { fetchStoreById } from '@/lib/database';
@@ -20,6 +20,17 @@ import {
   type PartnerOrderActionToastKind,
 } from '@/lib/partner-order-action-toast';
 import { RejectOrderSidesheet } from '@/components/orders/RejectOrderSidesheet';
+import {
+  PREP_TIME_MIN,
+  PREP_TIME_MAX,
+  PLATFORM_DEFAULT_PREP_MINUTES,
+  clampPrepMinutes,
+  resolveStoreDefaultPrepMinutes,
+} from '@/lib/order-prep-time';
+
+const PREP_STEP_MINUTES = 5;
+/** Max line items shown in the accept popup; rest open in sidesheet. */
+const MAX_PREVIEW_ITEMS = 6;
 
 const MUTE_KEY = 'partner_incoming_order_mute_sound';
 const DEFAULT_ALERT_SOUND = '/notification.wav';
@@ -162,6 +173,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const [muted, setMuted] = useState(false);
   const [modalOrder, setModalOrder] = useState<OrdersFoodRow | null>(null);
   const [rejectOpen, setRejectOpen] = useState(false);
+  const [itemsSheetOpen, setItemsSheetOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [settings, setSettings] = useState<AcceptanceSettings>(DEFAULT_SETTINGS);
@@ -174,6 +186,9 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   /** Prevents duplicate auto-cancel + toast when the acceptance timer hits zero. */
   const autoCancelFiredForOrderIdRef = useRef<number | null>(null);
   const [storeOpsSettings, setStoreOpsSettings] = useState<{ auto_accept_orders: boolean; auto_accept_time_seconds: number; show_floating_orders: boolean } | null>(null);
+  const [prepMinutes, setPrepMinutes] = useState(PLATFORM_DEFAULT_PREP_MINUTES);
+  const [maxPrepMinutes, setMaxPrepMinutes] = useState(PREP_TIME_MAX);
+  const storeDefaultPrepRef = useRef(PLATFORM_DEFAULT_PREP_MINUTES);
 
   const getDismissed = () => {
     if (typeof window === 'undefined') return new Set<number>();
@@ -277,11 +292,31 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
           auto_accept_time_seconds: typeof data.auto_accept_time_seconds === 'number' ? Math.max(0, Math.min(600, Math.floor(data.auto_accept_time_seconds))) : 30,
           show_floating_orders: data.show_floating_orders !== false,
         });
+        const maxPrep =
+          typeof data.max_preparation_time_minutes === 'number' && data.max_preparation_time_minutes >= PREP_TIME_MIN
+            ? Math.min(PREP_TIME_MAX, Math.floor(data.max_preparation_time_minutes))
+            : PREP_TIME_MAX;
+        setMaxPrepMinutes(maxPrep);
       } catch {
         setStoreOpsSettings(null);
       }
     })();
   }, [storeId]);
+
+  useEffect(() => {
+    if (!storeId) return;
+    void (async () => {
+      const s = await fetchStoreById(storeId);
+      const def = resolveStoreDefaultPrepMinutes(s?.avg_preparation_time_minutes);
+      storeDefaultPrepRef.current = def;
+      setPrepMinutes(def);
+    })();
+  }, [storeId]);
+
+  useEffect(() => {
+    if (!modalOrder) return;
+    setPrepMinutes(storeDefaultPrepRef.current);
+  }, [modalOrder?.order_id]);
 
   const fetchByFoodRow = useCallback(
     async (foodRowId: number) => {
@@ -512,6 +547,25 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
 
   const isBig = isBulkOrderFlag(modalOrder);
 
+  const stepPrep = useCallback(
+    (delta: number) => {
+      setPrepMinutes((prev) => {
+        const next = clampPrepMinutes(prev + delta, storeDefaultPrepRef.current);
+        return Math.max(PREP_TIME_MIN, Math.min(maxPrepMinutes, next));
+      });
+    },
+    [maxPrepMinutes]
+  );
+
+  const orderItems = modalOrder ? (Array.isArray(modalOrder.items) ? modalOrder.items : []) : [];
+  const itemCount = orderItems.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+  const previewItems = orderItems.slice(0, MAX_PREVIEW_ITEMS);
+  const moreItemsCount = Math.max(0, orderItems.length - MAX_PREVIEW_ITEMS);
+
+  useEffect(() => {
+    setItemsSheetOpen(false);
+  }, [modalOrder?.order_id]);
+
   useEffect(() => {
     if (!modalOrder) {
       autoCancelFiredForOrderIdRef.current = null;
@@ -554,6 +608,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     if (modalOrder) addDismissed(modalOrder.order_id);
     setModalOrder(null);
     setRejectOpen(false);
+    setItemsSheetOpen(false);
   };
 
   const showOrderActionToast = (kind: PartnerOrderActionToastKind, orderId: number) => {
@@ -574,7 +629,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
 
   const patchStatus = async (
     status: 'ACCEPTED' | 'CANCELLED',
-    extra?: { rejected_reason?: string },
+    extra?: { rejected_reason?: string; preparation_time_minutes?: number },
     mode: 'auto' | 'manual' = 'manual'
   ) => {
     if (!storeId || !modalOrder) return;
@@ -647,7 +702,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       const cur = String(modalOrder.order_status || 'CREATED').toUpperCase();
       if (cur !== 'CREATED' && cur !== 'NEW') return;
       if (actionLoading) return;
-      void patchStatus('ACCEPTED', undefined, 'auto');
+      void patchStatus('ACCEPTED', { preparation_time_minutes: prepMinutes }, 'auto');
     }, secs * 1000);
     return () => {
       if (autoAcceptTimerRef.current != null) {
@@ -674,14 +729,14 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
             aria-labelledby="partner-incoming-title"
           >
             <div className="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:rounded-2xl">
-              <div className="flex items-start justify-between gap-2 border-b border-gray-100 px-4 py-3">
-                <h2 id="partner-incoming-title" className="text-base font-semibold text-gray-900">
+              <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-4 py-3">
+                <h2 id="partner-incoming-title" className="text-lg font-bold text-gray-900">
                   1 new order
                 </h2>
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
-                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100"
+                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-semibold text-blue-600 hover:bg-blue-50"
                     onClick={() => persistMute(!muted)}
                     aria-label={muted ? 'Unmute' : 'Mute'}
                   >
@@ -699,94 +754,146 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                 </div>
               </div>
 
-              <div className="bg-violet-100 px-4 py-2 text-center text-xs font-bold uppercase tracking-wide text-violet-900">
-                GatiMitra · order at your store
+              <div className="bg-violet-100 px-4 py-2.5 text-center text-xs font-bold uppercase tracking-[0.12em] text-violet-900">
+                GatiMitra delivery
                 {modalOrder.order_type ? (
-                  <span className="mt-1 block text-[10px] font-semibold normal-case tracking-normal text-violet-800/95">
+                  <span className="mt-0.5 block text-[10px] font-semibold normal-case tracking-normal text-violet-800/90">
                     {String(modalOrder.order_type).replace(/_/g, ' ')}
                   </span>
                 ) : null}
               </div>
 
-              <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-                <div className="flex flex-wrap items-start justify-between gap-2 text-sm">
-                  <div>
-                    <span className="text-gray-500">ID </span>
-                    <MiniOrderId
-                      formattedOrderId={modalOrder.formatted_order_id}
-                      fallbackOrderId={modalOrder.order_id}
-                    />
-                  </div>
-                  <div className="text-gray-600">
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-3 sm:px-6">
+                <div className="flex items-start justify-between gap-2">
+                  <MiniOrderId
+                    formattedOrderId={modalOrder.formatted_order_id}
+                    fallbackOrderId={modalOrder.order_id}
+                  />
+                  <span className="text-sm font-medium text-gray-600">
                     {new Date(modalOrder.created_at).toLocaleTimeString('en-IN', {
                       hour: 'numeric',
                       minute: '2-digit',
                     })}
-                  </div>
-                </div>
-                <div className="mt-2 text-sm text-gray-700">
-                  {modalOrder.customer_name ? (
-                    <>
-                      <span className="font-semibold text-gray-900">
-                        {(() => {
-                          const n = Number((modalOrder as any).customer_order_count ?? 0);
-                          if (Number.isFinite(n) && n > 0) {
-                            return `${n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : `${n}th`} order by ${modalOrder.customer_name}`;
-                          }
-                          return `Order by ${modalOrder.customer_name}`;
-                        })()}
-                      </span>
-                    </>
-                  ) : (
-                    <span className="font-semibold text-gray-900">New order</span>
-                  )}
+                  </span>
                 </div>
 
+                <p className="mt-2 text-sm text-gray-800">
+                  {modalOrder.customer_name ? (
+                    <span className="font-semibold text-gray-900">
+                      {(() => {
+                        const n = Number((modalOrder as any).customer_order_count ?? 0);
+                        if (Number.isFinite(n) && n > 0) {
+                          return `${n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : `${n}th`} order by ${modalOrder.customer_name}`;
+                        }
+                        return `Order by ${modalOrder.customer_name}`;
+                      })()}
+                    </span>
+                  ) : (
+                    <span className="font-semibold text-gray-900">New customer order</span>
+                  )}
+                </p>
+
+                {modalOrder.requires_utensils ? (
+                  <p className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700">
+                    <UtensilsCrossed size={14} aria-hidden />
+                    Send cutlery
+                  </p>
+                ) : (
+                  <p className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-gray-500">
+                    <UtensilsCrossed size={14} aria-hidden />
+                    Don&apos;t send cutlery
+                  </p>
+                )}
+
                 {isBig ? (
-                  <div className="mt-4 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3">
+                  <div className="mt-3 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3">
                     <Clock className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" aria-hidden />
                     <div>
-                      <p className="text-sm font-bold text-amber-900">BIG ORDER!</p>
+                      <p className="text-sm font-bold text-amber-900">Big order</p>
                       <p className="mt-0.5 text-xs leading-snug text-amber-900/90">
-                        This order is marked as a bulk order. Set prep time and dispatch details in the next step
-                        for a smoother handoff.
+                        Allow extra prep time before you accept.
                       </p>
                     </div>
                   </div>
                 ) : null}
 
-                {modalOrder.requires_utensils ? (
-                  <p className="mt-3 text-xs font-medium text-emerald-700">Include cutlery / utensils</p>
-                ) : null}
-
-                <ul className="mt-3 divide-y divide-gray-100 border-t border-gray-100">
-                  {(Array.isArray(modalOrder.items) ? modalOrder.items : []).map((it, idx) => (
-                    <li key={idx} className="flex gap-2 py-2.5 text-sm">
-                      <div className="min-w-0 flex-1">
-                        <span className="font-medium text-gray-900">
-                          {it.quantity} × {it.name}
-                        </span>
+                <div className="mt-4 space-y-2 border-t border-gray-100 pt-3 text-sm">
+                  {previewItems.map((it, idx) => (
+                    <div key={idx} className="flex justify-between gap-4">
+                      <span className="min-w-0 flex-1 font-medium text-gray-900">
+                        {it.quantity} × {it.name}
                         {it.customizations?.length ? (
-                          <p className="text-xs text-gray-500">{it.customizations.join(' · ')}</p>
+                          <span className="block text-xs font-normal text-gray-500">
+                            {it.customizations.join(' · ')}
+                          </span>
                         ) : null}
-                      </div>
-                      <div className="shrink-0 font-medium text-gray-800">
-                        ₹{Number(it.total ?? 0).toLocaleString('en-IN')}
-                      </div>
-                    </li>
+                      </span>
+                      <span className="shrink-0 tabular-nums text-gray-800">
+                        ₹{Number(it.total ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
                   ))}
-                </ul>
+                  {moreItemsCount > 0 ? (
+                    <button
+                      type="button"
+                      className="w-full rounded-lg border border-dashed border-violet-300 bg-violet-50 py-2.5 text-sm font-bold text-violet-800 hover:bg-violet-100"
+                      onClick={() => setItemsSheetOpen(true)}
+                    >
+                      + {moreItemsCount} more item{moreItemsCount === 1 ? '' : 's'}
+                    </button>
+                  ) : null}
+                  <div className="flex justify-between border-t border-dashed border-gray-200 pt-2 text-sm">
+                    <span className="text-gray-600">
+                      {itemCount} item{itemCount === 1 ? '' : 's'}
+                    </span>
+                    <span className="tabular-nums text-gray-800">
+                      ₹{orderTotalRs(modalOrder).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div className="flex justify-between border-t border-gray-200 pt-2 text-base font-bold text-gray-900">
+                    <span>Total bill</span>
+                    <span className="tabular-nums">
+                      ₹{orderTotalRs(modalOrder).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                </div>
 
-                <p className="mt-2 text-right text-sm font-semibold text-gray-900">
-                  Total ₹{orderTotalRs(modalOrder).toLocaleString('en-IN')}
-                </p>
+                <div className="mt-5 border-t border-gray-100 pt-4">
+                  <p className="text-sm font-semibold text-gray-900">Set food preparation time</p>
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    Shown to the customer on order tracking ({PREP_TIME_MIN}–{maxPrepMinutes} min)
+                  </p>
+                  <div className="mt-3 flex overflow-hidden rounded-lg border border-gray-300">
+                    <button
+                      type="button"
+                      className="flex w-14 items-center justify-center border-r border-gray-300 bg-white py-3 text-gray-800 hover:bg-gray-50 disabled:opacity-40"
+                      disabled={prepMinutes <= PREP_TIME_MIN || actionLoading}
+                      onClick={() => stepPrep(-PREP_STEP_MINUTES)}
+                      aria-label="Decrease preparation time"
+                    >
+                      <Minus size={18} />
+                    </button>
+                    <div className="flex flex-1 items-center justify-center bg-white py-3 text-center text-sm font-bold text-gray-900">
+                      {prepMinutes} mins
+                    </div>
+                    <button
+                      type="button"
+                      className="flex w-14 items-center justify-center border-l border-gray-300 bg-white py-3 text-gray-800 hover:bg-gray-50 disabled:opacity-40"
+                      disabled={prepMinutes >= maxPrepMinutes || actionLoading}
+                      onClick={() => stepPrep(PREP_STEP_MINUTES)}
+                      aria-label="Increase preparation time"
+                    >
+                      <Plus size={18} />
+                    </button>
+                  </div>
+                </div>
               </div>
 
-              <div className="flex gap-2 border-t border-gray-100 bg-gray-50 px-4 py-3">
+              <div className="flex gap-2 border-t border-gray-100 bg-white px-4 py-3">
                 <button
                   type="button"
                   disabled={actionLoading}
-                  className="flex-1 rounded-xl border-2 border-red-500 py-3 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
+                  className="flex-1 rounded-xl border-2 border-red-500 py-3.5 text-sm font-bold text-red-600 hover:bg-red-50 disabled:opacity-50"
                   onClick={() => setRejectOpen(true)}
                 >
                   Reject
@@ -794,11 +901,17 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                 <button
                   type="button"
                   disabled={actionLoading || secondsLeft <= 0}
-                  className="relative flex-[1.35] overflow-hidden rounded-xl bg-emerald-600 py-3 text-sm font-bold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
-                  onClick={() => void patchStatus('ACCEPTED', undefined, 'manual')}
+                  className="relative flex-[1.35] overflow-hidden rounded-xl bg-emerald-600 py-3.5 text-sm font-bold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
+                  onClick={() =>
+                    void patchStatus(
+                      'ACCEPTED',
+                      { preparation_time_minutes: prepMinutes },
+                      'manual'
+                    )
+                  }
                 >
                   <span
-                    className="absolute inset-y-0 left-0 bg-orange-500/35"
+                    className="absolute inset-y-0 left-0 bg-orange-500/35 transition-[width] duration-1000 ease-linear"
                     style={{
                       width: `${Math.min(
                         100,
@@ -822,6 +935,15 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
           </div>
         )}
 
+      <IncomingOrderItemsSidesheet
+        open={!!modalOrder && itemsSheetOpen && !rejectOpen}
+        order={modalOrder}
+        items={orderItems}
+        itemCount={itemCount}
+        totalRs={modalOrder ? orderTotalRs(modalOrder) : 0}
+        onClose={() => setItemsSheetOpen(false)}
+      />
+
       <RejectOrderSidesheet
         open={!!modalOrder && rejectOpen}
         order={modalOrder}
@@ -833,5 +955,116 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
         }}
       />
     </>
+  );
+}
+
+type OrderLineItem = {
+  quantity: number;
+  name: string;
+  total?: number;
+  customizations?: string[];
+};
+
+function IncomingOrderItemsSidesheet({
+  open,
+  order,
+  items,
+  itemCount,
+  totalRs,
+  onClose,
+}: {
+  open: boolean;
+  order: OrdersFoodRow | null;
+  items: OrderLineItem[];
+  itemCount: number;
+  totalRs: number;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
+  if (!open || !order || typeof document === 'undefined') return null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[120] flex justify-end" role="presentation">
+      <button
+        type="button"
+        className="absolute inset-0 bg-black/35 backdrop-blur-[1px]"
+        aria-label="Close item list"
+        onClick={onClose}
+      />
+      <aside
+        className="relative flex h-dvh w-full max-w-md flex-col border-l border-gray-200 bg-white shadow-2xl sm:max-w-lg"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="incoming-items-sheet-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
+          <div>
+            <h2 id="incoming-items-sheet-title" className="text-base font-bold text-gray-900">
+              All items
+            </h2>
+            <p className="mt-0.5 text-xs text-gray-500">
+              {itemCount} item{itemCount === 1 ? '' : 's'} · Order{' '}
+              {order.formatted_order_id ? (
+                <span className="font-mono font-semibold">{order.formatted_order_id}</span>
+              ) : (
+                `#${order.order_id}`
+              )}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="rounded-lg p-2 text-gray-500 hover:bg-gray-100"
+            aria-label="Close"
+            onClick={onClose}
+          >
+            <X size={20} />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3">
+          <ul className="space-y-3">
+            {items.map((it, idx) => (
+              <li key={idx} className="flex justify-between gap-3 border-b border-gray-50 pb-3 text-sm last:border-0">
+                <span className="min-w-0 flex-1 font-medium text-gray-900">
+                  {it.quantity} × {it.name}
+                  {it.customizations?.length ? (
+                    <span className="mt-0.5 block text-xs font-normal text-gray-500">
+                      {it.customizations.join(' · ')}
+                    </span>
+                  ) : null}
+                </span>
+                <span className="shrink-0 tabular-nums text-gray-800">
+                  ₹{Number(it.total ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="border-t border-gray-200 bg-gray-50 px-4 py-4">
+          <div className="flex justify-between text-base font-bold text-gray-900">
+            <span>Total bill</span>
+            <span className="tabular-nums">
+              ₹{totalRs.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+            </span>
+          </div>
+          <button
+            type="button"
+            className="mt-3 w-full rounded-xl border border-gray-300 bg-white py-2.5 text-sm font-semibold text-gray-800 hover:bg-gray-50"
+            onClick={onClose}
+          >
+            Back to order
+          </button>
+        </div>
+      </aside>
+    </div>,
+    document.body
   );
 }

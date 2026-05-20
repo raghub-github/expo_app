@@ -14,6 +14,8 @@ export type MerchantSummary = {
   displayImage?: string | null;
   /** Banner from merchant_stores when API sends it; card falls back if displayImage empty. */
   banner_url?: string | null;
+  /** Gallery URLs for card carousel (excluding duplicate of banner). */
+  galleryImages?: string[];
   deliveryTime?: string;
   /**
    * Canonical ETA range stamped server-side. Drives every customer-visible
@@ -38,6 +40,8 @@ export type MerchantSummary = {
   nextOpenAt?: string | number | null;
   /** Backend live_status: OPEN only when is_active, is_available, is_accepting_orders, operational_status=OPEN. */
   liveStatus?: "OPEN" | "CLOSED";
+  /** Delivered food orders for this store (Loved by Customers ranking). */
+  completedOrderCount?: number;
 };
 
 export type MenuItem = {
@@ -170,11 +174,44 @@ function pickFirstString(...candidates: unknown[]): string | null {
 
 function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknown>): MerchantSummary {
   const bannerRaw = pickFirstString(item.banner_url, item.bannerUrl);
-  const chosen = pickFirstString(item.displayImage, bannerRaw, item.imageUrl);
+  const logoRaw = pickFirstString(
+    (item as Record<string, unknown>).logo_url,
+    (item as Record<string, unknown>).logoUrl
+  );
+  const chosen = pickFirstString(bannerRaw, item.displayImage, item.imageUrl, logoRaw);
+  const bannerAbs = toAbsoluteImageUrl(bannerRaw) ?? bannerRaw;
+  const rawGallery = Array.isArray(item.galleryImages)
+    ? item.galleryImages
+    : Array.isArray(item.gallery_images)
+      ? (item.gallery_images as string[])
+      : [];
+  const galleryImages = rawGallery
+    .map((u) => (typeof u === "string" ? toAbsoluteImageUrl(u) ?? u.trim() : null))
+    .filter((u): u is string => Boolean(u))
+    .filter((u) => u !== bannerAbs);
   return {
     ...item,
-    banner_url: bannerRaw,
+    banner_url: bannerAbs ?? bannerRaw,
     displayImage: toAbsoluteImageUrl(chosen),
+    galleryImages: galleryImages.length > 0 ? galleryImages : undefined,
+    nextOpenAt:
+      item.nextOpenAt ??
+      (item as Record<string, unknown>).nextOpenAt ??
+      (item as Record<string, unknown>).next_open_at ??
+      null,
+    nextCloseAt:
+      item.nextCloseAt ??
+      (item as Record<string, unknown>).nextCloseAt ??
+      (item as Record<string, unknown>).next_close_at ??
+      null,
+    completedOrderCount: (() => {
+      const raw =
+        item.completedOrderCount ??
+        (item as Record<string, unknown>).completedOrderCount ??
+        (item as Record<string, unknown>).completed_order_count;
+      const n = Number(raw ?? 0);
+      return Number.isFinite(n) ? n : 0;
+    })(),
   };
 }
 
@@ -217,6 +254,17 @@ function normalizeMerchantDetail(data: MerchantDetail): MerchantDetail {
     imageUrl: toAbsoluteImageUrl(m.imageUrl ?? null) ?? m.imageUrl,
   }));
 
+  const avgRatingRaw = data.avgRating ?? r.avg_rating ?? r.avgRating;
+  const totalReviewsRaw = data.totalReviews ?? r.total_reviews ?? r.totalReviews;
+  const avgRating =
+    avgRatingRaw != null && avgRatingRaw !== "" && Number.isFinite(Number(avgRatingRaw))
+      ? Number(avgRatingRaw)
+      : null;
+  const totalReviews =
+    totalReviewsRaw != null && Number.isFinite(Number(totalReviewsRaw))
+      ? Number(totalReviewsRaw)
+      : null;
+
   return {
     ...data,
     imageUrl: resolvedHero ?? undefined,
@@ -224,6 +272,14 @@ function normalizeMerchantDetail(data: MerchantDetail): MerchantDetail {
     banner_url: toAbsoluteImageUrl(bannerRaw) ?? bannerRaw ?? data.banner_url,
     bannerImages,
     menu,
+    avgRating,
+    totalReviews,
+    liveStatus:
+      data.liveStatus ??
+      (r.liveStatus === "OPEN" || r.liveStatus === "CLOSED" ? r.liveStatus : undefined),
+    nextOpenAt: data.nextOpenAt ?? (r.nextOpenAt as string | null) ?? (r.next_open_at as string | null) ?? null,
+    nextCloseAt:
+      data.nextCloseAt ?? (r.nextCloseAt as string | null) ?? (r.next_close_at as string | null) ?? null,
   };
 }
 

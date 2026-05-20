@@ -1,7 +1,7 @@
 /**
  * Food floating cart + multi-order tracking dock.
  * Visible on: /home, /home/merchant/*, /search, and on /orders when there are active orders.
- * When multiple active orders or cart + order: horizontal scrollable dock [Track #1] [Track #2] [Cart].
+ * When cart + active order(s): paged horizontal dock — swipe to switch (one pill visible at a time).
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -16,6 +16,9 @@ import {
   Modal,
   Pressable,
   Alert,
+  useWindowDimensions,
+  type NativeSyntheticEvent,
+  type NativeScrollEvent,
 } from "react-native";
 import { useRouter, useSegments, usePathname } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -38,6 +41,10 @@ import type { ActiveOrder } from "@/store/orderStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { merchantService } from "@/services/merchant.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { useStoreStatusStore } from "@/store/storeStatusStore";
+import { useEnsureStoreLiveStatus } from "@/hooks/useEnsureStoreLiveStatus";
+import { closedStoreCtaCopy, getOpenSoonState } from "@/lib/storeScheduleUi";
+import { useScheduleTick } from "@/hooks/useScheduleTick";
 
 const CHECKOUT_PATH = "/checkout";
 
@@ -126,12 +133,50 @@ export function GlobalFloatingCart() {
   }, [merchantBannerUrl]);
 
   /** Resolve banner / dish thumb for floating bar + sheet (shared merchant cache). */
+  useEnsureStoreLiveStatus(merchantId);
+
   const cartMerchantQuery = useQuery({
     queryKey: ["merchant", merchantId],
     queryFn: () => merchantService.getMerchantById(merchantId!),
     enabled: !!merchantId && (hasCart || allCartsSheetVisible),
     staleTime: 2 * 60 * 1000,
   });
+
+  const liveStatusFromStore = useStoreStatusStore((s) =>
+    merchantId ? s.getStatus(merchantId) : null
+  );
+
+  useEffect(() => {
+    const m = cartMerchantQuery.data;
+    if (!merchantId || !m) return;
+    const ls = m.liveStatus;
+    if (ls === "OPEN" || ls === "CLOSED") {
+      useStoreStatusStore.getState().setStatusFromApi(merchantId, ls === "OPEN", ls);
+    } else if (m.isOpen != null) {
+      useStoreStatusStore.getState().setStatusFromApi(merchantId, m.isOpen);
+    }
+  }, [cartMerchantQuery.data, merchantId]);
+
+  const isCartStoreClosed = useMemo(() => {
+    if (!merchantId || !hasCart) return false;
+    if (liveStatusFromStore === "CLOSED") return true;
+    if (liveStatusFromStore === "OPEN") return false;
+    const m = cartMerchantQuery.data;
+    if (m?.liveStatus === "CLOSED") return true;
+    if (m?.liveStatus === "OPEN") return false;
+    if (m?.isOpen === false) return true;
+    return false;
+  }, [merchantId, hasCart, liveStatusFromStore, cartMerchantQuery.data]);
+
+  const cartNextOpenAt = cartMerchantQuery.data?.nextOpenAt ?? null;
+  const scheduleNow = useScheduleTick(isCartStoreClosed && cartNextOpenAt != null);
+
+  const cartClosedCta = useMemo(
+    () => closedStoreCtaCopy(cartNextOpenAt, scheduleNow),
+    [cartNextOpenAt, scheduleNow]
+  );
+
+  const cartOpenSoon = getOpenSoonState(cartNextOpenAt, scheduleNow, isCartStoreClosed).isOpenSoon;
   const fetchedBannerUri = useMemo(() => {
     const m = cartMerchantQuery.data;
     if (!m) return null;
@@ -146,7 +191,17 @@ export function GlobalFloatingCart() {
 
   const resolvedThumbUri = heroImageUri ?? leadImageUri ?? fetchedBannerUri;
   const hasActiveOrder = activeOrders.length > 0;
-  const showDock = hasActiveOrder && (activeOrders.length > 1 || hasCart);
+  /** Cart + tracking (or multiple orders): one pill per page, swipe to switch. */
+  const showScrollDock = hasActiveOrder && (hasCart || activeOrders.length > 1);
+  const { width: windowWidth } = useWindowDimensions();
+  const dockSideInset = 16;
+  const dockPageWidth = Math.max(280, windowWidth - dockSideInset);
+  const dockPageCount = activeOrders.length + (hasCart ? 1 : 0);
+  const [dockPageIndex, setDockPageIndex] = useState(0);
+
+  useEffect(() => {
+    setDockPageIndex(0);
+  }, [dockPageCount, merchantId, activeOrders.map((o) => o.orderId).join(",")]);
 
   const cartSlotCount = useMemo(() => {
     const stashedSlots = Object.values(stashedCarts).filter((c) => c.items.length > 0).length;
@@ -182,6 +237,7 @@ export function GlobalFloatingCart() {
   }));
 
   const handleCartPress = () => {
+    if (isCartStoreClosed) return;
     const currentPath = typeof pathname === "string" ? pathname : "";
     if (currentPath.startsWith("/checkout")) return;
     router.push(CHECKOUT_PATH as any);
@@ -208,7 +264,8 @@ export function GlobalFloatingCart() {
   if (!visible) return null;
 
   const inTabs = segments[0] === "(tabs)";
-  const TAB_BAR_HEIGHT = 56;
+  /** Matches compact CustomerTabBar (~52px content + wrapper padding). */
+  const TAB_BAR_HEIGHT = 58;
   const GAP_ABOVE_NAV = 14;
   const bottomOffset = inTabs
     ? insets.bottom + TAB_BAR_HEIGHT + GAP_ABOVE_NAV
@@ -216,7 +273,15 @@ export function GlobalFloatingCart() {
 
   const slideUpEntering = SlideInUp.duration(250).easing(Easing.out(Easing.ease));
 
-  if (showDock) {
+  const onDockScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const x = e.nativeEvent.contentOffset.x;
+    const idx = Math.round(x / dockPageWidth);
+    if (idx !== dockPageIndex && idx >= 0 && idx < dockPageCount) {
+      setDockPageIndex(idx);
+    }
+  };
+
+  if (showScrollDock) {
     return (
       <Animated.View
         entering={slideUpEntering}
@@ -225,40 +290,74 @@ export function GlobalFloatingCart() {
       >
         <ScrollView
           horizontal
+          pagingEnabled
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.dockContent}
-          snapToInterval={160}
-          snapToAlignment="center"
           decelerationRate="fast"
+          snapToInterval={dockPageWidth}
+          snapToAlignment="start"
+          disableIntervalMomentum
+          onMomentumScrollEnd={onDockScroll}
+          onScrollEndDrag={onDockScroll}
+          style={[styles.dockScroll, { width: dockPageWidth }]}
+          contentContainerStyle={styles.dockContentPaged}
         >
-          {activeOrders.map((ord, idx) => (
-            <TrackOrderPill key={ord.orderId} order={ord} index={idx + 1} onPress={() => router.push(`/orders/${ord.orderId}` as const)} pulseStyle={pulseStyle} />
+          {activeOrders.map((ord) => (
+            <View key={ord.orderId} style={[styles.dockPage, { width: dockPageWidth }]}>
+              <TrackOrderPill
+                order={ord}
+                onPress={() => router.push(`/orders/${ord.orderId}` as const)}
+                pulseStyle={pulseStyle}
+              />
+            </View>
           ))}
-          {hasCart && (
-            <TouchableOpacity activeOpacity={0.9} onPress={handleCartPress} style={styles.dockPill}>
-              <View style={[styles.pill, styles.dockPillInner]}>
-                <LinearGradient
-                  colors={GatiMitraColors.mintGradient as unknown as [string, string]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.pillGradient}
-                >
-                  <View style={styles.glassOverlay} />
-                  <View style={styles.pillContent}>
-                    <Ionicons name="cart" size={18} color={GatiMitraColors.emerald} />
-                    <Text style={styles.cartCount}>{totalCount}</Text>
-                    <Text style={styles.cartCta}>Cart →</Text>
-                  </View>
-                </LinearGradient>
-              </View>
-            </TouchableOpacity>
-          )}
+          {hasCart ? (
+            <View style={[styles.dockPage, { width: dockPageWidth }]}>
+              <TouchableOpacity
+                activeOpacity={isCartStoreClosed ? 1 : 0.9}
+                onPress={handleCartPress}
+                disabled={isCartStoreClosed}
+                style={[styles.dockPillFull, isCartStoreClosed && styles.dockPillClosed]}
+              >
+                <View style={[styles.pill, styles.dockPillInner]}>
+                  <LinearGradient
+                    colors={
+                      isCartStoreClosed
+                        ? (["#9CA3AF", "#6B7280"] as [string, string])
+                        : (GatiMitraColors.mintGradient as unknown as [string, string])
+                    }
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.pillGradient}
+                  >
+                    <View style={styles.glassOverlay} />
+                    <View style={styles.pillContent}>
+                      <Ionicons name="cart" size={18} color={isCartStoreClosed ? "#fff" : GatiMitraColors.emerald} />
+                      <Text style={styles.cartCount}>{totalCount}</Text>
+                      <Text style={styles.cartCta}>
+                        {isCartStoreClosed ? (cartOpenSoon ? cartClosedCta.sub : "Closed") : "Cart →"}
+                      </Text>
+                    </View>
+                  </LinearGradient>
+                </View>
+              </TouchableOpacity>
+            </View>
+          ) : null}
         </ScrollView>
+        {dockPageCount > 1 ? (
+          <View style={styles.dockDots} pointerEvents="none">
+            {Array.from({ length: dockPageCount }).map((_, i) => (
+              <View
+                key={i}
+                style={[styles.dockDot, i === dockPageIndex && styles.dockDotActive]}
+              />
+            ))}
+          </View>
+        ) : null}
       </Animated.View>
     );
   }
 
-  if (hasActiveOrder && activeOrder) {
+  if (hasActiveOrder && activeOrder && !hasCart) {
     return (
       <Animated.View
         entering={slideUpEntering}
@@ -355,20 +454,35 @@ export function GlobalFloatingCart() {
             </Pressable>
 
             <TouchableOpacity
-              activeOpacity={0.92}
+              activeOpacity={isCartStoreClosed ? 1 : 0.92}
               onPress={handleCartPress}
-              style={[styles.zomatoViewCartCta, compact && styles.zomatoViewCartCtaCompact]}
+              disabled={isCartStoreClosed}
+              style={[
+                styles.zomatoViewCartCta,
+                compact && styles.zomatoViewCartCtaCompact,
+                isCartStoreClosed && styles.zomatoViewCartCtaClosed,
+              ]}
+              accessibilityState={{ disabled: isCartStoreClosed }}
+              accessibilityLabel={isCartStoreClosed ? "Store closed, cart unavailable" : "View cart"}
             >
               <LinearGradient
-                colors={GatiMitraColors.checkoutGradient as unknown as [string, string]}
+                colors={
+                  isCartStoreClosed
+                    ? cartOpenSoon
+                      ? (GatiMitraColors.mintGradient as unknown as [string, string])
+                      : (["#9CA3AF", "#6B7280"] as [string, string])
+                    : (GatiMitraColors.checkoutGradient as unknown as [string, string])
+                }
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
                 style={styles.zomatoViewCartGradient}
               >
                 <Text style={[styles.zomatoViewCartTitle, compact && styles.zomatoViewCartTitleCompact]}>
-                  View Cart
+                  {isCartStoreClosed ? cartClosedCta.title : "View Cart"}
                 </Text>
-                <Text style={[styles.zomatoViewCartSub, compact && styles.zomatoViewCartSubCompact]}>{itemLabel}</Text>
+                <Text style={[styles.zomatoViewCartSub, compact && styles.zomatoViewCartSubCompact]}>
+                  {isCartStoreClosed ? cartClosedCta.sub : itemLabel}
+                </Text>
               </LinearGradient>
             </TouchableOpacity>
 
@@ -397,6 +511,9 @@ export function GlobalFloatingCart() {
           setAllCartsSheetVisible(false);
           handleViewMenuPress();
         }}
+        isStoreClosed={isCartStoreClosed}
+        closedCta={cartClosedCta}
+        cartOpenSoon={cartOpenSoon}
         onViewCart={() => {
           setAllCartsSheetVisible(false);
           handleCartPress();
@@ -412,17 +529,15 @@ export function GlobalFloatingCart() {
 
 function TrackOrderPill({
   order,
-  index,
   onPress,
   pulseStyle,
 }: {
   order: ActiveOrder;
-  index: number;
   onPress: () => void;
   pulseStyle: { transform: { scale: number }[] };
 }) {
   return (
-    <TouchableOpacity activeOpacity={0.9} onPress={onPress} style={styles.dockPill}>
+    <TouchableOpacity activeOpacity={0.9} onPress={onPress} style={styles.dockPillFull}>
       <Animated.View style={[styles.pill, styles.livePill, styles.dockPillInner, pulseStyle]}>
         <LinearGradient
           colors={[GatiMitraColors.deepMintStart, GatiMitraColors.deepMintEnd]}
@@ -453,6 +568,9 @@ function AllCartsSheetModal({
   onViewMenu,
   onViewCart,
   onRemoveCart,
+  isStoreClosed = false,
+  closedCta = { title: "Store closed", sub: "Opens later" },
+  cartOpenSoon = false,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -464,6 +582,9 @@ function AllCartsSheetModal({
   onViewMenu: () => void;
   onViewCart: () => void;
   onRemoveCart: () => void;
+  isStoreClosed?: boolean;
+  closedCta?: { title: string; sub: string };
+  cartOpenSoon?: boolean;
 }) {
   const insets = useSafeAreaInsets();
   const [thumbLoadFailed, setThumbLoadFailed] = useState(false);
@@ -538,15 +659,30 @@ function AllCartsSheetModal({
                     </Pressable>
                   </View>
                   <View style={styles.sheetCartActions}>
-                    <TouchableOpacity activeOpacity={0.92} onPress={onViewCart} style={styles.sheetViewCartBtn}>
+                    <TouchableOpacity
+                      activeOpacity={isStoreClosed ? 1 : 0.92}
+                      onPress={onViewCart}
+                      disabled={isStoreClosed}
+                      style={[styles.sheetViewCartBtn, isStoreClosed && styles.zomatoViewCartCtaClosed]}
+                    >
                       <LinearGradient
-                        colors={GatiMitraColors.checkoutGradient as unknown as [string, string]}
+                        colors={
+                          isStoreClosed
+                            ? cartOpenSoon
+                              ? (GatiMitraColors.mintGradient as unknown as [string, string])
+                              : (["#9CA3AF", "#6B7280"] as [string, string])
+                            : (GatiMitraColors.checkoutGradient as unknown as [string, string])
+                        }
                         start={{ x: 0, y: 0 }}
                         end={{ x: 1, y: 1 }}
                         style={styles.sheetViewCartGradient}
                       >
-                        <Text style={styles.sheetViewCartBtnTitle}>View Cart</Text>
-                        <Text style={styles.sheetViewCartBtnSub}>{itemLabel}</Text>
+                        <Text style={styles.sheetViewCartBtnTitle}>
+                          {isStoreClosed ? closedCta.title : "View Cart"}
+                        </Text>
+                        <Text style={styles.sheetViewCartBtnSub}>
+                          {isStoreClosed ? closedCta.sub : itemLabel}
+                        </Text>
                       </LinearGradient>
                     </TouchableOpacity>
                     <Pressable style={styles.sheetRowClose} onPress={onRemoveCart} hitSlop={8}>
@@ -705,6 +841,12 @@ const styles = StyleSheet.create({
   zomatoViewCartCtaCompact: {
     minWidth: 96,
     borderRadius: 22,
+  },
+  zomatoViewCartCtaClosed: {
+    opacity: 0.58,
+  },
+  dockPillClosed: {
+    opacity: 0.58,
   },
   zomatoViewCartGradient: {
     paddingHorizontal: 14,
@@ -938,16 +1080,38 @@ const styles = StyleSheet.create({
   dockWrap: {
     left: 8,
     right: 8,
-    alignItems: "stretch",
+    alignItems: "center",
   },
-  dockContent: {
+  dockScroll: {
+    alignSelf: "center",
+  },
+  dockContentPaged: {
     flexDirection: "row",
-    gap: 10,
-    paddingHorizontal: 8,
+    alignItems: "center",
   },
-  dockPill: {
-    minWidth: 152,
-    maxWidth: 152,
+  dockPage: {
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  dockPillFull: {
+    width: "100%",
+  },
+  dockDots: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 8,
+  },
+  dockDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "rgba(0,0,0,0.15)",
+  },
+  dockDotActive: {
+    width: 16,
+    backgroundColor: GatiMitraColors.emerald,
   },
   dockPillInner: {
     minHeight: 48,

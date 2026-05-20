@@ -12,10 +12,13 @@ export function ReadyHandoverRunningTimeline({
   order,
   nowMs,
   compact,
+  placement = 'inline',
 }: {
   order: OrdersFoodRow;
   nowMs: number;
   compact?: boolean;
+  /** `panel` = customer column on order detail; `inline` = sidebar cards */
+  placement?: 'panel' | 'inline';
 }) {
   const preparedAt = order.prepared_at ?? null;
   const handedOverAt = order.handed_over_to_rider_at ?? null;
@@ -74,23 +77,58 @@ export function ReadyHandoverRunningTimeline({
     </div>
   );
 
-  if (compact) {
+  if (compact && placement === 'panel') {
     return (
       <div
-        className="w-full rounded-lg border border-teal-200 bg-teal-50/80 overflow-hidden p-2"
+        className="w-full overflow-hidden rounded-xl border border-teal-200/80 bg-gradient-to-br from-teal-50 via-white to-emerald-50/80 px-3 py-2.5 shadow-sm"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between gap-2 mb-1.5 min-w-0">
-          <p className="text-[11px] font-semibold text-teal-900 truncate">{title}</p>
+        <div className="flex items-start justify-between gap-3 min-w-0">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-bold text-teal-900 leading-snug">{title}</p>
+            {phase === 'waiting_handover' ? (
+              <p className="mt-0.5 text-[10px] text-teal-700/90 leading-snug">
+                Share pickup OTP after handoff
+              </p>
+            ) : null}
+          </div>
           {phase !== 'complete' ? (
-            <span className="shrink-0 font-mono text-xs font-bold text-teal-800 tabular-nums">
+            <span className="shrink-0 rounded-lg bg-white/90 px-2 py-1 font-mono text-xs font-bold text-teal-800 tabular-nums leading-none shadow-sm ring-1 ring-teal-100">
               {formatHandoverDuration(waitingMs)}
             </span>
           ) : (
-            <span className="shrink-0 text-[10px] font-semibold text-teal-700">Done</span>
+            <span className="shrink-0 rounded-lg bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-800">
+              Done
+            </span>
           )}
         </div>
-        {progressBar('h-1.5', '')}
+        <div className="mt-2.5 h-1.5 rounded-full bg-teal-100/90 overflow-hidden">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-teal-500 to-emerald-500 transition-all duration-500 ease-out"
+            style={{ width: `${progressPct}%` }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (compact) {
+    return (
+      <div
+        className="w-full rounded-md border border-teal-200/90 bg-teal-50/70 overflow-hidden px-2 py-1.5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-2 min-w-0">
+          <p className="text-[10px] font-semibold text-teal-900 truncate leading-tight">{title}</p>
+          {phase !== 'complete' ? (
+            <span className="shrink-0 font-mono text-[11px] font-bold text-teal-800 tabular-nums leading-none">
+              {formatHandoverDuration(waitingMs)}
+            </span>
+          ) : (
+            <span className="shrink-0 text-[10px] font-semibold text-teal-700 leading-none">Done</span>
+          )}
+        </div>
+        {progressBar('h-1', 'mt-1')}
       </div>
     );
   }

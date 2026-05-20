@@ -316,7 +316,6 @@ export async function listStoresNearby(params: {
           "id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, live_status, parent_id"
         )
         .eq("status", "ACTIVE")
-        .eq("is_active", true)
         .not("latitude", "is", null)
         .not("longitude", "is", null);
       if (storesError) throw storesError;
@@ -328,16 +327,7 @@ export async function listStoresNearby(params: {
           const lng = toNumber(s.longitude);
           if (lat == null || lng == null) return null;
           const distance_km = haversineDistanceKm(user, { lat, lng });
-          const live =
-            s.live_status === "OPEN" || s.live_status === "CLOSED"
-              ? s.live_status
-              : computeLiveStatus({
-                  is_active: s.is_active,
-                  is_available: s.is_available,
-                  is_accepting_orders: s.is_accepting_orders,
-                  operational_status: s.operational_status,
-                });
-          if (distance_km > radius_km || live !== "OPEN") return null;
+          if (distance_km > radius_km) return null;
           return {
             ...s,
             distance_km: Number(distance_km.toFixed(2)),

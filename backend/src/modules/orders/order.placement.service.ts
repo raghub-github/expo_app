@@ -7,7 +7,7 @@
  */
 
 import { randomBytes } from "crypto";
-import { and, eq, isNull, lt, inArray } from "drizzle-orm";
+import { and, eq, gt, isNull, lt, inArray } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 // drizzleSql alias used to avoid name collision in offer snapshot helpers
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
@@ -422,6 +422,10 @@ export type PendingOrderInput = {
   subscriptionOptIn?: boolean;
   /** 'delivery' (default) or 'self_pickup'. Self-pickup waives delivery fee in billing. */
   deliveryType?: "delivery" | "self_pickup";
+  checkoutMetadata?: Record<string, unknown> | null;
+  selectedPlatformOfferId?: number | null;
+  forceNoAutoOffer?: boolean;
+  idempotencyKey?: string | null;
 };
 
 export type CreatePendingResult =
@@ -452,6 +456,33 @@ export async function createPendingOrder(
     donationAmount = 0,
     subscriptionOptIn = false,
   } = input;
+
+  const idemKey = input.idempotencyKey?.trim() || null;
+  if (idemKey) {
+    const [existing] = await db
+      .select({
+        pendingId: pendingOrders.pendingId,
+        grandTotal: pendingOrders.grandTotal,
+        currency: pendingOrders.currency,
+      })
+      .from(pendingOrders)
+      .where(
+        and(
+          eq(pendingOrders.customerId, customerId),
+          eq(pendingOrders.idempotencyKey, idemKey),
+          gt(pendingOrders.expiresAt, new Date())
+        )
+      )
+      .limit(1);
+    if (existing) {
+      return {
+        ok: true,
+        pendingId: existing.pendingId,
+        amount: Math.round(Number(existing.grandTotal ?? 0) * 100),
+        currency: existing.currency ?? "INR",
+      };
+    }
+  }
 
   const itemTotal = items.reduce((s, i) => s + i.basePrice * i.quantity, 0);
   const addonTotal = items.reduce((s, i) => {
@@ -524,6 +555,8 @@ export async function createPendingOrder(
       pickupLon: input.pickupLon,
       subscriptionOptIn,
       deliveryType: input.deliveryType ?? "delivery",
+      selectedPlatformOfferId: input.selectedPlatformOfferId ?? null,
+      forceNoAutoOffer: input.forceNoAutoOffer,
     });
     if (!billRes.ok) {
       return { ok: false, code: billRes.code, message: billRes.message };
@@ -594,6 +627,8 @@ export async function createPendingOrder(
     billingSnapshot: billingSnapshot ?? undefined,
     billingRulesetVersion: billingRulesetVersion ?? undefined,
     couponCode: couponStored ?? undefined,
+    checkoutMetadata: input.checkoutMetadata ?? undefined,
+    idempotencyKey: idemKey ?? undefined,
     expiresAt,
   });
 

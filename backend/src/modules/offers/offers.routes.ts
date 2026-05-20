@@ -7,7 +7,7 @@
  *   for the customer's location (resolved via pincode → geo hierarchy).
  *
  * GET /v1/offers/featured
- *   Returns GLOBAL-scoped platform offers (no geo filter) for the home screen banner.
+ *   Active merchant + geo/platform store offers near the customer (home carousel).
  */
 
 import { z } from "zod";
@@ -19,6 +19,7 @@ import {
   merchantOffers,
   billingPlatformOffers,
 } from "../../db/schema.js";
+import { listStores } from "../merchants/merchant.service.js";
 import {
   resolveDropGeoRefsFromPincode,
   resolvePlatformOfferGeoBindingEffectiveIds,
@@ -237,6 +238,239 @@ async function fetchPlatformOffers(
   return result;
 }
 
+export type HomeBannerOffer = {
+  id: string;
+  store_id: string;
+  store_name: string | null;
+  title: string;
+  sub: string;
+  kind: "merchant" | "platform";
+  source_offer_id: number;
+};
+
+type NearbyStoreRef = {
+  internalId: number;
+  storeId: string;
+  name: string;
+};
+
+async function resolveNearbyStores(
+  lat: number | null,
+  lng: number | null,
+  limit: number
+): Promise<NearbyStoreRef[]> {
+  if (lat == null || lng == null || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return [];
+  }
+  const { items } = await listStores({ lat, lng, limit });
+  const out: NearbyStoreRef[] = [];
+  for (const row of items) {
+    const internalId = Number((row as { id?: number }).id);
+    const storeId = String((row as { store_id?: string }).store_id ?? "").trim();
+    if (!Number.isFinite(internalId) || internalId < 1 || !storeId) continue;
+    const name =
+      String((row as { store_display_name?: string | null }).store_display_name ?? "").trim() ||
+      String((row as { store_name?: string }).store_name ?? "").trim() ||
+      "Restaurant";
+    out.push({ internalId, storeId, name });
+  }
+  return out;
+}
+
+async function fetchMerchantBannerOffers(nearby: NearbyStoreRef[]): Promise<HomeBannerOffer[]> {
+  if (nearby.length === 0) return [];
+  const meta = new Map(nearby.map((s) => [s.internalId, s]));
+  const db = getDb();
+  const now = new Date();
+  const internalIds = nearby.map((s) => s.internalId);
+
+  const rows = await db
+    .select({
+      id: merchantOffers.id,
+      storeId: merchantOffers.storeId,
+      offerTitle: merchantOffers.offerTitle,
+      offerType: merchantOffers.offerType,
+      discountValue: merchantOffers.discountValue,
+      discountPercentage: merchantOffers.discountPercentage,
+      maxDiscountAmount: merchantOffers.maxDiscountAmount,
+      minOrderAmount: merchantOffers.minOrderAmount,
+      firstOrderOnly: merchantOffers.firstOrderOnly,
+      newUserOnly: merchantOffers.newUserOnly,
+      displayPriority: merchantOffers.displayPriority,
+    })
+    .from(merchantOffers)
+    .where(
+      and(
+        inArray(merchantOffers.storeId, internalIds),
+        eq(merchantOffers.isActive, true),
+        lte(merchantOffers.validFrom, now),
+        gte(merchantOffers.validTill, now)
+      )
+    )
+    .orderBy(sql`${merchantOffers.displayPriority} DESC NULLS LAST`, asc(merchantOffers.id));
+
+  const banners: HomeBannerOffer[] = [];
+  for (const r of rows) {
+    const store = meta.get(Number(r.storeId));
+    if (!store) continue;
+    const discPct = n(r.discountPercentage);
+    const discVal = n(r.discountValue);
+    const maxDisc = n(r.maxDiscountAmount);
+    const minOrder = n(r.minOrderAmount);
+    const type = String(r.offerType ?? "PERCENTAGE");
+    banners.push({
+      id: `merchant-${r.id}-${store.storeId}`,
+      store_id: store.storeId,
+      store_name: store.name,
+      title: buildOfferLabel(type, discPct, discVal, maxDisc),
+      sub:
+        buildOfferSublabel(minOrder, maxDisc, r.firstOrderOnly ?? false, r.newUserOnly ?? false) ||
+        String(r.offerTitle ?? "").trim() ||
+        store.name,
+      kind: "merchant",
+      source_offer_id: r.id,
+    });
+  }
+  return banners;
+}
+
+async function fetchPlatformBannerOffers(
+  pincode: string | null,
+  serviceType: string,
+  stateName: string | null,
+  cityName: string | null,
+  latitude: number | null,
+  longitude: number | null,
+  nearby: NearbyStoreRef[]
+): Promise<HomeBannerOffer[]> {
+  const db = getDb();
+  const st = serviceType.toUpperCase();
+  const now = new Date();
+  const nearbyInternal = new Set(nearby.map((s) => s.internalId));
+  const storeByInternal = new Map(nearby.map((s) => [s.internalId, s]));
+
+  const geo = await resolveGeoLocation({
+    livePincode: pincode,
+    liveState: stateName,
+    liveCity: cityName,
+    latitude,
+    longitude,
+  });
+  const geoBoundIds = geo.geoBoundOfferIds;
+
+  const rows = await db
+    .select({
+      id: billingPlatformOffers.id,
+      name: billingPlatformOffers.name,
+      serviceType: billingPlatformOffers.serviceType,
+      offerKind: billingPlatformOffers.offerKind,
+      discountType: billingPlatformOffers.discountType,
+      valueNumeric: billingPlatformOffers.valueNumeric,
+      maxDiscountAmount: billingPlatformOffers.maxDiscountAmount,
+      minOrderAmount: billingPlatformOffers.minOrderAmount,
+      targetScope: billingPlatformOffers.targetScope,
+      offerAudience: billingPlatformOffers.offerAudience,
+      merchantIds: billingPlatformOffers.merchantIds,
+      startsAt: billingPlatformOffers.startsAt,
+      endsAt: billingPlatformOffers.endsAt,
+      priority: billingPlatformOffers.priority,
+    })
+    .from(billingPlatformOffers)
+    .where(eq(billingPlatformOffers.isActive, true))
+    .orderBy(asc(billingPlatformOffers.priority));
+
+  const banners: HomeBannerOffer[] = [];
+
+  for (const o of rows) {
+    const oSt = String(o.serviceType ?? "FOOD").toUpperCase();
+    if (oSt !== st && oSt !== "ALL") continue;
+    if (String(o.offerAudience ?? "CUSTOMER").toUpperCase() !== "CUSTOMER") continue;
+    if (o.startsAt && new Date() < o.startsAt) continue;
+    if (o.endsAt && new Date() > o.endsAt) continue;
+
+    const scope = String(o.targetScope ?? "GLOBAL").toUpperCase();
+    if (scope === "GEO" || scope === "GEO_MERCHANT") {
+      if (!geoBoundIds.has(o.id)) continue;
+    } else if (scope === "MERCHANT") {
+      // Shown only when tied to a nearby store below.
+    } else {
+      // GLOBAL — location-wide platform offer; no single store page.
+      continue;
+    }
+
+    const rawIds = Array.isArray(o.merchantIds) ? o.merchantIds : [];
+    const merchantInternalIds = rawIds
+      .map((x) => (typeof x === "number" ? x : parseInt(String(x), 10)))
+      .filter((id) => Number.isFinite(id) && id > 0);
+
+    let store: NearbyStoreRef | null = null;
+    if (scope === "MERCHANT" || scope === "GEO_MERCHANT") {
+      const matchId = merchantInternalIds.find((id) => nearbyInternal.has(id));
+      if (matchId == null) continue;
+      store = storeByInternal.get(matchId) ?? null;
+      if (!store) continue;
+    }
+
+    const kind = String(o.offerKind ?? "DISCOUNT").toUpperCase();
+    const value = n(o.valueNumeric);
+    const maxDisc = n(o.maxDiscountAmount);
+    const minOrder = n(o.minOrderAmount);
+
+    banners.push({
+      id: `platform-${o.id}-${store!.storeId}`,
+      store_id: store!.storeId,
+      store_name: store!.name,
+      title: buildPlatformLabel(kind, o.discountType, value, maxDisc),
+      sub:
+        minOrder != null && minOrder > 0
+          ? `on orders above ₹${Math.round(minOrder)} · ${store!.name}`
+          : store!.name,
+      kind: "platform",
+      source_offer_id: o.id,
+    });
+  }
+
+  return banners;
+}
+
+async function fetchHomeFeaturedOffers(params: {
+  pincode: string | null;
+  stateName: string | null;
+  cityName: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  serviceType: string;
+  limit: number;
+}): Promise<HomeBannerOffer[]> {
+  const nearby = await resolveNearbyStores(params.latitude, params.longitude, 30);
+  const [merchantBanners, platformBanners] = await Promise.all([
+    fetchMerchantBannerOffers(nearby),
+    fetchPlatformBannerOffers(
+      params.pincode,
+      params.serviceType,
+      params.stateName,
+      params.cityName,
+      params.latitude,
+      params.longitude,
+      nearby
+    ),
+  ]);
+
+  const seen = new Set<string>();
+  const merged: HomeBannerOffer[] = [];
+  const push = (b: HomeBannerOffer) => {
+    const key = `${b.store_id}::${b.title.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(b);
+  };
+
+  for (const b of merchantBanners) push(b);
+  for (const b of platformBanners) push(b);
+
+  return merged.slice(0, params.limit);
+}
+
 export async function offersRoutes(app: FastifyInstance) {
   // GET /v1/offers/store/:storeId
   app.get(
@@ -306,12 +540,13 @@ export async function offersRoutes(app: FastifyInstance) {
     }
   );
 
-  // GET /v1/offers/featured — home screen banner (GLOBAL-scoped platform offers only)
+  // GET /v1/offers/featured — home banners: active merchant + geo/platform store offers near customer
   app.get(
     "/featured",
     {
       schema: {
-        description: "GLOBAL platform offers for home screen promo banner. No auth required.",
+        description:
+          "Active merchant and platform offers for the home promo carousel (location-scoped). Each item includes store_id for navigation.",
         querystring: z.object({
           pincode:     z.string().optional(),
           state:       z.string().optional(),
@@ -319,17 +554,18 @@ export async function offersRoutes(app: FastifyInstance) {
           lat:         z.coerce.number().optional(),
           lng:         z.coerce.number().optional(),
           serviceType: z.enum(["FOOD", "PARCEL", "RIDE"]).optional().default("FOOD"),
-          limit:       z.coerce.number().int().positive().max(10).optional().default(5),
+          limit:       z.coerce.number().int().positive().max(12).optional().default(6),
         }),
         response: {
           200: z.object({
             offers: z.array(z.object({
-              id:           z.number(),
-              name:         z.string().nullable(),
-              offer_kind:   z.string(),
-              label:        z.string(),
-              sub_label:    z.string(),
-              is_geo_bound: z.boolean(),
+              id:              z.string(),
+              store_id:        z.string(),
+              store_name:      z.string().nullable(),
+              title:           z.string(),
+              sub:             z.string(),
+              kind:            z.enum(["merchant", "platform"]),
+              source_offer_id: z.number(),
             })),
           }),
         },
@@ -343,10 +579,18 @@ export async function offersRoutes(app: FastifyInstance) {
       const latitude    = q.lat ?? null;
       const longitude   = q.lng ?? null;
       const serviceType = q.serviceType ?? "FOOD";
-      const limit       = Number(q.limit ?? 5);
+      const limit       = Number(q.limit ?? 6);
 
-      const all = await fetchPlatformOffers(pincode, serviceType, stateName, cityName, latitude, longitude);
-      return reply.send({ offers: all.slice(0, limit) });
+      const offers = await fetchHomeFeaturedOffers({
+        pincode,
+        stateName,
+        cityName,
+        latitude,
+        longitude,
+        serviceType,
+        limit,
+      });
+      return reply.send({ offers });
     }
   );
 }

@@ -157,6 +157,11 @@ export type OrderEtaView = {
     reason: string;
     createdAt: string;
   } | null;
+  /** Merchant-committed prep window (set on accept). */
+  prep: {
+    minutes: number | null;
+    readyByAt: string | null;
+  };
 };
 
 export async function getEtaForOrder(orderIdText: string): Promise<OrderEtaView | null> {
@@ -222,6 +227,13 @@ export async function getEtaForOrder(orderIdText: string): Promise<OrderEtaView 
             createdAt: toIsoOrNull(live[0]!.created_at) ?? "",
           }
         : null,
+    prep: {
+      minutes:
+        r.prep_time_minutes != null && Number(r.prep_time_minutes) > 0
+          ? Number(r.prep_time_minutes)
+          : null,
+      readyByAt: toIsoOrNull(r.prep_ready_by_at),
+    },
   };
 }
 

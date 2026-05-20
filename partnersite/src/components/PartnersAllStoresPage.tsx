@@ -3,7 +3,7 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { Store, Loader2, Plus, LogOut } from "lucide-react";
+import { Store, Loader2, Plus, LogOut, Leaf } from "lucide-react";
 import LogoutConfirmModal from "@/components/LogoutConfirmModal";
 import NeedHelpBadge from "@/components/NeedHelpBadge";
 import { StoreVerificationRejectionsBadge } from "@/components/partner/StoreVerificationRejectionsBadge";
@@ -130,12 +130,24 @@ export function PartnersAllStoresPage() {
     router.push(`/auth/register-store?parent_id=${parentId}&new=1`);
   };
 
-  const getStatusBadge = (approval_status: string | null) => {
-    const s = (approval_status || "").toUpperCase();
+  const isOnboardingPending = (store: StoreItem) => {
+    const status = String(store.approval_status || "").toUpperCase();
+    if (status === "APPROVED") return false;
+    if (store.onboarding_completed === true) return false;
+    if (status === "DRAFT") return true;
+    const step = store.current_onboarding_step;
+    return typeof step === "number" && step < 9;
+  };
+
+  const getStatusBadge = (store: StoreItem) => {
+    if (isOnboardingPending(store)) {
+      return { label: "Pending", className: "bg-emerald-500 text-white" };
+    }
+    const s = (store.approval_status || "").toUpperCase();
     if (s === "APPROVED") return { label: "Verified", className: "bg-emerald-100 text-emerald-800" };
     if (s === "REJECTED") return { label: "Rejected", className: "bg-red-100 text-red-800" };
     if (s === "UNDER_VERIFICATION") return { label: "Under review", className: "bg-amber-100 text-amber-800" };
-    return { label: approval_status || "Pending", className: "bg-slate-100 text-slate-700" };
+    return { label: store.approval_status || "Pending", className: "bg-slate-100 text-slate-700" };
   };
 
   const storesOrdered = useMemo(() => {
@@ -276,7 +288,8 @@ export function PartnersAllStoresPage() {
             <div className="w-full max-w-6xl">
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6 sm:gap-10 justify-items-center">
                 {storesOrdered.map((store) => {
-                  const badge = getStatusBadge(store.approval_status);
+                  const badge = getStatusBadge(store);
+                  const pendingOnboarding = isOnboardingPending(store);
                   const isApproved = String(store.approval_status || "").toUpperCase() === "APPROVED";
                   const hasStepRejections =
                     Array.isArray(store.verification_step_rejections) && store.verification_step_rejections.length > 0;
@@ -289,9 +302,10 @@ export function PartnersAllStoresPage() {
                       String(store.approval_status || "").toUpperCase() === "REJECTED" ||
                       (typeof store.current_onboarding_step === "number" && store.current_onboarding_step < 9));
                   const isHighlighted = !!highlightStorePublicId && store.store_id === highlightStorePublicId;
-                  const bannerSrc = store.banner_url
-                    ? normalizeMerchantStoreMediaUrl(store.banner_url) ?? store.banner_url
-                    : null;
+                  const bannerSrc =
+                    !pendingOnboarding && store.banner_url
+                      ? normalizeMerchantStoreMediaUrl(store.banner_url) ?? store.banner_url
+                      : null;
 
                   const onCardClick = () => {
                     if (isApproved) {
@@ -306,21 +320,33 @@ export function PartnersAllStoresPage() {
                   };
 
                   return (
-                    <button
+                    <div
                       key={store.store_id}
-                      type="button"
-                      onClick={onCardClick}
-                      className="group w-full max-w-[200px] sm:max-w-[220px] focus:outline-none"
-                      aria-label={store.store_name ? `Open ${store.store_name}` : `Open store ${store.store_id}`}
+                      className="group w-full max-w-[200px] sm:max-w-[220px]"
                     >
+                      <button
+                        type="button"
+                        onClick={onCardClick}
+                        className="w-full focus:outline-none"
+                        aria-label={store.store_name ? `Open ${store.store_name}` : `Open store ${store.store_id}`}
+                      >
                       <div className="flex flex-col items-center">
                         <div className="relative">
+                          {pendingOnboarding ? (
+                            <span className="absolute -top-1 left-1/2 z-10 -translate-x-1/2 inline-flex items-center justify-center rounded-full bg-emerald-500 p-1.5 shadow-md ring-2 ring-white">
+                              <Leaf className="h-3.5 w-3.5 text-white" aria-hidden />
+                            </span>
+                          ) : null}
                           <div
                             className={`relative h-[104px] w-[104px] sm:h-[120px] sm:w-[120px] overflow-hidden rounded-full shadow-lg transition-transform duration-200 group-hover:scale-[1.03] group-active:scale-[0.99] ${
                               isHighlighted ? "ring-4 ring-emerald-300" : "ring-2 ring-slate-200"
                             }`}
                           >
-                            {bannerSrc ? (
+                            {pendingOnboarding ? (
+                              <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-emerald-50 via-teal-50 to-emerald-100">
+                                <span className="text-4xl sm:text-5xl font-bold text-emerald-700 select-none">P</span>
+                              </div>
+                            ) : bannerSrc ? (
                               <img
                                 src={bannerSrc}
                                 alt=""
@@ -330,7 +356,9 @@ export function PartnersAllStoresPage() {
                             ) : (
                               <div className="absolute inset-0 bg-gradient-to-br from-slate-100 via-blue-50 to-purple-50" />
                             )}
-                            <div className="absolute inset-0 bg-gradient-to-t from-black/55 via-black/15 to-transparent" />
+                            {!pendingOnboarding ? (
+                              <div className="absolute inset-0 bg-gradient-to-t from-black/55 via-black/15 to-transparent" />
+                            ) : null}
                             <span
                               className={`absolute bottom-2 left-1/2 -translate-x-1/2 inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-semibold shadow-sm ${badge.className}`}
                             >
@@ -355,12 +383,26 @@ export function PartnersAllStoresPage() {
                         </div>
                       </div>
 
-                      <div className="mt-2 px-1">
-                        <p className="text-sm sm:text-base font-semibold text-slate-900 leading-snug text-center break-words line-clamp-2">
-                          {store.store_name || "Unnamed store"}
-                        </p>
-                      </div>
-                    </button>
+                        <div className="mt-2 px-1">
+                          <p className="text-sm sm:text-base font-semibold text-slate-900 leading-snug text-center break-words line-clamp-2">
+                            {store.store_name || "Unnamed store"}
+                          </p>
+                        </div>
+                      </button>
+
+                      {pendingOnboarding && canContinueOnboarding ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            goToOnboarding(store.store_id);
+                          }}
+                          className="mt-2 w-full rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2"
+                        >
+                          Complete Onboarding
+                        </button>
+                      ) : null}
+                    </div>
                   );
                 })}
 

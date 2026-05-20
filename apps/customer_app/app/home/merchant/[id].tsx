@@ -47,8 +47,16 @@ import Animated, {
 } from "react-native-reanimated";
 import { merchantService, type MenuItem, type MerchantSummary } from "@/services/merchant.service";
 import { previewEtaRange, formatEtaRange } from "@/lib/etaPreview";
+import {
+  buildStoreOpenStatusLabel,
+  formatOpenStatusTagText,
+} from "@/lib/storeOpenStatusLabel";
+import { formatNextOpenTime, toTimestamp } from "@/lib/storeScheduleUi";
+import { useScheduleTick } from "@/hooks/useScheduleTick";
 import { offersService, type MerchantOfferItem, type PlatformOfferItem } from "@/services/offers.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { StoreBannerCarousel } from "@/components/StoreBannerCarousel";
+import { NearFastDeliveryMeta } from "@/components/NearFastDeliveryMeta";
 import { getRoute } from "@/services/distance.service";
 import { useStoreDeliveryQuote } from "@/hooks/useStoreDeliveryQuote";
 import { addressService } from "@/services/address.service";
@@ -68,16 +76,12 @@ type MenuListRow = MenuItem & { listRowKey: string };
 const AnimatedSectionList = createAnimatedComponent(SectionList<MenuListRow>) as typeof SectionList;
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
-const HEADER_IMAGE_HEIGHT = 220;
+const HEADER_IMAGE_HEIGHT = 248;
 const HEADER_COLLAPSED_THRESHOLD = 120;
 const CARD_RADIUS = 18;
 const FILTER_PILL_HEIGHT = 40;
 const OFFER_CARD_WIDTH = 160;
 
-const BANNER_SLIDE_INTERVAL_MS = 3500;
-const BANNER_CROSSFADE_MS = 600;
-const BANNER_ZOOM_DURATION_MS = 6000;
-const BANNER_RESUME_AFTER_MS = 3000;
 const FILTER_BAR_HEIGHT = 62;
 /** Collapse filter chip row once user scrolls up (content offset past this). */
 const FILTER_STRIP_SCROLL_HIDE_END = 72;
@@ -128,160 +132,6 @@ function buildMenuSections(menu: MenuItem[]): { title: string; data: MenuItem[];
   return out;
 }
 
-/** Cinematic banner: single hero when no gallery; crossfade loop when gallery + hero. */
-function BannerCarousel({
-  bannerUri,
-  galleryUris,
-  height,
-}: {
-  /** Primary store banner (hero). */
-  bannerUri: string | null;
-  /** Extra photos only — must not repeat `bannerUri`; when non-empty, carousel loops banner + gallery. */
-  galleryUris: string[];
-  height: number;
-}) {
-  const [index, setIndex] = useState(0);
-  const indexRef = useRef(0);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const zoomScale = useSharedValue(1);
-  const frontOpacity = useSharedValue(1);
-  const backOpacity = useSharedValue(0);
-  const setNextIndex = useCallback(
-    (next: number) => {
-      indexRef.current = next;
-      setIndex(next);
-    },
-    [setIndex]
-  );
-
-  const data = useMemo(() => {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    const add = (s: string | null | undefined) => {
-      const t = typeof s === "string" ? s.trim() : "";
-      if (!t || seen.has(t)) return;
-      seen.add(t);
-      out.push(t);
-    };
-    if (bannerUri?.trim()) add(bannerUri);
-    for (const u of galleryUris ?? []) add(u);
-    return out;
-  }, [bannerUri, galleryUris]);
-
-  const dataKey = data.join("|");
-  const [remoteFailed, setRemoteFailed] = useState(false);
-  useEffect(() => {
-    setRemoteFailed(false);
-    setIndex(0);
-    indexRef.current = 0;
-  }, [dataKey]);
-
-  /** Loop only when there is at least one gallery image in addition to the distinct banner set. */
-  const hasGallery = (galleryUris ?? []).length > 0;
-  const showCarousel = hasGallery && data.length > 1;
-  indexRef.current = index;
-
-  const runZoom = useCallback(() => {
-    zoomScale.value = 1;
-    zoomScale.value = withTiming(1.08, { duration: BANNER_ZOOM_DURATION_MS }, () => {
-      zoomScale.value = 1;
-    });
-  }, [zoomScale]);
-
-  const goToNext = useCallback(() => {
-    if (data.length <= 1) return;
-    const next = (indexRef.current + 1) % data.length;
-    backOpacity.value = 1;
-    frontOpacity.value = withTiming(0, { duration: BANNER_CROSSFADE_MS }, () => {
-      runOnJS(setNextIndex)(next);
-      zoomScale.value = 1;
-      frontOpacity.value = 1;
-      backOpacity.value = 0;
-      runOnJS(runZoom)();
-    });
-  }, [data.length, frontOpacity, backOpacity, zoomScale, runZoom, setNextIndex]);
-
-  useEffect(() => {
-    runZoom();
-  }, [runZoom]);
-
-  useEffect(() => {
-    if (!showCarousel || data.length <= 1) return;
-    timerRef.current = setInterval(goToNext, BANNER_SLIDE_INTERVAL_MS);
-    return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-  }, [showCarousel, data.length, goToNext]);
-
-  const frontStyle = useAnimatedStyle(() => ({
-    opacity: frontOpacity.value,
-    transform: [{ scale: zoomScale.value }],
-  }));
-  const backStyle = useAnimatedStyle(() => ({
-    opacity: backOpacity.value,
-  }));
-
-  if (data.length === 0 || remoteFailed) {
-    return (
-      <View style={[styles.headerImageWrap, { height }]}>
-        <LinearGradient
-          colors={[GatiMitraColors.mintSoft, "#ecfdf5", GatiMitraColors.surfaceWarm]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={[styles.headerImage, { height }]}
-        >
-          <View style={styles.headerBannerPlaceholderInner}>
-            <Ionicons name="restaurant" size={52} color={GatiMitraColors.primaryMint} />
-          </View>
-        </LinearGradient>
-      </View>
-    );
-  }
-
-  if (!showCarousel) {
-    return (
-      <View style={[styles.headerImageWrap, { height }]}>
-        <Image
-          source={{ uri: data[0] }}
-          style={[styles.headerImage, { height }]}
-          resizeMode="cover"
-          onError={() => setRemoteFailed(true)}
-        />
-      </View>
-    );
-  }
-
-  const currentUri = data[index];
-  const nextUri = data[(index + 1) % data.length];
-
-  return (
-    <View style={[styles.headerImageWrap, { height }]}>
-      <Animated.View style={[StyleSheet.absoluteFill, backStyle]}>
-        <Image
-          source={{ uri: nextUri }}
-          style={[styles.headerImage, { width: SCREEN_WIDTH, height }]}
-          resizeMode="cover"
-          onError={() => setRemoteFailed(true)}
-        />
-      </Animated.View>
-      <Animated.View style={[StyleSheet.absoluteFill, frontStyle]}>
-        <Image
-          source={{ uri: currentUri }}
-          style={[styles.headerImage, { width: SCREEN_WIDTH, height }]}
-          resizeMode="cover"
-          onError={() => setRemoteFailed(true)}
-        />
-      </Animated.View>
-      {nextUri !== currentUri && (
-        <Image source={{ uri: nextUri }} style={styles.bannerPreload} resizeMode="cover" />
-      )}
-    </View>
-  );
-}
-
 /** Menu row fallback when there is no image or the URL fails to load — cutlery / restaurant icon, not a “not found” graphic. */
 function MenuImagePlaceholder({ size = 36 }: { size?: number }) {
   return (
@@ -297,26 +147,10 @@ function MenuImagePlaceholder({ size = 36 }: { size?: number }) {
   );
 }
 
-function formatNextOpenTime(ts: number): string {
-  const d = new Date(ts);
-  const today = new Date();
-  const isTomorrow =
-    d.getDate() !== today.getDate() ||
-    d.getMonth() !== today.getMonth() ||
-    d.getFullYear() !== today.getFullYear();
-  const timeStr = d.toLocaleTimeString("en-IN", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
-  return isTomorrow ? `Opens tomorrow ${timeStr}` : `Opens at ${timeStr}`;
-}
-
-function toTimestamp(v: string | number | null | undefined): number | null {
-  if (v == null) return null;
-  if (typeof v === "number") return v > 1e12 ? v : v * 1000;
-  const t = Date.parse(String(v));
-  return Number.isNaN(t) ? null : t;
+function formatReviewCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M+`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}K+`;
+  return `${n}`;
 }
 
 const MemoizedMenuItemCard = React.memo(function MenuItemCard({
@@ -622,7 +456,8 @@ export default function MerchantDetailScreen() {
     queryKey: ["merchant", merchantId],
     queryFn: () => merchantService.getMerchantById(merchantId),
     enabled: !!merchantId,
-    refetchOnWindowFocus: true,
+    staleTime: 60 * 1000,
+    refetchOnWindowFocus: false,
     refetchInterval: 2 * 60 * 1000,
   });
 
@@ -689,7 +524,12 @@ export default function MerchantDetailScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      if (merchantId) queryClient.invalidateQueries({ queryKey: ["merchant", merchantId] });
+      if (!merchantId) return;
+      const updatedAt =
+        queryClient.getQueryState({ queryKey: ["merchant", merchantId] })?.dataUpdatedAt ?? 0;
+      if (Date.now() - updatedAt > 2 * 60 * 1000) {
+        void queryClient.invalidateQueries({ queryKey: ["merchant", merchantId] });
+      }
     }, [merchantId, queryClient])
   );
 
@@ -801,6 +641,15 @@ export default function MerchantDetailScreen() {
     ...(storeOffersData?.merchant_offers ?? []),
     ...(storeOffersData?.platform_offers ?? []),
   ];
+  /** Inner page: full offer list (no free-delivery-only promos in the strip). */
+  const visibleOffers = useMemo(
+    () =>
+      liveOffers.filter((o) => {
+        const blob = `${o.label ?? ""} ${o.sub_label ?? ""}`.toLowerCase();
+        return !/\bfree\s*delivery\b/.test(blob) && !/\bfree\s*del\b/.test(blob);
+      }),
+    [liveOffers]
+  );
 
   // Kept for legacy fields (polyline for map) while we migrate to canonical quote.
   void getRoute;
@@ -1066,6 +915,41 @@ export default function MerchantDetailScreen() {
   const closeReportSheet = useCallback(() => setReportSheetVisible(false), []);
 
   const liveStatusFromStore = useStoreStatusStore((s) => s.getStatus(merchantId));
+
+  const merchantNextOpenAt =
+    (merchant as { nextOpenAt?: string | number | null } | undefined)?.nextOpenAt ?? null;
+  const merchantNextCloseAt =
+    (merchant as { nextCloseAt?: string | number | null } | undefined)?.nextCloseAt ?? null;
+  const scheduleTickEnabled =
+    toTimestamp(merchantNextOpenAt) != null || toTimestamp(merchantNextCloseAt) != null;
+  const scheduleNow = useScheduleTick(scheduleTickEnabled);
+
+  const merchantLiveStatus = (merchant as { liveStatus?: "OPEN" | "CLOSED" } | undefined)?.liveStatus;
+  const isStoreClosedForStatus =
+    merchant != null &&
+    (liveStatusFromStore ?? merchantLiveStatus ?? "CLOSED") === "CLOSED";
+
+  const openStatusLabel = useMemo(
+    () =>
+      buildStoreOpenStatusLabel({
+        isOpen: merchant != null && !isStoreClosedForStatus,
+        nextOpenAt: merchantNextOpenAt,
+        nextCloseAt: merchantNextCloseAt,
+        nowMs: scheduleNow,
+      }),
+    [
+      merchant,
+      isStoreClosedForStatus,
+      merchantNextOpenAt,
+      merchantNextCloseAt,
+      scheduleNow,
+    ]
+  );
+
+  const isOpenSoonPill = isStoreClosedForStatus && openStatusLabel.label === "Open soon";
+  const isClosingSoonPill = merchant != null && !isStoreClosedForStatus && openStatusLabel.isClosingSoon;
+  const statusPillLabel = formatOpenStatusTagText(openStatusLabel);
+
   useEffect(() => {
     if (merchant?.id != null && (merchant as { liveStatus?: "OPEN" | "CLOSED" }).liveStatus != null) {
       useStoreStatusStore.getState().setStatusFromApi(
@@ -1144,16 +1028,24 @@ export default function MerchantDetailScreen() {
   const storeEtaLabel = formatEtaRange(storeEtaRange);
   const hasOffers = Array.isArray((merchant as { offers?: unknown[] }).offers) && (merchant as { offers: unknown[] }).offers.length > 0;
 
-  const merchantLiveStatus = (merchant as { liveStatus?: "OPEN" | "CLOSED" }).liveStatus;
-  const isStoreClosed =
-    (liveStatusFromStore ?? merchantLiveStatus ?? "CLOSED") === "CLOSED";
-  const nextOpenTs = toTimestamp((merchant as { nextOpenAt?: string | number | null }).nextOpenAt);
-  const closedStatusText =
-    isStoreClosed && nextOpenTs != null
-      ? `Closed • ${formatNextOpenTime(nextOpenTs)}`
-      : isStoreClosed
-        ? "Currently closed"
-        : null;
+  const isStoreClosed = isStoreClosedForStatus;
+  const hasRating = merchant.avgRating != null && Number(merchant.avgRating) >= 0;
+  const ratingDisplay = hasRating ? Number(merchant.avgRating).toFixed(1) : null;
+  const reviewCountLabel =
+    merchant.totalReviews != null && merchant.totalReviews > 0
+      ? formatReviewCount(merchant.totalReviews)
+      : null;
+  const cuisineLine =
+    merchant.cuisines && merchant.cuisines.length > 0
+      ? merchant.cuisines.slice(0, 3).join(" · ")
+      : null;
+  const closedBannerMessage = isStoreClosed
+    ? openStatusLabel.label === "Open soon" && openStatusLabel.sub
+      ? `Opening soon — browse the menu. ${openStatusLabel.sub} remaining.`
+      : merchantNextOpenAt
+        ? `Closed for now — browse the menu. ${formatNextOpenTime(toTimestamp(merchantNextOpenAt)!)}.`
+        : "Closed for now — you can still browse the menu. Ordering resumes when we open."
+    : null;
 
   const filters: { id: FilterId; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
     { id: "all", label: "All", icon: "list" },
@@ -1309,14 +1201,24 @@ export default function MerchantDetailScreen() {
         ListHeaderComponent={
           <>
             <Animated.View style={[styles.headerImageWrap, headerImageStyle]}>
-              <BannerCarousel
+              <StoreBannerCarousel
                 bannerUri={merchantBannerHeroUri}
                 galleryUris={merchantGalleryBannerUris}
+                width={SCREEN_WIDTH}
                 height={HEADER_IMAGE_HEIGHT}
+                initialBannerHoldMs={4000}
+                slideIntervalMs={5200}
+                slideDurationMs={750}
+                showDots
               />
               <LinearGradient
-                colors={["rgba(0,0,0,0.55)", "rgba(0,0,0,0.25)", "transparent"]}
-                locations={[0, 0.4, 0.85]}
+                colors={[
+                  "rgba(0,0,0,0.35)",
+                  "rgba(0,0,0,0.15)",
+                  "rgba(0,0,0,0.55)",
+                  "rgba(0,0,0,0.88)",
+                ]}
+                locations={[0, 0.35, 0.72, 1]}
                 style={StyleSheet.absoluteFill}
                 pointerEvents="none"
               />
@@ -1337,35 +1239,65 @@ export default function MerchantDetailScreen() {
                   </TouchableOpacity>
                 </View>
               </View>
-              <View style={[styles.headerInfo, { paddingBottom: 14 }]} pointerEvents="box-none">
-                <Text style={styles.headerName} numberOfLines={2}>{merchant.name}</Text>
-                <View style={styles.headerMetaRowWrap} pointerEvents="none">
-                  <View style={styles.headerMetaRow}>
-                    <View style={styles.ratingBadge}>
-                      <Ionicons name="star" size={14} color="#fff" />
-                      <Text style={styles.ratingText}>{merchant.rating ?? "—"}</Text>
+              <View style={[styles.headerInfo, { paddingBottom: 16 }]} pointerEvents="box-none">
+                <Text style={styles.headerName} numberOfLines={2}>
+                  {merchant.name}
+                </Text>
+                <View style={styles.headerProfileCard} pointerEvents="none">
+                  <View style={styles.headerProfileTopRow}>
+                    <View style={[styles.ratingCapsule, !hasRating && styles.ratingCapsuleNew]}>
+                      {hasRating ? <Ionicons name="star" size={12} color="#fff" /> : null}
+                      <Text style={styles.ratingCapsuleText}>
+                        {ratingDisplay ?? "New"}
+                      </Text>
                     </View>
-                    {distanceKm != null ? (
-                      <Text style={styles.headerMetaText}> · {distanceKm < 1 ? `${Math.round(distanceKm * 1000)} m` : `${distanceKm.toFixed(1)} km`}</Text>
+                    {reviewCountLabel ? (
+                      <Text style={styles.ratingReviewCount}>{reviewCountLabel} ratings</Text>
                     ) : null}
-                    {/* Single canonical "delivery in 45-55 mins" badge.
-                        Replaces the two-line "~Mapbox min · prep mins" pair
-                        that was showing inconsistent numbers. */}
-                    <Text style={styles.headerMetaText}> · {storeEtaLabel}</Text>
-                    {merchant.city ? (
-                      <Text style={styles.headerMetaText}> · {merchant.city}</Text>
+                    {cuisineLine ? (
+                      <Text style={styles.headerCuisineLine} numberOfLines={1}>
+                        {cuisineLine}
+                      </Text>
                     ) : null}
                   </View>
+                  <NearFastDeliveryMeta
+                    deliveryTime={storeEtaLabel}
+                    distanceKm={distanceKm}
+                    onDark
+                  />
+                  {merchant.city ? (
+                    <Text style={styles.headerCityText}>{merchant.city}</Text>
+                  ) : null}
                 </View>
                 <View style={styles.headerStatusRow}>
-                  <View style={styles.headerStatusRowLeft}>
-                    <View style={[styles.headerStatusPill, isStoreClosed && styles.headerStatusPillClosed]}>
-                      <Ionicons name={isStoreClosed ? "close-circle" : "checkmark-circle"} size={14} color="#fff" />
-                      <Text style={styles.headerStatusPillText}>{isStoreClosed ? "CLOSED" : "OPEN"}</Text>
-                    </View>
-                    {isStoreClosed && closedStatusText ? (
-                      <Text style={styles.trustText}>{closedStatusText}</Text>
-                    ) : null}
+                  <View
+                    style={[
+                      styles.headerStatusPill,
+                      isClosingSoonPill
+                        ? styles.headerStatusPillClosingSoon
+                        : isOpenSoonPill
+                          ? styles.headerStatusPillOpenSoon
+                          : isStoreClosed
+                            ? styles.headerStatusPillClosed
+                            : styles.headerStatusPillOpen,
+                    ]}
+                  >
+                    <Ionicons
+                      name={
+                        isClosingSoonPill
+                          ? "time-outline"
+                          : isOpenSoonPill
+                            ? "time-outline"
+                            : isStoreClosed
+                              ? "moon"
+                              : "checkmark-circle"
+                      }
+                      size={14}
+                      color="#fff"
+                    />
+                    <Text style={styles.headerStatusPillText} numberOfLines={1}>
+                      {statusPillLabel}
+                    </Text>
                   </View>
                   <TouchableOpacity
                     onPress={() => setGroupOrderSheetVisible(true)}
@@ -1386,21 +1318,23 @@ export default function MerchantDetailScreen() {
               </View>
             </Animated.View>
 
-            {isStoreClosed ? (
+            {isStoreClosed && closedBannerMessage ? (
               <View style={styles.closedBanner}>
-                <Ionicons name="time-outline" size={20} color="#fff" />
-                <Text style={styles.closedBannerText}>Currently closed — you can explore the menu. Ordering will resume soon.</Text>
+                <View style={styles.closedBannerIconWrap}>
+                  <Ionicons name="time-outline" size={18} color="#fff" />
+                </View>
+                <Text style={styles.closedBannerText}>{closedBannerMessage}</Text>
               </View>
             ) : null}
 
-            {liveOffers.length > 0 ? (
+            {visibleOffers.length > 0 ? (
               <View style={styles.offersSection}>
                 <View style={styles.offersSectionHeader}>
                   <Ionicons name="pricetag" size={15} color={GatiMitraColors.emerald} />
                   <Text style={styles.offersSectionTitle}>Offers</Text>
                 </View>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.offersScroll}>
-                  {liveOffers.map((offer) => (
+                  {visibleOffers.map((offer) => (
                     <View key={offer.id} style={styles.offerCard}>
                       <Text style={styles.offerCardLabel}>{offer.label}</Text>
                       {offer.sub_label ? (
@@ -1904,58 +1838,112 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
   },
-  headerMetaRowWrap: {
-    alignSelf: "flex-start",
-    backgroundColor: "rgba(0,0,0,0.5)",
-    borderRadius: 10,
+  headerOfferChip: {
+    position: "absolute",
+    bottom: 88,
+    left: 14,
+    right: 14,
+    zIndex: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "rgba(37, 99, 235, 0.94)",
     paddingHorizontal: 10,
-    paddingVertical: 6,
-    marginBottom: 6,
+    paddingVertical: 7,
+    borderRadius: 10,
   },
-  headerMetaRow: {
-    flexDirection: "row",
+  headerOfferChipIcon: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: "rgba(255,255,255,0.22)",
     alignItems: "center",
+    justifyContent: "center",
   },
-  ratingBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.2)",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    gap: 4,
-  },
-  ratingText: {
-    fontSize: 13,
+  headerOfferChipText: {
+    flex: 1,
+    fontSize: 12,
     fontWeight: "700",
     color: "#fff",
   },
-  headerMetaText: {
+  headerCityText: {
+    fontSize: 12,
+    color: "rgba(255,255,255,0.88)",
+    marginTop: 4,
+    fontWeight: "500",
+  },
+  headerProfileCard: {
+    alignSelf: "stretch",
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.22)",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 10,
+    gap: 6,
+  },
+  headerProfileTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  ratingCapsule: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: GatiMitraColors.emerald,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  ratingCapsuleNew: {
+    backgroundColor: "rgba(255,255,255,0.25)",
+  },
+  ratingCapsuleText: {
     fontSize: 13,
+    fontWeight: "800",
     color: "#fff",
-    marginLeft: 6,
+  },
+  ratingReviewCount: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.9)",
+  },
+  headerCuisineLine: {
+    flex: 1,
+    minWidth: 80,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.92)",
   },
   headerStatusRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 6,
-    gap: 8,
-  },
-  headerStatusRowLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    flex: 1,
+    gap: 10,
   },
   headerStatusPill: {
     flexDirection: "row",
     alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 20,
+    gap: 6,
+    flexShrink: 1,
+    maxWidth: "58%",
+  },
+  headerStatusPillOpen: {
     backgroundColor: GatiMitraColors.emerald,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 14,
-    gap: 4,
+  },
+  headerStatusPillOpenSoon: {
+    backgroundColor: "rgba(22, 163, 74, 0.58)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.35)",
+  },
+  headerStatusPillClosingSoon: {
+    backgroundColor: GatiMitraColors.closedRed,
   },
   headerStatusPillClosed: {
     backgroundColor: GatiMitraColors.closedRed,
@@ -1964,11 +1952,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
     color: "#fff",
-  },
-  trustText: {
-    fontSize: 13,
-    color: "rgba(255,255,255,0.95)",
-    fontWeight: "600",
+    flexShrink: 1,
   },
   offersSection: {
     paddingTop: 12,
@@ -2433,20 +2417,31 @@ const styles = StyleSheet.create({
   },
   closedBanner: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    backgroundColor: "#6b7280",
+    alignItems: "flex-start",
+    gap: 12,
+    backgroundColor: "#374151",
     marginHorizontal: 16,
     marginTop: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.08)",
+  },
+  closedBannerIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    alignItems: "center",
+    justifyContent: "center",
   },
   closedBannerText: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 13,
     color: "#fff",
-    lineHeight: 20,
+    lineHeight: 19,
+    fontWeight: "500",
   },
   sheetOverlay: {
     flex: 1,

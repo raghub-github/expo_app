@@ -1140,7 +1140,7 @@ function OffersContent() {
             ) : null}
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-5 md:px-6 py-4 sm:py-6 w-full min-w-0">
+          <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar px-4 sm:px-5 md:px-6 py-4 sm:py-6 w-full min-w-0">
             {pageTab === "create" ? (
               <div className="py-6">
                 <div className="rounded-lg border border-gray-200 bg-white p-6">

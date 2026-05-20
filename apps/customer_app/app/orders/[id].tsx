@@ -236,6 +236,22 @@ export default function OrderTrackingScreen() {
   const isDelivered = order.status === "DELIVERED";
   const isCancelled = order.status === "CANCELLED";
 
+  const prepReadyByAt =
+    etaData?.prep?.readyByAt ?? order.prepReadyByAt ?? null;
+  const prepMinutesCommitted =
+    etaData?.prep?.minutes ?? order.prepTimeMinutes ?? null;
+  const prepMinutesLeft = prepReadyByAt ? minutesUntil(prepReadyByAt) : null;
+  const showPrepBanner =
+    !isDelivered &&
+    !isCancelled &&
+    prepReadyByAt != null &&
+    prepMinutesLeft != null &&
+    prepMinutesLeft > 0 &&
+    (normalizedStatus === "ORDER_PLACED" ||
+      normalizedStatus === "PREPARING" ||
+      normalizedStatus === "ACCEPTED" ||
+      order.status === "ORDER_PLACED");
+
   const handleCallRider = () => {
     const phone = order.rider?.phone?.replace(/\D/g, "") ?? "";
     if (phone) Linking.openURL(`tel:${phone}`);
@@ -394,6 +410,27 @@ export default function OrderTrackingScreen() {
               </View>
             )}
           </View>
+
+          {showPrepBanner ? (
+            <View style={styles.prepBanner}>
+              <Ionicons name="restaurant-outline" size={20} color={GatiMitraColors.emerald} />
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                <Text style={styles.prepBannerTitle}>
+                  Restaurant is preparing your order
+                </Text>
+                <Text style={styles.prepBannerSub}>
+                  Food ready in ~{prepMinutesLeft} min
+                  {prepMinutesCommitted != null ? ` · ${prepMinutesCommitted} min prep time` : ""}
+                  {prepReadyByAt
+                    ? ` · by ${new Date(prepReadyByAt).toLocaleTimeString(undefined, {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}`
+                    : ""}
+                </Text>
+              </View>
+            </View>
+          ) : null}
 
           {/* Status timeline */}
           <View style={styles.card}>
@@ -696,6 +733,27 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 12,
     ...GatiMitraColors.elevationShadow,
+  },
+  prepBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    backgroundColor: "#ECFDF5",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#A7F3D0",
+    padding: 14,
+    marginBottom: 12,
+  },
+  prepBannerTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+  },
+  prepBannerSub: {
+    fontSize: 12,
+    color: GatiMitraColors.textSecondary,
+    marginTop: 4,
+    lineHeight: 17,
   },
   cardTitle: {
     fontSize: 16,

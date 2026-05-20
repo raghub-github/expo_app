@@ -72,9 +72,15 @@ export function MerchantOrderPipelineCard({
   onPrintKot?: () => void;
   onPrintOrder?: () => void;
   onTimeline?: () => void;
-  onReady: () => void;
+  onAccept?: () => void | Promise<void | boolean>;
+  onReject?: () => void;
+  onReady: () => void | Promise<void>;
   onNeedMoreTime: () => void;
   onDispatch?: () => void;
+  onComplete?: () => void | Promise<void | boolean>;
+  onRto?: () => void;
+  acceptLabel?: string;
+  acceptDisabled?: boolean;
   onCallCustomer?: () => void;
   onCallRider?: () => void;
   onTrackRider?: () => void;

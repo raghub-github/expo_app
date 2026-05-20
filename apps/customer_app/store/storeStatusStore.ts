@@ -39,6 +39,7 @@ export const useStoreStatusStore = create<StoreStatusState>((set, get) => ({
   setStatusFromApi: (storeId, isOpen, liveStatus) => {
     const status: LiveStatus =
       liveStatus ?? (isOpen === true ? "OPEN" : "CLOSED");
+    if (get().statusMap[storeId] === status) return;
     set((s) => ({
       statusMap: { ...s.statusMap, [storeId]: status },
     }));
