@@ -26,8 +26,26 @@ type AuthPluginOpts = {
 
 const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
   const env = getEnv();
-  const key = createSecretKey(Buffer.from(env.SUPABASE_JWT_SECRET, "utf-8"));
+  /**
+   * JWT key rotation: verify against CURRENT first, then PREVIOUS (if set).
+   * During a rotation window both are active so already-signed tokens stay
+   * valid until they expire naturally. See env.ts for the procedure.
+   */
+  const currentKey = createSecretKey(Buffer.from(env.SUPABASE_JWT_SECRET, "utf-8"));
+  const previousKey = env.SUPABASE_JWT_SECRET_PREVIOUS
+    ? createSecretKey(Buffer.from(env.SUPABASE_JWT_SECRET_PREVIOUS, "utf-8"))
+    : null;
   const required = opts.required ?? true;
+
+  async function verifyWithRotation(token: string) {
+    try {
+      return await jwtVerify(token, currentKey);
+    } catch (e) {
+      if (!previousKey) throw e;
+      // Tokens signed before the rotation are still legal for their TTL.
+      return await jwtVerify(token, previousKey);
+    }
+  }
 
   app.addHook("preHandler", async (req, reply) => {
     const header = req.headers.authorization;
@@ -44,7 +62,7 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
     const token = m[1]!;
 
     try {
-      const { payload } = await jwtVerify(token, key);
+      const { payload } = await verifyWithRotation(token);
       const role = String((payload as any).role ?? "");
       const sub = String(payload.sub ?? "");
 

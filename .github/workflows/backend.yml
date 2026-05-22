@@ -1,0 +1,84 @@
+name: backend-deploy
+
+# Builds + ships the Fastify backend image. Triggered on:
+#   - push to main with changes under backend/** or shared packages it uses
+#   - manual run (workflow_dispatch) for emergency rollbacks
+#
+# The job pushes a tagged image to GHCR and SSHes into the Hostinger VPS to
+# pull + restart. Mirrors the existing partnersite/.github/workflows pattern.
+#
+# Required repo secrets:
+#   GHCR_USERNAME, GHCR_TOKEN     — read+write packages
+#   VPS_HOST, VPS_USER, VPS_SSH_KEY — deploy target
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "packages/redis/**"
+      - "packages/queue/**"
+      - "packages/logger/**"
+      - "packages/event-contracts/**"
+      - "packages/contracts/**"
+      - "packages/shared-config/**"
+      - ".github/workflows/backend.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck (turbo affected)
+        run: npx turbo run typecheck --filter='backend' --filter='@gatimitra/*'
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Build + push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/gm-backend:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/gm-backend:latest
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Deploy on VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/gatimitra
+            git fetch --depth 1 origin main
+            git reset --hard origin/main
+            docker compose -f infra/docker/docker-compose.prod.yml pull backend
+            docker compose -f infra/docker/docker-compose.prod.yml up -d --no-deps backend
+            docker image prune -f

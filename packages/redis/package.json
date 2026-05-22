@@ -1,0 +1,27 @@
+{
+  "name": "@gatimitra/redis",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts",
+    "./cache": "./src/cache.ts",
+    "./lock": "./src/lock.ts",
+    "./pubsub": "./src/pubsub.ts"
+  },
+  "dependencies": {
+    "ioredis": "^5.10.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "echo 'TODO: wire eslint when shared-config is adopted'",
+    "build": "echo 'consumed as source TS by other workspaces'"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "@types/node": "^22.10.5"
+  }
+}

@@ -169,19 +169,36 @@ export async function etaRoutes(app: FastifyInstance) {
         routeMinutes = Math.max(5, Math.round((routeKm / 18) * 60));
       }
 
-      // After rider pickup, prep time is 0 — we've already left the store.
+      // After rider pickup, prep is done and we've left the store — collapse
+      // food prep + rider assignment to zero in the recalc.
       const noPrep = body.reason === "RIDER_PICKED_UP";
-      const prepMinutes = noPrep ? 0 : await resolveStorePrepMinutes(Number(row.merchant_store_id));
-      const noAssignment = body.reason === "RIDER_PICKED_UP" || body.reason === "RIDER_ASSIGNED";
+      const prepMinutes = noPrep
+        ? 0
+        : await resolveStorePrepMinutes(Number(row.merchant_store_id));
+      const noAssignment =
+        body.reason === "RIDER_PICKED_UP" || body.reason === "RIDER_ASSIGNED";
+      const { getActiveOrdersForStore } = await import("./restaurantLoad.js");
+      const activeOrders = noPrep ? 0 : await getActiveOrdersForStore(Number(row.merchant_store_id));
 
       const snap = computeEta({
+        items: noPrep
+          ? [{ kptMinutes: 0, quantity: 1 }]
+          : [{ kptMinutes: prepMinutes, quantity: 1 }],
+        fallbackPrepMinutes: prepMinutes,
         routeMinutes,
         routeKm,
-        prepMinutes,
-        riderAssignmentMinutes: noAssignment ? 0 : undefined,
-        trafficDelayMinutes: body.extraTrafficMinutes,
-        weatherDelayMinutes: body.extraWeatherMinutes,
-        congestionDelayMinutes: body.extraCongestionMinutes,
+        activeOrdersAtStore: activeOrders,
+        riderAssigned: noAssignment ? true : false,
+        riderAssignmentDelayMinutes: noAssignment ? 0 : undefined,
+        // Caller can nudge multipliers via extra minutes (treated as additional
+        // traffic / weather signal — the engine applies them as part of its
+        // normal traffic/weather chain).
+        weather:
+          (body.extraWeatherMinutes ?? 0) >= 8
+            ? "HEAVY_RAIN"
+            : (body.extraWeatherMinutes ?? 0) >= 3
+              ? "LIGHT_RAIN"
+              : "CLEAR",
       });
 
       await appendEtaRecalc({
@@ -196,11 +213,14 @@ export async function etaRoutes(app: FastifyInstance) {
         ok: true,
         orderIdText,
         snap: {
-          minMinutes: snap.minMinutes,
-          maxMinutes: snap.maxMinutes,
+          etaMinMinutes: snap.etaMinMinutes,
+          etaMaxMinutes: snap.etaMaxMinutes,
           promisedDeliveryAt: snap.promisedDeliveryAt,
           confidenceScore: snap.confidenceScore,
+          engineVersion: snap.engineVersion,
           breakdown: snap.breakdown,
+          multipliers: snap.multipliers,
+          context: snap.context,
           routeKm: snap.routeKm,
         },
       });

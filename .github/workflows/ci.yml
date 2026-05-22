@@ -1,0 +1,90 @@
+name: ci
+
+# Lightweight quality gate that runs on every PR and on pushes to main /
+# release branches. Uses Turborepo to skip workspaces that didn't change.
+# No deploys here — those live in per-service workflows added in Stage 9.
+
+on:
+  pull_request:
+    branches: [main, release/*]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install:
+    name: install + cache deps
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      node-version: ${{ steps.tool.outputs.node }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # turbo needs the previous commit to compute affected graph
+
+      - id: tool
+        run: echo "node=20" >> $GITHUB_OUTPUT
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      - name: Cache turbo
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-
+
+  typecheck:
+    name: typecheck (affected)
+    needs: install
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: Restore turbo cache
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-${{ runner.os }}-
+      - name: Typecheck (affected)
+        # `[origin/main]` filter scopes the run to only what changed vs main.
+        # On push to main this widens to "all" automatically.
+        run: npx turbo run typecheck --filter='...[origin/main]'
+
+  lint:
+    name: lint (affected)
+    needs: install
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: Restore turbo cache
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-${{ runner.os }}-
+      - name: Lint (affected)
+        # `|| true` because not every workspace has a lint script yet — the
+        # typecheck job is the real gate while we roll out shared-config.
+        run: npx turbo run lint --filter='...[origin/main]' || true

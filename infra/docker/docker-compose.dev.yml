@@ -1,0 +1,265 @@
+# GatiMitra — development docker-compose.
+#
+# Usage (from repo root):
+#   docker compose -f infra/docker/docker-compose.dev.yml up
+#
+# What runs:
+#   - postgres        (volume-mounted; for local Drizzle migrations)
+#   - redis           (used by backend cache + queues + ws pub/sub + locks)
+#   - backend         (Fastify on :3000, hot reload via tsx watch)
+#   - notification-worker  (BullMQ consumer for q.push.send)
+#   - payment-worker  (reconciler + webhook retry)
+#   - ws-gateway      (websocket fan-out on :4100)
+#   - dashboard       (Next dev on :3001)
+#   - partnersite     (Next dev on :3002)
+#
+# Not included (intentional):
+#   - Mobile apps — Expo runs natively, not in containers.
+#   - Prometheus/Grafana — added in monitoring compose for opt-in.
+#
+# Internal vs published ports:
+#   Backend is published on :3000 (host). Workers + ws-gateway communicate
+#   over the docker network (`app`) via service name DNS — no host port
+#   exposure needed.
+
+name: gatimitra-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gatimitra
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: gatimitra
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - pg-dev-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gatimitra -d gatimitra"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [app]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - redis-dev-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [app]
+
+  # KRaft-mode Kafka (no Zookeeper). Optional for local dev — start with:
+  #   docker compose --profile kafka -f infra/docker/docker-compose.dev.yml up
+  # If you skip this profile, outbox-relay falls back to Redis streams.
+  kafka:
+    image: bitnami/kafka:3.7
+    profiles: ["kafka"]
+    restart: unless-stopped
+    environment:
+      KAFKA_CFG_NODE_ID: "0"
+      KAFKA_CFG_PROCESS_ROLES: "controller,broker"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "0@kafka:9093"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    ports:
+      - "127.0.0.1:9092:9092"
+    volumes:
+      - kafka-dev-data:/bitnami/kafka
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [app]
+
+  # bull-board UI for inspecting BullMQ queues during local dev.
+  # Mount on http://localhost:3300; start with `--profile tools` to opt in:
+  #   docker compose --profile tools -f infra/docker/docker-compose.dev.yml up
+  bull-board:
+    image: deadly0/bull-board:3.5.6
+    profiles: ["tools"]
+    restart: unless-stopped
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      BULL_PREFIX: "bull"
+    ports:
+      - "127.0.0.1:3300:3000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [app]
+
+  outbox-relay:
+    build:
+      context: ../..
+      dockerfile: services/outbox-relay/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../services/outbox-relay/.env
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://gatimitra:dev@postgres:5432/gatimitra
+      REDIS_URL: redis://redis:6379
+      # Empty when launched without `--profile kafka` so relay uses Redis stream.
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [app]
+
+  eta-worker:
+    build:
+      context: ../..
+      dockerfile: services/eta-worker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../services/eta-worker/.env
+    environment:
+      NODE_ENV: development
+      REDIS_URL: redis://redis:6379
+      BACKEND_INTERNAL_URL: http://backend:3000
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    networks: [app]
+
+  backend:
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../backend/.env
+    environment:
+      NODE_ENV: development
+      # Override .env to point at the in-compose services so local dev doesn't
+      # accidentally hit production Redis / Postgres.
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgres://gatimitra:dev@postgres:5432/gatimitra
+      PORT: "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    networks: [app]
+
+  notification-worker:
+    build:
+      context: ../..
+      dockerfile: services/notification-worker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../services/notification-worker/.env
+    environment:
+      NODE_ENV: development
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [app]
+
+  payment-worker:
+    build:
+      context: ../..
+      dockerfile: services/payment-worker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../services/payment-worker/.env
+    environment:
+      NODE_ENV: development
+      REDIS_URL: redis://redis:6379
+      BACKEND_INTERNAL_URL: http://backend:3000
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    networks: [app]
+
+  ws-gateway:
+    build:
+      context: ../..
+      dockerfile: services/ws-gateway/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../services/ws-gateway/.env
+    environment:
+      NODE_ENV: development
+      REDIS_URL: redis://redis:6379
+      # JWT_SECRET must match backend's. Pull from backend/.env, not hard-coded.
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "4100:4100"
+    networks: [app]
+
+  dashboard:
+    image: node:20-alpine
+    restart: unless-stopped
+    working_dir: /repo/dashboard
+    env_file:
+      - ../../dashboard/.env.local
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:3000
+    command: sh -c "npm install --include-workspace-root --workspaces && npx next dev --port 3001"
+    volumes:
+      - ../..:/repo
+      - /repo/node_modules
+    ports:
+      - "3001:3001"
+    depends_on:
+      - backend
+    networks: [app]
+
+  partnersite:
+    image: node:20-alpine
+    restart: unless-stopped
+    working_dir: /repo/partnersite
+    env_file:
+      - ../../partnersite/.env.local
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:3000
+    command: sh -c "npm install --include-workspace-root --workspaces && npx next dev --port 3002"
+    volumes:
+      - ../..:/repo
+      - /repo/node_modules
+    ports:
+      - "3002:3002"
+    depends_on:
+      - backend
+    networks: [app]
+
+networks:
+  app:
+    driver: bridge
+
+volumes:
+  pg-dev-data:
+  redis-dev-data:
+  kafka-dev-data:

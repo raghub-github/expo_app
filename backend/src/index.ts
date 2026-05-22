@@ -36,6 +36,8 @@ import { etaRoutes } from "./modules/eta/eta.routes.js";
 import { billingDebugRoutes } from "./modules/billing/billing.debug.routes.js";
 import { runStoreScheduleTick, runStoreScheduleTickForStore } from "./modules/merchant-partner/store-schedule-engine.js";
 import { runOrderAcceptanceTimeoutTick } from "./services/order-acceptance-timeout.js";
+import { withLock, closeRedis } from "@gatimitra/redis";
+import { incrCounter, renderPrometheus } from "@gatimitra/logger";
 import { merchantMenuRoutes } from "./modules/merchant-menu/merchant-menu.routes.js";
 import { pushRoutes } from "./modules/push/push.routes.js";
 import { offersRoutes } from "./modules/offers/offers.routes.js";
@@ -329,27 +331,91 @@ await app.register(deliveryRateCardModule, { prefix: "/v1/delivery-fee" });
 await app.register(pushRoutes, { prefix: "/v1/push" });
 await app.register(offersRoutes, { prefix: "/v1/offers" });
 
+// Internal routes for in-cluster workers (payment-worker etc). Guarded by
+// the shared INTERNAL_API_TOKEN header. Not exposed to the public internet.
+const { paymentInternalRoutes } = await import("./modules/payment/payment.internal.routes.js");
+await app.register(paymentInternalRoutes, { prefix: "/v1/internal" });
+
+// Mints short-lived JWTs the client trades for a websocket connection.
+const { wsTicketRoutes } = await import("./modules/auth/ws-ticket.routes.js");
+await app.register(wsTicketRoutes, { prefix: "/v1" });
+
+/**
+ * Prometheus scrape endpoint. Unprotected by JWT — relies on infra-level
+ * allowlist (Stage 5 nginx rule) so only the monitoring stack can reach it.
+ * The counters are populated by `incrCounter()` calls throughout the
+ * codebase (e.g. tick outcomes below, push enqueue helper).
+ */
+app.get("/metrics", async (_req, reply) => {
+  reply.header("content-type", "text/plain; version=0.0.4");
+  return renderPrometheus();
+});
+
+// Count every HTTP request by route + status. Lightweight, no histograms.
+app.addHook("onResponse", async (req, reply) => {
+  const route = req.routeOptions?.url ?? "unknown";
+  incrCounter(
+    "http_requests_total",
+    "Total HTTP requests by route + status",
+    1,
+    { route, status: String(reply.statusCode) },
+  );
+});
+
 let storeScheduleInterval: ReturnType<typeof setInterval> | null = null;
 let pendingPaymentReconcilerInterval: ReturnType<typeof setInterval> | null = null;
 let orderAcceptanceTimeoutInterval: ReturnType<typeof setInterval> | null = null;
+let shuttingDown = false;
+let inFlightRequests = 0;
 
-// Graceful shutdown
+/**
+ * In-flight request tracking. Combined with the SIGTERM handler below this
+ * lets a deploying replica wait until the last paid-but-not-finalized
+ * checkout completes before exiting, instead of orphaning the call.
+ *
+ * `?` on app.addHook keeps this safe even if Fastify lifecycle changes.
+ */
+app.addHook("onRequest", async (_req, reply) => {
+  if (shuttingDown) {
+    reply.header("connection", "close");
+    return reply.code(503).send({ ok: false, error: "shutting_down" });
+  }
+  inFlightRequests++;
+});
+app.addHook("onResponse", async () => {
+  inFlightRequests = Math.max(0, inFlightRequests - 1);
+});
+
+/**
+ * Graceful shutdown:
+ *   1. Set the "draining" flag → new requests get 503 immediately.
+ *   2. Stop scheduling new tick iterations (clearInterval).
+ *   3. Wait for in-flight requests to drain (cap 20 s) so checkout finishes.
+ *   4. Close Fastify, then Redis. DB pool closes through Fastify hooks.
+ *   5. Exit 0.
+ */
+const SHUTDOWN_DRAIN_TIMEOUT_MS = 20_000;
 const gracefulShutdown = async (signal: string) => {
-  app.log.info({ signal }, "Received shutdown signal, closing server");
-  if (storeScheduleInterval) {
-    clearInterval(storeScheduleInterval);
-    storeScheduleInterval = null;
+  if (shuttingDown) return;
+  shuttingDown = true;
+  app.log.info({ signal }, "Received shutdown signal, draining…");
+
+  if (storeScheduleInterval) { clearInterval(storeScheduleInterval); storeScheduleInterval = null; }
+  if (pendingPaymentReconcilerInterval) { clearInterval(pendingPaymentReconcilerInterval); pendingPaymentReconcilerInterval = null; }
+  if (orderAcceptanceTimeoutInterval) { clearInterval(orderAcceptanceTimeoutInterval); orderAcceptanceTimeoutInterval = null; }
+
+  const drainStart = Date.now();
+  while (inFlightRequests > 0 && Date.now() - drainStart < SHUTDOWN_DRAIN_TIMEOUT_MS) {
+    app.log.info({ inFlight: inFlightRequests }, "waiting for in-flight requests");
+    await new Promise((r) => setTimeout(r, 250));
   }
-  if (pendingPaymentReconcilerInterval) {
-    clearInterval(pendingPaymentReconcilerInterval);
-    pendingPaymentReconcilerInterval = null;
+  if (inFlightRequests > 0) {
+    app.log.warn({ inFlight: inFlightRequests }, "drain timeout — closing anyway");
   }
-  if (orderAcceptanceTimeoutInterval) {
-    clearInterval(orderAcceptanceTimeoutInterval);
-    orderAcceptanceTimeoutInterval = null;
-  }
+
   try {
     await app.close();
+    await closeRedis();
     app.log.info("Server closed successfully");
     process.exit(0);
   } catch (error) {
@@ -388,28 +454,67 @@ try {
   if (env.DISABLE_BACKGROUND_JOBS) {
     app.log.warn("Background jobs disabled via DISABLE_BACKGROUND_JOBS");
   } else {
-    // Store Auto Schedule Engine: cold start + every 30s
-    const scheduleIntervalMs = 30_000;
-    runStoreScheduleTick(app.log).catch((err) => app.log.error({ err }, "store_schedule_tick"));
-    storeScheduleInterval = setInterval(() => {
-      runStoreScheduleTick(app.log).catch((err) => app.log.error({ err }, "store_schedule_tick"));
-    }, scheduleIntervalMs);
+    /**
+     * Background ticks now run under Redis-backed distributed locks so >1
+     * replica can run safely without double-firing. Each lock TTL is set
+     * comfortably > the tick interval to handle short overruns, but short
+     * enough that a crashed worker doesn't hold the lock forever.
+     *
+     * If Redis is unavailable, `withLock` returns null and the tick is
+     * SKIPPED for that interval — we never duplicate, we just lose a beat.
+     */
 
-    const paymentReconcilerIntervalMs = env.PAYMENT_RECONCILER_INTERVAL_SEC * 1000;
-    reconcilePendingPayments(getDb()).catch((err) => app.log.error({ err }, "pending_payment_reconciler"));
-    pendingPaymentReconcilerInterval = setInterval(() => {
-      reconcilePendingPayments(getDb()).catch((err) => app.log.error({ err }, "pending_payment_reconciler"));
-    }, paymentReconcilerIntervalMs);
-    app.log.info(
-      { intervalMs: paymentReconcilerIntervalMs, ttlMs: env.PAYMENT_CONFIRM_WINDOW_MS, lateCapturePolicy: env.PAYMENT_LATE_CAPTURE_POLICY },
-      "payment reconciler started"
-    );
-    // Order acceptance auto-cancel: cold start + every 15s
+    // Store Auto Schedule Engine — every 30 s; lock TTL 40 s.
+    const scheduleIntervalMs = 30_000;
+    const runScheduleTickLocked = () =>
+      withLock("tick:store-schedule", 40_000, () => runStoreScheduleTick(app.log))
+        .then((result) => {
+          incrCounter(
+            "tick_runs_total",
+            "Polling tick outcomes by lock state",
+            1,
+            { tick: "store_schedule", outcome: result === null ? "skipped" : "ran" },
+          );
+        })
+        .catch((err) => app.log.error({ err }, "store_schedule_tick"));
+    void runScheduleTickLocked();
+    storeScheduleInterval = setInterval(() => { void runScheduleTickLocked(); }, scheduleIntervalMs);
+
+    // Payment reconciler — driven by services/payment-worker via BullMQ
+    // when RECONCILER_LEGACY_TICK_ENABLED=false (recommended in production).
+    // The legacy in-process tick stays as a fallback so the existing single-
+    // node deployment keeps working until the worker is provisioned.
+    if (env.RECONCILER_LEGACY_TICK_ENABLED) {
+      const paymentReconcilerIntervalMs = env.PAYMENT_RECONCILER_INTERVAL_SEC * 1000;
+      const paymentLockTtlMs = Math.max(paymentReconcilerIntervalMs * 2, 60_000);
+      const runPaymentReconcilerLocked = () =>
+        withLock("tick:payment-reconciler", paymentLockTtlMs, () => reconcilePendingPayments(getDb()))
+          .catch((err) => app.log.error({ err }, "pending_payment_reconciler"));
+      void runPaymentReconcilerLocked();
+      pendingPaymentReconcilerInterval = setInterval(() => { void runPaymentReconcilerLocked(); }, paymentReconcilerIntervalMs);
+      app.log.info(
+        { intervalMs: paymentReconcilerIntervalMs, ttlMs: env.PAYMENT_CONFIRM_WINDOW_MS, lateCapturePolicy: env.PAYMENT_LATE_CAPTURE_POLICY },
+        "payment reconciler started (legacy in-process tick + distributed lock)"
+      );
+    } else {
+      app.log.info("payment reconciler in-process tick DISABLED — payment-worker is the driver");
+    }
+
+    // Order acceptance auto-cancel — every 15 s; lock TTL 25 s.
     const orderAcceptanceIntervalMs = 15_000;
-    await runOrderAcceptanceTimeoutTick(app.log);
-    orderAcceptanceTimeoutInterval = setInterval(() => {
-      runOrderAcceptanceTimeoutTick(app.log).catch((err) => app.log.error({ err }, "order_acceptance_timeout_tick"));
-    }, orderAcceptanceIntervalMs);
+    const runAcceptanceTickLocked = () =>
+      withLock("tick:acceptance-timeout", 25_000, () => runOrderAcceptanceTimeoutTick(app.log))
+        .then((result) => {
+          incrCounter(
+            "tick_runs_total",
+            "Polling tick outcomes by lock state",
+            1,
+            { tick: "acceptance_timeout", outcome: result === null ? "skipped" : "ran" },
+          );
+        })
+        .catch((err) => app.log.error({ err }, "order_acceptance_timeout_tick"));
+    await runAcceptanceTickLocked();
+    orderAcceptanceTimeoutInterval = setInterval(() => { void runAcceptanceTickLocked(); }, orderAcceptanceIntervalMs);
   }
 } catch (error) {
   app.log.error({ error }, "Failed to start server");

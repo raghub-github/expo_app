@@ -1,0 +1,29 @@
+{
+  "name": "@gatimitra/outbox-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "echo 'TODO'",
+    "build": "echo 'consumed as TS source'"
+  },
+  "dependencies": {
+    "@gatimitra/event-contracts": "*",
+    "@gatimitra/logger": "*",
+    "@gatimitra/redis": "*",
+    "dotenv": "^16.4.7",
+    "ioredis": "^5.10.0",
+    "kafkajs": "^2.2.4",
+    "postgres": "^3.4.7",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@gatimitra/shared-config": "*",
+    "@types/node": "^22.10.5",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,38 @@
+# Prometheus scrape config — pulls /metrics every 15s from every service
+# that exposes the in-process counter endpoint (added in Stage 4).
+#
+# Adding a service:
+#   1. Make sure the service mounts `GET /metrics` (see backend's example)
+#   2. Add it to scrape_configs below
+#   3. Reload Prometheus: `curl -X POST localhost:9090/-/reload`
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    cluster: gatimitra-prod
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:3000"]
+        labels:
+          service: backend
+
+  - job_name: ws-gateway
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["ws-gateway:4100"]
+        labels:
+          service: ws-gateway
+
+  # Workers don't expose HTTP today; if/when they do, add them here.
+  # In the meantime, BullMQ + Redis metrics are derived from Redis keyspace.
+  - job_name: redis-exporter
+    static_configs:
+      - targets: []   # populate with a redis_exporter sidecar when needed

@@ -1,212 +1,309 @@
 /**
- * ETA Engine — computes the customer-facing delivery promise.
+ * ETA Engine v2 — production-grade critical-path delivery ETA.
  *
- * Architecture:
- *   - Pure(ish) function: takes a routing quote + store config + context flags,
- *     returns a complete EtaSnapshot. Side-effects (DB writes) live in the
- *     persistence layer below.
- *   - Every minute of the final range traces back to a named input so disputes
- *     can be resolved against the snapshot stored on orders_core.
+ * KEY DIFFERENCES vs v1:
+ *   * Food prep uses MAX(item_kpt) (critical-path), NOT average / sum.
+ *   * Logarithmic complexity scaling on item count + quantity.
+ *   * Step-function kitchen load buffer driven by active-orders count.
+ *   * Critical-path matching: food_prep || rider_arrival (whichever is later).
+ *   * Mapbox `driving-traffic` aware (caller passes traffic-adjusted minutes).
+ *   * Explicit weather / peak-hour / drop-context multipliers.
+ *   * Uncertainty margin → eta_min / eta_max range, never a single number.
+ *   * Confidence score derived from how many signals are known vs assumed.
  *
- * Final ETA = prep + assignment + rider→store + store→customer + traffic delay
- *           + weather delay + congestion delay + safety buffer
+ * FORMULA:
+ *   food_prep      = MAX(items[].kpt) + complexity_buffer + kitchen_load_buffer
+ *   rider_arrival  = rider_assignment_delay + rider_to_store
+ *                    (all multiplied by traffic & weather)
+ *   critical_path  = max(food_prep, rider_arrival)
+ *   travel         = route_minutes * traffic_multiplier * weather_multiplier
+ *   raw_eta        = critical_path + pickup_buffer + travel + apartment_buffer
+ *   adjusted_eta   = raw_eta * peak_hour_multiplier
+ *   eta_max        = ceil(adjusted_eta + uncertainty_margin)
+ *   eta_min        = max(eta_max - 10, ceil(adjusted_eta - 2))
  *
- * UX rule: never under-promise. We pad the optimistic raw ETA by a buffer that
- * grows with confidence-reducing factors (long distance, peak hours, weather,
- * congestion). The customer sees a RANGE `[min, max]` where max is the promise
- * deadline.
+ * Pure / deterministic — IO (DB, weather provider) sits in callers so this
+ * file stays testable and ML-friendly (every input fed in is in args).
  */
 
 import { getSql } from "../../db/client.js";
+import {
+  apartmentBufferMinutes,
+  classifyDropContext,
+  peakHourMultiplier,
+  resolvePeakWindow,
+  resolveWeatherState,
+  trafficMultiplierFromRoute,
+  weatherMultiplier,
+  type DropContext,
+  type PeakWindow,
+  type WeatherState,
+} from "./etaContext.js";
+import { kitchenLoadBufferMinutes } from "./restaurantLoad.js";
+
+export const ETA_ENGINE_VERSION = "v2.1";
+
+export type EtaItem = {
+  itemId?: string | number;
+  /** Per-item kitchen prep time in minutes. */
+  kptMinutes: number;
+  quantity: number;
+};
 
 export type EtaInputs = {
-  /** Store→customer travel duration in minutes (Mapbox / OSRM / haversine). */
+  /** Items being prepared. Empty → falls back to store-level prep average. */
+  items: EtaItem[];
+  /** Fallback when items is empty or every item is missing kpt (e.g. v1 callers). */
+  fallbackPrepMinutes?: number;
+
+  /** Mapbox driving-traffic minutes from store → customer. */
   routeMinutes: number;
-  /** Store→customer road distance in km. */
+  /** Free-flow (no-traffic) minutes if you have both; lets us derive traffic_multiplier. */
+  freeFlowRouteMinutes?: number | null;
+  /** Road distance, km. */
   routeKm: number;
-  /** Merchant's stated preparation time for the order. */
-  prepMinutes: number;
-  /** When > 0, traffic multiplier already baked into routeMinutes; else 0. */
-  trafficDelayMinutes?: number;
-  /** Optional weather multiplier delay (rain / extreme heat). */
-  weatherDelayMinutes?: number;
-  /** Network/area congestion delay (peak hour, festivals). */
-  congestionDelayMinutes?: number;
-  /** Pickup→assignment lag — how long until a rider accepts. */
-  riderAssignmentMinutes?: number;
-  /** When the order is placed at peak hours. Auto-detected if undefined. */
-  isPeakHour?: boolean;
-  /** Override safety-buffer calculation. Otherwise computed below. */
-  safetyBufferMinutesOverride?: number;
-  /** ISO timestamp for which "now" should be used (default: real now). */
+
+  /** Store load: count of in-flight orders right now. */
+  activeOrdersAtStore: number;
+
+  /** Rider context — supply what you know; defaults fill the rest. */
+  riderAssigned?: boolean;
+  riderToStoreMinutes?: number | null;
+  /** How long, on average, an order waits to be claimed by a rider. */
+  riderAssignmentDelayMinutes?: number;
+
+  /** Soft context — engine resolves defaults when omitted. */
+  weather?: WeatherState | null;
+  peakWindow?: PeakWindow | null;
+  dropContext?: DropContext | null;
+  /** Free-text address line; used to classify dropContext when not provided. */
+  dropAddress?: string | null;
+
+  /** When the ETA is being computed (used for peak-window detection). */
   now?: Date;
 };
 
 export type EtaSnapshot = {
-  /** Lower bound of the customer-visible range. */
-  minMinutes: number;
-  /** Upper bound — this is the platform's official promise. */
-  maxMinutes: number;
-  /** ISO timestamp of the promise deadline (now + maxMinutes). */
+  /** Customer-visible range — never a single magic number. */
+  etaMinMinutes: number;
+  etaMaxMinutes: number;
   promisedDeliveryAt: string;
-  /** Per-source breakdown (each rounded to whole minutes). */
+
+  /** Full critical-path breakdown — every minute traces back to an input. */
   breakdown: {
-    prepMinutes: number;
+    foodPrepMinutes: number;
+    kitchenLoadBufferMinutes: number;
     riderAssignmentMinutes: number;
     riderToStoreMinutes: number;
-    storeToCustomerMinutes: number;
-    trafficDelayMinutes: number;
-    weatherDelayMinutes: number;
-    congestionDelayMinutes: number;
-    bufferMinutes: number;
+    riderArrivalMinutes: number;
+    criticalPathMinutes: number;
+    pickupBufferMinutes: number;
+    travelMinutes: number;
+    apartmentBufferMinutes: number;
+    /** ceil(adjusted_eta) before uncertainty band — useful for promised_at. */
+    adjustedEtaMinutes: number;
+    uncertaintyMarginMinutes: number;
   };
+
+  /** Multipliers actually applied — stored for analytics. */
+  multipliers: {
+    traffic: number;
+    weather: number;
+    peakHour: number;
+  };
+
+  /** Context inputs the engine inferred / resolved. */
+  context: {
+    weather: WeatherState;
+    peakWindow: PeakWindow;
+    dropContext: DropContext;
+    activeOrdersAtStore: number;
+  };
+
   routeKm: number;
-  /**
-   * 0..1 — how confident the engine is in this estimate. Drops with distance,
-   * peak hours, weather, congestion. UI can show ⚠️ when < 0.7.
-   */
   confidenceScore: number;
-  /** Raw inputs preserved for audit. */
-  metadata: Record<string, unknown>;
+  engineVersion: string;
   generatedAt: string;
 };
 
-const DEFAULT_PREP_FALLBACK = 18;
-const DEFAULT_RIDER_ASSIGNMENT = 4;
-const DEFAULT_RIDER_TO_STORE_RATIO = 0.45;
-const PEAK_HOURS_IST: Array<[number, number]> = [
-  [12, 14],
-  [19, 22],
-];
+const SCALING_FACTOR_COMPLEXITY = 4;
+const DEFAULT_PREP_FALLBACK_MIN = 18;
+const DEFAULT_RIDER_ASSIGNMENT_MIN = 4;
+const DEFAULT_RIDER_TO_STORE_MIN = 6;
+const PICKUP_BUFFER_BASE_MIN = 3;
+const PICKUP_BUFFER_MAX_MIN = 8;
 
-function clampInt(n: number, min = 0, max = 999): number {
-  if (!Number.isFinite(n)) return min;
-  return Math.max(min, Math.min(max, Math.round(n)));
+/* ───────────────────────── Building blocks ───────────────────────── */
+
+function clamp(n: number, lo: number, hi: number): number {
+  if (!Number.isFinite(n)) return lo;
+  return Math.max(lo, Math.min(hi, n));
 }
 
-function detectPeakHour(now: Date): boolean {
-  const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
-  const h = ist.getUTCHours();
-  return PEAK_HOURS_IST.some(([s, e]) => h >= s && h < e);
+function safeCeil(n: number): number {
+  return Number.isFinite(n) && n > 0 ? Math.ceil(n) : 0;
 }
 
-/**
- * Safety buffer rules — additive, conservative. We pick a buffer that grows
- * with each confidence-reducing factor so the promise stays beatable.
- */
-function computeSafetyBuffer(opts: {
+/** Critical-path prep time = MAX of item KPTs, never the sum. */
+function criticalPathPrep(items: EtaItem[], fallbackPrepMinutes?: number): number {
+  const kpts = items
+    .map((it) => Number(it.kptMinutes))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  if (kpts.length === 0) {
+    return Math.max(1, Math.round(fallbackPrepMinutes ?? DEFAULT_PREP_FALLBACK_MIN));
+  }
+  return Math.max(...kpts);
+}
+
+/** Logarithmic scaling for multi-item complexity. */
+function complexityBuffer(items: EtaItem[]): number {
+  const totalItems = items.length;
+  const totalQty = items.reduce((s, it) => s + Math.max(0, Number(it.quantity) || 0), 0);
+  const x = totalItems + totalQty;
+  if (x <= 1) return 0;
+  // log2 because base-2 keeps small carts honest (cart=3 items → ~2 min; cart=10 → ~3.5).
+  return Math.round(Math.log2(x) * SCALING_FACTOR_COMPLEXITY);
+}
+
+/** Pickup buffer scales with load + qty so chaotic kitchens get more grace. */
+function pickupBufferMinutes(activeOrders: number, totalQty: number): number {
+  let buf = PICKUP_BUFFER_BASE_MIN;
+  if (activeOrders > 10) buf += 1;
+  if (activeOrders > 20) buf += 2;
+  if (totalQty > 5) buf += 1;
+  if (totalQty > 12) buf += 1;
+  return Math.min(buf, PICKUP_BUFFER_MAX_MIN);
+}
+
+function confidenceScore(args: {
+  riderAssigned: boolean;
+  activeOrders: number;
+  weather: WeatherState;
+  peakWindow: PeakWindow;
   routeKm: number;
-  isPeakHour: boolean;
-  weatherDelayMinutes: number;
-  congestionDelayMinutes: number;
-}): number {
-  let buf = 5; // base safety margin so we never promise too tight
-  if (opts.routeKm > 5) buf += 2;
-  if (opts.routeKm > 8) buf += 3;
-  if (opts.isPeakHour) buf += 4;
-  if (opts.weatherDelayMinutes > 0) buf += 3;
-  if (opts.congestionDelayMinutes > 0) buf += 2;
-  return buf;
-}
-
-/**
- * Confidence is a soft proxy for "how stable is this number". Customers don't
- * see this directly but the tracking UI can warn when it drops.
- */
-function computeConfidence(opts: {
-  routeKm: number;
-  isPeakHour: boolean;
-  weatherDelayMinutes: number;
-  congestionDelayMinutes: number;
 }): number {
   let c = 0.95;
-  if (opts.routeKm > 5) c -= 0.05;
-  if (opts.routeKm > 8) c -= 0.07;
-  if (opts.isPeakHour) c -= 0.08;
-  if (opts.weatherDelayMinutes > 0) c -= 0.06;
-  if (opts.congestionDelayMinutes > 0) c -= 0.04;
-  return Math.max(0, Math.min(1, Number(c.toFixed(2))));
+  if (!args.riderAssigned) c -= 0.05;
+  if (args.activeOrders > 15) c -= 0.05;
+  if (args.activeOrders > 30) c -= 0.05;
+  if (args.weather === "LIGHT_RAIN") c -= 0.03;
+  if (args.weather === "HEAVY_RAIN") c -= 0.07;
+  if (args.weather === "STORM") c -= 0.12;
+  if (args.peakWindow === "LUNCH_RUSH") c -= 0.04;
+  if (args.peakWindow === "DINNER_RUSH") c -= 0.07;
+  if (args.peakWindow === "FESTIVAL_PEAK") c -= 0.1;
+  if (args.routeKm > 8) c -= 0.05;
+  if (args.routeKm > 12) c -= 0.05;
+  return clamp(Number(c.toFixed(2)), 0.4, 0.99);
 }
+
+/** Uncertainty margin = 10-25% of adjusted_eta, floor 5, ceiling 15. */
+function uncertaintyMargin(adjustedEta: number, confidence: number): number {
+  // Lower confidence → wider margin (range widens to set a beatable expectation).
+  const pct = 0.1 + (1 - confidence) * 0.25;
+  const raw = adjustedEta * pct;
+  return clamp(Math.round(raw), 5, 15);
+}
+
+/* ───────────────────────── Engine entry ───────────────────────── */
 
 export function computeEta(input: EtaInputs): EtaSnapshot {
   const now = input.now ?? new Date();
-  const isPeak = input.isPeakHour ?? detectPeakHour(now);
 
-  const prep = clampInt(input.prepMinutes > 0 ? input.prepMinutes : DEFAULT_PREP_FALLBACK);
-  const assignment = clampInt(
-    input.riderAssignmentMinutes != null ? input.riderAssignmentMinutes : DEFAULT_RIDER_ASSIGNMENT,
-  );
-  // Rider→store is generally a short hop; approximate as a fraction of the
-  // full route until rider-side tracking gives us a better signal.
-  const riderToStore = clampInt(input.routeMinutes * DEFAULT_RIDER_TO_STORE_RATIO);
-  const storeToCustomer = clampInt(input.routeMinutes);
+  // Context resolution — engine never trusts a missing signal.
+  const weather: WeatherState = input.weather ?? "CLEAR";
+  const peakWindow: PeakWindow = input.peakWindow ?? resolvePeakWindow({ now });
+  const dropContext: DropContext = input.dropContext ?? classifyDropContext(input.dropAddress);
 
-  const trafficDelay = clampInt(input.trafficDelayMinutes ?? 0);
-  const weatherDelay = clampInt(input.weatherDelayMinutes ?? 0);
-  const congestionDelay = clampInt(input.congestionDelayMinutes ?? 0);
-
-  const buffer =
-    input.safetyBufferMinutesOverride != null
-      ? clampInt(input.safetyBufferMinutesOverride)
-      : computeSafetyBuffer({
-          routeKm: input.routeKm,
-          isPeakHour: isPeak,
-          weatherDelayMinutes: weatherDelay,
-          congestionDelayMinutes: congestionDelay,
-        });
-
-  // Optimistic raw ETA — no buffer.
-  const rawCore =
-    prep +
-    assignment +
-    riderToStore +
-    storeToCustomer +
-    trafficDelay +
-    weatherDelay +
-    congestionDelay;
-
-  // Range: [rawCore + smaller buffer, rawCore + larger buffer]. The min keeps
-  // the optimistic side honest; the max is the promise.
-  const minMinutes = clampInt(rawCore + Math.max(0, buffer - 5));
-  const maxMinutes = clampInt(rawCore + buffer);
-
-  const promisedDeliveryAt = new Date(now.getTime() + maxMinutes * 60 * 1000).toISOString();
-  const confidence = computeConfidence({
-    routeKm: input.routeKm,
-    isPeakHour: isPeak,
-    weatherDelayMinutes: weatherDelay,
-    congestionDelayMinutes: congestionDelay,
+  const trafficMul = trafficMultiplierFromRoute({
+    freeFlowMinutes: input.freeFlowRouteMinutes,
+    trafficAwareMinutes: input.routeMinutes,
+    peakWindow,
   });
+  const weatherMul = weatherMultiplier(weather);
+  const peakMul = peakHourMultiplier(peakWindow);
+
+  /* Food preparation — critical path, never the sum */
+  const items = Array.isArray(input.items) ? input.items : [];
+  const totalQty = items.reduce((s, it) => s + Math.max(0, Number(it.quantity) || 0), 0);
+  const prepCore = criticalPathPrep(items, input.fallbackPrepMinutes);
+  const prepComplexity = complexityBuffer(items);
+  const loadBuffer = kitchenLoadBufferMinutes(input.activeOrdersAtStore);
+  const foodPrepMinutes = prepCore + prepComplexity + loadBuffer;
+
+  /* Rider arrival — assignment delay + traffic-adjusted travel-to-store */
+  const riderAssignmentMinutes = input.riderAssigned
+    ? 0
+    : Math.max(0, Math.round(input.riderAssignmentDelayMinutes ?? DEFAULT_RIDER_ASSIGNMENT_MIN));
+  const riderToStoreBase = input.riderToStoreMinutes != null && Number.isFinite(input.riderToStoreMinutes)
+    ? Math.max(1, Math.round(Number(input.riderToStoreMinutes)))
+    : DEFAULT_RIDER_TO_STORE_MIN;
+  const riderToStoreMinutes = Math.round(riderToStoreBase * trafficMul * weatherMul);
+  const riderArrivalMinutes = riderAssignmentMinutes + riderToStoreMinutes;
+
+  /* Critical-path: prep and rider arrival happen in parallel */
+  const criticalPathMinutes = Math.max(foodPrepMinutes, riderArrivalMinutes);
+
+  /* Pickup + travel + apartment */
+  const pickupBuf = pickupBufferMinutes(input.activeOrdersAtStore, totalQty);
+  const travelMinutes = Math.round(
+    Math.max(1, Number(input.routeMinutes) || 0) * trafficMul * weatherMul,
+  );
+  const apartmentBuf = apartmentBufferMinutes(dropContext);
+
+  const rawEta = criticalPathMinutes + pickupBuf + travelMinutes + apartmentBuf;
+  const adjustedEta = Math.round(rawEta * peakMul);
+
+  const conf = confidenceScore({
+    riderAssigned: !!input.riderAssigned,
+    activeOrders: input.activeOrdersAtStore,
+    weather,
+    peakWindow,
+    routeKm: input.routeKm,
+  });
+  const margin = uncertaintyMargin(adjustedEta, conf);
+  const etaMaxMinutes = safeCeil(adjustedEta + margin);
+  const etaMinMinutes = Math.max(safeCeil(adjustedEta - 2), etaMaxMinutes - 10);
+
+  const promisedDeliveryAt = new Date(now.getTime() + etaMaxMinutes * 60 * 1000).toISOString();
 
   return {
-    minMinutes,
-    maxMinutes,
+    etaMinMinutes,
+    etaMaxMinutes,
     promisedDeliveryAt,
     breakdown: {
-      prepMinutes: prep,
-      riderAssignmentMinutes: assignment,
-      riderToStoreMinutes: riderToStore,
-      storeToCustomerMinutes: storeToCustomer,
-      trafficDelayMinutes: trafficDelay,
-      weatherDelayMinutes: weatherDelay,
-      congestionDelayMinutes: congestionDelay,
-      bufferMinutes: buffer,
+      foodPrepMinutes,
+      kitchenLoadBufferMinutes: loadBuffer,
+      riderAssignmentMinutes,
+      riderToStoreMinutes,
+      riderArrivalMinutes,
+      criticalPathMinutes,
+      pickupBufferMinutes: pickupBuf,
+      travelMinutes,
+      apartmentBufferMinutes: apartmentBuf,
+      adjustedEtaMinutes: adjustedEta,
+      uncertaintyMarginMinutes: margin,
     },
-    routeKm: Number(input.routeKm.toFixed(2)),
-    confidenceScore: confidence,
-    metadata: {
-      isPeakHour: isPeak,
-      raw: input,
+    multipliers: { traffic: trafficMul, weather: weatherMul, peakHour: peakMul },
+    context: {
+      weather,
+      peakWindow,
+      dropContext,
+      activeOrdersAtStore: input.activeOrdersAtStore,
     },
+    routeKm: Number((input.routeKm ?? 0).toFixed(2)),
+    confidenceScore: conf,
+    engineVersion: ETA_ENGINE_VERSION,
     generatedAt: now.toISOString(),
   };
 }
 
+/* ─── Helpers preserved for v1 callers ──────────────────────────── */
+
 /**
- * Resolves the prep_time for a store, falling back through:
- *   1. merchant_store_preparation_times (peak-hour override if matching)
- *   2. merchant_stores.avg_preparation_time_minutes
- *   3. compile-time default
+ * Reads the merchant store's configured average preparation time.
+ * v2 prefers per-item KPT, but this is still used as the fallback when the
+ * caller has no items list (e.g. menu list cards in the customer app).
  */
 export async function resolveStorePrepMinutes(storeId: number): Promise<number> {
   const sql = getSql();
@@ -220,7 +317,13 @@ export async function resolveStorePrepMinutes(storeId: number): Promise<number> 
     const n = rows[0]?.pt;
     if (n != null && Number.isFinite(Number(n)) && Number(n) > 0) return Math.round(Number(n));
   } catch (e) {
-    console.warn("[eta] resolveStorePrepMinutes lookup failed", { storeId, err: (e as Error).message });
+    console.warn("[eta] resolveStorePrepMinutes lookup failed", {
+      storeId,
+      err: (e as Error).message,
+    });
   }
-  return DEFAULT_PREP_FALLBACK;
+  return DEFAULT_PREP_FALLBACK_MIN;
 }
+
+/** Re-export resolveWeatherState so callers can import everything from the engine. */
+export { resolveWeatherState };

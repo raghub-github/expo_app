@@ -1,0 +1,90 @@
+# Optional monitoring stack — Prometheus + Grafana + Loki.
+#
+# Why a separate compose file:
+#   - Devs working on a single service shouldn't need 1.5GB of monitoring
+#     containers running locally
+#   - In prod, monitoring belongs to ops and gets deployed on a schedule
+#     independent of the app code
+#
+# Usage:
+#   docker compose -f infra/docker/docker-compose.prod.yml \
+#                  -f infra/monitoring/docker-compose.monitoring.yml \
+#                  up -d
+#
+# Access (after first start):
+#   Grafana:    http://<vps>:3030     (admin / admin → change immediately)
+#   Prometheus: http://<vps>:9090     (no auth — block at firewall)
+#
+# Data retention:
+#   - Prometheus: 14 days local (configurable via --storage.tsdb.retention.time)
+#   - Loki: 14 days, then chunks roll off (chunk_store_config.max_look_back_period)
+#   - Grafana state in a volume — dashboards persist across restarts
+
+name: gatimitra-monitoring
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=14d"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks: [app]
+
+  loki:
+    image: grafana/loki:3.3.2
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "127.0.0.1:3100:3100"
+    networks: [app]
+
+  # Sidecar that ships docker container logs to Loki via the Loki docker driver.
+  # Picks up labels by container name → easy to query "service=backend".
+  promtail:
+    image: grafana/promtail:3.3.2
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail/config.yml"]
+    volumes:
+      - ./promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on: [loki]
+    networks: [app]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana-provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3030:3000"
+    depends_on: [prometheus, loki]
+    networks: [app]
+
+# Join the main app network so we can scrape backend / workers by service name.
+networks:
+  app:
+    external: true
+    name: gatimitra-prod_app
+
+volumes:
+  prometheus-data:
+  loki-data:
+  grafana-data:
