@@ -10,9 +10,11 @@ import crypto from "crypto";
 import { and, eq, gt } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
 import { routeDistanceCache } from "../../db/schema.js";
+import { cacheGet, cacheSet } from "@gatimitra/redis";
 
 const EARTH_RADIUS_METERS = 6_371_000;
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const CACHE_TTL_SEC = 10 * 60;
 const DB_CACHE_TTL_MS = 30 * 60 * 1000;
 
 export type GetRouteOptions = {
@@ -25,7 +27,15 @@ export type GetRouteOptions = {
   skipCache?: boolean;
 };
 
+/**
+ * Two-layer cache: in-process Map for sub-ms hits within a single request
+ * burst, plus Redis for cross-replica consistency. Behind a load balancer,
+ * a Mapbox quote computed by replica A becomes immediately reusable by
+ * replica B (no second Mapbox round-trip). All cache misses fall through to
+ * the same fetch path, so Redis being down only degrades latency.
+ */
 const memoryCache = new Map<string, { value: RouteResult; expiresAt: number }>();
+const MEMORY_CACHE_MAX = 2000;
 
 function r(v: number): number {
   return Math.round(v * 10000) / 10000;
@@ -39,18 +49,43 @@ function cacheKey(options: GetRouteOptions): string {
   return `distance:${profile}:${points}`;
 }
 
-function getCached(key: string): RouteResult | null {
+async function getCached(key: string): Promise<RouteResult | null> {
+  // 1. Process-local Map first (no network).
   const entry = memoryCache.get(key);
-  if (!entry) return null;
-  if (Date.now() > entry.expiresAt) {
+  if (entry) {
+    if (Date.now() <= entry.expiresAt) return { ...entry.value, cached: true };
     memoryCache.delete(key);
-    return null;
   }
-  return { ...entry.value, cached: true };
+  // 2. Redis — shared across replicas.
+  try {
+    const remote = await cacheGet<RouteResult>(key);
+    if (remote) {
+      // Re-populate the local map so subsequent same-replica calls skip Redis.
+      memoryCacheSet(key, remote);
+      return { ...remote, cached: true };
+    }
+  } catch {
+    /* Redis down — degrade to upstream lookup. */
+  }
+  return null;
+}
+
+function memoryCacheSet(key: string, value: RouteResult): void {
+  if (memoryCache.size >= MEMORY_CACHE_MAX) {
+    const oldest = memoryCache.keys().next().value;
+    if (oldest !== undefined) memoryCache.delete(oldest);
+  }
+  memoryCache.set(key, {
+    value: { ...value, cached: false },
+    expiresAt: Date.now() + CACHE_TTL_MS,
+  });
 }
 
 function setCached(key: string, value: RouteResult): void {
-  memoryCache.set(key, { value: { ...value, cached: false }, expiresAt: Date.now() + CACHE_TTL_MS });
+  memoryCacheSet(key, value);
+  void cacheSet(key, value, CACHE_TTL_SEC).catch(() => {
+    /* tolerated — local cache still good for this replica. */
+  });
 }
 
 export function haversineMeters(a: LatLng, b: LatLng): number {
@@ -261,7 +296,7 @@ export async function getRoute(options: GetRouteOptions): Promise<RouteResult> {
   const key = cacheKey(options);
 
   if (!options.skipCache) {
-    const cached = getCached(key);
+    const cached = await getCached(key);
     if (cached) return cached;
     const dbCached = await getDbCached(options);
     if (dbCached) {

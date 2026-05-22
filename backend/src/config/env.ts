@@ -110,6 +110,38 @@ const EnvSchema = z.object({
   ).default(30),
 
   /**
+   * Shared secret the payment-worker presents on /v1/internal/* calls.
+   * Required when the worker is running; the backend rejects the call with
+   * 503 if missing so misconfig doesn't look like an auth bug.
+   */
+  INTERNAL_API_TOKEN: z.preprocess(emptyToUndefined, z.string().min(8).optional()),
+
+  /**
+   * Optional secondary JWT secret used during a rotation window.
+   *
+   * Rotation procedure (zero session loss):
+   *   1. Generate NEW_SECRET. Deploy with SUPABASE_JWT_SECRET=NEW_SECRET and
+   *      SUPABASE_JWT_SECRET_PREVIOUS=<old>. Existing tokens still verify
+   *      against the previous; new sign-ins use the current.
+   *   2. Wait for token TTL to elapse (usually 1–7 days).
+   *   3. Remove SUPABASE_JWT_SECRET_PREVIOUS from env.
+   *
+   * If unset, only the current secret is consulted (existing behavior).
+   */
+  SUPABASE_JWT_SECRET_PREVIOUS: z.preprocess(emptyToUndefined, z.string().min(20).optional()),
+
+  /**
+   * When true, the backend continues to run its setInterval-based reconciler
+   * (with Stage 1's distributed lock) as a belt-and-braces fallback. When
+   * false (recommended once payment-worker is deployed), the worker is the
+   * sole driver of reconcile ticks.
+   */
+  RECONCILER_LEGACY_TICK_ENABLED: z.preprocess(
+    emptyToUndefined,
+    z.coerce.boolean()
+  ).default(true),
+
+  /**
    * What to do if we find a late-but-captured payment after the TTL elapsed:
    *   - refund (default): customer very likely reordered elsewhere, return the
    *     money and mark pending as failed/refunded.

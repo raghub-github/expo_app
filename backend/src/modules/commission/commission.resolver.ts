@@ -59,7 +59,7 @@ export async function resolveStoreCommission(
   }
 
   if (!opts.bypassCache) {
-    const cached = getCached(storeId);
+    const cached = await getCached(storeId);
     if (cached) return cached;
   }
 
@@ -106,7 +106,7 @@ export async function resolveStoreCommission(
       validUntil: r.effective_to ? r.effective_to.toISOString() : null,
       resolvedAt: now.toISOString(),
     };
-    setCached(storeId, result);
+    void setCached(storeId, result);
     return result;
   }
 
@@ -164,7 +164,7 @@ export async function resolveStoreCommission(
       validUntil: r.expiry_date ? r.expiry_date.toISOString() : null,
       resolvedAt: now.toISOString(),
     };
-    setCached(storeId, result);
+    void setCached(storeId, result);
     return result;
   }
 
@@ -201,7 +201,7 @@ export async function resolveStoreCommission(
       validUntil: r.effective_to ? r.effective_to.toISOString() : null,
       resolvedAt: now.toISOString(),
     };
-    setCached(storeId, result);
+    void setCached(storeId, result);
     return result;
   }
 
@@ -217,7 +217,7 @@ export async function resolveStoreCommission(
     validUntil: null,
     resolvedAt: now.toISOString(),
   };
-  setCached(storeId, result);
+  void setCached(storeId, result);
   return result;
 }
 
@@ -250,5 +250,5 @@ export async function getGlobalDefaultPercent(): Promise<number> {
 
 /** Wrapper so cache eviction goes through a single named export. */
 export function invalidateStoreCommission(storeId: number): void {
-  invalidateStore(storeId);
+  void invalidateStore(storeId);
 }

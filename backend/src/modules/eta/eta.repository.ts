@@ -1,15 +1,20 @@
 /**
- * ETA persistence — freezes the promise snapshot on orders_core at placement
+ * ETA persistence — freezes the v2 snapshot on orders_core at placement
  * and appends recalc rows to order_eta_history for every subsequent change.
  *
  * Critical invariant: the promise columns on orders_core are written ONCE on
  * placement and never overwritten. Recalculations update tracking ETA via
  * history rows only. This way support / disputes can always answer
  * "what did we promise" by reading orders_core directly.
+ *
+ * The repository writes BOTH the v1 columns (eta_min_minutes, etc.) AND the
+ * v2 columns (eta_food_prep_minutes, eta_kitchen_load_buffer_minutes, etc.).
+ * v1 audit queries that already point at `eta_*` keep working; new analytics
+ * use the richer v2 fields.
  */
 
 import { getSql } from "../../db/client.js";
-import type { EtaSnapshot } from "./eta.engine.js";
+import { ETA_ENGINE_VERSION, type EtaSnapshot } from "./eta.engine.js";
 
 export type EtaRecalcReason =
   | "ORDER_PLACED"
@@ -23,9 +28,9 @@ export type EtaRecalcReason =
   | "STATUS_CHANGE";
 
 /**
- * Write the immutable promise snapshot onto orders_core. Called once per order
- * at finalize time. After this row is written, recalculations only append to
- * order_eta_history.
+ * Write the v2 snapshot to orders_core. v1 columns are populated by mapping
+ * v2 → v1 (delay-style fields = base × (multiplier − 1)) so any analytics
+ * still keyed off the v1 schema continues to work.
  */
 export async function writeEtaPromiseToOrder(
   orderIdText: string,
@@ -33,27 +38,64 @@ export async function writeEtaPromiseToOrder(
   metadata?: { mapboxRouteId?: string | null; routeSnapshot?: unknown },
 ): Promise<void> {
   const sql = getSql();
+
+  // v1-shaped delay decomposition derived from v2 multipliers so the legacy
+  // columns reflect roughly the same story.
+  const baseTravel = snap.breakdown.travelMinutes;
+  const trafficDelay = Math.max(
+    0,
+    Math.round(baseTravel - baseTravel / Math.max(1, snap.multipliers.traffic)),
+  );
+  const weatherDelay = Math.max(
+    0,
+    Math.round(baseTravel - baseTravel / Math.max(1, snap.multipliers.weather)),
+  );
+  const congestionDelay = Math.max(
+    0,
+    Math.round((snap.breakdown.adjustedEtaMinutes ?? 0) - (snap.breakdown.criticalPathMinutes +
+      snap.breakdown.pickupBufferMinutes +
+      snap.breakdown.travelMinutes +
+      snap.breakdown.apartmentBufferMinutes)),
+  );
+
   await sql`
     UPDATE orders_core
     SET
-      eta_min_minutes               = ${snap.minMinutes},
-      eta_max_minutes               = ${snap.maxMinutes},
+      -- v1 promise columns (kept for backwards-compat audit queries)
+      eta_min_minutes               = ${snap.etaMinMinutes},
+      eta_max_minutes               = ${snap.etaMaxMinutes},
       promised_delivery_at          = ${snap.promisedDeliveryAt},
       eta_generated_at              = ${snap.generatedAt},
-      eta_buffer_minutes            = ${snap.breakdown.bufferMinutes},
-      eta_prep_minutes              = ${snap.breakdown.prepMinutes},
+      eta_buffer_minutes            = ${snap.breakdown.uncertaintyMarginMinutes},
+      eta_prep_minutes              = ${snap.breakdown.foodPrepMinutes},
       eta_rider_assignment_minutes  = ${snap.breakdown.riderAssignmentMinutes},
       eta_rider_to_store_minutes    = ${snap.breakdown.riderToStoreMinutes},
-      eta_store_to_customer_minutes = ${snap.breakdown.storeToCustomerMinutes},
-      eta_traffic_delay_minutes     = ${snap.breakdown.trafficDelayMinutes},
-      eta_weather_delay_minutes     = ${snap.breakdown.weatherDelayMinutes},
-      eta_congestion_delay_minutes  = ${snap.breakdown.congestionDelayMinutes},
+      eta_store_to_customer_minutes = ${snap.breakdown.travelMinutes},
+      eta_traffic_delay_minutes     = ${trafficDelay},
+      eta_weather_delay_minutes     = ${weatherDelay},
+      eta_congestion_delay_minutes  = ${congestionDelay},
       eta_route_distance_km         = ${snap.routeKm.toFixed(2)},
       eta_confidence_score          = ${snap.confidenceScore.toFixed(2)},
-      eta_version                   = 1,
+      eta_version                   = 2,
       eta_mapbox_route_id           = ${metadata?.mapboxRouteId ?? null},
       eta_route_snapshot            = ${JSON.stringify(metadata?.routeSnapshot ?? {})}::jsonb,
-      eta_metadata                  = ${JSON.stringify(snap.metadata)}::jsonb
+      eta_metadata                  = ${JSON.stringify({ engineVersion: snap.engineVersion, ...snap.context })}::jsonb,
+
+      -- v2 critical-path breakdown
+      eta_food_prep_minutes          = ${snap.breakdown.foodPrepMinutes},
+      eta_kitchen_load_buffer_minutes = ${snap.breakdown.kitchenLoadBufferMinutes},
+      eta_pickup_buffer_minutes      = ${snap.breakdown.pickupBufferMinutes},
+      eta_apartment_buffer_minutes   = ${snap.breakdown.apartmentBufferMinutes},
+      eta_rider_arrival_minutes      = ${snap.breakdown.riderArrivalMinutes},
+      eta_critical_path_minutes      = ${snap.breakdown.criticalPathMinutes},
+      eta_traffic_multiplier         = ${snap.multipliers.traffic.toFixed(3)},
+      eta_weather_multiplier         = ${snap.multipliers.weather.toFixed(3)},
+      eta_peak_hour_multiplier       = ${snap.multipliers.peakHour.toFixed(3)},
+      eta_weather_state              = ${snap.context.weather},
+      eta_peak_window                = ${snap.context.peakWindow},
+      eta_drop_context               = ${snap.context.dropContext},
+      eta_engine_version             = ${snap.engineVersion},
+      eta_v2_metadata                = ${JSON.stringify(snap)}::jsonb
     WHERE order_id = ${orderIdText}
   `;
 }
@@ -88,8 +130,6 @@ export async function appendEtaRecalc(args: {
     console.warn("[eta] appendEtaRecalc: order not found", args.orderIdText);
     return;
   }
-  // postgres.js returns timestamptz as Date OR string depending on driver
-  // path; normalize before serialising back into the JSONB column.
   const prevPromisedIso =
     row.promised_delivery_at instanceof Date
       ? row.promised_delivery_at.toISOString()
@@ -97,6 +137,7 @@ export async function appendEtaRecalc(args: {
         ? row.promised_delivery_at
         : null;
 
+  const snap = args.newSnap;
   await sql`
     INSERT INTO order_eta_history (
       order_id, order_id_text,
@@ -113,23 +154,23 @@ export async function appendEtaRecalc(args: {
     ) VALUES (
       ${row.id}, ${args.orderIdText},
       ${row.eta_min_minutes}, ${row.eta_max_minutes},
-      ${args.newSnap.minMinutes}, ${args.newSnap.maxMinutes},
+      ${snap.etaMinMinutes}, ${snap.etaMaxMinutes},
       ${prevPromisedIso},
-      ${args.newSnap.promisedDeliveryAt},
+      ${snap.promisedDeliveryAt},
       ${args.reason},
-      ${args.newSnap.breakdown.prepMinutes},
-      ${args.newSnap.breakdown.riderAssignmentMinutes},
-      ${args.newSnap.breakdown.riderToStoreMinutes},
-      ${args.newSnap.breakdown.storeToCustomerMinutes},
-      ${args.newSnap.breakdown.trafficDelayMinutes},
-      ${args.newSnap.breakdown.weatherDelayMinutes},
-      ${args.newSnap.breakdown.congestionDelayMinutes},
-      ${args.newSnap.breakdown.bufferMinutes},
+      ${snap.breakdown.foodPrepMinutes},
+      ${snap.breakdown.riderAssignmentMinutes},
+      ${snap.breakdown.riderToStoreMinutes},
+      ${snap.breakdown.travelMinutes},
+      ${Math.max(0, Math.round(snap.breakdown.travelMinutes * (snap.multipliers.traffic - 1)))},
+      ${Math.max(0, Math.round(snap.breakdown.travelMinutes * (snap.multipliers.weather - 1)))},
+      0,
+      ${snap.breakdown.uncertaintyMarginMinutes},
       ${args.riderId ?? null},
       ${args.merchantStoreId ?? null},
-      ${args.newSnap.routeKm.toFixed(2)},
+      ${snap.routeKm.toFixed(2)},
       ${JSON.stringify({})}::jsonb,
-      ${JSON.stringify(args.newSnap.metadata)}::jsonb
+      ${JSON.stringify({ engineVersion: snap.engineVersion, breakdown: snap.breakdown, multipliers: snap.multipliers, context: snap.context })}::jsonb
     )
   `;
 }
@@ -141,6 +182,7 @@ export async function appendEtaRecalc(args: {
  */
 export type OrderEtaView = {
   orderIdText: string;
+  engineVersion: string;
   promise: {
     minMinutes: number | null;
     maxMinutes: number | null;
@@ -149,6 +191,21 @@ export type OrderEtaView = {
     bufferMinutes: number | null;
     routeKm: number | null;
     confidenceScore: number | null;
+  };
+  breakdown: {
+    foodPrepMinutes: number | null;
+    kitchenLoadBufferMinutes: number | null;
+    pickupBufferMinutes: number | null;
+    apartmentBufferMinutes: number | null;
+    riderArrivalMinutes: number | null;
+    criticalPathMinutes: number | null;
+    travelMinutes: number | null;
+  };
+  multipliers: { traffic: number | null; weather: number | null; peakHour: number | null };
+  context: {
+    weather: string | null;
+    peakWindow: string | null;
+    dropContext: string | null;
   };
   live: {
     minMinutes: number;
@@ -164,22 +221,56 @@ export type OrderEtaView = {
   };
 };
 
+function toIsoOrNull(v: Date | string | null | undefined): string | null {
+  if (v == null) return null;
+  if (v instanceof Date) return Number.isFinite(v.getTime()) ? v.toISOString() : null;
+  if (typeof v === "string") {
+    const t = new Date(v);
+    return Number.isFinite(t.getTime()) ? t.toISOString() : v;
+  }
+  return null;
+}
+
 export async function getEtaForOrder(orderIdText: string): Promise<OrderEtaView | null> {
   const sql = getSql();
   const rows = await sql<
     Array<{
       eta_min_minutes: number | null;
       eta_max_minutes: number | null;
-      promised_delivery_at: Date | null;
-      eta_generated_at: Date | null;
+      promised_delivery_at: Date | string | null;
+      eta_generated_at: Date | string | null;
       eta_buffer_minutes: number | null;
       eta_route_distance_km: string | null;
       eta_confidence_score: string | null;
+      eta_food_prep_minutes: number | null;
+      eta_kitchen_load_buffer_minutes: number | null;
+      eta_pickup_buffer_minutes: number | null;
+      eta_apartment_buffer_minutes: number | null;
+      eta_rider_arrival_minutes: number | null;
+      eta_critical_path_minutes: number | null;
+      eta_store_to_customer_minutes: number | null;
+      eta_traffic_multiplier: string | null;
+      eta_weather_multiplier: string | null;
+      eta_peak_hour_multiplier: string | null;
+      eta_weather_state: string | null;
+      eta_peak_window: string | null;
+      eta_drop_context: string | null;
+      eta_engine_version: string | null;
+      prep_time_minutes: number | null;
+      prep_ready_by_at: Date | string | null;
     }>
   >`
     SELECT
       eta_min_minutes, eta_max_minutes, promised_delivery_at, eta_generated_at,
-      eta_buffer_minutes, eta_route_distance_km, eta_confidence_score
+      eta_buffer_minutes, eta_route_distance_km, eta_confidence_score,
+      eta_food_prep_minutes, eta_kitchen_load_buffer_minutes,
+      eta_pickup_buffer_minutes, eta_apartment_buffer_minutes,
+      eta_rider_arrival_minutes, eta_critical_path_minutes,
+      eta_store_to_customer_minutes,
+      eta_traffic_multiplier, eta_weather_multiplier, eta_peak_hour_multiplier,
+      eta_weather_state, eta_peak_window, eta_drop_context,
+      eta_engine_version,
+      prep_time_minutes, prep_ready_by_at
     FROM orders_core
     WHERE order_id = ${orderIdText}
     LIMIT 1
@@ -205,17 +296,34 @@ export async function getEtaForOrder(orderIdText: string): Promise<OrderEtaView 
 
   return {
     orderIdText,
+    engineVersion: r.eta_engine_version ?? ETA_ENGINE_VERSION,
     promise: {
       minMinutes: r.eta_min_minutes,
       maxMinutes: r.eta_max_minutes,
-      // postgres.js returns timestamps as either Date or string depending on
-      // the query path / driver version — accept both so the endpoint never
-      // 500s on a benign type mismatch.
       promisedDeliveryAt: toIsoOrNull(r.promised_delivery_at),
       generatedAt: toIsoOrNull(r.eta_generated_at),
       bufferMinutes: r.eta_buffer_minutes,
       routeKm: r.eta_route_distance_km == null ? null : Number(r.eta_route_distance_km),
       confidenceScore: r.eta_confidence_score == null ? null : Number(r.eta_confidence_score),
+    },
+    breakdown: {
+      foodPrepMinutes: r.eta_food_prep_minutes,
+      kitchenLoadBufferMinutes: r.eta_kitchen_load_buffer_minutes,
+      pickupBufferMinutes: r.eta_pickup_buffer_minutes,
+      apartmentBufferMinutes: r.eta_apartment_buffer_minutes,
+      riderArrivalMinutes: r.eta_rider_arrival_minutes,
+      criticalPathMinutes: r.eta_critical_path_minutes,
+      travelMinutes: r.eta_store_to_customer_minutes,
+    },
+    multipliers: {
+      traffic: r.eta_traffic_multiplier == null ? null : Number(r.eta_traffic_multiplier),
+      weather: r.eta_weather_multiplier == null ? null : Number(r.eta_weather_multiplier),
+      peakHour: r.eta_peak_hour_multiplier == null ? null : Number(r.eta_peak_hour_multiplier),
+    },
+    context: {
+      weather: r.eta_weather_state,
+      peakWindow: r.eta_peak_window,
+      dropContext: r.eta_drop_context,
     },
     live:
       live.length > 0
@@ -235,19 +343,4 @@ export async function getEtaForOrder(orderIdText: string): Promise<OrderEtaView 
       readyByAt: toIsoOrNull(r.prep_ready_by_at),
     },
   };
-}
-
-/**
- * Normalize whatever postgres.js handed us — Date instance, ISO string, or
- * null — into a plain ISO 8601 string (or null). Returns null on garbage so
- * the caller can decide whether to surface a 0/null instead of crashing.
- */
-function toIsoOrNull(v: Date | string | null | undefined): string | null {
-  if (v == null) return null;
-  if (v instanceof Date) return Number.isFinite(v.getTime()) ? v.toISOString() : null;
-  if (typeof v === "string") {
-    const t = new Date(v);
-    return Number.isFinite(t.getTime()) ? t.toISOString() : v; // pass through raw if not parsable
-  }
-  return null;
 }

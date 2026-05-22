@@ -1,0 +1,158 @@
+# GatiMitra — production docker-compose for the Hostinger KVM VPS.
+#
+# Usage (on the VPS):
+#   docker compose -f infra/docker/docker-compose.prod.yml --env-file .env.prod up -d
+#
+# Services + ports:
+#   nginx           — reverse proxy + TLS terminator (80/443 published)
+#   backend         — internal-only port 3000
+#   notification-worker / payment-worker / ws-gateway — internal-only
+#   dashboard       — internal port 3001 (Next standalone)
+#   partnersite     — internal port 3002 (Next standalone)
+#
+# Postgres + Redis are EXTERNAL (Supabase + Redis-Labs respectively) — the
+# VPS doesn't run them. That's why both are absent from this compose file.
+# Set DATABASE_URL + REDIS_URL via the per-service .env files or .env.prod.
+#
+# Image source:
+#   We build locally on the VPS (matches existing partnersite workflow).
+#   In Stage 9 we move to GHCR with `image: ghcr.io/raghub-github/...:GIT_SHA`.
+
+name: gatimitra-prod
+
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../nginx/proxy_common.conf:/etc/nginx/proxy_common.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - nginx-logs:/var/log/nginx
+    depends_on:
+      - backend
+      - ws-gateway
+      - dashboard
+      - partnersite
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks: [app]
+
+  backend:
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../backend/.env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    expose:
+      - "3000"
+    networks: [app]
+
+  notification-worker:
+    build:
+      context: ../..
+      dockerfile: services/notification-worker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../services/notification-worker/.env
+    environment:
+      NODE_ENV: production
+    networks: [app]
+
+  payment-worker:
+    build:
+      context: ../..
+      dockerfile: services/payment-worker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../services/payment-worker/.env
+    environment:
+      NODE_ENV: production
+      BACKEND_INTERNAL_URL: http://backend:3000
+    depends_on:
+      - backend
+    networks: [app]
+
+  ws-gateway:
+    build:
+      context: ../..
+      dockerfile: services/ws-gateway/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../services/ws-gateway/.env
+    environment:
+      NODE_ENV: production
+    expose:
+      - "4100"
+    networks: [app]
+
+  eta-worker:
+    build:
+      context: ../..
+      dockerfile: services/eta-worker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../services/eta-worker/.env
+    environment:
+      NODE_ENV: production
+      BACKEND_INTERNAL_URL: http://backend:3000
+    depends_on:
+      - backend
+    networks: [app]
+
+  outbox-relay:
+    build:
+      context: ../..
+      dockerfile: services/outbox-relay/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../services/outbox-relay/.env
+    environment:
+      NODE_ENV: production
+    networks: [app]
+
+  dashboard:
+    build:
+      context: ../..
+      dockerfile: dashboard/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../dashboard/.env.local
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+    expose:
+      - "3001"
+    networks: [app]
+
+  partnersite:
+    build:
+      context: ../..
+      dockerfile: partnersite/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../partnersite/.env.local
+    environment:
+      NODE_ENV: production
+      PORT: "3002"
+    expose:
+      - "3002"
+    networks: [app]
+
+networks:
+  app:
+    driver: bridge
+
+volumes:
+  nginx-logs:

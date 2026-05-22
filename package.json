@@ -1,11 +1,14 @@
 {
   "name": "expo_app",
   "private": true,
+  "packageManager": "npm@10.0.0",
   "workspaces": [
     "apps/*",
     "backend",
     "packages/*",
+    "services/*",
     "dashboard",
+    "partnersite",
     "merchant_db"
   ],
   "dependencies": {
@@ -17,6 +20,9 @@
     "react-i18next": "^16.5.4",
     "react-native": "0.81.5"
   },
+  "devDependencies": {
+    "turbo": "^2.9.14"
+  },
   "scripts": {
     "dev:customer": "npm --workspace apps/customer_app run start",
     "dev:customer:clear": "npm --workspace apps/customer_app run start:clear",
@@ -24,10 +30,16 @@
     "dev:merchant": "npm --workspace apps/merchant_app run start",
     "dev:backend": "npm --workspace backend run dev",
     "dev:dashboard": "npm --workspace dashboard run dev",
+    "dev:partnersite": "npm --workspace partnersite run dev",
+    "dev:notification-worker": "npm --workspace @gatimitra/notification-worker run dev",
+    "dev:payment-worker": "npm --workspace @gatimitra/payment-worker run dev",
     "dev:merchant_db": "npm --workspace merchant_db run dev",
-    "build": "npm -ws run build",
-    "lint": "npm -ws run lint",
-    "typecheck": "npm -ws run typecheck",
+    "build": "turbo run build",
+    "build:legacy": "npm -ws run build",
+    "lint": "turbo run lint",
+    "lint:legacy": "npm -ws run lint",
+    "typecheck": "turbo run typecheck",
+    "typecheck:legacy": "npm -ws run typecheck",
     "android": "expo run:android",
     "ios": "expo run:ios"
   },
