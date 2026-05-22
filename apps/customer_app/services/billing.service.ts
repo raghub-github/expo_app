@@ -9,6 +9,7 @@
  */
 
 import api from "./api";
+import { BILLING_CALCULATE_TIMEOUT_MS } from "@/constants";
 
 const BILLING_PREFIX = "/v1/billing";
 
@@ -131,6 +132,9 @@ export type CalculateBillPayload = {
   subscriptionOptIn?: boolean;
   /** 'delivery' (default) or 'self_pickup'. Self-pickup zeroes the delivery fee in billing. */
   deliveryType?: "delivery" | "self_pickup";
+  selectedPlatformOfferId?: number | null;
+  selectedMerchantOfferId?: number | null;
+  forceNoAutoOffer?: boolean;
 };
 
 export type CheckoutOffersResponse = {
@@ -153,7 +157,9 @@ export type CheckoutOffersResponse = {
 
 export const billingService = {
   async calculateBill(payload: CalculateBillPayload): Promise<CalculateBillResponse> {
-    const { data } = await api.post<CalculateBillResponse>(`${BILLING_PREFIX}/calculate`, payload);
+    const { data } = await api.post<CalculateBillResponse>(`${BILLING_PREFIX}/calculate`, payload, {
+      timeout: BILLING_CALCULATE_TIMEOUT_MS,
+    });
     return data;
   },
 

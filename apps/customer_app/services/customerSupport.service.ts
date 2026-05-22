@@ -44,6 +44,7 @@ export type HelpSection = {
 export type RecentOrder = {
   id: number;
   order_id: string | null;
+  formatted_order_id?: string | null;
   status: string;
   current_status: string | null;
   grand_total: number | null;
@@ -141,6 +142,20 @@ export const customerSupportService = {
       { params }
     );
     return { orders: data.orders ?? [], hasMore: !!data.hasMore };
+  },
+
+  /** Resolve order by id, GM…, or GMF… for order-linked tickets. */
+  async resolveOrderForTicket(ref: string): Promise<RecentOrder | null> {
+    const trimmed = ref.replace(/^#/, "").trim();
+    if (!trimmed) return null;
+    try {
+      const { data } = await api.get<{ ok: boolean; order: RecentOrder }>(`${PREFIX}/orders/resolve`, {
+        params: { ref: trimmed },
+      });
+      return data.order ?? null;
+    } catch {
+      return null;
+    }
   },
 
   /** List the customer's tickets. */

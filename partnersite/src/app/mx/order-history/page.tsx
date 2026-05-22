@@ -170,17 +170,6 @@ function buildOrderPricing(order: OrdersFoodRow): OrderPricingBreakdown {
   };
 }
 
-function HistoryOrderStatusBadge({ status }: { status: string }) {
-  const label = historyStatusLabel(status);
-  return (
-    <div
-      className={`w-full rounded-xl px-4 py-3 text-center text-sm font-bold ${historyBadgeClass(status)}`}
-    >
-      {label}
-    </div>
-  );
-}
-
 function OrderHistoryInner() {
   const searchParams = useSearchParams();
   const [store, setStore] = useState<MerchantStore | null>(null);
@@ -854,9 +843,6 @@ function OrderHistoryInner() {
                 onTrackRider={() => setRiderTrackingOpen(true)}
                 otpCode={resolveOrderOtps(selected).pickup ?? undefined}
                 otpType="PICKUP"
-                primaryAction={
-                  <HistoryOrderStatusBadge status={selected.order_status || 'DELIVERED'} />
-                }
               />
             )}
           </main>

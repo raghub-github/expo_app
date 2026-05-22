@@ -235,16 +235,15 @@ export function getOfferStatusBadge(lifecycle: OfferLifecycleResult): {
     return { label: "Active", className: "border border-emerald-200 text-emerald-700 bg-emerald-50" };
   }
   if (lifecycle.phase === "upcoming") {
-    if (lifecycle.reason === "before_slot") {
-      return { label: "Scheduled", className: "border border-amber-200 text-amber-800 bg-amber-50" };
-    }
     return { label: "Upcoming", className: "border border-sky-200 text-sky-700 bg-sky-50" };
   }
   switch (lifecycle.reason) {
     case "outside_slot":
-      return { label: "Outside slot", className: "border border-amber-200 text-amber-800 bg-amber-50" };
     case "wrong_day":
-      return { label: "Not today", className: "border border-gray-300 text-gray-600 bg-gray-50" };
+      return {
+        label: "Not Active Today",
+        className: "border border-gray-300 text-gray-600 bg-gray-50",
+      };
     case "disabled":
       return { label: "Inactive", className: "border border-yellow-200 text-amber-700 bg-yellow-50" };
     default:
@@ -252,19 +251,32 @@ export function getOfferStatusBadge(lifecycle: OfferLifecycleResult): {
   }
 }
 
+/** Campaign ended (valid_till date passed) or dates invalid. */
+export function isOfferCampaignExpired(offer: Offer, now: Date = new Date()): boolean {
+  const { reason } = getOfferLifecycle(offer, now);
+  return reason === "expired" || reason === "invalid_dates";
+}
+
+/**
+ * Track tabs: Inactive = ended/disabled; Scheduled = not started; Active = in campaign (any day/slot state).
+ */
 export function offerMatchesTrackFilter(
   offer: Offer,
   filter: OfferTrackFilter,
   now: Date = new Date()
 ): boolean {
-  const phase = getOfferLifecyclePhase(offer, now);
+  const { reason } = getOfferLifecycle(offer, now);
+  const expired = reason === "expired" || reason === "invalid_dates";
+  const disabled = reason === "disabled";
+  const notStarted = reason === "not_started";
+
   switch (filter) {
-    case "active":
-      return phase === "active";
-    case "scheduled":
-      return phase === "upcoming";
     case "inactive":
-      return phase === "inactive";
+      return expired || disabled;
+    case "scheduled":
+      return notStarted;
+    case "active":
+      return !expired && !disabled && !notStarted;
     case "all":
     default:
       return true;

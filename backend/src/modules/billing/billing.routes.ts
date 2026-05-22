@@ -61,6 +61,9 @@ const calculateBodySchema = z.object({
   couponRedemptionsByUser: z.number().int().nonnegative().optional(),
   /** 'delivery' (default) or 'self_pickup' — waives delivery fee on the billing engine side. */
   deliveryType: z.enum(["delivery", "self_pickup"]).optional(),
+  selectedPlatformOfferId: z.coerce.number().int().positive().optional().nullable(),
+  selectedMerchantOfferId: z.coerce.number().int().positive().optional().nullable(),
+  forceNoAutoOffer: z.boolean().optional(),
 });
 
 function isSimRequest(req: { headers: Record<string, string | string[] | undefined> }): boolean {
@@ -334,6 +337,9 @@ export async function billingRoutes(app: FastifyInstance) {
           checkoutAudience: body.checkoutAudience,
           couponRedemptionsByUser: body.couponRedemptionsByUser,
           deliveryType: body.deliveryType,
+          selectedPlatformOfferId: body.selectedPlatformOfferId ?? null,
+          selectedMerchantOfferId: body.selectedMerchantOfferId ?? null,
+          forceNoAutoOffer: body.forceNoAutoOffer,
         });
         if (!result.ok) {
           return reply.status(400).send({ error: result.code, message: result.message });
@@ -382,6 +388,9 @@ export async function billingRoutes(app: FastifyInstance) {
         checkoutAudience: body.checkoutAudience,
         couponRedemptionsByUser: body.couponRedemptionsByUser,
         deliveryType: body.deliveryType,
+        selectedPlatformOfferId: body.selectedPlatformOfferId ?? null,
+        selectedMerchantOfferId: body.selectedMerchantOfferId ?? null,
+        forceNoAutoOffer: body.forceNoAutoOffer,
       });
 
       if (!result.ok) {

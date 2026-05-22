@@ -38,6 +38,17 @@ const EnvSchema = z.object({
   MSG91_FLOW_ID: z.preprocess(emptyToUndefined, z.string().min(3).optional()),
   SUPABASE_SEND_SMS_HOOK_SECRET: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
 
+  // SMTP (optional — customer email verification OTP)
+  SMTP_HOST: z.preprocess(emptyToUndefined, z.string().min(3).optional()),
+  SMTP_PORT: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(587)),
+  SMTP_USER: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  SMTP_PASS: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  SMTP_FROM: z.preprocess(emptyToUndefined, z.string().min(3).optional()),
+  SMTP_SECURE: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(false),
+
   // Firebase Admin (backend-only; used to verify Firebase ID tokens in dev flow)
   FIREBASE_PROJECT_ID: z.preprocess(emptyToUndefined, z.string().min(3).optional()),
   FIREBASE_CLIENT_EMAIL: z.preprocess(emptyToUndefined, z.string().min(3).optional()),

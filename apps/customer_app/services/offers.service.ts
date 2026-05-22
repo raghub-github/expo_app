@@ -39,8 +39,24 @@ export type StoreOffersResponse = {
   platform_offers: PlatformOfferItem[];
 };
 
+export type HomeBannerOffer = {
+  id: string;
+  store_id: string;
+  store_name: string | null;
+  title: string;
+  sub: string;
+  kind: "merchant" | "platform";
+  source_offer_id: number;
+  offer_type?: string | null;
+  coupon_code?: string | null;
+  min_order_amount?: number | null;
+  max_discount_amount?: number | null;
+  discount_percentage?: number | null;
+  discount_value?: number | null;
+};
+
 export type FeaturedOffersResponse = {
-  offers: PlatformOfferItem[];
+  offers: HomeBannerOffer[];
 };
 
 export const offersService = {

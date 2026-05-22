@@ -21,6 +21,10 @@ export const STORAGE_KEYS = {
 } as const;
 
 export const API_TIMEOUT_MS = 30000;
+/** Place-order / pending / finalize — billing recalc on server can take 30–60s under load. */
+export const ORDER_PLACEMENT_TIMEOUT_MS = 90000;
+/** POST /v1/billing/calculate — geo slabs + offers can exceed the default 30s API timeout. */
+export const BILLING_CALCULATE_TIMEOUT_MS = 60000;
 export const OTP_REQUEST_TIMEOUT_MS = 15000;
 export const OTP_LENGTH = 6;
 

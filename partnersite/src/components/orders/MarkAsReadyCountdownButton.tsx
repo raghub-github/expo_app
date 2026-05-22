@@ -15,6 +15,7 @@ export type MarkAsReadyCountdownButtonProps = {
   className?: string;
   compact?: boolean;
   fullWidth?: boolean;
+  theme?: 'dark' | 'light';
 };
 
 export function MarkAsReadyCountdownButton({
@@ -25,6 +26,7 @@ export function MarkAsReadyCountdownButton({
   className = '',
   compact,
   fullWidth,
+  theme = 'dark',
 }: MarkAsReadyCountdownButtonProps) {
   const { label } =
     nowMs != null

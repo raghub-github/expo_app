@@ -17,11 +17,12 @@ import { openMxNeedHelp } from '@/lib/openMxNeedHelp';
 import { OrderItemDetailModal, type OrderLineItem } from '@/components/orders/OrderItemDetailModal';
 import { OrderCancellationBanner } from '@/components/orders/OrderCancellationBanner';
 import { OrderOtpSection } from '@/components/orders/OrderOtpSection';
+import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';
 import { formatRtoOtpDisplay, resolveOrderOtps, type CachedOrderOtps } from '@/lib/orderOtps';
 import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import { formatOrderDropAddress } from '@/lib/formatOrderAddress';
 
-const ITEMS_PREVIEW_MAX = 10;
+const ITEMS_PREVIEW_MAX = 8;
 
 function resolveItemVegType(vegNonveg?: string | null, name?: string | null): 'veg' | 'non_veg' | null {
   const t = (vegNonveg ?? '').toLowerCase();
@@ -136,7 +137,8 @@ export type OrderPanelProps = {
   onOpenTimeline: () => void;
   onPrintBill: () => void;
   onClose?: () => void;
-  primaryAction: React.ReactNode;
+  /** Live-order actions (accept, mark ready, etc.). Omit on read-only views like order history. */
+  primaryAction?: React.ReactNode;
   otpCode?: string;
   otpType?: string;
   otpCache?: CachedOrderOtps;
@@ -146,6 +148,7 @@ export type OrderPanelProps = {
   onTrackRider?: () => void;
   onOrderHelp?: () => void;
   className?: string;
+  nowMs?: number;
 };
 
 export function OrderPanel({
@@ -168,6 +171,7 @@ export function OrderPanel({
   onTrackRider,
   onOrderHelp,
   className,
+  nowMs,
 }: OrderPanelProps) {
   const items = order.items ?? [];
   const previewItems = items.slice(0, ITEMS_PREVIEW_MAX);
@@ -184,6 +188,7 @@ export function OrderPanel({
   const riderMobile = order.rider_details?.mobile || order.rider_phone;
   const riderPhoto = order.rider_details?.selfie_url;
   const status = order.order_status || 'CREATED';
+  const isReadyForPickup = status === 'READY_FOR_PICKUP';
   const otps = resolveOrderOtps(order, otpCache);
   const legacyOtp = otpCode && !otps.pickup && !otps.rto ? { pickup: otpCode, rto: null as string | null } : otps;
   const displayOtps =
@@ -284,6 +289,17 @@ export function OrderPanel({
               Timeline
             </button>
           </div>
+
+          {isReadyForPickup ? (
+            <div className="mt-3.5">
+              <ReadyHandoverRunningTimeline
+                order={order}
+                nowMs={nowMs ?? Date.now()}
+                compact
+                placement="panel"
+              />
+            </div>
+          ) : null}
         </div>
 
         <div className="flex flex-col p-4 flex-1 min-w-0">
@@ -294,9 +310,7 @@ export function OrderPanel({
             </div>
           ) : null}
 
-          <div
-            className={`space-y-3 ${items.length > 8 ? 'max-h-[min(50vh,420px)] overflow-y-auto hide-scrollbar pr-1' : ''}`}
-          >
+          <div className="space-y-3">
             {previewItems.length > 0 ? (
               <>
                 {previewItems.map((item, idx) => {
@@ -359,9 +373,11 @@ export function OrderPanel({
             </button>
           </div>
 
-          <div className="mt-4 shrink-0 w-full [&_button]:w-full [&_[aria-label='More actions']]:hidden">
-            {primaryAction}
-          </div>
+          {primaryAction && !isReadyForPickup ? (
+            <div className="mt-4 shrink-0 w-full [&_button]:w-full [&_[aria-label='More actions']]:hidden">
+              {primaryAction}
+            </div>
+          ) : null}
         </div>
 
         <div className="relative flex flex-col p-4 xl:w-[28%] min-w-[240px] shrink-0 gap-3">

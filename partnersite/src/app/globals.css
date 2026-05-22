@@ -105,6 +105,21 @@ input:not([disabled]), textarea:not([disabled]), select:not([disabled]) {
   display: none; /* Chrome/Safari/Webkit */
 }
 
+/* All overflow scroll areas: hidden bar, wheel/touch scroll still works */
+.overflow-y-auto,
+.overflow-x-auto,
+.overflow-auto,
+.overflow-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.overflow-y-auto::-webkit-scrollbar,
+.overflow-x-auto::-webkit-scrollbar,
+.overflow-auto::-webkit-scrollbar,
+.overflow-scroll::-webkit-scrollbar {
+  display: none;
+}
+
 .scrollbar-hide {
   scrollbar-width: none; /* Firefox */
   -ms-overflow-style: none; /* IE 10+ */

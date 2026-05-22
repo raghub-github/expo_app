@@ -5,7 +5,8 @@
 
 import api from "./api";
 
-const PROFILE_PREFIX = "/v1/me/profile";
+const ME_PREFIX = "/v1/me";
+const PROFILE_PATH = `${ME_PREFIX}/profile`;
 
 export type Gender = "male" | "female" | "prefer_not_to_say" | "others";
 
@@ -34,6 +35,10 @@ export type UserProfile = {
   longitude?: number | null;
   created_at?: string;
   updated_at?: string;
+  /** GMitra Plus membership — true when subscription is active. */
+  gmitra_plus_active?: boolean;
+  /** Profile photo from verified email (Gravatar / Google). */
+  profile_image_url?: string | null;
 };
 
 export type UpdateProfilePayload = {
@@ -83,12 +88,27 @@ export const GENDERS: { value: Gender; label: string }[] = [
 
 export const profileService = {
   async getProfile(): Promise<UserProfile> {
-    const { data } = await api.get<UserProfile>(PROFILE_PREFIX);
+    const { data } = await api.get<UserProfile>(PROFILE_PATH);
     return data;
   },
 
   async updateProfile(payload: UpdateProfilePayload): Promise<UserProfile> {
-    const { data } = await api.patch<UserProfile>(PROFILE_PREFIX, payload);
+    const { data } = await api.patch<UserProfile>(PROFILE_PATH, payload);
+    return data;
+  },
+
+  async sendEmailVerificationCode(): Promise<{ sent: boolean; email: string }> {
+    const { data } = await api.post<{ sent: boolean; email: string }>(
+      `${ME_PREFIX}/email-verification/send`
+    );
+    return data;
+  },
+
+  async confirmEmailVerification(code: string): Promise<{ verified: boolean; is_email_verified: boolean; profile_image_url?: string | null }> {
+    const { data } = await api.post<{ verified: boolean; is_email_verified: boolean; profile_image_url?: string | null }>(
+      `${ME_PREFIX}/email-verification/confirm`,
+      { code }
+    );
     return data;
   },
 };

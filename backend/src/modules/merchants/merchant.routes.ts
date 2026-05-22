@@ -5,12 +5,17 @@ import {
   getMenuByStoreId,
   getStoreLiveStatus,
   getMenuItemFullConfig,
+  getOrderedTogetherPairs,
   search,
   listNearbyStoresByRoadDistance,
 } from "./merchant.service.js";
 import { listUserAppCategories } from "./userAppCategory.service.js";
 import type { NearbyStoreRow } from "./merchant.types.js";
 import { computeLiveStatus } from "./merchant.types.js";
+import { getPrimaryOfferHeadlinesForStores } from "./merchant-offer-headline.js";
+import { getStoreRatingsForStores } from "./merchant-store-ratings.js";
+import { getScheduleTimesForStores } from "./merchant-store-schedule-times.js";
+import { getCompletedOrderCountsForStores } from "./merchant-store-order-stats.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import { previewEtaRange } from "../eta/eta.preview.js";
 
@@ -110,9 +115,13 @@ export async function merchantRoutes(app: FastifyInstance) {
                 isOpen: z.boolean(),
                 liveStatus: z.enum(["OPEN", "CLOSED"]),
                 distanceKm: z.number().optional(),
+                galleryImages: z.array(z.string()).optional(),
                 offerText: z.string().nullable().optional(),
+                avgRating: z.number().nullable().optional(),
+                totalReviews: z.number().nullable().optional(),
                 nextCloseAt: z.union([z.string(), z.number()]).nullable().optional(),
                 nextOpenAt: z.union([z.string(), z.number()]).nullable().optional(),
+                completedOrderCount: z.number().optional(),
               })
             ),
           }),
@@ -129,8 +138,19 @@ export async function merchantRoutes(app: FastifyInstance) {
         veg_mode: q.veg ?? false,
         distanceMode: q.distanceMode,
       });
+      const storeInternalIds = items
+        .map((s) => Number((s as { id?: number }).id))
+        .filter((id) => Number.isFinite(id) && id > 0);
+      const [offerHeadlines, ratingSummaries, scheduleTimes, orderCounts] = await Promise.all([
+        getPrimaryOfferHeadlinesForStores(storeInternalIds),
+        getStoreRatingsForStores(storeInternalIds),
+        getScheduleTimesForStores(storeInternalIds),
+        getCompletedOrderCountsForStores(storeInternalIds),
+      ]);
+
       const body = items.map((s) => {
         const nearby = s as NearbyStoreRow;
+        const storeInternalId = Number(s.id);
         const displayImageRaw =
           nearby.display_image ??
           s.banner_url ??
@@ -138,6 +158,11 @@ export async function merchantRoutes(app: FastifyInstance) {
           null;
         const displayImage = toAbsoluteClientMediaUrl(displayImageRaw);
         const bannerAbs = toAbsoluteClientMediaUrl(s.banner_url ?? null);
+        const galleryRaw = Array.isArray(s.gallery_images) ? s.gallery_images : [];
+        const galleryImages = galleryRaw
+          .map((u) => toAbsoluteClientMediaUrl(typeof u === "string" ? u : null))
+          .filter((u): u is string => Boolean(u))
+          .filter((u) => u !== bannerAbs && u !== displayImage);
         const prepMin = nearby.avg_preparation_time_minutes ?? s.avg_preparation_time_minutes;
         // ETA range: canonical "(prep + distance/18kmh) + 5..10 min buffer"
         // formula stamped server-side so list, merchant detail header, and
@@ -159,6 +184,10 @@ export async function merchantRoutes(app: FastifyInstance) {
                 operational_status: (s as { operational_status?: string | null }).operational_status,
               });
         const isOpen = liveStatus === "OPEN";
+        const sched =
+          Number.isFinite(storeInternalId) && storeInternalId > 0
+            ? scheduleTimes.get(storeInternalId)
+            : undefined;
         return {
           id: s.store_id,
           name: s.store_display_name ?? s.store_name,
@@ -171,9 +200,25 @@ export async function merchantRoutes(app: FastifyInstance) {
           isOpen,
           liveStatus,
           distanceKm: "distance_km" in s ? nearby.distance_km : undefined,
-          offerText: null,
-          nextCloseAt: (s as { next_close_at?: string | number | null }).next_close_at ?? null,
-          nextOpenAt: (s as { next_open_at?: string | number | null }).next_open_at ?? null,
+          galleryImages: galleryImages.length > 0 ? galleryImages : undefined,
+          offerText:
+            Number.isFinite(storeInternalId) && storeInternalId > 0
+              ? offerHeadlines.get(storeInternalId) ?? null
+              : null,
+          avgRating:
+            Number.isFinite(storeInternalId) && storeInternalId > 0
+              ? ratingSummaries.get(storeInternalId)?.avgRating ?? null
+              : null,
+          totalReviews:
+            Number.isFinite(storeInternalId) && storeInternalId > 0
+              ? ratingSummaries.get(storeInternalId)?.totalReviews ?? null
+              : null,
+          nextCloseAt: sched?.nextCloseAt ?? null,
+          nextOpenAt: sched?.nextOpenAt ?? null,
+          completedOrderCount:
+            Number.isFinite(storeInternalId) && storeInternalId > 0
+              ? orderCounts.get(storeInternalId) ?? 0
+              : 0,
         };
       });
       return reply.send({ items: body });
@@ -222,6 +267,7 @@ export async function merchantRoutes(app: FastifyInstance) {
                 price: z.number(),
                 imageUrl: z.string().nullable(),
                 displayOrder: z.number(),
+                isMostOrdered: z.boolean().optional(),
               })),
             })),
           }),
@@ -237,6 +283,39 @@ export async function merchantRoutes(app: FastifyInstance) {
     }
   );
 
+  // GET /v1/merchants/:id/menu/ordered-together – item pairs frequently ordered together at this store.
+  app.get<{ Params: { id: string } }>(
+    "/merchants/:id/menu/ordered-together",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({
+            pairs: z.array(
+              z.object({
+                id: z.string(),
+                item1Id: z.string(),
+                item2Id: z.string(),
+                item1MenuItemPk: z.number(),
+                item2MenuItemPk: z.number(),
+                orderCount: z.number(),
+              })
+            ),
+          }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id: storeId } = request.params;
+      const { getStoreByStoreId } = await import("./merchant.service.js");
+      const store = await getStoreByStoreId(storeId);
+      if (!store) return reply.status(404).send({ error: "Store not found" });
+      const pairs = await getOrderedTogetherPairs(storeId);
+      return reply.send({ pairs });
+    }
+  );
+
   // GET /v1/merchants/:id/live-status – single source of truth for OPEN/CLOSED. Used by list, detail, cart, checkout, group order.
   app.get<{ Params: { id: string } }>(
     "/merchants/:id/live-status",
@@ -244,16 +323,32 @@ export async function merchantRoutes(app: FastifyInstance) {
       schema: {
         params: z.object({ id: z.string().min(1) }),
         response: {
-          200: z.object({ liveStatus: z.enum(["OPEN", "CLOSED"]) }),
+          200: z.object({
+            liveStatus: z.enum(["OPEN", "CLOSED"]),
+            nextOpenAt: z.string().nullable().optional(),
+            nextCloseAt: z.string().nullable().optional(),
+          }),
           404: z.object({ error: z.string() }),
         },
       },
     },
     async (request, reply) => {
       const { id } = request.params;
+      const { getStoreByStoreId } = await import("./merchant.service.js");
+      const store = await getStoreByStoreId(id);
+      if (!store) return reply.status(404).send({ error: "Store not found" });
       const liveStatus = await getStoreLiveStatus(id);
       if (liveStatus == null) return reply.status(404).send({ error: "Store not found" });
-      return reply.send({ liveStatus });
+      const internalId = Number(store.id);
+      const sched =
+        Number.isFinite(internalId) && internalId > 0
+          ? (await getScheduleTimesForStores([internalId])).get(internalId)
+          : undefined;
+      return reply.send({
+        liveStatus,
+        nextOpenAt: sched?.nextOpenAt ?? null,
+        nextCloseAt: sched?.nextCloseAt ?? null,
+      });
     }
   );
 
@@ -280,6 +375,11 @@ export async function merchantRoutes(app: FastifyInstance) {
             banner_url: z.string().nullable(),
             is_active: z.boolean().nullable(),
             created_at: z.string().nullable().optional(),
+            legal_name: z.string().nullable().optional(),
+            gst_number: z.string().nullable().optional(),
+            fssai_number: z.string().nullable().optional(),
+            store_phone: z.string().nullable().optional(),
+            is_cloud_kitchen: z.boolean().optional(),
           }),
           404: z.object({ error: z.string() }),
         },
@@ -287,26 +387,10 @@ export async function merchantRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params;
-      const { getStoreByStoreId } = await import("./merchant.service.js");
-      const store = await getStoreByStoreId(id);
-      if (!store) return reply.status(404).send({ error: "Store not found" });
-      return reply.send({
-        store_name: store.store_name,
-        store_display_name: store.store_display_name ?? null,
-        full_address: store.full_address ?? store.store_description ?? null,
-        city: store.city ?? null,
-        state: (store as { state?: string | null }).state ?? null,
-        postal_code: store.postal_code ?? null,
-        cuisine_types: store.cuisine_types ?? null,
-        operational_status: store.operational_status ?? null,
-        avg_preparation_time_minutes: store.avg_preparation_time_minutes ?? null,
-        packaging_charge_amount: (store as { packaging_charge_amount?: number | null }).packaging_charge_amount ?? null,
-        delivery_charge_per_km: (store as { delivery_charge_per_km?: number | null }).delivery_charge_per_km ?? null,
-        delivery_radius_km: (store as { delivery_radius_km?: number | null }).delivery_radius_km ?? null,
-        banner_url: store.banner_url ?? null,
-        is_active: store.is_active ?? null,
-        created_at: store.created_at ?? null,
-      });
+      const { getMerchantAboutPayload } = await import("./merchant.service.js");
+      const payload = await getMerchantAboutPayload(id);
+      if (!payload) return reply.status(404).send({ error: "Store not found" });
+      return reply.send(payload);
     }
   );
 
@@ -357,6 +441,11 @@ export async function merchantRoutes(app: FastifyInstance) {
               })
             ),
             cuisines: z.array(z.string()).optional(),
+            avgRating: z.number().nullable().optional(),
+            totalReviews: z.number().nullable().optional(),
+            liveStatus: z.enum(["OPEN", "CLOSED"]).optional(),
+            nextOpenAt: z.string().nullable().optional(),
+            nextCloseAt: z.string().nullable().optional(),
           }),
           404: z.object({ error: z.string() }),
         },
@@ -369,6 +458,12 @@ export async function merchantRoutes(app: FastifyInstance) {
       if (!store) {
         return reply.status(404).send({ error: "Store not found" });
       }
+      const storeInternalId = Number(store.id);
+      const ratingSummaries =
+        Number.isFinite(storeInternalId) && storeInternalId > 0
+          ? await getStoreRatingsForStores([storeInternalId])
+          : new Map();
+      const rating = ratingSummaries.get(storeInternalId);
       const bannerImages: string[] = [];
       const gallery = store.gallery_images ?? [];
       if (Array.isArray(gallery) && gallery.length > 0) bannerImages.push(...gallery.filter(Boolean));
@@ -380,7 +475,13 @@ export async function merchantRoutes(app: FastifyInstance) {
         name: m.item_name,
         description: m.item_description ?? undefined,
         price: parseFloat(m.selling_price),
+        basePrice:
+          m.base_price != null && Number.isFinite(parseFloat(String(m.base_price)))
+            ? parseFloat(String(m.base_price))
+            : undefined,
         imageUrl: toAbsoluteClientMediaUrl(m.item_image_url ?? null) ?? undefined,
+        foodType: m.food_type ?? undefined,
+        spiceLevel: (m as { spice_level?: string | null }).spice_level ?? undefined,
         isVeg: (m.food_type ?? "").toLowerCase().startsWith("veg"),
         category: m.cuisine_type ?? (m as { category_name?: string | null }).category_name ?? undefined,
         categoryId: m.category_id ?? undefined,
@@ -405,6 +506,10 @@ export async function merchantRoutes(app: FastifyInstance) {
               operational_status: store.operational_status,
             });
       const isOpen = liveStatus === "OPEN";
+      const sched =
+        Number.isFinite(storeInternalId) && storeInternalId > 0
+          ? (await getScheduleTimesForStores([storeInternalId])).get(storeInternalId)
+          : undefined;
       const bannerImagesAbsolute = bannerImages
         .map((u) => toAbsoluteClientMediaUrl(u))
         .filter((u): u is string => Boolean(u));
@@ -425,6 +530,10 @@ export async function merchantRoutes(app: FastifyInstance) {
         city: store.city ?? undefined,
         menu,
         cuisines: store.cuisine_types ?? undefined,
+        avgRating: rating?.avgRating ?? null,
+        totalReviews: rating?.totalReviews ?? null,
+        nextOpenAt: sched?.nextOpenAt ?? null,
+        nextCloseAt: sched?.nextCloseAt ?? null,
       });
     }
   );

@@ -4,6 +4,11 @@ import { getDb } from "../../db/client.js";
 import { userProfiles, customers } from "../../db/schema.js";
 import { eq, and, ne } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
+import {
+  sendCustomerEmailVerificationOtp,
+  verifyCustomerEmailVerificationOtp,
+} from "../../services/email/emailVerificationOtp.js";
+import { resolveEmailAvatarUrl } from "../../lib/email-avatar.js";
 
 /** Random words for referral code suffix (1 or 2 words) */
 const REFERRAL_WORDS = [
@@ -65,8 +70,8 @@ const genderSchema = z.enum(["male", "female", "prefer_not_to_say"]);
 const profileResponseSchema = z.object({
   profile_completed: z.boolean(),
   customer_id: z.string().nullable().optional(),
-  user_id: z.string().optional(),
-  mobile_number: z.string().optional(),
+  user_id: z.string().nullable().optional(),
+  mobile_number: z.string().nullable().optional(),
   full_name: z.string().nullable(),
   email: z.string().nullable(),
   age_group: z.string().nullable(),
@@ -87,6 +92,8 @@ const profileResponseSchema = z.object({
   longitude: z.number().nullable().optional(),
   created_at: z.string().optional(),
   updated_at: z.string().optional(),
+  gmitra_plus_active: z.boolean().optional(),
+  profile_image_url: z.string().nullable().optional(),
 });
 
 const patchBodySchema = z.object({
@@ -112,8 +119,8 @@ const patchBodySchema = z.object({
 function toResponseFromUserProfile(row: typeof userProfiles.$inferSelect) {
   return {
     profile_completed: row.profileCompleted,
-    user_id: row.userId,
-    mobile_number: row.mobileNumber,
+    user_id: row.userId ?? null,
+    mobile_number: row.mobileNumber ?? null,
     full_name: row.fullName ?? null,
     email: row.email ?? null,
     age_group: row.ageGroup ?? null,
@@ -126,12 +133,18 @@ function toResponseFromUserProfile(row: typeof userProfiles.$inferSelect) {
   };
 }
 
+function safeCoord(v: string | number | null | undefined): number | null {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 function toResponseFromCustomer(row: typeof customers.$inferSelect) {
   const profileCompleted = row.profileCompleted ?? !!(row.fullName && row.email && row.fullName !== "Pending");
   return {
     profile_completed: profileCompleted,
-    customer_id: row.customerId,
-    user_id: row.customerId,
+    customer_id: row.customerId ?? null,
+    user_id: row.customerId ?? null,
     mobile_number: row.primaryMobile ?? null,
     full_name: row.fullName ?? null,
     email: row.email ?? null,
@@ -149,11 +162,34 @@ function toResponseFromCustomer(row: typeof customers.$inferSelect) {
     state: row.state ?? null,
     pincode: row.pincode ?? null,
     country: row.country ?? null,
-    latitude: row.latitude != null ? Number(row.latitude) : null,
-    longitude: row.longitude != null ? Number(row.longitude) : null,
+    latitude: safeCoord(row.latitude),
+    longitude: safeCoord(row.longitude),
     created_at: row.createdAt?.toISOString(),
     updated_at: row.updatedAt?.toISOString(),
+    gmitra_plus_active: row.gmitraPlusActive ?? false,
+    profile_image_url: row.profileImageUrl ?? null,
   };
+}
+
+async function ensureEmailAvatarForCustomer(
+  db: ReturnType<typeof getDb>,
+  row: typeof customers.$inferSelect,
+): Promise<typeof customers.$inferSelect> {
+  if (!row.isEmailVerified || row.profileImageUrl?.trim()) return row;
+  const email = row.email?.trim().toLowerCase();
+  if (!email) return row;
+
+  try {
+    const avatarUrl = await resolveEmailAvatarUrl(email);
+    const [updated] = await db
+      .update(customers)
+      .set({ profileImageUrl: avatarUrl, updatedAt: new Date() })
+      .where(eq(customers.customerId, row.customerId))
+      .returning();
+    return updated ?? { ...row, profileImageUrl: avatarUrl };
+  } catch {
+    return row;
+  }
 }
 
 /** Resolve customer_id when we should use customers table (sub is GM* or we find customer by phone). */
@@ -198,7 +234,7 @@ export async function meRoutes(app: FastifyInstance) {
             message: "Your account is no longer available. Please sign in again.",
           });
         }
-        return toResponseFromCustomer(rows[0]!);
+        return toResponseFromCustomer(await ensureEmailAvatarForCustomer(db, rows[0]!));
       }
 
       if (sub.startsWith("usr_")) {
@@ -289,6 +325,16 @@ export async function meRoutes(app: FastifyInstance) {
             } as any);
           }
           const existing = rows[0]!;
+          if (
+            existing.isEmailVerified &&
+            body.email !== undefined &&
+            emailNorm &&
+            emailNorm !== existing.email?.trim().toLowerCase()
+          ) {
+            return reply.code(400).send({
+              message: "Verified email cannot be changed.",
+            } as any);
+          }
           const genderVal = body.gender != null ? (body.gender.toUpperCase() as "MALE" | "FEMALE" | "PREFER_NOT_TO_SAY" | "OTHER") : undefined;
           const newProfileCompleted = body.profile_completed !== undefined ? body.profile_completed : existing.profileCompleted;
           const effectiveFullName = body.full_name !== undefined ? body.full_name : existing.fullName ?? "";
@@ -296,14 +342,21 @@ export async function meRoutes(app: FastifyInstance) {
           // Auto-generate unique referral code when user completes profile (redirect to home) and doesn't have one yet
           let referralCodeToSet: string | null = existing.referralCode ?? null;
           if (newProfileCompleted && !existing.referralCode && effectiveFullName && effectiveFullName.trim().toLowerCase() !== "pending") {
-            referralCodeToSet = await generateUniqueReferralCode(db, effectiveFullName.trim(), customerId);
+            try {
+              referralCodeToSet = await generateUniqueReferralCode(db, effectiveFullName.trim(), customerId);
+            } catch (refErr) {
+              req.log?.warn?.({ err: refErr }, "referral code generation skipped");
+            }
           }
 
           const [updated] = await db
             .update(customers)
             .set({
               fullName: body.full_name !== undefined ? body.full_name : existing.fullName,
-              email: body.email !== undefined ? (emailNorm ?? body.email) : existing.email,
+              email:
+                body.email !== undefined && !existing.isEmailVerified
+                  ? (emailNorm ?? body.email)
+                  : existing.email,
               ageGroup: body.age_group !== undefined ? body.age_group : existing.ageGroup,
               gender: genderVal !== undefined ? genderVal : existing.gender,
               profileCompleted: newProfileCompleted,
@@ -407,6 +460,127 @@ export async function meRoutes(app: FastifyInstance) {
         const message = err?.message || err?.code || "Could not save. Try again.";
         return reply.code(500).send({ message: String(message) } as any);
       }
+    }
+  );
+
+  app.post(
+    "/email-verification/send",
+    {
+      schema: {
+        response: {
+          200: z.object({ sent: z.boolean(), email: z.string() }),
+          400: z.object({ message: z.string() }),
+          401: z.object({ message: z.string() }),
+          503: z.object({ message: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const sub = req.auth!.sub;
+      const role = req.auth!.role;
+      const db = getDb();
+      const customerId = await resolveCustomerId(db, sub, role, req.auth?.phone);
+      if (!customerId) {
+        return reply.code(401).send({ message: "Customer account required" });
+      }
+
+      const rows = await db
+        .select()
+        .from(customers)
+        .where(eq(customers.customerId, customerId))
+        .limit(1);
+      if (rows.length === 0) {
+        return reply.code(401).send({ message: "Customer not found" });
+      }
+      const row = rows[0]!;
+      if (row.isEmailVerified) {
+        return reply.code(400).send({ message: "Email is already verified" });
+      }
+      const email = row.email?.trim().toLowerCase();
+      if (!email) {
+        return reply.code(400).send({ message: "Add an email to your profile first" });
+      }
+
+      const result = await sendCustomerEmailVerificationOtp({
+        customerKey: customerId,
+        email,
+        log: req.log,
+      });
+      if (!result.sent) {
+        return reply.code(503).send({
+          message: result.error ?? "Could not send verification email. Try again later.",
+        });
+      }
+      return { sent: true, email };
+    }
+  );
+
+  app.post(
+    "/email-verification/confirm",
+    {
+      schema: {
+        body: z.object({ code: z.string().min(4).max(8) }),
+        response: {
+          200: z.object({ verified: z.boolean(), is_email_verified: z.boolean(), profile_image_url: z.string().nullable().optional() }),
+          400: z.object({ message: z.string() }),
+          401: z.object({ message: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const sub = req.auth!.sub;
+      const role = req.auth!.role;
+      const body = z.object({ code: z.string().min(4).max(8) }).parse(req.body);
+      const db = getDb();
+      const customerId = await resolveCustomerId(db, sub, role, req.auth?.phone);
+      if (!customerId) {
+        return reply.code(401).send({ message: "Customer account required" });
+      }
+
+      const rows = await db
+        .select()
+        .from(customers)
+        .where(eq(customers.customerId, customerId))
+        .limit(1);
+      if (rows.length === 0) {
+        return reply.code(401).send({ message: "Customer not found" });
+      }
+      const row = rows[0]!;
+      const email = row.email?.trim().toLowerCase();
+      if (!email) {
+        return reply.code(400).send({ message: "Add an email to your profile first" });
+      }
+
+      const result = await verifyCustomerEmailVerificationOtp({
+        customerKey: customerId,
+        email,
+        code: body.code.trim(),
+      });
+      if (!result.ok) {
+        return reply.code(400).send({ message: result.reason ?? "Invalid OTP. Please try again." });
+      }
+
+      const now = new Date();
+      let profileImageUrl = row.profileImageUrl?.trim() || null;
+      if (!profileImageUrl) {
+        try {
+          profileImageUrl = await resolveEmailAvatarUrl(email);
+        } catch (err) {
+          req.log?.warn?.({ err, email }, "email avatar resolve failed on verify");
+        }
+      }
+
+      await db
+        .update(customers)
+        .set({
+          isEmailVerified: true,
+          emailVerifiedAt: now,
+          ...(profileImageUrl ? { profileImageUrl } : {}),
+          updatedAt: now,
+        })
+        .where(eq(customers.customerId, customerId));
+
+      return { verified: true, is_email_verified: true, profile_image_url: profileImageUrl };
     }
   );
 

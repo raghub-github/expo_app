@@ -61,6 +61,62 @@ function toIsoOrNull(v: unknown): string | null {
   return Number.isFinite(d.getTime()) ? d.toISOString() : null;
 }
 
+type ResolvedCustomerOrder = {
+  id: number;
+  order_id: string | null;
+  formatted_order_id: string | null;
+  status: string;
+  current_status: string | null;
+  grand_total: number | null;
+  placed_at: string | null;
+  delivered_at: string | null;
+  merchant_store_id: number | null;
+  merchant_store_name: string | null;
+};
+
+function mapResolvedOrder(r: Record<string, unknown>): ResolvedCustomerOrder {
+  return {
+    id: Number(r.id),
+    order_id: r.order_id != null ? String(r.order_id) : null,
+    formatted_order_id: r.formatted_order_id != null ? String(r.formatted_order_id) : null,
+    status: r.status != null ? String(r.status) : "assigned",
+    current_status: r.current_status != null ? String(r.current_status) : null,
+    grand_total: r.grand_total != null ? Number(r.grand_total) : null,
+    placed_at: toIsoOrNull(r.placed_at),
+    delivered_at: toIsoOrNull(r.delivered_at),
+    merchant_store_id: r.merchant_store_id != null ? Number(r.merchant_store_id) : null,
+    merchant_store_name: r.merchant_store_name != null ? String(r.merchant_store_name) : null,
+  };
+}
+
+/** Match orders_core.id | order_id (GM…) | formatted_order_id (GMF…) for this customer. */
+async function resolveCustomerOrderRef(
+  sql: ReturnType<typeof getSql>,
+  customerPk: number,
+  ref: string
+): Promise<ResolvedCustomerOrder | null> {
+  const trimmed = ref.replace(/^#/, "").trim();
+  if (!trimmed) return null;
+  const rows = await sql`
+    SELECT oc.id, oc.order_id, oc.formatted_order_id, oc.status::text AS status, oc.current_status,
+           oc.grand_total, oc.placed_at, oc.actual_delivery_time AS delivered_at,
+           oc.merchant_store_id,
+           ms.store_name AS merchant_store_name
+    FROM orders_core oc
+    LEFT JOIN merchant_stores ms ON ms.id = oc.merchant_store_id
+    WHERE oc.customer_id = ${customerPk}
+      AND (
+        oc.order_id = ${trimmed}
+        OR oc.formatted_order_id = ${trimmed}
+        OR UPPER(TRIM(COALESCE(oc.formatted_order_id, ''))) = UPPER(${trimmed})
+        OR oc.id::text = ${trimmed}
+      )
+    LIMIT 1
+  `;
+  const row = (rows as Array<Record<string, unknown>>)[0];
+  return row ? mapResolvedOrder(row) : null;
+}
+
 /** Resolve JWT sub (customer_id text uuid) to numeric customers.id. */
 async function resolveCustomerInternalId(sub: string): Promise<{
   id: number;
@@ -172,6 +228,31 @@ export async function customerSupportRoutes(app: FastifyInstance) {
   });
 
   /**
+   * GET /orders/resolve?ref= — resolve any order reference for ticket linking.
+   * Accepts orders_core.id, order_id (GM…), or formatted_order_id (GMF…).
+   */
+  app.get<{ Querystring: { ref?: string } }>("/orders/resolve", async (req, reply) => {
+    if (req.auth?.role !== "customer" || !req.auth?.sub) {
+      return reply.code(401).send({ error: "customer_required" });
+    }
+    const me = await resolveCustomerInternalId(req.auth.sub);
+    if (!me) return reply.code(404).send({ error: "customer_not_found" });
+
+    const ref = (req.query.ref ?? "").toString().trim();
+    if (!ref) return reply.code(400).send({ error: "ref_required" });
+
+    try {
+      const sql = getSql();
+      const order = await resolveCustomerOrderRef(sql, me.id, ref);
+      if (!order) return reply.code(404).send({ error: "order_not_found" });
+      return reply.send({ ok: true, order });
+    } catch (e) {
+      req.log.error({ err: e, ref }, "customer order resolve failed");
+      return reply.code(500).send({ error: "order_resolve_failed" });
+    }
+  });
+
+  /**
    * GET /recent-orders — paginated list of this customer's recent orders.
    * Used by the raise-ticket wizard to let the customer pick which order
    * the ticket is about. Returns 3 at a time by default.
@@ -187,8 +268,8 @@ export async function customerSupportRoutes(app: FastifyInstance) {
     const offset = Math.max(0, Number(req.query.offset) || 0);
     const sql = getSql();
     const rows = await sql`
-      SELECT oc.id, oc.order_id, oc.status::text AS status, oc.current_status,
-             oc.grand_total, oc.placed_at, oc.delivered_at,
+      SELECT oc.id, oc.order_id, oc.formatted_order_id, oc.status::text AS status, oc.current_status,
+             oc.grand_total, oc.placed_at, oc.actual_delivery_time AS delivered_at,
              oc.merchant_store_id,
              ms.store_name AS merchant_store_name
       FROM orders_core oc
@@ -197,17 +278,7 @@ export async function customerSupportRoutes(app: FastifyInstance) {
       ORDER BY oc.placed_at DESC NULLS LAST, oc.id DESC
       LIMIT ${limit} OFFSET ${offset}
     `;
-    const orders = (rows as Array<Record<string, unknown>>).map((r) => ({
-      id: Number(r.id),
-      order_id: r.order_id != null ? String(r.order_id) : null,
-      status: r.status != null ? String(r.status) : "assigned",
-      current_status: r.current_status != null ? String(r.current_status) : null,
-      grand_total: r.grand_total != null ? Number(r.grand_total) : null,
-      placed_at: toIsoOrNull(r.placed_at),
-      delivered_at: toIsoOrNull(r.delivered_at),
-      merchant_store_id: r.merchant_store_id != null ? Number(r.merchant_store_id) : null,
-      merchant_store_name: r.merchant_store_name != null ? String(r.merchant_store_name) : null,
-    }));
+    const orders = (rows as Array<Record<string, unknown>>).map((r) => mapResolvedOrder(r));
     return reply.send({ ok: true, orders, hasMore: orders.length === limit });
   });
 
@@ -309,25 +380,44 @@ export async function customerSupportRoutes(app: FastifyInstance) {
       };
     }
 
-    // Resolve order context if order_id is provided.
+    // Resolve order context if order_id is provided (numeric id, GM…, or GMF…).
     const rawOrderId = body.order_id;
-    const orderIdNum =
+    let orderIdNum: number | null =
       typeof rawOrderId === "number" && Number.isInteger(rawOrderId) && rawOrderId > 0
         ? rawOrderId
         : typeof rawOrderId === "string" && /^\d+$/.test(rawOrderId.trim())
           ? Number(rawOrderId.trim())
           : null;
+
     let orderContext: {
       orderInternalId: number;
       merchantStoreId: number | null;
       merchantParentId: number | null;
       riderId: number | null;
     } | null = null;
+
     if (orderIdNum != null) {
       const ordRows = await sql`
         SELECT id, merchant_store_id, merchant_parent_id, rider_id
         FROM orders_core
         WHERE id = ${orderIdNum} AND customer_id = ${me.id}
+        LIMIT 1
+      `;
+      const ord = (ordRows as Array<Record<string, unknown>>)[0];
+      if (!ord) return reply.code(404).send({ error: "order_not_found" });
+      orderContext = {
+        orderInternalId: Number(ord.id),
+        merchantStoreId: ord.merchant_store_id != null ? Number(ord.merchant_store_id) : null,
+        merchantParentId: ord.merchant_parent_id != null ? Number(ord.merchant_parent_id) : null,
+        riderId: ord.rider_id != null ? Number(ord.rider_id) : null,
+      };
+    } else if (typeof rawOrderId === "string" && rawOrderId.trim()) {
+      const resolved = await resolveCustomerOrderRef(sql, me.id, rawOrderId.trim());
+      if (!resolved) return reply.code(404).send({ error: "order_not_found" });
+      const ordRows = await sql`
+        SELECT id, merchant_store_id, merchant_parent_id, rider_id
+        FROM orders_core
+        WHERE id = ${resolved.id} AND customer_id = ${me.id}
         LIMIT 1
       `;
       const ord = (ordRows as Array<Record<string, unknown>>)[0];

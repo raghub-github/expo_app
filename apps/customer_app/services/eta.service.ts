@@ -29,11 +29,17 @@ export type EtaLive = {
   createdAt: string;
 };
 
+export type OrderEtaPrep = {
+  minutes: number | null;
+  readyByAt: string | null;
+};
+
 export type OrderEtaResponse = {
   ok: true;
   orderIdText: string;
   promise: EtaPromise;
   live: EtaLive | null;
+  prep?: OrderEtaPrep;
 };
 
 export const etaService = {

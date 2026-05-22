@@ -48,7 +48,15 @@ api.interceptors.response.use(
         onSessionRevoked?.();
       }
     }
-    return Promise.reject(err);
+    const apiError = new Error(message) as Error & {
+      response?: typeof err.response;
+      status?: number;
+      isAxiosError?: boolean;
+    };
+    apiError.response = err.response;
+    apiError.status = status;
+    apiError.isAxiosError = true;
+    return Promise.reject(apiError);
   }
 );
 

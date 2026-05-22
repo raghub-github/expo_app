@@ -72,6 +72,8 @@ export default function EditProfileScreen() {
     }
   }, [profile]);
 
+  const isEmailVerified = profile?.is_email_verified ?? false;
+
   const validate = (): boolean => {
     const e: Record<string, string> = {};
     if (fullName.trim().length < 2) e.fullName = "At least 2 characters required";
@@ -87,7 +89,7 @@ export default function EditProfileScreen() {
     try {
       await profileService.updateProfile({
         full_name: fullName.trim(),
-        email: email.trim().toLowerCase(),
+        ...(isEmailVerified ? {} : { email: email.trim().toLowerCase() }),
         age_group: ageGroup || undefined,
         gender: gender || undefined,
         referred_by: referralId.trim() || undefined,
@@ -136,16 +138,38 @@ export default function EditProfileScreen() {
         />
         {errors.fullName ? <Text style={styles.errorText}>{errors.fullName}</Text> : null}
 
-        <Text style={styles.label}>Email *</Text>
-        <TextInput
-          style={[styles.input, errors.email && styles.inputError]}
-          placeholder="your@email.com"
-          placeholderTextColor={PLACEHOLDER}
-          keyboardType="email-address"
-          value={email}
-          onChangeText={(t) => { setEmail(t); setErrors((e) => ({ ...e, email: "" })); }}
-          editable={!submitting}
-        />
+        <View style={styles.labelRow}>
+          <Text style={[styles.label, styles.labelInline]}>Email *</Text>
+          {isEmailVerified ? (
+            <View style={styles.verifiedBadge}>
+              <Ionicons name="checkmark-circle" size={14} color={GREEN} />
+              <Text style={styles.verifiedBadgeText}>Verified</Text>
+            </View>
+          ) : null}
+        </View>
+        <View style={[styles.emailFieldWrap, isEmailVerified && styles.emailFieldWrapLocked]}>
+          {isEmailVerified ? (
+            <Ionicons name="lock-closed" size={16} color={GRAY} style={styles.emailLockIcon} />
+          ) : null}
+          <TextInput
+            style={[
+              styles.input,
+              styles.emailInput,
+              isEmailVerified && styles.inputLocked,
+              errors.email && styles.inputError,
+            ]}
+            placeholder="your@email.com"
+            placeholderTextColor={PLACEHOLDER}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            value={email}
+            onChangeText={(t) => { setEmail(t); setErrors((e) => ({ ...e, email: "" })); }}
+            editable={!submitting && !isEmailVerified}
+          />
+        </View>
+        {isEmailVerified ? (
+          <Text style={styles.verifiedHint}>Verified email cannot be changed.</Text>
+        ) : null}
         {errors.email ? <Text style={styles.errorText}>{errors.email}</Text> : null}
 
         <Text style={styles.label}>Age group</Text>
@@ -246,6 +270,26 @@ const styles = StyleSheet.create({
   scroll: { padding: 20, paddingBottom: 40 },
   sectionTitle: { fontSize: 16, fontWeight: "700", color: TITLE, marginTop: 20, marginBottom: 12 },
   label: { fontSize: 14, fontWeight: "600", color: TITLE, marginBottom: 8 },
+  labelRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  labelInline: { marginBottom: 0 },
+  verifiedBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#ECFDF5",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+  },
+  verifiedBadgeText: { fontSize: 12, fontWeight: "700", color: GREEN },
+  emailFieldWrap: { position: "relative", marginBottom: 16 },
+  emailFieldWrapLocked: { marginBottom: 6 },
+  emailLockIcon: { position: "absolute", left: 14, top: 15, zIndex: 1 },
+  emailInput: { marginBottom: 0 },
+  inputLocked: { backgroundColor: "#F9FAFB", color: GRAY, paddingLeft: 40 },
+  verifiedHint: { fontSize: 12, color: GRAY, marginBottom: 16 },
   input: {
     backgroundColor: "#FFF",
     borderWidth: 1,

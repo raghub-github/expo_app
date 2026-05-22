@@ -5,10 +5,12 @@ import {
   labelsForStatusUpdate,
   normalizeActionMode,
   normalizeActionSource,
+  computeOrderItemQuantityCount,
 } from '@/lib/merchantOrderFoodActions';
 import { appendAcceptanceTimeline } from '@/lib/orderAcceptanceTimeline';
 import { appendCancellationTimeline } from '@/lib/orderCancellationTimeline';
 import { appendReadyTimeline } from '@/lib/orderFoodStatusTimeline';
+import { loadPartnerOrderItemsForFoodRow } from '@/lib/partnerFoodOrderItems';
 import {
   PLATFORM_DEFAULT_PREP_MINUTES,
   resolveAcceptPrepCommitment,
@@ -257,6 +259,35 @@ export async function PATCH(
       } catch (tlErr) {
         console.warn('[food-orders PATCH] acceptance timeline failed:', tlErr);
       }
+
+      // Refresh customer live ETA using merchant-committed prep minutes on orders_core.
+      try {
+        const { data: coreMeta } = await db
+          .from('orders_core')
+          .select('order_id')
+          .eq('id', existing.order_id as number)
+          .maybeSingle();
+        const orderIdText = (coreMeta?.order_id as string | null)?.trim();
+        const backendBase = (
+          process.env.GATIMITRA_BACKEND_API_URL ||
+          process.env.BACKEND_API_URL ||
+          ''
+        ).replace(/\/+$/, '');
+        if (orderIdText && backendBase) {
+          await fetch(
+            `${backendBase}/v1/eta/orders/${encodeURIComponent(orderIdText)}/recalc`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ reason: 'MERCHANT_DELAY' }),
+            }
+          ).catch((err) => {
+            console.warn('[food-orders PATCH] ETA recalc after accept failed:', err);
+          });
+        }
+      } catch (etaErr) {
+        console.warn('[food-orders PATCH] ETA recalc setup failed:', etaErr);
+      }
     }
 
     if (newStatus === 'CANCELLED') {
@@ -341,7 +372,21 @@ export async function PATCH(
       }
     }
 
-    return NextResponse.json({ order: data });
+    const enrichedItems = await loadPartnerOrderItemsForFoodRow(db, data as Record<string, unknown>);
+    const itemCount = computeOrderItemQuantityCount({
+      items: enrichedItems,
+      food_items_count: (data as { food_items_count?: number | null }).food_items_count,
+    });
+
+    return NextResponse.json({
+      order: {
+        ...data,
+        order_status: newStatus,
+        items: enrichedItems,
+        food_items_count: itemCount,
+        display_item_count: itemCount,
+      },
+    });
   } catch (err) {
     console.error('[food-orders PATCH] Error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

@@ -214,6 +214,11 @@ export type OrderEtaView = {
     reason: string;
     createdAt: string;
   } | null;
+  /** Merchant-committed prep window (set on accept). */
+  prep: {
+    minutes: number | null;
+    readyByAt: string | null;
+  };
 };
 
 function toIsoOrNull(v: Date | string | null | undefined): string | null {
@@ -251,6 +256,8 @@ export async function getEtaForOrder(orderIdText: string): Promise<OrderEtaView 
       eta_peak_window: string | null;
       eta_drop_context: string | null;
       eta_engine_version: string | null;
+      prep_time_minutes: number | null;
+      prep_ready_by_at: Date | string | null;
     }>
   >`
     SELECT
@@ -262,7 +269,8 @@ export async function getEtaForOrder(orderIdText: string): Promise<OrderEtaView 
       eta_store_to_customer_minutes,
       eta_traffic_multiplier, eta_weather_multiplier, eta_peak_hour_multiplier,
       eta_weather_state, eta_peak_window, eta_drop_context,
-      eta_engine_version
+      eta_engine_version,
+      prep_time_minutes, prep_ready_by_at
     FROM orders_core
     WHERE order_id = ${orderIdText}
     LIMIT 1
@@ -327,5 +335,12 @@ export async function getEtaForOrder(orderIdText: string): Promise<OrderEtaView 
             createdAt: toIsoOrNull(live[0]!.created_at) ?? "",
           }
         : null,
+    prep: {
+      minutes:
+        r.prep_time_minutes != null && Number(r.prep_time_minutes) > 0
+          ? Number(r.prep_time_minutes)
+          : null,
+      readyByAt: toIsoOrNull(r.prep_ready_by_at),
+    },
   };
 }

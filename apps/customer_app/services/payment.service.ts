@@ -4,6 +4,7 @@
 
 import api from "./api";
 import { getConfig } from "@/config/env";
+import { ORDER_PLACEMENT_TIMEOUT_MS } from "@/constants";
 
 const PAYMENT_PREFIX = "/v1/payment";
 
@@ -28,12 +29,16 @@ export const paymentService = {
     receipt?: string;
     pendingId?: string;
   }): Promise<CreateRazorpayOrderResponse> {
-    const { data } = await api.post<CreateRazorpayOrderResponse>(`${PAYMENT_PREFIX}/create-order`, {
-      amount: params.amountPaise,
-      currency: params.currency ?? "INR",
-      receipt: params.receipt,
-      pendingId: params.pendingId,
-    });
+    const { data } = await api.post<CreateRazorpayOrderResponse>(
+      `${PAYMENT_PREFIX}/create-order`,
+      {
+        amount: params.amountPaise,
+        currency: params.currency ?? "INR",
+        receipt: params.receipt,
+        pendingId: params.pendingId,
+      },
+      { timeout: ORDER_PLACEMENT_TIMEOUT_MS }
+    );
     return data;
   },
 

@@ -1,19 +1,22 @@
 /**
  * Customer food orders.
  * POST / creates an order (Razorpay verify + persist to orders_core + items + payments; trigger → orders_food).
- * GET /:id returns order detail (supports numeric orders_core.id or text orders_core.order_id e.g. GM10000001).
+ * GET /:id returns order detail (supports orders_core.id, order_id GM…, or formatted_order_id GMF…).
  */
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { randomBytes } from "crypto";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { verifyRazorpaySignature, verifyRazorpayPaymentDetails } from "../../services/payment/razorpayService.js";
 import { getStoreByStoreId, getStoreByIdForOrder } from "../merchants/merchant.service.js";
+import { getStoreRatingsForStores } from "../merchants/merchant-store-ratings.js";
 import { auth } from "../../plugins/auth.js";
 import { createPendingOrder, finalizeOrder } from "./order.placement.service.js";
 import { getEnv } from "../../config/env.js";
 import { getRoute } from "../distance/distance.service.js";
+import { resolveOrderItemsVegNonVeg } from "../../lib/order-item-veg.js";
+import { customerOrderRefWhere } from "../../lib/order-ref-resolve.js";
 
 /** Em dash / empty → null for DB. Never insert placeholder characters. */
 const EM_DASH = "\u2014";
@@ -26,7 +29,7 @@ function sanitizeOptional<T>(v: T): T | null {
   }
   return v;
 }
-import { getDb } from "../../db/client.js";
+import { getDb, getSql } from "../../db/client.js";
 import { computeBillForOrder } from "../billing/billing.service.js";
 import { normalizeOrderItems } from "./orderNormalizer.js";
 import {
@@ -40,30 +43,73 @@ import {
   orderEvents,
   pendingOrders,
   orderEtaSnapshots,
+  riders,
   orderRiderTracking,
 } from "../../db/schema.js";
 
+const orderDetailItemSchema = z.object({
+  name: z.string(),
+  quantity: z.number(),
+  price: z.number(),
+  lineTotal: z.number().optional().nullable(),
+  menuItemId: z.string().optional().nullable(),
+  vegNonVeg: z.string().optional().nullable(),
+  variantName: z.string().optional().nullable(),
+  customization: z.string().optional().nullable(),
+});
+
 const orderDetailResponseSchema = z.object({
   orderId: z.string(),
+  formattedOrderId: z.string().optional().nullable(),
   status: z.string(),
   merchantName: z.string().optional().nullable(),
+  merchantPublicName: z.string().optional().nullable(),
+  merchantPublicStoreId: z.string().optional().nullable(),
+  merchantAddress: z.string().optional().nullable(),
+  merchantBannerUrl: z.string().optional().nullable(),
   totalAmount: z.number().optional().nullable(),
   createdAt: z.string(),
+  paymentMethod: z.string().optional().nullable(),
+  paymentStatus: z.string().optional().nullable(),
   deliveryAddress: z.string().optional().nullable(),
+  deliveryLat: z.number().optional().nullable(),
+  deliveryLng: z.number().optional().nullable(),
+  pickupLat: z.number().optional().nullable(),
+  pickupLng: z.number().optional().nullable(),
   /** 4-digit delivery OTP — customer tracking only. */
   deliveryOtp: z.string().optional().nullable(),
   statusHistory: z.array(z.object({ status: z.string(), at: z.string() })).optional(),
   rider: z.object({ name: z.string(), phone: z.string().optional() }).optional().nullable(),
-  items: z.array(z.object({ name: z.string(), quantity: z.number(), price: z.number() })).optional(),
+  items: z.array(orderDetailItemSchema).optional(),
+  billingSnapshot: z.record(z.string(), z.unknown()).optional().nullable(),
+  prepTimeMinutes: z.number().int().positive().optional().nullable(),
+  prepReadyByAt: z.string().optional().nullable(),
 });
 
 const orderSummarySchema = z.object({
   orderId: z.string(),
+  formattedOrderId: z.string().optional().nullable(),
   status: z.string(),
   merchantName: z.string().optional().nullable(),
+  merchantPublicName: z.string().optional().nullable(),
+  merchantPublicStoreId: z.string().optional().nullable(),
+  merchantAddress: z.string().optional().nullable(),
+  merchantBannerUrl: z.string().optional().nullable(),
+  merchantStoreId: z.number().optional().nullable(),
+  vegNonVeg: z.string().optional().nullable(),
+  avgRating: z.number().optional().nullable(),
+  totalReviews: z.number().int().optional().nullable(),
   totalAmount: z.number().optional().nullable(),
   createdAt: z.string(),
-  items: z.array(z.object({ name: z.string(), quantity: z.number(), price: z.number() })).optional(),
+  items: z.array(z.object({
+    name: z.string(),
+    quantity: z.number(),
+    price: z.number(),
+    menuItemId: z.string().optional().nullable(),
+    vegNonVeg: z.string().optional().nullable(),
+    variantName: z.string().optional().nullable(),
+    customization: z.string().optional().nullable(),
+  })).optional(),
 });
 
 const addonItemSchema = z.object({
@@ -160,9 +206,13 @@ export async function orderRoutes(app: FastifyInstance) {
         .select({
           id: ordersCore.id,
           orderId: ordersCore.orderId,
+          formattedOrderId: ordersCore.formattedOrderId,
+          merchantStoreId: ordersCore.merchantStoreId,
           status: ordersCore.status,
           currentStatus: ordersCore.currentStatus,
+          pickupAddressRaw: ordersCore.pickupAddressRaw,
           grandTotal: ordersCore.grandTotal,
+          items: ordersCore.items,
           createdAt: ordersCore.createdAt,
           placedAt: ordersCore.placedAt,
         })
@@ -170,11 +220,23 @@ export async function orderRoutes(app: FastifyInstance) {
         .where(eq(ordersCore.customerId, customerPk))
         .orderBy(desc(ordersCore.placedAt), desc(ordersCore.createdAt));
 
+      const storeBannerCache = new Map<number, string | null>();
+      const storeRatingCache = new Map<number, { avgRating: number; totalReviews: number } | null>();
+      const storeIds = [...new Set(allRows.map((r) => (r.merchantStoreId != null ? Number(r.merchantStoreId) : null)).filter((v): v is number => v != null && Number.isFinite(v) && v > 0))];
+      const ratingMap = await getStoreRatingsForStores(storeIds);
+      for (const sid of storeIds) {
+        storeRatingCache.set(sid, ratingMap.get(sid) ?? null);
+      }
+
       const summaries = await Promise.all(
         allRows.slice(offset, offset + limit).map(async (row) => {
           const orderIdDisplay = row.orderId ?? String(row.id);
           const [foodRow] = await db
-            .select({ restaurantName: ordersFood.restaurantName, foodItemsTotalValue: ordersFood.foodItemsTotalValue })
+            .select({
+              restaurantName: ordersFood.restaurantName,
+              foodItemsTotalValue: ordersFood.foodItemsTotalValue,
+              vegNonVeg: ordersFood.vegNonVeg,
+            })
             .from(ordersFood)
             .where(
               row.orderId != null ? eq(ordersFood.coreOrderId, row.orderId) : eq(ordersFood.orderId, row.id)
@@ -187,12 +249,166 @@ export async function orderRoutes(app: FastifyInstance) {
                 ? Number(foodRow.foodItemsTotalValue)
                 : null;
           const at = row.placedAt ?? row.createdAt ?? new Date();
+          let merchantBannerUrl: string | null = null;
+          let merchantPublicName: string | null = null;
+          let merchantPublicStoreId: string | null = null;
+          if (row.merchantStoreId != null) {
+            const storeId = Number(row.merchantStoreId);
+            if (storeBannerCache.has(storeId)) {
+              merchantBannerUrl = storeBannerCache.get(storeId) ?? null;
+            } else {
+              const store = await getStoreByIdForOrder(storeId);
+              merchantBannerUrl = store?.bannerUrl ?? null;
+              merchantPublicName = store?.storeDisplayName ?? store?.storeName ?? null;
+              merchantPublicStoreId = store?.storeId ?? null;
+              storeBannerCache.set(storeId, merchantBannerUrl);
+            }
+            if (!merchantPublicName) {
+              const store = await getStoreByIdForOrder(storeId);
+              merchantPublicName = store?.storeDisplayName ?? store?.storeName ?? null;
+              merchantPublicStoreId = store?.storeId ?? null;
+            }
+          }
+
+          let items: {
+            name: string;
+            quantity: number;
+            price: number;
+            menuItemId?: string | null;
+            vegNonVeg?: string | null;
+            variantName?: string | null;
+            customization?: string | null;
+          }[] = [];
+          if (Array.isArray(row.items) && row.items.length > 0) {
+            const parsed = row.items as Array<{
+              name?: string;
+              menuItemId?: string;
+              quantity?: number;
+              price?: number;
+              vegNonVeg?: string;
+              variantName?: string;
+              addons?: Array<{ addonName?: string; name?: string; quantity?: number }>;
+            }>;
+            items = parsed
+              .map((i) => {
+                const addonParts = (i.addons ?? [])
+                  .map((a) => (a.addonName ?? a.name ?? "").trim())
+                  .filter(Boolean);
+                const customizationParts = [
+                  ...(i.variantName?.trim() ? [i.variantName.trim()] : []),
+                  ...addonParts,
+                ];
+                return {
+                  name: i.name ?? i.menuItemId ?? "",
+                  quantity: i.quantity ?? 1,
+                  price: i.price ?? 0,
+                  menuItemId: i.menuItemId?.trim() || null,
+                  vegNonVeg: null as string | null,
+                  variantName: i.variantName?.trim() || null,
+                  customization: customizationParts.length > 0 ? customizationParts.join(" · ") : null,
+                };
+              })
+              .filter((i) => i.name.trim().length > 0);
+          }
+          let itemVegInputs: Array<{
+            menuItemId?: number | string | null;
+            vegNonveg?: string | null;
+            itemSnapshot?: Record<string, unknown> | null;
+          }> = [];
+          if (items.length === 0 && row.orderId) {
+            const coreItems = await db
+              .select({
+                id: ordersCoreItems.id,
+                menuItemId: ordersCoreItems.menuItemId,
+                itemName: ordersCoreItems.itemName,
+                quantity: ordersCoreItems.quantity,
+                totalPrice: ordersCoreItems.totalPrice,
+                vegNonveg: ordersCoreItems.vegNonveg,
+                variantName: ordersCoreItems.variantName,
+                itemSnapshot: ordersCoreItems.itemSnapshot,
+              })
+              .from(ordersCoreItems)
+              .where(eq(ordersCoreItems.orderId, row.orderId));
+            const coreItemIds = coreItems.map((i) => i.id).filter((id) => id != null);
+            const addonsByItemId = new Map<number, string[]>();
+            if (coreItemIds.length > 0) {
+              const addonRows = await db
+                .select({
+                  orderItemId: ordersCoreItemAddons.orderItemId,
+                  addonName: ordersCoreItemAddons.addonName,
+                  quantity: ordersCoreItemAddons.quantity,
+                })
+                .from(ordersCoreItemAddons)
+                .where(inArray(ordersCoreItemAddons.orderItemId, coreItemIds));
+              for (const addon of addonRows) {
+                const label = (addon.addonName ?? "").trim();
+                if (!label) continue;
+                const qty = addon.quantity ?? 1;
+                const text = qty > 1 ? `${label} x${qty}` : label;
+                const list = addonsByItemId.get(addon.orderItemId) ?? [];
+                list.push(text);
+                addonsByItemId.set(addon.orderItemId, list);
+              }
+            }
+            items = coreItems
+              .map((i) => {
+                const addonParts = addonsByItemId.get(i.id) ?? [];
+                const customizationParts = [
+                  ...(i.variantName?.trim() ? [i.variantName.trim()] : []),
+                  ...addonParts,
+                ];
+                return {
+                  name: i.itemName ?? "",
+                  quantity: i.quantity ?? 1,
+                  price: Number(i.totalPrice ?? 0) / Math.max(i.quantity ?? 1, 1),
+                  menuItemId: i.menuItemId != null ? String(i.menuItemId) : null,
+                  vegNonVeg: null as string | null,
+                  variantName: i.variantName?.trim() || null,
+                  customization: customizationParts.length > 0 ? customizationParts.join(" · ") : null,
+                };
+              })
+              .filter((i) => i.name.trim().length > 0);
+            itemVegInputs = coreItems.map((i) => ({
+              menuItemId: i.menuItemId,
+              vegNonveg: i.vegNonveg,
+              itemSnapshot: (i.itemSnapshot as Record<string, unknown> | null | undefined) ?? null,
+            }));
+          }
+          if (items.length > 0) {
+            const vegResolved = await resolveOrderItemsVegNonVeg(
+              row.merchantStoreId != null ? Number(row.merchantStoreId) : null,
+              row.items,
+              items.map((item, idx) =>
+                itemVegInputs[idx] ?? {
+                  menuItemId: item.menuItemId,
+                  vegNonveg: null,
+                  itemSnapshot: null,
+                }
+              )
+            );
+            items = items.map((item, idx) => ({
+              ...item,
+              vegNonVeg: vegResolved[idx]?.vegNonVeg ?? null,
+            }));
+          }
+
           return {
             orderId: orderIdDisplay,
+            coreOrderId: row.id,
+            formattedOrderId: row.formattedOrderId ?? orderIdDisplay,
             status: row.currentStatus === "PLACED" ? "ORDER_PLACED" : (row.currentStatus ?? toAppStatus(row.status)),
             merchantName: foodRow?.restaurantName ?? null,
+            merchantPublicName: merchantPublicName ?? foodRow?.restaurantName ?? null,
+            merchantPublicStoreId,
+            merchantAddress: row.pickupAddressRaw ?? null,
+            merchantBannerUrl,
+            merchantStoreId: row.merchantStoreId != null ? Number(row.merchantStoreId) : null,
+            vegNonVeg: foodRow?.vegNonVeg ?? null,
+            avgRating: row.merchantStoreId != null ? storeRatingCache.get(Number(row.merchantStoreId))?.avgRating ?? null : null,
+            totalReviews: row.merchantStoreId != null ? storeRatingCache.get(Number(row.merchantStoreId))?.totalReviews ?? null : null,
             totalAmount,
             createdAt: (at instanceof Date ? at : new Date(at)).toISOString(),
+            items: items.length > 0 ? items : undefined,
           };
         })
       );
@@ -216,6 +432,9 @@ export async function orderRoutes(app: FastifyInstance) {
     /** 'delivery' (default) or 'self_pickup' — waives delivery fee, skips rider dispatch. */
     deliveryType: z.enum(["delivery", "self_pickup"]).optional(),
     checkoutMetadata: z.record(z.string(), z.unknown()).optional(),
+    selectedPlatformOfferId: z.coerce.number().int().positive().optional().nullable(),
+    forceNoAutoOffer: z.boolean().optional(),
+    idempotencyKey: z.string().min(6).max(128).optional().nullable(),
   });
 
   app.post(
@@ -246,6 +465,11 @@ export async function orderRoutes(app: FastifyInstance) {
         return reply.status(403).send({ error: "Customer not found" });
       }
       const body = req.body as z.infer<typeof pendingOrderBodySchema>;
+      const headerIdem = req.headers["idempotency-key"];
+      const idempotencyKey =
+        (typeof headerIdem === "string" ? headerIdem.trim() : "") ||
+        body.idempotencyKey?.trim() ||
+        null;
       const addressIdNum = parseInt(body.addressId, 10);
       if (Number.isNaN(addressIdNum)) {
         return reply.status(400).send({ error: "INVALID_ADDRESS_DATA", message: "Invalid addressId." });
@@ -266,6 +490,9 @@ export async function orderRoutes(app: FastifyInstance) {
         subscriptionOptIn: body.subscriptionOptIn,
         deliveryType: body.deliveryType,
         checkoutMetadata: body.checkoutMetadata ?? null,
+        selectedPlatformOfferId: body.selectedPlatformOfferId ?? null,
+        forceNoAutoOffer: body.forceNoAutoOffer,
+        idempotencyKey,
       });
       if (!result.ok) {
         return reply.status(400).send({ error: result.code, message: result.message });
@@ -291,6 +518,7 @@ export async function orderRoutes(app: FastifyInstance) {
             success: z.boolean().optional(),
             orderId: z.string(),
             order_id: z.string().optional(),
+            formattedOrderId: z.string().optional().nullable(),
             status: z.string(),
             totalAmount: z.number(),
             createdAt: z.string(),
@@ -340,10 +568,16 @@ export async function orderRoutes(app: FastifyInstance) {
           message: "Order was created but confirmation failed. Check My Orders.",
         });
       }
+      const [finalizedRow] = await db
+        .select({ formattedOrderId: ordersCore.formattedOrderId })
+        .from(ordersCore)
+        .where(eq(ordersCore.orderId, result.orderId))
+        .limit(1);
       return reply.send({
         success: true,
         orderId: result.orderId,
         order_id: result.orderId,
+        formattedOrderId: finalizedRow?.formattedOrderId ?? (result as { formattedOrderId?: string | null }).formattedOrderId ?? null,
         status: result.status,
         totalAmount: result.totalAmount,
         createdAt: result.createdAt,
@@ -445,8 +679,6 @@ export async function orderRoutes(app: FastifyInstance) {
         return reply.status(403).send({ error: "Customer only" });
       }
       const orderIdParam = (req.params as { id: string }).id;
-      const orderIdNum = parseInt(orderIdParam, 10);
-      const isNumericId = !Number.isNaN(orderIdNum);
 
       const db = getDb();
       const [customerRow] = await db
@@ -463,22 +695,28 @@ export async function orderRoutes(app: FastifyInstance) {
         .select({
           id: ordersCore.id,
           orderId: ordersCore.orderId,
+          formattedOrderId: ordersCore.formattedOrderId,
           status: ordersCore.status,
           currentStatus: ordersCore.currentStatus,
           grandTotal: ordersCore.grandTotal,
+          paymentMethod: ordersCore.paymentMethod,
+          paymentStatus: ordersCore.paymentStatus,
           deliveryAddress: ordersCore.deliveryAddress,
           deliveryOtp: ordersCore.deliveryOtp,
           items: ordersCore.items,
           createdAt: ordersCore.createdAt,
           placedAt: ordersCore.placedAt,
+          merchantStoreId: ordersCore.merchantStoreId,
+          pickupAddressRaw: ordersCore.pickupAddressRaw,
+          pickupLat: ordersCore.pickupLat,
+          pickupLon: ordersCore.pickupLon,
+          dropLat: ordersCore.dropLat,
+          dropLon: ordersCore.dropLon,
+          billingSnapshot: ordersCore.billingSnapshot,
+          riderId: ordersCore.riderId,
         })
         .from(ordersCore)
-        .where(
-          and(
-            eq(ordersCore.customerId, customerPk),
-            isNumericId ? eq(ordersCore.id, orderIdNum) : eq(ordersCore.orderId, orderIdParam)
-          )
-        )
+        .where(customerOrderRefWhere(customerPk, orderIdParam))
         .limit(1);
 
       if (!coreRow) {
@@ -486,40 +724,202 @@ export async function orderRoutes(app: FastifyInstance) {
       }
 
       const orderIdDisplay = coreRow.orderId ?? String(coreRow.id);
-      const [foodRow] = await db
+      const appStatusEarly =
+        coreRow.currentStatus === "PLACED"
+          ? "ORDER_PLACED"
+          : (coreRow.currentStatus ?? toAppStatus(coreRow.status));
+      const isLiveOrder = !["DELIVERED", "CANCELLED", "FAILED", "PAYMENT_FAILED"].includes(
+        String(appStatusEarly).toUpperCase()
+      );
+
+      async function loadDetailItems(): Promise<
+        Array<{
+          name: string;
+          quantity: number;
+          price: number;
+          lineTotal?: number;
+          menuItemId?: string | null;
+          vegNonVeg?: string | null;
+          variantName?: string | null;
+          customization?: string | null;
+        }>
+      > {
+        if (coreRow.orderId == null) {
+          const itemsPayload = coreRow.items as Array<{
+            name?: string;
+            item_name?: string;
+            menuItemId?: string;
+            item_id?: number;
+            quantity?: number;
+            price?: number;
+            vegNonVeg?: string;
+            veg_non_veg?: string;
+            variantName?: string;
+          }> | null;
+          const built =
+            itemsPayload?.map((i) => {
+              const qty = i.quantity ?? 1;
+              const unitPrice = i.price ?? 0;
+              const menuItemId =
+                i.menuItemId?.trim() ||
+                (i.item_id != null ? String(i.item_id) : null);
+              return {
+                name: i.name ?? i.item_name ?? i.menuItemId ?? "Item",
+                quantity: qty,
+                price: unitPrice,
+                lineTotal: unitPrice * qty,
+                menuItemId,
+                vegNonVeg: null as string | null,
+                variantName: i.variantName?.trim() || null,
+                customization: i.variantName?.trim() || null,
+              };
+            }) ?? [];
+          const vegResolved = await resolveOrderItemsVegNonVeg(
+            coreRow.merchantStoreId != null ? Number(coreRow.merchantStoreId) : null,
+            coreRow.items,
+            built.map((item) => ({
+              menuItemId: item.menuItemId,
+              vegNonveg: null,
+              itemSnapshot: null,
+            }))
+          );
+          return built.map((item, idx) => ({
+            ...item,
+            vegNonVeg: vegResolved[idx]?.vegNonVeg ?? null,
+          }));
+        }
+
+        const coreItems = await db
+          .select({
+            id: ordersCoreItems.id,
+            menuItemId: ordersCoreItems.menuItemId,
+            itemName: ordersCoreItems.itemName,
+            quantity: ordersCoreItems.quantity,
+            totalPrice: ordersCoreItems.totalPrice,
+            vegNonveg: ordersCoreItems.vegNonveg,
+            variantName: ordersCoreItems.variantName,
+            itemSnapshot: ordersCoreItems.itemSnapshot,
+          })
+          .from(ordersCoreItems)
+          .where(eq(ordersCoreItems.orderId, coreRow.orderId));
+
+        const coreItemIds = coreItems.map((i) => i.id).filter((id) => id != null);
+        const addonsByItemId = new Map<number, string[]>();
+        if (coreItemIds.length > 0) {
+          const addonRows = await db
+            .select({
+              orderItemId: ordersCoreItemAddons.orderItemId,
+              addonName: ordersCoreItemAddons.addonName,
+              quantity: ordersCoreItemAddons.quantity,
+            })
+            .from(ordersCoreItemAddons)
+            .where(inArray(ordersCoreItemAddons.orderItemId, coreItemIds));
+          for (const addon of addonRows) {
+            const label = (addon.addonName ?? "").trim();
+            if (!label) continue;
+            const qty = addon.quantity ?? 1;
+            const text = qty > 1 ? `${label} x${qty}` : label;
+            const list = addonsByItemId.get(addon.orderItemId) ?? [];
+            list.push(text);
+            addonsByItemId.set(addon.orderItemId, list);
+          }
+        }
+
+        const built = coreItems.map((i) => {
+          const addonParts = addonsByItemId.get(i.id) ?? [];
+          const customizationParts = [
+            ...(i.variantName?.trim() ? [i.variantName.trim()] : []),
+            ...addonParts,
+          ];
+          const qty = i.quantity ?? 1;
+          const lineTotal = Number(i.totalPrice ?? 0);
+          return {
+            name: i.itemName ?? "Item",
+            quantity: qty,
+            price: lineTotal / Math.max(qty, 1),
+            lineTotal,
+            menuItemId: i.menuItemId != null ? String(i.menuItemId) : null,
+            vegNonVeg: null as string | null,
+            variantName: i.variantName?.trim() || null,
+            customization: customizationParts.length > 0 ? customizationParts.join(" · ") : null,
+          };
+        });
+
+        const vegInputs = coreItems.map((i) => ({
+          menuItemId: i.menuItemId,
+          vegNonveg: i.vegNonveg,
+          itemSnapshot: (i.itemSnapshot as Record<string, unknown> | null | undefined) ?? null,
+        }));
+        const vegResolved = await resolveOrderItemsVegNonVeg(
+          coreRow.merchantStoreId != null ? Number(coreRow.merchantStoreId) : null,
+          coreRow.items,
+          vegInputs
+        );
+        return built.map((item, idx) => ({
+          ...item,
+          vegNonVeg: vegResolved[idx]?.vegNonVeg ?? null,
+        }));
+      }
+
+      const foodPromise = db
         .select({
           restaurantName: ordersFood.restaurantName,
           foodItemsTotalValue: ordersFood.foodItemsTotalValue,
         })
         .from(ordersFood)
         .where(
-          coreRow.orderId != null ? eq(ordersFood.coreOrderId, coreRow.orderId) : eq(ordersFood.orderId, coreRow.id)
+          coreRow.orderId != null
+            ? eq(ordersFood.coreOrderId, coreRow.orderId)
+            : eq(ordersFood.orderId, coreRow.id)
         )
         .limit(1);
 
-      let items: Array<{ name: string; quantity: number; price: number }>;
-      if (coreRow.orderId != null) {
-        const coreItems = await db
-          .select({
-            itemName: ordersCoreItems.itemName,
-            quantity: ordersCoreItems.quantity,
-            totalPrice: ordersCoreItems.totalPrice,
-          })
-          .from(ordersCoreItems)
-          .where(eq(ordersCoreItems.orderId, coreRow.orderId));
-        items = coreItems.map((i) => ({
-          name: i.itemName ?? "Item",
-          quantity: i.quantity ?? 1,
-          price: Number(i.totalPrice ?? 0) / (i.quantity ?? 1),
-        }));
-      } else {
-        const itemsPayload = coreRow.items as Array<{ name?: string; menuItemId?: string; quantity?: number; price?: number }> | null;
-        items =
-          itemsPayload?.map((i) => ({
-            name: i.name ?? i.menuItemId ?? "Item",
-            quantity: i.quantity ?? 1,
-            price: i.price ?? 0,
-          })) ?? [];
+      const storePromise =
+        coreRow.merchantStoreId != null
+          ? getStoreByIdForOrder(Number(coreRow.merchantStoreId))
+          : Promise.resolve(null);
+
+      const riderPromise =
+        coreRow.riderId != null
+          ? db
+              .select({ name: riders.name, mobile: riders.mobile })
+              .from(riders)
+              .where(eq(riders.id, coreRow.riderId))
+              .limit(1)
+          : Promise.resolve([]);
+
+      const prepPromise =
+        isLiveOrder && orderIdDisplay
+          ? getSql()<
+              Array<{ prep_time_minutes: number | null; prep_ready_by_at: Date | string | null }>
+            >`
+              SELECT prep_time_minutes, prep_ready_by_at
+              FROM orders_core
+              WHERE order_id = ${orderIdDisplay}
+              LIMIT 1
+            `
+          : Promise.resolve([]);
+
+      const [foodRows, items, store, riderRows, prepRows] = await Promise.all([
+        foodPromise,
+        loadDetailItems(),
+        storePromise,
+        riderPromise,
+        prepPromise,
+      ]);
+
+      const foodRow = foodRows[0] ?? null;
+      const merchantBannerUrl = store?.bannerUrl ?? null;
+      const merchantPublicName = store?.storeDisplayName ?? store?.storeName ?? null;
+      const merchantPublicStoreId = store?.storeId ?? null;
+
+      let rider: { name: string; phone?: string } | null = null;
+      const riderRow = riderRows[0];
+      if (riderRow) {
+        rider = {
+          name: riderRow.name?.trim() || "Delivery partner",
+          phone: riderRow.mobile ?? undefined,
+        };
       }
 
       const totalAmount =
@@ -528,20 +928,50 @@ export async function orderRoutes(app: FastifyInstance) {
           : foodRow?.foodItemsTotalValue != null
             ? Number(foodRow.foodItemsTotalValue)
             : null;
-      const appStatus = coreRow.currentStatus === "PLACED" ? "ORDER_PLACED" : (coreRow.currentStatus ?? toAppStatus(coreRow.status));
+      const appStatus = appStatusEarly;
       const createdAt = coreRow.placedAt ?? coreRow.createdAt ?? new Date();
+
+      let prepTimeMinutes: number | null = null;
+      let prepReadyByAt: string | null = null;
+      const prepRow = prepRows[0];
+      if (prepRow) {
+        const pm = prepRow.prep_time_minutes;
+        prepTimeMinutes = pm != null && Number(pm) > 0 ? Number(pm) : null;
+        const rawReady = prepRow.prep_ready_by_at;
+        prepReadyByAt =
+          rawReady instanceof Date
+            ? rawReady.toISOString()
+            : rawReady != null
+              ? String(rawReady)
+              : null;
+      }
 
       return {
         orderId: orderIdDisplay,
+        coreOrderId: coreRow.id,
+        formattedOrderId: coreRow.formattedOrderId ?? orderIdDisplay,
         status: appStatus,
-        merchantName: foodRow?.restaurantName ?? null,
+        merchantName: foodRow?.restaurantName ?? merchantPublicName ?? null,
+        merchantPublicName: merchantPublicName ?? foodRow?.restaurantName ?? null,
+        merchantPublicStoreId,
+        merchantAddress: coreRow.pickupAddressRaw ?? null,
+        merchantBannerUrl,
         totalAmount,
         createdAt: (createdAt instanceof Date ? createdAt : new Date(createdAt)).toISOString(),
+        paymentMethod: coreRow.paymentMethod ?? null,
+        paymentStatus: coreRow.paymentStatus ?? null,
         deliveryAddress: coreRow.deliveryAddress ?? null,
+        deliveryLat: coreRow.dropLat != null ? Number(coreRow.dropLat) : null,
+        deliveryLng: coreRow.dropLon != null ? Number(coreRow.dropLon) : null,
+        pickupLat: coreRow.pickupLat != null ? Number(coreRow.pickupLat) : null,
+        pickupLng: coreRow.pickupLon != null ? Number(coreRow.pickupLon) : null,
         deliveryOtp: coreRow.deliveryOtp ?? null,
         statusHistory: [{ status: appStatus, at: (createdAt instanceof Date ? createdAt : new Date(createdAt)).toISOString() }],
-        rider: null,
+        rider,
         items: items.length > 0 ? items : undefined,
+        billingSnapshot: (coreRow.billingSnapshot as Record<string, unknown> | null) ?? null,
+        prepTimeMinutes,
+        prepReadyByAt,
       };
     }
   );
@@ -899,8 +1329,15 @@ export async function orderRoutes(app: FastifyInstance) {
         });
       }
 
+      const [createdRow] = await db
+        .select({ formattedOrderId: ordersCore.formattedOrderId })
+        .from(ordersCore)
+        .where(eq(ordersCore.orderId, orderIdText))
+        .limit(1);
+
       return reply.send({
         orderId: orderIdText,
+        formattedOrderId: createdRow?.formattedOrderId ?? orderIdText,
         status: "ORDER_PLACED",
         totalAmount,
         createdAt: new Date().toISOString(),
@@ -937,16 +1374,10 @@ export async function orderRoutes(app: FastifyInstance) {
       const customerPk = customerRow?.id ?? null;
       if (customerPk === null) return reply.status(403).send({ error: "Customer not found" });
 
-      const isNumeric = !Number.isNaN(parseInt(orderIdParam, 10));
       const [orderRow] = await db
         .select({ id: ordersCore.id, orderId: ordersCore.orderId })
         .from(ordersCore)
-        .where(
-          and(
-            eq(ordersCore.customerId, customerPk),
-            isNumeric ? eq(ordersCore.id, parseInt(orderIdParam, 10)) : eq(ordersCore.orderId, orderIdParam)
-          )
-        )
+        .where(customerOrderRefWhere(customerPk, orderIdParam))
         .limit(1);
       if (!orderRow) return reply.status(404).send({ error: "Order not found" });
 
@@ -994,16 +1425,10 @@ export async function orderRoutes(app: FastifyInstance) {
       const customerPk = customerRow?.id ?? null;
       if (customerPk === null) return reply.status(403).send({ error: "Customer not found" });
 
-      const isNumeric = !Number.isNaN(parseInt(orderIdParam, 10));
       const [orderRow] = await db
         .select({ id: ordersCore.id, orderId: ordersCore.orderId })
         .from(ordersCore)
-        .where(
-          and(
-            eq(ordersCore.customerId, customerPk),
-            isNumeric ? eq(ordersCore.id, parseInt(orderIdParam, 10)) : eq(ordersCore.orderId, orderIdParam)
-          )
-        )
+        .where(customerOrderRefWhere(customerPk, orderIdParam))
         .limit(1);
       if (!orderRow) return reply.status(404).send({ error: "Order not found" });
       const orderIdForEta = orderRow.orderId ?? String(orderRow.id);
@@ -1052,16 +1477,10 @@ export async function orderRoutes(app: FastifyInstance) {
       const customerPk = customerRow?.id ?? null;
       if (customerPk === null) return reply.status(403).send({ error: "Customer not found" });
 
-      const isNumeric = !Number.isNaN(parseInt(orderIdParam, 10));
       const [orderRow] = await db
         .select({ id: ordersCore.id, orderId: ordersCore.orderId })
         .from(ordersCore)
-        .where(
-          and(
-            eq(ordersCore.customerId, customerPk),
-            isNumeric ? eq(ordersCore.id, parseInt(orderIdParam, 10)) : eq(ordersCore.orderId, orderIdParam)
-          )
-        )
+        .where(customerOrderRefWhere(customerPk, orderIdParam))
         .limit(1);
       if (!orderRow) return reply.status(404).send({ error: "Order not found" });
       const orderIdForTracking = orderRow.orderId ?? String(orderRow.id);

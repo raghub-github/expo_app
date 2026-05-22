@@ -1,14 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
-import {
-  extractItemsArray,
-  mapCoreDbItemsToRaw,
-  normalizeOrderItems,
-  orderRawItemsMissingDisplayNames,
-  parseMerchantBillingBreakdown,
-} from '@/lib/orderLineItems';
+import { parseMerchantBillingBreakdown } from '@/lib/orderLineItems';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
+import {
+  collectCoreItemOrderKeys,
+  loadCoreDbItemsByOrderTextIds,
+  resolvePartnerOrderItems,
+} from '@/lib/partnerFoodOrderItems';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -289,65 +288,14 @@ export async function GET(req: NextRequest) {
 
     const orderIdTexts = [
       ...new Set(
-        coreRows
-          .map((c) => String(c.order_id ?? '').trim())
-          .filter((s) => s.length > 0)
+        coreRows.flatMap((c) => {
+          const core = c as CoreRow;
+          const food = foodByCoreId.get(Number(core.id)) ?? null;
+          return collectCoreItemOrderKeys(core, food);
+        })
       ),
     ];
-    const rawItemsByOrderTextId = new Map<string, Record<string, unknown>[]>();
-    if (orderIdTexts.length > 0) {
-      const { data: coreItemRows, error: itemsErr } = await db
-        .from('orders_core_items')
-        .select(
-          'id, order_id, menu_item_id, item_name, variant_name, category_name, quantity, base_price, total_price, veg_nonveg, item_snapshot'
-        )
-        .in('order_id', orderIdTexts)
-        .order('id');
-      if (itemsErr) {
-        console.warn('[food-orders GET] orders_core_items:', itemsErr.message);
-      } else if (coreItemRows && coreItemRows.length > 0) {
-        const itemIds = coreItemRows
-          .map((r) => Number((r as { id: number }).id))
-          .filter((n) => Number.isFinite(n));
-        const addonsByItemId = new Map<number, { order_item_id: number; addon_name?: string | null; quantity: number }[]>();
-        if (itemIds.length > 0) {
-          const { data: addonRows } = await db
-            .from('orders_core_item_addons')
-            .select('order_item_id, addon_name, quantity, addon_price')
-            .in('order_item_id', itemIds);
-          for (const a of addonRows || []) {
-            const itemId = Number((a as { order_item_id: number }).order_item_id);
-            if (!Number.isFinite(itemId)) continue;
-            const list = addonsByItemId.get(itemId) ?? [];
-            list.push(a as { order_item_id: number; addon_name?: string | null; quantity: number });
-            addonsByItemId.set(itemId, list);
-          }
-        }
-        const grouped = new Map<string, Parameters<typeof mapCoreDbItemsToRaw>[0]>();
-        for (const row of coreItemRows) {
-          const r = row as {
-            id: number;
-            order_id: string;
-            menu_item_id?: number | null;
-            item_name: string;
-            variant_name?: string | null;
-            category_name?: string | null;
-            quantity: number;
-            base_price: string | number;
-            total_price: string | number;
-            veg_nonveg?: string | null;
-            item_snapshot?: Record<string, unknown> | null;
-          };
-          const oid = String(r.order_id);
-          const list = grouped.get(oid) ?? [];
-          list.push(r);
-          grouped.set(oid, list);
-        }
-        for (const [oid, rows] of grouped) {
-          rawItemsByOrderTextId.set(oid, mapCoreDbItemsToRaw(rows, addonsByItemId));
-        }
-      }
-    }
+    const rawItemsByOrderTextId = await loadCoreDbItemsByOrderTextIds(db, orderIdTexts);
 
     const riderIds = [
       ...new Set(coreRows.map((c) => c.rider_id).filter((x) => x != null).map((x) => Number(x))),
@@ -375,24 +323,7 @@ export async function GET(req: NextRequest) {
           currentSt
         );
 
-        const textOrderId = String(core.order_id ?? '').trim();
-        const fromDb = textOrderId ? rawItemsByOrderTextId.get(textOrderId) : undefined;
-        let rawItems: unknown =
-          food != null &&
-          food.items != null &&
-          Array.isArray(food.items) &&
-          (food.items as unknown[]).length > 0
-            ? food.items
-            : core.items != null && extractItemsArray(core.items).length > 0
-              ? core.items
-              : [];
-        if (
-          (extractItemsArray(rawItems).length === 0 || orderRawItemsMissingDisplayNames(rawItems)) &&
-          fromDb?.length
-        ) {
-          rawItems = fromDb;
-        }
-        const items = normalizeOrderItems(rawItems);
+        const items = resolvePartnerOrderItems(core, food, rawItemsByOrderTextId);
 
         const riderId = core.rider_id != null ? Number(core.rider_id) : null;
         const riderDetails = riderId != null ? riderById.get(riderId) ?? null : null;
