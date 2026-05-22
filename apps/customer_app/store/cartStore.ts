@@ -66,6 +66,13 @@ type CartState = {
   updateQuantity: (menuItemId: string, delta: number) => void;
   removeItem: (menuItemId: string) => void;
   clearCart: () => void;
+  /** Replace cart entirely — used for reorder flow. */
+  setCartForReorder: (
+    merchantId: string,
+    merchantName: string,
+    items: CartItem[],
+    merchantBannerUrl?: string | null,
+  ) => void;
   /**
    * Replace stored per-unit prices for every line whose menuItemId matches.
    * Used by the checkout screen to sync cart prices with the live menu API
@@ -233,6 +240,18 @@ export const useCartStore = create<CartState>((set, get) => ({
       stashedCarts: {},
       lastUpdatedAt: 0,
       // hydrated intentionally NOT touched — stays true
+    });
+    get().persist();
+  },
+
+  setCartForReorder: (merchantId, merchantName, items, merchantBannerUrl) => {
+    const now = Date.now();
+    set({
+      merchantId,
+      merchantName,
+      merchantBannerUrl: merchantBannerUrl ?? null,
+      items: items.map((i) => ({ ...i })),
+      lastUpdatedAt: now,
     });
     get().persist();
   },

@@ -21,12 +21,13 @@ export default function ProfileLayout() {
         headerStatusBarHeight: statusBarHeight,
       }}
     >
+      <Stack.Screen name="referrals" options={{ title: "Rewards & Referrals" }} />
       <Stack.Screen name="addresses" options={{ title: "Saved addresses" }} />
       <Stack.Screen name="edit" options={{ title: "Edit profile" }} />
       <Stack.Screen name="language" options={{ title: "Language" }} />
-      <Stack.Screen name="verify-email" options={{ title: "Verify email" }} />
+      <Stack.Screen name="verify-email" options={{ headerShown: false }} />
       <Stack.Screen name="help" options={{ title: "Help & Support" }} />
-      <Stack.Screen name="settings" options={{ title: "Settings" }} />
+      <Stack.Screen name="settings" options={{ headerShown: false }} />
       <Stack.Screen name="ticket-create" options={{ title: "Create ticket" }} />
       <Stack.Screen name="ticket/[id]" options={{ title: "Ticket" }} />
     </Stack>

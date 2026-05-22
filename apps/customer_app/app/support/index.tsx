@@ -1,7 +1,7 @@
 /**
  * My Support — list of the customer's tickets.
  * Tap a row → opens the chat detail.
- * Top-right "+" → raise a new ticket.
+ * Bottom FAB → raise a new ticket.
  */
 
 import React, { useCallback } from "react";
@@ -16,6 +16,7 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { customerSupportService, type TicketListItem } from "@/services/customerSupport.service";
@@ -72,33 +73,41 @@ export default function SupportListScreen() {
       return (
         <TouchableOpacity
           onPress={() => router.push({ pathname: "/support/[ticketId]", params: { ticketId: String(item.id) } })}
-          activeOpacity={0.7}
+          activeOpacity={0.72}
           style={styles.card}
         >
-          <View style={styles.cardHeader}>
-            <Text style={styles.subject} numberOfLines={1}>
-              {item.subject || item.ticket_title || "Ticket"}
-            </Text>
-            <View style={[styles.badge, { backgroundColor: sb.bg }]}>
-              <Text style={[styles.badgeText, { color: sb.color }]}>{sb.label}</Text>
+          <View style={styles.cardTop}>
+            <View style={styles.ticketIconWrap}>
+              <Ionicons name="chatbubble-ellipses-outline" size={18} color={GatiMitraColors.primaryMint} />
             </View>
-          </View>
-          {item.description ? (
-            <Text style={styles.body} numberOfLines={2}>
-              {item.description}
-            </Text>
-          ) : null}
-          <View style={styles.cardFooter}>
-            <Text style={styles.ref}>#{item.ticket_id}</Text>
-            <View style={styles.footerRight}>
-              {lastByAgent ? (
-                <View style={styles.dotAgent}>
-                  <View style={styles.dot} />
-                  <Text style={styles.dotText}>Agent replied</Text>
+            <View style={styles.cardMain}>
+              <View style={styles.cardHeader}>
+                <Text style={styles.subject} numberOfLines={1}>
+                  {item.subject || item.ticket_title || "Ticket"}
+                </Text>
+                <View style={[styles.badge, { backgroundColor: sb.bg }]}>
+                  <Text style={[styles.badgeText, { color: sb.color }]}>{sb.label}</Text>
                 </View>
+              </View>
+              {item.description ? (
+                <Text style={styles.body} numberOfLines={2}>
+                  {item.description}
+                </Text>
               ) : null}
-              <Text style={styles.when}>{formatWhen(lastActivity)}</Text>
+              <View style={styles.cardFooter}>
+                <Text style={styles.ref}>#{item.ticket_id}</Text>
+                <View style={styles.footerRight}>
+                  {lastByAgent ? (
+                    <View style={styles.dotAgent}>
+                      <View style={styles.dot} />
+                      <Text style={styles.dotText}>Agent replied</Text>
+                    </View>
+                  ) : null}
+                  <Text style={styles.when}>{formatWhen(lastActivity)}</Text>
+                </View>
+              </View>
             </View>
+            <Ionicons name="chevron-forward" size={18} color="#CBD5E1" />
           </View>
         </TouchableOpacity>
       );
@@ -109,73 +118,123 @@ export default function SupportListScreen() {
   if (isLoading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator size="large" color={GatiMitraColors.emerald} />
+        <ActivityIndicator size="large" color={GatiMitraColors.primaryMint} />
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <FlatList
-        data={tickets}
-        keyExtractor={(t) => String(t.id)}
-        renderItem={renderItem}
-        contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 96 }}
-        ListEmptyComponent={
-          <View style={styles.empty}>
-            <Ionicons name="chatbubbles-outline" size={56} color={GatiMitraColors.textSecondary} />
-            <Text style={styles.emptyTitle}>No tickets yet</Text>
-            <Text style={styles.emptyBody}>
-              Need help? Tap “Raise a ticket” below — an agent will get back to you in chat.
-            </Text>
-            {error ? (
-              <Text style={styles.errorText} numberOfLines={3}>
-                {(error as Error).message}
+    <>
+      <StatusBar style="dark" backgroundColor="#fff" />
+      <View style={styles.container}>
+        <View style={[styles.header, { paddingTop: Math.max(insets.top - 8, 0) }]}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.headerSide} hitSlop={12}>
+            <Ionicons name="arrow-back" size={22} color={GatiMitraColors.textPrimaryNew} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>My Support</Text>
+          <View style={styles.headerSide} />
+        </View>
+
+        <FlatList
+          data={tickets}
+          keyExtractor={(t) => String(t.id)}
+          renderItem={renderItem}
+          contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 96, paddingTop: 8 }}
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <View style={styles.emptyIconWrap}>
+                <Ionicons name="chatbubbles-outline" size={40} color={GatiMitraColors.primaryMint} />
+              </View>
+              <Text style={styles.emptyTitle}>No tickets yet</Text>
+              <Text style={styles.emptyBody}>
+                Need help? Tap “Raise a ticket” below — an agent will get back to you in chat.
               </Text>
-            ) : null}
-          </View>
-        }
-        refreshControl={
-          <RefreshControl refreshing={isFetching && !isLoading} onRefresh={refetch} tintColor={GatiMitraColors.emerald} />
-        }
-        ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
-      />
-      <TouchableOpacity
-        onPress={() => router.push("/support/new")}
-        style={[styles.fab, { bottom: insets.bottom + 16 }]}
-        activeOpacity={0.9}
-      >
-        <Ionicons name="add" size={22} color="#fff" />
-        <Text style={styles.fabText}>Raise a ticket</Text>
-      </TouchableOpacity>
-    </View>
+              {error ? (
+                <Text style={styles.errorText} numberOfLines={3}>
+                  {(error as Error).message}
+                </Text>
+              ) : null}
+            </View>
+          }
+          refreshControl={
+            <RefreshControl refreshing={isFetching && !isLoading} onRefresh={refetch} tintColor={GatiMitraColors.primaryMint} />
+          }
+          ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
+        />
+
+        <TouchableOpacity
+          onPress={() => router.push("/support/new")}
+          style={[styles.fab, { bottom: insets.bottom + 16 }]}
+          activeOpacity={0.9}
+        >
+          <Ionicons name="add" size={22} color="#fff" />
+          <Text style={styles.fabText}>Raise a ticket</Text>
+        </TouchableOpacity>
+      </View>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: GatiMitraColors.softBackground },
-  centered: { flex: 1, justifyContent: "center", alignItems: "center" },
+  centered: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: GatiMitraColors.softBackground },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+    backgroundColor: "#fff",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: GatiMitraColors.border,
+  },
+  headerSide: { width: 40, alignItems: "flex-start" },
+  headerTitle: {
+    flex: 1,
+    textAlign: "center",
+    fontSize: 17,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimaryNew,
+  },
   card: {
     backgroundColor: "#fff",
-    borderRadius: 14,
+    borderRadius: 16,
     padding: 14,
     borderWidth: 1,
-    borderColor: GatiMitraColors.border,
+    borderColor: "#EEF2F7",
+    ...GatiMitraColors.elevationShadow,
   },
-  cardHeader: { flexDirection: "row", alignItems: "center", marginBottom: 6, gap: 10 },
-  subject: { flex: 1, fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary },
-  badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
-  badgeText: { fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.4 },
+  cardTop: { flexDirection: "row", alignItems: "center", gap: 12 },
+  ticketIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: "#ECFDF5",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cardMain: { flex: 1 },
+  cardHeader: { flexDirection: "row", alignItems: "center", marginBottom: 4, gap: 8 },
+  subject: { flex: 1, fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimaryNew },
+  badge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
+  badgeText: { fontSize: 10, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.3 },
   body: { fontSize: 13, color: GatiMitraColors.textSecondary, lineHeight: 18, marginBottom: 8 },
   cardFooter: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   ref: { fontSize: 11, color: GatiMitraColors.textSecondary, fontWeight: "600" },
   footerRight: { flexDirection: "row", alignItems: "center", gap: 8 },
   dotAgent: { flexDirection: "row", alignItems: "center", gap: 4 },
-  dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: GatiMitraColors.emerald },
-  dotText: { fontSize: 11, fontWeight: "700", color: GatiMitraColors.emerald },
+  dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: GatiMitraColors.primaryMint },
+  dotText: { fontSize: 11, fontWeight: "700", color: GatiMitraColors.primaryMint },
   when: { fontSize: 11, color: GatiMitraColors.textSecondary },
-  empty: { paddingTop: 60, alignItems: "center", paddingHorizontal: 32, gap: 8 },
-  emptyTitle: { fontSize: 18, fontWeight: "700", color: GatiMitraColors.textPrimary, marginTop: 12 },
+  empty: { paddingTop: 48, alignItems: "center", paddingHorizontal: 32, gap: 8 },
+  emptyIconWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: "#ECFDF5",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  emptyTitle: { fontSize: 18, fontWeight: "700", color: GatiMitraColors.textPrimaryNew, marginTop: 12 },
   emptyBody: { fontSize: 14, color: GatiMitraColors.textSecondary, textAlign: "center", lineHeight: 20 },
   errorText: { color: "#b91c1c", fontSize: 12, marginTop: 12, textAlign: "center" },
   fab: {
@@ -184,15 +243,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: GatiMitraColors.emerald,
-    paddingHorizontal: 20,
+    backgroundColor: GatiMitraColors.primaryMint,
+    paddingHorizontal: 22,
     paddingVertical: 14,
     borderRadius: 28,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.18,
+    shadowColor: GatiMitraColors.primaryMint,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
     shadowRadius: 12,
-    elevation: 6,
+    elevation: 8,
   },
   fabText: { color: "#fff", fontWeight: "700", fontSize: 15 },
 });

@@ -1,7 +1,6 @@
 /**
- * Settings – account, preferences, legal, support, about, sign out.
- * Professional UI; each row is a single touch target (no overlapping).
- * Language preference opens Language screen for user to set app language.
+ * Settings – account, preferences, legal, sign out.
+ * UI aligned with profile tab (white cards on grey background).
  */
 
 import { useState, useEffect } from "react";
@@ -22,22 +21,11 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { useAuthStore } from "@/store/authStore";
 import { useLanguageStore } from "@/store/languageStore";
+import { ProfileSubpageHeader } from "@/components/profile/ProfileSubpageHeader";
+import { ProfileTheme } from "@/constants/profileTheme";
 
-const TEAL = "#14b8a6";
-const TITLE_DARK = "#0f172a";
-const TEXT_GRAY = "#64748b";
-const TEXT_MUTED = "#94a3b8";
-const CARD_BG = "#FFFFFF";
-const BORDER_LIGHT = "#f1f5f9";
-const SURFACE = "#f8fafc";
-
-const SHADOW_SOFT = {
-  shadowColor: "#0f172a",
-  shadowOffset: { width: 0, height: 1 },
-  shadowOpacity: 0.04,
-  shadowRadius: 4,
-  elevation: 2,
-};
+const { green: GREEN, greenDark: GREEN_DARK, text: TEXT, muted: MUTED, border: BORDER, pageBg: PAGE_BG } =
+  ProfileTheme;
 
 type RowProps = {
   icon: keyof typeof Ionicons.glyphMap;
@@ -53,18 +41,20 @@ function SettingsRow({ icon, label, value, onPress, right, showChevron = true }:
   const content = (
     <View style={styles.rowInner}>
       <View style={styles.rowIconWrap}>
-        <Ionicons name={icon} size={22} color={TEAL} />
+        <Ionicons name={icon} size={19} color={GREEN_DARK} />
       </View>
       <View style={styles.rowTextWrap}>
         <Text style={styles.rowLabel}>{label}</Text>
         {value ? <Text style={styles.rowValue}>{value}</Text> : null}
       </View>
-      {right !== undefined ? right : isPressable && showChevron ? <Ionicons name="chevron-forward" size={20} color={TEXT_MUTED} /> : null}
+      {right !== undefined ? right : isPressable && showChevron ? (
+        <Ionicons name="chevron-forward" size={17} color="#C4C4C4" />
+      ) : null}
     </View>
   );
   if (isPressable) {
     return (
-      <TouchableOpacity onPress={onPress} activeOpacity={0.7} style={styles.rowOuter}>
+      <TouchableOpacity onPress={onPress} activeOpacity={0.75} style={styles.rowOuter}>
         {content}
       </TouchableOpacity>
     );
@@ -103,15 +93,17 @@ export default function SettingsScreen() {
   };
 
   return (
-    <View style={[styles.container, { paddingBottom: insets.bottom + 24 }]}>
-      <StatusBar style="dark" backgroundColor="#FFFFFF" />
+    <View style={styles.screen}>
+      <StatusBar style="dark" backgroundColor="#fff" />
+      <ProfileSubpageHeader title={t("profile.settings")} onBack={() => router.back()} />
+
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
         showsVerticalScrollIndicator={false}
       >
         <SectionTitle title={t("settings.account")} />
-        <View style={[styles.card, SHADOW_SOFT]}>
+        <View style={styles.card}>
           <SettingsRow
             icon="person-outline"
             label={t("settings.editProfile")}
@@ -123,14 +115,20 @@ export default function SettingsScreen() {
             label={t("settings.savedAddresses")}
             onPress={() => router.push("/profile/addresses")}
           />
+          <View style={styles.separator} />
+          <SettingsRow
+            icon="mail-outline"
+            label={t("profile.verifyEmail")}
+            onPress={() => router.push("/profile/verify-email")}
+          />
         </View>
 
         <SectionTitle title={t("settings.preferences")} />
-        <View style={[styles.card, SHADOW_SOFT]}>
+        <View style={styles.card}>
           <View style={styles.rowOuter}>
             <View style={styles.rowInner}>
               <View style={styles.rowIconWrap}>
-                <Ionicons name="notifications-outline" size={22} color={TEAL} />
+                <Ionicons name="notifications-outline" size={19} color={GREEN_DARK} />
               </View>
               <View style={styles.rowTextWrap}>
                 <Text style={styles.rowLabel}>{t("settings.pushNotifications")}</Text>
@@ -139,7 +137,7 @@ export default function SettingsScreen() {
               <Switch
                 value={notificationsEnabled}
                 onValueChange={setNotificationsEnabled}
-                trackColor={{ false: "#e2e8f0", true: TEAL }}
+                trackColor={{ false: "#E5E7EB", true: GREEN }}
                 thumbColor="#fff"
               />
             </View>
@@ -154,14 +152,14 @@ export default function SettingsScreen() {
         </View>
 
         <SectionTitle title={t("settings.legal")} />
-        <View style={[styles.card, SHADOW_SOFT]}>
+        <View style={styles.card}>
           <SettingsRow icon="document-text-outline" label={t("settings.termsOfService")} onPress={() => {}} />
           <View style={styles.separator} />
           <SettingsRow icon="shield-checkmark-outline" label={t("settings.privacyPolicy")} onPress={() => {}} />
         </View>
 
         <SectionTitle title={t("settings.about")} />
-        <View style={[styles.card, SHADOW_SOFT]}>
+        <View style={styles.card}>
           <SettingsRow icon="information-circle-outline" label={t("settings.appVersion")} value="1.0.0" showChevron={false} />
         </View>
 
@@ -169,52 +167,32 @@ export default function SettingsScreen() {
         <TouchableOpacity
           onPress={() => setLogoutModalVisible(true)}
           style={styles.logoutBtn}
-          activeOpacity={0.8}
+          activeOpacity={0.85}
         >
-          <Ionicons name="log-out-outline" size={22} color="#dc2626" />
+          <Ionicons name="log-out-outline" size={20} color="#DC2626" />
           <Text style={styles.logoutText}>{t("settings.signOut")}</Text>
         </TouchableOpacity>
       </ScrollView>
 
-      <Modal
-        visible={logoutModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setLogoutModalVisible(false)}
-      >
-        <Pressable
-          style={styles.modalOverlay}
-          onPress={() => setLogoutModalVisible(false)}
-        >
+      <Modal visible={logoutModalVisible} transparent animationType="fade" onRequestClose={() => setLogoutModalVisible(false)}>
+        <Pressable style={styles.modalOverlay} onPress={() => setLogoutModalVisible(false)}>
           <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
             <View style={styles.modalIconWrap}>
-              <Ionicons name="log-out-outline" size={36} color="#fff" />
+              <Ionicons name="log-out-outline" size={32} color="#fff" />
             </View>
             <Text style={styles.modalTitle}>{t("settings.signOutModalTitle")}</Text>
             <Text style={styles.modalMessage}>{t("settings.signOutModalMessage")}</Text>
-            <TouchableOpacity
-              style={styles.modalOptionBtn}
-              onPress={handleSignOutThisDevice}
-              activeOpacity={0.85}
-            >
-              <Ionicons name="phone-portrait-outline" size={20} color={TEAL} />
+            <TouchableOpacity style={styles.modalOptionBtn} onPress={handleSignOutThisDevice} activeOpacity={0.85}>
+              <Ionicons name="phone-portrait-outline" size={20} color={GREEN_DARK} />
               <Text style={styles.modalOptionText}>{t("settings.thisDevice")}</Text>
-              <Ionicons name="chevron-forward" size={18} color={TEXT_GRAY} />
+              <Ionicons name="chevron-forward" size={18} color={MUTED} />
             </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.modalOptionBtn}
-              onPress={handleSignOutAllDevices}
-              activeOpacity={0.85}
-            >
-              <Ionicons name="phone-portrait-outline" size={20} color={TEAL} />
+            <TouchableOpacity style={styles.modalOptionBtn} onPress={handleSignOutAllDevices} activeOpacity={0.85}>
+              <Ionicons name="phone-portrait-outline" size={20} color={GREEN_DARK} />
               <Text style={styles.modalOptionText}>{t("settings.allDevices")}</Text>
-              <Ionicons name="chevron-forward" size={18} color={TEXT_GRAY} />
+              <Ionicons name="chevron-forward" size={18} color={MUTED} />
             </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.modalCancelBtn}
-              onPress={() => setLogoutModalVisible(false)}
-              activeOpacity={0.8}
-            >
+            <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setLogoutModalVisible(false)} activeOpacity={0.8}>
               <Text style={styles.modalCancelText}>{t("common.cancel")}</Text>
             </TouchableOpacity>
           </Pressable>
@@ -224,61 +202,56 @@ export default function SettingsScreen() {
   );
 }
 
-const PAD_H = 20;
-const CARD_RADIUS = 16;
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: SURFACE },
+  screen: { flex: 1, backgroundColor: PAGE_BG },
   scroll: { flex: 1 },
-  scrollContent: {
-    paddingHorizontal: PAD_H,
-    paddingTop: 16,
-    paddingBottom: 40,
-  },
+  scrollContent: { paddingHorizontal: 16, paddingTop: 16 },
   sectionTitle: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: TEXT_MUTED,
-    marginTop: 24,
+    fontSize: 15,
+    fontWeight: "700",
+    color: TEXT,
+    marginTop: 18,
     marginBottom: 10,
-    marginLeft: 4,
-    textTransform: "uppercase",
-    letterSpacing: 0.6,
+    marginLeft: 2,
   },
   card: {
-    backgroundColor: CARD_BG,
-    borderRadius: CARD_RADIUS,
+    backgroundColor: "#fff",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: BORDER,
     overflow: "hidden",
   },
-  rowOuter: {
-    paddingVertical: 16,
-    paddingHorizontal: 18,
-  },
-  rowInner: {
-    flexDirection: "row",
+  rowOuter: { paddingVertical: 14, paddingHorizontal: 14 },
+  rowInner: { flexDirection: "row", alignItems: "center", gap: 12 },
+  rowIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: ProfileTheme.mintSoft,
     alignItems: "center",
+    justifyContent: "center",
   },
-  rowIconWrap: { width: 44, alignItems: "center", justifyContent: "center" },
-  rowTextWrap: { flex: 1, marginLeft: 12, minWidth: 0 },
-  rowLabel: { fontSize: 16, fontWeight: "500", color: TITLE_DARK },
-  rowValue: { fontSize: 13, color: TEXT_GRAY, marginTop: 2 },
+  rowTextWrap: { flex: 1, minWidth: 0 },
+  rowLabel: { fontSize: 15, fontWeight: "600", color: TEXT },
+  rowValue: { fontSize: 12, color: MUTED, marginTop: 2 },
   separator: {
-    height: 1,
-    backgroundColor: BORDER_LIGHT,
-    marginLeft: 18 + 44 + 12,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: BORDER,
+    marginLeft: 14 + 36 + 12,
   },
   logoutBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
-    paddingVertical: 18,
-    backgroundColor: "rgba(220,38,38,0.08)",
-    borderRadius: CARD_RADIUS,
+    gap: 8,
+    paddingVertical: 14,
+    backgroundColor: "#fff",
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: "rgba(220,38,38,0.2)",
+    borderColor: "#FECACA",
+    marginTop: 4,
   },
-  logoutText: { fontSize: 16, fontWeight: "600", color: "#dc2626" },
+  logoutText: { fontSize: 15, fontWeight: "700", color: "#DC2626" },
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
@@ -289,65 +262,52 @@ const styles = StyleSheet.create({
   modalCard: {
     width: "100%",
     maxWidth: 340,
-    backgroundColor: CARD_BG,
-    borderRadius: 24,
-    padding: 28,
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    padding: 24,
     alignItems: "center",
-    shadowColor: "#0f172a",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 24,
-    elevation: 8,
+    borderWidth: 1,
+    borderColor: BORDER,
   },
   modalIconWrap: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: TEAL,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: GREEN,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 20,
+    marginBottom: 16,
   },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: TITLE_DARK,
-    marginBottom: 8,
-  },
+  modalTitle: { fontSize: 18, fontWeight: "800", color: TEXT, marginBottom: 8 },
   modalMessage: {
-    fontSize: 15,
-    color: TEXT_GRAY,
+    fontSize: 14,
+    color: MUTED,
     textAlign: "center",
-    lineHeight: 22,
-    marginBottom: 20,
-    paddingHorizontal: 8,
+    lineHeight: 20,
+    marginBottom: 16,
+    paddingHorizontal: 4,
   },
   modalOptionBtn: {
     flexDirection: "row",
     alignItems: "center",
     width: "100%",
-    paddingVertical: 16,
-    paddingHorizontal: 18,
-    backgroundColor: SURFACE,
-    borderRadius: 14,
-    marginBottom: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    backgroundColor: PAGE_BG,
+    borderRadius: 12,
+    marginBottom: 8,
     borderWidth: 1,
-    borderColor: BORDER_LIGHT,
+    borderColor: BORDER,
+    gap: 10,
   },
-  modalOptionText: {
-    flex: 1,
-    fontSize: 16,
-    fontWeight: "600",
-    color: TITLE_DARK,
-    marginLeft: 12,
-  },
+  modalOptionText: { flex: 1, fontSize: 15, fontWeight: "600", color: TEXT },
   modalCancelBtn: {
     width: "100%",
-    paddingVertical: 14,
-    borderRadius: 14,
-    backgroundColor: BORDER_LIGHT,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: PAGE_BG,
     alignItems: "center",
-    marginTop: 8,
+    marginTop: 4,
   },
-  modalCancelText: { fontSize: 16, fontWeight: "600", color: TITLE_DARK },
+  modalCancelText: { fontSize: 15, fontWeight: "700", color: TEXT },
 });

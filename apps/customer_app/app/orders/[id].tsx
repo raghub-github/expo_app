@@ -1,9 +1,8 @@
 /**
- * Order tracking – Swiggy/Zomato-style: map, live rider, ETA, timeline, rider card, summary.
- * Syncs active order store; clears when order is DELIVERED/CANCELLED.
+ * Order Details – delivered / cancelled / live tracking (reference UI + GatiMitra green).
  */
 
-import { useEffect, useRef, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -11,31 +10,37 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Linking,
-  Platform,
+  Image,
+  Alert,
+  InteractionManager,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import MapView, { Marker, Polyline, Region } from "react-native-maps";
-import { customerMapProps } from "@/lib/mapViewProps";
+import * as Clipboard from "expo-clipboard";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { customerMapProps } from "@/lib/mapViewProps";
 import { orderService } from "@/services/order.service";
-import { etaService, formatEtaRange, minutesUntil } from "@/services/eta.service";
+import { etaService, minutesUntil } from "@/services/eta.service";
 import { getRouteCoordinates } from "@/services/directions.service";
-import { ORDER_STATUS_LABELS } from "@/constants";
 import { useOrderStore } from "@/store/orderStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
+import { DietIndicator } from "@/components/store/DietIndicator";
+import { parseOrderBillFromSnapshot } from "@/lib/orderBillBreakdown";
+import { getOrderDetailInitialData } from "@/lib/orderDetailCache";
+import { resolveOrderItemDiet } from "@/lib/reorderFromOrder";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
-const STATUS_STEPS = [
-  { key: "ORDER_PLACED", label: "Order Confirmed" },
-  { key: "PREPARING", label: "Preparing Food" },
-  { key: "PICKED_UP", label: "Picked by Rider" },
-  { key: "ON_THE_WAY", label: "On the Way" },
-  { key: "DELIVERED", label: "Delivered" },
-].map((s) => ({ key: s.key, label: ORDER_STATUS_LABELS[s.key] ?? s.label }));
+const GREEN = GatiMitraColors.primaryMint;
+const LINK_BLUE = "#2563EB";
+const PAGE_BG = "#F5F5F5";
+const CARD = "#FFFFFF";
+const BORDER = "#EBEBEB";
+const TEXT = "#1C1C1C";
+const MUTED = "#828282";
 
 const DEFAULT_LAT = 20.5937;
 const DEFAULT_LNG = 78.9629;
@@ -49,22 +54,11 @@ function getMapRegion(
   pickupLng: number | null
 ): Region {
   const points: { lat: number; lng: number }[] = [];
-  if (rider) {
-    points.push({ lat: rider.latitude, lng: rider.longitude });
-  }
-  if (deliveryLat != null && deliveryLng != null) {
-    points.push({ lat: deliveryLat, lng: deliveryLng });
-  }
-  if (pickupLat != null && pickupLng != null) {
-    points.push({ lat: pickupLat, lng: pickupLng });
-  }
+  if (rider) points.push({ lat: rider.latitude, lng: rider.longitude });
+  if (deliveryLat != null && deliveryLng != null) points.push({ lat: deliveryLat, lng: deliveryLng });
+  if (pickupLat != null && pickupLng != null) points.push({ lat: pickupLat, lng: pickupLng });
   if (points.length === 0) {
-    return {
-      latitude: DEFAULT_LAT,
-      longitude: DEFAULT_LNG,
-      latitudeDelta: DELTA,
-      longitudeDelta: DELTA,
-    };
+    return { latitude: DEFAULT_LAT, longitude: DEFAULT_LNG, latitudeDelta: DELTA, longitudeDelta: DELTA };
   }
   const lats = points.map((p) => p.lat);
   const lngs = points.map((p) => p.lng);
@@ -72,63 +66,127 @@ function getMapRegion(
   const maxLat = Math.max(...lats);
   const minLng = Math.min(...lngs);
   const maxLng = Math.max(...lngs);
-  const latDelta = Math.max((maxLat - minLat) * 1.4, DELTA);
-  const lngDelta = Math.max((maxLng - minLng) * 1.4, DELTA);
   return {
     latitude: (minLat + maxLat) / 2,
     longitude: (minLng + maxLng) / 2,
-    latitudeDelta: latDelta,
-    longitudeDelta: lngDelta,
+    latitudeDelta: Math.max((maxLat - minLat) * 1.4, DELTA),
+    longitudeDelta: Math.max((maxLng - minLng) * 1.4, DELTA),
   };
 }
 
-export default function OrderTrackingScreen() {
+function getCompactAddressLine(address: string | null | undefined) {
+  const raw = (address ?? "").trim();
+  if (!raw) return "";
+  const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length >= 2) return `${parts[parts.length - 2]}, ${parts[parts.length - 1]}`;
+  return raw;
+}
+
+function toDietType(itemVeg: string | null | undefined): "veg" | "nonveg" | "egg" | null {
+  return resolveOrderItemDiet(itemVeg);
+}
+
+function maskPhone(phone: string | undefined | null) {
+  const digits = (phone ?? "").replace(/\D/g, "");
+  if (digits.length <= 4) return digits;
+  if (digits.length <= 6) return `${digits.slice(0, 2)}XXXX`;
+  return `${digits.slice(0, 6)}XXXX`;
+}
+
+function formatPaymentDate(iso: string) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString("en-IN", {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function formatMoney(value: number) {
+  return `₹${value.toFixed(2)}`;
+}
+
+function getStatusBannerText(status: string, paymentStatus?: string | null) {
+  const s = status.toUpperCase();
+  if (s === "CANCELLED") return "Order was cancelled";
+  if (s === "PAYMENT_FAILED" || s === "FAILED" || paymentStatus?.toLowerCase() === "failed") {
+    return "Payment failed";
+  }
+  if (s === "DELIVERED") return "Order was delivered";
+  if (s === "ON_THE_WAY" || s === "OUT_FOR_DELIVERY") return "Order is on the way";
+  if (s === "PICKED_UP") return "Order picked up";
+  if (s === "PREPARING") return "Restaurant is preparing your order";
+  return "Order in progress";
+}
+
+export default function OrderDetailsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const queryClient = useQueryClient();
   const { id } = useLocalSearchParams<{ id: string }>();
   const orderId = id ?? "";
   const mapRef = useRef<MapView>(null);
+  const [mapReady, setMapReady] = useState(false);
 
   const { data: order, isLoading } = useQuery({
     queryKey: ["order", orderId],
     queryFn: () => orderService.getOrder(orderId),
     enabled: !!orderId,
-  });
-
-  // Frozen promise + latest live recalc snapshot. Refetched every 60s while
-  // the order is active so traffic / rider-pickup events propagate.
-  const { data: etaData } = useQuery({
-    queryKey: ["orderEta", orderId],
-    queryFn: () => etaService.getForOrder(orderId),
-    enabled: !!orderId,
-    refetchInterval: 60_000,
+    initialData: () => getOrderDetailInitialData(queryClient, orderId),
     staleTime: 30_000,
   });
 
-  const isActive =
-    order &&
+  const isInProgress =
+    !!order &&
     order.status !== "DELIVERED" &&
     order.status !== "CANCELLED" &&
-    (order.status === "ON_THE_WAY" ||
-      order.status === "OUT_FOR_DELIVERY" ||
-      order.status === "PICKED_UP");
+    order.status !== "PAYMENT_FAILED" &&
+    order.status !== "FAILED";
+
+  useEffect(() => {
+    if (!isInProgress) {
+      setMapReady(false);
+      return;
+    }
+    const task = InteractionManager.runAfterInteractions(() => setMapReady(true));
+    return () => task.cancel();
+  }, [isInProgress, orderId]);
+
+  const { data: etaData } = useQuery({
+    queryKey: ["orderEta", orderId],
+    queryFn: () => etaService.getForOrder(orderId),
+    enabled: !!orderId && !!isInProgress,
+    refetchInterval: isInProgress ? 60_000 : false,
+    staleTime: 30_000,
+  });
 
   const { data: tracking } = useQuery({
     queryKey: ["orderTracking", orderId],
     queryFn: () => orderService.getOrderTracking(orderId),
-    enabled: !!orderId && !!isActive,
-    refetchInterval: isActive ? 2500 : false,
+    enabled: !!orderId && !!isInProgress,
+    refetchInterval: isInProgress ? 2500 : false,
   });
+
+  const deliveryLat = order?.deliveryLat != null ? order.deliveryLat : DEFAULT_LAT + 0.008;
+  const deliveryLng = order?.deliveryLng != null ? order.deliveryLng : DEFAULT_LNG + 0.008;
+  const pickupLat = order?.pickupLat != null ? order.pickupLat : DEFAULT_LAT - 0.006;
+  const pickupLng = order?.pickupLng != null ? order.pickupLng : DEFAULT_LNG - 0.006;
 
   const [routeCoordinates, setRouteCoordinates] = useState<{ latitude: number; longitude: number }[]>([]);
   useEffect(() => {
-    if (!orderId || !order) return;
-    const pickup = { latitude: pickupLat, longitude: pickupLng };
-    const drop = { latitude: deliveryLat, longitude: deliveryLng };
-    getRouteCoordinates(pickup, drop).then(setRouteCoordinates);
-  }, [orderId, pickupLat, pickupLng, deliveryLat, deliveryLng, order?.orderId]);
+    if (!orderId || !order || !mapReady) return;
+    getRouteCoordinates(
+      { latitude: pickupLat, longitude: pickupLng },
+      { latitude: deliveryLat, longitude: deliveryLng }
+    ).then(setRouteCoordinates);
+  }, [orderId, pickupLat, pickupLng, deliveryLat, deliveryLng, order?.orderId, mapReady]);
 
-  const activeOrderForThis = useOrderStore((s) => s.activeOrders.find((o) => o.orderId === orderId) ?? s.activeOrder?.orderId === orderId ? s.activeOrder : null);
   const updateOrderStatus = useOrderStore((s) => s.updateOrderStatus);
   const removeActiveOrder = useOrderStore((s) => s.removeActiveOrder);
 
@@ -138,47 +196,16 @@ export default function OrderTrackingScreen() {
     if (status === "DELIVERED" || status === "CANCELLED") {
       removeActiveOrder(order.orderId);
     } else {
-      const eta =
-        status === "OUT_FOR_DELIVERY" || status === "ON_THE_WAY"
-          ? 15
-          : status === "PICKED_UP"
-            ? 20
-            : 27;
-      updateOrderStatus(order.orderId, status as import("@/store/orderStore").OrderStatus, eta);
+      updateOrderStatus(order.orderId, status as import("@/store/orderStore").OrderStatus, 20);
     }
   }, [order?.status, order?.orderId, updateOrderStatus, removeActiveOrder]);
 
-  const deliveryLat =
-    order?.deliveryLat != null ? order.deliveryLat : DEFAULT_LAT + 0.008;
-  const deliveryLng =
-    order?.deliveryLng != null ? order.deliveryLng : DEFAULT_LNG + 0.008;
-  const pickupLat =
-    order?.pickupLat != null ? order.pickupLat : DEFAULT_LAT - 0.006;
-  const pickupLng =
-    order?.pickupLng != null ? order.pickupLng : DEFAULT_LNG - 0.006;
-
   const mapRegion = useMemo(
     () =>
-      getMapRegion(
-        tracking?.rider ?? null,
-        deliveryLat,
-        deliveryLng,
-        pickupLat,
-        pickupLng
-      ),
-    [
-      tracking?.rider,
-      deliveryLat,
-      deliveryLng,
-      pickupLat,
-      pickupLng,
-    ]
+      getMapRegion(tracking?.rider ?? null, deliveryLat, deliveryLng, pickupLat, pickupLng),
+    [tracking?.rider, deliveryLat, deliveryLng, pickupLat, pickupLng]
   );
 
-  // ETA priority: live recalc snapshot (most recent server compute) → frozen
-  // placement promise → legacy in-cart estimate → status-derived fallback.
-  // The live snapshot already accounts for traffic / pickup / weather updates,
-  // so when the server has anything for us it's authoritative.
   const liveEtaMins = (() => {
     if (!etaData) return null;
     if (etaData.live?.promisedDeliveryAt) {
@@ -189,816 +216,617 @@ export default function OrderTrackingScreen() {
       const m = minutesUntil(etaData.promise.promisedDeliveryAt);
       if (m != null && m > 0) return m;
     }
-    if (etaData.live) return etaData.live.maxMinutes;
-    if (etaData.promise?.maxMinutes != null) return etaData.promise.maxMinutes;
-    return null;
+    return etaData.live?.maxMinutes ?? etaData.promise?.maxMinutes ?? null;
   })();
-  const etaMinutes =
-    liveEtaMins ??
-    activeOrderForThis?.etaMinutes ??
-    (order?.status === "ON_THE_WAY" || order?.status === "OUT_FOR_DELIVERY"
-      ? 15
-      : order?.status === "PICKED_UP"
-        ? 20
-        : 27);
-  const promisedDeliveryAtIso =
-    etaData?.live?.promisedDeliveryAt || etaData?.promise?.promisedDeliveryAt || null;
-  const promisedRangeLabel = etaData
-    ? formatEtaRange(
-        etaData.live?.minMinutes ?? etaData.promise.minMinutes,
-        etaData.live?.maxMinutes ?? etaData.promise.maxMinutes,
-      )
-    : null;
 
-  if (!orderId) {
-    return (
-      <View style={[styles.center, styles.screenBg]}>
-        <Text style={styles.errText}>Invalid order</Text>
-        <TouchableOpacity onPress={() => router.back()} style={styles.primaryBtn}>
-          <Text style={styles.primaryBtnText}>Go back</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  if (isLoading || !order) {
-    return (
-      <View style={[styles.center, styles.screenBg]}>
-        <ActivityIndicator size="large" color={GatiMitraColors.emerald} />
-        <Text style={styles.loadingText}>Loading order...</Text>
-      </View>
-    );
-  }
-
-  const normalizedStatus = order.status === "OUT_FOR_DELIVERY" ? "ON_THE_WAY" : order.status;
-  const currentIndex = STATUS_STEPS.findIndex((s) => s.key === normalizedStatus);
-  const activeIndex = currentIndex >= 0 ? currentIndex : 0;
-  const isDelivered = order.status === "DELIVERED";
-  const isCancelled = order.status === "CANCELLED";
-
-  const prepReadyByAt =
-    etaData?.prep?.readyByAt ?? order.prepReadyByAt ?? null;
-  const prepMinutesCommitted =
-    etaData?.prep?.minutes ?? order.prepTimeMinutes ?? null;
-  const prepMinutesLeft = prepReadyByAt ? minutesUntil(prepReadyByAt) : null;
-  const showPrepBanner =
-    !isDelivered &&
-    !isCancelled &&
-    prepReadyByAt != null &&
-    prepMinutesLeft != null &&
-    prepMinutesLeft > 0 &&
-    (normalizedStatus === "ORDER_PLACED" ||
-      normalizedStatus === "PREPARING" ||
-      normalizedStatus === "ACCEPTED" ||
-      order.status === "ORDER_PLACED");
-
-  const handleCallRider = () => {
-    const phone = order.rider?.phone?.replace(/\D/g, "") ?? "";
-    if (phone) Linking.openURL(`tel:${phone}`);
-  };
-
-  /**
-   * Opens the order-linked ticket flow. Same screen the user can reach from
-   * the support hub, but pre-seeded with this order's internal id + GM…
-   * reference so the help-topic picker shows status-aware concerns (e.g.
-   * "Order not arrived" for an ON_THE_WAY order vs "Damaged item" for
-   * DELIVERED). The user can still switch orders inside that flow.
-   */
   const handleOpenHelp = () => {
-    const orderInternalId = (order as { id?: number | string }).id;
-    const orderRef =
-      (order as { orderId?: string; order_id?: string }).orderId ??
-      (order as { order_id?: string }).order_id ??
-      orderId;
     router.push({
       pathname: "/orders/raise-ticket",
       params: {
-        orderId: String(orderInternalId ?? ""),
-        orderRef: String(orderRef ?? ""),
+        orderId: String(order?.orderId ?? orderId),
+        orderRef: String(order?.formattedOrderId ?? order?.orderId ?? orderId),
+        ...(order?.coreOrderId != null ? { coreOrderId: String(order.coreOrderId) } : {}),
       },
     });
   };
 
-  const handleViewAllTickets = () => router.push("/support");
+  const handleCopyOrderId = async () => {
+    const text = order?.formattedOrderId ?? order?.orderId ?? orderId;
+    await Clipboard.setStringAsync(text);
+    Alert.alert("Copied", "Order ID copied to clipboard.");
+  };
+
+  const handleInvoice = () => {
+    Alert.alert("Invoice", "Invoice download will be available soon.");
+  };
+
+  if (!orderId) {
+    return (
+      <View style={[styles.center, styles.screen]}>
+        <Text style={styles.mutedText}>Invalid order</Text>
+      </View>
+    );
+  }
+
+  if (isLoading && !order) {
+    return (
+      <View style={[styles.center, styles.screen]}>
+        <ActivityIndicator size="large" color={GREEN} />
+        <Text style={styles.mutedText}>Loading order...</Text>
+      </View>
+    );
+  }
+
+  if (!order) {
+    return (
+      <View style={[styles.center, styles.screen]}>
+        <Text style={styles.mutedText}>Order not found</Text>
+      </View>
+    );
+  }
+
+  const displayOrderId = order.formattedOrderId ?? order.orderId;
+  const restaurantName = order.merchantPublicName ?? order.merchantName ?? "Restaurant";
+  const merchantArea = getCompactAddressLine(order.merchantAddress);
+  const bannerUri = toAbsoluteImageUrl(order.merchantBannerUrl);
+  const items = order.items ?? [];
+  const bill = parseOrderBillFromSnapshot(order.billingSnapshot, order.totalAmount ?? null);
+  const isCancelled = order.status === "CANCELLED";
+  const isDelivered = order.status === "DELIVERED";
+  const isFailed =
+    order.status === "PAYMENT_FAILED" ||
+    order.status === "FAILED" ||
+    order.paymentStatus?.toLowerCase() === "failed";
+  const paymentMethodLabel = (order.paymentMethod ?? "UPI").replace(/_/g, " ").toUpperCase();
+  const statusBanner = getStatusBannerText(order.status, order.paymentStatus);
 
   return (
     <>
       <AndroidBackHandler />
       <StatusBar style="dark" backgroundColor="#fff" />
-      <View style={[styles.container, { paddingTop: insets.top }]}>
-        {/* Header — back arrow, store name + order id, and a always-visible
-            help button so the customer can open the order-linked ticket flow
-            from any state of the order. Mirrors Zomato/Swiggy live order UI. */}
-        <View style={styles.header}>
-          <TouchableOpacity
-            onPress={() => router.back()}
-            style={styles.headerIconBtn}
-            hitSlop={12}
-            accessibilityRole="button"
-            accessibilityLabel="Back"
-          >
-            <Ionicons name="arrow-back" size={22} color={GatiMitraColors.textPrimary} />
+      <View style={styles.screen}>
+        <View style={[styles.header, { paddingTop: Math.max(insets.top - 8, 0) }]}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.headerSide} hitSlop={12}>
+            <Ionicons name="arrow-back" size={22} color={TEXT} />
           </TouchableOpacity>
-          <View style={styles.headerCenter}>
-            <Text style={styles.headerTitle} numberOfLines={1}>
-              {order.merchantName ?? "Restaurant"}
-            </Text>
-            <Text style={styles.orderIdLabel}>#{order.orderId}</Text>
-          </View>
-          <TouchableOpacity
-            onPress={handleOpenHelp}
-            style={styles.headerIconBtn}
-            hitSlop={12}
-            accessibilityRole="button"
-            accessibilityLabel="Get help on this order"
-          >
-            <Ionicons name="help-circle-outline" size={24} color={GatiMitraColors.emerald} />
+          <Text style={styles.headerTitle}>Order Details</Text>
+          <TouchableOpacity onPress={handleOpenHelp} style={styles.headerSideRight} hitSlop={12}>
+            <Ionicons name="headset-outline" size={18} color={GREEN} />
+            <Text style={styles.supportText}>Support</Text>
           </TouchableOpacity>
         </View>
 
         <ScrollView
           style={styles.scroll}
-          contentContainerStyle={[
-            styles.scrollContent,
-            { paddingBottom: insets.bottom + 24 },
-          ]}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 88, paddingHorizontal: 16, paddingTop: 4 }}
           showsVerticalScrollIndicator={false}
         >
-          {/* Map */}
-          <View style={styles.mapWrap}>
-            <MapView
-              ref={mapRef}
-              style={styles.map}
-              {...customerMapProps()}
-              initialRegion={mapRegion}
-              scrollEnabled
-              zoomEnabled
-              showsUserLocation={false}
-              showsMyLocationButton={Platform.OS !== "web"}
-            >
-              {/* Restaurant / pickup */}
-              <Marker
-                coordinate={{ latitude: pickupLat, longitude: pickupLng }}
-                title={order.merchantName ?? "Restaurant"}
-                pinColor={GatiMitraColors.warmOrange}
-              />
-              {/* Delivery address */}
-              <Marker
-                coordinate={{ latitude: deliveryLat, longitude: deliveryLng }}
-                title="Delivery address"
-                pinColor={GatiMitraColors.emerald}
-              />
-              {/* Blue route polyline (pickup → drop, drivable route) */}
-              {routeCoordinates.length >= 2 && (
-                <Polyline
-                  coordinates={routeCoordinates}
-                  strokeColor="#2563eb"
-                  strokeWidth={4}
-                  lineCap="round"
-                  lineJoin="round"
+          <View style={styles.card}>
+            <View style={styles.statusRow}>
+              <View style={[styles.statusIcon, (isCancelled || isFailed) && styles.statusIconDanger]}>
+                <Ionicons
+                  name={isCancelled || isFailed ? "bag-remove-outline" : isDelivered ? "bag-check-outline" : "bag-outline"}
+                  size={18}
+                  color={isCancelled || isFailed ? "#DC2626" : GREEN}
                 />
-              )}
-              {/* Rider (live) */}
-              {tracking?.rider && (
-                <Marker
-                  coordinate={{
-                    latitude: tracking.rider.latitude,
-                    longitude: tracking.rider.longitude,
-                  }}
-                  title="Rider"
-                  description="Your order is here"
-                  anchor={{ x: 0.5, y: 0.5 }}
-                >
-                  <View style={styles.riderMarker}>
-                    <Ionicons name="bicycle" size={28} color="#fff" />
-                  </View>
-                </Marker>
-              )}
-            </MapView>
-            {/* ETA pill overlay — live countdown from the server snapshot. */}
-            {!isDelivered && !isCancelled && (
-              <View style={styles.etaPill}>
-                <Ionicons name="time-outline" size={20} color={GatiMitraColors.emerald} />
-                <View style={{ marginLeft: 6 }}>
-                  <Text style={styles.etaText}>
-                    Arriving in ~{etaMinutes} min
+              </View>
+              <Text style={styles.statusText}>{statusBanner}</Text>
+            </View>
+          </View>
+
+          <View style={styles.card}>
+            <View style={styles.restaurantRow}>
+              <View style={styles.restaurantLogo}>
+                {bannerUri ? (
+                  <Image source={{ uri: bannerUri }} style={styles.restaurantLogoImg} resizeMode="cover" />
+                ) : (
+                  <Text style={styles.restaurantInitial}>{restaurantName.slice(0, 1).toUpperCase()}</Text>
+                )}
+              </View>
+              <View style={styles.restaurantInfo}>
+                <Text style={styles.restaurantName} numberOfLines={1}>
+                  {restaurantName}
+                </Text>
+                {!!merchantArea && (
+                  <Text style={styles.restaurantArea} numberOfLines={1}>
+                    {merchantArea}
                   </Text>
-                  {promisedRangeLabel ? (
-                    <Text
-                      style={{
-                        fontSize: 11,
-                        color: GatiMitraColors.textSecondary,
-                        fontWeight: "500",
-                      }}
-                    >
-                      Promised {promisedRangeLabel}
-                      {promisedDeliveryAtIso
-                        ? ` · by ${new Date(promisedDeliveryAtIso).toLocaleTimeString(undefined, {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}`
-                        : ""}
-                    </Text>
-                  ) : null}
+                )}
+              </View>
+              <TouchableOpacity
+                style={styles.callBtn}
+                onPress={() => {
+                  const storeId = order.merchantPublicStoreId;
+                  if (storeId) router.push(`/home/merchant/${storeId}`);
+                }}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="call-outline" size={18} color={GREEN} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.orderIdRow}>
+              <Text style={styles.orderIdText}>Order ID: #{displayOrderId}</Text>
+              <TouchableOpacity onPress={handleCopyOrderId} hitSlop={8}>
+                <Ionicons name="copy-outline" size={16} color={MUTED} />
+              </TouchableOpacity>
+            </View>
+
+            {items.map((item, index) => {
+              const diet = toDietType(item.vegNonVeg);
+              const lineTotal = item.lineTotal ?? item.price * item.quantity;
+              const subtext = item.customization?.trim() || item.variantName?.trim() || "";
+              return (
+                <View key={`${displayOrderId}-item-${index}`} style={styles.itemRow}>
+                  <View style={styles.itemLeft}>
+                    {diet != null && (
+                      <View style={styles.dietWrap}>
+                        <DietIndicator type={diet} />
+                      </View>
+                    )}
+                    <View style={styles.itemTextWrap}>
+                      <Text style={styles.itemName} numberOfLines={2}>
+                        {item.quantity} x {item.name}
+                      </Text>
+                      {!!subtext && (
+                        <Text style={styles.itemSubtext} numberOfLines={2}>
+                          {subtext}
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                  <Text style={styles.itemPrice}>₹{Math.round(lineTotal)}</Text>
                 </View>
+              );
+            })}
+          </View>
+
+          {isInProgress ? (
+            <View style={styles.card}>
+              <View style={styles.mapWrap}>
+                {mapReady ? (
+                  <MapView ref={mapRef} style={styles.map} {...customerMapProps} region={mapRegion}>
+                    {routeCoordinates.length > 0 ? (
+                      <Polyline coordinates={routeCoordinates} strokeWidth={4} strokeColor={GREEN} />
+                    ) : null}
+                    <Marker coordinate={{ latitude: pickupLat, longitude: pickupLng }} anchor={{ x: 0.5, y: 0.5 }}>
+                      <View style={styles.pickupMarker}>
+                        <Ionicons name="restaurant" size={14} color="#fff" />
+                      </View>
+                    </Marker>
+                    <Marker coordinate={{ latitude: deliveryLat, longitude: deliveryLng }} anchor={{ x: 0.5, y: 0.5 }}>
+                      <View style={styles.dropMarker}>
+                        <Ionicons name="home" size={14} color="#fff" />
+                      </View>
+                    </Marker>
+                    {tracking?.rider ? (
+                      <Marker
+                        coordinate={{ latitude: tracking.rider.latitude, longitude: tracking.rider.longitude }}
+                        anchor={{ x: 0.5, y: 0.5 }}
+                      >
+                        <View style={styles.riderMarker}>
+                          <Ionicons name="bicycle" size={16} color="#fff" />
+                        </View>
+                      </Marker>
+                    ) : null}
+                  </MapView>
+                ) : (
+                  <View style={styles.mapPlaceholder}>
+                    <ActivityIndicator size="small" color={GREEN} />
+                  </View>
+                )}
+                {liveEtaMins != null ? (
+                  <View style={styles.etaPill}>
+                    <Ionicons name="time-outline" size={16} color={GREEN} />
+                    <Text style={styles.etaText}>Arriving in ~{liveEtaMins} mins</Text>
+                  </View>
+                ) : null}
+              </View>
+              {order.deliveryOtp ? (
+                <View style={styles.otpRow}>
+                  <Ionicons name="shield-checkmark-outline" size={16} color={GREEN} />
+                  <Text style={styles.otpText}>
+                    Delivery OTP: <Text style={styles.otpValue}>{order.deliveryOtp}</Text>
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+
+          <View style={styles.card}>
+            <View style={styles.billHeader}>
+              <View style={styles.billHeaderLeft}>
+                <View style={styles.billIconWrap}>
+                  <Ionicons name="receipt-outline" size={16} color={MUTED} />
+                </View>
+                <Text style={styles.billTitle}>Bill Summary</Text>
+              </View>
+              <TouchableOpacity onPress={handleInvoice} hitSlop={8}>
+                <Ionicons name="download-outline" size={20} color={MUTED} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.billRow}>
+              <Text style={styles.billLabel}>Item total</Text>
+              <Text style={styles.billValue}>{formatMoney(bill.itemTotal || items.reduce((s, i) => s + (i.lineTotal ?? i.price * i.quantity), 0))}</Text>
+            </View>
+            {bill.gstAndPackaging > 0.005 && (
+              <View style={styles.billRow}>
+                <Text style={styles.billLabel}>GST & restaurant packaging</Text>
+                <Text style={styles.billValue}>{formatMoney(bill.gstAndPackaging)}</Text>
               </View>
             )}
-            {isDelivered && (
-              <View style={[styles.etaPill, styles.deliveredPill]}>
-                <Ionicons name="checkmark-circle" size={20} color="#fff" />
-                <Text style={styles.deliveredText}>Delivered</Text>
+            {(bill.deliveryFeeOriginal != null || bill.deliveryFee > 0.005) && (
+              <View style={styles.billRow}>
+                <Text style={styles.billLabel}>Delivery partner fee</Text>
+                {bill.deliveryFee <= 0.005 && bill.deliveryFeeOriginal != null ? (
+                  <View style={styles.freeDeliveryWrap}>
+                    <Text style={styles.strikePrice}>{formatMoney(bill.deliveryFeeOriginal)}</Text>
+                    <Text style={styles.freeText}>FREE</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.billValue}>{formatMoney(bill.deliveryFee)}</Text>
+                )}
+              </View>
+            )}
+            {bill.platformFee > 0.005 && (
+              <View style={styles.billRow}>
+                <Text style={styles.billLabel}>Platform fee</Text>
+                <Text style={styles.billValue}>{formatMoney(bill.platformFee)}</Text>
+              </View>
+            )}
+            {bill.donation > 0.005 && (
+              <View style={styles.billRow}>
+                <Text style={styles.billLabel}>Feeding India donation</Text>
+                <Text style={styles.billValue}>{formatMoney(bill.donation)}</Text>
+              </View>
+            )}
+
+            <View style={[styles.billRow, styles.billGrandRow]}>
+              <Text style={styles.billGrandLabel}>Grand total</Text>
+              <Text style={styles.billGrandValue}>{formatMoney(bill.grandTotal || bill.paid)}</Text>
+            </View>
+
+            {bill.couponDiscount > 0.005 && (
+              <View style={styles.billRow}>
+                <Text style={styles.couponLabel}>
+                  Coupon applied{bill.couponCode ? ` - ${bill.couponCode}` : ""}
+                </Text>
+                <Text style={styles.couponValue}>- {formatMoney(bill.couponDiscount)}</Text>
+              </View>
+            )}
+
+            <View style={styles.billRow}>
+              <Text style={styles.paidLabel}>{isCancelled || isFailed ? "Amount" : "Paid"}</Text>
+              <Text style={styles.paidValue}>{formatMoney(bill.paid)}</Text>
+            </View>
+
+            {bill.totalSavings > 0.005 && (
+              <View style={styles.savingsBanner}>
+                <Text style={styles.savingsText}>🎉 You saved {formatMoney(bill.totalSavings)} on this order!</Text>
               </View>
             )}
           </View>
 
-          {showPrepBanner ? (
-            <View style={styles.prepBanner}>
-              <Ionicons name="restaurant-outline" size={20} color={GatiMitraColors.emerald} />
-              <View style={{ flex: 1, marginLeft: 10 }}>
-                <Text style={styles.prepBannerTitle}>
-                  Restaurant is preparing your order
-                </Text>
-                <Text style={styles.prepBannerSub}>
-                  Food ready in ~{prepMinutesLeft} min
-                  {prepMinutesCommitted != null ? ` · ${prepMinutesCommitted} min prep time` : ""}
-                  {prepReadyByAt
-                    ? ` · by ${new Date(prepReadyByAt).toLocaleTimeString(undefined, {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}`
-                    : ""}
-                </Text>
+          {order.rider ? (
+            <View style={styles.card}>
+              <View style={styles.riderRow}>
+                <View style={styles.riderAvatar}>
+                  <Text style={styles.riderAvatarText}>{order.rider.name.slice(0, 1).toUpperCase()}</Text>
+                </View>
+                <View style={styles.riderInfo}>
+                  <Text style={styles.riderName}>{order.rider.name}</Text>
+                  {order.rider.phone ? (
+                    <Text style={styles.riderPhone}>{maskPhone(order.rider.phone)}</Text>
+                  ) : null}
+                </View>
               </View>
             </View>
           ) : null}
 
-          {/* Status timeline */}
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Order status</Text>
-            {STATUS_STEPS.map((step, i) => (
-              <View key={step.key} style={styles.timelineRow}>
-                <View style={styles.timelineDotWrap}>
-                  <View
-                    style={[
-                      styles.timelineDot,
-                      i <= activeIndex ? styles.timelineDotActive : styles.timelineDotInactive,
-                    ]}
-                  >
-                    {i < activeIndex ? (
-                      <Ionicons name="checkmark" size={14} color="#fff" />
-                    ) : i === activeIndex ? (
-                      <View style={styles.timelineDotCurrent} />
-                    ) : null}
+            <View style={styles.infoRow}>
+              <Ionicons name="wallet-outline" size={20} color={GREEN} />
+              <View style={styles.infoTextWrap}>
+                <Text style={styles.infoTitle}>Payment method</Text>
+                <Text style={styles.infoSub}>Paid via: {paymentMethodLabel}</Text>
+              </View>
+            </View>
+            <View style={styles.infoDivider} />
+            <View style={styles.infoRow}>
+              <Ionicons name="calendar-outline" size={20} color={GREEN} />
+              <View style={styles.infoTextWrap}>
+                <Text style={styles.infoTitle}>Payment date</Text>
+                <Text style={styles.infoSub}>{formatPaymentDate(order.createdAt)}</Text>
+              </View>
+            </View>
+            {!!order.deliveryAddress && (
+              <>
+                <View style={styles.infoDivider} />
+                <View style={styles.infoRow}>
+                  <Ionicons name="location-outline" size={20} color={GREEN} />
+                  <View style={styles.infoTextWrap}>
+                    <Text style={styles.infoTitle}>Delivery address</Text>
+                    <Text style={styles.infoSub}>{order.deliveryAddress}</Text>
                   </View>
-                  {i < STATUS_STEPS.length - 1 && (
-                    <View
-                      style={[
-                        styles.timelineLine,
-                        i < activeIndex ? styles.timelineLineActive : styles.timelineLineInactive,
-                      ]}
-                    />
-                  )}
                 </View>
-                <Text
-                  style={[
-                    styles.timelineLabel,
-                    i <= activeIndex ? styles.timelineLabelActive : styles.timelineLabelInactive,
-                  ]}
-                >
-                  {step.label}
-                </Text>
-              </View>
-            ))}
-          </View>
-
-          {/* Rider card */}
-          {order.rider && (
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Delivery partner</Text>
-              <View style={styles.riderRow}>
-                <View style={styles.riderAvatar}>
-                  <Ionicons name="person" size={24} color={GatiMitraColors.emerald} />
-                </View>
-                <View style={styles.riderInfo}>
-                  <Text style={styles.riderName}>{order.rider.name}</Text>
-                  {order.rider.phone && (
-                    <TouchableOpacity
-                      onPress={handleCallRider}
-                      style={styles.callBtn}
-                      activeOpacity={0.8}
-                    >
-                      <Ionicons name="call" size={18} color={GatiMitraColors.emerald} />
-                      <Text style={styles.callBtnText}>Call</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              </View>
-            </View>
-          )}
-
-          {/* Delivery address */}
-          {order.deliveryAddress && (
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Delivery address</Text>
-              <View style={styles.addressRow}>
-                <Ionicons name="location-outline" size={20} color={GatiMitraColors.textSecondary} />
-                <Text style={styles.addressText}>{order.deliveryAddress}</Text>
-              </View>
-              {order.deliveryOtp && !["DELIVERED", "CANCELLED"].includes(order.status) && (
-                <View style={styles.otpBox}>
-                  <Text style={styles.otpLabel}>Delivery OTP</Text>
-                  <Text style={styles.otpCode}>{order.deliveryOtp}</Text>
-                  <Text style={styles.otpHint}>Share this code only when you receive the order.</Text>
-                </View>
-              )}
-            </View>
-          )}
-
-          {/* Order summary */}
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Order summary</Text>
-            {order.items?.map((item, i) => (
-              <View key={i} style={styles.summaryRow}>
-                <Text style={styles.summaryItem} numberOfLines={1}>
-                  {item.name} × {item.quantity}
-                </Text>
-                <Text style={styles.summaryPrice}>
-                  ₹{Math.round(item.price * item.quantity)}
-                </Text>
-              </View>
-            ))}
-            {order.totalAmount != null && (
-              <View style={styles.summaryTotal}>
-                <Text style={styles.summaryTotalLabel}>Total</Text>
-                <Text style={styles.summaryTotalValue}>₹{order.totalAmount}</Text>
-              </View>
+              </>
             )}
           </View>
-
-          {/* Help & Support — full-featured card with three actions.
-              Mirrors the support hub's options so the customer never has to
-              leave this page to raise a ticket. Order context is pre-loaded
-              into raise-ticket; user can switch orders inside that flow. */}
-          <View style={styles.helpCard}>
-            <View style={styles.helpHeader}>
-              <View style={styles.helpHeaderIcon}>
-                <Ionicons name="headset" size={20} color={GatiMitraColors.emerald} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.helpTitle}>Need help?</Text>
-                <Text style={styles.helpSubtitle}>
-                  Chat with our support team — we&apos;re here 24×7.
-                </Text>
-              </View>
-            </View>
-
-            <TouchableOpacity
-              style={styles.helpActionPrimary}
-              onPress={handleOpenHelp}
-              activeOpacity={0.85}
-              accessibilityRole="button"
-              accessibilityLabel="Raise a ticket for this order"
-            >
-              <Ionicons name="chatbubbles" size={18} color="#fff" />
-              <Text style={styles.helpActionPrimaryText}>Raise ticket for this order</Text>
-              <Ionicons name="chevron-forward" size={18} color="#fff" />
-            </TouchableOpacity>
-
-            <View style={styles.helpActionRow}>
-              <TouchableOpacity
-                style={styles.helpActionSecondary}
-                onPress={handleViewAllTickets}
-                activeOpacity={0.85}
-              >
-                <Ionicons
-                  name="list-circle-outline"
-                  size={18}
-                  color={GatiMitraColors.emerald}
-                />
-                <Text style={styles.helpActionSecondaryText}>My tickets</Text>
-              </TouchableOpacity>
-              {order.rider?.phone ? (
-                <TouchableOpacity
-                  style={styles.helpActionSecondary}
-                  onPress={handleCallRider}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons name="call-outline" size={18} color={GatiMitraColors.emerald} />
-                  <Text style={styles.helpActionSecondaryText}>Call rider</Text>
-                </TouchableOpacity>
-              ) : (
-                <View style={[styles.helpActionSecondary, { opacity: 0.5 }]}>
-                  <Ionicons
-                    name="time-outline"
-                    size={18}
-                    color={GatiMitraColors.textSecondary}
-                  />
-                  <Text
-                    style={[
-                      styles.helpActionSecondaryText,
-                      { color: GatiMitraColors.textSecondary },
-                    ]}
-                  >
-                    Rider not assigned
-                  </Text>
-                </View>
-              )}
-            </View>
-          </View>
         </ScrollView>
+
+        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+          <TouchableOpacity style={styles.invoiceBtn} onPress={handleInvoice} activeOpacity={0.9}>
+            <Ionicons name="download-outline" size={18} color={GREEN} />
+            <Text style={styles.invoiceText}>Invoice</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: GatiMitraColors.softBackground,
-  },
-  screenBg: {
-    backgroundColor: GatiMitraColors.softBackground,
-  },
-  center: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  errText: {
-    fontSize: 16,
-    color: GatiMitraColors.textSecondary,
-    marginBottom: 16,
-  },
-  loadingText: {
-    fontSize: 16,
-    color: GatiMitraColors.textSecondary,
-    marginTop: 12,
-  },
-  primaryBtn: {
-    backgroundColor: GatiMitraColors.emerald,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 12,
-  },
-  primaryBtnText: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#fff",
-  },
+  screen: { flex: 1, backgroundColor: PAGE_BG },
+  center: { flex: 1, justifyContent: "center", alignItems: "center" },
+  mutedText: { marginTop: 12, fontSize: 15, color: MUTED },
   header: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#fff",
-    paddingHorizontal: 8,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: GatiMitraColors.border,
+    paddingHorizontal: 12,
+    paddingBottom: 6,
+    backgroundColor: PAGE_BG,
   },
-  headerIconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  headerSide: {
+    width: 88,
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
   },
-  headerCenter: { flex: 1, paddingHorizontal: 4, justifyContent: "center" },
+  headerSideRight: {
+    width: 88,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 4,
+  },
   headerTitle: {
-    fontSize: 16,
+    flex: 1,
+    textAlign: "center",
+    fontSize: 17,
     fontWeight: "700",
-    color: GatiMitraColors.textPrimary,
-    letterSpacing: 0.1,
+    color: TEXT,
   },
-  orderIdLabel: {
-    fontSize: 11,
-    color: GatiMitraColors.textSecondary,
-    marginTop: 1,
-    letterSpacing: 0.3,
+  supportText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: GREEN,
   },
   scroll: { flex: 1 },
-  scrollContent: { padding: 16 },
-  mapWrap: {
-    height: 220,
-    borderRadius: 16,
-    overflow: "hidden",
-    marginBottom: 16,
-    backgroundColor: GatiMitraColors.border,
+  card: {
+    backgroundColor: CARD,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
   },
-  map: {
-    ...StyleSheet.absoluteFillObject,
-    width: "100%",
-    height: "100%",
+  mapWrap: {
+    height: 200,
+    borderRadius: 10,
+    overflow: "hidden",
+    backgroundColor: "#E5E7EB",
+  },
+  map: { ...StyleSheet.absoluteFillObject },
+  mapPlaceholder: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#EEF2F0",
+  },
+  pickupMarker: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: GREEN,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#fff",
+  },
+  dropMarker: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "#374151",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#fff",
   },
   riderMarker: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: GatiMitraColors.emerald,
-    justifyContent: "center",
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: GREEN,
     alignItems: "center",
-    borderWidth: 3,
+    justifyContent: "center",
+    borderWidth: 2,
     borderColor: "#fff",
-    ...GatiMitraColors.elevationShadow,
   },
   etaPill: {
     position: "absolute",
-    top: 12,
-    left: 12,
-    right: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    backgroundColor: "#fff",
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 24,
-    ...GatiMitraColors.elevationShadow,
-  },
-  etaText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: GatiMitraColors.textPrimary,
-  },
-  deliveredPill: {
-    backgroundColor: GatiMitraColors.emerald,
-  },
-  deliveredText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#fff",
-  },
-  card: {
-    backgroundColor: "#fff",
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    ...GatiMitraColors.elevationShadow,
-  },
-  prepBanner: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    backgroundColor: "#ECFDF5",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#A7F3D0",
-    padding: 14,
-    marginBottom: 12,
-  },
-  prepBannerTitle: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: GatiMitraColors.textPrimary,
-  },
-  prepBannerSub: {
-    fontSize: 12,
-    color: GatiMitraColors.textSecondary,
-    marginTop: 4,
-    lineHeight: 17,
-  },
-  cardTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: GatiMitraColors.textPrimary,
-    marginBottom: 12,
-  },
-  timelineRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    marginBottom: 2,
-  },
-  timelineDotWrap: {
-    width: 24,
-    alignItems: "center",
-    position: "relative",
-  },
-  timelineDot: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  timelineDotActive: {
-    backgroundColor: GatiMitraColors.emerald,
-  },
-  timelineDotInactive: {
-    backgroundColor: "#E5E7EB",
-  },
-  timelineDotCurrent: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: "#fff",
-    borderWidth: 2,
-    borderColor: GatiMitraColors.emerald,
-  },
-  timelineLine: {
-    position: "absolute",
-    left: 11,
-    top: 24,
-    width: 2,
-    height: 22,
-  },
-  timelineLineActive: {
-    backgroundColor: GatiMitraColors.emerald,
-  },
-  timelineLineInactive: {
-    backgroundColor: "#E5E7EB",
-  },
-  timelineLabel: {
-    fontSize: 15,
-    marginLeft: 12,
-    flex: 1,
-    marginTop: 2,
-  },
-  timelineLabelActive: {
-    fontWeight: "600",
-    color: GatiMitraColors.textPrimary,
-  },
-  timelineLabelInactive: {
-    color: GatiMitraColors.textSecondary,
-  },
-  riderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  riderAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: GatiMitraColors.mintSoft,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  riderInfo: { marginLeft: 12, flex: 1 },
-  riderName: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: GatiMitraColors.textPrimary,
-  },
-  callBtn: {
+    top: 10,
+    alignSelf: "center",
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    marginTop: 4,
+    backgroundColor: "#fff",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 3,
   },
-  callBtnText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: GatiMitraColors.emerald,
+  etaText: { fontSize: 14, fontWeight: "600", color: TEXT },
+  otpRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 10,
   },
-  addressRow: {
+  otpText: { fontSize: 13, color: MUTED },
+  otpValue: { fontWeight: "700", color: TEXT },
+  statusRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  statusIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#F0FDF4",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  statusIconDanger: { backgroundColor: "#FEF2F2" },
+  statusText: { flex: 1, fontSize: 16, fontWeight: "700", color: TEXT },
+  restaurantRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  restaurantLogo: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "#F3F4F6",
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  restaurantLogoImg: { width: "100%", height: "100%" },
+  restaurantInitial: { fontSize: 18, fontWeight: "700", color: GREEN },
+  restaurantInfo: { flex: 1 },
+  restaurantName: { fontSize: 16, fontWeight: "700", color: TEXT },
+  restaurantArea: { marginTop: 2, fontSize: 12, color: MUTED },
+  callBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: BORDER,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  orderIdRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: BORDER,
+  },
+  orderIdText: { fontSize: 13, fontWeight: "600", color: TEXT },
+  itemRow: {
     flexDirection: "row",
     alignItems: "flex-start",
+    justifyContent: "space-between",
+    paddingTop: 12,
     gap: 10,
   },
-  addressText: {
-    fontSize: 14,
-    color: GatiMitraColors.textSecondary,
-    flex: 1,
+  itemLeft: { flex: 1, flexDirection: "row", alignItems: "flex-start", gap: 8 },
+  dietWrap: { marginTop: 2 },
+  itemTextWrap: { flex: 1 },
+  itemName: { fontSize: 14, fontWeight: "600", color: TEXT, lineHeight: 18 },
+  itemSubtext: { marginTop: 2, fontSize: 12, color: MUTED, lineHeight: 16 },
+  itemPrice: { fontSize: 14, fontWeight: "700", color: TEXT },
+  billHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
   },
-  otpBox: {
-    marginTop: 14,
-    padding: 12,
-    borderRadius: 10,
-    backgroundColor: GatiMitraColors.emerald + "14",
-    borderWidth: 1,
-    borderColor: GatiMitraColors.emerald + "40",
+  billHeaderLeft: { flexDirection: "row", alignItems: "center", gap: 8 },
+  billIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  otpLabel: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: GatiMitraColors.emerald,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  otpCode: {
-    fontSize: 28,
-    fontWeight: "700",
-    color: GatiMitraColors.textPrimary,
-    letterSpacing: 6,
-    marginTop: 4,
-  },
-  otpHint: {
-    fontSize: 12,
-    color: GatiMitraColors.textSecondary,
-    marginTop: 6,
-  },
-  summaryRow: {
+  billTitle: { fontSize: 15, fontWeight: "700", color: TEXT },
+  billRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     paddingVertical: 6,
   },
-  summaryItem: {
-    fontSize: 14,
-    color: GatiMitraColors.textPrimary,
-    flex: 1,
-  },
-  summaryPrice: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: GatiMitraColors.textPrimary,
-  },
-  summaryTotal: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginTop: 8,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: GatiMitraColors.border,
-  },
-  summaryTotalLabel: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: GatiMitraColors.textPrimary,
-  },
-  summaryTotalValue: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: GatiMitraColors.textPrimary,
-  },
-  helpBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 14,
-    marginTop: 8,
-  },
-  helpBtnText: {
-    fontSize: 15,
-    color: GatiMitraColors.textSecondary,
-  },
-  /** Rich help/support card — mirrors the support hub's actions inline. */
-  helpCard: {
-    backgroundColor: "#fff",
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    ...GatiMitraColors.elevationShadow,
-  },
-  helpHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    marginBottom: 14,
-  },
-  helpHeaderIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: GatiMitraColors.mintSoft,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  helpTitle: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: GatiMitraColors.textPrimary,
-  },
-  helpSubtitle: {
-    fontSize: 12,
-    color: GatiMitraColors.textSecondary,
-    marginTop: 2,
-  },
-  helpActionPrimary: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: GatiMitraColors.emerald,
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-  },
-  helpActionPrimaryText: {
-    flex: 1,
-    color: "#fff",
-    fontWeight: "700",
-    fontSize: 14,
-  },
-  helpActionRow: {
-    flexDirection: "row",
-    gap: 10,
-    marginTop: 10,
-  },
-  helpActionSecondary: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    borderRadius: 12,
-    paddingVertical: 11,
-    paddingHorizontal: 8,
-    backgroundColor: GatiMitraColors.mintSoft,
-    borderWidth: 1,
-    borderColor: "#d1fae5",
-  },
-  helpActionSecondaryText: {
+  billLabel: { flex: 1, fontSize: 13, color: MUTED, paddingRight: 8 },
+  billValue: { fontSize: 13, fontWeight: "600", color: TEXT },
+  freeDeliveryWrap: { flexDirection: "row", alignItems: "center", gap: 6 },
+  strikePrice: {
     fontSize: 13,
-    fontWeight: "600",
-    color: GatiMitraColors.emerald,
+    color: MUTED,
+    textDecorationLine: "line-through",
   },
+  freeText: { fontSize: 13, fontWeight: "700", color: LINK_BLUE },
+  billGrandRow: {
+    marginTop: 4,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: BORDER,
+  },
+  billGrandLabel: { fontSize: 14, fontWeight: "700", color: TEXT },
+  billGrandValue: { fontSize: 14, fontWeight: "700", color: TEXT },
+  couponLabel: { flex: 1, fontSize: 13, fontWeight: "600", color: LINK_BLUE },
+  couponValue: { fontSize: 13, fontWeight: "700", color: LINK_BLUE },
+  paidLabel: { fontSize: 15, fontWeight: "700", color: TEXT },
+  paidValue: { fontSize: 15, fontWeight: "800", color: TEXT },
+  savingsBanner: {
+    marginTop: 10,
+    backgroundColor: "#EBF5FF",
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  savingsText: { fontSize: 13, fontWeight: "600", color: LINK_BLUE, textAlign: "center" },
+  riderRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  riderAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  riderAvatarText: { fontSize: 16, fontWeight: "700", color: GREEN },
+  riderInfo: { flex: 1 },
+  riderName: { fontSize: 15, fontWeight: "700", color: TEXT },
+  riderPhone: { marginTop: 2, fontSize: 12, color: MUTED },
+  infoRow: { flexDirection: "row", alignItems: "flex-start", gap: 12, paddingVertical: 4 },
+  infoDivider: { height: 1, backgroundColor: BORDER, marginVertical: 10 },
+  infoTextWrap: { flex: 1 },
+  infoTitle: { fontSize: 13, fontWeight: "700", color: TEXT },
+  infoSub: { marginTop: 3, fontSize: 12, lineHeight: 17, color: MUTED },
+  footer: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: PAGE_BG,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: BORDER,
+  },
+  invoiceBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 1.5,
+    borderColor: GREEN,
+    borderRadius: 10,
+    paddingVertical: 14,
+    backgroundColor: CARD,
+  },
+  invoiceText: { fontSize: 15, fontWeight: "700", color: GREEN },
 });

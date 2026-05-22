@@ -69,7 +69,7 @@ const RAIL_ROW_GAP = 10;
 const CATEGORY_RAIL_TARGET_COLUMNS = 4;
 
 const OFFERS_SECTION_PAD = 10;
-const OFFER_CARD_HEIGHT = 116;
+const OFFER_CARD_HEIGHT = 148;
 const OFFER_GAP = 12;
 
 type SortOption = "default" | "rating" | "distance";
@@ -568,6 +568,12 @@ export default function FoodMerchantsScreen() {
                         <HomeFeaturedOfferCard
                           title={o.title}
                           sub={o.sub}
+                          storeName={o.store_name}
+                          couponCode={o.coupon_code}
+                          minOrderAmount={o.min_order_amount}
+                          maxDiscountAmount={o.max_discount_amount}
+                          offerType={o.offer_type}
+                          kind={o.kind}
                           width={offerCardWidth}
                           height={OFFER_CARD_HEIGHT}
                         />
@@ -918,22 +924,19 @@ const styles = StyleSheet.create({
   offersSection: {
     paddingVertical: OFFERS_SECTION_PAD,
     paddingHorizontal: PAGE_PAD,
+    marginBottom: 4,
   },
   offersScrollContent: {
     gap: OFFER_GAP,
     paddingRight: PAGE_PAD,
+    paddingVertical: 4,
   },
   offerCardWrap: {
     height: OFFER_CARD_HEIGHT,
-    borderRadius: 18,
+    borderRadius: 12,
     overflow: "hidden",
-    ...(Platform.OS === "ios" && {
-      shadowColor: "#000",
-      shadowOffset: { width: 0, height: 10 },
-      shadowOpacity: 0.12,
-      shadowRadius: 22,
-    }),
-    elevation: 6,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
   },
   restaurantEmptyHint: {
     fontSize: 14,

@@ -1,46 +1,47 @@
 /**
- * Profile tab – GatiMitra Account screen.
- * Gradient header with visible status bar, quick actions, single rewards/referral entry, refer CTA.
+ * Profile tab — Zomato-style account card with GMitra Plus subscription strip.
  */
 
-import { useCallback } from "react";
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert } from "react-native";
+import { useCallback, useMemo, useState, useEffect } from "react";
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Pressable } from "react-native";
+import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
-import { LinearGradient } from "expo-linear-gradient";
-import { Ionicons } from "@expo/vector-icons";
+import { StatusBar } from "expo-status-bar";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { profileService } from "@/services/profile.service";
 import { BrandingFooter } from "@/components/BrandingFooter";
+import { shareReferralCode } from "@/lib/referralShare";
 
-const TEAL = "#14b8a6";
-const TEAL_DARK = "#0d9488";
-const TEAL_LIGHT = "#5eead4";
-const MINT_SOFT = "#ccfbf1";
-const MINT_SOFT_ALT = "#E0F2F1";
-const TITLE_DARK = "#0f172a";
-const TEXT_GRAY = "#64748b";
-const TEXT_MUTED = "#94a3b8";
-const CARD_BG = "#FFFFFF";
-const BORDER_LIGHT = "#f1f5f9";
-const SURFACE = "#f8fafc";
+import { GatiMitraColors } from "@/constants/gatimitra";
 
-const SHADOW = {
-  shadowColor: "#0f172a",
-  shadowOffset: { width: 0, height: 2 },
-  shadowOpacity: 0.06,
-  shadowRadius: 8,
-  elevation: 3,
-};
+const PLUS_BLUE = "#1D4ED8";
+const GMITRA_PLUS_NAME = "GMitra Plus";
+const GREEN = GatiMitraColors.primaryMint;
+const GREEN_DARK = "#15803D";
+const TEXT = "#111827";
+const MUTED = "#6B7280";
+const BORDER = "#E5E7EB";
+const PAGE_BG = "#F3F4F6";
+const GOLD = "#FBBF24";
+const GOLD_TEXT = "#FDE68A";
 
-const SHADOW_SOFT = {
-  shadowColor: "#0f172a",
-  shadowOffset: { width: 0, height: 1 },
-  shadowOpacity: 0.04,
-  shadowRadius: 4,
-  elevation: 2,
+function getInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return "GM";
+}
+
+type MenuItem = {
+  id: string;
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  path: string | null;
+  badge?: string;
 };
 
 export default function ProfileScreen() {
@@ -54,10 +55,20 @@ export default function ProfileScreen() {
   });
 
   const displayName = profile?.full_name?.trim() || t("common.customer");
+  const initials = useMemo(() => getInitials(displayName), [displayName]);
+  const email = profile?.email?.trim() || null;
   const lifetimeSavings = "2,167";
   const referralCode = profile?.referral_code ?? null;
-  const customerId = profile?.customer_id ?? profile?.user_id ?? profile?.referral_code ?? null;
+  const customerId = profile?.customer_id ?? profile?.user_id ?? null;
   const isEmailVerified = profile?.is_email_verified ?? false;
+  const profileImageUrl = profile?.profile_image_url?.trim() || null;
+  const showEmailAvatar = isEmailVerified && !!profileImageUrl;
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  const subscriptionActive = profile?.gmitra_plus_active ?? false;
+
+  useEffect(() => {
+    setAvatarFailed(false);
+  }, [profileImageUrl]);
 
   const copyToClipboard = useCallback(async (text: string, label: string) => {
     if (!text) return;
@@ -68,6 +79,30 @@ export default function ProfileScreen() {
       Alert.alert("Error", "Could not copy");
     }
   }, []);
+
+  const handleSubscriptionPress = useCallback(() => {
+    if (subscriptionActive) {
+      Alert.alert(
+        `${GMITRA_PLUS_NAME} Active`,
+        "Your membership benefits are applied automatically on eligible orders — better delivery pricing and exclusive offers.",
+        [{ text: "OK" }]
+      );
+      return;
+    }
+    Alert.alert(
+      `Join ${GMITRA_PLUS_NAME}`,
+      "Add GMitra Plus at checkout on your next order — save on delivery and unlock member-only offers.",
+      [
+        { text: "Not now", style: "cancel" },
+        { text: "Browse restaurants", onPress: () => router.push("/(tabs)") },
+      ]
+    );
+  }, [subscriptionActive, router]);
+
+  const handleReferNow = useCallback(() => {
+    void shareReferralCode(referralCode, displayName);
+  }, [referralCode, displayName]);
+
   const addressParts = [
     profile?.address_line1,
     profile?.address_line2,
@@ -76,163 +111,176 @@ export default function ProfileScreen() {
   ].filter(Boolean);
   const addressLine = addressParts.length > 0 ? addressParts.join(", ") : null;
 
-  const quickActions = [
-    { id: "transactions", label: t("profile.transactions"), icon: "receipt-outline" as const, path: "/wallet" },
-    { id: "support", label: t("profile.support"), icon: "help-circle-outline" as const, path: "/support" },
-    { id: "settings", label: t("profile.settings"), icon: "settings-outline" as const, path: "/profile/settings" },
-  ];
-  const menuItems = [
-    { id: "rewards", label: t("profile.rewardsAndReferrals"), icon: "gift-outline" as const, path: null },
-    { id: "addresses", label: t("profile.savedAddresses"), icon: "location-outline" as const, path: "/profile/addresses" },
+  const menuItems: MenuItem[] = [
+    { id: "transactions", label: t("profile.transactions"), icon: "wallet-outline", path: "/wallet" },
+    { id: "support", label: t("profile.support"), icon: "chatbubble-ellipses-outline", path: "/support" },
+    { id: "rewards", label: t("profile.rewardsAndReferrals"), icon: "gift-outline", path: "/profile/referrals", badge: "New" },
+    { id: "addresses", label: t("profile.savedAddresses"), icon: "location-outline", path: "/profile/addresses" },
+    { id: "settings", label: t("profile.settings"), icon: "settings-outline", path: "/profile/settings" },
+    ...( !isEmailVerified && profile?.email
+      ? [{ id: "verify", label: t("profile.verifyEmail"), icon: "mail-outline" as const, path: "/profile/verify-email", badge: "!" }]
+      : []),
   ];
 
   return (
-    <View style={styles.container}>
+    <View style={styles.screen}>
+      <StatusBar style="dark" backgroundColor={PAGE_BG} />
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 100 }]}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header gradient – starts below the white status bar */}
-        <LinearGradient
-          colors={[TEAL_DARK, TEAL, TEAL_LIGHT]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.headerGradient}
-        >
-          <View style={styles.headerCurve} />
-          {customerId ? (
-            <View style={styles.customerIdBadge}>
-              <Text style={styles.customerIdLabel}>{t("profile.customerId")}</Text>
-              <View style={styles.customerIdRow}>
-                <Text style={styles.customerIdValue} numberOfLines={1}>{customerId}</Text>
-                <TouchableOpacity
-                  hitSlop={6}
-                  style={styles.copyBtn}
-                  onPress={() => copyToClipboard(customerId, "Customer ID")}
-                >
-                  <Ionicons name="copy-outline" size={14} color="rgba(255,255,255,0.95)" />
-                </TouchableOpacity>
-              </View>
-            </View>
-          ) : null}
-          <View style={styles.profileRow}>
-            <View style={styles.avatarWrap}>
-              <Text style={styles.avatarText}>👤</Text>
-            </View>
-            <View style={styles.profileInfo}>
-              <View style={styles.nameRow}>
-                <Text style={styles.profileName}>{displayName}</Text>
-                <TouchableOpacity hitSlop={8} onPress={() => router.push("/profile/edit")}>
-                  <Ionicons name="pencil" size={16} color="rgba(255,255,255,0.9)" />
-                </TouchableOpacity>
-              </View>
-              <Text style={styles.savings}>{t("profile.lifetimeSavings")}: ₹{lifetimeSavings}</Text>
-              {referralCode ? (
-                <View style={styles.referralIdWrap}>
-                  <Text style={styles.referralIdLabel}>{t("profile.referralId")}</Text>
-                  <View style={styles.referralIdRow}>
-                    <Text style={styles.referralIdValue} selectable numberOfLines={1}>
-                      {referralCode}
-                    </Text>
-                    <TouchableOpacity
-                      hitSlop={6}
-                      style={styles.copyBtn}
-                      onPress={() => copyToClipboard(referralCode, t("profile.referralId"))}
-                    >
-                      <Ionicons name="copy-outline" size={14} color="rgba(255,255,255,0.95)" />
-                    </TouchableOpacity>
+        {/* Profile card — Zomato-style with subscription strip */}
+        <View style={[styles.profileCard, { marginTop: Math.max(insets.top - 4, 6) }]}>
+          <View style={styles.profileCardBody}>
+            <View style={styles.identityRow}>
+              <View style={styles.avatar}>
+                {showEmailAvatar && !avatarFailed ? (
+                  <Image
+                    source={{ uri: profileImageUrl }}
+                    style={styles.avatarImage}
+                    contentFit="cover"
+                    transition={200}
+                    onError={() => setAvatarFailed(true)}
+                  />
+                ) : (
+                  <Text style={styles.avatarText}>{initials}</Text>
+                )}
+                {isEmailVerified ? (
+                  <View style={styles.avatarVerifiedDot}>
+                    <Ionicons name="checkmark" size={10} color="#fff" />
                   </View>
-                </View>
-              ) : null}
-              <View style={styles.linksRow}>
-                {!isEmailVerified && profile?.email ? (
-                  <TouchableOpacity
-                    style={styles.linkChip}
-                    onPress={() => router.push("/profile/verify-email")}
-                  >
-                    <Ionicons name="mail-unread-outline" size={14} color="rgba(255,255,255,0.95)" />
-                    <Text style={styles.linkChipText}>{t("profile.verifyEmail")}</Text>
-                  </TouchableOpacity>
                 ) : null}
-                <TouchableOpacity style={styles.linkChip} onPress={() => router.push("/profile/edit")}>
-                  <Text style={styles.linkChipText}>{t("profile.editProfile")}</Text>
-                  <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.95)" />
-                </TouchableOpacity>
+              </View>
+              <View style={styles.identityBody}>
+                <Text style={styles.userName} numberOfLines={1}>{displayName}</Text>
+                {email ? (
+                  <View style={styles.emailRow}>
+                    <Text style={styles.userEmail} numberOfLines={1}>{email}</Text>
+                    {isEmailVerified ? (
+                      <View style={styles.emailVerifiedTag}>
+                        <Ionicons name="checkmark-circle" size={12} color={GREEN} />
+                        <Text style={styles.emailVerifiedText}>Verified</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                ) : (
+                  <Text style={styles.userEmail}>Add email in profile</Text>
+                )}
+                <Pressable style={styles.editLink} onPress={() => router.push("/profile/edit")}>
+                  <Text style={styles.editLinkText}>{t("profile.editProfile")}</Text>
+                  <Ionicons name="chevron-forward" size={14} color={GREEN} />
+                </Pressable>
               </View>
             </View>
           </View>
-        </LinearGradient>
 
-        {addressLine ? (
-          <View style={[styles.addressCard, SHADOW_SOFT]}>
-            <View style={styles.addressIconWrap}>
-              <Ionicons name="location-outline" size={20} color={TEAL} />
+          <TouchableOpacity
+            style={styles.plusStrip}
+            activeOpacity={0.88}
+            onPress={handleSubscriptionPress}
+          >
+            <View style={styles.plusCrownRing}>
+              <MaterialCommunityIcons name="crown" size={16} color={GOLD} />
             </View>
-            <Text style={styles.addressText} numberOfLines={2}>
-              {addressLine}
+            <Text style={styles.plusStripText}>
+              {subscriptionActive ? `${GMITRA_PLUS_NAME} Active` : `Join ${GMITRA_PLUS_NAME}`}
             </Text>
+            <Ionicons name="chevron-forward" size={18} color={GOLD_TEXT} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Savings + coupons */}
+        <View style={styles.statsRow}>
+          <View style={styles.statCard}>
+            <View style={styles.statTopRow}>
+              <View style={styles.statIconWrap}>
+                <Ionicons name="sparkles-outline" size={18} color={GREEN_DARK} />
+              </View>
+              <Text style={styles.statLabel} numberOfLines={2}>{t("profile.lifetimeSavings")}</Text>
+            </View>
+            <Text style={styles.statValue}>₹{lifetimeSavings}</Text>
+          </View>
+          <View style={styles.statCard}>
+            <View style={styles.statTopRow}>
+              <View style={styles.statIconWrap}>
+                <Ionicons name="pricetag-outline" size={18} color={GREEN_DARK} />
+              </View>
+              <Text style={styles.statLabel} numberOfLines={2}>Your coupons</Text>
+            </View>
+            <Text style={styles.statValue}>0</Text>
+          </View>
+        </View>
+
+        {/* Customer / Referral IDs */}
+        {(customerId || referralCode) ? (
+          <View style={styles.idCard}>
+            {customerId ? (
+              <TouchableOpacity style={styles.idRow} onPress={() => copyToClipboard(customerId, "Customer ID")}>
+                <Text style={styles.idLabel}>{t("profile.customerId")}</Text>
+                <View style={styles.idValueRow}>
+                  <Text style={styles.idValue}>{customerId}</Text>
+                  <Ionicons name="copy-outline" size={15} color={MUTED} />
+                </View>
+              </TouchableOpacity>
+            ) : null}
+            {customerId && referralCode ? <View style={styles.idDivider} /> : null}
+            {referralCode ? (
+              <TouchableOpacity style={styles.idRow} onPress={() => copyToClipboard(referralCode, t("profile.referralId"))}>
+                <Text style={styles.idLabel}>{t("profile.referralId")}</Text>
+                <View style={styles.idValueRow}>
+                  <Text style={styles.idValue}>{referralCode}</Text>
+                  <Ionicons name="copy-outline" size={15} color={MUTED} />
+                </View>
+              </TouchableOpacity>
+            ) : null}
           </View>
         ) : null}
 
-        {/* Quick actions */}
-        <View style={styles.quickCardsWrap}>
-          {quickActions.map((a) => (
-            <TouchableOpacity
-              key={a.id}
-              style={[styles.quickCard, SHADOW_SOFT]}
-              activeOpacity={0.85}
-              onPress={() => a.path && router.push(a.path as any)}
-            >
-              <View style={styles.quickCardIconWrap}>
-                <Ionicons name={a.icon} size={24} color={TEAL} />
-              </View>
-              <Text style={styles.quickCardLabel} numberOfLines={1}>
-                {a.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+        {/* Address */}
+        <TouchableOpacity style={styles.addressRow} activeOpacity={0.8} onPress={() => router.push("/profile/addresses")}>
+          <View style={styles.addressIconWrap}>
+            <Ionicons name="location-outline" size={18} color={GREEN} />
+          </View>
+          <View style={styles.addressCopy}>
+            <Text style={styles.addressTitle}>{addressLine ? "Delivery address" : "Add delivery address"}</Text>
+            <Text style={styles.addressSub} numberOfLines={2}>
+              {addressLine ?? "Save your home or work for faster checkout"}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+        </TouchableOpacity>
 
-        {/* Menu list – single Rewards & Referrals, no duplicate Settings */}
-        <View style={[styles.listCard, SHADOW_SOFT]}>
+        {/* Menu list */}
+        <View style={styles.menuCard}>
           {menuItems.map((item, index) => (
             <TouchableOpacity
               key={item.id}
-              style={[styles.listRow, index < menuItems.length - 1 && styles.listRowBorder]}
-              onPress={() => (item.path ? router.push(item.path as any) : null)}
-              activeOpacity={0.7}
+              style={[styles.menuRow, index < menuItems.length - 1 && styles.menuRowBorder]}
+              onPress={() => (item.path ? router.push(item.path as never) : null)}
+              activeOpacity={0.75}
             >
-              <View style={styles.listIconWrap}>
-                <Ionicons name={item.icon} size={22} color={TEAL} />
-              </View>
-              <Text style={styles.listLabel}>{item.label}</Text>
-              <Ionicons name="chevron-forward" size={20} color={TEXT_MUTED} />
+              <Ionicons name={item.icon} size={20} color={TEXT} />
+              <Text style={styles.menuLabel}>{item.label}</Text>
+              {item.badge ? (
+                <View style={styles.menuBadge}>
+                  <Text style={styles.menuBadgeText}>{item.badge}</Text>
+                </View>
+              ) : null}
+              <Ionicons name="chevron-forward" size={17} color="#C4C4C4" />
             </TouchableOpacity>
           ))}
         </View>
 
-        {/* Single Refer & Earn CTA */}
-        <LinearGradient
-          colors={[MINT_SOFT_ALT, MINT_SOFT]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={[styles.referBanner, SHADOW_SOFT]}
-        >
-          <View style={styles.referBannerContent}>
-            <View style={styles.referIconWrap}>
-              <Ionicons name="gift" size={28} color={TEAL_DARK} />
-            </View>
-            <View style={styles.referTextWrap}>
-              <Text style={styles.referTitle}>{t("profile.referEarnTitle")}</Text>
-              <Text style={styles.referSub}>{t("profile.referEarnSub")}</Text>
-            </View>
-          </View>
-          <TouchableOpacity style={styles.referBtn} activeOpacity={0.9}>
+        {/* Refer banner */}
+        <View style={styles.referCard}>
+          <Text style={styles.referTitle}>{t("profile.referEarnTitle")}</Text>
+          <Text style={styles.referSub}>{t("profile.referEarnSub")}</Text>
+          <TouchableOpacity style={styles.referBtn} activeOpacity={0.9} onPress={handleReferNow}>
             <Text style={styles.referBtnText}>{t("profile.referNow")}</Text>
-            <Ionicons name="arrow-forward" size={18} color="#fff" />
+            <Ionicons name="arrow-forward" size={16} color="#fff" />
           </TouchableOpacity>
-        </LinearGradient>
+        </View>
 
         <BrandingFooter />
       </ScrollView>
@@ -240,189 +288,192 @@ export default function ProfileScreen() {
   );
 }
 
-const PAD_H = 20;
-const SECTION_GAP = 20;
-const CARD_RADIUS = 16;
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: SURFACE },
+  screen: { flex: 1, backgroundColor: PAGE_BG },
   scroll: { flex: 1 },
-  scrollContent: {
-    paddingHorizontal: PAD_H,
-    paddingTop: 0,
-    paddingBottom: 40,
+  scrollContent: { paddingHorizontal: 16 },
+  profileCard: {
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: BORDER,
   },
-  headerGradient: {
-    paddingHorizontal: PAD_H + 4,
-    paddingTop: 24,
-    paddingBottom: 28,
-    marginHorizontal: -4,
-    marginTop: 0,
-    borderBottomLeftRadius: 24,
-    borderBottomRightRadius: 24,
+  profileCardBody: { padding: 16, paddingBottom: 14 },
+  identityRow: { flexDirection: "row", alignItems: "center", gap: 14 },
+  avatar: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "#ECFDF5",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+    overflow: "hidden",
+    position: "relative",
+  },
+  avatarImage: { width: 64, height: 64, borderRadius: 32 },
+  avatarVerifiedDot: {
+    position: "absolute",
+    right: 0,
+    bottom: 0,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: GREEN,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#fff",
+  },
+  avatarText: { fontSize: 22, fontWeight: "800", color: GREEN_DARK },
+  identityBody: { flex: 1 },
+  userName: { fontSize: 18, fontWeight: "800", color: TEXT, letterSpacing: -0.2 },
+  userEmail: { fontSize: 13, color: MUTED, flexShrink: 1 },
+  emailRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2, flexWrap: "wrap" },
+  emailVerifiedTag: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: "#ECFDF5",
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+  },
+  emailVerifiedText: { fontSize: 10, fontWeight: "700", color: GREEN_DARK },
+  editLink: { flexDirection: "row", alignItems: "center", gap: 2, marginTop: 6 },
+  editLinkText: { fontSize: 13, fontWeight: "700", color: GREEN },
+  plusStrip: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: PLUS_BLUE,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  plusCrownRing: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: "rgba(255, 255, 255, 0.18)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  plusStripText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "700",
+    color: GOLD_TEXT,
+    letterSpacing: 0.1,
+  },
+  statsRow: { flexDirection: "row", gap: 10, marginTop: 12 },
+  statCard: {
+    flex: 1,
+    backgroundColor: "#fff",
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  statTopRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  statIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#ECFDF5",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  statLabel: { flex: 1, fontSize: 12, color: MUTED, fontWeight: "600", lineHeight: 16 },
+  statValue: { fontSize: 20, fontWeight: "800", color: GREEN_DARK, marginTop: 10 },
+  idCard: {
+    backgroundColor: "#fff",
+    borderRadius: 14,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
     overflow: "hidden",
   },
-  headerCurve: {
-    position: "absolute",
-    right: -40,
-    top: -20,
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: "rgba(255,255,255,0.12)",
-  },
-  customerIdBadge: {
-    position: "absolute",
-    top: 16,
-    right: PAD_H + 4,
-    zIndex: 2,
-    alignItems: "flex-end",
-    maxWidth: "50%",
-  },
-  customerIdLabel: {
+  idRow: { paddingHorizontal: 14, paddingVertical: 12 },
+  idDivider: { height: StyleSheet.hairlineWidth, backgroundColor: BORDER, marginHorizontal: 14 },
+  idLabel: {
     fontSize: 10,
-    color: "rgba(255,255,255,0.95)",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    fontWeight: "600",
-  },
-  customerIdRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    marginTop: 2,
-  },
-  customerIdValue: {
-    fontSize: 12,
     fontWeight: "700",
-    color: "#fff",
-    maxWidth: 100,
+    color: MUTED,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
   },
-  copyBtn: {
-    padding: 2,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  profileRow: { flexDirection: "row", alignItems: "center" },
-  avatarWrap: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: "rgba(255,255,255,0.28)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  avatarText: { fontSize: 36 },
-  profileInfo: { marginLeft: 18, flex: 1 },
-  nameRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  profileName: { fontSize: 20, fontWeight: "700", color: "#fff", letterSpacing: 0.2 },
-  savings: { fontSize: 14, color: "rgba(255,255,255,0.92)", marginTop: 4 },
-  referralIdWrap: { marginTop: 6 },
-  referralIdLabel: { fontSize: 11, color: "rgba(255,255,255,0.95)", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: "600" },
-  referralIdRow: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", gap: 4, marginTop: 2 },
-  referralIdValue: { fontSize: 13, fontWeight: "600", color: "#fff" },
-  linksRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", marginTop: 10, gap: 8 },
-  linkChip: {
+  idValueRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 },
+  idValue: { flex: 1, fontSize: 14, fontWeight: "700", color: TEXT },
+  addressRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    backgroundColor: "rgba(255,255,255,0.2)",
-  },
-  linkChipText: { fontSize: 13, color: "rgba(255,255,255,0.98)", fontWeight: "600" },
-  addressCard: {
-    flexDirection: "row",
-    alignItems: "center",
+    backgroundColor: "#fff",
+    borderRadius: 14,
+    padding: 14,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
     gap: 12,
-    backgroundColor: CARD_BG,
-    borderRadius: CARD_RADIUS,
-    padding: 16,
-    marginTop: 18,
   },
   addressIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: MINT_SOFT_ALT,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#ECFDF5",
     alignItems: "center",
     justifyContent: "center",
   },
-  addressText: { flex: 1, fontSize: 14, color: TITLE_DARK, lineHeight: 20 },
-  quickCardsWrap: {
-    flexDirection: "row",
-    marginTop: SECTION_GAP,
-    gap: 12,
-  },
-  quickCard: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 18,
-    paddingHorizontal: 10,
-    backgroundColor: CARD_BG,
-    borderRadius: CARD_RADIUS,
-  },
-  quickCardIconWrap: {
-    width: 44,
-    height: 44,
+  addressCopy: { flex: 1 },
+  addressTitle: { fontSize: 14, fontWeight: "700", color: TEXT },
+  addressSub: { fontSize: 12, color: MUTED, marginTop: 3, lineHeight: 17 },
+  menuCard: {
+    backgroundColor: "#fff",
     borderRadius: 14,
-    backgroundColor: MINT_SOFT_ALT,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  quickCardLabel: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: TITLE_DARK,
-    marginTop: 10,
-    textAlign: "center",
-  },
-  listCard: {
-    backgroundColor: CARD_BG,
-    borderRadius: CARD_RADIUS,
-    marginTop: SECTION_GAP,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
     overflow: "hidden",
   },
-  listRow: {
+  menuRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 16,
-    paddingHorizontal: 16,
+    paddingVertical: 15,
+    paddingHorizontal: 14,
+    gap: 12,
   },
-  listRowBorder: { borderBottomWidth: 1, borderBottomColor: BORDER_LIGHT },
-  listIconWrap: { width: 40, alignItems: "center" },
-  listLabel: { flex: 1, fontSize: 15, fontWeight: "500", color: TITLE_DARK },
-  referBanner: {
-    marginTop: SECTION_GAP,
-    borderRadius: CARD_RADIUS,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: "rgba(20, 184, 166, 0.2)",
+  menuRowBorder: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: BORDER },
+  menuLabel: { flex: 1, fontSize: 15, fontWeight: "600", color: TEXT },
+  menuBadge: {
+    backgroundColor: "#FEE2E2",
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+    marginRight: 4,
   },
-  referBannerContent: { flexDirection: "row", alignItems: "center", marginBottom: 14 },
-  referIconWrap: {
-    width: 48,
-    height: 48,
+  menuBadgeText: { fontSize: 10, fontWeight: "800", color: "#DC2626" },
+  referCard: {
+    marginTop: 12,
+    backgroundColor: GREEN_DARK,
     borderRadius: 14,
-    backgroundColor: "rgba(255,255,255,0.9)",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 14,
+    padding: 16,
   },
-  referTextWrap: { flex: 1 },
-  referTitle: { fontSize: 16, fontWeight: "700", color: TITLE_DARK },
-  referSub: { fontSize: 13, color: TEXT_GRAY, marginTop: 2 },
+  referTitle: { fontSize: 16, fontWeight: "800", color: "#fff" },
+  referSub: { fontSize: 12, color: "rgba(255,255,255,0.8)", marginTop: 4, lineHeight: 17 },
   referBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: TEAL_DARK,
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    marginTop: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.25)",
   },
-  referBtnText: { fontSize: 15, fontWeight: "600", color: "#fff" },
+  referBtnText: { fontSize: 14, fontWeight: "700", color: "#fff" },
 });

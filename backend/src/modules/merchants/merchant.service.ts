@@ -1,4 +1,6 @@
 import { getSupabase } from "../../lib/supabase.js";
+import { getDb } from "../../db/client.js";
+import { sql } from "drizzle-orm";
 import { getEnv } from "../../config/env.js";
 import { getRoute, haversineDistanceKm } from "../distance/distance.service.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
@@ -432,11 +434,65 @@ export async function getStoreByStoreId(storeId: string): Promise<MerchantStoreR
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("merchant_stores")
-    .select("id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, created_at, parent_id, packaging_charge_amount, delivery_charge_per_km, delivery_radius_km")
+    .select("id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, created_at, parent_id, packaging_charge_amount, delivery_charge_per_km, delivery_radius_km, store_phones")
     .eq("store_id", storeId)
     .single();
   if (error || !data) return null;
   return data as MerchantStoreRow;
+}
+
+/** Customer About page payload — store info + verified document numbers when available. */
+export async function getMerchantAboutPayload(storeId: string) {
+  const store = await getStoreByStoreId(storeId);
+  if (!store) return null;
+
+  const supabase = getSupabase();
+  const { data: docs } = await supabase
+    .from("merchant_store_documents")
+    .select("gst_document_number, gst_document_name, fssai_document_number, fssai_document_name")
+    .eq("store_id", store.id)
+    .maybeSingle();
+
+  const docRow = docs as {
+    gst_document_number?: string | null;
+    gst_document_name?: string | null;
+    fssai_document_number?: string | null;
+    fssai_document_name?: string | null;
+  } | null;
+
+  const legalName =
+    (store.store_display_name ?? "").trim() ||
+    (store.store_name ?? "").trim() ||
+    null;
+
+  const phones = (store as { store_phones?: string[] | null }).store_phones;
+  const storePhone =
+    Array.isArray(phones) && phones.length > 0
+      ? phones.map((p) => (p ?? "").trim()).find(Boolean) ?? null
+      : null;
+
+  return {
+    store_name: store.store_name,
+    store_display_name: store.store_display_name ?? null,
+    legal_name: legalName,
+    full_address: store.full_address ?? store.store_description ?? null,
+    city: store.city ?? null,
+    state: (store as { state?: string | null }).state ?? null,
+    postal_code: store.postal_code ?? null,
+    cuisine_types: store.cuisine_types ?? null,
+    operational_status: store.operational_status ?? null,
+    avg_preparation_time_minutes: store.avg_preparation_time_minutes ?? null,
+    packaging_charge_amount: (store as { packaging_charge_amount?: number | null }).packaging_charge_amount ?? null,
+    delivery_charge_per_km: (store as { delivery_charge_per_km?: number | null }).delivery_charge_per_km ?? null,
+    delivery_radius_km: (store as { delivery_radius_km?: number | null }).delivery_radius_km ?? null,
+    banner_url: store.banner_url ?? null,
+    is_active: store.is_active ?? null,
+    created_at: store.created_at ?? null,
+    gst_number: (docRow?.gst_document_number ?? "").trim() || null,
+    fssai_number: (docRow?.fssai_document_number ?? "").trim() || null,
+    store_phone: storePhone,
+    is_cloud_kitchen: store.parent_id != null,
+  };
 }
 
 /** For order creation: fetch parent_id, address, coordinates, and accepting status by numeric store id. Never trust frontend for these. */
@@ -465,18 +521,22 @@ export async function getStoreBillingRates(
 
 export async function getStoreByIdForOrder(
   merchantStoreId: number
-): Promise<{ parentId: number | null; fullAddress: string | null; latitude: number | null; longitude: number | null; is_accepting_orders: boolean } | null> {
+): Promise<{ parentId: number | null; storeId: string | null; fullAddress: string | null; bannerUrl: string | null; storeName: string | null; storeDisplayName: string | null; latitude: number | null; longitude: number | null; is_accepting_orders: boolean } | null> {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("merchant_stores")
-    .select("parent_id, full_address, latitude, longitude, is_accepting_orders")
+    .select("parent_id, store_id, full_address, banner_url, store_name, store_display_name, latitude, longitude, is_accepting_orders")
     .eq("id", merchantStoreId)
     .single();
   if (error || !data) return null;
-  const row = data as { parent_id?: number | null; full_address?: string | null; latitude?: number | string | null; longitude?: number | string | null; is_accepting_orders?: boolean | null };
+  const row = data as { parent_id?: number | null; store_id?: string | null; full_address?: string | null; banner_url?: string | null; store_name?: string | null; store_display_name?: string | null; latitude?: number | string | null; longitude?: number | string | null; is_accepting_orders?: boolean | null };
   return {
     parentId: row.parent_id != null ? Number(row.parent_id) : null,
+    storeId: row.store_id ?? null,
     fullAddress: row.full_address ?? null,
+    bannerUrl: row.banner_url ?? null,
+    storeName: row.store_name ?? null,
+    storeDisplayName: row.store_display_name ?? null,
     latitude: row.latitude != null ? Number(row.latitude) : null,
     longitude: row.longitude != null ? Number(row.longitude) : null,
     is_accepting_orders: row.is_accepting_orders === true,
@@ -566,12 +626,21 @@ export async function getMenuByStoreId(
   const commission = await resolveStoreCommission(store.id);
   for (const it of itemsWithCategory) {
     const netRupees = parseFloat(it.selling_price);
-    if (!Number.isFinite(netRupees) || netRupees <= 0) continue;
-    const { customerPaise } = customerPriceFromBase(
-      Math.round(netRupees * 100),
-      commission.percent,
-    );
-    it.selling_price = (customerPaise / 100).toFixed(2);
+    if (Number.isFinite(netRupees) && netRupees > 0) {
+      const { customerPaise } = customerPriceFromBase(
+        Math.round(netRupees * 100),
+        commission.percent,
+      );
+      it.selling_price = (customerPaise / 100).toFixed(2);
+    }
+    const baseNet = parseFloat(String(it.base_price ?? ""));
+    if (Number.isFinite(baseNet) && baseNet > 0) {
+      const { customerPaise } = customerPriceFromBase(
+        Math.round(baseNet * 100),
+        commission.percent,
+      );
+      it.base_price = (customerPaise / 100).toFixed(2);
+    }
   }
 
   return { store, items: itemsWithCategory };
@@ -611,9 +680,176 @@ export type MenuItemFullConfig = {
       price: number;
       imageUrl: string | null;
       displayOrder: number;
+      isMostOrdered?: boolean;
     }>;
   }>;
 };
+
+/** Remove embedded price hints from merchant-entered addon names e.g. "Extra Spicy (+₹20)". */
+function stripEmbeddedPriceFromAddonName(name: string): string {
+  return (name ?? "")
+    .replace(/\s*\(\s*\+?\s*₹?\s*[\d,]+(?:\.\d+)?\s*\)\s*$/i, "")
+    .replace(/\s*\(\+\s*[\d,]+(?:\.\d+)?\s*\)\s*$/i, "")
+    .trim();
+}
+
+/** Count completed addon picks for a menu item at a store (orders_core_item_addons.addon_id = addon PK). */
+async function fetchAddonOrderCounts(
+  merchantStoreId: number,
+  menuItemPk: number
+): Promise<Map<number, number>> {
+  const counts = new Map<number, number>();
+  try {
+    const db = getDb();
+    const result = await db.execute(sql`
+      SELECT oia.addon_id, SUM(COALESCE(oia.quantity, 1))::int AS order_count
+      FROM orders_core_item_addons oia
+      INNER JOIN orders_core_items oci ON oci.id = oia.order_item_id
+      INNER JOIN orders_core oc ON oc.order_id = oci.order_id
+      WHERE oc.merchant_store_id = ${merchantStoreId}
+        AND oci.menu_item_id = ${menuItemPk}
+        AND oia.addon_id IS NOT NULL
+        AND oc.status IS DISTINCT FROM 'cancelled'
+      GROUP BY oia.addon_id
+    `);
+    const rows = (result.rows ?? result) as Array<{ addon_id: number | string; order_count: number | string }>;
+    for (const row of rows) {
+      const addonPk = Number(row.addon_id);
+      const count = Number(row.order_count);
+      if (Number.isFinite(addonPk) && Number.isFinite(count) && count > 0) {
+        counts.set(addonPk, count);
+      }
+    }
+  } catch {
+    // Non-fatal — sheet still works without popularity badges.
+  }
+  return counts;
+}
+
+export type OrderedTogetherPairRow = {
+  id: string;
+  item1Id: string;
+  item2Id: string;
+  item1MenuItemPk: number;
+  item2MenuItemPk: number;
+  orderCount: number;
+};
+
+/**
+ * Pairs of menu items that appeared together in 2+ non-cancelled orders at this store.
+ * Only returns pairs where both items are still active, in stock, and approved on the menu.
+ */
+export async function getOrderedTogetherPairs(
+  storeId: string
+): Promise<OrderedTogetherPairRow[]> {
+  const store = await getStoreByStoreId(storeId);
+  if (!store) return [];
+
+  const storePk = Number(store.id);
+  if (!Number.isFinite(storePk) || storePk <= 0) return [];
+
+  try {
+    const db = getDb();
+    const result = await db.execute(sql`
+      WITH pair_counts AS (
+        SELECT
+          LEAST(oci1.menu_item_id, oci2.menu_item_id)::bigint AS item_a_pk,
+          GREATEST(oci1.menu_item_id, oci2.menu_item_id)::bigint AS item_b_pk,
+          COUNT(DISTINCT oci1.order_id)::int AS order_count
+        FROM orders_core_items oci1
+        INNER JOIN orders_core_items oci2
+          ON oci1.order_id = oci2.order_id
+          AND oci1.menu_item_id < oci2.menu_item_id
+        INNER JOIN orders_core oc ON oc.order_id = oci1.order_id
+        WHERE oc.merchant_store_id = ${storePk}
+          AND oc.status IS DISTINCT FROM 'cancelled'
+        GROUP BY item_a_pk, item_b_pk
+        HAVING COUNT(DISTINCT oci1.order_id) >= 2
+        ORDER BY order_count DESC
+        LIMIT 12
+      )
+      SELECT
+        pc.item_a_pk,
+        pc.item_b_pk,
+        pc.order_count,
+        a.item_id AS item_a_id,
+        b.item_id AS item_b_id
+      FROM pair_counts pc
+      INNER JOIN merchant_menu_items a
+        ON a.id = pc.item_a_pk
+        AND a.store_id = ${storePk}
+        AND a.is_active = TRUE
+        AND a.in_stock = TRUE
+        AND a.approval_status = 'APPROVED'
+      INNER JOIN merchant_menu_items b
+        ON b.id = pc.item_b_pk
+        AND b.store_id = ${storePk}
+        AND b.is_active = TRUE
+        AND b.in_stock = TRUE
+        AND b.approval_status = 'APPROVED'
+      ORDER BY pc.order_count DESC
+      LIMIT 8
+    `);
+
+    const rows = (result.rows ?? result) as Array<{
+      item_a_pk: number | string;
+      item_b_pk: number | string;
+      order_count: number | string;
+      item_a_id: string;
+      item_b_id: string;
+    }>;
+
+    return rows
+      .map((row) => {
+        const item1MenuItemPk = Number(row.item_a_pk);
+        const item2MenuItemPk = Number(row.item_b_pk);
+        const orderCount = Number(row.order_count);
+        const item1Id = String(row.item_a_id ?? "").trim();
+        const item2Id = String(row.item_b_id ?? "").trim();
+        if (
+          !Number.isFinite(item1MenuItemPk) ||
+          !Number.isFinite(item2MenuItemPk) ||
+          !Number.isFinite(orderCount) ||
+          orderCount < 2 ||
+          !item1Id ||
+          !item2Id
+        ) {
+          return null;
+        }
+        return {
+          id: `${item1Id}-${item2Id}`,
+          item1Id,
+          item2Id,
+          item1MenuItemPk,
+          item2MenuItemPk,
+          orderCount,
+        };
+      })
+      .filter((row): row is OrderedTogetherPairRow => row != null);
+  } catch {
+    return [];
+  }
+}
+
+function markMostOrderedAddons<T extends { numericId: number }>(
+  addons: T[],
+  orderCounts: Map<number, number>
+): Array<Omit<T, "numericId"> & { isMostOrdered: boolean }> {
+  let topId: number | null = null;
+  let topCount = 0;
+  for (const addon of addons) {
+    const count = orderCounts.get(addon.numericId) ?? 0;
+    if (count > topCount) {
+      topCount = count;
+      topId = addon.numericId;
+    }
+  }
+  const showBadge = topCount >= 2 && topId != null;
+  return addons.map(({ numericId, ...rest }) => ({
+    ...rest,
+    isMostOrdered: showBadge && numericId === topId,
+  }));
+}
 
 /**
  * Full config for one menu item: item + variants + customizations (with addons). Used by customization sheet.
@@ -627,16 +863,38 @@ export async function getMenuItemFullConfig(
   const store = await getStoreByStoreId(storeId);
   if (!store) return null;
 
-  const { data: itemRow, error: itemError } = await supabase
+  const itemSelect =
+    "id, item_id, item_name, item_description, item_image_url, food_type, base_price, selling_price, packaging_charges, has_customizations, has_addons, has_variants";
+
+  let itemRow: Record<string, unknown> | null = null;
+
+  const { data: byItemId, error: byItemIdError } = await supabase
     .from("merchant_menu_items")
-    .select("id, item_id, item_name, item_description, item_image_url, food_type, base_price, selling_price, packaging_charges, has_customizations, has_addons, has_variants")
+    .select(itemSelect)
     .eq("store_id", store.id)
     .eq("item_id", itemId)
     .eq("is_active", true)
     .eq("approval_status", "APPROVED")
-    .single();
+    .maybeSingle();
 
-  if (itemError || !itemRow) return null;
+  if (!byItemIdError && byItemId) {
+    itemRow = byItemId;
+  } else if (/^\d+$/.test(itemId)) {
+    const numericId = Number(itemId);
+    if (Number.isFinite(numericId) && numericId > 0) {
+      const { data: byPk, error: byPkError } = await supabase
+        .from("merchant_menu_items")
+        .select(itemSelect)
+        .eq("store_id", store.id)
+        .eq("id", numericId)
+        .eq("is_active", true)
+        .eq("approval_status", "APPROVED")
+        .maybeSingle();
+      if (!byPkError && byPk) itemRow = byPk;
+    }
+  }
+
+  if (!itemRow) return null;
   const item = itemRow as MerchantMenuItemRow & { has_customizations?: boolean; has_addons?: boolean; has_variants?: boolean };
 
   const [variantsRes, customizationsRes] = await Promise.all([
@@ -660,15 +918,25 @@ export async function getMenuItemFullConfig(
     customizations.map((c) =>
       supabase
         .from("merchant_menu_item_addons")
-        .select("addon_id, addon_name, addon_price, addon_image_url, display_order")
+        .select("id, addon_id, addon_name, addon_price, addon_image_url, display_order")
         .eq("customization_id", c.id)
         .eq("in_stock", true)
         .order("display_order", { ascending: true })
     )
   );
 
+  const addonOrderCounts = await fetchAddonOrderCounts(store.id, item.id);
+
   const customizationsWithAddons = customizations.map((c, i) => {
     const addons = (addonsByCustomization[i].data ?? []) as MenuItemAddonRow[];
+    const mapped = addons.map((a) => ({
+      numericId: a.id,
+      id: a.addon_id,
+      name: stripEmbeddedPriceFromAddonName(a.addon_name),
+      price: parseFloat(a.addon_price ?? "0"),
+      imageUrl: a.addon_image_url ?? null,
+      displayOrder: a.display_order ?? 0,
+    }));
     return {
       id: c.customization_id,
       title: c.customization_title,
@@ -677,13 +945,7 @@ export async function getMenuItemFullConfig(
       minSelection: c.min_selection ?? 0,
       maxSelection: c.max_selection ?? 1,
       displayOrder: c.display_order ?? 0,
-      addons: addons.map((a) => ({
-        id: a.addon_id,
-        name: a.addon_name,
-        price: parseFloat(a.addon_price ?? "0"),
-        imageUrl: a.addon_image_url ?? null,
-        displayOrder: a.display_order ?? 0,
-      })),
+      addons: markMostOrderedAddons(mapped, addonOrderCounts),
     };
   });
 

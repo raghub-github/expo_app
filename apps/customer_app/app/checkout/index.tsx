@@ -211,6 +211,31 @@ function cartItemSubline(item: CartItem): string {
   return parts.join(" · ");
 }
 
+function cartItemBaseId(menuItemId: string): string {
+  return menuItemId.includes("_") ? menuItemId.split("_")[0]! : menuItemId;
+}
+
+function findMenuItemByCartBaseId(
+  menu: import("@/services/merchant.service").MenuItem[] | undefined,
+  baseId: string
+): import("@/services/merchant.service").MenuItem | undefined {
+  if (!menu?.length || !baseId) return undefined;
+  return menu.find(
+    (m) => m.id === baseId || (m.menuItemId != null && String(m.menuItemId) === baseId)
+  );
+}
+
+function isCartItemCustomizable(
+  cartItem: CartItem,
+  menuItem?: import("@/services/merchant.service").MenuItem
+): boolean {
+  if (cartItem.variantId || cartItem.variantName?.trim() || (cartItem.addons?.length ?? 0) > 0) {
+    return true;
+  }
+  if (!menuItem) return false;
+  return !!(menuItem.hasVariants || menuItem.hasAddons || menuItem.hasCustomizations);
+}
+
 function DietIndicator({ isVeg }: { isVeg: boolean }) {
   return (
     <View style={[dietStyles.box, isVeg ? dietStyles.boxVeg : dietStyles.boxNonVeg]}>
@@ -989,7 +1014,7 @@ export default function CheckoutScreen() {
       menuItemId.includes("_") ? menuItemId.split("_")[0]! : menuItemId;
     return items.map((i) => {
       const bid = baseId(i.menuItemId);
-      const menuItem = merchant?.menu?.find((m) => m.id === bid);
+      const menuItem = findMenuItemByCartBaseId(merchant?.menu, bid);
       const categoryName =
         (menuItem as { categoryName?: string } | undefined)?.categoryName ??
         (menuItem as { category_name?: string } | undefined)?.category_name;
@@ -998,7 +1023,7 @@ export default function CheckoutScreen() {
           ?.packaging_charges ??
         (menuItem as { packagingCharges?: number } | undefined)?.packagingCharges;
       const packNum = rawPack != null ? Number(rawPack) : NaN;
-      const snap: Record<string, unknown> = {};
+      const snap: Record<string, unknown> = { isVeg: i.isVeg };
       if (categoryName) snap.category_name = categoryName;
       if (Number.isFinite(packNum) && packNum > 0) {
         snap.packaging_enabled = true;
@@ -1017,7 +1042,7 @@ export default function CheckoutScreen() {
           addonPrice: a.addonPrice,
           quantity: a.quantity,
         })),
-        itemSnapshot: Object.keys(snap).length ? snap : undefined,
+        itemSnapshot: snap,
       };
     });
   }, [items, merchant?.menu]);
@@ -1753,8 +1778,8 @@ export default function CheckoutScreen() {
       }));
     }
     return items.map((cartItem) => {
-      const baseId = cartItem.menuItemId.includes("_") ? cartItem.menuItemId.split("_")[0] : cartItem.menuItemId;
-      const menuItem = merchant.menu.find((m) => m.id === baseId);
+      const baseId = cartItemBaseId(cartItem.menuItemId);
+      const menuItem = findMenuItemByCartBaseId(merchant.menu, baseId);
       return {
         ...cartItem,
         imageUrl: menuItem?.imageUrl ?? null,
@@ -1810,21 +1835,56 @@ export default function CheckoutScreen() {
 
   const editingItem = useMemo((): import("@/services/merchant.service").MenuItem | null => {
     if (!editingCartItemId) return null;
-    const item = items.find((i) => i.menuItemId === editingCartItemId);
-    if (!item) return null;
-    const baseId = item.menuItemId.includes("_") ? item.menuItemId.split("_")[0] : item.menuItemId;
-    const numericId = /^\d+$/.test(baseId ?? "") ? Number(baseId) : undefined;
+    const cartLine = items.find((i) => i.menuItemId === editingCartItemId);
+    if (!cartLine) return null;
+    const baseId = cartItemBaseId(cartLine.menuItemId);
+    const menuItem = findMenuItemByCartBaseId(merchant?.menu, baseId);
     return {
-      id: baseId ?? "",
-      menuItemId: numericId,
-      name: item.name,
-      price: item.price,
-      isVeg: item.isVeg,
-      hasVariants: false,
-      hasAddons: false,
-      hasCustomizations: false,
+      id: menuItem?.id ?? baseId,
+      menuItemId: menuItem?.menuItemId ?? (/^\d+$/.test(baseId) ? Number(baseId) : undefined),
+      name: cartLine.name,
+      price: cartLine.price,
+      isVeg: cartLine.isVeg,
+      imageUrl: menuItem?.imageUrl ?? cartLine.imageUrl ?? undefined,
+      description: menuItem?.description,
+      hasVariants: menuItem?.hasVariants ?? !!cartLine.variantId,
+      hasAddons: menuItem?.hasAddons ?? (cartLine.addons?.length ?? 0) > 0,
+      hasCustomizations:
+        menuItem?.hasCustomizations ??
+        !!(cartLine.variantId || cartLine.variantName || (cartLine.addons?.length ?? 0) > 0),
+    };
+  }, [editingCartItemId, items, merchant?.menu]);
+
+  const editingCartSelection = useMemo(() => {
+    if (!editingCartItemId) return null;
+    const cartLine = items.find((i) => i.menuItemId === editingCartItemId);
+    if (!cartLine) return null;
+    return {
+      variantId: cartLine.variantId ?? null,
+      addons: (cartLine.addons ?? []).map((a) => ({ addonId: a.addonId })),
+      quantity: cartLine.quantity,
     };
   }, [editingCartItemId, items]);
+
+  const handleEditCartItem = useCallback(
+    (cartLine: CartItem) => {
+      if (!merchantId) return;
+      const baseId = cartItemBaseId(cartLine.menuItemId);
+      const menuItem = findMenuItemByCartBaseId(merchant?.menu, baseId);
+      if (isCartItemCustomizable(cartLine, menuItem)) {
+        setEditingCartItemId(cartLine.menuItemId);
+        return;
+      }
+      router.push({
+        pathname: "/home/merchant/[id]",
+        params: {
+          id: merchantId,
+          focusItemId: menuItem?.id ?? (menuItem?.menuItemId != null ? String(menuItem.menuItemId) : baseId),
+        },
+      });
+    },
+    [merchantId, merchant?.menu, router]
+  );
 
   const paymentLabel = PAYMENT_OPTIONS.find((p) => p.id === paymentMethod)?.displayName ?? "UPI";
 
@@ -2013,7 +2073,7 @@ export default function CheckoutScreen() {
                       ) : null}
                       <TouchableOpacity
                         style={styles.orderItemEditRow}
-                        onPress={() => setEditingCartItemId(item.menuItemId)}
+                        onPress={() => handleEditCartItem(item)}
                         activeOpacity={0.7}
                         hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
                       >
@@ -2928,6 +2988,7 @@ export default function CheckoutScreen() {
           item={editingItem}
           merchantName={merchantName ?? ""}
           isStoreClosed={isStoreClosed}
+          initialSelection={editingCartSelection}
           onAdd={(params) => {
             updateQuantity(editingCartItemId!, -999);
             useCartStore.getState().addItem(merchantId!, merchantName!, {

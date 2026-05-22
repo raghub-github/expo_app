@@ -8,7 +8,7 @@
  *    `unified_ticket_messages` + `unified_tickets`. Debounced refetch (~180ms).
  *  - Background polling fallback every 4s when realtime is unavailable.
  *  - Composer: text + image/PDF attachment via ImagePicker / DocumentPicker.
- *  - CSAT sheet appears when status flips to RESOLVED/CLOSED (one-time per ticket).
+ *  - Inline CSAT (emoji rating) when ticket is RESOLVED/CLOSED — same UX as merchant app.
  *  - Internal notes never reach this screen — the backend filters them out.
  */
 
@@ -30,9 +30,12 @@ import {
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
+import { AndroidBackHandler } from "@/components/AndroidBackHandler";
+import { formatTicketMessageText } from "@/lib/formatTicketMessage";
 import {
   customerSupportService,
   type TicketDetailResponse,
@@ -43,7 +46,24 @@ import { useTicketRealtime } from "@/hooks/useTicketRealtime";
 import { getConfig } from "@/config/env";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
+const GREEN = GatiMitraColors.primaryMint;
+const TEXT = "#1C1C1C";
+const MUTED = "#828282";
 const FALLBACK_POLL_MS = 4_000;
+
+const RATING_OPTIONS = [
+  { value: 1, label: "Very poor", emoji: "😡" },
+  { value: 2, label: "Poor", emoji: "🙁" },
+  { value: 3, label: "Neutral", emoji: "😐" },
+  { value: 4, label: "Good", emoji: "🙂" },
+  { value: 5, label: "Excellent", emoji: "😍" },
+] as const;
+
+function ticketStatusNormalized(status: string | null | undefined): string {
+  return String(status ?? "")
+    .toUpperCase()
+    .replace(/-/g, "_");
+}
 
 function statusBadge(status: string): { label: string; color: string; bg: string } {
   const s = String(status).toUpperCase();
@@ -112,10 +132,9 @@ export default function TicketDetailScreen() {
   const [pendingAttachments, setPendingAttachments] = useState<
     Array<{ storageKey: string; url: string; name: string; mimeType: string; localPreviewUri?: string }>
   >([]);
-  const [csatVisible, setCsatVisible] = useState(false);
-  const [csatRating, setCsatRating] = useState(0);
-  const [csatFeedback, setCsatFeedback] = useState("");
-  const [csatSubmitting, setCsatSubmitting] = useState(false);
+  const [ratingValue, setRatingValue] = useState<number | null>(null);
+  const [ratingFeedback, setRatingFeedback] = useState("");
+  const [ratingSubmitting, setRatingSubmitting] = useState(false);
   const scrollRef = useRef<ScrollView | null>(null);
   const prevMessageCountRef = useRef(0);
 
@@ -147,15 +166,25 @@ export default function TicketDetailScreen() {
     }
   }, [messages.length]);
 
-  // Show CSAT once when status flips to RESOLVED/CLOSED if no rating yet
-  useEffect(() => {
-    if (!ticket) return;
-    const isTerminal = ticket.status === "RESOLVED" || ticket.status === "CLOSED";
-    const alreadyRated = ticket.satisfaction_rating != null;
-    if (isTerminal && !alreadyRated && !csatVisible) {
-      setCsatVisible(true);
+  const submitRating = useCallback(async () => {
+    if (!ticketIdNum || ratingValue == null || ratingValue < 1 || ratingValue > 5) return;
+    setRatingSubmitting(true);
+    try {
+      await customerSupportService.rateTicket(
+        ticketIdNum,
+        ratingValue,
+        ratingFeedback.trim() || undefined
+      );
+      setRatingValue(null);
+      setRatingFeedback("");
+      await refetch();
+    } catch (e) {
+      console.warn("rating failed", e);
+      Alert.alert("Couldn't submit", "Could not save your rating. Try again later.");
+    } finally {
+      setRatingSubmitting(false);
     }
-  }, [ticket?.status, ticket?.satisfaction_rating]);
+  }, [ticketIdNum, ratingValue, ratingFeedback, refetch]);
 
   const pickImage = useCallback(async () => {
     if (!ticketIdNum) return;
@@ -220,21 +249,6 @@ export default function TicketDetailScreen() {
     }
   }, [ticketIdNum, draft, pendingAttachments, refetch]);
 
-  const submitCsat = useCallback(async () => {
-    if (!ticketIdNum || csatRating < 1 || csatRating > 5) return;
-    setCsatSubmitting(true);
-    try {
-      await customerSupportService.rateTicket(ticketIdNum, csatRating, csatFeedback.trim() || undefined);
-      setCsatVisible(false);
-      await refetch();
-    } catch (e) {
-      console.warn("csat failed", e);
-      Alert.alert("Couldn't submit", "Could not save your rating. Try again later.");
-    } finally {
-      setCsatSubmitting(false);
-    }
-  }, [ticketIdNum, csatRating, csatFeedback, refetch]);
-
   const reopen = useCallback(async () => {
     if (!ticketIdNum) return;
     try {
@@ -250,6 +264,46 @@ export default function TicketDetailScreen() {
     () => !sending && (draft.trim().length > 0 || pendingAttachments.length > 0),
     [sending, draft, pendingAttachments.length]
   );
+
+  const ratingSummary = useMemo(() => {
+    if (!ticket || ticket.satisfaction_rating == null || Number.isNaN(Number(ticket.satisfaction_rating))) {
+      return null;
+    }
+    const numeric = Number(ticket.satisfaction_rating);
+    const opt = RATING_OPTIONS.find((o) => o.value === numeric);
+    let submittedAt = "";
+    if (ticket.satisfaction_collected_at) {
+      try {
+        const d = new Date(ticket.satisfaction_collected_at);
+        if (!Number.isNaN(d.getTime())) {
+          submittedAt = d.toLocaleString("en-IN", {
+            timeZone: "Asia/Kolkata",
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+        }
+      } catch {
+        submittedAt = "";
+      }
+    }
+    return {
+      numeric,
+      label: opt?.label ?? `Rated ${numeric}/5`,
+      emoji: opt?.emoji ?? "⭐",
+      feedback: ticket.satisfaction_feedback ?? "",
+      submittedAt,
+    };
+  }, [ticket]);
+
+  const statusNorm = ticket ? ticketStatusNormalized(ticket.status) : "";
+  const isTerminal = statusNorm === "RESOLVED" || statusNorm === "CLOSED";
+  const showRatingPrompt =
+    !!ticket &&
+    isTerminal &&
+    (ticket.satisfaction_rating == null || Number.isNaN(Number(ticket.satisfaction_rating)));
 
   if (ticketIdNum == null) {
     return (
@@ -277,34 +331,58 @@ export default function TicketDetailScreen() {
   }
 
   const sb = statusBadge(ticket.status);
-  const isTerminal = ticket.status === "RESOLVED" || ticket.status === "CLOSED";
+  const ratingBarBottomPad = 12 + insets.bottom;
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
-    >
-      <View style={styles.headerCard}>
-        <View style={styles.headerTop}>
-          <Text style={styles.headerSubject} numberOfLines={2}>
-            {ticket.subject || ticket.ticket_title || "Ticket"}
-          </Text>
-          <View style={[styles.badge, { backgroundColor: sb.bg }]}>
-            <Text style={[styles.badgeText, { color: sb.color }]}>{sb.label}</Text>
+    <>
+      <AndroidBackHandler />
+      <StatusBar style="dark" backgroundColor="#fff" />
+      <View style={styles.screen}>
+        <View style={[styles.navHeader, { paddingTop: Math.max(insets.top - 8, 0) }]}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.navSide} hitSlop={12}>
+            <Ionicons name="arrow-back" size={22} color={TEXT} />
+          </TouchableOpacity>
+          <Text style={styles.navTitle}>Support chat</Text>
+          <View style={styles.navSide} />
+        </View>
+
+        <View style={styles.headerCard}>
+          <View style={styles.headerAccent} />
+          <View style={styles.headerBody}>
+            <View style={styles.headerTop}>
+              <View style={styles.headerIconWrap}>
+                <Ionicons name="chatbubbles-outline" size={18} color={GREEN} />
+              </View>
+              <Text style={styles.headerSubject} numberOfLines={2}>
+                {ticket.subject || ticket.ticket_title || "Ticket"}
+              </Text>
+              <View style={[styles.badge, { backgroundColor: sb.bg }]}>
+                <Text style={[styles.badgeText, { color: sb.color }]}>{sb.label}</Text>
+              </View>
+            </View>
+            <View style={styles.headerMeta}>
+              <View style={styles.ticketIdPill}>
+                <Text style={styles.ticketIdText}>#{ticket.ticket_id}</Text>
+              </View>
+              {ticket.order_id ? (
+                <View style={styles.orderLinkedPill}>
+                  <Ionicons name="receipt-outline" size={11} color={GREEN} />
+                  <Text style={styles.orderLinkedText}>Order linked</Text>
+                </View>
+              ) : null}
+              <View style={[styles.live, postgresLive ? styles.liveOn : styles.liveOff]}>
+                <View style={[styles.liveDot, postgresLive ? styles.liveDotOn : styles.liveDotOff]} />
+                <Text style={styles.liveText}>{postgresLive ? "Live" : "Reconnecting…"}</Text>
+              </View>
+            </View>
           </View>
         </View>
-        <View style={styles.headerMeta}>
-          <Text style={styles.ref}>#{ticket.ticket_id}</Text>
-          {ticket.order_id ? (
-            <Text style={styles.ref}> • Order linked</Text>
-          ) : null}
-          <View style={[styles.live, postgresLive ? styles.liveOn : styles.liveOff]}>
-            <View style={[styles.liveDot, postgresLive ? styles.liveDotOn : styles.liveDotOff]} />
-            <Text style={styles.liveText}>{postgresLive ? "Live" : "Reconnecting…"}</Text>
-          </View>
-        </View>
-      </View>
+
+        <KeyboardAvoidingView
+          style={styles.container}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+        >
 
       <ScrollView
         ref={scrollRef}
@@ -345,117 +423,205 @@ export default function TicketDetailScreen() {
             />
           );
         })}
-        {isTerminal && (
+        {isTerminal && !showRatingPrompt && !ratingSummary && (
           <View style={styles.resolvedBanner}>
             <Ionicons name="checkmark-circle" size={18} color="#15803d" />
             <Text style={styles.resolvedText}>
-              This ticket is {ticket.status === "CLOSED" ? "closed" : "resolved"}. Reply to reopen, or rate your experience above.
+              This ticket is {statusNorm === "CLOSED" ? "closed" : "resolved"}. Reply below to reopen.
             </Text>
           </View>
         )}
       </ScrollView>
 
-      {/* Pending attachments preview row */}
-      {pendingAttachments.length > 0 && (
-        <ScrollView horizontal style={styles.attachmentsRow} showsHorizontalScrollIndicator={false}>
-          {pendingAttachments.map((a, idx) => (
-            <View key={idx} style={styles.attachmentTile}>
-              {a.localPreviewUri ? (
-                <Image source={{ uri: a.localPreviewUri }} style={styles.attachmentImage} />
-              ) : (
-                <View style={styles.attachmentFile}>
-                  <Ionicons name="document" size={22} color={GatiMitraColors.emerald} />
-                </View>
-              )}
-              <TouchableOpacity
-                onPress={() => setPendingAttachments((p) => p.filter((_, i) => i !== idx))}
-                style={styles.attachmentRemove}
-              >
-                <Ionicons name="close" size={14} color="#fff" />
-              </TouchableOpacity>
+      {!!ratingSummary && (
+        <>
+          <View style={styles.ratingSummaryCard}>
+            <Text style={styles.ratingExperienceTitle}>Support experience</Text>
+            <View style={styles.ratingAutoSummaryRow}>
+              <Text style={styles.ratingAutoEmoji}>{ratingSummary.emoji}</Text>
+              <Text style={styles.ratingAutoLabel}>{ratingSummary.label}</Text>
+              <View style={styles.ratingAutoStarsRow}>
+                {Array.from({ length: ratingSummary.numeric }).map((_, idx) => (
+                  <Ionicons key={idx} name="star" size={14} color="#FFC107" style={styles.ratingAutoStarIcon} />
+                ))}
+              </View>
             </View>
-          ))}
-        </ScrollView>
-      )}
-
-      <View style={[styles.composer, { paddingBottom: insets.bottom + 8 }]}>
-        {ticket.status === "CLOSED" ? (
-          <View style={styles.closedRow}>
-            <Text style={styles.closedText}>This ticket is closed. To get help again, raise a new ticket.</Text>
-            <TouchableOpacity style={styles.closedCta} onPress={() => router.push("/support/new")}>
-              <Text style={styles.closedCtaText}>Raise new</Text>
-            </TouchableOpacity>
+            <Text style={styles.ratingExperienceNote}>
+              Thank you for rating your support interaction.
+            </Text>
+            {!!ratingSummary.feedback && (
+              <Text style={styles.ratingSummaryFeedback}>{`"${ratingSummary.feedback}"`}</Text>
+            )}
+            {!!ratingSummary.submittedAt && (
+              <Text style={styles.ratingSummaryMeta}>{`Submitted on: ${ratingSummary.submittedAt}`}</Text>
+            )}
           </View>
-        ) : (
-          <>
-            <TouchableOpacity onPress={pickImage} style={styles.composerIconBtn} disabled={sending}>
-              <Ionicons name="image-outline" size={22} color={GatiMitraColors.textSecondary} />
-            </TouchableOpacity>
-            <TextInput
-              style={styles.composerInput}
-              placeholder={ticket.status === "RESOLVED" ? "Reply to reopen…" : "Type your reply…"}
-              placeholderTextColor={GatiMitraColors.textSecondary}
-              value={draft}
-              onChangeText={setDraft}
-              multiline
-              maxLength={5000}
-              editable={!sending}
-            />
-            <TouchableOpacity
-              onPress={ticket.status === "RESOLVED" ? () => void reopen().then(sendMessage) : sendMessage}
-              disabled={!canSend}
-              style={[styles.sendBtn, !canSend && styles.sendBtnDisabled]}
-            >
-              {sending ? (
-                <ActivityIndicator color="#fff" size="small" />
-              ) : (
-                <Ionicons name="send" size={18} color="#fff" />
-              )}
-            </TouchableOpacity>
-          </>
-        )}
-      </View>
 
-      {/* CSAT sheet */}
-      {csatVisible && (
-        <Pressable style={styles.csatBackdrop} onPress={csatSubmitting ? undefined : () => setCsatVisible(false)}>
-          <Pressable style={styles.csatSheet} onPress={() => {}}>
-            <Text style={styles.csatTitle}>How did we do?</Text>
-            <Text style={styles.csatSub}>Rate your experience on this ticket.</Text>
-            <View style={styles.starRow}>
-              {[1, 2, 3, 4, 5].map((s) => (
-                <TouchableOpacity key={s} onPress={() => setCsatRating(s)}>
-                  <Ionicons
-                    name={s <= csatRating ? "star" : "star-outline"}
-                    size={36}
-                    color={s <= csatRating ? "#f59e0b" : "#cbd5e1"}
-                  />
-                </TouchableOpacity>
-              ))}
+          <View style={styles.ratingAutoCard}>
+            <View style={styles.ratingAutoHeaderRow}>
+              <Ionicons name="information-circle" size={16} color={GREEN} style={{ marginRight: 6 }} />
+              <Text style={styles.ratingAutoTitle}>From GatiMitra Support Team</Text>
             </View>
-            <TextInput
-              placeholder="Anything you'd like to add? (optional)"
-              placeholderTextColor={GatiMitraColors.textSecondary}
-              value={csatFeedback}
-              onChangeText={setCsatFeedback}
-              multiline
-              style={styles.csatInput}
-              maxLength={2000}
-            />
-            <TouchableOpacity
-              style={[styles.csatSubmit, csatRating < 1 && styles.sendBtnDisabled]}
-              onPress={submitCsat}
-              disabled={csatRating < 1 || csatSubmitting}
-            >
-              {csatSubmitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.csatSubmitText}>Submit</Text>}
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setCsatVisible(false)} style={styles.csatSkip}>
-              <Text style={styles.csatSkipText}>Skip for now</Text>
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
+            {ratingSummary.numeric >= 3 ? (
+              <>
+                <Text style={styles.ratingAutoBody}>Thank you for sharing your feedback with us.</Text>
+                <Text style={styles.ratingAutoBody}>
+                  We're glad that the <Text style={styles.ratingAutoBold}>GatiMitra Support Team</Text> was able
+                  to assist you and resolve your concern.
+                </Text>
+                <Text style={styles.ratingAutoSignature}>– GatiMitra Team</Text>
+              </>
+            ) : (
+              <>
+                <Text style={styles.ratingAutoBody}>
+                  We sincerely apologize that your experience did not meet your expectations. The{" "}
+                  <Text style={styles.ratingAutoBold}>GatiMitra Team</Text> will review this case to improve our
+                  support.
+                </Text>
+                <Text style={styles.ratingAutoBody}>
+                  If you still need assistance, reply below to reopen this ticket.
+                </Text>
+                <Text style={styles.ratingAutoSignature}>– GatiMitra Team</Text>
+              </>
+            )}
+          </View>
+        </>
       )}
-    </KeyboardAvoidingView>
+
+      {showRatingPrompt && (
+        <View style={[styles.ratingBar, { paddingBottom: ratingBarBottomPad }]}>
+          <View style={styles.ratingClosedPill}>
+            <Ionicons name="checkmark-circle" size={16} color="#15803d" style={{ marginRight: 6 }} />
+            <Text style={styles.ratingClosedText}>
+              {statusNorm === "CLOSED"
+                ? "This conversation has been closed"
+                : "This conversation has been resolved"}
+            </Text>
+          </View>
+
+          <Text style={styles.ratingHeading}>Hey there!</Text>
+          <Text style={styles.ratingSubheading}>
+            {`We just ${String(ticket.status ?? "closed").toLowerCase()} ticket ${ticket.ticket_id}.`}
+          </Text>
+          <Text style={styles.ratingSubheading}>We know you're busy, so we just have one question:</Text>
+          <Text style={[styles.ratingSubheading, styles.ratingQuestion]}>
+            Are you satisfied with the support you received in this ticket?
+          </Text>
+
+          <View style={styles.ratingEmojisRow}>
+            {RATING_OPTIONS.map((opt) => {
+              const selected = ratingValue === opt.value;
+              return (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => setRatingValue(opt.value)}
+                  style={[styles.ratingEmojiWrap, selected && styles.ratingEmojiWrapSelected]}
+                >
+                  <Text style={styles.ratingEmoji}>{opt.emoji}</Text>
+                  <Text style={[styles.ratingEmojiLabel, selected && styles.ratingEmojiLabelSelected]}>
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <TextInput
+            style={styles.ratingFeedbackInput}
+            placeholder="Tell us more (optional)"
+            placeholderTextColor={MUTED}
+            value={ratingFeedback}
+            onChangeText={setRatingFeedback}
+            multiline
+            maxLength={2000}
+          />
+
+          <Pressable
+            disabled={!ratingValue || ratingSubmitting}
+            onPress={submitRating}
+            style={[
+              styles.ratingSubmitBtn,
+              (!ratingValue || ratingSubmitting) && styles.ratingSubmitBtnDisabled,
+            ]}
+          >
+            <Text style={styles.ratingSubmitText}>
+              {ratingSubmitting ? "Submitting…" : "Submit feedback"}
+            </Text>
+          </Pressable>
+        </View>
+      )}
+
+      {!showRatingPrompt && (
+        <>
+          {pendingAttachments.length > 0 && (
+            <ScrollView horizontal style={styles.attachmentsRow} showsHorizontalScrollIndicator={false}>
+              {pendingAttachments.map((a, idx) => (
+                <View key={idx} style={styles.attachmentTile}>
+                  {a.localPreviewUri ? (
+                    <Image source={{ uri: a.localPreviewUri }} style={styles.attachmentImage} />
+                  ) : (
+                    <View style={styles.attachmentFile}>
+                      <Ionicons name="document" size={22} color={GREEN} />
+                    </View>
+                  )}
+                  <TouchableOpacity
+                    onPress={() => setPendingAttachments((p) => p.filter((_, i) => i !== idx))}
+                    style={styles.attachmentRemove}
+                  >
+                    <Ionicons name="close" size={14} color="#fff" />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
+          )}
+
+          <View style={[styles.composer, { paddingBottom: insets.bottom + 8 }]}>
+            {ticket.status === "CLOSED" ? (
+              <View style={styles.closedRow}>
+                <Text style={styles.closedText}>
+                  This ticket is closed. To get help again, raise a new ticket.
+                </Text>
+                <TouchableOpacity style={styles.closedCta} onPress={() => router.push("/support/new")}>
+                  <Text style={styles.closedCtaText}>Raise new</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <>
+                <TouchableOpacity onPress={pickImage} style={styles.composerIconBtn} disabled={sending}>
+                  <Ionicons name="image-outline" size={22} color={GatiMitraColors.textSecondary} />
+                </TouchableOpacity>
+                <TextInput
+                  style={styles.composerInput}
+                  placeholder={ticket.status === "RESOLVED" ? "Reply to reopen…" : "Type your reply…"}
+                  placeholderTextColor={GatiMitraColors.textSecondary}
+                  value={draft}
+                  onChangeText={setDraft}
+                  multiline
+                  maxLength={5000}
+                  editable={!sending}
+                />
+                <TouchableOpacity
+                  onPress={
+                    ticket.status === "RESOLVED" ? () => void reopen().then(sendMessage) : sendMessage
+                  }
+                  disabled={!canSend}
+                  style={[styles.sendBtn, !canSend && styles.sendBtnDisabled]}
+                >
+                  {sending ? (
+                    <ActivityIndicator color="#fff" size="small" />
+                  ) : (
+                    <Ionicons name="send" size={18} color="#fff" />
+                  )}
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </>
+      )}
+
+        </KeyboardAvoidingView>
+      </View>
+    </>
   );
 }
 
@@ -474,13 +640,14 @@ function MessageBubble({
   if (senderType === "SYSTEM") {
     return (
       <View style={styles.systemRow}>
-        <Text style={styles.systemText}>{message.message_text}</Text>
+        <Text style={styles.systemText}>{formatTicketMessageText(message.message_text)}</Text>
       </View>
     );
   }
   const attachments = (Array.isArray(message.attachments) ? message.attachments : [])
     .map(resolveAttachmentUrl)
     .filter((a): a is { name: string; url: string; isImage: boolean } => !!a);
+  const bodyText = formatTicketMessageText(message.message_text);
 
   return (
     <View
@@ -501,8 +668,16 @@ function MessageBubble({
       ) : null}
       <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs]}>
         {!mine && showSender ? <Text style={styles.supportLabel}>Support</Text> : null}
-        {message.message_text ? (
-          <Text style={[styles.bubbleText, mine && styles.bubbleTextMine]}>{message.message_text}</Text>
+        {bodyText ? (
+          <Text
+            style={[
+              styles.bubbleText,
+              mine && styles.bubbleTextMine,
+              !mine && styles.bubbleTextTheirs,
+            ]}
+          >
+            {bodyText}
+          </Text>
         ) : null}
         {attachments.length > 0 && (
           <View style={styles.attachmentsInline}>
@@ -546,28 +721,91 @@ function MessageBubble({
 }
 
 const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: "#F5F5F5" },
+  navHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingBottom: 10,
+    backgroundColor: "#fff",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#EBEBEB",
+  },
+  navSide: { width: 40, alignItems: "flex-start" },
+  navTitle: {
+    flex: 1,
+    textAlign: "center",
+    fontSize: 17,
+    fontWeight: "700",
+    color: TEXT,
+  },
   container: { flex: 1, backgroundColor: GatiMitraColors.softBackground },
-  centered: { flex: 1, justifyContent: "center", alignItems: "center", padding: 20 },
+  centered: { flex: 1, justifyContent: "center", alignItems: "center", padding: 20, backgroundColor: "#F5F5F5" },
   errText: { color: GatiMitraColors.textSecondary, marginBottom: 12 },
   retryBtn: {
-    backgroundColor: GatiMitraColors.emerald,
+    backgroundColor: GREEN,
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 8,
   },
   retryText: { color: "#fff", fontWeight: "700" },
   headerCard: {
+    flexDirection: "row",
     backgroundColor: "#fff",
-    padding: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: GatiMitraColors.border,
+    marginHorizontal: 12,
+    marginTop: 10,
+    marginBottom: 4,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#EBEBEB",
+    overflow: "hidden",
   },
-  headerTop: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
-  headerSubject: { flex: 1, fontSize: 16, fontWeight: "700", color: GatiMitraColors.textPrimary },
-  headerMeta: { flexDirection: "row", alignItems: "center", marginTop: 6, gap: 8 },
-  ref: { fontSize: 12, color: GatiMitraColors.textSecondary, fontWeight: "600" },
+  headerAccent: {
+    width: 4,
+    backgroundColor: GREEN,
+  },
+  headerBody: {
+    flex: 1,
+    padding: 12,
+    paddingLeft: 10,
+  },
+  headerTop: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
+  headerIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#ECFDF5",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 1,
+  },
+  headerSubject: { flex: 1, fontSize: 15, fontWeight: "700", color: TEXT, lineHeight: 20 },
+  headerMeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    marginTop: 10,
+    gap: 6,
+  },
+  ticketIdPill: {
+    backgroundColor: "#F3F4F6",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  ticketIdText: { fontSize: 11, color: MUTED, fontWeight: "700" },
+  orderLinkedPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#ECFDF5",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  orderLinkedText: { fontSize: 11, color: GREEN, fontWeight: "700" },
   badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
-  badgeText: { fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.4 },
+  badgeText: { fontSize: 10, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.4 },
   live: { flexDirection: "row", alignItems: "center", gap: 4, marginLeft: "auto" },
   liveOn: {},
   liveOff: { opacity: 0.6 },
@@ -586,7 +824,7 @@ const styles = StyleSheet.create({
     width: 26,
     height: 26,
     borderRadius: 13,
-    backgroundColor: GatiMitraColors.emerald,
+    backgroundColor: GREEN,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 4,
@@ -599,7 +837,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
-  bubbleMine: { backgroundColor: GatiMitraColors.emerald, borderBottomRightRadius: 4 },
+  bubbleMine: { backgroundColor: GREEN, borderBottomRightRadius: 4 },
   bubbleTheirs: {
     backgroundColor: "#fff",
     borderBottomLeftRadius: 4,
@@ -610,12 +848,13 @@ const styles = StyleSheet.create({
   supportLabel: {
     fontSize: 11,
     fontWeight: "800",
-    color: GatiMitraColors.emerald,
+    color: GREEN,
     marginBottom: 3,
     letterSpacing: 0.2,
   },
-  bubbleText: { fontSize: 14, color: GatiMitraColors.textPrimary, lineHeight: 20 },
+  bubbleText: { fontSize: 14, color: GatiMitraColors.textPrimary, lineHeight: 21 },
   bubbleTextMine: { color: "#fff" },
+  bubbleTextTheirs: { color: "#1f2937" },
   timestamp: { fontSize: 10, color: GatiMitraColors.textSecondary, marginTop: 4, alignSelf: "flex-end" },
   timestampMine: { color: "#e0f2f1" },
   systemRow: { width: "100%", alignItems: "center", paddingVertical: 6 },
@@ -705,7 +944,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   sendBtn: {
-    backgroundColor: GatiMitraColors.emerald,
+    backgroundColor: GREEN,
     width: 40,
     height: 40,
     borderRadius: 20,
@@ -722,39 +961,135 @@ const styles = StyleSheet.create({
   },
   closedText: { flex: 1, fontSize: 13, color: GatiMitraColors.textSecondary },
   closedCta: {
-    backgroundColor: GatiMitraColors.emerald,
+    backgroundColor: GREEN,
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 10,
   },
   closedCtaText: { color: "#fff", fontWeight: "700", fontSize: 13 },
-  csatBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    paddingHorizontal: 24,
-  },
-  csatSheet: { backgroundColor: "#fff", borderRadius: 18, padding: 20 },
-  csatTitle: { fontSize: 18, fontWeight: "800", color: GatiMitraColors.textPrimary },
-  csatSub: { fontSize: 13, color: GatiMitraColors.textSecondary, marginTop: 4, marginBottom: 12 },
-  starRow: { flexDirection: "row", justifyContent: "center", gap: 8, marginVertical: 8 },
-  csatInput: {
-    borderWidth: 1,
-    borderColor: GatiMitraColors.border,
-    borderRadius: 10,
-    padding: 10,
-    minHeight: 70,
-    color: GatiMitraColors.textPrimary,
-    marginTop: 8,
-  },
-  csatSubmit: {
-    backgroundColor: GatiMitraColors.emerald,
+
+  ratingBar: {
+    paddingHorizontal: 14,
     paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: "center",
-    marginTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#EBEBEB",
+    backgroundColor: "#fff",
   },
-  csatSubmitText: { color: "#fff", fontWeight: "700", fontSize: 15 },
-  csatSkip: { paddingVertical: 10, alignItems: "center" },
-  csatSkipText: { color: GatiMitraColors.textSecondary, fontSize: 13 },
+  ratingClosedPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "#F3F4F6",
+    marginBottom: 8,
+  },
+  ratingClosedText: { fontSize: 11, fontWeight: "600", color: MUTED },
+  ratingHeading: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: TEXT,
+    textAlign: "center",
+    marginBottom: 2,
+  },
+  ratingSubheading: {
+    fontSize: 12,
+    color: MUTED,
+    textAlign: "center",
+    marginBottom: 8,
+    lineHeight: 18,
+  },
+  ratingQuestion: { fontWeight: "600", marginBottom: 10 },
+  ratingEmojisRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  ratingEmojiWrap: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: 6,
+    marginHorizontal: 2,
+    borderRadius: 10,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#EBEBEB",
+  },
+  ratingEmojiWrapSelected: {
+    backgroundColor: "#ECFDF5",
+    borderColor: GREEN,
+  },
+  ratingEmoji: { fontSize: 20, marginBottom: 2 },
+  ratingEmojiLabel: { fontSize: 10, color: MUTED, textAlign: "center" },
+  ratingEmojiLabelSelected: { fontWeight: "600", color: GREEN },
+  ratingFeedbackInput: {
+    minHeight: 60,
+    maxHeight: 100,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#EBEBEB",
+    backgroundColor: "#fff",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: TEXT,
+    marginBottom: 10,
+  },
+  ratingSubmitBtn: {
+    alignSelf: "flex-end",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: GREEN,
+  },
+  ratingSubmitBtnDisabled: { opacity: 0.5 },
+  ratingSubmitText: { fontSize: 13, fontWeight: "600", color: "#fff" },
+
+  ratingSummaryCard: {
+    marginHorizontal: 12,
+    marginTop: 6,
+    marginBottom: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#EBEBEB",
+  },
+  ratingExperienceTitle: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: TEXT,
+    marginBottom: 6,
+  },
+  ratingAutoSummaryRow: { flexDirection: "row", alignItems: "center", marginBottom: 4 },
+  ratingAutoEmoji: { fontSize: 18, marginRight: 6 },
+  ratingAutoLabel: { fontSize: 13, fontWeight: "600", color: TEXT, marginRight: 6 },
+  ratingAutoStarsRow: { flexDirection: "row", alignItems: "center" },
+  ratingAutoStarIcon: { marginRight: 2 },
+  ratingExperienceNote: { marginTop: 4, fontSize: 11, color: MUTED },
+  ratingSummaryFeedback: { fontSize: 12, color: MUTED, marginTop: 8, fontStyle: "italic" },
+  ratingSummaryMeta: { marginTop: 6, fontSize: 11, color: "#9CA3AF" },
+  ratingAutoCard: {
+    marginHorizontal: 12,
+    marginBottom: 8,
+    paddingHorizontal: 13,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#EBEBEB",
+  },
+  ratingAutoHeaderRow: { flexDirection: "row", alignItems: "center", marginBottom: 6 },
+  ratingAutoTitle: { fontSize: 12, fontWeight: "600", color: TEXT },
+  ratingAutoBody: { fontSize: 12, color: MUTED, lineHeight: 18, marginTop: 2 },
+  ratingAutoBold: { fontWeight: "600", color: TEXT },
+  ratingAutoSignature: {
+    fontSize: 12,
+    color: MUTED,
+    marginTop: 8,
+    fontStyle: "italic",
+  },
 });

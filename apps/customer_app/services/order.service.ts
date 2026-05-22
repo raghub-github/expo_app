@@ -9,16 +9,39 @@ import { ORDER_PLACEMENT_TIMEOUT_MS } from "@/constants";
 const ORDERS_PREFIX = "/v1/orders";
 
 export type OrderSummary = {
-  /** Canonical order reference (string; e.g. GM-<ts>-<hex> for new orders). */
+  /** Canonical order reference (string; e.g. GM10000001). */
   orderId: string;
+  /** Numeric orders_core.id — used for support tickets. */
+  coreOrderId?: number | null;
+  formattedOrderId?: string | null;
   status: string;
   merchantName?: string;
+  merchantPublicName?: string | null;
+  merchantPublicStoreId?: string | null;
+  merchantAddress?: string | null;
+  merchantBannerUrl?: string | null;
+  merchantStoreId?: number | null;
+  vegNonVeg?: string | null;
+  avgRating?: number | null;
+  totalReviews?: number | null;
   totalAmount?: number;
   createdAt: string;
-  items?: { name: string; quantity: number; price: number }[];
+  items?: {
+    name: string;
+    quantity: number;
+    price: number;
+    menuItemId?: string | null;
+    lineTotal?: number | null;
+    vegNonVeg?: string | null;
+    variantName?: string | null;
+    customization?: string | null;
+  }[];
 };
 
 export type OrderDetail = OrderSummary & {
+  /** Numeric orders_core.id — required for order-linked support tickets. */
+  coreOrderId?: number | null;
+  billingSnapshot?: Record<string, unknown> | null;
   statusHistory?: { status: string; at: string }[];
   /** Minutes the restaurant committed at accept. */
   prepTimeMinutes?: number | null;
@@ -26,6 +49,8 @@ export type OrderDetail = OrderSummary & {
   prepReadyByAt?: string | null;
   rider?: { name: string; phone?: string };
   deliveryAddress?: string;
+  paymentMethod?: string | null;
+  paymentStatus?: string | null;
   /** 4-digit code shown on customer tracking for delivery handoff. */
   deliveryOtp?: string | null;
   /** Optional: for map – when available from backend */
@@ -134,6 +159,7 @@ export type FinalizeOrderPayload = {
 
 export type FinalizeOrderResponse = {
   orderId: string;
+  formattedOrderId?: string | null;
   status: string;
   totalAmount: number;
   createdAt: string;

@@ -11,9 +11,9 @@ export default function SupportLayout() {
           headerBackTitle: "Back",
         }}
       >
-        <Stack.Screen name="index" options={{ title: "My Support" }} />
+        <Stack.Screen name="index" options={{ headerShown: false }} />
         <Stack.Screen name="new" options={{ title: "Raise a ticket" }} />
-        <Stack.Screen name="[ticketId]" options={{ title: "Ticket" }} />
+        <Stack.Screen name="[ticketId]" options={{ headerShown: false }} />
       </Stack>
     </>
   );

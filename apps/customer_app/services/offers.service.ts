@@ -47,6 +47,12 @@ export type HomeBannerOffer = {
   sub: string;
   kind: "merchant" | "platform";
   source_offer_id: number;
+  offer_type?: string | null;
+  coupon_code?: string | null;
+  min_order_amount?: number | null;
+  max_discount_amount?: number | null;
+  discount_percentage?: number | null;
+  discount_value?: number | null;
 };
 
 export type FeaturedOffersResponse = {

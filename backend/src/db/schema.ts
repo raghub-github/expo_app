@@ -690,6 +690,7 @@ export const customers = pgTable(
     longitude: numeric("longitude", { precision: 10, scale: 7 }),
     emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
     customerUuid: uuid("customer_uuid").notNull().$defaultFn(() => crypto.randomUUID()),
+    gmitraPlusActive: boolean("gmitra_plus_active").notNull().default(false),
   },
   (table) => ({
     customerIdIdx: index("customers_customer_id_idx").on(table.customerId),

@@ -117,8 +117,9 @@ const confettiStyles = StyleSheet.create({
 const AUTO_REDIRECT_SEC = 4;
 
 export default function OrderSuccessScreen() {
-  const { orderId: orderIdParam, merchantName: paramMerchantName, etaMinutes: paramEtaMinutes } = useLocalSearchParams<{
+  const { orderId: orderIdParam, formattedOrderId: formattedOrderIdParam, merchantName: paramMerchantName, etaMinutes: paramEtaMinutes } = useLocalSearchParams<{
     orderId?: string | string[];
+    formattedOrderId?: string | string[];
     merchantName?: string;
     etaMinutes?: string | number;
   }>();
@@ -126,6 +127,7 @@ export default function OrderSuccessScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const fromUrl = Array.isArray(orderIdParam) ? orderIdParam[0] : orderIdParam;
+  const fromFormattedUrl = Array.isArray(formattedOrderIdParam) ? formattedOrderIdParam[0] : formattedOrderIdParam;
   const fromParams = (route.params as { orderId?: string } | undefined)?.orderId;
   const id = (fromUrl ?? fromParams ?? "").toString();
   const merchantName = (route.params as { merchantName?: string } | undefined)?.merchantName ?? (paramMerchantName as string | undefined);
@@ -168,7 +170,7 @@ export default function OrderSuccessScreen() {
   }
 
   const displayEta = typeof etaFromParams === "number" && etaFromParams > 0 ? etaFromParams : ETA_DEFAULT_MINS;
-  const orderIdDisplay = order?.orderId ?? id;
+  const orderIdDisplay = order?.formattedOrderId ?? fromFormattedUrl ?? order?.orderId ?? id;
   const displayMerchantName = order?.merchantName ?? merchantName ?? undefined;
   // Show success UI immediately when we have orderId (from params); optional order fetch for summary/address
   const showSuccessContent = true;

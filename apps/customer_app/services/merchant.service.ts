@@ -51,8 +51,12 @@ export type MenuItem = {
   name: string;
   description?: string;
   price: number;
+  /** MRP / base price before item discount (customer-facing, commission-inclusive). */
+  basePrice?: number;
   imageUrl?: string;
   isVeg: boolean;
+  foodType?: string;
+  spiceLevel?: string;
   category?: string;
   categoryId?: number | null;
   categoryName?: string | null;
@@ -101,8 +105,18 @@ export type MenuItemFullConfig = {
       price: number;
       imageUrl: string | null;
       displayOrder: number;
+      isMostOrdered?: boolean;
     }>;
   }>;
+};
+
+export type OrderedTogetherPair = {
+  id: string;
+  item1Id: string;
+  item2Id: string;
+  item1MenuItemPk: number;
+  item2MenuItemPk: number;
+  orderCount: number;
 };
 
 export type MerchantDetail = MerchantSummary & {
@@ -133,6 +147,7 @@ export type NearbyStore = {
 export type MerchantAbout = {
   store_name: string;
   store_display_name: string | null;
+  legal_name?: string | null;
   full_address: string | null;
   city: string | null;
   state?: string | null;
@@ -144,6 +159,10 @@ export type MerchantAbout = {
   banner_url: string | null;
   is_active: boolean | null;
   created_at?: string | null;
+  gst_number?: string | null;
+  fssai_number?: string | null;
+  store_phone?: string | null;
+  is_cloud_kitchen?: boolean;
 };
 
 /** Response from GET /v1/search (dishes from merchant_menu_items + stores). */
@@ -375,6 +394,18 @@ export const merchantService = {
       return data ?? null;
     } catch {
       return null;
+    }
+  },
+
+  /** Pairs of items frequently ordered together at this store (from completed order history). */
+  async getOrderedTogetherPairs(storeId: string): Promise<OrderedTogetherPair[]> {
+    try {
+      const { data } = await api.get<{ pairs: OrderedTogetherPair[] }>(
+        `${MERCHANTS_PREFIX}/${storeId}/menu/ordered-together`
+      );
+      return Array.isArray(data?.pairs) ? data.pairs : [];
+    } catch {
+      return [];
     }
   },
 

@@ -56,8 +56,8 @@ export function BrandingFooter({ variant = "default" }: BrandingFooterProps) {
 
 const styles = StyleSheet.create({
   wrap: {
-    paddingTop: 12,
-    paddingBottom: 16,
+    paddingTop: 20,
+    paddingBottom: 24,
     paddingHorizontal: 16,
     alignItems: "center",
     justifyContent: "center",
@@ -69,24 +69,24 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   tagline: {
-    fontSize: 13,
-    fontWeight: "500",
-    color: GatiMitraColors.emerald,
+    fontSize: 14,
+    fontWeight: "600",
+    color: GatiMitraColors.primaryMint,
     textAlign: "center",
-    letterSpacing: 0.5,
+    letterSpacing: 0.3,
   },
   brandTextWrap: {
-    marginTop: 4,
+    marginTop: 6,
     alignItems: "center",
     overflow: "visible",
   },
   brandText: {
-    fontSize: 18,
-    fontWeight: "700",
+    fontSize: 28,
+    fontWeight: "800",
     color: WATERMARK_GRAY,
     textAlign: "center",
-    letterSpacing: 2,
-    transform: [{ scaleX: 1.1 }],
+    letterSpacing: 1.5,
+    transform: [{ scaleX: 1.05 }],
   },
   wrapHome: {
     paddingTop: 20,
