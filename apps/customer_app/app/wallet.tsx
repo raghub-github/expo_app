@@ -1,87 +1,76 @@
 /**
- * GatiMitra Money – wallet balance and transaction history.
- * Design aligned with reference; GatiMitra teal/mint branding.
+ * GatiMitra Money — wallet balance and transaction history (live API).
  */
 
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   View,
   Text,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
+  ActivityIndicator,
+  RefreshControl,
+  Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
+import { StatusBar } from "expo-status-bar";
+import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { BrandingFooter } from "@/components/BrandingFooter";
+import { ProfileSubpageHeader } from "@/components/profile/ProfileSubpageHeader";
+import { ProfileTheme } from "@/constants/profileTheme";
+import {
+  walletService,
+  type WalletTransaction,
+  type WalletTxFilter,
+} from "@/services/wallet.service";
 
-const TEAL = "#14b8a6";
-const TEAL_DARK = "#0d9488";
-const TITLE_DARK = "#1A1A1A";
-const TEXT_GRAY = "#6B7280";
-const CARD_BG = "#FFFFFF";
-const BORDER = "#E8E8E8";
-const PAD = 20;
-const SHADOW = {
-  shadowColor: "#000",
-  shadowOffset: { width: 0, height: 2 },
-  shadowOpacity: 0.06,
-  shadowRadius: 8,
-  elevation: 3,
-};
+const { green: GREEN, greenDark: GREEN_DARK, text: TEXT, muted: MUTED, border: BORDER, pageBg: PAGE_BG } =
+  ProfileTheme;
 
-type TxFilter = "all" | "additions" | "deductions" | "refunds" | "expired";
-
-const FILTERS: { id: TxFilter; label: string }[] = [
-  { id: "all", label: "All Transactions" },
-  { id: "additions", label: "Additions" },
-  { id: "deductions", label: "Deductions" },
+const FILTERS: { id: WalletTxFilter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "additions", label: "Added" },
+  { id: "deductions", label: "Spent" },
   { id: "refunds", label: "Refunds" },
   { id: "expired", label: "Expired" },
 ];
 
-type TxType = "credit" | "debit" | "expired";
+function formatTxDate(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+  } catch {
+    return iso;
+  }
+}
 
-const MOCK_TRANSACTIONS = [
-  { id: "1", type: "expired" as TxType, title: "Expired", date: "17 May, 2024", amount: -25 },
-  { id: "2", type: "credit" as TxType, title: "Credit balance added", date: "11 May, 2024", amount: 25 },
-  { id: "3", type: "debit" as TxType, title: "Order Debit", date: "10 May, 2024", amount: -264.25 },
-  { id: "4", type: "credit" as TxType, title: "Refund", date: "8 May, 2024", amount: 120 },
-];
+function txIcon(type: WalletTransaction["type"]): { name: keyof typeof Ionicons.glyphMap; color: string; bg: string } {
+  if (type === "credit" || type === "bonus" || type === "cashback") {
+    return { name: "add-circle", color: GREEN_DARK, bg: ProfileTheme.mintSoft };
+  }
+  if (type === "refund") return { name: "refresh-circle", color: "#2563EB", bg: "#EFF6FF" };
+  if (type === "expired") return { name: "time-outline", color: MUTED, bg: PAGE_BG };
+  return { name: "bag-outline", color: "#64748B", bg: "#F8FAFC" };
+}
 
-function TransactionRow({
-  type,
-  title,
-  date,
-  amount,
-}: {
-  type: TxType;
-  title: string;
-  date: string;
-  amount: number;
-}) {
-  const isCredit = amount >= 0;
-  const iconName =
-    type === "credit"
-      ? "add-circle"
-      : type === "expired"
-        ? "time-outline"
-        : "bag-outline";
-  const iconColor = type === "credit" ? TEAL : type === "expired" ? TEXT_GRAY : "#64748b";
-
+function TransactionRow({ tx }: { tx: WalletTransaction }) {
+  const icon = txIcon(tx.type);
+  const isCredit = tx.amount >= 0;
   return (
-    <View style={[styles.txCard, SHADOW]}>
-      <View style={styles.txIconWrap}>
-        <Ionicons name={iconName as any} size={24} color={iconColor} />
+    <View style={styles.txCard}>
+      <View style={[styles.txIconWrap, { backgroundColor: icon.bg }]}>
+        <Ionicons name={icon.name} size={20} color={icon.color} />
       </View>
       <View style={styles.txBody}>
-        <Text style={styles.txTitle}>{title}</Text>
-        <Text style={styles.txDate}>{date}</Text>
+        <Text style={styles.txTitle} numberOfLines={1}>{tx.title}</Text>
+        <Text style={styles.txDate}>{formatTxDate(tx.created_at)}</Text>
       </View>
       <Text style={[styles.txAmount, isCredit ? styles.txAmountCredit : styles.txAmountDebit]}>
-        {isCredit ? "+" : ""} ₹{Math.abs(amount).toFixed(2)}
+        {isCredit ? "+" : "−"} ₹{Math.abs(tx.amount).toFixed(2)}
       </Text>
     </View>
   );
@@ -90,201 +79,208 @@ function TransactionRow({
 export default function WalletScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const [filter, setFilter] = useState<TxFilter>("all");
+  const [filter, setFilter] = useState<WalletTxFilter>("all");
 
-  const balance = 0; // could come from API
-
-  const filteredTx = MOCK_TRANSACTIONS.filter((tx) => {
-    if (filter === "all") return true;
-    if (filter === "additions") return tx.amount > 0 && tx.type !== "expired";
-    if (filter === "deductions") return tx.amount < 0 && tx.type === "debit";
-    if (filter === "refunds") return tx.amount > 0 && tx.title.toLowerCase().includes("refund");
-    if (filter === "expired") return tx.type === "expired";
-    return true;
+  const balanceQ = useQuery({
+    queryKey: ["wallet", "balance"],
+    queryFn: () => walletService.getBalance(),
   });
+
+  const txQ = useQuery({
+    queryKey: ["wallet", "transactions", filter],
+    queryFn: () => walletService.getTransactions({ filter, limit: 50 }),
+  });
+
+  const balance = balanceQ.data?.available_balance ?? balanceQ.data?.balance ?? 0;
+  const transactions = txQ.data?.transactions ?? [];
+  const loading = balanceQ.isLoading || txQ.isLoading;
+  const refreshing = (balanceQ.isFetching || txQ.isFetching) && !loading;
+
+  const onRefresh = useCallback(() => {
+    void balanceQ.refetch();
+    void txQ.refetch();
+  }, [balanceQ, txQ]);
+
+  const handleAddMoney = useCallback(() => {
+    Alert.alert(
+      "Add money",
+      "Wallet top-up will be available soon. Your refunds and cashback will appear here automatically.",
+      [{ text: "OK" }]
+    );
+  }, []);
+
+  const lockedNote = useMemo(() => {
+    const locked = balanceQ.data?.locked_amount ?? 0;
+    if (locked <= 0) return null;
+    return `₹${locked.toFixed(2)} locked for active orders`;
+  }, [balanceQ.data?.locked_amount]);
 
   return (
     <>
       <AndroidBackHandler />
-      <View style={styles.container}>
-        {/* Header */}
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={12}>
-            <Ionicons name="arrow-back" size={24} color={TITLE_DARK} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>GatiMitra Money</Text>
-        <TouchableOpacity style={styles.settingsBtn} hitSlop={12}>
-          <Ionicons name="settings-outline" size={22} color={TITLE_DARK} />
-        </TouchableOpacity>
-      </View>
+      <StatusBar style="dark" backgroundColor="#fff" />
+      <View style={styles.screen}>
+        <ProfileSubpageHeader
+          title="GatiMitra Money"
+          onBack={() => router.back()}
+          rightAction={{ icon: "settings-outline", onPress: () => router.push("/profile/settings") }}
+        />
 
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 32 }]}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Balance section */}
-        <View style={styles.balanceSection}>
-          <View style={styles.walletIconWrap}>
-            <Ionicons name="wallet" size={48} color={TEAL} />
-          </View>
-          <Text style={styles.balanceLabel}>YOUR BALANCE</Text>
-          <Text style={styles.balanceAmount}>₹{balance.toFixed(0)}</Text>
-          <TouchableOpacity
-            style={styles.addMoneyBtn}
-            activeOpacity={0.9}
-            onPress={() => {}}
-          >
-            <Text style={styles.addMoneyText}>Add money</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Transaction history */}
-        <Text style={styles.sectionTitle}>TRANSACTION HISTORY</Text>
         <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.filtersWrap}
-          style={styles.filtersScroll}
+          style={styles.scroll}
+          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: insets.bottom + 32 }}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={GREEN} />
+          }
         >
-          {FILTERS.map((f) => (
-            <TouchableOpacity
-              key={f.id}
-              onPress={() => setFilter(f.id)}
-              style={[styles.filterChip, filter === f.id && styles.filterChipActive]}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.filterChipText, filter === f.id && styles.filterChipTextActive]}>
-                {f.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-
-        <View style={styles.txList}>
-          {filteredTx.length === 0 ? (
-            <View style={styles.emptyTx}>
-              <Ionicons name="receipt-outline" size={40} color={BORDER} />
-              <Text style={styles.emptyTxText}>No transactions in this category</Text>
+          <View style={styles.balanceCard}>
+            <View style={styles.balanceTopRow}>
+              <View style={styles.balanceIconWrap}>
+                <Ionicons name="wallet-outline" size={18} color={GREEN_DARK} />
+              </View>
+              <Text style={styles.balanceLabel}>Available balance</Text>
             </View>
-          ) : (
-            filteredTx.map((tx) => (
-              <TransactionRow
-                key={tx.id}
-                type={tx.type}
-                title={tx.title}
-                date={tx.date}
-                amount={tx.amount}
-              />
-            ))
-          )}
-        </View>
+            {balanceQ.isLoading ? (
+              <ActivityIndicator color={GREEN} style={{ marginTop: 12, alignSelf: "flex-start" }} />
+            ) : (
+              <Text style={styles.balanceAmount}>₹{balance.toFixed(2)}</Text>
+            )}
+            {lockedNote ? <Text style={styles.lockedNote}>{lockedNote}</Text> : null}
+            <TouchableOpacity style={styles.addMoneyBtn} activeOpacity={0.9} onPress={handleAddMoney}>
+              <Ionicons name="add" size={18} color="#fff" />
+              <Text style={styles.addMoneyText}>Add money</Text>
+            </TouchableOpacity>
+          </View>
 
-        <BrandingFooter />
-      </ScrollView>
+          <Text style={styles.sectionTitle}>Transaction history</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.filtersWrap}
+            style={styles.filtersScroll}
+          >
+            {FILTERS.map((f) => (
+              <TouchableOpacity
+                key={f.id}
+                onPress={() => setFilter(f.id)}
+                style={[styles.filterChip, filter === f.id && styles.filterChipActive]}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.filterChipText, filter === f.id && styles.filterChipTextActive]}>
+                  {f.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+
+          <View style={styles.txList}>
+            {loading ? (
+              <ActivityIndicator color={GREEN} style={{ marginTop: 24 }} />
+            ) : transactions.length === 0 ? (
+              <View style={styles.emptyTx}>
+                <Ionicons name="receipt-outline" size={40} color="#CBD5E1" />
+                <Text style={styles.emptyTxTitle}>No transactions yet</Text>
+                <Text style={styles.emptyTxText}>
+                  Refunds, cashback, and wallet credits will show up here.
+                </Text>
+              </View>
+            ) : (
+              transactions.map((tx) => <TransactionRow key={tx.id} tx={tx} />)
+            )}
+          </View>
+
+          <BrandingFooter />
+        </ScrollView>
       </View>
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F5F5F5" },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: PAD,
-    paddingVertical: 14,
-    backgroundColor: CARD_BG,
-    borderBottomWidth: 1,
-    borderBottomColor: BORDER,
-  },
-  backBtn: { padding: 4 },
-  headerTitle: { fontSize: 18, fontWeight: "700", color: TITLE_DARK },
-  settingsBtn: { padding: 4 },
+  screen: { flex: 1, backgroundColor: PAGE_BG },
   scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: PAD },
-  balanceSection: {
-    alignItems: "center",
-    paddingVertical: 28,
+  balanceCard: {
+    marginTop: 16,
+    backgroundColor: "#fff",
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: BORDER,
   },
-  walletIconWrap: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    backgroundColor: "#E0F2F1",
+  balanceTopRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  balanceIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: ProfileTheme.mintSoft,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 16,
   },
-  balanceLabel: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: TEXT_GRAY,
-    letterSpacing: 0.5,
-  },
+  balanceLabel: { flex: 1, fontSize: 12, fontWeight: "600", color: MUTED },
   balanceAmount: {
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: "800",
-    color: TITLE_DARK,
-    marginTop: 6,
+    color: GREEN_DARK,
+    marginTop: 10,
+    letterSpacing: -0.5,
   },
+  lockedNote: { fontSize: 12, color: MUTED, marginTop: 6 },
   addMoneyBtn: {
-    marginTop: 20,
-    backgroundColor: TEAL,
-    paddingVertical: 14,
-    paddingHorizontal: 48,
-    borderRadius: 14,
-    minWidth: 200,
-    alignItems: "center",
-  },
-  addMoneyText: { fontSize: 16, fontWeight: "700", color: "#fff" },
-  sectionTitle: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: TEXT_GRAY,
-    letterSpacing: 0.5,
-    marginBottom: 12,
-  },
-  filtersScroll: { marginHorizontal: -PAD },
-  filtersWrap: {
-    paddingHorizontal: PAD,
-    paddingBottom: 16,
-    gap: 10,
     flexDirection: "row",
-  },
-  filterChip: {
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    backgroundColor: "#E8E8E8",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    marginTop: 16,
+    backgroundColor: GREEN,
+    paddingVertical: 12,
     borderRadius: 12,
   },
-  filterChipActive: {
-    backgroundColor: "transparent",
-    borderWidth: 2,
-    borderColor: TEAL,
+  addMoneyText: { fontSize: 15, fontWeight: "700", color: "#fff" },
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: TEXT,
+    marginTop: 18,
+    marginBottom: 10,
   },
-  filterChipText: { fontSize: 14, fontWeight: "600", color: TEXT_GRAY },
-  filterChipTextActive: { color: TEAL },
+  filtersScroll: { marginHorizontal: -16, marginBottom: 4 },
+  filtersWrap: { paddingHorizontal: 16, gap: 8, flexDirection: "row", paddingBottom: 12 },
+  filterChip: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    backgroundColor: "#fff",
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  filterChipActive: { backgroundColor: ProfileTheme.mintSoft, borderColor: GREEN },
+  filterChipText: { fontSize: 13, fontWeight: "600", color: MUTED },
+  filterChipTextActive: { color: GREEN_DARK },
   txList: { gap: 10 },
   txCard: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: CARD_BG,
+    backgroundColor: "#fff",
     borderRadius: 14,
     padding: 14,
-    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: BORDER,
   },
-  txIconWrap: { width: 40, alignItems: "center" },
-  txBody: { flex: 1, marginLeft: 12 },
-  txTitle: { fontSize: 15, fontWeight: "600", color: TITLE_DARK },
-  txDate: { fontSize: 12, color: TEXT_GRAY, marginTop: 2 },
-  txAmount: { fontSize: 15, fontWeight: "700" },
-  txAmountCredit: { color: TEAL },
-  txAmountDebit: { color: TITLE_DARK },
-  emptyTx: {
+  txIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
     alignItems: "center",
-    paddingVertical: 32,
+    justifyContent: "center",
   },
-  emptyTxText: { fontSize: 14, color: TEXT_GRAY, marginTop: 12 },
+  txBody: { flex: 1, marginLeft: 12 },
+  txTitle: { fontSize: 14, fontWeight: "700", color: TEXT },
+  txDate: { fontSize: 12, color: MUTED, marginTop: 2 },
+  txAmount: { fontSize: 14, fontWeight: "800" },
+  txAmountCredit: { color: GREEN_DARK },
+  txAmountDebit: { color: TEXT },
+  emptyTx: { alignItems: "center", paddingVertical: 36, paddingHorizontal: 24 },
+  emptyTxTitle: { fontSize: 16, fontWeight: "700", color: TEXT, marginTop: 12 },
+  emptyTxText: { fontSize: 13, color: MUTED, textAlign: "center", marginTop: 6, lineHeight: 19 },
 });

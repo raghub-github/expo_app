@@ -246,6 +246,12 @@ export type HomeBannerOffer = {
   sub: string;
   kind: "merchant" | "platform";
   source_offer_id: number;
+  offer_type?: string | null;
+  coupon_code?: string | null;
+  min_order_amount?: number | null;
+  max_discount_amount?: number | null;
+  discount_percentage?: number | null;
+  discount_value?: number | null;
 };
 
 type NearbyStoreRef = {
@@ -290,6 +296,7 @@ async function fetchMerchantBannerOffers(nearby: NearbyStoreRef[]): Promise<Home
       storeId: merchantOffers.storeId,
       offerTitle: merchantOffers.offerTitle,
       offerType: merchantOffers.offerType,
+      couponCode: merchantOffers.couponCode,
       discountValue: merchantOffers.discountValue,
       discountPercentage: merchantOffers.discountPercentage,
       maxDiscountAmount: merchantOffers.maxDiscountAmount,
@@ -329,6 +336,12 @@ async function fetchMerchantBannerOffers(nearby: NearbyStoreRef[]): Promise<Home
         store.name,
       kind: "merchant",
       source_offer_id: r.id,
+      offer_type: type,
+      coupon_code: r.couponCode ? String(r.couponCode).trim() || null : null,
+      min_order_amount: minOrder,
+      max_discount_amount: maxDisc,
+      discount_percentage: discPct,
+      discount_value: discVal,
     });
   }
   return banners;
@@ -427,6 +440,12 @@ async function fetchPlatformBannerOffers(
           : store!.name,
       kind: "platform",
       source_offer_id: o.id,
+      offer_type: kind,
+      coupon_code: null,
+      min_order_amount: minOrder,
+      max_discount_amount: maxDisc,
+      discount_percentage: o.discountType === "PERCENTAGE" ? value : null,
+      discount_value: o.discountType !== "PERCENTAGE" ? value : null,
     });
   }
 
@@ -566,6 +585,12 @@ export async function offersRoutes(app: FastifyInstance) {
               sub:             z.string(),
               kind:            z.enum(["merchant", "platform"]),
               source_offer_id: z.number(),
+              offer_type:            z.string().nullable().optional(),
+              coupon_code:           z.string().nullable().optional(),
+              min_order_amount:      z.number().nullable().optional(),
+              max_discount_amount:   z.number().nullable().optional(),
+              discount_percentage:   z.number().nullable().optional(),
+              discount_value:        z.number().nullable().optional(),
             })),
           }),
         },

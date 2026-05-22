@@ -16,6 +16,7 @@ export type OrderStatus =
 
 export type ActiveOrder = {
   orderId: string;
+  formattedOrderId?: string | null;
   status: OrderStatus;
   etaMinutes: number;
   storeId: string | null;

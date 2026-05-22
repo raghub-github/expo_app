@@ -30,6 +30,7 @@ import { normalizeOrderItems } from "./orderNormalizer.js";
 import { getRoute } from "../distance/distance.service.js";
 import { writeOrderItemCommissionSnapshots } from "../commission/writeOrderCommissionSnapshots.js";
 import { freezeEtaForPlacedOrder } from "../eta/eta.placement.js";
+import { vegNonvegForPlacementItem } from "../../lib/order-item-veg.js";
 
 const EM_DASH = "\u2014";
 
@@ -777,7 +778,7 @@ export async function finalizeOrder(
           menuItemId: i.menuItemId,
           itemName: i.itemName,
           categoryName: null,
-          vegNonveg: null,
+          vegNonveg: vegNonvegForPlacementItem(i.itemSnapshot),
           variantId: i.variantId != null ? i.variantId : undefined,
           variantName: sanitizeOptional(i.variantName ?? "") ?? undefined,
           quantity: i.quantity,
@@ -1209,7 +1210,7 @@ export async function finalizePendingOrderFromWebhook(
           menuItemId: i.menuItemId,
           itemName: i.itemName,
           categoryName: null as string | null,
-          vegNonveg: null as string | null,
+          vegNonveg: vegNonvegForPlacementItem(i.itemSnapshot),
           variantId: i.variantId != null ? i.variantId : undefined,
           variantName: sanitizeOptional(i.variantName ?? "") ?? undefined,
           quantity: i.quantity,

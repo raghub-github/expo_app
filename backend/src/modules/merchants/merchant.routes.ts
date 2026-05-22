@@ -5,6 +5,7 @@ import {
   getMenuByStoreId,
   getStoreLiveStatus,
   getMenuItemFullConfig,
+  getOrderedTogetherPairs,
   search,
   listNearbyStoresByRoadDistance,
 } from "./merchant.service.js";
@@ -266,6 +267,7 @@ export async function merchantRoutes(app: FastifyInstance) {
                 price: z.number(),
                 imageUrl: z.string().nullable(),
                 displayOrder: z.number(),
+                isMostOrdered: z.boolean().optional(),
               })),
             })),
           }),
@@ -278,6 +280,39 @@ export async function merchantRoutes(app: FastifyInstance) {
       const config = await getMenuItemFullConfig(storeId, itemId);
       if (!config) return reply.status(404).send({ error: "Item not found" });
       return reply.send(config);
+    }
+  );
+
+  // GET /v1/merchants/:id/menu/ordered-together – item pairs frequently ordered together at this store.
+  app.get<{ Params: { id: string } }>(
+    "/merchants/:id/menu/ordered-together",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({
+            pairs: z.array(
+              z.object({
+                id: z.string(),
+                item1Id: z.string(),
+                item2Id: z.string(),
+                item1MenuItemPk: z.number(),
+                item2MenuItemPk: z.number(),
+                orderCount: z.number(),
+              })
+            ),
+          }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id: storeId } = request.params;
+      const { getStoreByStoreId } = await import("./merchant.service.js");
+      const store = await getStoreByStoreId(storeId);
+      if (!store) return reply.status(404).send({ error: "Store not found" });
+      const pairs = await getOrderedTogetherPairs(storeId);
+      return reply.send({ pairs });
     }
   );
 
@@ -340,6 +375,11 @@ export async function merchantRoutes(app: FastifyInstance) {
             banner_url: z.string().nullable(),
             is_active: z.boolean().nullable(),
             created_at: z.string().nullable().optional(),
+            legal_name: z.string().nullable().optional(),
+            gst_number: z.string().nullable().optional(),
+            fssai_number: z.string().nullable().optional(),
+            store_phone: z.string().nullable().optional(),
+            is_cloud_kitchen: z.boolean().optional(),
           }),
           404: z.object({ error: z.string() }),
         },
@@ -347,26 +387,10 @@ export async function merchantRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params;
-      const { getStoreByStoreId } = await import("./merchant.service.js");
-      const store = await getStoreByStoreId(id);
-      if (!store) return reply.status(404).send({ error: "Store not found" });
-      return reply.send({
-        store_name: store.store_name,
-        store_display_name: store.store_display_name ?? null,
-        full_address: store.full_address ?? store.store_description ?? null,
-        city: store.city ?? null,
-        state: (store as { state?: string | null }).state ?? null,
-        postal_code: store.postal_code ?? null,
-        cuisine_types: store.cuisine_types ?? null,
-        operational_status: store.operational_status ?? null,
-        avg_preparation_time_minutes: store.avg_preparation_time_minutes ?? null,
-        packaging_charge_amount: (store as { packaging_charge_amount?: number | null }).packaging_charge_amount ?? null,
-        delivery_charge_per_km: (store as { delivery_charge_per_km?: number | null }).delivery_charge_per_km ?? null,
-        delivery_radius_km: (store as { delivery_radius_km?: number | null }).delivery_radius_km ?? null,
-        banner_url: store.banner_url ?? null,
-        is_active: store.is_active ?? null,
-        created_at: store.created_at ?? null,
-      });
+      const { getMerchantAboutPayload } = await import("./merchant.service.js");
+      const payload = await getMerchantAboutPayload(id);
+      if (!payload) return reply.status(404).send({ error: "Store not found" });
+      return reply.send(payload);
     }
   );
 
@@ -451,7 +475,13 @@ export async function merchantRoutes(app: FastifyInstance) {
         name: m.item_name,
         description: m.item_description ?? undefined,
         price: parseFloat(m.selling_price),
+        basePrice:
+          m.base_price != null && Number.isFinite(parseFloat(String(m.base_price)))
+            ? parseFloat(String(m.base_price))
+            : undefined,
         imageUrl: toAbsoluteClientMediaUrl(m.item_image_url ?? null) ?? undefined,
+        foodType: m.food_type ?? undefined,
+        spiceLevel: (m as { spice_level?: string | null }).spice_level ?? undefined,
         isVeg: (m.food_type ?? "").toLowerCase().startsWith("veg"),
         category: m.cuisine_type ?? (m as { category_name?: string | null }).category_name ?? undefined,
         categoryId: m.category_id ?? undefined,

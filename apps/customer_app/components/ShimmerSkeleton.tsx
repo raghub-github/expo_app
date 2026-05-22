@@ -273,12 +273,12 @@ export function LovedMerchantsGridSkeleton({ count = 4 }: { count?: number }) {
 /** Featured offer banner skeleton (full width home card). */
 export function HomeOfferBannerSkeleton({
   width,
-  height = 116,
+  height = 148,
 }: {
   width: number;
   height?: number;
 }) {
-  return <GMSkeleton style={[offerBannerSkeletonStyles.wrap, { width, height, borderRadius: 20 }]} />;
+  return <GMSkeleton style={[offerBannerSkeletonStyles.wrap, { width, height, borderRadius: 12 }]} />;
 }
 
 const menuSkeletonStyles = StyleSheet.create({

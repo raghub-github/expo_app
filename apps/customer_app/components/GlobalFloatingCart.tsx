@@ -548,7 +548,7 @@ function TrackOrderPill({
           <View style={styles.pillContent}>
             <Ionicons name="bicycle" size={20} color="#fff" />
             <Text style={styles.liveText} numberOfLines={1}>
-              #{order.orderId.slice(-6)} · {order.etaMinutes}m
+              #{order.formattedOrderId ?? order.orderId} · {order.etaMinutes}m
             </Text>
           </View>
         </LinearGradient>
