@@ -5,9 +5,15 @@ import { getEnv } from "../../config/env.js";
 import { getStoreBillingRates, getStoreByIdForOrder, getStoreByStoreId } from "../merchants/merchant.service.js";
 import type { NormalizedOrderItem } from "../orders/orderNormalizer.js";
 import { rewriteCartPricesAuthoritatively } from "./serverAuthoritativePricing.js";
-import { loadBillingDatasetUncached, getRulesetVersion, listActiveCustomerCoupons, loadMerchantOfferUsagesByUser } from "./billing.repository.js";
+import {
+  loadBillingDatasetUncached,
+  getRulesetVersion,
+  listActiveCustomerCoupons,
+  loadMerchantOfferUsagesByUser,
+} from "./billing.repository.js";
 import { executeBillingPipeline } from "./executeBillingPipeline.js";
 import { listEligiblePlatformOffersForCheckout } from "./platformOffersApply.js";
+import { listMerchantOffersForCheckout } from "./merchantOffersCheckout.js";
 import {
   resolveDropGeoRefsFromPincode,
   resolvePlatformOfferGeoBindingEffectiveIds,
@@ -455,6 +461,9 @@ export type CheckoutOfferMerchantRow = {
   id: number;
   title: string;
   summary: string;
+  autoApply: boolean;
+  requiresCouponCode: string | null;
+  minOrderAmount: number | null;
 };
 
 export type CheckoutOfferPlatformRow = {
@@ -505,6 +514,21 @@ function describeMerchantOfferRow(m: {
   return parts.join(" · ") || "Store offer";
 }
 
+function formatPlatformOfferLockReason(reason: string, grossCart: number): string {
+  const minMatch = reason.match(/minCart=(\d+(?:\.\d+)?)/);
+  if (minMatch) {
+    const min = Number(minMatch[1]);
+    if (Number.isFinite(min) && min > 0) {
+      const gap = Math.ceil(Math.max(0, min - grossCart));
+      if (gap > 0) return `Add eligible items worth ₹${gap} more to unlock`;
+      return `Minimum order value ₹${Math.round(min)} required`;
+    }
+  }
+  if (reason.includes("geo=GEO_NOT_BOUND")) return "Not available at your delivery location";
+  if (reason.includes("segment=")) return "Not available for your account";
+  return "Not eligible on this order";
+}
+
 function describePlatformOfferRow(o: PlatformOfferRow): string {
   const parts: string[] = [];
   const cond = (o.conditions ?? {}) as Record<string, unknown>;
@@ -540,6 +564,8 @@ export async function listCheckoutBillOffers(
     livePincode?: string | null;
     liveState?: string | null;
     liveCity?: string | null;
+    /** Items + addons + delivery + packaging (same basis as bill apply). */
+    qualifyingCartTotal?: number | null;
   }
 ): Promise<
   | {
@@ -549,6 +575,7 @@ export async function listCheckoutBillOffers(
       platformOffers: CheckoutOfferPlatformRow[];
       /** Offers filtered out for this cart, each with the rejection reason. */
       platformOffersIneligible: Array<CheckoutOfferPlatformRow & { reason: string }>;
+      merchantOffersIneligible: Array<CheckoutOfferMerchantRow & { reason: string; lockReason: string }>;
     }
   | { ok: false; code: string; message: string }
 > {
@@ -648,13 +675,16 @@ export async function listCheckoutBillOffers(
   const deliveryDefaultBaseInr = env.DELIVERY_DEFAULT_BASE_INR ?? 25;
   const deliveryDefaultPerKmInr = env.DELIVERY_DEFAULT_PER_KM_INR ?? 5;
 
-  // Qualifying cart total for offer min_order_amount check.
-  // Mirrors the apply phase: items + addons + estimated delivery + estimated packaging.
-  // Without this, offers would only see item subtotal (e.g. ₹189) and reject themselves
-  // even when the full cart (₹274 incl. delivery + packaging) clearly qualifies.
   const estimatedDelivery = Math.max(0, deliveryDefaultBaseInr + distanceKm * deliveryDefaultPerKmInr);
   const estimatedPackaging = Math.max(0, rates?.packagingChargeAmount ?? 0);
-  const grossCart = itemPlusAddon + estimatedDelivery + estimatedPackaging;
+  const grossCartFromClient =
+    input.qualifyingCartTotal != null && Number.isFinite(input.qualifyingCartTotal)
+      ? Math.max(0, input.qualifyingCartTotal)
+      : null;
+  const grossCart =
+    grossCartFromClient != null && grossCartFromClient > 0
+      ? grossCartFromClient
+      : itemPlusAddon + estimatedDelivery + estimatedPackaging;
 
   const ctx: BillContext = {
     itemSubtotal: itemPlusAddon,
@@ -687,14 +717,26 @@ export async function listCheckoutBillOffers(
     checkoutAudience: "CUSTOMER",
   };
 
-  const [couponRows, dataset] = await Promise.all([
-    listActiveCustomerCoupons(db, serviceType),
-    loadBillingDatasetUncached(db, {
-      merchantStoreId: resolved.merchantStoreId,
-      couponCode: null,
-      serviceType,
-    }),
-  ]);
+  const dataset = await loadBillingDatasetUncached(db, {
+    merchantStoreId: resolved.merchantStoreId,
+    couponCode: null,
+    serviceType,
+  });
+
+  if (input.customerId > 0) {
+    const offersWithCap = dataset.merchantOffers.filter(
+      (o) => o.maxUsesPerUser != null && o.maxUsesPerUser > 0
+    );
+    if (offersWithCap.length > 0) {
+      ctx.merchantOfferUsagesByUser = await loadMerchantOfferUsagesByUser(
+        db,
+        input.customerId,
+        offersWithCap.map((o) => o.id)
+      );
+    }
+  }
+
+  const couponRows = await listActiveCustomerCoupons(db, serviceType);
 
   const coupons: CheckoutOfferCouponRow[] = couponRows.map((c) => ({
     code: c.code,
@@ -702,10 +744,35 @@ export async function listCheckoutBillOffers(
     description: describeCouponRow(c),
   }));
 
-  const merchantOffers: CheckoutOfferMerchantRow[] = dataset.merchantOffers.map((m) => ({
+  const { eligible: merchantEligible, ineligible: merchantIneligible } =
+    listMerchantOffersForCheckout(ctx, dataset, grossCart);
+
+  const merchantOffers: CheckoutOfferMerchantRow[] = merchantEligible.map((m) => ({
     id: m.id,
     title: m.title,
     summary: describeMerchantOfferRow(m),
+    autoApply: m.autoApply !== false,
+    requiresCouponCode:
+      m.offerType.toUpperCase() === "COUPON" && (m.couponCode ?? "").trim()
+        ? String(m.couponCode).trim()
+        : null,
+    minOrderAmount: m.minOrderAmount != null && m.minOrderAmount > 0 ? m.minOrderAmount : null,
+  }));
+
+  const merchantOffersIneligible: Array<
+    CheckoutOfferMerchantRow & { reason: string; lockReason: string }
+  > = merchantIneligible.map((m) => ({
+    id: m.id,
+    title: m.title,
+    summary: describeMerchantOfferRow(m),
+    autoApply: m.autoApply !== false,
+    requiresCouponCode:
+      m.offerType.toUpperCase() === "COUPON" && (m.couponCode ?? "").trim()
+        ? String(m.couponCode).trim()
+        : null,
+    minOrderAmount: m.minOrderAmount != null && m.minOrderAmount > 0 ? m.minOrderAmount : null,
+    reason: m.reason,
+    lockReason: m.lockReason,
   }));
 
   const { eligible: platformRows, rejections: platformRejections } =
@@ -729,7 +796,10 @@ export async function listCheckoutBillOffers(
         name: o.name ?? null,
         offerKind: String(o.offerKind ?? "DISCOUNT").toUpperCase(),
         summary: describePlatformOfferRow(o),
-        reason: rejectionById.get(o.id) ?? "",
+        reason: formatPlatformOfferLockReason(
+          rejectionById.get(o.id) ?? "",
+          grossCart
+        ),
       }));
 
   // Diagnostic logging — helps debug "no offers showing" issues by showing each filter step.
@@ -766,7 +836,14 @@ export async function listCheckoutBillOffers(
     platformRejections,
   }));
 
-  return { ok: true, coupons, merchantOffers, platformOffers, platformOffersIneligible };
+  return {
+    ok: true,
+    coupons,
+    merchantOffers,
+    merchantOffersIneligible,
+    platformOffers,
+    platformOffersIneligible,
+  };
 }
 
 /**

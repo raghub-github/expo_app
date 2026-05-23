@@ -4,6 +4,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { useToast } from '@/context/ToastContext';
 import { MerchantIncomingAcceptPanel } from '@/components/merchant/MerchantIncomingAcceptPanel';
+import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
+import type { OrderPricingBreakdown } from '@/lib/orderLineItems';
 import {
   resolveInitialPrepMinutesForOrder,
   resolveStoreDefaultPrepMinutes,
@@ -18,6 +20,11 @@ import {
 import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
 import { merchantFoodRowId, merchantOrderApiId } from '@/lib/merchantOrderApiId';
 import { useStoreContext } from '@/app/dashboard/merchants/stores/[id]/StoreContext';
+import { subscribeMenuItemFormModalOpen } from '@/lib/merchant-menu-form-modal-bus';
+import {
+  dispatchMerchantStoreOrderUpdated,
+  setIncomingOrderModalOpen,
+} from '@/lib/merchant-incoming-order-modal-bus';
 
 const MUTE_KEY = 'merchant_incoming_order_mute_sound';
 const FALLBACK_POLL_MS = 20_000;
@@ -120,6 +127,7 @@ export function MerchantIncomingOrderModal() {
   const alertStoreKey = merchantPublicStoreId || storeId;
 
   const [modalOrder, setModalOrder] = useState<OrdersFoodRow | null>(null);
+  const [itemsSheetOpen, setItemsSheetOpen] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
@@ -131,6 +139,7 @@ export function MerchantIncomingOrderModal() {
   const chimeAudioRef = useRef<HTMLAudioElement | null>(null);
   const autoCancelFiredForOrderIdRef = useRef<number | null>(null);
   const [prepMinutes, setPrepMinutes] = useState(30);
+  const [menuItemFormOpen, setMenuItemFormOpen] = useState(false);
   const [soundMuted, setSoundMuted] = useState(() => {
     if (typeof window === 'undefined') return false;
     try {
@@ -193,6 +202,8 @@ export function MerchantIncomingOrderModal() {
     }
   }, [storeId]);
 
+  useEffect(() => subscribeMenuItemFormModalOpen(setMenuItemFormOpen), []);
+
   useEffect(() => {
     void reloadAcceptanceSettings();
   }, [reloadAcceptanceSettings]);
@@ -249,7 +260,7 @@ export function MerchantIncomingOrderModal() {
         hydrateBusyRef.current = false;
       }
     })();
-  }, [storeId, modalOrder, fetchByCoreId]);
+  }, [storeId, modalOrder?.order_id, fetchByCoreId]);
 
   const openIfNew = useCallback(
     async (full: OrdersFoodRow | null): Promise<boolean> => {
@@ -278,6 +289,7 @@ export function MerchantIncomingOrderModal() {
       }
 
       shownInsertIds.current.add(dedupeKey);
+      setIncomingOrderModalOpen(true);
       setModalOrder(full);
       if (shouldPlayIncomingSound(alertStoreKey) && settings.alert_sound_enabled) {
         const device = readPartnerDeviceOrderAlerts(alertStoreKey);
@@ -398,20 +410,27 @@ export function MerchantIncomingOrderModal() {
   }, [storeId, storeInternalId, fetchByCoreId, fetchByFoodRow, openIfNew]);
 
   useEffect(() => {
+    if (menuItemFormOpen) return;
     void scanForNewOrders();
-    const t = window.setInterval(() => void scanForNewOrders(), FALLBACK_POLL_MS);
+    const t = window.setInterval(() => {
+      if (document.body?.dataset?.menuItemFormOpen === '1') return;
+      void scanForNewOrders();
+    }, FALLBACK_POLL_MS);
     return () => window.clearInterval(t);
-  }, [scanForNewOrders]);
+  }, [scanForNewOrders, menuItemFormOpen]);
 
   useEffect(() => {
-    const onScan = () => void scanForNewOrders();
+    const onScan = () => {
+      if (menuItemFormOpen || document.body?.dataset?.menuItemFormOpen === '1') return;
+      void scanForNewOrders();
+    };
     window.addEventListener('merchant-incoming-order-scan', onScan);
     window.addEventListener('merchant-pending-orders-refresh', onScan);
     return () => {
       window.removeEventListener('merchant-incoming-order-scan', onScan);
       window.removeEventListener('merchant-pending-orders-refresh', onScan);
     };
-  }, [scanForNewOrders]);
+  }, [scanForNewOrders, menuItemFormOpen]);
 
   useEffect(() => {
     if (!modalOrder) return;
@@ -441,6 +460,7 @@ export function MerchantIncomingOrderModal() {
           /* ignore */
         }
         shownInsertIds.current.delete(`o:${full.order_id}`);
+        setIncomingOrderModalOpen(true);
         setModalOrder(full);
       })();
     };
@@ -470,6 +490,36 @@ export function MerchantIncomingOrderModal() {
     return `${m}:${s.toString().padStart(2, '0')}`;
   }, [secondsLeft]);
 
+  const orderItems = modalOrder ? (Array.isArray(modalOrder.items) ? modalOrder.items : []) : [];
+
+  const incomingOrderLineSum = useMemo(() => {
+    if (!orderItems.length) return 0;
+    return orderItems.reduce(
+      (acc, it) => acc + Number(it.total || (it.price || 0) * (it.quantity || 1)),
+      0
+    );
+  }, [orderItems]);
+
+  const incomingOrderPricing = useMemo((): OrderPricingBreakdown => {
+    if (!modalOrder) {
+      return { subtotal: 0, packaging: 0, taxes: 0, discount: 0, total: 0 };
+    }
+    const p = modalOrder.pricing;
+    if (p) return p;
+    const total = Number(modalOrder.food_items_total_value ?? incomingOrderLineSum);
+    return {
+      subtotal: incomingOrderLineSum,
+      packaging: 0,
+      taxes: 0,
+      discount: 0,
+      total: Number.isFinite(total) ? total : incomingOrderLineSum,
+    };
+  }, [modalOrder, incomingOrderLineSum]);
+
+  useEffect(() => {
+    setItemsSheetOpen(false);
+  }, [modalOrder?.order_id]);
+
   const close = () => {
     chimeRunIdRef.current += 1;
     try {
@@ -482,8 +532,10 @@ export function MerchantIncomingOrderModal() {
     }
     chimeAudioRef.current = null;
     if (modalOrder) addDismissed(modalOrder.order_id);
+    setIncomingOrderModalOpen(false);
     setModalOrder(null);
     setRejectOpen(false);
+    setItemsSheetOpen(false);
     setRejectReason('');
     try {
       window.dispatchEvent(new CustomEvent('merchant-pending-orders-refresh'));
@@ -527,20 +579,35 @@ export function MerchantIncomingOrderModal() {
     };
     setActionLoading(true);
     try {
-      let res: Response | null = null;
-      for (const pathId of pathIds) {
-        res = await fetch(`/api/merchant/stores/${storeId}/orders/${pathId}`, {
+      const tryUpdate = async (pathId: number) => {
+        const res = await fetch(`/api/merchant/stores/${storeId}/orders/${pathId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
           body: JSON.stringify(payload),
         });
-        if (res.ok) break;
+        const data = await res.json().catch(() => ({}));
+        return { ok: res.ok, data };
+      };
+
+      let result: { ok: boolean; data: unknown } = { ok: false, data: {} };
+      for (const pathId of pathIds) {
+        result = await tryUpdate(pathId);
+        if (result.ok) break;
       }
-      if (!res?.ok) {
-        const err = (await res?.json().catch(() => ({}))) as { error?: string };
-        throw new Error(err.error || 'Update failed');
+      if (!result.ok) {
+        await new Promise((r) => setTimeout(r, 1200));
+        for (const pathId of pathIds) {
+          result = await tryUpdate(pathId);
+          if (result.ok) break;
+        }
       }
+      if (!result.ok) {
+        const err = (result.data as { error?: string } | null)?.error;
+        throw new Error(err || 'Update failed');
+      }
+      const updated = (result.data as { order?: OrdersFoodRow } | null)?.order;
+      if (updated) dispatchMerchantStoreOrderUpdated(updated);
       toast(status === 'ACCEPTED' ? 'Order accepted' : 'Order rejected', 'success');
       close();
     } catch (e) {
@@ -589,12 +656,22 @@ export function MerchantIncomingOrderModal() {
               onClose={close}
               onAccept={() => void patchStatus('ACCEPTED', undefined, 'manual')}
               onReject={() => setRejectOpen(true)}
+              onViewAllItems={() => setItemsSheetOpen(true)}
               actionLoading={actionLoading}
               acceptLabel={`Accept order (${mmss})`}
               acceptDisabled={secondsLeft <= 0}
             />
           </div>
         )}
+
+      <OrderBillSidesheet
+        open={!!modalOrder && itemsSheetOpen && !rejectOpen}
+        onClose={() => setItemsSheetOpen(false)}
+        order={modalOrder}
+        pricing={incomingOrderPricing}
+        lineSum={incomingOrderLineSum}
+        allItemsOnly
+      />
 
       {modalOrder &&
         rejectOpen &&

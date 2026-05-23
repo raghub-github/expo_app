@@ -9,6 +9,10 @@ import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
+import {
+  fetchCustomizationsForMenuItems,
+  fetchVariantsForMenuItems,
+} from "@/lib/menu-item-detail-sql";
 
 export const runtime = "nodejs";
 
@@ -152,6 +156,44 @@ export async function GET(
       ORDER BY category_id NULLS FIRST, display_order ASC, id ASC
     `;
 
+    const itemRows = items as unknown as Array<Record<string, unknown>>;
+    const menuItemIds = itemRows
+      .map((row) => Number(row.id))
+      .filter((id) => Number.isFinite(id));
+
+    const [variantRows, customizationRows] = await Promise.all([
+      fetchVariantsForMenuItems(sql, menuItemIds),
+      fetchCustomizationsForMenuItems(sql, menuItemIds),
+    ]);
+
+    const variantsByItemId = new Map<number, Record<string, unknown>[]>();
+    for (const v of variantRows) {
+      const itemId = Number(v.menu_item_id);
+      if (!Number.isFinite(itemId)) continue;
+      const { menu_item_id: _mid, ...rest } = v;
+      const list = variantsByItemId.get(itemId) ?? [];
+      list.push(rest);
+      variantsByItemId.set(itemId, list);
+    }
+
+    const customizationsByItemId = new Map<number, Record<string, unknown>[]>();
+    for (const c of customizationRows) {
+      const itemId = Number(c.menu_item_id);
+      if (!Number.isFinite(itemId)) continue;
+      const list = customizationsByItemId.get(itemId) ?? [];
+      list.push(c);
+      customizationsByItemId.set(itemId, list);
+    }
+
+    const itemsWithOptions = itemRows.map((row) => {
+      const id = Number(row.id);
+      return {
+        ...row,
+        variants: variantsByItemId.get(id) ?? [],
+        customizations: customizationsByItemId.get(id) ?? [],
+      };
+    });
+
     return NextResponse.json({
       success: true,
       store: {
@@ -162,7 +204,7 @@ export async function GET(
         packaging_charge_amount: (store as any).packaging_charge_amount ?? null,
       },
       categories: normalizedCategories,
-      items,
+      items: itemsWithOptions,
     });
   } catch (e) {
     console.error("[GET /api/merchant/stores/[id]/menu]", e);

@@ -61,6 +61,7 @@ import {
   historyStatusLabel,
 } from './orders-page-ui';
 import { OrderPanel } from '@/components/orders/OrderPanel';
+import { OrderCancellationBanner } from '@/components/orders/OrderCancellationBanner';
 import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
 import { GatiMitraOrderPrintBill } from '@/components/orders/GatiMitraOrderPrintBill';
 import { OrderCustomerSidesheet } from '@/components/orders/OrderCustomerSidesheet';
@@ -88,6 +89,12 @@ import { MerchantPrepDelayModal } from '@/components/merchant/MerchantPrepDelayM
 import { StoreClosedActiveOrdersNotice } from '@/components/orders/StoreClosedActiveOrdersNotice';
 import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';
 import { isActiveMerchantFoodOrderStatus } from '@/lib/merchantActiveOrders';
+import {
+  dispatchMerchantStoreOrderUpdated,
+  isIncomingOrderModalOpen,
+  MERCHANT_STORE_ORDER_UPDATED_EVENT,
+  subscribeIncomingOrderModalOpen,
+} from '@/lib/merchant-incoming-order-modal-bus';
 
 // orders_food_status enum: CREATED, ACCEPTED, PREPARING, READY_FOR_PICKUP, OUT_FOR_DELIVERY, DELIVERED, RTO, CANCELLED
 const STATUS_LABEL: Record<string, string> = {
@@ -623,6 +630,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const [downloadOpen, setDownloadOpen] = useState(false);
 
   const hasNotifiedNew = useRef<Set<number>>(new Set());
+  const [incomingModalOpen, setIncomingModalOpen] = useState(false);
 
   const { store: storeMeta } = useStore(storeId);
   const merchantPublicStoreId =
@@ -985,11 +993,45 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     }
   }, [storeId]);
 
+  const incomingModalWasOpenRef = useRef(false);
+  useEffect(() => {
+    return subscribeIncomingOrderModalOpen((open) => {
+      setIncomingModalOpen(open);
+      if (incomingModalWasOpenRef.current && !open) {
+        void fetchOrders();
+        void fetchStats();
+      }
+      incomingModalWasOpenRef.current = open;
+    });
+  }, [fetchOrders, fetchStats]);
+
   useEffect(() => {
     const ac = new AbortController();
     fetchOrders(ac.signal);
     return () => ac.abort();
   }, [fetchOrders]);
+
+  useEffect(() => {
+    const onOrderUpdated = (ev: Event) => {
+      const order = (ev as CustomEvent<{ order?: OrdersFoodRow }>).detail?.order;
+      if (!order?.id) return;
+      setOrders((prev) => {
+        const idx = prev.findIndex((o) => o.id === order.id || o.order_id === order.order_id);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = order;
+          return next;
+        }
+        return [order, ...prev];
+      });
+      if (selectedOrder?.id === order.id || selectedOrder?.order_id === order.order_id) {
+        setSelectedOrder(order);
+      }
+      void fetchStats();
+    };
+    window.addEventListener(MERCHANT_STORE_ORDER_UPDATED_EVENT, onOrderUpdated);
+    return () => window.removeEventListener(MERCHANT_STORE_ORDER_UPDATED_EVENT, onOrderUpdated);
+  }, [fetchStats, selectedOrder?.id, selectedOrder?.order_id]);
 
   useEffect(() => {
     fetchStats();
@@ -1001,16 +1043,13 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     if (!storeInternalId || !storeId) return;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     const reload = () => {
+      if (incomingModalOpen || isIncomingOrderModalOpen()) return;
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
+        if (incomingModalOpen || isIncomingOrderModalOpen()) return;
         void fetchOrders();
         void fetchStats();
-        try {
-          window.dispatchEvent(new CustomEvent('merchant-incoming-order-scan'));
-        } catch {
-          /* ignore */
-        }
-      }, 900);
+      }, 1200);
     };
     const ch = supabase
       .channel(`partner_store_orders:${storeInternalId}`)
@@ -1029,7 +1068,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
       if (debounceTimer) clearTimeout(debounceTimer);
       ch.unsubscribe();
     };
-  }, [storeInternalId, storeId, fetchOrders, fetchStats]);
+  }, [storeInternalId, storeId, fetchOrders, fetchStats, incomingModalOpen]);
 
   useEffect(() => {
     if (!storeInternalId || !storeId) return;
@@ -1409,6 +1448,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         const data = result.data as { order?: OrdersFoodRow };
         if (data?.order) {
           const updated = data.order as OrdersFoodRow;
+          dispatchMerchantStoreOrderUpdated(updated);
           setOrders((prev) =>
             prev.map((o) =>
               o.id === order.id || o.order_id === order.order_id ? updated : o
@@ -1426,7 +1466,6 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         }
         try {
           window.dispatchEvent(new CustomEvent('merchant-pending-orders-refresh'));
-          window.dispatchEvent(new CustomEvent('merchant-incoming-order-scan'));
         } catch {
           /* ignore */
         }
@@ -1705,8 +1744,8 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   }, [filteredOrders.length, displayOrders.length, filter]);
 
   const renderLiveOrderSwitcher = () => (
-    <div className="hidden lg:flex w-64 shrink-0 flex-col overflow-hidden pl-4">
-      <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 hide-scrollbar">
+    <div className="hidden lg:flex w-64 shrink-0 min-h-0 h-full flex-col overflow-hidden pl-4">
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain hide-scrollbar">
         <div className="space-y-3 pr-1">
           {displayOrders.map((order) => (
             <OrderCard
@@ -2281,8 +2320,8 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
             {/* Desktop (lg+): When panel open, split layout. Card shows placeholder until an order is selected. */}
             {usePipelineListLayout ? (
               <>
-                <div className="hidden lg:flex flex-1 min-h-0 min-w-0 overflow-hidden">
-                  <div className="flex-1 min-w-0 overflow-y-auto p-3 sm:p-4 border-r border-gray-200 bg-gray-50/80 hide-scrollbar">
+                <div className="hidden lg:flex flex-1 min-h-0 min-w-0 h-full overflow-hidden">
+                  <div className="flex-1 min-w-0 min-h-0 overflow-y-auto overscroll-contain p-3 sm:p-4 border-r border-gray-200 bg-gray-50/80 hide-scrollbar">
                     {pipelineMainOrder ? (
                       renderPipelineCard(pipelineMainOrder)
                     ) : (
@@ -2334,8 +2373,9 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
               </>
             ) : rightPanelOpen ? (
               <>
-                <div className="hidden lg:flex flex-1 min-w-0 border-r border-gray-200 bg-gray-50/80 flex-col overflow-hidden order-1 p-3">
-                <div className="flex-1 overflow-y-auto min-h-0 hide-scrollbar overflow-x-hidden">
+                <div className="hidden lg:flex flex-1 min-h-0 min-w-0 overflow-hidden order-1">
+                <div className="flex flex-1 min-w-0 min-h-0 flex-col overflow-hidden border-r border-gray-200 bg-gray-50/80 p-3">
+                <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar overflow-x-hidden overscroll-contain">
                   {selectedOrder && selectedOrderPricing ? (
                     <OrderPanel
                       className="w-full"
@@ -2372,6 +2412,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                       rtoVerified={false}
                       otpCode={resolveOrderOtps(selectedOrder, otpCache[selectedOrder.id]).pickup ?? undefined}
                       otpType="PICKUP"
+                      nowMs={nowTick}
                       primaryAction={
                         <ActionBtns
                           order={selectedOrder}
@@ -2401,43 +2442,9 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                   )}
                 </div>
               </div>
-                {/* Mobile: Order details panel beside sidebar - card-based layout (only when order selected) */}
-                {selectedOrder && (
-                <div className="lg:hidden flex-1 min-w-0 flex flex-col overflow-hidden order-1">
-                  <OrderDetailMobile
-                    storeId={storeId}
-                    order={selectedOrder}
-                    onClose={closeOrderPanel}
-                    statusLabel={STATUS_LABEL[selectedOrder.order_status || 'CREATED'] || selectedOrder.order_status || 'CREATED'}
-                    formatVegNonVeg={formatVegNonVeg}
-                    formatTimeAgo={formatTimeAgo}
-                    otpCode={otpCache[selectedOrder.id]?.pickup ?? undefined}
-                    otpType="PICKUP"
-                    otpVerified={otpVerified.has(selectedOrder.id)}
-                    onFetchOtp={() => fetchOtp(selectedOrder.id)}
-                    onAccept={() => updateStatus(selectedOrder, 'ACCEPTED')}
-                    onReject={() => setRejectModal(selectedOrder)}
-                    acceptLabel={acceptCountdown.label}
-                    acceptDisabled={acceptCountdown.disabled}
-                    nowMs={nowTick}
-                    onPreparing={() => updateStatus(selectedOrder, 'PREPARING')}
-                    onReady={() => updateStatus(selectedOrder, 'READY_FOR_PICKUP')}
-                    onDispatch={() => setDispatchModal(selectedOrder)}
-                    onComplete={() => updateStatus(selectedOrder, 'DELIVERED')}
-                    onRto={() => setRtoModalOrder(selectedOrder)}
-                    actionLoading={actionLoading === selectedOrder.id}
-                    onOpenRidersLog={() => {
-                      setRidersLogModalOrderId(merchantOrderApiId(selectedOrder));
-                      setRidersLogModalOrderLabel(selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`);
-                    }}
-                    onOpenRiderImage={(url) => setRiderImageModalUrl(url)}
-                  />
-                </div>
-                )}
-
-                {/* Right: Cards column - desktop only when order open (hidden on mobile) */}
-                <div className="hidden lg:flex w-64 shrink-0 flex-col overflow-hidden pl-4 order-2">
-                  <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 hide-scrollbar">
+                {/* Right: order cards — scrolls independently from detail panel */}
+                <div className="hidden lg:flex w-64 shrink-0 min-h-0 h-full flex-col overflow-hidden pl-4">
+                  <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain hide-scrollbar">
                     <div className="space-y-3 pr-1">
                       {displayOrders.map((order) => (
                         <OrderCard
@@ -2476,6 +2483,40 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                     )}
                   </div>
                 </div>
+              </div>
+                {/* Mobile: Order details panel beside sidebar - card-based layout (only when order selected) */}
+                {selectedOrder && (
+                <div className="lg:hidden flex-1 min-w-0 flex flex-col overflow-hidden order-1">
+                  <OrderDetailMobile
+                    storeId={storeId}
+                    order={selectedOrder}
+                    onClose={closeOrderPanel}
+                    statusLabel={STATUS_LABEL[selectedOrder.order_status || 'CREATED'] || selectedOrder.order_status || 'CREATED'}
+                    formatVegNonVeg={formatVegNonVeg}
+                    formatTimeAgo={formatTimeAgo}
+                    otpCode={otpCache[selectedOrder.id]?.pickup ?? undefined}
+                    otpType="PICKUP"
+                    otpVerified={otpVerified.has(selectedOrder.id)}
+                    onFetchOtp={() => fetchOtp(selectedOrder.id)}
+                    onAccept={() => updateStatus(selectedOrder, 'ACCEPTED')}
+                    onReject={() => setRejectModal(selectedOrder)}
+                    acceptLabel={acceptCountdown.label}
+                    acceptDisabled={acceptCountdown.disabled}
+                    nowMs={nowTick}
+                    onPreparing={() => updateStatus(selectedOrder, 'PREPARING')}
+                    onReady={() => updateStatus(selectedOrder, 'READY_FOR_PICKUP')}
+                    onDispatch={() => setDispatchModal(selectedOrder)}
+                    onComplete={() => updateStatus(selectedOrder, 'DELIVERED')}
+                    onRto={() => setRtoModalOrder(selectedOrder)}
+                    actionLoading={actionLoading === selectedOrder.id}
+                    onOpenRidersLog={() => {
+                      setRidersLogModalOrderId(merchantOrderApiId(selectedOrder));
+                      setRidersLogModalOrderLabel(selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`);
+                    }}
+                    onOpenRiderImage={(url) => setRiderImageModalUrl(url)}
+                  />
+                </div>
+                )}
               </>
             ) : (
               <>
@@ -3486,22 +3527,8 @@ function OrderDetailMobile({
 
         {/* Cancellation - compact */}
         {(order.rejected_reason || order.cancelled_by_label || order.cancelled_by_type) && (
-          <div className="mt-3 p-2.5 bg-red-50/80 rounded-lg border border-red-200/60">
-            <p className="text-[10px] font-semibold text-red-600 uppercase tracking-wide mb-1.5">Cancellation</p>
-            {order.cancelled_by_label && (
-              <p className="text-xs font-semibold text-red-800 mb-1">{order.cancelled_by_label}</p>
-            )}
-            {order.rejected_reason && (
-              <p className="text-xs text-red-800 mb-1.5 leading-relaxed break-words">{order.rejected_reason}</p>
-            )}
-            {order.cancelled_by_type && (
-              <p className="text-[10px] text-red-700">
-                <span className="font-medium capitalize">{order.cancelled_by_type}</span>
-                {order.cancelled_at && (
-                  <span className="ml-1.5 text-red-600">• {formatTimeAgo(order.cancelled_at)}</span>
-                )}
-              </p>
-            )}
+          <div className="mt-3">
+            <OrderCancellationBanner order={order} />
           </div>
         )}
 
@@ -3993,9 +4020,12 @@ function ActionBtns({
     const prepExpired =
       nowMs != null &&
       (isPrepCountdownExpired(order, nowMs) || !prepCountdown.label.includes('('));
+    const showNeedMore = prepExpired && onNeedMoreTime && !compact;
+    const prepBtnPair =
+      'w-full min-h-[44px] rounded-xl px-3 py-2.5 text-sm font-semibold';
     return (
-      <div className={`flex gap-2 items-center ${topRightLayout ? 'w-full' : 'flex-wrap'}`}>
-        {prepExpired && onNeedMoreTime && !compact && (
+      <div className={`w-full ${showNeedMore ? 'grid grid-cols-2 gap-2' : 'flex gap-2 items-stretch'}`}>
+        {showNeedMore ? (
           <button
             type="button"
             onClick={(e) => {
@@ -4003,36 +4033,29 @@ function ActionBtns({
               onNeedMoreTime();
             }}
             disabled={dis}
-            className={`${btnBase} ${topRightLayout ? 'flex-1 px-3 py-2.5 text-sm font-semibold' : ''} border-2 border-blue-500 bg-white text-blue-600 hover:bg-blue-50`}
+            className={`${btnBase} ${prepBtnPair} border border-blue-600 bg-white text-blue-700 hover:bg-blue-50`}
           >
             Need more time
           </button>
-        )}
+        ) : null}
         <MarkAsReadyCountdownButton
           order={order}
           nowMs={nowMs}
           disabled={dis}
           compact={compact}
-          fullWidth={!prepExpired || !onNeedMoreTime ? topRightLayout : false}
-          className={
-            prepExpired && onNeedMoreTime
-              ? topRightLayout
-                ? 'flex-[1.2] min-w-0'
-                : 'min-w-0'
-              : topRightLayout
-                ? 'flex-[2] min-w-0'
-                : 'min-w-0'
-          }
+          fullWidth={topRightLayout || showNeedMore || !compact}
+          className={`${prepBtnPair} ${showNeedMore ? 'min-w-0' : topRightLayout ? 'flex-1 min-w-0' : 'min-w-0'}`}
           onClick={(e) => {
             e.stopPropagation();
             onReady();
           }}
         />
-        <RtoMenu />
+        {!showNeedMore ? <RtoMenu /> : null}
       </div>
     );
   }
   if (status === 'READY_FOR_PICKUP') {
+    if (topRightLayout) return null;
     return (
       <div className={`flex flex-col gap-2 ${topRightLayout ? 'w-full' : ''}`}>
         <ReadyHandoverRunningTimeline

@@ -113,12 +113,6 @@ export function OrderItemDetailModal({ open, onClose, item }: OrderItemDetailMod
                 <p className="mt-0.5 font-medium text-gray-800">{item.variantName}</p>
               </div>
             ) : null}
-            {item.categoryName ? (
-              <div className="col-span-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Category</p>
-                <p className="mt-0.5 font-medium text-gray-800">{item.categoryName}</p>
-              </div>
-            ) : null}
           </div>
 
           {item.customizations && item.customizations.length > 0 && (

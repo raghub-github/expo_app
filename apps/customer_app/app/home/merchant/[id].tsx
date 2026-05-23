@@ -56,6 +56,11 @@ import { useMerchantScrollStore } from "@/store/merchantScrollStore";
 import { MerchantHeaderSkeleton, MenuListSkeleton } from "@/components/ShimmerSkeleton";
 import { GroupOrderStartSheet } from "@/components/GroupOrderStartSheet";
 import { ItemCustomizationSheet } from "@/components/ItemCustomizationSheet";
+import {
+  prefetchMenuItemFullConfig,
+  prefetchMenuItemFullConfigsForMenu,
+  resolveFullConfigItemId,
+} from "@/lib/menu-item-config-query";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreTheme } from "@/constants/storeTheme";
 import { StoreMenuItemRow } from "@/components/store/StoreMenuItemRow";
@@ -235,6 +240,11 @@ export default function MerchantDetailScreen() {
     refetchOnWindowFocus: false,
     refetchInterval: 2 * 60 * 1000,
   });
+
+  useEffect(() => {
+    if (!merchantId || !merchant?.menu?.length) return;
+    prefetchMenuItemFullConfigsForMenu(queryClient, merchantId, merchant.menu);
+  }, [merchantId, merchant?.menu, queryClient]);
 
   /** List screen often has displayImage already; detail payload can miss URLs — reuse for header banner. */
   const listCachedBanner = useMemo(() => {
@@ -592,6 +602,11 @@ export default function MerchantDetailScreen() {
       if (!merchant) return;
       const needsCustomization = !!(item.hasVariants || item.hasAddons || item.hasCustomizations);
       if (needsCustomization) {
+        void prefetchMenuItemFullConfig(
+          queryClient,
+          merchantId,
+          resolveFullConfigItemId(item)
+        );
         setCustomizationItem(item);
         setCustomizationSheetVisible(true);
       } else {
@@ -604,7 +619,7 @@ export default function MerchantDetailScreen() {
         }, 1, cartMerchantBannerUrl);
       }
     },
-    [merchantId, merchant?.name, merchant, addItem, cartMerchantBannerUrl]
+    [merchantId, merchant?.name, merchant, addItem, cartMerchantBannerUrl, queryClient]
   );
 
   const handleAddCombo = useCallback(
@@ -644,7 +659,17 @@ export default function MerchantDetailScreen() {
       basePrice?: number;
       variantId?: string;
       variantName?: string;
-      addons?: Array<{ addonId: string; addonName: string; addonPrice: number; quantity: number }>;
+      variantSizeValue?: string | null;
+      variantSizeUnit?: string | null;
+      addons?: Array<{
+        addonId: string;
+        customizationId?: string;
+        addonName: string;
+        addonPrice: number;
+        quantity: number;
+        addonSizeValue?: string | null;
+        addonSizeUnit?: string | null;
+      }>;
       imageUrl?: string | null;
     }) => {
       if (!merchant) return;
@@ -656,6 +681,8 @@ export default function MerchantDetailScreen() {
         basePrice: params.basePrice,
         variantId: params.variantId,
         variantName: params.variantName,
+        variantSizeValue: params.variantSizeValue,
+        variantSizeUnit: params.variantSizeUnit,
         addons: params.addons,
         imageUrl: params.imageUrl ?? customizationItem?.imageUrl ?? null,
       }, params.quantity, cartMerchantBannerUrl);

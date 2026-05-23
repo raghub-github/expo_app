@@ -48,7 +48,7 @@ export function MarkAsReadyCountdownButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`relative overflow-hidden rounded-lg font-semibold text-white shadow-sm border border-orange-700/25 disabled:opacity-50 min-w-0 transition-all active:scale-[0.98] bg-slate-800 hover:bg-slate-900 ${sizeClass} ${className}`}
+      className={`relative overflow-hidden rounded-xl font-semibold text-white shadow-sm border border-orange-700/25 disabled:opacity-50 min-w-0 transition-all active:scale-[0.98] bg-slate-800 hover:bg-slate-900 ${sizeClass} ${className}`}
     >
       <span
         className="absolute inset-y-0 left-0 bg-gradient-to-r from-amber-400 via-orange-500 to-orange-600 transition-[width] duration-1000 ease-linear"

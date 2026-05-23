@@ -230,9 +230,22 @@ export function buildMerchantVisibleTimeline(
   });
 }
 
+export function formatTimelineDate(s: string | null | undefined): string {
+  if (!s) return '';
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
 export function formatTimelineClock(s: string | null | undefined): string {
   if (!s) return '';
-  return new Date(s).toLocaleTimeString('en-IN', {
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('en-IN', {
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,

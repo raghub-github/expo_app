@@ -17,6 +17,10 @@ import { computeLiveStatus } from "./merchant.types.js";
 import { resolveStoreCommission } from "../commission/commission.resolver.js";
 import { customerPriceFromBase } from "../commission/pricing.js";
 import { previewEtaRange } from "../eta/eta.preview.js";
+import {
+  fetchAddonsForCustomizationIds,
+  fetchVariantsForFullConfig,
+} from "../../lib/menu-full-config-sql.js";
 
 /**
  * Stamps the canonical customer-facing ETA range on a store row using its
@@ -662,6 +666,8 @@ export type MenuItemFullConfig = {
     id: string;
     name: string;
     type: string | null;
+    sizeValue: string | null;
+    sizeUnit: string | null;
     price: number;
     isDefault: boolean;
     displayOrder: number;
@@ -679,11 +685,62 @@ export type MenuItemFullConfig = {
       name: string;
       price: number;
       imageUrl: string | null;
+      sizeValue: string | null;
+      sizeUnit: string | null;
       displayOrder: number;
       isMostOrdered?: boolean;
     }>;
   }>;
 };
+
+/** Keep one in-stock variant per display name (lowest display_order / id). */
+function dedupeVariantRows(rows: MenuItemVariantRow[]): MenuItemVariantRow[] {
+  const seen = new Set<string>();
+  const sorted = [...rows].sort(
+    (a, b) =>
+      (a.display_order ?? 0) - (b.display_order ?? 0) ||
+      (a.is_default === true ? -1 : 0) - (b.is_default === true ? -1 : 0) ||
+      a.id - b.id
+  );
+  const out: MenuItemVariantRow[] = [];
+  for (const v of sorted) {
+    const key = String(v.variant_name ?? "").trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
+  }
+  return out;
+}
+
+function dedupeAddonRows(rows: MenuItemAddonRow[]): MenuItemAddonRow[] {
+  const seenId = new Set<number>();
+  const seenName = new Set<string>();
+  const sorted = [...rows].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0) || a.id - b.id);
+  const out: MenuItemAddonRow[] = [];
+  for (const a of sorted) {
+    const nameKey = stripEmbeddedPriceFromAddonName(a.addon_name).toLowerCase();
+    if (!nameKey) continue;
+    if (seenId.has(a.id)) continue;
+    seenId.add(a.id);
+    if (seenName.has(nameKey)) continue;
+    seenName.add(nameKey);
+    out.push(a);
+  }
+  return out;
+}
+
+const VARIANT_MIRROR_TITLES = new Set(["quantity", "size", "portion", "variant", "variants"]);
+
+function isVariantMirrorCustomizationGroup(
+  title: string,
+  addonNames: string[],
+  variantNames: Set<string>
+): boolean {
+  if (variantNames.size === 0 || addonNames.length === 0) return false;
+  const t = title.trim().toLowerCase();
+  if (!VARIANT_MIRROR_TITLES.has(t) && !t.includes("size")) return false;
+  return addonNames.every((n) => variantNames.has(n));
+}
 
 /** Remove embedded price hints from merchant-entered addon names e.g. "Extra Spicy (+₹20)". */
 function stripEmbeddedPriceFromAddonName(name: string): string {
@@ -897,57 +954,103 @@ export async function getMenuItemFullConfig(
   if (!itemRow) return null;
   const item = itemRow as MerchantMenuItemRow & { has_customizations?: boolean; has_addons?: boolean; has_variants?: boolean };
 
-  const [variantsRes, customizationsRes] = await Promise.all([
-    supabase
-      .from("merchant_menu_item_variants")
-      .select("variant_id, variant_name, variant_type, variant_price, is_default, display_order")
-      .eq("menu_item_id", item.id)
-      .eq("in_stock", true)
-      .order("display_order", { ascending: true }),
+  const menuItemPk = Number(item.id);
+
+  const [variantRowsRaw, customizationsRes, addonOrderCounts] = await Promise.all([
+    fetchVariantsForFullConfig(Number(item.id)),
     supabase
       .from("merchant_menu_item_customizations")
       .select("id, customization_id, customization_title, customization_type, is_required, min_selection, max_selection, display_order")
       .eq("menu_item_id", item.id)
       .order("display_order", { ascending: true }),
+    Number.isFinite(menuItemPk) && menuItemPk > 0
+      ? fetchAddonOrderCounts(store.id, menuItemPk)
+      : Promise.resolve(new Map<number, number>()),
   ]);
 
-  const variants = (variantsRes.data ?? []) as MenuItemVariantRow[];
-  const customizations = (customizationsRes.data ?? []) as MenuItemCustomizationRow[];
-
-  const addonsByCustomization = await Promise.all(
-    customizations.map((c) =>
-      supabase
-        .from("merchant_menu_item_addons")
-        .select("id, addon_id, addon_name, addon_price, addon_image_url, display_order")
-        .eq("customization_id", c.id)
-        .eq("in_stock", true)
-        .order("display_order", { ascending: true })
+  const variants = dedupeVariantRows(
+    variantRowsRaw.map(
+      (row) =>
+        ({
+          id: Number(row.id),
+          variant_id: String(row.variant_id ?? ""),
+          menu_item_id: Number(item.id),
+          variant_name: String(row.variant_name ?? ""),
+          variant_type: row.variant_type != null ? String(row.variant_type) : null,
+          variant_size_value: row.variant_size_value ?? null,
+          variant_size_unit: row.variant_size_unit ?? null,
+          variant_price: String(row.variant_price ?? "0"),
+          price_difference: null,
+          in_stock: row.in_stock !== false,
+          display_order: Number(row.display_order ?? 0),
+          is_default: row.is_default === true,
+        }) as MenuItemVariantRow
     )
   );
+  const variantNameSet = new Set(
+    variants.map((v) => String(v.variant_name ?? "").trim().toLowerCase()).filter(Boolean)
+  );
+  const customizations = (customizationsRes.data ?? []) as MenuItemCustomizationRow[];
 
-  const addonOrderCounts = await fetchAddonOrderCounts(store.id, item.id);
+  const customizationPkIds = customizations.map((c) => c.id);
+  const addonsByCustomizationPk = new Map<number, MenuItemAddonRow[]>();
+  if (customizationPkIds.length > 0) {
+    const allAddonRows = await fetchAddonsForCustomizationIds(customizationPkIds);
+    for (const row of allAddonRows) {
+      const cid = Number(row.customization_id);
+      if (!Number.isFinite(cid)) continue;
+      const list = addonsByCustomizationPk.get(cid) ?? [];
+      list.push({
+        id: Number(row.id),
+        customization_id: cid,
+        addon_id: String(row.addon_id ?? ""),
+        addon_name: String(row.addon_name ?? ""),
+        addon_price: String(row.addon_price ?? "0"),
+        addon_image_url: row.addon_image_url != null ? String(row.addon_image_url) : null,
+        addon_size_value: row.addon_size_value ?? null,
+        addon_size_unit: row.addon_size_unit != null ? String(row.addon_size_unit) : null,
+        display_order: Number(row.display_order ?? 0),
+        in_stock: row.in_stock !== false,
+      } as MenuItemAddonRow);
+      addonsByCustomizationPk.set(cid, list);
+    }
+  }
 
-  const customizationsWithAddons = customizations.map((c, i) => {
-    const addons = (addonsByCustomization[i].data ?? []) as MenuItemAddonRow[];
-    const mapped = addons.map((a) => ({
-      numericId: a.id,
-      id: a.addon_id,
-      name: stripEmbeddedPriceFromAddonName(a.addon_name),
-      price: parseFloat(a.addon_price ?? "0"),
-      imageUrl: a.addon_image_url ?? null,
-      displayOrder: a.display_order ?? 0,
-    }));
-    return {
-      id: c.customization_id,
-      title: c.customization_title,
-      type: c.customization_type ?? null,
-      isRequired: c.is_required === true,
-      minSelection: c.min_selection ?? 0,
-      maxSelection: c.max_selection ?? 1,
-      displayOrder: c.display_order ?? 0,
-      addons: markMostOrderedAddons(mapped, addonOrderCounts),
-    };
-  });
+  const customizationsWithAddons = customizations
+    .map((c) => {
+      const addons = dedupeAddonRows(addonsByCustomizationPk.get(c.id) ?? []);
+      const mapped = addons.map((a) => ({
+        numericId: a.id,
+        id: String(a.id),
+        name: stripEmbeddedPriceFromAddonName(a.addon_name),
+        price: parseFloat(a.addon_price ?? "0"),
+        imageUrl: toAbsoluteClientMediaUrl(a.addon_image_url ?? null),
+        sizeValue:
+          a.addon_size_value != null && String(a.addon_size_value).trim() !== ""
+            ? String(a.addon_size_value).trim()
+            : null,
+        sizeUnit:
+          a.addon_size_unit != null && String(a.addon_size_unit).trim() !== ""
+            ? String(a.addon_size_unit).trim()
+            : null,
+        displayOrder: a.display_order ?? 0,
+      }));
+      return {
+        id: String(c.id),
+        title: c.customization_title,
+        type: c.customization_type ?? null,
+        isRequired: c.is_required === true,
+        minSelection: c.min_selection ?? 0,
+        maxSelection: c.max_selection ?? 1,
+        displayOrder: c.display_order ?? 0,
+        addons: markMostOrderedAddons(mapped, addonOrderCounts),
+      };
+    })
+    .filter((c) => c.addons.length > 0)
+    .filter((c) => {
+      const addonNames = c.addons.map((a) => a.name.trim().toLowerCase()).filter(Boolean);
+      return !isVariantMirrorCustomizationGroup(c.title, addonNames, variantNameSet);
+    });
 
   // Mark up the merchant's stored prices to the customer-visible amount.
   // Same rule as getMenuByStoreId: selling_price/variant_price/addon_price
@@ -974,9 +1077,17 @@ export async function getMenuItemFullConfig(
       hasVariants: item.has_variants === true,
     },
     variants: variants.map((v) => ({
-      id: v.variant_id,
+      id: String(v.id),
       name: v.variant_name,
       type: v.variant_type ?? null,
+      sizeValue:
+        v.variant_size_value != null && String(v.variant_size_value).trim() !== ""
+          ? String(v.variant_size_value).trim()
+          : null,
+      sizeUnit:
+        v.variant_size_unit != null && String(v.variant_size_unit).trim() !== ""
+          ? String(v.variant_size_unit).trim()
+          : null,
       price: markup(parseFloat(v.variant_price)),
       isDefault: v.is_default === true,
       displayOrder: v.display_order ?? 0,

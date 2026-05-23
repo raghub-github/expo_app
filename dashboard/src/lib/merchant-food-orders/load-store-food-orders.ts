@@ -7,7 +7,14 @@ import {
   orderRawItemsMissingDisplayNames,
   parseMerchantBillingBreakdown,
 } from "@/lib/orderLineItems";
+import { enrichRawOrderItemFromCoreRow } from "@/lib/order-item-customisation";
 import { computeOrderItemQuantityCount } from "@/lib/merchantOrderFoodActions";
+import { merchantFundedDiscountFromBilling } from "@/lib/merchant-billing-discount";
+import { merchantBillPartsFromItems } from "@/lib/merchant-order-item-display";
+import {
+  applyMerchantBaseToOrderItems,
+  loadSnapshotsByOrderTexts,
+} from "@/lib/merchant-visible-pricing";
 import type { OrdersFoodRow } from "@/lib/types/food-orders";
 
 type CoreRow = Record<string, unknown>;
@@ -269,7 +276,7 @@ export async function loadMerchantStoreFoodOrders(
       const { data: coreItemRows, error: itemsErr } = await db
         .from('orders_core_items')
         .select(
-          'id, order_id, menu_item_id, item_name, variant_name, category_name, quantity, base_price, total_price, veg_nonveg, item_snapshot'
+          'id, order_id, menu_item_id, item_name, variant_name, category_name, quantity, base_price, addon_price, total_price, veg_nonveg, item_snapshot'
         )
         .in('order_id', orderIdTexts)
         .order('id');
@@ -279,7 +286,29 @@ export async function loadMerchantStoreFoodOrders(
         const itemIds = coreItemRows
           .map((r) => Number((r as { id: number }).id))
           .filter((n) => Number.isFinite(n));
-        const addonsByItemId = new Map<number, { order_item_id: number; addon_name?: string | null; quantity: number }[]>();
+        const cartByOrderText = new Map<string, Record<string, unknown>[]>();
+        const { data: pendingRows } = await db
+          .from('pending_orders')
+          .select('finalized_order_id, items_snapshot')
+          .in('finalized_order_id', orderIdTexts);
+        for (const p of pendingRows || []) {
+          const key = String((p as { finalized_order_id?: string }).finalized_order_id ?? '').trim();
+          if (!key) continue;
+          const lines = extractItemsArray((p as { items_snapshot?: unknown }).items_snapshot).map(
+            (r) => (r && typeof r === 'object' ? (r as Record<string, unknown>) : {})
+          );
+          if (lines.length > 0) cartByOrderText.set(key, lines);
+        }
+
+        const addonsByItemId = new Map<
+          number,
+          {
+            order_item_id: number;
+            addon_name?: string | null;
+            quantity: number;
+            addon_price?: string | number | null;
+          }[]
+        >();
         if (itemIds.length > 0) {
           const { data: addonRows } = await db
             .from('orders_core_item_addons')
@@ -304,6 +333,7 @@ export async function loadMerchantStoreFoodOrders(
             category_name?: string | null;
             quantity: number;
             base_price: string | number;
+            addon_price?: string | number | null;
             total_price: string | number;
             veg_nonveg?: string | null;
             item_snapshot?: Record<string, unknown> | null;
@@ -314,10 +344,27 @@ export async function loadMerchantStoreFoodOrders(
           grouped.set(oid, list);
         }
         for (const [oid, rows] of grouped) {
-          rawItemsByOrderTextId.set(oid, mapCoreDbItemsToRaw(rows, addonsByItemId));
+          const cartLines = cartByOrderText.get(oid) ?? [];
+          const raw = mapCoreDbItemsToRaw(rows, addonsByItemId);
+          for (let i = 0; i < rows.length; i++) {
+            raw[i] = enrichRawOrderItemFromCoreRow({
+              row: rows[i],
+              dbAddons: addonsByItemId.get(rows[i].id) ?? [],
+              cartLines,
+              lineIndex: i,
+              raw: raw[i],
+            });
+          }
+          rawItemsByOrderTextId.set(oid, raw);
         }
       }
     }
+
+    const snapshotsByOrderText = await loadSnapshotsByOrderTexts(
+      db,
+      orderIdTexts,
+      merchantStoreInternalId
+    );
 
     const riderIds = [
       ...new Set(coreRows.map((c) => c.rider_id).filter((x) => x != null).map((x) => Number(x))),
@@ -362,7 +409,20 @@ export async function loadMerchantStoreFoodOrders(
         ) {
           rawItems = fromDb;
         }
-        const items = normalizeOrderItems(rawItems);
+        let items = normalizeOrderItems(rawItems);
+        if (fromDb?.length) {
+          if (items.length === 0) {
+            items = normalizeOrderItems(fromDb);
+          } else {
+            const enriched = normalizeOrderItems(fromDb);
+            items = items.map((it, i) => {
+              const dbLine = enriched[i];
+              if (!dbLine?.customizations?.length) return it;
+              return { ...it, customizations: dbLine.customizations };
+            });
+            if (enriched.length > items.length) items = enriched;
+          }
+        }
 
         const riderId = core.rider_id != null ? Number(core.rider_id) : null;
         const riderDetails = riderId != null ? riderById.get(riderId) ?? null : null;
@@ -378,6 +438,67 @@ export async function loadMerchantStoreFoodOrders(
               }
             : null;
 
+        const snaps = textOrderId ? snapshotsByOrderText.get(textOrderId) ?? [] : [];
+        const { items: merchantMapped, merchantSubtotal } = applyMerchantBaseToOrderItems(
+          items.map((it) => ({
+            ...it,
+            qty: it.quantity,
+            price: it.total,
+            total: it.total,
+            base_amount: it.baseAmount,
+            baseAmount: it.baseAmount,
+            customizations_total: it.customizationsTotal,
+            customizationsTotal: it.customizationsTotal,
+            customization_lines: it.customizationLines,
+            customizationLines: it.customizationLines,
+          })),
+          snaps
+        );
+        items = items.map((it, i) => {
+          const m = merchantMapped[i];
+          if (!m) return it;
+          const qty = Math.max(1, it.quantity || 1);
+          const lineTotal = Number(m.total ?? m.price ?? it.total);
+          const oldBase =
+            Number(it.baseAmount) > 0.005
+              ? Number(it.baseAmount)
+              : Number(it.capturedBaseAmount) > 0.005
+                ? Number(it.capturedBaseAmount)
+                : 0;
+          const oldCust =
+            Number(it.customizationsTotal) > 0.005
+              ? Number(it.customizationsTotal)
+              : Number(it.capturedAddonAmount) > 0.005
+                ? Number(it.capturedAddonAmount)
+                : 0;
+          const oldLine =
+            oldBase + oldCust > 0.005 ? oldBase + oldCust : Number(it.total) || lineTotal;
+          const factor = oldLine > 0.005 ? lineTotal / oldLine : 1;
+          const newBase = Math.round(oldBase * factor * 100) / 100;
+          const newCust = Math.round(oldCust * factor * 100) / 100;
+          const recomposed = Math.round((newBase + newCust) * 100) / 100;
+          const finalLine = recomposed > 0.005 ? recomposed : lineTotal;
+          return {
+            ...it,
+            baseAmount: newBase > 0.005 ? newBase : it.baseAmount,
+            customizationsTotal: newCust > 0.005 ? newCust : it.customizationsTotal,
+            capturedBaseAmount:
+              it.capturedBaseAmount != null
+                ? Math.round(Number(it.capturedBaseAmount) * factor * 100) / 100
+                : undefined,
+            capturedAddonAmount:
+              it.capturedAddonAmount != null
+                ? Math.round(Number(it.capturedAddonAmount) * factor * 100) / 100
+                : undefined,
+            customizationLines: it.customizationLines?.map((l) => ({
+              ...l,
+              amount: Math.round((Number(l.amount) || 0) * factor * 100) / 100,
+            })),
+            total: finalLine,
+            price: finalLine / qty,
+          };
+        });
+
         const foodTotalRaw = food != null ? food.food_items_total_value : null;
         const coreGrandRaw = core.grand_total ?? core.item_total;
         const pricingTotal =
@@ -386,7 +507,26 @@ export async function loadMerchantStoreFoodOrders(
             : coreGrandRaw != null && coreGrandRaw !== ''
               ? Number(coreGrandRaw)
               : null;
-        const pricing = parseMerchantBillingBreakdown(core, pricingTotal);
+        const customerPricing = parseMerchantBillingBreakdown(core, pricingTotal);
+        const billingSnap =
+          core.billing_snapshot && typeof core.billing_snapshot === 'object'
+            ? (core.billing_snapshot as Record<string, unknown>)
+            : null;
+        const merchantDiscount = merchantFundedDiscountFromBilling(billingSnap);
+        const bill = merchantBillPartsFromItems(items, {
+          subtotal: merchantSubtotal,
+          packaging: customerPricing.packaging,
+          taxes: 0,
+          discount: merchantDiscount,
+          total: 0,
+        });
+        const pricing = {
+          subtotal: bill.itemsSubtotal,
+          packaging: bill.packaging,
+          taxes: 0,
+          discount: merchantDiscount,
+          total: bill.total,
+        };
         const displayItemCount = computeOrderItemQuantityCount({
           items,
           food_items_count: food?.food_items_count != null ? Number(food.food_items_count) : null,

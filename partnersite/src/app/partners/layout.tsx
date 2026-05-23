@@ -6,7 +6,7 @@ import { PartnerIncomingOrderModal } from "@/components/PartnerIncomingOrderModa
 import { GlobalToaster } from "@/components/GlobalToaster";
 
 /**
- * Global shell for /partners/* — same as /mx/*.
+ * Global shell for /partners/* — accept-order live modal + floating pending count on every page.
  */
 export default function PartnersLayout({ children }: { children: React.ReactNode }) {
   return (

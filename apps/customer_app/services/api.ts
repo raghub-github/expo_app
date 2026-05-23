@@ -13,10 +13,7 @@ export function setOnSessionRevoked(cb: () => void) {
   onSessionRevoked = cb;
 }
 
-const { apiBaseUrl } = getConfig();
-
 export const api = axios.create({
-  baseURL: apiBaseUrl,
   timeout: API_TIMEOUT_MS,
   headers: { "Content-Type": "application/json" },
 });
@@ -24,6 +21,7 @@ export const api = axios.create({
 /** Attach Bearer token from SecureStore to every request */
 api.interceptors.request.use(
   async (config) => {
+    config.baseURL = getConfig().apiBaseUrl;
     const token = await getItem(STORAGE_KEYS.AUTH_TOKEN);
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
@@ -40,7 +38,7 @@ api.interceptors.response.use(
     const status = err.response?.status;
     const message = err.response?.data?.message ?? err.response?.data?.error ?? err.message ?? "Network Error";
     if (__DEV__) {
-      console.warn("[API]", status ?? "network", message);
+      console.warn("[API]", status ?? "network", message, "→", getConfig().apiBaseUrl);
     }
     if (status === 401) {
       const errorCode = err.response?.data?.error;

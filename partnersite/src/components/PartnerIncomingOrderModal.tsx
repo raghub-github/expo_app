@@ -7,7 +7,12 @@ import { toast } from 'sonner';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import { fetchStoreById } from '@/lib/database';
 import { createClient } from '@/lib/supabase/client';
-import { DEMO_RESTAURANT_ID } from '@/lib/constants';
+import {
+  PARTNER_INCOMING_MODAL_CLOSED,
+  PARTNER_INCOMING_MODAL_OPEN,
+  PARTNER_PENDING_ORDERS_REFRESH,
+  usePartnerSelectedStore,
+} from '@/lib/partner-selected-store';
 import {
   readPartnerDeviceOrderAlerts,
   resolveAlertUrlFromSlots,
@@ -20,6 +25,11 @@ import {
   type PartnerOrderActionToastKind,
 } from '@/lib/partner-order-action-toast';
 import { RejectOrderSidesheet } from '@/components/orders/RejectOrderSidesheet';
+import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
+import { MerchantOrderItemsList } from '@/components/orders/MerchantOrderItemsList';
+import { MerchantOrderBillSummary } from '@/components/orders/MerchantOrderBillSummary';
+import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
+import type { NormalizedOrderLineItem, OrderPricingBreakdown } from '@/lib/orderLineItems';
 import {
   PREP_TIME_MIN,
   PREP_TIME_MAX,
@@ -29,12 +39,12 @@ import {
 } from '@/lib/order-prep-time';
 
 const PREP_STEP_MINUTES = 5;
-/** Max line items shown in the accept popup; rest open in sidesheet. */
-const MAX_PREVIEW_ITEMS = 6;
+/** Max line items in accept popup; rest via +N more → sidesheet. */
+const MAX_PREVIEW_ITEMS = 3;
 
 const MUTE_KEY = 'partner_incoming_order_mute_sound';
 const DEFAULT_ALERT_SOUND = '/notification.wav';
-const FALLBACK_POLL_MS = 15_000;
+const FALLBACK_POLL_MS = 8_000;
 const FALLBACK_SCAN_LIMIT = 12;
 const DISMISS_KEY = 'partner_incoming_order_dismissed_v1';
 
@@ -154,22 +164,21 @@ function MiniOrderId({
     const last4 = formattedOrderId.slice(-4);
     const prefix = formattedOrderId.slice(0, -4);
     return (
-      <span className="font-mono text-xl font-extrabold tracking-wide text-gray-900">
+      <span className="font-mono text-lg font-extrabold tracking-wide text-gray-900">
         <span className="text-gray-900">{prefix}</span>
         <span className="px-0.5" aria-hidden />
         <span className="text-orange-600">{last4}</span>
       </span>
     );
   }
-  return <span className="font-mono text-xl font-extrabold tracking-wide text-gray-900">#{fallbackOrderId}</span>;
+  return <span className="font-mono text-lg font-extrabold tracking-wide text-gray-900">#{fallbackOrderId}</span>;
 }
 
 /**
  * Global overlay: new store orders (orders_core assigned, or orders_food CREATED). Partnersite only.
  */
 export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: string }) {
-  const [storeId, setStoreId] = useState<string | null>(null);
-  const [storeInternalId, setStoreInternalId] = useState<number | null>(null);
+  const { storeId, storeInternalId, ready: storeReady } = usePartnerSelectedStore(restaurantId);
   const [muted, setMuted] = useState(false);
   const [modalOrder, setModalOrder] = useState<OrdersFoodRow | null>(null);
   const [rejectOpen, setRejectOpen] = useState(false);
@@ -228,27 +237,6 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       setMuted(false);
     }
   }, []);
-
-  useEffect(() => {
-    const fromProp = (restaurantId || '').trim();
-    const fromLs = typeof window !== 'undefined' ? (localStorage.getItem('selectedStoreId') || '').trim() : '';
-    const raw = fromProp || fromLs || DEMO_RESTAURANT_ID;
-    if (!raw) {
-      setStoreId(null);
-      setStoreInternalId(null);
-      return;
-    }
-    void (async () => {
-      const s = await fetchStoreById(raw);
-      if (s) {
-        setStoreInternalId(Number(s.id));
-        setStoreId(String(s.store_id ?? raw));
-        return;
-      }
-      setStoreId(raw);
-      setStoreInternalId(/^\d+$/.test(raw) ? parseInt(raw, 10) : null);
-    })();
-  }, [restaurantId]);
 
   const reloadAcceptanceSettings = useCallback(async () => {
     if (!storeId) return;
@@ -348,11 +336,21 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     // Ensure modal has customer name + items + bulk flag by re-fetching full order (DB-backed)
     // in case it was opened from a partial row or older cached data.
     if (!storeId || !modalOrder) return;
+    const itemsArr = Array.isArray(modalOrder.items) ? modalOrder.items : [];
     const needsHydrate =
       !modalOrder.customer_name ||
-      !Array.isArray(modalOrder.items) ||
-      modalOrder.items.length === 0 ||
-      (modalOrder as unknown as Record<string, unknown>).is_bulk_order === undefined;
+      itemsArr.length === 0 ||
+      (modalOrder as unknown as Record<string, unknown>).is_bulk_order === undefined ||
+      itemsArr.some((it) => {
+        const row = it as NormalizedOrderLineItem;
+        const hasCust =
+          (row.customizations?.length ?? 0) > 0 ||
+          Boolean(row.variantName) ||
+          Boolean(row.variantTag);
+        const hasStructured =
+          (row.customizationLines?.length ?? 0) > 0 || Boolean(row.variantTag);
+        return hasCust && !hasStructured;
+      });
     if (!needsHydrate) return;
     if (hydrateBusyRef.current) return;
     hydrateBusyRef.current = true;
@@ -364,7 +362,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
         hydrateBusyRef.current = false;
       }
     })();
-  }, [storeId, modalOrder, fetchByCoreId]);
+  }, [storeId, modalOrder?.order_id, fetchByCoreId]);
 
   const openIfNew = useCallback(
     async (full: OrdersFoodRow | null) => {
@@ -393,6 +391,9 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       }
 
       setModalOrder(full);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(PARTNER_INCOMING_MODAL_OPEN));
+      }
       if (shouldPlayIncomingSound(storeId) && settings.alert_sound_enabled) {
         const device = readPartnerDeviceOrderAlerts(storeId);
         const slots =
@@ -430,7 +431,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   );
 
   const scanForNewOrders = useCallback(async () => {
-    if (!storeId) return;
+    if (!storeId || !storeReady) return;
     // If user already has a modal open, don't steal focus; next scan will run again.
     if (modalOrder) return;
     try {
@@ -448,10 +449,13 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     } catch {
       /* ignore */
     }
-  }, [storeId, modalOrder, openIfNew]);
+  }, [storeId, storeReady, modalOrder, openIfNew]);
+
+  const scanForNewOrdersRef = useRef(scanForNewOrders);
+  scanForNewOrdersRef.current = scanForNewOrders;
 
   useEffect(() => {
-    if (!storeInternalId || !storeId) return () => {};
+    if (!storeInternalId || !storeId || !storeReady) return () => {};
     const supabase = createClient();
     const ch = supabase
       .channel(`partner_incoming:${storeInternalId}`)
@@ -506,15 +510,21 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     return () => {
       ch.unsubscribe();
     };
-  }, [storeId, storeInternalId, fetchByCoreId, fetchByFoodRow, openIfNew]);
+  }, [storeId, storeInternalId, storeReady, fetchByCoreId, fetchByFoodRow, openIfNew]);
 
   useEffect(() => {
+    if (!storeReady || !storeId) return;
     // Fallback: if realtime misses events (or order becomes "assigned" via UPDATE),
     // still pop a modal when there is any CREATED pipeline order.
     void scanForNewOrders();
     const t = window.setInterval(() => void scanForNewOrders(), FALLBACK_POLL_MS);
-    return () => window.clearInterval(t);
-  }, [scanForNewOrders]);
+    const onRescan = () => void scanForNewOrders();
+    window.addEventListener('partner-incoming-order-rescan', onRescan);
+    return () => {
+      window.clearInterval(t);
+      window.removeEventListener('partner-incoming-order-rescan', onRescan);
+    };
+  }, [scanForNewOrders, storeReady, storeId]);
 
   useEffect(() => {
     if (!modalOrder) return;
@@ -559,7 +569,30 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
 
   const orderItems = modalOrder ? (Array.isArray(modalOrder.items) ? modalOrder.items : []) : [];
   const itemCount = orderItems.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
-  const previewItems = orderItems.slice(0, MAX_PREVIEW_ITEMS);
+
+  const incomingOrderLineSum = useMemo(() => {
+    if (!orderItems.length) return 0;
+    return orderItems.reduce(
+      (acc, it) => acc + Number(it.total || (it.price || 0) * (it.quantity || 1)),
+      0
+    );
+  }, [orderItems]);
+
+  const incomingOrderPricing = useMemo((): OrderPricingBreakdown => {
+    if (!modalOrder) {
+      return { subtotal: 0, packaging: 0, taxes: 0, discount: 0, total: 0 };
+    }
+    const p = modalOrder.pricing;
+    if (p) return p;
+    const total = Number(modalOrder.food_items_total_value ?? incomingOrderLineSum);
+    return {
+      subtotal: incomingOrderLineSum,
+      packaging: 0,
+      taxes: 0,
+      discount: 0,
+      total: Number.isFinite(total) ? total : incomingOrderLineSum,
+    };
+  }, [modalOrder, incomingOrderLineSum]);
   const moreItemsCount = Math.max(0, orderItems.length - MAX_PREVIEW_ITEMS);
 
   useEffect(() => {
@@ -609,6 +642,11 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     setModalOrder(null);
     setRejectOpen(false);
     setItemsSheetOpen(false);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(PARTNER_INCOMING_MODAL_CLOSED));
+      window.dispatchEvent(new CustomEvent(PARTNER_PENDING_ORDERS_REFRESH));
+    }
+    queueMicrotask(() => void scanForNewOrdersRef.current());
   };
 
   const showOrderActionToast = (kind: PartnerOrderActionToastKind, orderId: number) => {
@@ -671,7 +709,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       }
       console.debug('[partner-incoming-modal] PATCH ok', { url, httpStatus: res.status });
       showOrderActionToast(status === 'ACCEPTED' ? 'accepted' : 'rejected', orderIdForToast);
-      window.dispatchEvent(new CustomEvent('partner-pending-orders-refresh'));
+      window.dispatchEvent(new CustomEvent(PARTNER_PENDING_ORDERS_REFRESH));
       close();
     } catch (e) {
       console.debug('[partner-incoming-modal] PATCH exception', {
@@ -723,14 +761,14 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
         !rejectOpen &&
         portal(
           <div
-            className="fixed inset-0 z-[110] flex items-end justify-center bg-black/50 p-3 backdrop-blur-[2px] sm:items-center sm:p-4"
+            className="fixed inset-0 z-[110] flex items-end justify-center bg-black/50 p-2 backdrop-blur-[2px] sm:items-start sm:justify-center sm:px-4 sm:pb-4 sm:pt-[4.75rem]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="partner-incoming-title"
           >
-            <div className="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:rounded-2xl">
-              <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-4 py-3">
-                <h2 id="partner-incoming-title" className="text-lg font-bold text-gray-900">
+            <div className="flex max-h-[min(88dvh,calc(100dvh-5.5rem))] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:max-h-[min(82dvh,calc(100dvh-6.5rem))] sm:rounded-2xl">
+              <div className="flex shrink-0 items-center justify-between gap-2 border-b border-gray-100 px-4 py-2">
+                <h2 id="partner-incoming-title" className="text-base font-bold text-gray-900">
                   1 new order
                 </h2>
                 <div className="flex items-center gap-1">
@@ -754,22 +792,22 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                 </div>
               </div>
 
-              <div className="bg-violet-100 px-4 py-2.5 text-center text-xs font-bold uppercase tracking-[0.12em] text-violet-900">
+              <div className="shrink-0 bg-violet-100 px-4 py-1.5 text-center text-[11px] font-bold uppercase tracking-[0.1em] text-violet-900">
                 GatiMitra delivery
                 {modalOrder.order_type ? (
-                  <span className="mt-0.5 block text-[10px] font-semibold normal-case tracking-normal text-violet-800/90">
-                    {String(modalOrder.order_type).replace(/_/g, ' ')}
+                  <span className="ml-1.5 font-semibold normal-case tracking-normal text-violet-800/90">
+                    · {String(modalOrder.order_type).replace(/_/g, ' ')}
                   </span>
                 ) : null}
               </div>
 
-              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-3 sm:px-6">
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-2.5 sm:px-5">
                 <div className="flex items-start justify-between gap-2">
                   <MiniOrderId
                     formattedOrderId={modalOrder.formatted_order_id}
                     fallbackOrderId={modalOrder.order_id}
                   />
-                  <span className="text-sm font-medium text-gray-600">
+                  <span className="text-xs font-medium text-gray-600">
                     {new Date(modalOrder.created_at).toLocaleTimeString('en-IN', {
                       hour: 'numeric',
                       minute: '2-digit',
@@ -777,7 +815,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                   </span>
                 </div>
 
-                <p className="mt-2 text-sm text-gray-800">
+                <p className="mt-1.5 text-sm text-gray-800">
                   {modalOrder.customer_name ? (
                     <span className="font-semibold text-gray-900">
                       {(() => {
@@ -793,17 +831,46 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                   )}
                 </p>
 
-                {modalOrder.requires_utensils ? (
-                  <p className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700">
-                    <UtensilsCrossed size={14} aria-hidden />
-                    Send cutlery
-                  </p>
-                ) : (
-                  <p className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-gray-500">
-                    <UtensilsCrossed size={14} aria-hidden />
-                    Don&apos;t send cutlery
-                  </p>
-                )}
+                {(() => {
+                  const utensilsLabel = getUtensilsCustomerLabel(modalOrder);
+                  const sendCutlery =
+                    modalOrder.requires_utensils === true ||
+                    (utensilsLabel != null && !/don'?t send/i.test(utensilsLabel));
+                  return (
+                    <div className="mt-3 flex gap-2">
+                      <div
+                        className={`flex w-1/2 min-w-0 items-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-semibold leading-tight ${
+                          sendCutlery
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                            : 'border-gray-200 bg-gray-50 text-gray-600'
+                        }`}
+                      >
+                        <UtensilsCrossed
+                          size={14}
+                          className={`shrink-0 ${sendCutlery ? 'text-emerald-600' : 'text-gray-500'}`}
+                          aria-hidden
+                        />
+                        <span className="min-w-0 truncate">
+                          {utensilsLabel ?? (sendCutlery ? 'Send cutlery & utensils' : "Don't send cutlery")}
+                        </span>
+                      </div>
+                      <div className="flex w-1/2 min-w-0 items-center justify-end gap-1 rounded-lg border border-gray-200 bg-gray-50 px-2 py-2 text-[11px] text-gray-800">
+                        <span className="font-semibold tabular-nums">
+                          Total items – {itemCount}
+                        </span>
+                        {orderItems.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => setItemsSheetOpen(true)}
+                            className="shrink-0 font-bold text-blue-600 hover:underline"
+                          >
+                            View all
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {isBig ? (
                   <div className="mt-3 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3">
@@ -817,68 +884,63 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                   </div>
                 ) : null}
 
-                <div className="mt-4 space-y-2 border-t border-gray-100 pt-3 text-sm">
-                  {previewItems.map((it, idx) => (
-                    <div key={idx} className="flex justify-between gap-4">
-                      <span className="min-w-0 flex-1 font-medium text-gray-900">
-                        {it.quantity} × {it.name}
-                        {it.customizations?.length ? (
-                          <span className="block text-xs font-normal text-gray-500">
-                            {it.customizations.join(' · ')}
-                          </span>
-                        ) : null}
-                      </span>
-                      <span className="shrink-0 tabular-nums text-gray-800">
-                        ₹{Number(it.total ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                      </span>
-                    </div>
-                  ))}
+                <div className="mt-3 border-t border-gray-100 pt-2.5">
+                  <MerchantOrderItemsList
+                    items={orderItems as NormalizedOrderLineItem[]}
+                    totalItemCount={itemCount}
+                    totalLineCount={orderItems.length}
+                    requiresUtensils={false}
+                    maxItems={MAX_PREVIEW_ITEMS}
+                    compact
+                    hideMoreHint
+                    showUtensilsBanner={false}
+                  />
                   {moreItemsCount > 0 ? (
                     <button
                       type="button"
-                      className="w-full rounded-lg border border-dashed border-violet-300 bg-violet-50 py-2.5 text-sm font-bold text-violet-800 hover:bg-violet-100"
+                      className="mt-2 w-full text-center text-xs font-bold text-blue-600 hover:underline"
                       onClick={() => setItemsSheetOpen(true)}
                     >
-                      + {moreItemsCount} more item{moreItemsCount === 1 ? '' : 's'}
+                      +{moreItemsCount} more in list — View all
                     </button>
                   ) : null}
-                  <div className="flex justify-between border-t border-dashed border-gray-200 pt-2 text-sm">
-                    <span className="text-gray-600">
-                      {itemCount} item{itemCount === 1 ? '' : 's'}
-                    </span>
-                    <span className="tabular-nums text-gray-800">
-                      ₹{orderTotalRs(modalOrder).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                    </span>
-                  </div>
-                  <div className="flex justify-between border-t border-gray-200 pt-2 text-base font-bold text-gray-900">
-                    <span>Total bill</span>
-                    <span className="tabular-nums">
-                      ₹{orderTotalRs(modalOrder).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                    </span>
-                  </div>
+                  <MerchantOrderBillSummary
+                    className="mt-2"
+                    compact
+                    items={orderItems as NormalizedOrderLineItem[]}
+                    pricing={
+                      modalOrder.pricing ?? {
+                        subtotal: 0,
+                        packaging: 0,
+                        taxes: 0,
+                        discount: 0,
+                        total: orderTotalRs(modalOrder),
+                      }
+                    }
+                  />
                 </div>
 
-                <div className="mt-5 border-t border-gray-100 pt-4">
-                  <p className="text-sm font-semibold text-gray-900">Set food preparation time</p>
-                  <p className="mt-0.5 text-xs text-gray-500">
-                    Shown to the customer on order tracking ({PREP_TIME_MIN}–{maxPrepMinutes} min)
+                <div className="mt-3 border-t border-gray-100 pt-3">
+                  <p className="text-xs font-semibold text-gray-900">Preparation time</p>
+                  <p className="text-[10px] text-gray-500">
+                    {PREP_TIME_MIN}–{maxPrepMinutes} min · shown to customer
                   </p>
-                  <div className="mt-3 flex overflow-hidden rounded-lg border border-gray-300">
+                  <div className="mt-2 flex overflow-hidden rounded-lg border border-gray-300">
                     <button
                       type="button"
-                      className="flex w-14 items-center justify-center border-r border-gray-300 bg-white py-3 text-gray-800 hover:bg-gray-50 disabled:opacity-40"
+                      className="flex w-12 items-center justify-center border-r border-gray-300 bg-white py-2.5 text-gray-800 hover:bg-gray-50 disabled:opacity-40"
                       disabled={prepMinutes <= PREP_TIME_MIN || actionLoading}
                       onClick={() => stepPrep(-PREP_STEP_MINUTES)}
                       aria-label="Decrease preparation time"
                     >
                       <Minus size={18} />
                     </button>
-                    <div className="flex flex-1 items-center justify-center bg-white py-3 text-center text-sm font-bold text-gray-900">
+                    <div className="flex flex-1 items-center justify-center bg-white py-2.5 text-center text-sm font-bold text-gray-900">
                       {prepMinutes} mins
                     </div>
                     <button
                       type="button"
-                      className="flex w-14 items-center justify-center border-l border-gray-300 bg-white py-3 text-gray-800 hover:bg-gray-50 disabled:opacity-40"
+                      className="flex w-12 items-center justify-center border-l border-gray-300 bg-white py-2.5 text-gray-800 hover:bg-gray-50 disabled:opacity-40"
                       disabled={prepMinutes >= maxPrepMinutes || actionLoading}
                       onClick={() => stepPrep(PREP_STEP_MINUTES)}
                       aria-label="Increase preparation time"
@@ -889,11 +951,11 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                 </div>
               </div>
 
-              <div className="flex gap-2 border-t border-gray-100 bg-white px-4 py-3">
+              <div className="flex shrink-0 gap-2 border-t border-gray-100 bg-white px-4 py-2.5">
                 <button
                   type="button"
                   disabled={actionLoading}
-                  className="flex-1 rounded-xl border-2 border-red-500 py-3.5 text-sm font-bold text-red-600 hover:bg-red-50 disabled:opacity-50"
+                  className="flex-1 rounded-xl border-2 border-red-500 py-3 text-sm font-bold text-red-600 hover:bg-red-50 disabled:opacity-50"
                   onClick={() => setRejectOpen(true)}
                 >
                   Reject
@@ -901,7 +963,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                 <button
                   type="button"
                   disabled={actionLoading || secondsLeft <= 0}
-                  className="relative flex-[1.35] overflow-hidden rounded-xl bg-emerald-600 py-3.5 text-sm font-bold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
+                  className="relative flex-[1.35] overflow-hidden rounded-xl bg-emerald-600 py-3 text-sm font-bold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
                   onClick={() =>
                     void patchStatus(
                       'ACCEPTED',
@@ -935,13 +997,13 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
           </div>
         )}
 
-      <IncomingOrderItemsSidesheet
+      <OrderBillSidesheet
         open={!!modalOrder && itemsSheetOpen && !rejectOpen}
-        order={modalOrder}
-        items={orderItems}
-        itemCount={itemCount}
-        totalRs={modalOrder ? orderTotalRs(modalOrder) : 0}
         onClose={() => setItemsSheetOpen(false)}
+        order={modalOrder}
+        pricing={incomingOrderPricing}
+        lineSum={incomingOrderLineSum}
+        allItemsOnly
       />
 
       <RejectOrderSidesheet
@@ -958,113 +1020,3 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   );
 }
 
-type OrderLineItem = {
-  quantity: number;
-  name: string;
-  total?: number;
-  customizations?: string[];
-};
-
-function IncomingOrderItemsSidesheet({
-  open,
-  order,
-  items,
-  itemCount,
-  totalRs,
-  onClose,
-}: {
-  open: boolean;
-  order: OrdersFoodRow | null;
-  items: OrderLineItem[];
-  itemCount: number;
-  totalRs: number;
-  onClose: () => void;
-}) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-
-  if (!open || !order || typeof document === 'undefined') return null;
-
-  return createPortal(
-    <div className="fixed inset-0 z-[120] flex justify-end" role="presentation">
-      <button
-        type="button"
-        className="absolute inset-0 bg-black/35 backdrop-blur-[1px]"
-        aria-label="Close item list"
-        onClick={onClose}
-      />
-      <aside
-        className="relative flex h-dvh w-full max-w-md flex-col border-l border-gray-200 bg-white shadow-2xl sm:max-w-lg"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="incoming-items-sheet-title"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
-          <div>
-            <h2 id="incoming-items-sheet-title" className="text-base font-bold text-gray-900">
-              All items
-            </h2>
-            <p className="mt-0.5 text-xs text-gray-500">
-              {itemCount} item{itemCount === 1 ? '' : 's'} · Order{' '}
-              {order.formatted_order_id ? (
-                <span className="font-mono font-semibold">{order.formatted_order_id}</span>
-              ) : (
-                `#${order.order_id}`
-              )}
-            </p>
-          </div>
-          <button
-            type="button"
-            className="rounded-lg p-2 text-gray-500 hover:bg-gray-100"
-            aria-label="Close"
-            onClick={onClose}
-          >
-            <X size={20} />
-          </button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3">
-          <ul className="space-y-3">
-            {items.map((it, idx) => (
-              <li key={idx} className="flex justify-between gap-3 border-b border-gray-50 pb-3 text-sm last:border-0">
-                <span className="min-w-0 flex-1 font-medium text-gray-900">
-                  {it.quantity} × {it.name}
-                  {it.customizations?.length ? (
-                    <span className="mt-0.5 block text-xs font-normal text-gray-500">
-                      {it.customizations.join(' · ')}
-                    </span>
-                  ) : null}
-                </span>
-                <span className="shrink-0 tabular-nums text-gray-800">
-                  ₹{Number(it.total ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div className="border-t border-gray-200 bg-gray-50 px-4 py-4">
-          <div className="flex justify-between text-base font-bold text-gray-900">
-            <span>Total bill</span>
-            <span className="tabular-nums">
-              ₹{totalRs.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-            </span>
-          </div>
-          <button
-            type="button"
-            className="mt-3 w-full rounded-xl border border-gray-300 bg-white py-2.5 text-sm font-semibold text-gray-800 hover:bg-gray-50"
-            onClick={onClose}
-          >
-            Back to order
-          </button>
-        </div>
-      </aside>
-    </div>,
-    document.body
-  );
-}

@@ -161,7 +161,7 @@ export function TerminalOrderCard({
   const rejection =
     meta.kind === "delivered"
       ? null
-      : splitRejectionMessage(rejectedReason, meta.kind);
+      : splitRejectionMessage(rejectedReason, meta.kind, order.cancelledByLabel);
 
   return (
     <Pressable

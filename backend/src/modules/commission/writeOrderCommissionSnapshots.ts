@@ -33,10 +33,24 @@ type ItemForSnapshot = {
   quantity: number;
 };
 
+export async function resolveOrdersCorePk(
+  tx: PostgresJsDatabase<Record<string, unknown>>,
+  orderIdText: string,
+): Promise<number | null> {
+  const rows = await tx.execute(
+    sql`SELECT id FROM orders_core WHERE order_id = ${orderIdText} LIMIT 1`,
+  );
+  const orderRow = (rows as unknown as Array<{ id: number | string }>)[0];
+  if (!orderRow) return null;
+  const n = Number(orderRow.id);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 export async function writeOrderItemCommissionSnapshots(
   tx: PostgresJsDatabase<Record<string, unknown>>,
   storeId: number,
   items: ItemForSnapshot[],
+  orderIdNumOverride?: number,
 ): Promise<void> {
   if (items.length === 0) return;
   const commission = await resolveStoreCommission(storeId);
@@ -48,16 +62,16 @@ export async function writeOrderItemCommissionSnapshots(
     return;
   }
 
-  // Look up the order_id BIGINT once per orderIdText (they're all the same in
-  // practice — one finalize call = one order).
-  const orderText = items[0]!.orderIdText;
-  const rows = await tx.execute(sql`SELECT id FROM orders_core WHERE order_id = ${orderText} LIMIT 1`);
-  const orderRow = (rows as unknown as Array<{ id: number | string }>)[0];
-  if (!orderRow) {
-    console.warn(`[commission] orders_core row missing for ${orderText} — skipping snapshot`);
+  let orderIdNum: number | null =
+    orderIdNumOverride != null && orderIdNumOverride > 0 ? orderIdNumOverride : null;
+  if (orderIdNum == null) {
+    const orderText = items[0]!.orderIdText;
+    orderIdNum = await resolveOrdersCorePk(tx, orderText);
+  }
+  if (orderIdNum == null || orderIdNum <= 0) {
+    console.warn(`[commission] orders_core row missing — skipping item snapshot`);
     return;
   }
-  const orderIdNum = Number(orderRow.id);
 
   for (const it of items) {
     const customer = it.customerVisiblePerUnitRupees;

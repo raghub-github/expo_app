@@ -69,7 +69,7 @@ export const SERVES_OPTIONS = [
   "8 - 9 people",
 ];
 
-export const SIZE_UNITS = ["slices", "kg", "litre", "ml", "serves", "cms", "piece", "grams", "inches"];
+export const SIZE_UNITS = ["slices", "kg", "L", "litre", "ml", "serves", "cms", "piece", "grams", "inches"];
 
 /** Aligned with merchant app + backend `merchant_menu_items` (food / restaurant). */
 export const WEIGHT_PER_SERVING_UNITS = ["grams", "kg", "oz", "lbs"] as const;
@@ -82,6 +82,8 @@ export interface Addon {
   addon_name: string;
   addon_price: number;
   addon_image_url?: string;
+  addon_size_value?: number | null;
+  addon_size_unit?: string | null;
   in_stock?: boolean;
   display_order?: number;
 }
@@ -106,6 +108,9 @@ export interface Variant {
   variant_name: string;
   variant_type?: string;
   variant_price: number;
+  /** Optional portion size or range (e.g. 500 or 1500-1700). */
+  variant_size_value?: string | number | null;
+  variant_size_unit?: string | null;
   price_difference?: number;
   in_stock?: boolean;
   display_order?: number;

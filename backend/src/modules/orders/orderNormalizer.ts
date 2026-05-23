@@ -11,8 +11,25 @@ export type NormalizeOrderItemInput = {
   basePrice?: number | null;
   variantId?: string | number | null;
   variantName?: string | null;
-  addons?: Array< { addonId?: string | number; addonName?: string; addonPrice?: number; quantity?: number }>;
+  addons?: Array<{
+    addonId?: string | number;
+    customizationId?: string | number | null;
+    addonName?: string;
+    addonPrice?: number;
+    quantity?: number;
+  }>;
   itemSnapshot?: Record<string, unknown> | null;
+};
+
+export type NormalizedOrderAddon = {
+  /** merchant_menu_item_addons.id when resolved; legacy numeric addonId when parseable. */
+  menuAddonPk: number | null;
+  /** Stable menu addon_id text from customer app (required). */
+  menuAddonId: string;
+  customizationId: string | null;
+  addonName: string;
+  addonPrice: number;
+  quantity: number;
 };
 
 export type NormalizedOrderItem = {
@@ -20,9 +37,12 @@ export type NormalizedOrderItem = {
   itemName: string;
   quantity: number;
   basePrice: number;
+  /** Numeric PK on merchant_menu_item_variants when client sends a number. */
   variantId: number | null;
+  /** Text variant_id (SIZE keys like half/full) from the customization sheet. */
+  variantKey: string | null;
   variantName: string | null;
-  addons: Array<{ addonId: number; addonName: string; addonPrice: number; quantity: number }>;
+  addons: NormalizedOrderAddon[];
   itemSnapshot: Record<string, unknown> | null;
 };
 
@@ -44,6 +64,35 @@ function toNonNegativeNumber(v: unknown): number {
   const n = typeof v === "number" ? v : parseFloat(String(v));
   if (!Number.isFinite(n) || Number.isNaN(n) || n < 0) return 0;
   return n;
+}
+
+function normalizeAddon(raw: {
+  addonId?: string | number;
+  addon_id?: string | number;
+  menuAddonId?: string | number;
+  customizationId?: string | number | null;
+  addonName?: string;
+  addonPrice?: number;
+  quantity?: number;
+}): NormalizedOrderAddon | null {
+  const rawId = raw.menuAddonId ?? raw.addonId ?? raw.addon_id;
+  let menuAddonId = rawId != null ? String(rawId).trim() : "";
+  if (menuAddonId === "0" || menuAddonId === "undefined" || menuAddonId === "null") {
+    menuAddonId = "";
+  }
+  if (!menuAddonId && !(raw.addonName != null && String(raw.addonName).trim())) return null;
+  const customizationId =
+    raw.customizationId != null && String(raw.customizationId).trim() !== ""
+      ? String(raw.customizationId).trim()
+      : null;
+  return {
+    menuAddonPk: null,
+    menuAddonId,
+    customizationId,
+    addonName: raw.addonName != null ? String(raw.addonName) : "",
+    addonPrice: toNonNegativeNumber(raw.addonPrice),
+    quantity: Math.max(1, Math.floor(toNonNegativeNumber(raw.quantity)) || 1),
+  };
 }
 
 /**
@@ -75,22 +124,33 @@ export function normalizeOrderItems(items: unknown): NormalizeOrderItemsResult {
     const itemName = raw.itemName != null && String(raw.itemName).trim() !== "" ? String(raw.itemName).trim() : "Item";
     const quantity = Math.max(1, Math.floor(toNonNegativeNumber(raw.quantity)) || 1);
     const basePrice = toNonNegativeNumber(raw.basePrice);
-    const variantId = toPositiveInt(raw.variantId);
+    const variantPk = toPositiveInt(raw.variantId);
+    const variantKey =
+      variantPk == null && raw.variantId != null && String(raw.variantId).trim() !== ""
+        ? String(raw.variantId).trim()
+        : null;
     const variantName = raw.variantName != null ? String(raw.variantName).trim() || null : null;
 
-    const addons = (Array.isArray(raw.addons) ? raw.addons : []).map((a) => ({
-      addonId: toPositiveInt(a?.addonId) ?? 0,
-      addonName: a?.addonName != null ? String(a.addonName) : "",
-      addonPrice: toNonNegativeNumber(a?.addonPrice),
-      quantity: Math.max(1, Math.floor(toNonNegativeNumber(a?.quantity)) || 1),
-    }));
+    const addons: NormalizedOrderAddon[] = [];
+    const rawAddonList = Array.isArray(raw.addons)
+      ? raw.addons
+      : raw.itemSnapshot != null &&
+          typeof raw.itemSnapshot === "object" &&
+          Array.isArray((raw.itemSnapshot as Record<string, unknown>).addons)
+        ? ((raw.itemSnapshot as Record<string, unknown>).addons as unknown[])
+        : [];
+    for (const a of rawAddonList) {
+      const norm = normalizeAddon(a ?? {});
+      if (norm) addons.push(norm);
+    }
 
     normalized.push({
       menuItemId,
       itemName,
       quantity,
       basePrice,
-      variantId: variantId ?? null,
+      variantId: variantPk ?? null,
+      variantKey,
       variantName,
       addons,
       itemSnapshot: raw.itemSnapshot != null && typeof raw.itemSnapshot === "object" ? raw.itemSnapshot as Record<string, unknown> : null,

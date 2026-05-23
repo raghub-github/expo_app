@@ -55,7 +55,17 @@ export function mapStateMachineStatusToPartnerUi(raw: string | null | undefined)
   if (["READY_FOR_PICKUP", "READY", "DISPATCH_READY", "DISPATCHREADY", "DISPATCH_READY_FOR_PICKUP"].includes(u)) {
     return "READY_FOR_PICKUP";
   }
-  if (["OUT_FOR_DELIVERY", "PICKED_UP", "IN_TRANSIT", "ON_THE_WAY", "PICKEDUP"].includes(u)) {
+  if (
+    [
+      "OUT_FOR_DELIVERY",
+      "PICKED_UP",
+      "IN_TRANSIT",
+      "ON_THE_WAY",
+      "PICKEDUP",
+      "DISPATCHED",
+      "DESPATCHED",
+    ].includes(u)
+  ) {
     return "OUT_FOR_DELIVERY";
   }
   if (u === "DELIVERED") return "DELIVERED";
@@ -72,16 +82,40 @@ export function mapStateMachineStatusToPartnerUi(raw: string | null | undefined)
   return null;
 }
 
+const PIPELINE_RANK = [
+  "CREATED",
+  "ACCEPTED",
+  "PREPARING",
+  "READY_FOR_PICKUP",
+  "OUT_FOR_DELIVERY",
+  "DELIVERED",
+] as const;
+
+function pipelineRank(status: string): number {
+  const i = PIPELINE_RANK.indexOf(status as (typeof PIPELINE_RANK)[number]);
+  return i >= 0 ? i : -1;
+}
+
 export function resolvePartnerPipeline(
   foodOrderStatus: string | null | undefined,
   coreStatus: string | null | undefined,
   currentStatus: string | null | undefined
 ): string {
   const cur = mapStateMachineStatusToPartnerUi(currentStatus);
-  if (cur) return cur;
-
   const fromFood = mapStateMachineStatusToPartnerUi(foodOrderStatus);
-  if (fromFood) return fromFood;
+  const fromCore = mapCoreStatusToPartnerUi(coreStatus);
 
-  return mapCoreStatusToPartnerUi(coreStatus);
+  for (const s of [cur, fromFood, fromCore]) {
+    if (s === "CANCELLED" || s === "RTO") return s;
+  }
+  if (cur === "DELIVERED" || fromFood === "DELIVERED" || fromCore === "DELIVERED") {
+    return "DELIVERED";
+  }
+
+  let best = fromCore;
+  for (const s of [cur, fromFood, fromCore]) {
+    if (!s) continue;
+    if (pipelineRank(s) > pipelineRank(best)) best = s;
+  }
+  return best || "CREATED";
 }

@@ -110,10 +110,34 @@ export function OrderTimelineModal({
   }, [open, onClose, actorOpen]);
 
   useEffect(() => {
-    if (!isMerchant && orderFoodId > 0 && resolvedTimelineUrl) {
+    if (orderFoodId > 0 && resolvedTimelineUrl) {
       prefetchOrderTimeline(orderFoodId, resolvedTimelineUrl);
     }
-  }, [orderFoodId, resolvedTimelineUrl, isMerchant]);
+  }, [orderFoodId, resolvedTimelineUrl]);
+
+  /** Merchant strip must read order_timelines (e.g. GatiMitra "Dispatched" from dashboard). */
+  useEffect(() => {
+    if (!open || !isMerchant || orderFoodId <= 0 || !resolvedTimelineUrl) {
+      if (!open) setTimelineEntries([]);
+      return;
+    }
+
+    let cancelled = false;
+    void fetchOrderTimelineCached(orderFoodId, resolvedTimelineUrl).then((list) => {
+      if (cancelled) return;
+      setTimelineEntries(
+        list.map((e) => ({
+          status: e.status,
+          occurred_at: e.occurred_at,
+          status_message: e.status_message,
+        }))
+      );
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, isMerchant, orderFoodId, resolvedTimelineUrl]);
 
   useEffect(() => {
     if (!open || !isMerchant || orderFoodId <= 0) {

@@ -9,7 +9,9 @@ import {
   fetchFoodOrders,
   patchFoodOrderStatus,
   type ApiFoodOrder,
+  type ApiFoodOrderItem,
 } from "@/services/ordersApi";
+import { merchantOrderBillTotal } from "@/lib/merchant-line-total";
 import { getStoreSettings } from "@/services/storeSettingsApi";
 
 export type DeliveryType = "GATIMITRA_RIDER" | "SELF_DELIVERY" | "SELF_PICKUP";
@@ -28,6 +30,11 @@ export type LineItem = {
   name: string;
   price: number;
   vegNonveg?: string | null;
+  customization_lines?: ApiFoodOrderItem["customization_lines"];
+  base_amount?: number;
+  customizations_total?: number;
+  captured_base_amount?: number;
+  captured_addon_amount?: number;
 };
 
 export type OrderRecord = {
@@ -49,6 +56,7 @@ export type OrderRecord = {
   rejectedReason?: string | null;
   acceptedByLabel?: string | null;
   cancelledByLabel?: string | null;
+  cancelledByType?: string | null;
   cancelledAt?: string | null;
   customerPhone?: string | null;
   customerEmail?: string | null;
@@ -135,10 +143,15 @@ function mapApiOrder(o: ApiFoodOrder): OrderRecord {
     lineItems: (o.items ?? []).map((it) => ({
       qty: it.qty,
       name: it.name,
-      price: it.price,
+      price: Number(it.price) || 0,
       vegNonveg: it.veg_nonveg ?? null,
+      customization_lines: it.customization_lines,
+      base_amount: it.base_amount,
+      customizations_total: it.customizations_total,
+      captured_base_amount: it.captured_base_amount,
+      captured_addon_amount: it.captured_addon_amount,
     })),
-    total: Number(o.grand_total) || 0,
+    total: merchantOrderBillTotal(o),
     status: apiStatusToStage(o.order_status),
     pipelineStatus: String(o.order_status || "CREATED").toUpperCase(),
     deliveryType,
@@ -147,6 +160,7 @@ function mapApiOrder(o: ApiFoodOrder): OrderRecord {
     rejectedReason: o.rejected_reason ?? null,
     acceptedByLabel: o.accepted_by_label ?? null,
     cancelledByLabel: o.cancelled_by_label ?? null,
+    cancelledByType: o.cancelled_by_type ?? null,
     cancelledAt,
     customerPhone: o.customer_phone?.trim() || null,
     customerEmail: o.customer_email?.trim() || null,

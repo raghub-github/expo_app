@@ -22,6 +22,8 @@ export function getDb() {
     max: env.NODE_ENV === "production" ? 20 : 5,
     idle_timeout: 20,
     connect_timeout: connectTimeoutSec,
+    // Supabase pooler (port 6543) does not support prepared statements across pooled connections.
+    prepare: false,
   });
 
   _sql = sql;

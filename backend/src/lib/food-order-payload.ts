@@ -125,3 +125,61 @@ export function requiresUtensilsFromCheckout(
   if (!checkoutMetadata || typeof checkoutMetadata !== "object") return true;
   return checkoutMetadata.skipCutlery !== true;
 }
+
+/** Rider-facing instruction tags (leave at door, don't ring bell, etc.). */
+export function buildDeliveryInstructionsArray(
+  checkoutMetadata: Record<string, unknown> | null | undefined
+): string[] {
+  if (!checkoutMetadata || typeof checkoutMetadata !== "object") return [];
+  const out: string[] = [];
+  const freeText = checkoutMetadata.deliveryInstructions;
+  if (typeof freeText === "string" && freeText.trim()) {
+    out.push(freeText.trim());
+  }
+  if (checkoutMetadata.leaveAtDoor === true) out.push("Leave at door");
+  if (checkoutMetadata.leaveWithGuard === true) out.push("Leave with guard");
+  if (checkoutMetadata.avoidCalling === true) out.push("Avoid calling");
+  if (checkoutMetadata.dontRingBell === true) out.push("Do not ring bell");
+  if (checkoutMetadata.petAtHome === true) out.push("Pet at home");
+  return [...new Set(out)];
+}
+
+/** Kitchen / merchant-facing notes (no cutlery, custom text). */
+export function buildMerchantInstructionsArray(
+  checkoutMetadata: Record<string, unknown> | null | undefined
+): string[] {
+  if (!checkoutMetadata || typeof checkoutMetadata !== "object") return [];
+  const out: string[] = [];
+  const note = checkoutMetadata.restaurantNote;
+  if (typeof note === "string" && note.trim()) {
+    out.push(note.trim());
+  }
+  if (checkoutMetadata.skipCutlery === true) {
+    out.push("Don't send cutlery");
+  }
+  return [...new Set(out)];
+}
+
+export function isScheduledOrderFromCheckout(
+  checkoutMetadata: Record<string, unknown> | null | undefined
+): boolean {
+  if (!checkoutMetadata || typeof checkoutMetadata !== "object") return false;
+  const summary = checkoutMetadata.scheduledDeliverySummary;
+  return typeof summary === "string" && summary.trim().length > 0;
+}
+
+export function etaSecondsFromBillingSnapshot(
+  billingSnapshot: Record<string, unknown> | null | undefined
+): number | null {
+  if (!billingSnapshot || typeof billingSnapshot !== "object") return null;
+  const durationMin =
+    billingSnapshot.durationMin ??
+    billingSnapshot.duration_min ??
+    billingSnapshot.etaMinutes;
+  const n = Number(durationMin);
+  if (Number.isFinite(n) && n > 0) return Math.round(n * 60);
+  const maxMin = billingSnapshot.eta_max_minutes ?? billingSnapshot.etaMaxMinutes;
+  const m = Number(maxMin);
+  if (Number.isFinite(m) && m > 0) return Math.round(m * 60);
+  return null;
+}

@@ -1,6 +1,7 @@
 /**
  * Food floating cart + multi-order tracking dock.
  * Visible on: /home, /home/merchant/*, /search, and on /orders when there are active orders.
+ * Hidden on /orders/[id] (order detail already shows map + tracking).
  * When cart + active order(s): paged horizontal dock — swipe to switch (one pill visible at a time).
  */
 
@@ -77,6 +78,21 @@ function useIsOnOrdersArea(): boolean {
   return p === "/orders" || p.startsWith("/orders/") || p.includes("orders");
 }
 
+const ORDER_STATIC_ROUTES = new Set([
+  "payment-failure",
+  "payment-success",
+  "payment-confirming",
+  "raise-ticket",
+]);
+
+/** Live order detail (/orders/[id]) — map + status already on screen; hide bottom track pill. */
+function useIsOnOrderDetailPage(): boolean {
+  const segments = useSegments();
+  if (segments[0] !== "orders" || segments.length !== 2) return false;
+  const slug = String(segments[1] ?? "");
+  return slug.length > 0 && !ORDER_STATIC_ROUTES.has(slug);
+}
+
 /** True when current route is restaurant detail and it's the same as cart merchant */
 function useIsInsideCartRestaurant(): boolean {
   const segments = useSegments();
@@ -93,6 +109,7 @@ export function GlobalFloatingCart() {
   const segments = useSegments();
   const isFoodServicePage = useIsFoodServicePage();
   const isOnOrdersArea = useIsOnOrdersArea();
+  const isOnOrderDetailPage = useIsOnOrderDetailPage();
   const isInsideCartRestaurant = useIsInsideCartRestaurant();
   const merchantScrollY = useMerchantScrollStore((s) => s.scrollY);
   const isCartCompact = isInsideCartRestaurant && merchantScrollY > 80;
@@ -191,8 +208,11 @@ export function GlobalFloatingCart() {
 
   const resolvedThumbUri = heroImageUri ?? leadImageUri ?? fetchedBannerUri;
   const hasActiveOrder = activeOrders.length > 0;
+  /** Hide track pill on order detail — tracking UI is already on that screen. */
+  const showActiveOrderTracking = hasActiveOrder && !isOnOrderDetailPage;
   /** Cart + tracking (or multiple orders): one pill per page, swipe to switch. */
-  const showScrollDock = hasActiveOrder && (hasCart || activeOrders.length > 1);
+  const showScrollDock =
+    showActiveOrderTracking && (hasCart || activeOrders.length > 1);
   const { width: windowWidth } = useWindowDimensions();
   const dockSideInset = 16;
   const dockPageWidth = Math.max(280, windowWidth - dockSideInset);
@@ -215,7 +235,7 @@ export function GlobalFloatingCart() {
   const pulse = useSharedValue(1);
 
   useEffect(() => {
-    if (hasActiveOrder) {
+    if (showActiveOrderTracking) {
       pulse.value = withRepeat(
         withSequence(
           withTiming(1.03, { duration: 800 }),
@@ -230,7 +250,7 @@ export function GlobalFloatingCart() {
     return () => {
       pulse.value = 1;
     };
-  }, [hasActiveOrder, pulse]);
+  }, [showActiveOrderTracking, pulse]);
 
   const pulseStyle = useAnimatedStyle(() => ({
     transform: [{ scale: pulse.value }],
@@ -260,7 +280,8 @@ export function GlobalFloatingCart() {
     ]);
   };
 
-  const visible = (isFoodServicePage || isOnOrdersArea) && (hasCart || hasActiveOrder);
+  const visible =
+    (isFoodServicePage || isOnOrdersArea) && (hasCart || showActiveOrderTracking);
   if (!visible) return null;
 
   const inTabs = segments[0] === "(tabs)";
@@ -357,7 +378,7 @@ export function GlobalFloatingCart() {
     );
   }
 
-  if (hasActiveOrder && activeOrder && !hasCart) {
+  if (showActiveOrderTracking && activeOrder && !hasCart) {
     return (
       <Animated.View
         entering={slideUpEntering}

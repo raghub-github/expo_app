@@ -7,7 +7,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { randomBytes } from "crypto";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { verifyRazorpaySignature, verifyRazorpayPaymentDetails } from "../../services/payment/razorpayService.js";
 import { getStoreByStoreId, getStoreByIdForOrder } from "../merchants/merchant.service.js";
 import { getStoreRatingsForStores } from "../merchants/merchant-store-ratings.js";
@@ -16,6 +16,11 @@ import { createPendingOrder, finalizeOrder } from "./order.placement.service.js"
 import { getEnv } from "../../config/env.js";
 import { getRoute } from "../distance/distance.service.js";
 import { resolveOrderItemsVegNonVeg } from "../../lib/order-item-veg.js";
+import { loadOrderItemAddonLabelsByCoreItemIds } from "../../lib/load-order-item-addon-labels.js";
+import {
+  buildCustomerOrderDetailItems,
+  buildCustomerOrderDetailItemsFromJson,
+} from "../../lib/customer-order-detail-items.js";
 import { customerOrderRefWhere } from "../../lib/order-ref-resolve.js";
 
 /** Em dash / empty → null for DB. Never insert placeholder characters. */
@@ -33,12 +38,19 @@ import { getDb, getSql } from "../../db/client.js";
 import { computeBillForOrder } from "../billing/billing.service.js";
 import { normalizeOrderItems } from "./orderNormalizer.js";
 import {
+  resolveOrdersCorePk,
+  writeOrderItemCommissionSnapshots,
+} from "../commission/writeOrderCommissionSnapshots.js";
+import { enrichAddonsWithMenuMetadata } from "../commission/resolveMenuAddonMetadata.js";
+import { persistOrderItemAddonsWithSnapshots } from "../commission/persistOrderItemAddons.js";
+import { resolveMenuAddonPk } from "../commission/resolveMenuAddonPk.js";
+import type { Sql } from "postgres";
+import {
   customers,
   customerAddresses,
   ordersCore,
   ordersFood,
   ordersCoreItems,
-  ordersCoreItemAddons,
   ordersCorePayments,
   orderEvents,
   pendingOrders,
@@ -113,7 +125,8 @@ const orderSummarySchema = z.object({
 });
 
 const addonItemSchema = z.object({
-  addonId: z.string(),
+  addonId: z.union([z.string(), z.number()]),
+  customizationId: z.string().optional().nullable(),
   addonName: z.string(),
   addonPrice: z.number().nonnegative(),
   quantity: z.number().int().min(1).default(1),
@@ -323,51 +336,21 @@ export async function orderRoutes(app: FastifyInstance) {
                 itemName: ordersCoreItems.itemName,
                 quantity: ordersCoreItems.quantity,
                 totalPrice: ordersCoreItems.totalPrice,
+                basePrice: ordersCoreItems.basePrice,
+                addonPrice: ordersCoreItems.addonPrice,
                 vegNonveg: ordersCoreItems.vegNonveg,
                 variantName: ordersCoreItems.variantName,
                 itemSnapshot: ordersCoreItems.itemSnapshot,
               })
               .from(ordersCoreItems)
               .where(eq(ordersCoreItems.orderId, row.orderId));
-            const coreItemIds = coreItems.map((i) => i.id).filter((id) => id != null);
-            const addonsByItemId = new Map<number, string[]>();
-            if (coreItemIds.length > 0) {
-              const addonRows = await db
-                .select({
-                  orderItemId: ordersCoreItemAddons.orderItemId,
-                  addonName: ordersCoreItemAddons.addonName,
-                  quantity: ordersCoreItemAddons.quantity,
-                })
-                .from(ordersCoreItemAddons)
-                .where(inArray(ordersCoreItemAddons.orderItemId, coreItemIds));
-              for (const addon of addonRows) {
-                const label = (addon.addonName ?? "").trim();
-                if (!label) continue;
-                const qty = addon.quantity ?? 1;
-                const text = qty > 1 ? `${label} x${qty}` : label;
-                const list = addonsByItemId.get(addon.orderItemId) ?? [];
-                list.push(text);
-                addonsByItemId.set(addon.orderItemId, list);
-              }
-            }
-            items = coreItems
-              .map((i) => {
-                const addonParts = addonsByItemId.get(i.id) ?? [];
-                const customizationParts = [
-                  ...(i.variantName?.trim() ? [i.variantName.trim()] : []),
-                  ...addonParts,
-                ];
-                return {
-                  name: i.itemName ?? "",
-                  quantity: i.quantity ?? 1,
-                  price: Number(i.totalPrice ?? 0) / Math.max(i.quantity ?? 1, 1),
-                  menuItemId: i.menuItemId != null ? String(i.menuItemId) : null,
-                  vegNonVeg: null as string | null,
-                  variantName: i.variantName?.trim() || null,
-                  customization: customizationParts.length > 0 ? customizationParts.join(" · ") : null,
-                };
+            items = (
+              await buildCustomerOrderDetailItems({
+                orderIdText: row.orderId,
+                coreItems,
+                itemsJsonFallback: row.items,
               })
-              .filter((i) => i.name.trim().length > 0);
+            ).filter((i) => i.name.trim().length > 0);
             itemVegInputs = coreItems.map((i) => ({
               menuItemId: i.menuItemId,
               vegNonveg: i.vegNonveg,
@@ -433,6 +416,7 @@ export async function orderRoutes(app: FastifyInstance) {
     deliveryType: z.enum(["delivery", "self_pickup"]).optional(),
     checkoutMetadata: z.record(z.string(), z.unknown()).optional(),
     selectedPlatformOfferId: z.coerce.number().int().positive().optional().nullable(),
+    selectedMerchantOfferId: z.coerce.number().int().positive().optional().nullable(),
     forceNoAutoOffer: z.boolean().optional(),
     idempotencyKey: z.string().min(6).max(128).optional().nullable(),
   });
@@ -491,6 +475,7 @@ export async function orderRoutes(app: FastifyInstance) {
         deliveryType: body.deliveryType,
         checkoutMetadata: body.checkoutMetadata ?? null,
         selectedPlatformOfferId: body.selectedPlatformOfferId ?? null,
+        selectedMerchantOfferId: body.selectedMerchantOfferId ?? null,
         forceNoAutoOffer: body.forceNoAutoOffer,
         idempotencyKey,
       });
@@ -755,25 +740,10 @@ export async function orderRoutes(app: FastifyInstance) {
             vegNonVeg?: string;
             veg_non_veg?: string;
             variantName?: string;
+            variant?: string | null;
+            addons?: Array<{ addonName?: string; name?: string; quantity?: number } | string>;
           }> | null;
-          const built =
-            itemsPayload?.map((i) => {
-              const qty = i.quantity ?? 1;
-              const unitPrice = i.price ?? 0;
-              const menuItemId =
-                i.menuItemId?.trim() ||
-                (i.item_id != null ? String(i.item_id) : null);
-              return {
-                name: i.name ?? i.item_name ?? i.menuItemId ?? "Item",
-                quantity: qty,
-                price: unitPrice,
-                lineTotal: unitPrice * qty,
-                menuItemId,
-                vegNonVeg: null as string | null,
-                variantName: i.variantName?.trim() || null,
-                customization: i.variantName?.trim() || null,
-              };
-            }) ?? [];
+          const built = buildCustomerOrderDetailItemsFromJson(itemsPayload);
           const vegResolved = await resolveOrderItemsVegNonVeg(
             coreRow.merchantStoreId != null ? Number(coreRow.merchantStoreId) : null,
             coreRow.items,
@@ -796,6 +766,8 @@ export async function orderRoutes(app: FastifyInstance) {
             itemName: ordersCoreItems.itemName,
             quantity: ordersCoreItems.quantity,
             totalPrice: ordersCoreItems.totalPrice,
+            basePrice: ordersCoreItems.basePrice,
+            addonPrice: ordersCoreItems.addonPrice,
             vegNonveg: ordersCoreItems.vegNonveg,
             variantName: ordersCoreItems.variantName,
             itemSnapshot: ordersCoreItems.itemSnapshot,
@@ -803,46 +775,10 @@ export async function orderRoutes(app: FastifyInstance) {
           .from(ordersCoreItems)
           .where(eq(ordersCoreItems.orderId, coreRow.orderId));
 
-        const coreItemIds = coreItems.map((i) => i.id).filter((id) => id != null);
-        const addonsByItemId = new Map<number, string[]>();
-        if (coreItemIds.length > 0) {
-          const addonRows = await db
-            .select({
-              orderItemId: ordersCoreItemAddons.orderItemId,
-              addonName: ordersCoreItemAddons.addonName,
-              quantity: ordersCoreItemAddons.quantity,
-            })
-            .from(ordersCoreItemAddons)
-            .where(inArray(ordersCoreItemAddons.orderItemId, coreItemIds));
-          for (const addon of addonRows) {
-            const label = (addon.addonName ?? "").trim();
-            if (!label) continue;
-            const qty = addon.quantity ?? 1;
-            const text = qty > 1 ? `${label} x${qty}` : label;
-            const list = addonsByItemId.get(addon.orderItemId) ?? [];
-            list.push(text);
-            addonsByItemId.set(addon.orderItemId, list);
-          }
-        }
-
-        const built = coreItems.map((i) => {
-          const addonParts = addonsByItemId.get(i.id) ?? [];
-          const customizationParts = [
-            ...(i.variantName?.trim() ? [i.variantName.trim()] : []),
-            ...addonParts,
-          ];
-          const qty = i.quantity ?? 1;
-          const lineTotal = Number(i.totalPrice ?? 0);
-          return {
-            name: i.itemName ?? "Item",
-            quantity: qty,
-            price: lineTotal / Math.max(qty, 1),
-            lineTotal,
-            menuItemId: i.menuItemId != null ? String(i.menuItemId) : null,
-            vegNonVeg: null as string | null,
-            variantName: i.variantName?.trim() || null,
-            customization: customizationParts.length > 0 ? customizationParts.join(" · ") : null,
-          };
+        const built = await buildCustomerOrderDetailItems({
+          orderIdText: coreRow.orderId,
+          coreItems,
+          itemsJsonFallback: coreRow.items,
         });
 
         const vegInputs = coreItems.map((i) => ({
@@ -1264,7 +1200,7 @@ export async function orderRoutes(app: FastifyInstance) {
               itemName: i.itemName,
               categoryName: null,
               vegNonveg: null,
-              variantId: i.variantId ?? undefined,
+              variantId: i.variantKey ?? (i.variantId != null ? String(i.variantId) : undefined),
               variantName: i.variantName ?? undefined,
               quantity: i.quantity,
               basePrice: String(i.basePrice.toFixed(2)),
@@ -1277,23 +1213,53 @@ export async function orderRoutes(app: FastifyInstance) {
           const insertedItems = await (tx.insert(ordersCoreItems) as any)
             .values(itemInserts as any)
             .returning({ id: ordersCoreItems.id });
+          const orderIdNumRoute = await resolveOrdersCorePk(tx, idText);
+          const sql = getSql();
+          await enrichAddonsWithMenuMetadata(sql, merchantStoreId, normItems);
+          for (const it of normItems) {
+            for (const ad of it.addons) {
+              if (ad.menuAddonPk != null && ad.menuAddonPk > 0) continue;
+              const pk = await resolveMenuAddonPk(
+                sql,
+                merchantStoreId,
+                ad.menuAddonId,
+                ad.customizationId,
+              );
+              if (pk) ad.menuAddonPk = pk;
+            }
+          }
           for (let idx = 0; idx < normItems.length; idx++) {
             const row = normItems[idx]!;
             const addons = row.addons;
             if (addons.length === 0) continue;
             const orderItemId = insertedItems[idx]?.id;
-            if (orderItemId == null) continue;
-            await tx.insert(ordersCoreItemAddons).values(
-              addons.map((ad) => {
-                const n = Number(ad.addonId);
-                return {
-                  orderItemId,
-                  addonId: Number.isNaN(n) ? undefined : n,
-                  addonName: ad.addonName,
-                  addonPrice: String(ad.addonPrice.toFixed(2)),
-                  quantity: ad.quantity,
-                };
-              })
+            if (orderItemId == null || orderIdNumRoute == null) continue;
+            await persistOrderItemAddonsWithSnapshots(tx, {
+              storeId: merchantStoreId,
+              orderIdNum: orderIdNumRoute,
+              orderItemId: Number(orderItemId),
+              addons,
+            });
+          }
+
+          const snapshotInputsRoute = insertedItems
+            .map((row: { id?: number }, idx: number) => {
+              if (row?.id == null) return null;
+              const it = normItems[idx]!;
+              return {
+                orderIdText: idText,
+                orderItemId: Number(row.id),
+                customerVisiblePerUnitRupees: Number(it.basePrice),
+                quantity: it.quantity,
+              };
+            })
+            .filter((x: unknown): x is NonNullable<typeof x> => x != null);
+          if (snapshotInputsRoute.length > 0) {
+            await writeOrderItemCommissionSnapshots(
+              tx,
+              merchantStoreId,
+              snapshotInputsRoute,
+              orderIdNumRoute ?? undefined,
             );
           }
 

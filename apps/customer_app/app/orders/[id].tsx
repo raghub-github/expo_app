@@ -33,6 +33,11 @@ import { parseOrderBillFromSnapshot } from "@/lib/orderBillBreakdown";
 import { getOrderDetailInitialData } from "@/lib/orderDetailCache";
 import { resolveOrderItemDiet } from "@/lib/reorderFromOrder";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { OrderItemCustomizationModal } from "@/components/orders/OrderItemCustomizationModal";
+import {
+  orderItemHasCustomizations,
+  type OrderDetailLineItem,
+} from "@/lib/order-item-customization-display";
 
 const GREEN = GatiMitraColors.primaryMint;
 const LINK_BLUE = "#2563EB";
@@ -133,6 +138,7 @@ export default function OrderDetailsScreen() {
   const orderId = id ?? "";
   const mapRef = useRef<MapView>(null);
   const [mapReady, setMapReady] = useState(false);
+  const [customizationItem, setCustomizationItem] = useState<OrderDetailLineItem | null>(null);
 
   const { data: order, isLoading } = useQuery({
     queryKey: ["order", orderId],
@@ -355,27 +361,65 @@ export default function OrderDetailsScreen() {
             {items.map((item, index) => {
               const diet = toDietType(item.vegNonVeg);
               const lineTotal = item.lineTotal ?? item.price * item.quantity;
-              const subtext = item.customization?.trim() || item.variantName?.trim() || "";
+              const lineItem: OrderDetailLineItem = {
+                name: item.name,
+                quantity: item.quantity,
+                variantName: item.variantName,
+                customization: item.customization,
+              };
+              const hasCust = orderItemHasCustomizations(lineItem);
               return (
-                <View key={`${displayOrderId}-item-${index}`} style={styles.itemRow}>
-                  <View style={styles.itemLeft}>
-                    {diet != null && (
-                      <View style={styles.dietWrap}>
-                        <DietIndicator type={diet} />
-                      </View>
-                    )}
-                    <View style={styles.itemTextWrap}>
-                      <Text style={styles.itemName} numberOfLines={2}>
-                        {item.quantity} x {item.name}
-                      </Text>
-                      {!!subtext && (
-                        <Text style={styles.itemSubtext} numberOfLines={2}>
-                          {subtext}
-                        </Text>
+                <View key={`${displayOrderId}-item-${index}`}>
+                  <TouchableOpacity
+                    style={[styles.itemRow, hasCust && styles.itemRowClickable]}
+                    activeOpacity={hasCust ? 0.7 : 1}
+                    disabled={!hasCust}
+                    onPress={() => hasCust && setCustomizationItem(lineItem)}
+                    accessibilityRole={hasCust ? "button" : undefined}
+                    accessibilityLabel={
+                      hasCust
+                        ? `${item.quantity} ${item.name}, view customizations`
+                        : undefined
+                    }
+                  >
+                    <View style={styles.itemLeft}>
+                      {diet != null && (
+                        <View style={styles.dietWrap}>
+                          <DietIndicator type={diet} />
+                        </View>
                       )}
+                      <View style={styles.itemTextWrap}>
+                        <View style={styles.itemNameRow}>
+                          <Text style={[styles.itemName, styles.itemNameFlex]} numberOfLines={2}>
+                            {item.quantity} x {item.name}
+                          </Text>
+                          {hasCust ? (
+                            <TouchableOpacity
+                              style={styles.infoBtn}
+                              onPress={() => setCustomizationItem(lineItem)}
+                              hitSlop={8}
+                              accessibilityLabel="View customizations"
+                            >
+                              <Ionicons
+                                name="information-circle-outline"
+                                size={20}
+                                color={GREEN}
+                              />
+                            </TouchableOpacity>
+                          ) : null}
+                        </View>
+                        {hasCust ? (
+                          <Text style={styles.itemTapHint}>Tap to see size & add-ons</Text>
+                        ) : null}
+                      </View>
                     </View>
-                  </View>
-                  <Text style={styles.itemPrice}>₹{Math.round(lineTotal)}</Text>
+                    <Text style={styles.itemPrice}>₹{Math.round(lineTotal)}</Text>
+                  </TouchableOpacity>
+                  {hasCust ? (
+                    <Text style={styles.itemDashedText} numberOfLines={1} accessibilityElementsHidden>
+                      — — — — — — — — —
+                    </Text>
+                  ) : null}
                 </View>
               );
             })}
@@ -561,6 +605,12 @@ export default function OrderDetailsScreen() {
             <Text style={styles.invoiceText}>Invoice</Text>
           </TouchableOpacity>
         </View>
+
+        <OrderItemCustomizationModal
+          visible={customizationItem != null}
+          item={customizationItem}
+          onClose={() => setCustomizationItem(null)}
+        />
       </View>
     </>
   );
@@ -731,11 +781,37 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     gap: 10,
   },
+  itemRowClickable: {
+    paddingBottom: 4,
+  },
   itemLeft: { flex: 1, flexDirection: "row", alignItems: "flex-start", gap: 8 },
   dietWrap: { marginTop: 2 },
   itemTextWrap: { flex: 1 },
+  itemNameRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 6,
+  },
   itemName: { fontSize: 14, fontWeight: "600", color: TEXT, lineHeight: 18 },
-  itemSubtext: { marginTop: 2, fontSize: 12, color: MUTED, lineHeight: 16 },
+  itemNameFlex: { flex: 1 },
+  infoBtn: {
+    marginTop: 0,
+    padding: 2,
+  },
+  itemTapHint: {
+    marginTop: 4,
+    fontSize: 11,
+    fontWeight: "500",
+    color: GREEN,
+  },
+  itemDashedText: {
+    marginTop: 8,
+    marginBottom: 2,
+    fontSize: 11,
+    letterSpacing: 3,
+    color: "#B8D4C8",
+    textAlign: "center",
+  },
   itemPrice: { fontSize: 14, fontWeight: "700", color: TEXT },
   billHeader: {
     flexDirection: "row",

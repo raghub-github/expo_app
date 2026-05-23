@@ -6,12 +6,18 @@ import {
   orderRawItemsMissingDisplayNames,
   type NormalizedOrderLineItem,
 } from '@/lib/orderLineItems';
+import { enrichRawOrderItemFromCoreRow } from '@/lib/order-item-customisation';
 
 const CORE_ITEM_SELECT =
-  'id, order_id, menu_item_id, item_name, variant_name, category_name, quantity, base_price, total_price, veg_nonveg, item_snapshot';
+  'id, order_id, menu_item_id, item_name, variant_name, category_name, quantity, base_price, addon_price, total_price, veg_nonveg, item_snapshot';
 
 type CoreItemRow = Parameters<typeof mapCoreDbItemsToRaw>[0][number];
-type CoreAddonRow = { order_item_id: number; addon_name?: string | null; quantity: number };
+type CoreAddonRow = {
+  order_item_id: number;
+  addon_name?: string | null;
+  quantity: number;
+  addon_price?: string | number | null;
+};
 
 /** Collect public order_id strings used in orders_core_items.order_id. */
 export function collectCoreItemOrderKeys(
@@ -63,6 +69,22 @@ export async function loadCoreDbItemsByOrderTextIds(
     .filter((n) => Number.isFinite(n));
 
   const addonsByItemId = new Map<number, CoreAddonRow[]>();
+  const cartByOrderText = new Map<string, Record<string, unknown>[]>();
+  if (unique.length > 0) {
+    const { data: pendingRows } = await db
+      .from('pending_orders')
+      .select('finalized_order_id, items_snapshot')
+      .in('finalized_order_id', unique);
+    for (const p of pendingRows || []) {
+      const key = String((p as { finalized_order_id?: string }).finalized_order_id ?? '').trim();
+      if (!key) continue;
+      const lines = extractItemsArray((p as { items_snapshot?: unknown }).items_snapshot).map(
+        (r) => (r && typeof r === 'object' ? (r as Record<string, unknown>) : {})
+      );
+      if (lines.length > 0) cartByOrderText.set(key, lines);
+    }
+  }
+
   if (itemIds.length > 0) {
     const { data: addonRows } = await db
       .from('orders_core_item_addons')
@@ -87,7 +109,18 @@ export async function loadCoreDbItemsByOrderTextIds(
   }
 
   for (const [oid, rows] of grouped) {
-    out.set(oid, mapCoreDbItemsToRaw(rows, addonsByItemId));
+    const cartLines = cartByOrderText.get(oid) ?? [];
+    const raw = mapCoreDbItemsToRaw(rows, addonsByItemId);
+    for (let i = 0; i < rows.length; i++) {
+      raw[i] = enrichRawOrderItemFromCoreRow({
+        row: rows[i],
+        dbAddons: addonsByItemId.get(rows[i].id) ?? [],
+        cartLines,
+        lineIndex: i,
+        raw: raw[i],
+      });
+    }
+    out.set(oid, raw);
   }
   return out;
 }
@@ -124,7 +157,39 @@ export function resolvePartnerOrderItems(
     rawItems = fromDb;
   }
 
-  return normalizeOrderItems(rawItems);
+  let items = normalizeOrderItems(rawItems);
+  if (fromDb?.length) {
+    const enriched = normalizeOrderItems(fromDb);
+    if (items.length === 0) {
+      items = enriched;
+    } else if (enriched.length > 0) {
+      items = items.map((it, i) => {
+        const dbLine = enriched[i];
+        if (!dbLine) return it;
+        return {
+          ...it,
+          name: dbLine.name || it.name,
+          customizations: dbLine.customizations?.length ? dbLine.customizations : it.customizations,
+          customizationLines: dbLine.customizationLines?.length
+            ? dbLine.customizationLines
+            : it.customizationLines,
+          variantTag: dbLine.variantTag ?? it.variantTag,
+          variantName: dbLine.variantName ?? it.variantName,
+          baseAmount: dbLine.baseAmount ?? it.baseAmount,
+          customizationsTotal: dbLine.customizationsTotal ?? it.customizationsTotal,
+          capturedBaseAmount: dbLine.capturedBaseAmount ?? it.capturedBaseAmount,
+          capturedAddonAmount: dbLine.capturedAddonAmount ?? it.capturedAddonAmount,
+          hasCustomizations: dbLine.hasCustomizations ?? it.hasCustomizations,
+          categoryName: dbLine.categoryName ?? it.categoryName,
+          vegNonveg: dbLine.vegNonveg ?? it.vegNonveg,
+          total: dbLine.total > 0 ? dbLine.total : it.total,
+          price: dbLine.price > 0 ? dbLine.price : it.price,
+        };
+      });
+      if (enriched.length > items.length) items = enriched;
+    }
+  }
+  return items;
 }
 
 /** Load line items for one orders_food row (PATCH / detail refresh). */

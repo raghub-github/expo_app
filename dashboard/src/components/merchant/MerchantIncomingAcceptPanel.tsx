@@ -1,14 +1,20 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { MapPin, Minus, Plus, UtensilsCrossed, Volume2, VolumeX, X } from 'lucide-react';
 import type { OrdersFoodRow } from '@/lib/types/food-orders';
-import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
 import {
   clampPrepMinutes,
   PREP_TIME_MAX,
   PREP_TIME_MIN,
 } from '@/lib/order-prep-time';
+import { MerchantOrderItemsList } from '@/components/orders/MerchantOrderItemsList';
+import { MerchantOrderBillSummary } from '@/components/orders/MerchantOrderBillSummary';
+import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
+import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
+import type { NormalizedOrderLineItem } from '@/lib/orderLineItems';
+
+const MAX_PREVIEW_ITEMS = 3;
 
 export function OrderPrepTimeStepper({
   minutes,
@@ -50,13 +56,6 @@ export function OrderPrepTimeStepper({
   );
 }
 
-function vegDotClass(veg?: string | null) {
-  const v = String(veg || '').toLowerCase();
-  if (v.includes('non')) return 'bg-red-600';
-  if (v === 'veg') return 'bg-green-600';
-  return 'bg-gray-400';
-}
-
 /** Zomato-style incoming accept modal. */
 export function MerchantIncomingAcceptPanel({
   order,
@@ -68,6 +67,7 @@ export function MerchantIncomingAcceptPanel({
   onClose,
   onAccept,
   onReject,
+  onViewAllItems,
   actionLoading,
   acceptLabel,
   acceptDisabled,
@@ -81,16 +81,28 @@ export function MerchantIncomingAcceptPanel({
   onClose: () => void;
   onAccept: () => void;
   onReject: () => void;
+  onViewAllItems?: () => void;
   actionLoading: boolean;
   acceptLabel?: string;
   acceptDisabled?: boolean;
 }) {
-  const pricing = order.pricing;
-  const itemCount = computeOrderItemQuantityCount(order);
-  const subtotal =
-    pricing?.subtotal ??
-    (order.items?.reduce((s, it) => s + Number(it.total || 0), 0) || Number(order.food_items_total_value || 0));
-  const total = pricing?.total ?? Number(order.food_items_total_value || 0);
+  const pricing = order.pricing ?? {
+    subtotal: 0,
+    packaging: 0,
+    taxes: 0,
+    discount: 0,
+    total: Number(order.food_items_total_value || 0),
+  };
+  const orderItems = useMemo(
+    () => (Array.isArray(order.items) ? order.items : []) as NormalizedOrderLineItem[],
+    [order.items]
+  );
+  const itemCount = useMemo(() => computeOrderItemQuantityCount(order), [order]);
+  const moreItemsCount = Math.max(0, orderItems.length - MAX_PREVIEW_ITEMS);
+  const utensilsLabel = getUtensilsCustomerLabel(order);
+  const sendCutlery =
+    order.requires_utensils === true ||
+    (utensilsLabel != null && !/don'?t send/i.test(utensilsLabel));
 
   return (
     <div className="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:rounded-2xl">
@@ -120,12 +132,6 @@ export function MerchantIncomingAcceptPanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        {order.requires_utensils && (
-          <div className="mb-3 flex items-center gap-2 text-sm font-medium text-green-700">
-            <UtensilsCrossed size={16} />
-            Send cutlery
-          </div>
-        )}
         {order.delivery_instructions && !order.requires_utensils && (
           <div className="mb-3 flex items-start gap-2 text-sm text-gray-700">
             <MapPin size={14} className="mt-0.5 shrink-0 text-amber-600" />
@@ -133,61 +139,59 @@ export function MerchantIncomingAcceptPanel({
           </div>
         )}
 
-        <div className="space-y-3 border-b border-gray-100 pb-3">
-          {order.items && order.items.length > 0 ? (
-            order.items.map((item, idx) => {
-              const qty = item.quantity || 1;
-              const amount = Number(item.total || Number(item.price || 0) * qty);
-              return (
-                <div key={idx} className="flex items-start justify-between gap-2 text-sm">
-                  <div className="flex min-w-0 flex-1 items-start gap-2">
-                    <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-sm ${vegDotClass(item.vegNonveg)}`} />
-                    <span className="font-medium text-gray-900">
-                      {qty} × {item.name || `Item ${idx + 1}`}
-                    </span>
-                  </div>
-                  <span className="shrink-0 font-medium">₹{amount.toFixed(2)}</span>
-                </div>
-              );
-            })
-          ) : (
-            <p className="text-sm text-gray-600">
-              {itemCount} item{itemCount !== 1 ? 's' : ''}
-            </p>
-          )}
+        <div className="mb-3 flex gap-2">
+          <div
+            className={`flex w-1/2 min-w-0 items-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-semibold leading-tight ${
+              sendCutlery
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                : 'border-gray-200 bg-gray-50 text-gray-600'
+            }`}
+          >
+            <UtensilsCrossed
+              size={14}
+              className={`shrink-0 ${sendCutlery ? 'text-emerald-600' : 'text-gray-500'}`}
+              aria-hidden
+            />
+            <span className="min-w-0 truncate">
+              {utensilsLabel ?? (sendCutlery ? 'Send cutlery & utensils' : "Don't send cutlery")}
+            </span>
+          </div>
+          <div className="flex w-1/2 min-w-0 items-center justify-end gap-1 rounded-lg border border-gray-200 bg-gray-50 px-2 py-2 text-[11px] text-gray-800">
+            <span className="font-semibold tabular-nums">Total items – {itemCount}</span>
+            {orderItems.length > 0 && onViewAllItems ? (
+              <button
+                type="button"
+                onClick={onViewAllItems}
+                className="shrink-0 font-bold text-blue-600 hover:underline"
+              >
+                View all
+              </button>
+            ) : null}
+          </div>
         </div>
 
-        <div className="space-y-1.5 py-3 text-sm text-gray-700">
-          <div className="flex justify-between">
-            <span>
-              Subtotal ({itemCount} item{itemCount !== 1 ? 's' : ''})
-            </span>
-            <span>₹{Number(subtotal).toFixed(2)}</span>
-          </div>
-          {(pricing?.packaging ?? 0) > 0 && (
-            <div className="flex justify-between">
-              <span>Restaurant packaging charges</span>
-              <span>₹{Number(pricing?.packaging).toFixed(2)}</span>
-            </div>
-          )}
-          <div className="flex justify-between">
-            <span>Taxes</span>
-            <span>₹{Number(pricing?.taxes ?? 0).toFixed(2)}</span>
-          </div>
-          {(pricing?.discount ?? 0) > 0 && (
-            <div className="flex justify-between text-red-600">
-              <span>Discount</span>
-              <span>-₹{Number(pricing?.discount).toFixed(2)}</span>
-            </div>
-          )}
-          <div className="flex items-center justify-between border-t border-gray-100 pt-2 font-bold text-gray-900">
-            <span>Total bill</span>
-            <div className="flex items-center gap-2">
-              <span>₹{Number(total).toFixed(2)}</span>
-              <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold text-sky-800">PAID</span>
-            </div>
-          </div>
-        </div>
+        <MerchantOrderItemsList
+          items={orderItems}
+          requiresUtensils={false}
+          maxItems={MAX_PREVIEW_ITEMS}
+          compact
+          className="border-b border-gray-100 pb-3"
+        />
+        {moreItemsCount > 0 && onViewAllItems ? (
+          <button
+            type="button"
+            className="mb-3 w-full text-center text-xs font-bold text-blue-600 hover:underline"
+            onClick={onViewAllItems}
+          >
+            +{moreItemsCount} more in list — View all
+          </button>
+        ) : null}
+
+        <MerchantOrderBillSummary
+          className="py-3"
+          items={orderItems}
+          pricing={pricing}
+        />
 
         <OrderPrepTimeStepper minutes={prepMinutes} onChange={onPrepMinutesChange} disabled={actionLoading} />
         {storeDefaultPrepMinutes != null && prepMinutes !== storeDefaultPrepMinutes && (

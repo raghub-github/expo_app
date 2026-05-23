@@ -14,13 +14,17 @@ import {
 import type { OrdersFoodRow } from '@/lib/types/food-orders';
 import type { OrderPricingBreakdown } from '@/lib/orderLineItems';
 import { OrderItemDetailModal, type OrderLineItem } from '@/components/orders/OrderItemDetailModal';
+import { MerchantOrderItemsList } from '@/components/orders/MerchantOrderItemsList';
+import { MerchantOrderBillSummary } from '@/components/orders/MerchantOrderBillSummary';
 import { OrderCancellationBanner } from '@/components/orders/OrderCancellationBanner';
 import { OrderOtpSection } from '@/components/orders/OrderOtpSection';
+import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';
 import { formatRtoOtpDisplay, resolveOrderOtps, type CachedOrderOtps } from '@/lib/orderOtps';
 import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import { formatOrderDropAddress } from '@/lib/formatOrderAddress';
 
-const ITEMS_PREVIEW_MAX = 10;
+/** Panel preview only — full list via sidesheet (+N more). No scroll on items. */
+const ITEMS_PREVIEW_MAX = 4;
 
 function resolveItemVegType(vegNonveg?: string | null, name?: string | null): 'veg' | 'non_veg' | null {
   const t = (vegNonveg ?? '').toLowerCase();
@@ -145,6 +149,7 @@ export type OrderPanelProps = {
   onTrackRider?: () => void;
   onOrderHelp?: () => void;
   className?: string;
+  nowMs?: number;
 };
 
 export function OrderPanel({
@@ -167,6 +172,7 @@ export function OrderPanel({
   onTrackRider,
   onOrderHelp,
   className,
+  nowMs,
 }: OrderPanelProps) {
   const items = order.items ?? [];
   const previewItems = items.slice(0, ITEMS_PREVIEW_MAX);
@@ -183,6 +189,7 @@ export function OrderPanel({
   const riderMobile = order.rider_details?.mobile || order.rider_phone;
   const riderPhoto = order.rider_details?.selfie_url;
   const status = order.order_status || 'CREATED';
+  const isReadyForPickup = status === 'READY_FOR_PICKUP';
   const otps = resolveOrderOtps(order, otpCache);
   const legacyOtp = otpCode && !otps.pickup && !otps.rto ? { pickup: otpCode, rto: null as string | null } : otps;
   const displayOtps =
@@ -283,87 +290,51 @@ export function OrderPanel({
               Timeline
             </button>
           </div>
-        </div>
 
-        <div className="flex flex-col p-4 flex-1 min-w-0">
-          {utensilsLabel ? (
-            <div className="mb-3 flex items-start gap-2 rounded-lg border border-emerald-100 bg-emerald-50/80 px-3 py-2.5 text-sm text-emerald-900">
-              <UtensilsCrossed size={16} className="mt-0.5 shrink-0 text-emerald-600" />
-              <span className="font-medium leading-snug">{utensilsLabel}</span>
+          {isReadyForPickup ? (
+            <div className="mt-3.5">
+              <ReadyHandoverRunningTimeline
+                order={order}
+                nowMs={nowMs ?? Date.now()}
+                compact
+                placement="panel"
+              />
             </div>
           ) : null}
 
-          <div
-            className={`space-y-3 ${items.length > 8 ? 'max-h-[min(50vh,420px)] overflow-y-auto hide-scrollbar pr-1' : ''}`}
-          >
-            {previewItems.length > 0 ? (
-              <>
-                {previewItems.map((item, idx) => {
-                  const qty = item.quantity || 1;
-                  const amount = Number(item.total || (item.price || 0) * qty);
-                  return (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => setSelectedItem(item)}
-                      className="w-full flex items-start justify-between gap-3 text-sm text-left rounded-lg px-1 py-0.5 -mx-1 hover:bg-gray-50 transition-colors cursor-pointer"
-                    >
-                      <div className="flex items-start gap-2 min-w-0 flex-1">
-                        <ItemVegCheckbox vegNonveg={item.vegNonveg} name={item.name} />
-                        <span className="text-gray-900">
-                          <span className="font-medium">{qty} x </span>
-                          <span className="underline decoration-gray-400 underline-offset-2">
-                            {item.name || `Item ${idx + 1}`}
-                          </span>
-                        </span>
-                      </div>
-                      <span className="font-semibold text-gray-900 tabular-nums shrink-0">
-                        ₹{amount.toFixed(0)}
-                      </span>
-                    </button>
-                  );
-                })}
-                {hasMoreItems && (
-                  <button
-                    type="button"
-                    onClick={onOpenAllItems}
-                    className="text-sm font-semibold text-blue-600 hover:underline"
-                  >
-                    +{items.length - ITEMS_PREVIEW_MAX} more
-                  </button>
-                )}
-              </>
-            ) : (
-              <p className="text-sm text-gray-500">No items listed</p>
-            )}
-          </div>
-
-          <div className="mt-4 pt-3 border-t border-gray-200">
-            <button
-              type="button"
-              onClick={onOpenBill}
-              className="w-full flex items-center justify-between gap-2 text-left group"
-            >
-              <span className="flex items-center gap-2">
-                <span className="text-sm font-medium text-gray-800 underline decoration-dashed decoration-gray-400 underline-offset-4 group-hover:decoration-blue-500 group-hover:text-blue-700">
-                  Total Bill
-                </span>
-                <span className="rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-bold text-teal-700 border border-teal-100">
-                  PAID
-                </span>
-              </span>
-              <span className="text-lg font-bold text-gray-900 tabular-nums">
-                ₹{pricing.total.toFixed(0)}
-              </span>
-            </button>
-          </div>
-
-          <div className="mt-4 shrink-0 w-full [&_button]:w-full [&_[aria-label='More actions']]:hidden">
-            {primaryAction}
-          </div>
+          {primaryAction ? (
+            <div className="mt-3 shrink-0 w-full [&_button]:min-h-[44px] [&_[aria-label='More actions']]:hidden">
+              {primaryAction}
+            </div>
+          ) : null}
         </div>
 
-        <div className="relative flex flex-col p-4 xl:w-[28%] min-w-[240px] shrink-0 gap-3">
+        <div className="flex flex-col p-4 flex-1 min-w-0 min-h-0">
+          <MerchantOrderItemsList
+            items={previewItems}
+            requiresUtensils={order.requires_utensils}
+            utensilsLabel={utensilsLabel}
+            onItemClick={(item) => setSelectedItem(item as OrderLineItem)}
+          />
+          {hasMoreItems ? (
+            <button
+              type="button"
+              onClick={onOpenAllItems}
+              className="mt-2 w-full rounded-lg border border-blue-200 bg-blue-50 py-2.5 text-sm font-bold text-blue-700 hover:bg-blue-100"
+            >
+              +{items.length - ITEMS_PREVIEW_MAX} more items — view all
+            </button>
+          ) : null}
+
+          <MerchantOrderBillSummary
+            className="mt-4 shrink-0"
+            items={items}
+            pricing={pricing}
+            onTotalClick={onOpenBill}
+          />
+        </div>
+
+        <div className="relative flex flex-col p-4 xl:w-[28%] min-w-[240px] shrink-0 gap-2 min-h-0">
           {onClose && (
             <button
               type="button"
@@ -375,11 +346,11 @@ export function OrderPanel({
             </button>
           )}
           {showRiderCard && (
-            <div className="mt-8 flex min-h-[180px] flex-col rounded-xl border border-gray-200 bg-gradient-to-b from-slate-50 to-white p-4 shadow-sm">
-              <div className="mb-3">
+            <div className="mt-6 shrink-0 flex flex-col rounded-xl border border-gray-200 bg-gradient-to-b from-slate-50 to-white p-3 shadow-sm">
+              <div className="mb-2">
                 <p className="text-xs font-bold uppercase tracking-wide text-gray-500">Delivery partner</p>
               </div>
-              <div className="flex flex-1 flex-col gap-3">
+              <div className="flex flex-col gap-2">
               <div className="flex gap-3">
                 {riderPhoto ? (
                   <img
@@ -433,7 +404,7 @@ export function OrderPanel({
             </div>
           )}
 
-          <div className="mt-auto flex flex-col gap-2 pt-2">
+          <div className="mt-3 shrink-0 flex flex-col gap-2">
             {onViewPastRiders ? (
               <button
                 type="button"

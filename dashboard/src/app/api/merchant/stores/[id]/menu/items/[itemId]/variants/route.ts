@@ -58,10 +58,35 @@ export async function POST(
     const isDefault = body.is_default === true;
     const displayOrderRaw = Number(body.display_order);
     const displayOrder = Number.isFinite(displayOrderRaw) ? displayOrderRaw : 0;
-    const [row] = await sql`
-      INSERT INTO merchant_menu_item_variants (menu_item_id, variant_id, variant_name, variant_type, variant_price, is_default, display_order)
-      VALUES (${menuItemId}, ${variantId}, ${variant_name}, ${variantType}, ${variant_price}, ${isDefault}, ${displayOrder})      RETURNING id
-    `;
+    const sizeRaw = body.variant_size_value;
+    const variantSizeValue =
+      sizeRaw != null && String(sizeRaw).trim() !== "" ? String(sizeRaw).trim() : null;
+    const variantSizeUnit =
+      body.variant_size_unit != null && String(body.variant_size_unit).trim() !== ""
+        ? String(body.variant_size_unit).trim()
+        : null;
+
+    let row: unknown;
+    try {
+      [row] = await sql`
+        INSERT INTO merchant_menu_item_variants (
+          menu_item_id, variant_id, variant_name, variant_type, variant_price,
+          variant_size_value, variant_size_unit, is_default, display_order
+        )
+        VALUES (
+          ${menuItemId}, ${variantId}, ${variant_name}, ${variantType}, ${variant_price},
+          ${variantSizeValue}, ${variantSizeUnit}, ${isDefault}, ${displayOrder}
+        )
+        RETURNING id
+      `;
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code !== "42703") throw err;
+      [row] = await sql`
+        INSERT INTO merchant_menu_item_variants (menu_item_id, variant_id, variant_name, variant_type, variant_price, is_default, display_order)
+        VALUES (${menuItemId}, ${variantId}, ${variant_name}, ${variantType}, ${variant_price}, ${isDefault}, ${displayOrder})
+        RETURNING id
+      `;
+    }
     try {
       const agentId = await getAgentIdForStore(storeId);
       await insertActivityLog({

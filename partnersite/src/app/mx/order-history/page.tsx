@@ -33,6 +33,7 @@ import { OrderTimelineModal } from '@/components/orders/OrderTimelineModal';
 import { OrderRiderTrackingModal } from '@/components/orders/OrderRiderTrackingModal';
 import { OrderRidersHistorySidesheet } from '@/components/orders/OrderRidersHistorySidesheet';
 import { resolveOrderOtps } from '@/lib/orderOtps';
+import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
 
 /** Order history shows completed terminal orders only (not live pipeline). */
 const HISTORY_TERMINAL_STATUSES = new Set(['DELIVERED', 'RTO', 'CANCELLED']);
@@ -54,15 +55,17 @@ function normStatus(s: string | null | undefined) {
 
 function formatItemsSummary(order: OrdersFoodRow): string {
   const raw = order.items;
+  const totalQty = computeOrderItemQuantityCount(order);
   if (Array.isArray(raw) && raw.length > 0) {
     const it = raw[0] as Record<string, unknown>;
     const name = String(it.name ?? it.item_name ?? 'Item').trim();
     const qty = Number(it.quantity ?? 1) || 1;
-    const more = raw.length > 1 ? ` +${raw.length - 1} more` : '';
-    return `${qty} × ${name}${more}`;
+    const moreLines = raw.length > 1 ? ` +${raw.length - 1} more` : '';
+    const countSuffix =
+      totalQty > 0 ? ` · ${totalQty} item${totalQty === 1 ? '' : 's'}` : '';
+    return `${qty} × ${name}${moreLines}${countSuffix}`;
   }
-  const n = order.food_items_count ?? 0;
-  return n ? `${n} item${n === 1 ? '' : 's'}` : '—';
+  return totalQty > 0 ? `${totalQty} item${totalQty === 1 ? '' : 's'}` : '—';
 }
 
 function formatListTime(iso: string) {
@@ -801,9 +804,9 @@ function OrderHistoryInner() {
             </div>
           </aside>
 
-          <main className="flex-1 min-w-0 overflow-y-auto min-h-0 bg-gray-50/80 p-3 sm:p-4 hide-scrollbar">
+          <main className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden bg-gray-50/80">
             {!selected || !selectedOrderPricing ? (
-              <div className="h-full flex flex-col items-center justify-center text-gray-500 text-sm gap-2 min-h-[280px]">
+              <div className="flex-1 flex flex-col items-center justify-center text-gray-500 text-sm gap-2 min-h-[280px] p-4">
                 <span className="text-4xl opacity-40" aria-hidden>
                   🍽
                 </span>
@@ -812,8 +815,10 @@ function OrderHistoryInner() {
                   : 'Select an order to view details'}
               </div>
             ) : (
+              <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3 sm:p-4 hide-scrollbar">
               <OrderPanel
-                className="w-full max-w-none h-auto max-h-none"
+                className="w-full max-w-none min-h-[min(520px,calc(100dvh-12rem))] max-h-none"
+                panelMode="history"
                 order={selected}
                 pricing={selectedOrderPricing}
                 formattedOrderId={
@@ -844,6 +849,7 @@ function OrderHistoryInner() {
                 otpCode={resolveOrderOtps(selected).pickup ?? undefined}
                 otpType="PICKUP"
               />
+              </div>
             )}
           </main>
         </div>

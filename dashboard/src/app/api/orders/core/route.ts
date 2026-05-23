@@ -17,6 +17,8 @@ import {
   type OrderStatusFilter,
   type OrdersCoreRow,
 } from "@/lib/db/operations/orders-core";
+import { getOrderDetailEnrichment } from "@/lib/db/operations/order-detail-enrichment";
+import { fetchOrderPaymentDetail } from "@/lib/orders/order-payment-detail";
 
 /** Row returned to the client: list shape + `storeId`, optional enrichments for single-order fetch */
 type OrderCoreApiListItem = Omit<OrdersCoreRow, "estimatedDeliveryTime"> & {
@@ -270,6 +272,7 @@ export async function GET(request: NextRequest) {
     let reconsCount: number | undefined;
     let statusHistory: Awaited<ReturnType<typeof getOrderManualStatusHistory>> | undefined;
     let timeline: Awaited<ReturnType<typeof getOrderTimelineEntriesWithFallback>> | undefined;
+    let paymentDetail: Awaited<ReturnType<typeof fetchOrderPaymentDetail>> | null = null;
     if (result.orders.length === 1) {
       const first = data[0] as {
         id?: number;
@@ -282,7 +285,21 @@ export async function GET(request: NextRequest) {
         merchantSummary = await getMerchantStoreSummaryByStoreId(storeId);
       }
       if (orderId != null && Number.isFinite(orderId)) {
-        const [remarks, recons, history, deliveryInstructions, etaSet, etaBreach, timelineEntries] =
+        const firstRow = first as {
+          orderId?: string | null;
+          formattedOrderId?: string | null;
+          merchantStoreId?: number | null;
+          orderType?: string;
+          orderSource?: string | null;
+          paymentStatus?: string | null;
+          paymentMethod?: string | null;
+          grandTotal?: string | number | null;
+          itemTotal?: string | number | null;
+          addonTotal?: string | number | null;
+          tipAmount?: string | number | null;
+        };
+
+        const [remarks, recons, history, deliveryInstructions, etaSet, etaBreach, timelineEntries, detailExtra, paymentDetail] =
           await Promise.all([
             getOrderRemarksCount(orderId),
             getOrderReconsCount(orderId),
@@ -293,6 +310,32 @@ export async function GET(request: NextRequest) {
             ensureOrderEtaWhenAccepted(orderId),
             recordEtaBreachIfNeeded(orderId),
             getOrderTimelineEntriesWithFallback(orderId),
+            getOrderDetailEnrichment(orderId).catch((err) => {
+              console.error("[GET /api/orders/core] order detail enrichment failed", err);
+              return null;
+            }),
+            fetchOrderPaymentDetail({
+              orderCoreId: orderId,
+              orderIdText: firstRow.orderId != null ? String(firstRow.orderId) : null,
+              formattedOrderId:
+                firstRow.formattedOrderId != null ? String(firstRow.formattedOrderId) : null,
+              displayId:
+                firstRow.formattedOrderId?.trim() ||
+                (firstRow.orderId ? String(firstRow.orderId) : `ORDER-${orderId}`),
+              merchantStoreId: firstRow.merchantStoreId ?? null,
+              orderType: firstRow.orderType ?? "food",
+              orderSource: firstRow.orderSource ?? null,
+              paymentStatus: firstRow.paymentStatus ?? null,
+              paymentMethod: firstRow.paymentMethod ?? null,
+              grandTotal:
+                firstRow.grandTotal != null ? Number(firstRow.grandTotal) : null,
+              itemTotal: firstRow.itemTotal != null ? Number(firstRow.itemTotal) : null,
+              addonTotal: firstRow.addonTotal != null ? Number(firstRow.addonTotal) : null,
+              tipAmount: firstRow.tipAmount != null ? Number(firstRow.tipAmount) : null,
+            }).catch((err) => {
+              console.error("[GET /api/orders/core] payment detail failed", err);
+              return null;
+            }),
           ]);
         timeline = timelineEntries;
         remarksCount = remarks;
@@ -310,6 +353,44 @@ export async function GET(request: NextRequest) {
               ...(data[0] as Record<string, unknown>),
               etaBreachedAt: etaBreach.etaBreachedAt,
               etaBreachedTimelineId: etaBreach.etaBreachedTimelineId,
+            },
+          ] as unknown as typeof data;
+        }
+        if (detailExtra != null) {
+          data = [
+            {
+              ...(data[0] as Record<string, unknown>),
+              orderTimeIso: detailExtra.orderTimeIso,
+              orderTimeSource: detailExtra.orderTimeSource,
+              itemCount: detailExtra.itemCount,
+              systemKptMinutes: detailExtra.systemKptMinutes,
+              merchantUpdatedKptMinutes: detailExtra.merchantUpdatedKptMinutes,
+              isScheduledOrder: detailExtra.isScheduledOrder,
+              scheduledDeliverySummary: detailExtra.scheduledDeliverySummary,
+              deliveryType: detailExtra.deliveryType,
+              contactlessDelivery: detailExtra.contactlessDelivery,
+              localityType: detailExtra.localityType,
+              localityIsSafe: detailExtra.localityIsSafe,
+              deliveredBy: detailExtra.deliveredBy,
+              deliveryInitiator: detailExtra.deliveryInitiator,
+              customerTrustTierLabel: detailExtra.customerTrustTierLabel,
+              customerUserType: detailExtra.customerUserType,
+              riderInstructionsList: detailExtra.riderInstructionsList,
+              merchantInstructionsList: detailExtra.merchantInstructionsList,
+              firstEtaAt:
+                detailExtra.firstEtaAtIso ??
+                (data[0] as { firstEtaAt?: string | Date | null }).firstEtaAt ??
+                (data[0] as { estimatedDeliveryTime?: string | Date | null })
+                  .estimatedDeliveryTime ??
+                null,
+            },
+          ] as unknown as typeof data;
+        }
+        if (paymentDetail != null) {
+          data = [
+            {
+              ...(data[0] as Record<string, unknown>),
+              paymentDetail,
             },
           ] as unknown as typeof data;
         }
@@ -341,6 +422,7 @@ export async function GET(request: NextRequest) {
       ...(reconsCount !== undefined && { reconsCount }),
       ...(statusHistory !== undefined && { statusHistory }),
       ...(timeline !== undefined && { timeline }),
+      ...(paymentDetail != null && { paymentDetail }),
     });
   } catch (error) {
     console.error("[GET /api/orders/core] Error:", error);

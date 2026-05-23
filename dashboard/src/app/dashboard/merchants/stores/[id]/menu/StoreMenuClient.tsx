@@ -25,6 +25,19 @@ import { useToast } from "@/context/ToastContext";
 import { R2Image } from "@/components/ui/R2Image";
 import { MenuItemsGridSkeleton } from "@/components/ui/MenuItemsGridSkeleton";
 import { MenuItemForm, type ItemFormData } from "./MenuItemForm";
+import { buildEditOptionsRefs } from "@/lib/map-menu-item-options";
+import {
+  DEFAULT_ITEM_FORM_DATA,
+  mapMenuItemToEditForm,
+} from "@/lib/map-menu-item-edit-form";
+import {
+  customizationGroupIds,
+  dedupeCustomizationGroups,
+  dedupeVariants,
+  toFiniteMenuId,
+} from "@/lib/menu-customization-normalize";
+import { normalizeVariantSizeValue } from "@/lib/menu-variant-size";
+import { setMenuItemFormModalOpen } from "@/lib/merchant-menu-form-modal-bus";
 import {
   ITEM_PLACEHOLDER_SVG,
   normalizeFoodTypeForForm,
@@ -55,51 +68,10 @@ import { MenuOutOfStockSheet } from "@/components/merchant/MenuOutOfStockSheet";
 import { MenuRestoreStockConfirm } from "@/components/merchant/MenuRestoreStockConfirm";
 import { MenuItemStockToggle } from "@/components/merchant/MenuItemStockToggle";
 
-const defaultItemFormData: ItemFormData = {
-  item_name: "",
-  item_description: "",
-  item_image_url: "",
-  food_type: "",
-  spice_level: "",
-  cuisine_type: "",
-  base_price: "",
-  selling_price: "",
-  discount_percentage: "0",
-  tax_percentage: "0",
-  in_stock: true,
-  available_quantity: "",
-  low_stock_threshold: "",
-  has_customizations: false,
-  has_addons: false,
-  has_variants: false,
-  is_popular: false,
-  is_recommended: false,
-  preparation_time_minutes: 15,
-  packaging_enabled: false,
-  packaging_charges: "",
-  serves: 1,
-  serves_label: "",
-  item_size_value: "",
-  item_size_unit: "",
-  available_for_delivery: true,
-  weight_per_serving: "",
-  weight_per_serving_unit: "grams",
-  calories_kcal: "",
-  protein: "",
-  protein_unit: "mg",
-  carbohydrates: "",
-  carbohydrates_unit: "mg",
-  fat: "",
-  fat_unit: "mg",
-  fibre: "",
-  fibre_unit: "mg",
-  item_tags: "",
-  is_active: true,
-  allergens: "",
-  category_id: null,
-  customizations: [],
-  variants: [],
-};
+async function throwMenuApiError(res: Response, fallback: string): Promise<never> {
+  const j = await res.json().catch(() => ({}));
+  throw new Error(typeof (j as { error?: string }).error === "string" ? (j as { error: string }).error : fallback);
+}
 
 function nutritionPayloadFromForm(form: ItemFormData) {
   const parseOpt = (s: string): number | null => {
@@ -308,7 +280,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     initialAddAddonIdsRef.current = {};
     setAddModalKey((k) => k + 1);
     setAddForm({
-      ...defaultItemFormData,
+      ...DEFAULT_ITEM_FORM_DATA,
       preparation_time_minutes: storeMenuDefaults.avg_preparation_time_minutes ?? 15,
     });
     setAddError("");
@@ -322,6 +294,17 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const refreshMenu = useCallback(async () => {
     await queryClient.refetchQueries({ queryKey: queryKeys.merchantStore.menu(storeId), type: "active" });
   }, [queryClient, storeId]);
+  const deleteMenuVariantsById = useCallback(async (variantIds: number[]) => {
+    const base = `/api/merchant/stores/${storeId}/menu`;
+    for (const id of [...new Set(variantIds)]) {
+      const r = await fetch(`${base}/variants/${id}`, { method: "DELETE" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok && r.status !== 404) {
+        throw new Error(typeof j?.error === "string" ? j.error : "Failed to delete variant");
+      }
+    }
+  }, [storeId]);
+
   const patchMenuItemInCache = useCallback(
     (itemId: number, patch: Record<string, unknown>) => {
       queryClient.setQueryData(queryKeys.merchantStore.menu(storeId), (prev: unknown) => {
@@ -362,6 +345,11 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+
+  useEffect(() => {
+    setMenuItemFormModalOpen(showEditModal || showAddModal);
+    return () => setMenuItemFormModalOpen(false);
+  }, [showEditModal, showAddModal]);
   useEffect(() => {
     if (!showMenuFileSection) return;
     if (menuReferenceLoadedForStoreRef.current === storeId) return;
@@ -449,8 +437,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     Array<{ id: number; name: string; is_system_defined: boolean }>
   >([]);
 
-  const [addForm, setAddForm] = useState<ItemFormData>(defaultItemFormData);
-  const [editForm, setEditForm] = useState<ItemFormData>(defaultItemFormData);
+  const [addForm, setAddForm] = useState<ItemFormData>(DEFAULT_ITEM_FORM_DATA);
+  const [editForm, setEditForm] = useState<ItemFormData>(DEFAULT_ITEM_FORM_DATA);
   const [imagePreview, setImagePreview] = useState("");
   const [editImagePreview, setEditImagePreview] = useState("");
   const [addImageFile, setAddImageFile] = useState<File | null>(null);
@@ -461,6 +449,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const [editImageValidating, setEditImageValidating] = useState(false);
   const addImagePendingFileRef = useRef<File | null>(null);
   const editImagePendingFileRef = useRef<File | null>(null);
+  /** Item id for the open edit modal; null when closed. Guards in-flight reload from overwriting another session. */
+  const editModalItemIdRef = useRef<number | null>(null);
   const [addError, setAddError] = useState("");
   const [editError, setEditError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -931,201 +921,113 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const imageLimit: number | null = null;
   const imageSlotsLeft: number | null = null;
 
-  const [editDetailLoading, setEditDetailLoading] = useState(false);
   const initialEditVariantsRef = useRef<number[]>([]);
   const initialEditCustRef = useRef<number[]>([]);
   const initialEditAddonIdsRef = useRef<Record<number, number[]>>({});
-  const handleOpenEditModal = async (item: MenuItem) => {
-    setEditingId(item.id);
-    setEditDetailLoading(true);
-    setEditError("");
-    try {
-      const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${item.id}`);
-      const json = await res.json().catch(() => ({}));
-      const full = res.ok && json?.success && json?.item ? json.item : null;
-      const data = full ?? item;
-      const variants = (data.variants ?? []).map((v: any) => ({
-        id: v.id,
-        variant_id: v.variant_id ?? "",
-        menu_item_id: item.id,
-        variant_name: v.variant_name ?? "",
-        variant_type: v.variant_type ?? null,
-        variant_price: typeof v.variant_price === "string" ? Number(v.variant_price) : (v.variant_price ?? 0),
-        in_stock: v.in_stock ?? true,
-        display_order: v.display_order ?? 0,
-        is_default: v.is_default ?? false,
-      }));
-      const customizations = (data.customizations ?? []).map((c: any) => ({
-        id: c.id,
-        customization_id: c.customization_id ?? "",
-        menu_item_id: item.id,
-        customization_title: c.customization_title ?? "",
-        customization_type: c.customization_type ?? "Checkbox",
-        is_required: c.is_required ?? false,
-        min_selection: c.min_selection ?? 0,
-        max_selection: c.max_selection ?? 1,
-        display_order: c.display_order ?? 0,
-        addons: (c.addons ?? []).map((o: any) => ({
-          id: o.id,
-          addon_id: o.addon_id ?? "",
-          customization_id: c.id,
-          addon_name: o.addon_name ?? "",
-          addon_price: typeof o.addon_price === "string" ? Number(o.addon_price) : (o.addon_price ?? 0),
-          display_order: o.display_order ?? 0,
-          in_stock: o.in_stock ?? true,
-        })),
-      }));
-      const allergensString = Array.isArray(data.allergens)
-        ? data.allergens.join(", ")
-        : typeof data.allergens === "string"
-          ? data.allergens
-          : "";
-      initialEditVariantsRef.current = variants.map((v: any) => v.id).filter((id: number) => Number.isFinite(id));
-      initialEditCustRef.current = customizations.map((c: any) => c.id).filter((id: number) => Number.isFinite(id));
-      const addonMap: Record<number, number[]> = {};
-      customizations.forEach((c: any) => {
-        if (c.id && Number.isFinite(c.id))
-          addonMap[c.id] = (c.addons ?? []).map((o: any) => o.id).filter((id: number) => Number.isFinite(id));
-      });
-      initialEditAddonIdsRef.current = addonMap;
-      const basePriceNum = data.base_price != null ? Number(data.base_price) : null;
-      const sellingPriceNum = data.selling_price != null ? Number(data.selling_price) : null;
-      const discountNum = data.discount_percentage != null ? Number(data.discount_percentage) : 0;
-      const taxNum = data.tax_percentage != null ? Number(data.tax_percentage) : 0;
-      const pkgRaw = (data as { packaging_charges?: unknown }).packaging_charges;
-      const pkgNum = pkgRaw != null && pkgRaw !== "" ? Number(pkgRaw) : NaN;
-      const packaging_enabled = Number.isFinite(pkgNum) && pkgNum > 0;
-      setEditForm({
-        ...defaultItemFormData,
-        item_name: data.item_name ?? "",
-        item_description: data.item_description ?? "",
-        item_image_url: data.item_image_url ?? "",
-        food_type: normalizeFoodTypeForForm(data.food_type),
-        spice_level: normalizeSpiceLevelForForm(data.spice_level),
-        cuisine_type: data.cuisine_type ?? "",
-        base_price: basePriceNum != null ? basePriceNum.toFixed(2) : "",
-        selling_price: sellingPriceNum != null ? sellingPriceNum.toFixed(2) : "",
-        discount_percentage: String(discountNum),
-        tax_percentage: String(taxNum),
-        in_stock: data.in_stock ?? true,
-        has_customizations: customizations.length > 0,
-        has_addons: customizations.some(
-          (c: { addons?: { length?: number }[] }) => (c.addons?.length ?? 0) > 0
-        ),
-        has_variants: variants.length > 0,
-        is_popular: data.is_popular ?? false,
-        is_recommended: data.is_recommended ?? false,
-        preparation_time_minutes: data.preparation_time_minutes ?? 15,
-        packaging_enabled,
-        packaging_charges: packaging_enabled ? String(pkgNum) : "",
-        serves: data.serves ?? 1,
-        serves_label: data.serves_label ?? "",
-        item_size_value: data.item_size_value != null ? String(data.item_size_value) : "",
-        item_size_unit: data.item_size_unit ?? "",
-        available_for_delivery: data.available_for_delivery ?? true,
-        weight_per_serving:
-          data.weight_per_serving != null ? String(data.weight_per_serving) : "",
-        weight_per_serving_unit: data.weight_per_serving_unit ?? "grams",
-        calories_kcal:
-          data.calories_kcal != null ? String(data.calories_kcal) : "",
-        protein: data.protein != null ? String(data.protein) : "",
-        protein_unit: data.protein_unit ?? "mg",
-        carbohydrates:
-          data.carbohydrates != null ? String(data.carbohydrates) : "",
-        carbohydrates_unit: data.carbohydrates_unit ?? "mg",
-        fat: data.fat != null ? String(data.fat) : "",
-        fat_unit: data.fat_unit ?? "mg",
-        fibre: data.fibre != null ? String(data.fibre) : "",
-        fibre_unit: data.fibre_unit ?? "mg",
-        item_tags: Array.isArray(data.item_tags)
-          ? data.item_tags.join(", ")
-          : typeof data.item_tags === "string"
-            ? data.item_tags
-            : "",
-        is_active: data.is_active ?? true,
-        allergens: allergensString,
-        category_id: data.category_id ?? null,
-        customizations,
-        variants,
-      });
-      setEditImagePreview(data.item_image_url || "");
-    } catch {
-      setEditError("Failed to load item details.");
-      const allergensString = Array.isArray(item.allergens)
-        ? item.allergens.join(", ")
-        : typeof item.allergens === "string"
-          ? item.allergens
-          : "";
-      const basePriceNum = item.base_price != null ? Number(item.base_price) : null;
-      const sellingPriceNum = item.selling_price != null ? Number(item.selling_price) : null;
-      const pkgNumFb =
-        item.packaging_charges != null ? Number(item.packaging_charges as number) : NaN;
-      const packaging_enabled_fb = Number.isFinite(pkgNumFb) && pkgNumFb > 0;
-      setEditForm({
-        ...defaultItemFormData,
-        item_name: item.item_name ?? "",
-        item_description: item.item_description ?? "",
-        item_image_url: item.item_image_url ?? "",
-        food_type: normalizeFoodTypeForForm(item.food_type),
-        spice_level: normalizeSpiceLevelForForm(item.spice_level),
-        cuisine_type: item.cuisine_type ?? "",
-        base_price: basePriceNum != null ? basePriceNum.toFixed(2) : "",
-        selling_price: sellingPriceNum != null ? sellingPriceNum.toFixed(2) : "",
-        discount_percentage: String(item.discount_percentage ?? "0"),
-        tax_percentage: String(item.tax_percentage ?? "0"),
-        in_stock: item.in_stock ?? true,
-        has_customizations: (item.customizations?.length ?? 0) > 0,
-        has_addons: (item.customizations?.some((c) => (c.addons?.length ?? 0) > 0)) ?? false,
-        has_variants: (item.variants?.length ?? 0) > 0,
-        is_popular: item.is_popular ?? false,
-        is_recommended: item.is_recommended ?? false,
-        preparation_time_minutes: item.preparation_time_minutes ?? 15,
-        packaging_enabled: packaging_enabled_fb,
-        packaging_charges: packaging_enabled_fb ? String(pkgNumFb) : "",
-        serves: item.serves ?? 1,
-        serves_label: item.serves_label ?? "",
-        item_size_value: item.item_size_value != null ? String(item.item_size_value) : "",
-        item_size_unit: item.item_size_unit ?? "",
-        available_for_delivery: (item as { available_for_delivery?: boolean }).available_for_delivery ?? true,
-        weight_per_serving:
-          (item as { weight_per_serving?: unknown }).weight_per_serving != null
-            ? String((item as { weight_per_serving?: unknown }).weight_per_serving)
-            : "",
-        weight_per_serving_unit:
-          (item as { weight_per_serving_unit?: string }).weight_per_serving_unit ?? "grams",
-        calories_kcal:
-          (item as { calories_kcal?: unknown }).calories_kcal != null
-            ? String((item as { calories_kcal?: unknown }).calories_kcal)
-            : "",
-        protein:
-          (item as { protein?: unknown }).protein != null ? String((item as { protein?: unknown }).protein) : "",
-        protein_unit: (item as { protein_unit?: string }).protein_unit ?? "mg",
-        carbohydrates:
-          (item as { carbohydrates?: unknown }).carbohydrates != null
-            ? String((item as { carbohydrates?: unknown }).carbohydrates)
-            : "",
-        carbohydrates_unit: (item as { carbohydrates_unit?: string }).carbohydrates_unit ?? "mg",
-        fat: (item as { fat?: unknown }).fat != null ? String((item as { fat?: unknown }).fat) : "",
-        fat_unit: (item as { fat_unit?: string }).fat_unit ?? "mg",
-        fibre: (item as { fibre?: unknown }).fibre != null ? String((item as { fibre?: unknown }).fibre) : "",
-        fibre_unit: (item as { fibre_unit?: string }).fibre_unit ?? "mg",
-        item_tags: Array.isArray((item as { item_tags?: unknown }).item_tags)
-          ? ((item as { item_tags?: string[] }).item_tags ?? []).join(", ")
-          : typeof (item as { item_tags?: unknown }).item_tags === "string"
-            ? String((item as { item_tags?: string }).item_tags)
-            : "",
-        is_active: item.is_active ?? true,
-        allergens: allergensString,
-        category_id: item.category_id ?? null,
-        customizations: item.customizations ?? [],
-        variants: item.variants ?? [],
-      });
+
+  const setEditOptionsRefs = useCallback((form: ItemFormData) => {
+    const refs = buildEditOptionsRefs(dedupeCustomizationGroups(form.customizations));
+    initialEditVariantsRef.current = dedupeVariants(form.variants)
+      .map((v) => toFiniteMenuId(v.id))
+      .filter((id): id is number => id != null);
+    initialEditCustRef.current = refs.custIds;
+    initialEditAddonIdsRef.current = refs.addonMap;
+  }, []);
+
+  const hydrateEditFormFromItem = useCallback(
+    (item: MenuItem) => {
+      const form = mapMenuItemToEditForm(item as unknown as Record<string, unknown>, item.id);
+      const deduped: ItemFormData = {
+        ...form,
+        customizations: dedupeCustomizationGroups(form.customizations),
+        variants: dedupeVariants(form.variants),
+      };
+      setEditOptionsRefs(deduped);
+      setEditForm(deduped);
       setEditImagePreview(item.item_image_url || "");
-    } finally {
-      setEditDetailLoading(false);
-    }
+    },
+    [setEditOptionsRefs]
+  );
+
+  /** Reload full edit form + menu list cache from GET /menu/items/[id] after any save. */
+  const reloadEditItemFromServer = useCallback(
+    async (menuItemId: number): Promise<ItemFormData> => {
+      const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${menuItemId}`);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.success || !json?.item) {
+        throw new Error(json?.error || "Failed to load saved item");
+      }
+      const data = json.item as Record<string, unknown>;
+      const form = mapMenuItemToEditForm(data, menuItemId);
+      const deduped: ItemFormData = {
+        ...form,
+        customizations: dedupeCustomizationGroups(form.customizations),
+        variants: dedupeVariants(form.variants),
+      };
+      setEditOptionsRefs(deduped);
+      if (editModalItemIdRef.current === menuItemId) {
+        setEditForm(deduped);
+        setEditImagePreview(String(data.item_image_url ?? ""));
+      }
+      patchMenuItemInCache(menuItemId, {
+        ...data,
+        customizations: deduped.customizations,
+        variants: deduped.variants,
+        has_variants: deduped.has_variants,
+        has_customizations: deduped.has_customizations,
+        has_addons: deduped.has_addons,
+      });
+      return deduped;
+    },
+    [storeId, setEditOptionsRefs, patchMenuItemInCache]
+  );
+
+  const closeEditModalAfterSuccess = useCallback(() => {
+    toast("Successfully Updated");
+    editModalItemIdRef.current = null;
+    setShowEditModal(false);
+    setEditError("");
+    setEditImageFile(null);
+    setEditImageValidationError("");
+    setEditImageValidating(false);
+    editImagePendingFileRef.current = null;
+  }, [toast]);
+
+  const handleOpenEditModal = (item: MenuItem) => {
+    const latest = menuItems.find((m) => m.id === item.id) ?? item;
+    editModalItemIdRef.current = latest.id;
+    setEditingId(latest.id);
+    setEditError("");
+    setEditImageFile(null);
+    setEditImageValidationError("");
+    editImagePendingFileRef.current = null;
+    hydrateEditFormFromItem(latest);
     setShowEditModal(true);
+    void reloadEditItemFromServer(latest.id).catch(() => {
+      /* keep cache-hydrated form if fetch fails */
+    });
   };
+
+  const handleEditVariantRemoved = useCallback(
+    (variantId: number | null, nextVariants: Variant[]) => {
+      if (variantId != null) {
+        initialEditVariantsRef.current = initialEditVariantsRef.current.filter((id) => id !== variantId);
+      }
+      if (editingId != null) {
+        patchMenuItemInCache(editingId, {
+          variants: nextVariants,
+          has_variants: nextVariants.length > 0,
+        });
+      }
+    },
+    [editingId, patchMenuItemInCache]
+  );
+
+  const handleAddVariantRemoved = useCallback((variantId: number | null) => {
+    if (variantId != null) {
+      initialAddVariantsRef.current = initialAddVariantsRef.current.filter((id) => id !== variantId);
+    }
+  }, []);
 
   const openAppliedAddons = useCallback(
     async (item: MenuItem) => {
@@ -1383,22 +1285,25 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     try {
       const base = `/api/merchant/stores/${storeId}/menu`;
       const itemId = addCreatedItemId;
-      const currentVariantIds = (addForm.variants ?? []).map((v) => v.id).filter((id): id is number => id != null && Number.isFinite(id));
+      const variantsToSave = dedupeVariants(addForm.variants ?? []);
+      const currentVariantIds = variantsToSave
+        .map((v) => toFiniteMenuId(v.id))
+        .filter((id): id is number => id != null);
       const toDeleteVariants = initialAddVariantsRef.current.filter((id) => !currentVariantIds.includes(id));
-      for (const id of toDeleteVariants) {
-        const r = await fetch(`${base}/variants/${id}`, { method: "DELETE" });
-        if (!r.ok) throw new Error("Failed to delete variant");
-      }
-      for (const v of addForm.variants ?? []) {
+      await deleteMenuVariantsById(toDeleteVariants);
+      for (const v of variantsToSave) {
         const payload = {
           variant_name: v.variant_name,
           variant_type: v.variant_type ?? null,
           variant_price: v.variant_price,
+          variant_size_value: normalizeVariantSizeValue(v.variant_size_value),
+          variant_size_unit: v.variant_size_unit ?? null,
           is_default: v.is_default ?? false,
           display_order: v.display_order ?? 0,
         };
-        if (v.id && Number.isFinite(v.id)) {
-          const r = await fetch(`${base}/variants/${v.id}`, {
+        const variantPk = toFiniteMenuId(v.id);
+        if (variantPk != null) {
+          const r = await fetch(`${base}/variants/${variantPk}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
@@ -1414,7 +1319,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         }
       }
 
-      const currentCustIds = (addForm.customizations ?? []).map((c) => c.id).filter((id): id is number => id != null && Number.isFinite(id));
+      const custsToSave = dedupeCustomizationGroups(addForm.customizations ?? []);
+      const currentCustIds = customizationGroupIds(custsToSave);
       const toDeleteCust = initialAddCustRef.current.filter((id) => !currentCustIds.includes(id));
       for (const id of toDeleteCust) {
         const r = await fetch(`${base}/customization-groups/${id}`, { method: "DELETE" });
@@ -1422,7 +1328,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       }
 
       const groupIdsInOrder: number[] = [];
-      for (const c of addForm.customizations ?? []) {
+      for (const c of custsToSave) {
         const payload = {
           customization_title: c.customization_title,
           customization_type: c.customization_type ?? null,
@@ -1431,14 +1337,15 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
           max_selection: c.max_selection,
           display_order: c.display_order,
         };
-        if (c.id && Number.isFinite(c.id)) {
-          const r = await fetch(`${base}/customization-groups/${c.id}`, {
+        const groupPk = toFiniteMenuId(c.id);
+        if (groupPk != null) {
+          const r = await fetch(`${base}/customization-groups/${groupPk}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
           });
           if (!r.ok) throw new Error("Failed to update customization group");
-          groupIdsInOrder.push(c.id);
+          groupIdsInOrder.push(groupPk);
         } else {
           const r = await fetch(`${base}/items/${itemId}/customization-groups`, {
             method: "POST",
@@ -1447,25 +1354,35 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
           });
           const j = await r.json().catch(() => ({}));
           if (!r.ok || !j?.id) throw new Error("Failed to add customization group");
-          groupIdsInOrder.push(j.id);
+          groupIdsInOrder.push(Number(j.id));
         }
       }
 
       let custIndex = 0;
-      for (const c of addForm.customizations ?? []) {
+      for (const c of custsToSave) {
         const groupId = groupIdsInOrder[custIndex++] ?? 0;
         if (!groupId) continue;
-        const initialAddonIds = initialAddAddonIdsRef.current[c.id ?? 0] ?? [];
-        const currentAddonIds = (c.addons ?? []).map((o) => o.id).filter((id): id is number => id != null && Number.isFinite(id));
+        const initialAddonIds = initialAddAddonIdsRef.current[groupId] ?? [];
+        const currentAddonIds = (c.addons ?? [])
+          .map((o) => toFiniteMenuId(o.id))
+          .filter((id): id is number => id != null);
         const toDeleteAddons = initialAddonIds.filter((id) => !currentAddonIds.includes(id));
         for (const id of toDeleteAddons) {
           const r = await fetch(`${base}/customization-options/${id}`, { method: "DELETE" });
           if (!r.ok) throw new Error("Failed to delete addon");
         }
         for (const o of c.addons ?? []) {
-          const optPayload = { addon_name: o.addon_name, addon_price: o.addon_price ?? 0, display_order: o.display_order ?? 0 };
-          if (o.id && Number.isFinite(o.id)) {
-            const r = await fetch(`${base}/customization-options/${o.id}`, {
+          const optPayload = {
+            addon_name: o.addon_name,
+            addon_price: o.addon_price ?? 0,
+            addon_image_url: o.addon_image_url ?? null,
+            addon_size_value: o.addon_size_value ?? null,
+            addon_size_unit: o.addon_size_unit ?? null,
+            display_order: o.display_order ?? 0,
+          };
+          const addonPk = toFiniteMenuId(o.id);
+          if (addonPk != null) {
+            const r = await fetch(`${base}/customization-options/${addonPk}`, {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(optPayload),
@@ -1487,7 +1404,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       await refreshMenu();
       setShowAddModal(false);
       setAddCreatedItemId(null);
-      setAddForm(defaultItemFormData);
+      setAddForm(DEFAULT_ITEM_FORM_DATA);
       setImagePreview("");
       setAddImageFile(null);
     } catch (e) {
@@ -1501,10 +1418,17 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const handleSaveEdit = async () => {
     setEditError("");
     if (editingId == null) return;
-    if (!editForm.item_name.trim()) return setEditError("Name is required");
-    if (!editForm.category_id) return setEditError("Category is required");
+    if (!editForm.item_name.trim()) {
+      setEditError("Name is required");
+      throw new Error("Name is required");
+    }
+    if (!editForm.category_id) {
+      setEditError("Category is required");
+      throw new Error("Category is required");
+    }
     if (editImageValidationError) {
-      return setEditError("Fix the image issue in the upload area or use Auto-fix.");
+      setEditError("Fix the image issue in the upload area or use Auto-fix.");
+      throw new Error("Fix image");
     }
     setIsSavingEdit(true);
     try {
@@ -1513,6 +1437,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         const n = Number(String(editForm.packaging_charges ?? "").replace(/,/g, ""));
         return Number.isFinite(n) && n >= 0 ? n : null;
       })();
+      const discountNum = Number(String(editForm.discount_percentage ?? "0").replace(/,/g, ""));
+      const taxNum = Number(String(editForm.tax_percentage ?? "0").replace(/,/g, ""));
       const payload = {
         item_name: editForm.item_name.trim(),
         item_description: editForm.item_description?.trim() || null,
@@ -1522,7 +1448,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         cuisine_type: editForm.cuisine_type || null,
         base_price: editForm.base_price ? Number(editForm.base_price) : 0,
         selling_price: editForm.selling_price ? Number(editForm.selling_price) : (editForm.base_price ? Number(editForm.base_price) : 0),
-        discount_percentage: 0,
+        discount_percentage: Number.isFinite(discountNum) ? discountNum : 0,
+        tax_percentage: Number.isFinite(taxNum) ? taxNum : 0,
         in_stock: Boolean(editForm.in_stock),
         is_active: Boolean(editForm.is_active),
         is_popular: Boolean(editForm.is_popular),
@@ -1573,42 +1500,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
           requestMethod: "POST",
         });
       }
-      patchMenuItemInCache(editingId, {
-        item_name: payload.item_name,
-        item_description: payload.item_description,
-        category_id: payload.category_id,
-        food_type: payload.food_type,
-        spice_level: payload.spice_level,
-        cuisine_type: payload.cuisine_type,
-        base_price: payload.base_price,
-        selling_price: payload.selling_price,
-        discount_percentage: payload.discount_percentage,
-        in_stock: payload.in_stock,
-        is_active: payload.is_active,
-        is_popular: payload.is_popular,
-        is_recommended: payload.is_recommended,
-        preparation_time_minutes: payload.preparation_time_minutes,
-        packaging_charges: payload.packaging_charges,
-        serves: payload.serves,
-        serves_label: payload.serves_label,
-        item_size_value: payload.item_size_value,
-        item_size_unit: payload.item_size_unit,
-        available_for_delivery: payload.available_for_delivery,
-        weight_per_serving: payload.weight_per_serving,
-        weight_per_serving_unit: payload.weight_per_serving_unit,
-        calories_kcal: payload.calories_kcal,
-        protein: payload.protein,
-        protein_unit: payload.protein_unit,
-        carbohydrates: payload.carbohydrates,
-        carbohydrates_unit: payload.carbohydrates_unit,
-        fat: payload.fat,
-        fat_unit: payload.fat_unit,
-        fibre: payload.fibre,
-        fibre_unit: payload.fibre_unit,
-        item_tags: payload.item_tags,
-        ...(uploadedImageUrl ? { item_image_url: uploadedImageUrl } : {}),
-      });
-      toast("Menu item updated.");
+      await reloadEditItemFromServer(editingId);
       try {
         const { linked, skippedMessages } = await ensureStoreCuisinesLinkedForItemNames(
           storeId,
@@ -1621,20 +1513,23 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       } catch {
         /* non-fatal */
       }
-      setShowEditModal(false);
-    } catch {
-      setEditError("Error updating item.");
+      closeEditModalAfterSuccess();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Error updating item.";
+      setEditError(msg);
       trackAudit({
         actionType: "UPDATE",
         resourceType: "merchant_menu_items",
         resourceId: editingId != null ? String(editingId) : undefined,
         actionDetails: { action: "update_item" },
         actionStatus: "FAILED",
-        errorMessage: "Error updating item.",
+        errorMessage: msg,
         requestMethod: "PUT",
       });
+      throw e;
+    } finally {
+      setIsSavingEdit(false);
     }
-    setIsSavingEdit(false);
   };
 
   const handleSaveEditOptions = async () => {
@@ -1643,76 +1538,101 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     setIsSavingEdit(true);
     try {
       const base = `/api/merchant/stores/${storeId}/menu`;
-      const currentVariantIds = (editForm.variants ?? []).map((v) => v.id).filter((id): id is number => id != null && Number.isFinite(id));
+      const variantsToSave = dedupeVariants(editForm.variants ?? []);
+      const currentVariantIds = variantsToSave
+        .map((v) => toFiniteMenuId(v.id))
+        .filter((id): id is number => id != null);
       const toDeleteVariants = initialEditVariantsRef.current.filter((id) => !currentVariantIds.includes(id));
-      for (const id of toDeleteVariants) {
-        const r = await fetch(`${base}/variants/${id}`, { method: "DELETE" });
-        if (!r.ok) throw new Error("Failed to delete variant");
-      }
-      for (const v of editForm.variants ?? []) {
-        const payload = { variant_name: v.variant_name, variant_type: v.variant_type ?? null, variant_price: v.variant_price, is_default: v.is_default ?? false, display_order: v.display_order ?? 0 };
-        if (v.id && Number.isFinite(v.id)) {
-          const r = await fetch(`${base}/variants/${v.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-          if (!r.ok) throw new Error("Failed to update variant");
+      await deleteMenuVariantsById(toDeleteVariants);
+      for (const v of variantsToSave) {
+        const payload = {
+          variant_name: v.variant_name,
+          variant_type: v.variant_type ?? null,
+          variant_price: v.variant_price,
+          variant_size_value: normalizeVariantSizeValue(v.variant_size_value),
+          variant_size_unit: v.variant_size_unit ?? null,
+          is_default: v.is_default ?? false,
+          display_order: v.display_order ?? 0,
+        };
+        const variantPk = toFiniteMenuId(v.id);
+        if (variantPk != null) {
+          const r = await fetch(`${base}/variants/${variantPk}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+          if (!r.ok) await throwMenuApiError(r, "Failed to update variant");
         } else {
           const r = await fetch(`${base}/items/${editingId}/variants`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-          if (!r.ok) throw new Error("Failed to add variant");
+          if (!r.ok) await throwMenuApiError(r, "Failed to add variant");
         }
       }
 
-      const currentCustIds = (editForm.customizations ?? []).map((c) => c.id).filter((id): id is number => id != null && Number.isFinite(id));
+      const custsToSave = dedupeCustomizationGroups(editForm.customizations ?? []);
+      const currentCustIds = customizationGroupIds(custsToSave);
       const toDeleteCust = initialEditCustRef.current.filter((id) => !currentCustIds.includes(id));
       for (const id of toDeleteCust) {
         const r = await fetch(`${base}/customization-groups/${id}`, { method: "DELETE" });
-        if (!r.ok) throw new Error("Failed to delete customization group");
+        if (!r.ok) await throwMenuApiError(r, "Failed to delete customization group");
       }
 
       const groupIdsInOrder: number[] = [];
-      for (const c of editForm.customizations ?? []) {
+      for (const c of custsToSave) {
         const payload = { customization_title: c.customization_title, customization_type: c.customization_type ?? null, is_required: c.is_required, min_selection: c.min_selection, max_selection: c.max_selection, display_order: c.display_order };
-        if (c.id && Number.isFinite(c.id)) {
-          const r = await fetch(`${base}/customization-groups/${c.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-          if (!r.ok) throw new Error("Failed to update customization group");
-          groupIdsInOrder.push(c.id);
+        const groupPk = toFiniteMenuId(c.id);
+        if (groupPk != null) {
+          const r = await fetch(`${base}/customization-groups/${groupPk}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+          if (!r.ok) await throwMenuApiError(r, "Failed to update customization group");
+          groupIdsInOrder.push(groupPk);
         } else {
           const r = await fetch(`${base}/items/${editingId}/customization-groups`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
           const j = await r.json().catch(() => ({}));
-          if (!r.ok || !j?.id) throw new Error("Failed to add customization group");
-          groupIdsInOrder.push(j.id);
+          if (!r.ok || !j?.id) {
+            if (!r.ok) await throwMenuApiError(r, "Failed to add customization group");
+            throw new Error("Failed to add customization group");
+          }
+          groupIdsInOrder.push(Number(j.id));
         }
       }
 
       let custIndex = 0;
-      for (const c of editForm.customizations ?? []) {
+      for (const c of custsToSave) {
         const groupId = groupIdsInOrder[custIndex++] ?? 0;
         if (!groupId) continue;
-        const initialAddonIds = initialEditAddonIdsRef.current[c.id ?? 0] ?? [];
-        const currentAddonIds = (c.addons ?? []).map((o) => o.id).filter((id): id is number => id != null && Number.isFinite(id));
+        const initialAddonIds = initialEditAddonIdsRef.current[groupId] ?? [];
+        const currentAddonIds = (c.addons ?? [])
+          .map((o) => toFiniteMenuId(o.id))
+          .filter((id): id is number => id != null);
         const toDeleteAddons = initialAddonIds.filter((id) => !currentAddonIds.includes(id));
         for (const id of toDeleteAddons) {
           const r = await fetch(`${base}/customization-options/${id}`, { method: "DELETE" });
-          if (!r.ok) throw new Error("Failed to delete addon");
+          if (!r.ok) await throwMenuApiError(r, "Failed to delete addon");
         }
         for (const o of c.addons ?? []) {
-          const payload = { addon_name: o.addon_name, addon_price: o.addon_price ?? 0, display_order: o.display_order ?? 0 };
-          if (o.id && Number.isFinite(o.id)) {
-            const r = await fetch(`${base}/customization-options/${o.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-            if (!r.ok) throw new Error("Failed to update addon");
+          const payload = {
+            addon_name: o.addon_name,
+            addon_price: o.addon_price ?? 0,
+            addon_image_url: o.addon_image_url ?? null,
+            addon_size_value: o.addon_size_value ?? null,
+            addon_size_unit: o.addon_size_unit ?? null,
+            display_order: o.display_order ?? 0,
+          };
+          const addonPk = toFiniteMenuId(o.id);
+          if (addonPk != null) {
+            const r = await fetch(`${base}/customization-options/${addonPk}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+            if (!r.ok) await throwMenuApiError(r, "Failed to update addon");
           } else {
             const r = await fetch(`${base}/customization-groups/${groupId}/options`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-            if (!r.ok) throw new Error("Failed to add addon");
+            if (!r.ok) await throwMenuApiError(r, "Failed to add addon");
           }
         }
       }
 
       await syncItemOptionFlags(editingId, editForm);
-      toast("Variants and customizations saved.");
-      await refreshMenu();
-      setShowEditModal(false);
+      await reloadEditItemFromServer(editingId);
+      closeEditModalAfterSuccess();
     } catch (e) {
       setEditError(e instanceof Error ? e.message : "Failed to save options.");
+      throw e;
+    } finally {
+      setIsSavingEdit(false);
     }
-    setIsSavingEdit(false);
   };
 
   const handleProcessImage = async (file: File, isEdit: boolean) => {
@@ -3130,7 +3050,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 onCancel={() => {
                   setShowAddModal(false);
                   setAddCreatedItemId(null);
-                  setAddForm(defaultItemFormData);
+                  setAddForm(DEFAULT_ITEM_FORM_DATA);
                   setImagePreview("");
                   setAddImageFile(null);
                   setAddImageValidationError("");
@@ -3139,6 +3059,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 }}
                 onSaveAndNext={handleAddSaveAndNext}
                 onSubmitOptions={addCreatedItemId != null ? handleAddSubmitOptions : undefined}
+                onVariantRemoved={handleAddVariantRemoved}
                 isSaving={isSaving}
                 error={addError}
                 title="Add New Menu Item"
@@ -3173,6 +3094,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 imageValidating={editImageValidating}
                 onNormalizeMenuItemImage={() => handleNormalizeMenuItemImage(true)}
                 onCancel={() => {
+                  editModalItemIdRef.current = null;
                   setShowEditModal(false);
                   setEditImageValidationError("");
                   setEditImageValidating(false);
@@ -3180,6 +3102,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 }}
                 onSubmit={handleSaveEdit}
                 onSubmitOptions={handleSaveEditOptions}
+                onVariantRemoved={handleEditVariantRemoved}
                 isSaving={isSavingEdit}
                 error={editError}
                 title="Edit Menu Item"

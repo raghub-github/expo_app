@@ -57,18 +57,50 @@ export async function PUT(
     const is_default = mergeBool(body.is_default, e.is_default);
     const display_order = mergeNum(body.display_order, e.display_order);
     const in_stock = mergeBool(body.in_stock, e.in_stock);
+    const sizeRaw = body.variant_size_value;
+    const variant_size_value =
+      sizeRaw !== undefined
+        ? sizeRaw == null || String(sizeRaw).trim() === ""
+          ? null
+          : String(sizeRaw).trim()
+        : e.variant_size_value != null
+          ? String(e.variant_size_value).trim()
+          : null;
+    const variant_size_unit =
+      body.variant_size_unit !== undefined
+        ? body.variant_size_unit == null || String(body.variant_size_unit).trim() === ""
+          ? null
+          : String(body.variant_size_unit).trim()
+        : e.variant_size_unit;
 
-    await sql`
-      UPDATE merchant_menu_item_variants
-      SET variant_name = ${variant_name},
-          variant_type = ${variant_type},
-          variant_price = ${variant_price},
-          is_default = ${is_default},
-          display_order = ${display_order},
-          in_stock = ${in_stock},
-          updated_at = NOW()
-      WHERE id = ${vId}
-    `;
+    try {
+      await sql`
+        UPDATE merchant_menu_item_variants
+        SET variant_name = ${variant_name},
+            variant_type = ${variant_type},
+            variant_price = ${variant_price},
+            variant_size_value = ${variant_size_value},
+            variant_size_unit = ${variant_size_unit},
+            is_default = ${is_default},
+            display_order = ${display_order},
+            in_stock = ${in_stock},
+            updated_at = NOW()
+        WHERE id = ${vId}
+      `;
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code !== "42703") throw err;
+      await sql`
+        UPDATE merchant_menu_item_variants
+        SET variant_name = ${variant_name},
+            variant_type = ${variant_type},
+            variant_price = ${variant_price},
+            is_default = ${is_default},
+            display_order = ${display_order},
+            in_stock = ${in_stock},
+            updated_at = NOW()
+        WHERE id = ${vId}
+      `;
+    }
     try {
       const agentId = await getAgentIdForStore(storeId);
       await insertActivityLog({

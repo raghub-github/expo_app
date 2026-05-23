@@ -1,4 +1,13 @@
 import type { Sql } from "postgres";
+import { merchantFundedDiscountFromBilling } from "../../lib/merchant-billing-discount.js";
+import {
+  applyMerchantBaseToOrderItems,
+  loadSnapshotsByOrderTexts,
+  merchantOrderTotalFromBilling,
+  scaleMerchantOrderItemBreakdown,
+  type ItemCommissionSnapshot,
+} from "../../lib/merchant-visible-pricing.js";
+import { resolveStoreCommission } from "../commission/commission.resolver.js";
 import { resolvePartnerPipeline } from "../../lib/partner-orders-unify.js";
 import {
   labelsForStatusUpdate,
@@ -10,12 +19,34 @@ import {
 import { recordAcceptanceTimeline } from "../../lib/order-acceptance-timeline.js";
 import { recordCancellationTimeline } from "../../lib/order-cancellation-timeline.js";
 import { recordReadyTimeline } from "../../lib/order-food-status-timeline.js";
+import { loadMerchantOrderLineItemsByTextIds } from "../../lib/load-merchant-order-line-items.js";
 
 export type MerchantFoodOrderItem = {
   qty: number;
   name: string;
   price: number;
   veg_nonveg?: string | null;
+  customizations?: string[];
+  variant_tag?: string | null;
+  category_name?: string | null;
+  customization_lines?: Array<{
+    name: string;
+    amount: number;
+    kind: "variant" | "addon" | "note";
+  }>;
+  base_amount?: number;
+  customizations_total?: number;
+  captured_base_amount?: number;
+  captured_addon_amount?: number;
+  has_customizations?: boolean;
+};
+
+export type MerchantOrderPricing = {
+  subtotal: number;
+  packaging: number;
+  taxes: number;
+  discount: number;
+  total: number;
 };
 
 export type MerchantFoodOrderDto = {
@@ -30,6 +61,10 @@ export type MerchantFoodOrderDto = {
   delivery_type: string;
   rider_id: number | null;
   grand_total: number;
+  pricing: MerchantOrderPricing;
+  /** Full checkout breakdown (orders_core.billing_snapshot). */
+  billing_snapshot: Record<string, unknown> | null;
+  payment_status: string | null;
   items: MerchantFoodOrderItem[];
   pickup_otp: string | null;
   rto_otp: string | null;
@@ -61,6 +96,10 @@ function num(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 /** Postgres bigint/numeric often arrives as string — normalize for Map keys and IN lists. */
 function coerceCustomerId(raw: unknown): number | null {
   if (raw == null || raw === "") return null;
@@ -79,6 +118,26 @@ function pickCustomerDisplayName(cust: CustomerRow | undefined): string | null {
   return full || null;
 }
 
+function mergeDbItemFields(
+  it: MerchantFoodOrderItem,
+  db?: MerchantFoodOrderItem
+): MerchantFoodOrderItem {
+  if (!db) return it;
+  return {
+    ...it,
+    name: db.name || it.name,
+    customizations: db.customizations ?? it.customizations,
+    variant_tag: db.variant_tag ?? it.variant_tag,
+    category_name: db.category_name ?? it.category_name,
+    customization_lines: db.customization_lines ?? it.customization_lines,
+    base_amount: db.base_amount ?? it.base_amount,
+    customizations_total: db.customizations_total ?? it.customizations_total,
+    captured_base_amount: db.captured_base_amount ?? it.captured_base_amount,
+    captured_addon_amount: db.captured_addon_amount ?? it.captured_addon_amount,
+    has_customizations: db.has_customizations ?? it.has_customizations,
+  };
+}
+
 function normalizeItems(raw: unknown): MerchantFoodOrderItem[] {
   if (!Array.isArray(raw)) return [];
   const out: MerchantFoodOrderItem[] = [];
@@ -91,7 +150,33 @@ function normalizeItems(raw: unknown): MerchantFoodOrderItem[] {
     const vegRaw = r.veg_nonveg ?? r.vegNonveg ?? r.food_type ?? null;
     const veg_nonveg =
       vegRaw != null && String(vegRaw).trim() !== "" ? String(vegRaw).trim() : null;
-    out.push({ qty, name, price, veg_nonveg });
+    let customizations: string[] | undefined;
+    if (Array.isArray(r.customizations)) {
+      customizations = (r.customizations as unknown[])
+        .map((c) => String(c).trim())
+        .filter(Boolean);
+    } else if (Array.isArray(r.addons)) {
+      customizations = (r.addons as Record<string, unknown>[])
+        .map((a) => {
+          const n = String(a.addon_name ?? a.name ?? "Add-on").trim();
+          const q = Number(a.quantity) || 1;
+          return q > 1 ? `${n} ×${q}` : n;
+        })
+        .filter(Boolean);
+    }
+    const custText = r.customization ?? r.customisation;
+    if ((!customizations || customizations.length === 0) && custText != null) {
+      const t = String(custText).trim();
+      if (t) customizations = t.split(/[,;|•]+/).map((s) => s.trim()).filter(Boolean);
+    }
+    out.push({
+      qty,
+      name,
+      price,
+      veg_nonveg,
+      customizations: customizations?.length ? customizations : undefined,
+      has_customizations: (customizations?.length ?? 0) > 0,
+    });
   }
   return out;
 }
@@ -108,6 +193,34 @@ function mapDeliveryType(
   return "GATIMITRA_RIDER";
 }
 
+function parseMerchantBillingBreakdown(
+  core: {
+    item_total: unknown;
+    addon_total?: unknown;
+    grand_total: unknown;
+    billing_snapshot?: unknown;
+  },
+  foodTotal: number
+): MerchantOrderPricing {
+  const snap =
+    core.billing_snapshot && typeof core.billing_snapshot === "object"
+      ? (core.billing_snapshot as Record<string, unknown>)
+      : null;
+
+  const itemTotal = num(snap?.item_total ?? core.item_total);
+  const addonTotal = num(snap?.addon_total ?? core.addon_total);
+  const subtotal = itemTotal + addonTotal;
+  const packaging = num(snap?.packaging_fee ?? 0);
+  const taxes = num(snap?.tax_total ?? 0);
+  const discount = merchantFundedDiscountFromBilling(snap);
+  const total =
+    foodTotal > 0
+      ? foodTotal
+      : Math.max(0, subtotal + packaging + taxes - discount);
+
+  return { subtotal, packaging, taxes, discount, total };
+}
+
 type CoreRow = {
   id: number;
   order_id: string | null;
@@ -119,6 +232,9 @@ type CoreRow = {
   delivery_type: string | null;
   grand_total: unknown;
   item_total: unknown;
+  addon_total: unknown;
+  billing_snapshot: unknown;
+  payment_status: string | null;
   created_at: Date | string;
   customer_id: number | null;
   rider_id: number | null;
@@ -233,6 +349,9 @@ async function loadCoreRows(
         oc.delivery_type,
         oc.grand_total,
         oc.item_total,
+        oc.addon_total,
+        oc.billing_snapshot,
+        oc.payment_status,
         oc.created_at,
         oc.customer_id,
         oc.rider_id,
@@ -270,6 +389,9 @@ async function loadCoreRows(
       oc.delivery_type,
       oc.grand_total,
       oc.item_total,
+      oc.addon_total,
+      oc.billing_snapshot,
+      oc.payment_status,
       oc.created_at,
       oc.customer_id,
       oc.rider_id,
@@ -422,10 +544,13 @@ function resolveCancelledAt(food: FoodRow | null, core: CoreRow): string | null 
   return null;
 }
 
-function buildOrderDto(
+async function buildOrderDto(
   core: CoreRow,
   food: FoodRow | null,
   opts: {
+    storeId: number;
+    commissionPercent?: number;
+    snapshotsByOrderText: Map<string, ItemCommissionSnapshot[]>;
     selfDeliveryEnabled: boolean;
     customerById: Map<number, CustomerRow>;
     storeOrdinalByCoreId: Map<number, number>;
@@ -433,7 +558,7 @@ function buildOrderDto(
     itemsByOrderTextId: Map<string, MerchantFoodOrderItem[]>;
     otpByCoreId: Map<number, { pickup: string | null; rto: string | null }>;
   }
-): MerchantFoodOrderDto {
+): Promise<MerchantFoodOrderDto> {
   const pipeline = resolvePartnerPipeline(
     food?.order_status ?? null,
     core.status,
@@ -443,13 +568,49 @@ function buildOrderDto(
   const cust = customerId != null ? opts.customerById.get(customerId) : undefined;
   const textOid = String(core.order_id ?? "").trim();
   let items = normalizeItems(food?.items ?? core.items);
-  if (items.length === 0 && textOid) {
-    items = opts.itemsByOrderTextId.get(textOid) ?? [];
+  const fromDb = textOid ? opts.itemsByOrderTextId.get(textOid) : undefined;
+  if (fromDb?.length) {
+    if (items.length === 0) {
+      items = fromDb;
+    } else {
+      items = items.map((it, i) => mergeDbItemFields(it, fromDb[i]));
+      if (fromDb.length > items.length) items = fromDb;
+    }
   }
-  const total =
-    food?.food_items_total_value != null && food.food_items_total_value !== ""
-      ? num(food.food_items_total_value)
-      : num(core.grand_total ?? core.item_total);
+
+  const snaps = textOid ? opts.snapshotsByOrderText.get(textOid) ?? [] : [];
+  const itemsBeforeBase = items.map((it) => ({ ...it }));
+  const { items: merchantItems, merchantSubtotal } = await applyMerchantBaseToOrderItems(
+    items,
+    snaps,
+    { storeId: opts.storeId, commissionPercent: opts.commissionPercent }
+  );
+  items = itemsBeforeBase.map((it, i) => {
+    const mapped = merchantItems[i];
+    const lineTotal = num(mapped?.price ?? it.price);
+    return scaleMerchantOrderItemBreakdown(it, lineTotal) as MerchantFoodOrderItem;
+  });
+
+  const billingSnap =
+    core.billing_snapshot && typeof core.billing_snapshot === "object"
+      ? (core.billing_snapshot as Record<string, unknown>)
+      : null;
+  const packaging = num(billingSnap?.packaging_fee ?? 0);
+  const merchantDiscount = merchantFundedDiscountFromBilling(billingSnap);
+  const itemsSubtotal = round2(items.reduce((s, it) => s + num(it.price), 0));
+  const merchantTotal = merchantOrderTotalFromBilling(
+    itemsSubtotal > 0.005 ? itemsSubtotal : merchantSubtotal,
+    billingSnap,
+    packaging
+  );
+  const pricing: MerchantOrderPricing = {
+    subtotal: itemsSubtotal > 0.005 ? itemsSubtotal : merchantSubtotal,
+    packaging,
+    taxes: 0,
+    discount: merchantDiscount,
+    total: merchantTotal,
+  };
+
   const otps = opts.otpByCoreId.get(core.id);
   const coreOnly = food == null;
 
@@ -466,7 +627,10 @@ function buildOrderDto(
     created_at: new Date(core.created_at).toISOString(),
     delivery_type: mapDeliveryType(core.delivery_type, core.rider_id, opts.selfDeliveryEnabled),
     rider_id: core.rider_id,
-    grand_total: total,
+    grand_total: merchantTotal,
+    pricing,
+    billing_snapshot: billingSnap,
+    payment_status: core.payment_status ?? null,
     items,
     pickup_otp: food?.pickup_otp ?? otps?.pickup ?? null,
     rto_otp: food?.rto_otp ?? otps?.rto ?? null,
@@ -612,38 +776,10 @@ export async function loadMerchantFoodOrders(
   const textOrderIds = [
     ...new Set(cores.map((c) => String(c.order_id ?? "").trim()).filter((s) => s.length > 0)),
   ];
-  const itemsByOrderTextId = new Map<string, MerchantFoodOrderItem[]>();
-  if (textOrderIds.length > 0) {
-    const itemRows = await sql`
-      SELECT order_id, item_name, quantity, total_price, base_price, veg_nonveg
-      FROM orders_core_items
-      WHERE order_id IN ${sql(textOrderIds)}
-      ORDER BY id ASC
-    `;
-    const grouped = new Map<string, MerchantFoodOrderItem[]>();
-    for (const ir of itemRows as unknown as Array<{
-      order_id: string;
-      item_name: string;
-      quantity: number;
-      total_price: unknown;
-      base_price: unknown;
-      veg_nonveg: string | null;
-    }>) {
-      const oid = String(ir.order_id);
-      const list = grouped.get(oid) ?? [];
-      const veg = ir.veg_nonveg != null && String(ir.veg_nonveg).trim() !== ""
-        ? String(ir.veg_nonveg).trim()
-        : null;
-      list.push({
-        qty: Number(ir.quantity) || 1,
-        name: String(ir.item_name ?? "Item"),
-        price: num(ir.total_price ?? ir.base_price),
-        veg_nonveg: veg,
-      });
-      grouped.set(oid, list);
-    }
-    for (const [k, v] of grouped) itemsByOrderTextId.set(k, v);
-  }
+  const itemsByOrderTextId =
+    textOrderIds.length > 0
+      ? await loadMerchantOrderLineItemsByTextIds(sql, textOrderIds)
+      : new Map<string, MerchantFoodOrderItem[]>();
 
   const coreIds = cores.map((c) => c.id);
   const otpByCoreId = new Map<number, { pickup: string | null; rto: string | null }>();
@@ -703,7 +839,18 @@ export async function loadMerchantFoodOrders(
     }
   }
 
+  const snapshotsByOrderText = await loadSnapshotsByOrderTexts(sql, textOrderIds, storeId);
+  let commissionPercent: number | undefined;
+  try {
+    commissionPercent = (await resolveStoreCommission(storeId)).percent;
+  } catch {
+    commissionPercent = undefined;
+  }
+
   const buildOpts = {
+    storeId,
+    commissionPercent,
+    snapshotsByOrderText,
     selfDeliveryEnabled,
     customerById,
     storeOrdinalByCoreId,
@@ -712,10 +859,12 @@ export async function loadMerchantFoodOrders(
     otpByCoreId,
   };
 
-  return cores.map((core) => {
-    const food = matchFoodToCore(core, byCorePk, byTextId);
-    return buildOrderDto(core, food, buildOpts);
-  });
+  return Promise.all(
+    cores.map(async (core) => {
+      const food = matchFoodToCore(core, byCorePk, byTextId);
+      return buildOrderDto(core, food, buildOpts);
+    })
+  );
 }
 
 function normalizeOrderStatusForTransition(raw: string | null | undefined): string {

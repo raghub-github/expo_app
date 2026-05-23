@@ -1,4 +1,12 @@
+import { merchantFundedDiscountFromBilling } from '@/lib/merchant-billing-discount';
+
 /** Shared order line-item parsing for partner food order APIs and UI. */
+
+export type OrderItemCustomizationLine = {
+  name: string;
+  amount: number;
+  kind: "variant" | "addon" | "note";
+};
 
 export type NormalizedOrderLineItem = {
   name: string;
@@ -9,9 +17,18 @@ export type NormalizedOrderLineItem = {
   vegNonveg?: string | null;
   menuItemId?: number | null;
   variantName?: string | null;
+  variantTag?: string | null;
   categoryName?: string | null;
   description?: string | null;
   imageUrl?: string | null;
+  customizationLines?: OrderItemCustomizationLine[];
+  baseAmount?: number;
+  customizationsTotal?: number;
+  /** orders_core_items.base_price × qty at order placement */
+  capturedBaseAmount?: number;
+  /** orders_core_items.addon_price at order placement */
+  capturedAddonAmount?: number;
+  hasCustomizations?: boolean;
 };
 
 export type OrderPricingBreakdown = {
@@ -94,9 +111,13 @@ export function normalizeOrderItems(rawItems: unknown): NormalizedOrderLineItem[
         `Item ${idx + 1}`
     ).trim();
     const variant = String(
-      row.variant_name ?? row.variantName ?? snap?.variant_name ?? ''
+      row.variant_tag ?? row.variant_name ?? row.variantName ?? snap?.variant_name ?? ''
     ).trim();
-    const name = variant ? `${baseName} (${variant})` : baseName;
+    const name =
+      String(row.display_name ?? '').trim() ||
+      (variant && !String(row.variant_tag ?? '').trim()
+        ? `${baseName} (${variant})`
+        : baseName);
     const menuItemIdRaw = row.menu_item_id ?? row.menuItemId ?? snap?.menu_item_id;
     const menuItemId =
       menuItemIdRaw != null && menuItemIdRaw !== '' ? Number(menuItemIdRaw) : null;
@@ -122,6 +143,22 @@ export function normalizeOrderItems(rawItems: unknown): NormalizedOrderLineItem[
     const imageUrl =
       String(row.item_image_url ?? row.imageUrl ?? snap?.item_image_url ?? '').trim() || null;
 
+    const customizationLines = Array.isArray(row.customization_lines)
+      ? (row.customization_lines as OrderItemCustomizationLine[])
+      : Array.isArray(row.customizationLines)
+        ? (row.customizationLines as OrderItemCustomizationLine[])
+        : undefined;
+    const variantTag =
+      String(row.variant_tag ?? variant ?? '').trim() || null;
+    const baseAmount =
+      row.base_amount != null ? Number(row.base_amount) : undefined;
+    const customizationsTotal =
+      row.customizations_total != null ? Number(row.customizations_total) : undefined;
+    const capturedBaseAmount =
+      row.captured_base_amount != null ? Number(row.captured_base_amount) : undefined;
+    const capturedAddonAmount =
+      row.captured_addon_amount != null ? Number(row.captured_addon_amount) : undefined;
+
     return {
       name,
       quantity: qty,
@@ -131,9 +168,28 @@ export function normalizeOrderItems(rawItems: unknown): NormalizedOrderLineItem[
       vegNonveg,
       menuItemId: Number.isFinite(menuItemId as number) ? (menuItemId as number) : null,
       variantName: variant || null,
-      categoryName,
+      variantTag,
+      categoryName:
+        String(row.category_name ?? row.categoryName ?? categoryName ?? '').trim() ||
+        categoryName,
       description,
       imageUrl,
+      customizationLines: customizationLines?.length ? customizationLines : undefined,
+      baseAmount: Number.isFinite(baseAmount as number) ? baseAmount : undefined,
+      customizationsTotal: Number.isFinite(customizationsTotal as number)
+        ? customizationsTotal
+        : undefined,
+      capturedBaseAmount: Number.isFinite(capturedBaseAmount as number)
+        ? capturedBaseAmount
+        : undefined,
+      capturedAddonAmount: Number.isFinite(capturedAddonAmount as number)
+        ? capturedAddonAmount
+        : undefined,
+      hasCustomizations:
+        Boolean(row.has_customizations) ||
+        Boolean(row.hasCustomizations) ||
+        (customizationLines?.length ?? 0) > 0 ||
+        (customizations?.length ?? 0) > 0,
     };
   });
 }
@@ -147,10 +203,19 @@ type CoreItemRow = {
   category_name?: string | null;
   quantity: number;
   base_price: string | number;
+  addon_price?: string | number | null;
   total_price: string | number;
   veg_nonveg?: string | null;
   item_snapshot?: Record<string, unknown> | null;
 };
+
+function imageUrlFromSnapshot(snap: Record<string, unknown> | null | undefined): string | null {
+  if (!snap || typeof snap !== "object") return null;
+  const url = String(
+    snap.item_image_url ?? snap.imageUrl ?? snap.itemImageUrl ?? snap.image_url ?? ""
+  ).trim();
+  return url || null;
+}
 
 type CoreAddonRow = {
   order_item_id: number;
@@ -177,20 +242,26 @@ export function mapCoreDbItemsToRaw(
     const unit = Number(row.base_price) || 0;
     const variant = String(row.variant_name ?? '').trim();
     const baseName = String(row.item_name ?? 'Item').trim();
+    const snap = row.item_snapshot ?? null;
+    const imageUrl = imageUrlFromSnapshot(snap);
+    const addonUnit = Number(row.addon_price) || 0;
     return {
       name: variant ? `${baseName} (${variant})` : baseName,
       item_name: row.item_name,
       menu_item_id: row.menu_item_id ?? null,
       variant_name: variant || null,
       category_name: row.category_name ?? null,
-      item_snapshot: row.item_snapshot ?? null,
+      item_snapshot: snap,
       quantity: qty,
       price: unit,
       unit_price: unit,
+      addon_price: addonUnit,
       total: Number(row.total_price) || unit * qty,
       total_price: Number(row.total_price) || unit * qty,
       veg_nonveg: row.veg_nonveg ?? null,
       customizations: customizations.length ? customizations : undefined,
+      item_image_url: imageUrl,
+      imageUrl,
     };
   });
 }
@@ -209,11 +280,12 @@ export function parseMerchantBillingBreakdown(
   const subtotal = itemTotal + addonTotal;
   const packaging = Number(snap?.packaging_fee ?? 0) || 0;
   const taxes = Number(snap?.tax_total ?? 0) || 0;
-  const discount = Number(snap?.discount_total ?? 0) || 0;
+  const discount = merchantFundedDiscountFromBilling(snap);
   const foodNum = foodTotal != null && foodTotal !== '' ? Number(foodTotal) : NaN;
-  const total = Number.isFinite(foodNum)
-    ? foodNum
-    : Number(snap?.final_amount ?? core.grand_total ?? subtotal + packaging + taxes - discount) || 0;
+  const total =
+    Number.isFinite(foodNum) && foodNum > 0
+      ? foodNum
+      : Math.max(0, subtotal + packaging + taxes - discount);
 
   return { subtotal, packaging, taxes, discount, total };
 }

@@ -32,17 +32,26 @@ export type CheckoutOffersSheetProps = {
   couponError: string | null;
   appliedCouponCode: string | null;
   appliedPlatformOfferId: number | null;
-  appliedDiscounts: Array<{ label: string; amount: number; platformOfferId?: number | null }>;
+  appliedMerchantOfferId: number | null;
+  appliedDiscounts: Array<{
+    label: string;
+    amount: number;
+    platformOfferId?: number | null;
+    merchantOfferId?: number | null;
+  }>;
   onApplyCouponCode: (code: string, description?: string) => void;
   onApplyPlatformOffer: (id: number, name: string | null) => void;
+  onApplyMerchantOffer: (id: number, couponCode?: string | null) => void;
   onRemoveCoupon: () => void;
   onRemovePlatformOffer: () => void;
+  onRemoveMerchantOffer: () => void;
   onRemoveAllOffers: () => void;
 };
 
 function OfferRow({
   title,
   subtitle,
+  couponCode,
   applied,
   locked,
   lockReason,
@@ -52,6 +61,7 @@ function OfferRow({
 }: {
   title: string;
   subtitle: string;
+  couponCode?: string | null;
   applied?: boolean;
   locked?: boolean;
   lockReason?: string;
@@ -78,18 +88,22 @@ function OfferRow({
         <Text style={[styles.offerTitle, locked && styles.offerTitleMuted]} numberOfLines={2}>
           {title}
         </Text>
-        {subtitle ? (
+        {locked && lockReason ? (
+          <Text style={styles.offerLockReason} numberOfLines={2}>
+            {lockReason}
+          </Text>
+        ) : subtitle ? (
           <Text style={styles.offerSub} numberOfLines={2}>
             {subtitle}
           </Text>
         ) : null}
+        {couponCode ? (
+          <View style={styles.couponCodeBox}>
+            <Text style={styles.couponCodeText}>{couponCode}</Text>
+          </View>
+        ) : null}
         {applied && savings != null && savings > 0 ? (
           <Text style={styles.offerSaved}>You save ₹{Math.round(savings)}</Text>
-        ) : null}
-        {locked && lockReason ? (
-          <Text style={styles.offerLockReason} numberOfLines={2}>
-            🔒 {lockReason}
-          </Text>
         ) : null}
       </View>
       {applied && onRemove ? (
@@ -117,15 +131,23 @@ export function CheckoutOffersSheet({
   couponError,
   appliedCouponCode,
   appliedPlatformOfferId,
+  appliedMerchantOfferId,
   appliedDiscounts,
   onApplyCouponCode,
   onApplyPlatformOffer,
+  onApplyMerchantOffer,
   onRemoveCoupon,
   onRemovePlatformOffer,
+  onRemoveMerchantOffer,
   onRemoveAllOffers,
 }: CheckoutOffersSheetProps) {
   const savingsForPlatform = (id: number) => {
     const d = appliedDiscounts.find((x) => x.platformOfferId === id);
+    return d?.amount ?? null;
+  };
+
+  const savingsForMerchant = (id: number) => {
+    const d = appliedDiscounts.find((x) => x.merchantOfferId === id);
     return d?.amount ?? null;
   };
 
@@ -139,7 +161,8 @@ export function CheckoutOffersSheet({
   };
 
   const hasApplied =
-    Boolean(appliedCouponCode || appliedPlatformOfferId) || appliedDiscounts.length > 0;
+    Boolean(appliedCouponCode || appliedPlatformOfferId || appliedMerchantOfferId) ||
+    appliedDiscounts.length > 0;
 
   const totalSavings = appliedDiscounts.reduce((s, d) => s + d.amount, 0);
 
@@ -247,8 +270,34 @@ export function CheckoutOffersSheet({
                           onRemove={onRemovePlatformOffer}
                         />
                       ) : null}
+                      {appliedMerchantOfferId != null ? (
+                        <OfferRow
+                          title={
+                            data?.merchantOffers.find((o) => o.id === appliedMerchantOfferId)?.title ??
+                            data?.merchantOffersIneligible?.find((o) => o.id === appliedMerchantOfferId)
+                              ?.title ??
+                            appliedDiscounts.find((d) => d.merchantOfferId === appliedMerchantOfferId)?.label ??
+                            "Store offer"
+                          }
+                          subtitle={
+                            data?.merchantOffers.find((o) => o.id === appliedMerchantOfferId)?.summary ??
+                            data?.merchantOffersIneligible?.find((o) => o.id === appliedMerchantOfferId)
+                              ?.summary ??
+                            ""
+                          }
+                          applied
+                          savings={savingsForMerchant(appliedMerchantOfferId)}
+                          onRemove={onRemoveMerchantOffer}
+                        />
+                      ) : null}
                       {appliedDiscounts
-                        .filter((d) => !d.platformOfferId && !appliedCouponCode && d.amount > 0)
+                        .filter(
+                          (d) =>
+                            !d.platformOfferId &&
+                            !d.merchantOfferId &&
+                            !appliedCouponCode &&
+                            d.amount > 0
+                        )
                         .map((d, i) => (
                           <OfferRow
                             key={`applied-other-${i}`}
@@ -304,24 +353,47 @@ export function CheckoutOffersSheet({
                   {(data?.merchantOffers.length ?? 0) > 0 ? (
                     <View style={styles.section}>
                       <Text style={styles.sectionLabel}>STORE OFFERS</Text>
-                      <Text style={styles.sectionHint}>Auto-applied when eligible</Text>
+                      <Text style={styles.sectionHint}>
+                        {data!.merchantOffers.some((o) => o.autoApply === false)
+                          ? "Tap APPLY when eligible · auto offers apply at checkout"
+                          : "Auto-applied when eligible"}
+                      </Text>
                       {data!.merchantOffers.map((o) => {
-                        const isApplied = appliedDiscounts.some(
-                          (d) =>
-                            !d.platformOfferId &&
-                            (d.label.toLowerCase() === o.title.toLowerCase() ||
-                              o.title.toLowerCase().includes(d.label.toLowerCase()))
-                        );
+                        const isApplied = appliedMerchantOfferId === o.id;
+                        const manual = o.autoApply === false;
                         return (
                           <OfferRow
                             key={`mo-${o.id}`}
                             title={o.title}
                             subtitle={o.summary}
+                            couponCode={o.requiresCouponCode}
                             applied={isApplied}
-                            savings={isApplied ? savingsForLabel(o.title) : null}
+                            savings={isApplied ? savingsForMerchant(o.id) : null}
+                            onApply={
+                              manual && !isApplied
+                                ? () => onApplyMerchantOffer(o.id, o.requiresCouponCode)
+                                : undefined
+                            }
+                            onRemove={isApplied ? onRemoveMerchantOffer : undefined}
                           />
                         );
                       })}
+                    </View>
+                  ) : null}
+
+                  {(data?.merchantOffersIneligible?.length ?? 0) > 0 ? (
+                    <View style={styles.section}>
+                      <Text style={styles.sectionLabel}>STORE OFFERS — UNLOCK</Text>
+                      {data!.merchantOffersIneligible!.map((o) => (
+                        <OfferRow
+                          key={`mo-lock-${o.id}`}
+                          title={o.title}
+                          subtitle={o.summary}
+                          couponCode={o.requiresCouponCode}
+                          locked
+                          lockReason={o.lockReason || o.reason}
+                        />
+                      ))}
                     </View>
                   ) : null}
 
@@ -350,7 +422,8 @@ export function CheckoutOffersSheet({
                   (data?.coupons.length ?? 0) === 0 &&
                   (data?.merchantOffers.length ?? 0) === 0 &&
                   (data?.platformOffers.length ?? 0) === 0 &&
-                  (data?.platformOffersIneligible?.length ?? 0) === 0 ? (
+                  (data?.platformOffersIneligible?.length ?? 0) === 0 &&
+                  (data?.merchantOffersIneligible?.length ?? 0) === 0 ? (
                     <Text style={styles.empty}>No offers for this address right now.</Text>
                   ) : null}
                 </>
@@ -531,7 +604,22 @@ const styles = StyleSheet.create({
   offerTitleMuted: { color: "#64748B" },
   offerSub: { fontSize: 11, color: "#64748B", marginTop: 2, lineHeight: 15 },
   offerSaved: { fontSize: 11, fontWeight: "700", color: "#16A34A", marginTop: 4 },
-  offerLockReason: { fontSize: 10, color: "#B45309", marginTop: 4 },
+  offerLockReason: { fontSize: 11, fontWeight: "600", color: "#E23744", marginTop: 4, lineHeight: 15 },
+  couponCodeBox: {
+    alignSelf: "flex-start",
+    marginTop: 4,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  couponCodeText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#9CA3AF",
+    letterSpacing: 0.6,
+  },
   applyBtn: {
     paddingHorizontal: 10,
     paddingVertical: 6,

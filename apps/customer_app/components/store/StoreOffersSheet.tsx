@@ -25,11 +25,30 @@ function isMerchantOffer(o: StoreOffer): o is MerchantOfferItem {
   return "coupon_code" in o || "offer_type" in o;
 }
 
+function merchantOfferCriteria(offer: MerchantOfferItem): string | null {
+  const parts: string[] = [];
+  if (offer.min_order_amount != null && offer.min_order_amount > 0) {
+    parts.push(`Min order ₹${Math.round(offer.min_order_amount)}`);
+  }
+  const ot = String(offer.offer_type ?? "").toUpperCase();
+  if (ot === "PERCENTAGE" && offer.discount_percentage != null && offer.discount_percentage > 0) {
+    parts.push(`${offer.discount_percentage}% off`);
+    if (offer.max_discount_amount != null && offer.max_discount_amount > 0) {
+      parts.push(`up to ₹${Math.round(offer.max_discount_amount)}`);
+    }
+  } else if (offer.discount_value != null && offer.discount_value > 0) {
+    parts.push(`₹${Math.round(offer.discount_value)} off`);
+  }
+  if (parts.length === 0) return null;
+  return parts.join(" · ");
+}
+
 function OfferCard({ offer }: { offer: StoreOffer }) {
   const [expanded, setExpanded] = useState(false);
   const merchant = isMerchantOffer(offer);
   const code = merchant ? offer.coupon_code : null;
   const autoApply = merchant ? offer.auto_apply : true;
+  const criteria = merchant ? merchantOfferCriteria(offer) : null;
 
   const details = [
     autoApply
@@ -55,6 +74,9 @@ function OfferCard({ offer }: { offer: StoreOffer }) {
           <Text style={styles.cardTitle}>{offer.label}</Text>
           {offer.sub_label ? (
             <Text style={styles.cardSub}>{offer.sub_label}</Text>
+          ) : null}
+          {criteria ? (
+            <Text style={styles.cardCriteria}>{criteria}</Text>
           ) : null}
           {code ? (
             <View style={styles.codeBox}>
@@ -185,6 +207,12 @@ const styles = StyleSheet.create({
   cardSub: {
     fontSize: 12,
     color: StoreTheme.textSecondary,
+    lineHeight: 16,
+  },
+  cardCriteria: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#E23744",
     lineHeight: 16,
   },
   codeBox: {

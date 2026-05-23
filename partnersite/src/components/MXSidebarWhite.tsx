@@ -248,7 +248,10 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
   }
 
   const switchToStore = (storeId: string) => {
-    if (typeof localStorage !== 'undefined') localStorage.setItem('selectedStoreId', storeId);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('selectedStoreId', storeId);
+      void import('@/lib/partner-selected-store').then((m) => m.notifyPartnerSelectedStoreChanged(storeId));
+    }
     setStoreDropdownOpen(false);
     setMobileMenuOpen(false);
     const base = (pathname || '/partners/dashboard').split('?')[0];

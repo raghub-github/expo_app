@@ -28,9 +28,17 @@ import { verifyRazorpayPaymentDetails, verifyRazorpaySignature } from "../../ser
 import { computeBillForOrder } from "../billing/billing.service.js";
 import { normalizeOrderItems } from "./orderNormalizer.js";
 import { getRoute } from "../distance/distance.service.js";
-import { writeOrderItemCommissionSnapshots } from "../commission/writeOrderCommissionSnapshots.js";
+import {
+  resolveOrdersCorePk,
+  writeOrderItemCommissionSnapshots,
+} from "../commission/writeOrderCommissionSnapshots.js";
+import { persistOrderItemAddonsWithSnapshots } from "../commission/persistOrderItemAddons.js";
+import { enrichAddonsWithMenuMetadata } from "../commission/resolveMenuAddonMetadata.js";
+import { resolveMenuAddonPk } from "../commission/resolveMenuAddonPk.js";
+import type { NormalizedOrderItem } from "./orderNormalizer.js";
 import { freezeEtaForPlacedOrder } from "../eta/eta.placement.js";
 import { vegNonvegForPlacementItem } from "../../lib/order-item-veg.js";
+import { insertPlacedOrderCoreWithTimelines } from "../../lib/order-placement-persist.js";
 
 const EM_DASH = "\u2014";
 
@@ -398,6 +406,24 @@ export function paymentMethodToEnum(method: string): "upi" | "card" | "wallet" |
 /** Pending order TTL: 30 minutes */
 const PENDING_TTL_MS = 30 * 60 * 1000;
 
+/** Read-only menu lookups — must use postgres `getSql()`, not Drizzle `tx`. */
+async function enrichAddonsWithMenuPk(
+  storeId: number,
+  items: NormalizedOrderItem[],
+): Promise<void> {
+  if (!storeId || storeId <= 0) return;
+  const { getSql } = await import("../../db/client.js");
+  const sql = getSql();
+  await enrichAddonsWithMenuMetadata(sql, storeId, items);
+  for (const it of items) {
+    for (const ad of it.addons) {
+      if (ad.menuAddonPk != null && ad.menuAddonPk > 0) continue;
+      const pk = await resolveMenuAddonPk(sql, storeId, ad.menuAddonId, ad.customizationId);
+      if (pk) ad.menuAddonPk = pk;
+    }
+  }
+}
+
 export type PendingOrderInput = {
   customerId: number;
   merchantId: string;
@@ -409,7 +435,13 @@ export type PendingOrderInput = {
     basePrice: number;
     variantId?: string | null;
     variantName?: string | null;
-    addons?: Array<{ addonId: string; addonName: string; addonPrice: number; quantity: number }>;
+    addons?: Array<{
+      addonId: string;
+      customizationId?: string | null;
+      addonName: string;
+      addonPrice: number;
+      quantity: number;
+    }>;
     itemSnapshot?: Record<string, unknown> | null;
   }>;
   addressId: number;
@@ -425,6 +457,7 @@ export type PendingOrderInput = {
   deliveryType?: "delivery" | "self_pickup";
   checkoutMetadata?: Record<string, unknown> | null;
   selectedPlatformOfferId?: number | null;
+  selectedMerchantOfferId?: number | null;
   forceNoAutoOffer?: boolean;
   idempotencyKey?: string | null;
 };
@@ -557,6 +590,7 @@ export async function createPendingOrder(
       subscriptionOptIn,
       deliveryType: input.deliveryType ?? "delivery",
       selectedPlatformOfferId: input.selectedPlatformOfferId ?? null,
+      selectedMerchantOfferId: input.selectedMerchantOfferId ?? null,
       forceNoAutoOffer: input.forceNoAutoOffer,
     });
     if (!billRes.ok) {
@@ -599,6 +633,9 @@ export async function createPendingOrder(
     distanceKm = Math.round(R * c * 100) / 100;
   }
   const pickupAddressNormalized = sanitizeOptional((storeForOrder?.fullAddress ?? input.pickupAddressRaw ?? dropAddressRaw).trim() || null);
+
+  const { getSql } = await import("../../db/client.js");
+  await enrichAddonsWithMenuMetadata(getSql(), merchantStoreId, items);
 
   const pendingId = `PEND-${Date.now()}-${randomBytes(4).toString("hex")}`;
   const expiresAt = new Date(Date.now() + PENDING_TTL_MS);
@@ -711,6 +748,8 @@ export async function finalizeOrder(
   }
   const items = norm.items;
 
+  await enrichAddonsWithMenuPk(pending.merchantStoreId, items);
+
   const pickupRaw = sanitizeStringForDb(pending.pickupAddressNormalized ?? undefined) ?? "";
   const dropRaw = sanitizeStringForDb(pending.deliveryAddress ?? undefined) ?? "";
   const pickupLat = pending.pickupLat != null ? String(pending.pickupLat) : "0";
@@ -741,33 +780,37 @@ export async function finalizeOrder(
         throw new Error(`Failed to generate order_id: got ${JSON.stringify(seqResult)}`);
       }
 
-      await tx.insert(ordersCore).values({
-        orderId: orderIdText,
-        orderType: ORDER_TYPE_FOOD,
-        orderSource: ORDER_SOURCE_INTERNAL,
-        customerId: pending.customerId,
-        merchantStoreId: pending.merchantStoreId,
-        merchantParentId: pending.merchantParentId ?? undefined,
-        status: ORDER_STATUS_ASSIGNED,
-        currentStatus: "PLACED",
-        itemTotal: pending.itemTotal,
-        addonTotal: pending.addonTotal ?? "0",
-        grandTotal: pending.grandTotal,
-        tipAmount: pending.tipAmount ?? "0",
-        placedAt: new Date(),
-        pickupAddressRaw: pickupRaw || " ",
-        pickupLat,
-        pickupLon,
-        dropAddressRaw: dropRaw || " ",
-        dropLat,
-        dropLon,
-        deliveryAddress: sanitizeStringForDb(pending.deliveryAddress ?? undefined) ?? undefined,
-        distanceKm: pending.distanceKm ?? undefined,
-        paymentStatus: PAYMENT_STATUS_COMPLETED,
-        paymentMethod: paymentMethodEnum,
-        deliveryType: pending.deliveryType ?? "delivery",
-        billingSnapshot: pending.billingSnapshot ?? undefined,
-        billingRulesetVersion: pending.billingRulesetVersion ?? undefined,
+      await insertPlacedOrderCoreWithTimelines(tx, {
+        pending: {
+          pendingId: pending.pendingId,
+          customerId: pending.customerId,
+          merchantStoreId: pending.merchantStoreId,
+          merchantParentId: pending.merchantParentId,
+          itemTotal: String(pending.itemTotal),
+          addonTotal: pending.addonTotal != null ? String(pending.addonTotal) : null,
+          grandTotal: String(pending.grandTotal),
+          tipAmount: pending.tipAmount != null ? String(pending.tipAmount) : null,
+          pickupAddressNormalized: pending.pickupAddressNormalized,
+          deliveryAddress: pending.deliveryAddress,
+          pickupLat: pending.pickupLat != null ? String(pending.pickupLat) : null,
+          pickupLon: pending.pickupLon != null ? String(pending.pickupLon) : null,
+          dropLat,
+          dropLon,
+          distanceKm: pending.distanceKm != null ? String(pending.distanceKm) : null,
+          deliveryType: pending.deliveryType ?? "delivery",
+          billingSnapshot: pending.billingSnapshot,
+          billingRulesetVersion: pending.billingRulesetVersion,
+          checkoutMetadata: pending.checkoutMetadata,
+          createdAt: pending.createdAt,
+          paymentStartedAt: pending.paymentStartedAt,
+          currency: pending.currency,
+        },
+        orderIdText,
+        items,
+        paymentMethodEnum,
+        razorpayOrderId,
+        razorpayPaymentId,
+        finalizedAt: new Date(),
       });
 
       const itemInserts = items.map((i) => {
@@ -779,7 +822,7 @@ export async function finalizeOrder(
           itemName: i.itemName,
           categoryName: null,
           vegNonveg: vegNonvegForPlacementItem(i.itemSnapshot),
-          variantId: i.variantId != null ? i.variantId : undefined,
+          variantId: i.variantKey ?? (i.variantId != null ? String(i.variantId) : undefined),
           variantName: sanitizeOptional(i.variantName ?? "") ?? undefined,
           quantity: i.quantity,
           basePrice: sanitizeNumeric(i.basePrice),
@@ -790,20 +833,24 @@ export async function finalizeOrder(
       });
 
       const insertedItems = await tx.insert(ordersCoreItems).values(itemInserts).returning({ id: ordersCoreItems.id });
+      const orderIdNum = await resolveOrdersCorePk(
+        tx as unknown as PostgresJsDatabase<Record<string, unknown>>,
+        orderIdText,
+      );
       for (let idx = 0; idx < items.length; idx++) {
         const row = items[idx]!;
         const addons = row.addons;
         if (addons.length === 0) continue;
         const orderItemId = insertedItems[idx]?.id;
-        if (orderItemId == null) continue;
-        await tx.insert(ordersCoreItemAddons).values(
-          addons.map((ad) => ({
-            orderItemId,
-            addonId: ad.addonId > 0 ? ad.addonId : undefined,
-            addonName: ad.addonName || undefined,
-            addonPrice: sanitizeNumeric(ad.addonPrice),
-            quantity: ad.quantity,
-          }))
+        if (orderItemId == null || orderIdNum == null) continue;
+        await persistOrderItemAddonsWithSnapshots(
+          tx as unknown as PostgresJsDatabase<Record<string, unknown>>,
+          {
+            storeId: pending.merchantStoreId,
+            orderIdNum,
+            orderItemId: Number(orderItemId),
+            addons,
+          },
         );
       }
 
@@ -826,6 +873,7 @@ export async function finalizeOrder(
         tx as unknown as PostgresJsDatabase<Record<string, unknown>>,
         pending.merchantStoreId,
         snapshotInputs,
+        orderIdNum ?? undefined,
       );
 
       await tx.insert(ordersCorePayments).values({
@@ -1100,6 +1148,7 @@ export async function finalizePendingOrderFromWebhook(
         SELECT id, pending_id, customer_id, merchant_store_id, merchant_parent_id,
                item_total, addon_total, grand_total, tip_amount, currency,
                items_snapshot, billing_snapshot, billing_ruleset_version,
+               checkout_metadata, created_at, payment_started_at,
                pickup_address_normalized, delivery_address,
                pickup_lat, pickup_lon, drop_lat, drop_lon, distance_km,
                finalized_order_id, payment_state, delivery_type
@@ -1124,6 +1173,9 @@ export async function finalizePendingOrderFromWebhook(
             items_snapshot: unknown;
             billing_snapshot: unknown;
             billing_ruleset_version: number | null;
+            checkout_metadata: unknown;
+            created_at: Date | string;
+            payment_started_at: Date | string | null;
             pickup_address_normalized: string | null;
             delivery_address: string | null;
             pickup_lat: string | null;
@@ -1152,6 +1204,7 @@ export async function finalizePendingOrderFromWebhook(
         return { ok: false as const, code: norm.code };
       }
       const items = norm.items;
+      await enrichAddonsWithMenuPk(Number(pending.merchant_store_id), items);
 
       const pickupRaw = sanitizeStringForDb(pending.pickup_address_normalized ?? undefined) ?? "";
       const dropRaw = sanitizeStringForDb(pending.delivery_address ?? undefined) ?? "";
@@ -1173,33 +1226,39 @@ export async function finalizePendingOrderFromWebhook(
         throw new Error(`order_id generation failed: ${JSON.stringify(seqResult)}`);
       }
 
-      await tx.insert(ordersCore).values({
-        orderId: orderIdText,
-        orderType: "food" as const,
-        orderSource: "internal" as const,
-        customerId: pending.customer_id,
-        merchantStoreId: pending.merchant_store_id,
-        merchantParentId: pending.merchant_parent_id ?? undefined,
-        status: "assigned" as const,
-        currentStatus: "PLACED",
-        itemTotal: pending.item_total,
-        addonTotal: pending.addon_total ?? "0",
-        grandTotal: pending.grand_total,
-        tipAmount: pending.tip_amount ?? "0",
-        placedAt: new Date(),
-        pickupAddressRaw: pickupRaw || " ",
-        pickupLat,
-        pickupLon,
-        dropAddressRaw: dropRaw || " ",
-        dropLat,
-        dropLon,
-        deliveryAddress: sanitizeStringForDb(pending.delivery_address ?? undefined) ?? undefined,
-        distanceKm: pending.distance_km ?? undefined,
-        paymentStatus: "completed" as const,
-        paymentMethod: paymentMethodEnum,
-        deliveryType: pending.delivery_type ?? "delivery",
-        billingSnapshot: (pending.billing_snapshot as Record<string, unknown> | null) ?? undefined,
-        billingRulesetVersion: pending.billing_ruleset_version ?? undefined,
+      await insertPlacedOrderCoreWithTimelines(tx, {
+        pending: {
+          pendingId: pending.pending_id,
+          customerId: Number(pending.customer_id),
+          merchantStoreId: Number(pending.merchant_store_id),
+          merchantParentId: pending.merchant_parent_id,
+          itemTotal: String(pending.item_total),
+          addonTotal: pending.addon_total != null ? String(pending.addon_total) : null,
+          grandTotal: String(pending.grand_total),
+          tipAmount: pending.tip_amount != null ? String(pending.tip_amount) : null,
+          pickupAddressNormalized: pending.pickup_address_normalized,
+          deliveryAddress: pending.delivery_address,
+          pickupLat: pending.pickup_lat != null ? String(pending.pickup_lat) : null,
+          pickupLon: pending.pickup_lon != null ? String(pending.pickup_lon) : null,
+          dropLat,
+          dropLon,
+          distanceKm: pending.distance_km != null ? String(pending.distance_km) : null,
+          deliveryType: pending.delivery_type ?? "delivery",
+          billingSnapshot: pending.billing_snapshot,
+          billingRulesetVersion: pending.billing_ruleset_version,
+          checkoutMetadata: pending.checkout_metadata,
+          createdAt: new Date(pending.created_at),
+          paymentStartedAt: pending.payment_started_at
+            ? new Date(pending.payment_started_at)
+            : null,
+          currency: pending.currency,
+        },
+        orderIdText,
+        items,
+        paymentMethodEnum,
+        razorpayOrderId,
+        razorpayPaymentId,
+        finalizedAt: new Date(),
       });
 
       const itemInserts = items.map((i) => {
@@ -1211,7 +1270,7 @@ export async function finalizePendingOrderFromWebhook(
           itemName: i.itemName,
           categoryName: null as string | null,
           vegNonveg: vegNonvegForPlacementItem(i.itemSnapshot),
-          variantId: i.variantId != null ? i.variantId : undefined,
+          variantId: i.variantKey ?? (i.variantId != null ? String(i.variantId) : undefined),
           variantName: sanitizeOptional(i.variantName ?? "") ?? undefined,
           quantity: i.quantity,
           basePrice: sanitizeNumeric(i.basePrice),
@@ -1222,19 +1281,24 @@ export async function finalizePendingOrderFromWebhook(
       });
 
       const insertedItems = await tx.insert(ordersCoreItems).values(itemInserts).returning({ id: ordersCoreItems.id });
+      const orderIdNumWebhook = await resolveOrdersCorePk(
+        tx as unknown as PostgresJsDatabase<Record<string, unknown>>,
+        orderIdText,
+      );
+      const storeIdWebhook = Number(pending.merchant_store_id);
       for (let idx = 0; idx < items.length; idx++) {
         const addons = items[idx]!.addons;
         if (addons.length === 0) continue;
         const orderItemId = insertedItems[idx]?.id;
-        if (orderItemId == null) continue;
-        await tx.insert(ordersCoreItemAddons).values(
-          addons.map((ad) => ({
-            orderItemId,
-            addonId: ad.addonId > 0 ? ad.addonId : undefined,
-            addonName: ad.addonName || undefined,
-            addonPrice: sanitizeNumeric(ad.addonPrice),
-            quantity: ad.quantity,
-          }))
+        if (orderItemId == null || orderIdNumWebhook == null) continue;
+        await persistOrderItemAddonsWithSnapshots(
+          tx as unknown as PostgresJsDatabase<Record<string, unknown>>,
+          {
+            storeId: storeIdWebhook,
+            orderIdNum: orderIdNumWebhook,
+            orderItemId: Number(orderItemId),
+            addons,
+          },
         );
       }
 
@@ -1253,8 +1317,9 @@ export async function finalizePendingOrderFromWebhook(
         .filter((x): x is NonNullable<typeof x> => x != null);
       await writeOrderItemCommissionSnapshots(
         tx as unknown as PostgresJsDatabase<Record<string, unknown>>,
-        Number(pending.merchant_store_id),
+        storeIdWebhook,
         snapshotInputs,
+        orderIdNumWebhook ?? undefined,
       );
 
       await tx.insert(ordersCorePayments).values({

@@ -18,6 +18,11 @@ import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { insertActivityLog } from "@/lib/db/operations/merchant-portal-activity-logs";
 import { deleteDocument } from "@/lib/services/r2";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
+import {
+  fetchAddonsForCustomization,
+  fetchVariantsForMenuItem,
+} from "@/lib/menu-item-detail-sql";
+import { mapAddonsFromApiRows } from "@/lib/map-menu-item-options";
 
 export const runtime = "nodejs";
 
@@ -122,11 +127,8 @@ export async function GET(
     `;
     if (!item) return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
 
-    const [variants, customizationsRows, imagesRows] = await Promise.all([
-      sql`
-        SELECT id, variant_id, variant_name, variant_type, variant_price::text, is_default, display_order, in_stock
-        FROM merchant_menu_item_variants WHERE menu_item_id = ${menuItemId} ORDER BY display_order ASC, id ASC
-      `,
+    const [variantRows, customizationsRows, imagesRows] = await Promise.all([
+      fetchVariantsForMenuItem(sql, menuItemId),
       sql`
         SELECT id, customization_id, customization_title, customization_type, is_required, min_selection, max_selection, display_order
         FROM merchant_menu_item_customizations WHERE menu_item_id = ${menuItemId} ORDER BY display_order ASC, id ASC
@@ -137,17 +139,12 @@ export async function GET(
       `,
     ]);
 
-    const customizations = customizationsRows as any[];
+    const customizations = customizationsRows as { id: number }[];
     const optionRows = await Promise.all(
-      customizations.map((c: any) =>
-        sql`
-          SELECT id, addon_id, addon_name, addon_price::text, display_order, in_stock
-          FROM merchant_menu_item_addons WHERE customization_id = ${c.id} ORDER BY display_order ASC, id ASC
-        `
-      )
+      customizations.map((c) => fetchAddonsForCustomization(sql, Number(c.id)))
     );
-    const customizationsWithOptions = customizations.map((c: any, i: number) => ({
-      id: c.id,
+    const customizationsWithOptions = customizations.map((c: Record<string, unknown>, i: number) => ({
+      id: Number(c.id),
       customization_id: c.customization_id,
       customization_title: c.customization_title,
       customization_type: c.customization_type ?? null,
@@ -155,14 +152,7 @@ export async function GET(
       min_selection: c.min_selection ?? 0,
       max_selection: c.max_selection ?? 1,
       display_order: c.display_order ?? 0,
-      addons: (optionRows[i] as any[]).map((o: any) => ({
-        id: o.id,
-        addon_id: o.addon_id,
-        addon_name: o.addon_name,
-        addon_price: o.addon_price,
-        display_order: o.display_order ?? 0,
-        in_stock: o.in_stock ?? true,
-      })),
+      addons: mapAddonsFromApiRows(optionRows[i] ?? []),
     }));
 
     let linked_modifier_groups: any[] = [];
@@ -269,7 +259,7 @@ export async function GET(
           (item as any).fibre_unit ?? attrFibreUnit ?? "mg",
         item_tags:
           (item as any).item_tags ?? (Array.isArray(attrItemTags) ? attrItemTags : null),
-        variants: (variants as any[]).map((v: any) => ({
+        variants: (variantRows as Record<string, unknown>[]).map((v) => ({
           ...v,
           variant_price: v.variant_price,
         })),

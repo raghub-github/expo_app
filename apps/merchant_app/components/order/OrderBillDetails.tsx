@@ -1,0 +1,141 @@
+import { useState } from "react";
+import { View, Text, StyleSheet, Pressable } from "react-native";
+import type { ApiFoodOrder } from "@/services/ordersApi";
+import { GatiMitraMerchant, CARD_PADDING, CARD_RADIUS } from "@/constants/theme";
+import { merchantOrderBillTotal } from "@/lib/merchant-line-total";
+import { OrderMerchantBillModal } from "@/components/order/OrderMerchantBillModal";
+
+function formatRs(amount: number, decimals = 2): string {
+  const n = Number.isFinite(amount) ? amount : 0;
+  if (decimals === 0) return `₹${Math.round(n)}`;
+  return `₹${n.toFixed(decimals)}`;
+}
+
+function isPaidOrder(order: ApiFoodOrder): boolean {
+  const st = (order.payment_status ?? "").trim().toUpperCase();
+  if (st === "PAID" || st === "COMPLETED" || st === "SUCCESS") return true;
+  const method = (order.payment_method ?? "").trim().toLowerCase();
+  if (method.includes("cod") || method.includes("cash")) return false;
+  return true;
+}
+
+type Props = {
+  order: ApiFoodOrder;
+};
+
+export function OrderBillDetails({ order }: Props) {
+  const [billOpen, setBillOpen] = useState(false);
+  const discount = order.pricing?.discount ?? 0;
+  const total = merchantOrderBillTotal(order);
+  const showPaid = isPaidOrder(order);
+
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionHeading}>TOTAL BILL</Text>
+      <Pressable
+        onPress={() => setBillOpen(true)}
+        style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
+        accessibilityRole="button"
+        accessibilityLabel="View bill breakdown"
+      >
+        {discount > 0 ? (
+          <Text style={styles.discountNote}>
+            Restaurant discount −{formatRs(discount)} included in total
+          </Text>
+        ) : null}
+        <View style={styles.totalRow}>
+          <View style={styles.totalLeft}>
+            <Text style={styles.totalLabel}>Total</Text>
+            {showPaid ? (
+              <View style={styles.paidBadge}>
+                <Text style={styles.paidBadgeText}>PAID</Text>
+              </View>
+            ) : null}
+          </View>
+          <Text style={styles.totalAmount}>{formatRs(total, 0)}</Text>
+        </View>
+        <Text style={styles.hint}>
+          All items (with customizations) + packaging − restaurant discount · Tap for breakdown
+        </Text>
+      </Pressable>
+
+      <OrderMerchantBillModal
+        visible={billOpen}
+        onClose={() => setBillOpen(false)}
+        order={order}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  section: {
+    marginTop: 16,
+  },
+  sectionHeading: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: GatiMitraMerchant.textSecondary,
+    letterSpacing: 0.6,
+    marginBottom: 10,
+  },
+  card: {
+    backgroundColor: GatiMitraMerchant.cardBg,
+    borderRadius: CARD_RADIUS,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    padding: CARD_PADDING,
+    ...GatiMitraMerchant.shadowSm,
+  },
+  cardPressed: {
+    opacity: 0.92,
+  },
+  discountNote: {
+    fontSize: 11,
+    color: "#059669",
+    marginBottom: 10,
+    fontWeight: "600",
+  },
+  totalRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  totalLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flex: 1,
+  },
+  totalLabel: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: GatiMitraMerchant.textPrimary,
+    textDecorationLine: "underline",
+    textDecorationStyle: "dashed",
+  },
+  paidBadge: {
+    backgroundColor: "#D1FAE5",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  paidBadgeText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#047857",
+    letterSpacing: 0.4,
+  },
+  totalAmount: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: "#059669",
+    fontVariant: ["tabular-nums"],
+  },
+  hint: {
+    marginTop: 6,
+    fontSize: 11,
+    color: GatiMitraMerchant.textTertiary,
+    lineHeight: 15,
+  },
+});

@@ -20,6 +20,9 @@ import {
   NUTRIENT_UNITS,
   normalizeSpiceLevelForForm,
 } from "./menu-types";
+import { toFiniteMenuId } from "@/lib/menu-customization-normalize";
+import { normalizeMenuItemImageFile } from "@/lib/menuItemImageValidationClient";
+import { variantSizeValueForInput } from "@/lib/menu-variant-size";
 
 export interface ItemFormData {
   item_name: string;
@@ -78,8 +81,9 @@ interface ItemFormProps {
   setImagePreview: (url: string) => void;
   onProcessImage?: (file: File, isEdit: boolean) => void | Promise<void>;
   onSaveAndNext?: () => Promise<void>;
+  optionsLoading?: boolean;
   onSubmitOptions?: () => Promise<void>;
-  onSubmit?: () => void;
+  onSubmit?: () => void | Promise<void>;
   onCancel: () => void;
   isSaving: boolean;
   error: string;
@@ -102,6 +106,8 @@ interface ItemFormProps {
     avg_preparation_time_minutes?: number | null;
     packaging_charge_amount?: number | null;
   } | null;
+  /** After a saved variant row is removed from the form (DB delete + cache). */
+  onVariantRemoved?: (variantId: number | null, nextVariants: Variant[]) => void;
 }
 
 const defaultNewCustomization = {
@@ -121,6 +127,7 @@ export function MenuItemForm({
   onProcessImage,
   onSaveAndNext,
   onSubmitOptions,
+  optionsLoading = false,
   onSubmit,
   onCancel,
   isSaving,
@@ -140,22 +147,33 @@ export function MenuItemForm({
   imageValidating = false,
   onNormalizeMenuItemImage,
   storeDefaults,
+  onVariantRemoved,
 }: ItemFormProps) {
   const [activeSection, setActiveSection] = useState<"main" | "customization">("main");
   const [cuisineSearch, setCuisineSearch] = useState("");
   const [cuisineViewMore, setCuisineViewMore] = useState(false);
   const [nutritionExpanded, setNutritionExpanded] = useState(false);
-  const [customizations, setCustomizations] = useState<Customization[]>(formData.customizations || []);
+  const [addonLocalPreviews, setAddonLocalPreviews] = useState<Record<string, string>>({});
+  const [variantActionError, setVariantActionError] = useState("");
+  const variantDeleteInFlightRef = useRef<Set<number>>(new Set());
+  const addonFileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const customizations = formData.customizations ?? [];
+  const patchCustomizations = (next: Customization[]) => {
+    setFormData((prev) => ({
+      ...prev,
+      customizations: next,
+      has_customizations: next.length > 0,
+      has_addons: next.some((c) => (c.addons?.length ?? 0) > 0),
+    }));
+  };
   const [newCustomization, setNewCustomization] = useState({ ...defaultNewCustomization });
   const [editingCustomizationIndex, setEditingCustomizationIndex] = useState<number | null>(null);
+  const [addonImageUploading, setAddonImageUploading] = useState<number | null>(null);
+  const [addonImageError, setAddonImageError] = useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [linkedAddonGroups, setLinkedAddonGroups] = useState<{ id: number; modifier_group_id: number; group?: { title: string; options_count?: number } }[]>([]);
   const [showLinkAddonPicker, setShowLinkAddonPicker] = useState(false);
   const [allGroupsForPicker, setAllGroupsForPicker] = useState<{ id: number; title: string; options_count: number; used_in_items_count: number }[]>([]);
-
-  useEffect(() => {
-    setCustomizations(formData.customizations || []);
-  }, [formData.customizations?.length, currentItemId]);
 
   useEffect(() => {
     if (!storeId || !currentItemId) return;
@@ -366,13 +384,91 @@ export function MenuItemForm({
   };
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
     const file = e.target.files?.[0];
     e.target.value = "";
     if (file && onProcessImage) void Promise.resolve(onProcessImage(file, isEdit));
   };
 
+  const addonPreviewKey = (custIndex: number, addonIndex: number) => `${custIndex}-${addonIndex}`;
+
+  const setAddonLocalPreview = (key: string, blobUrl: string | null) => {
+    setAddonLocalPreviews((prev) => {
+      const next = { ...prev };
+      if (prev[key]) URL.revokeObjectURL(prev[key]);
+      if (blobUrl) next[key] = blobUrl;
+      else delete next[key];
+      return next;
+    });
+  };
+
+  const addonLocalPreviewsRef = useRef(addonLocalPreviews);
+  addonLocalPreviewsRef.current = addonLocalPreviews;
+  useEffect(() => {
+    return () => {
+      Object.values(addonLocalPreviewsRef.current).forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, []);
+
+  const handleFormSubmit = async () => {
+    try {
+      if (activeSection === "main") {
+        if (onSaveAndNext) {
+          await onSaveAndNext();
+          setActiveSection("customization");
+        } else if (onSubmit) await Promise.resolve(onSubmit());
+      } else if (onSubmitOptions) {
+        await onSubmitOptions();
+      } else if (onSubmit) {
+        await Promise.resolve(onSubmit());
+      }
+    } catch {
+      /* parent sets error / toast */
+    }
+  };
+
   const totalOptionsCount = (formData.customizations?.length || 0) + (formData.variants?.length || 0);
   const atOptionsLimit = totalOptionsCount >= CUSTOMIZATION_VARIANT_LIMIT;
+
+  const handleRemoveVariant = async (idx: number) => {
+    const row = (formData.variants || [])[idx];
+    if (!row) return;
+    const variantPk = toFiniteMenuId(row.id);
+    if (variantPk != null && variantDeleteInFlightRef.current.has(variantPk)) return;
+
+    const nextVariants = (formData.variants || []).filter((_, i) => i !== idx);
+    setVariantActionError("");
+
+    if (storeId && variantPk != null) {
+      variantDeleteInFlightRef.current.add(variantPk);
+      try {
+        const res = await fetch(
+          `/api/merchant/stores/${storeId}/menu/variants/${variantPk}`,
+          { method: "DELETE" }
+        );
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok && res.status !== 404) {
+          setVariantActionError(
+            typeof j?.error === "string" ? j.error : "Failed to delete variant"
+          );
+          return;
+        }
+      } catch (e) {
+        setVariantActionError(e instanceof Error ? e.message : "Failed to delete variant");
+        return;
+      } finally {
+        variantDeleteInFlightRef.current.delete(variantPk);
+      }
+    }
+
+    setFormData((prev) => ({
+      ...prev,
+      variants: nextVariants,
+      has_variants: nextVariants.length > 0,
+    }));
+    onVariantRemoved?.(variantPk ?? null, nextVariants);
+  };
 
   const handleAddCustomization = () => {
     if (!newCustomization.customization_title.trim()) return;
@@ -394,8 +490,7 @@ export function MenuItemForm({
         addons: [],
       });
     }
-    setCustomizations(updated);
-    setFormData({ ...formData, customizations: updated, has_customizations: updated.length > 0 });
+    patchCustomizations(updated);
     setNewCustomization({ ...defaultNewCustomization, display_order: updated.length });
   };
 
@@ -414,8 +509,7 @@ export function MenuItemForm({
 
   const handleDeleteCustomization = (index: number) => {
     const updated = customizations.filter((_, i) => i !== index);
-    setCustomizations(updated);
-    setFormData({ ...formData, customizations: updated, has_customizations: updated.length > 0 });
+    patchCustomizations(updated);
   };
 
   const handleAddAddon = (custIndex: number) => {
@@ -430,8 +524,7 @@ export function MenuItemForm({
       display_order: addons.length,
     });
     updated[custIndex] = { ...cust, addons };
-    setCustomizations(updated);
-    setFormData({ ...formData, customizations: updated, has_customizations: updated.length > 0 });
+    patchCustomizations(updated);
   };
 
   const handleUpdateAddon = (custIndex: number, addonIndex: number, field: string, value: unknown) => {
@@ -439,16 +532,97 @@ export function MenuItemForm({
     const addons = [...(updated[custIndex].addons || [])];
     addons[addonIndex] = { ...addons[addonIndex], [field]: value };
     updated[custIndex] = { ...updated[custIndex], addons };
-    setCustomizations(updated);
-    setFormData({ ...formData, customizations: updated, has_customizations: updated.length > 0 });
+    patchCustomizations(updated);
   };
 
-  const handleDeleteAddon = (custIndex: number, addonIndex: number) => {
+  const handleUploadAddonImage = async (
+    custIndex: number,
+    addonIndex: number,
+    file: File
+  ) => {
+    const addon = customizations[custIndex]?.addons?.[addonIndex];
+    const addonPk = toFiniteMenuId(addon?.id);
+    const previewKey = addonPreviewKey(custIndex, addonIndex);
+    setAddonImageError(null);
+    try {
+      const normalized = await normalizeMenuItemImageFile(file);
+      if (!normalized.ok) {
+        setAddonImageError(normalized.error);
+        return;
+      }
+      setAddonLocalPreview(previewKey, URL.createObjectURL(normalized.file));
+
+      if (!storeId || addonPk == null) {
+        return;
+      }
+
+      setAddonImageUploading(addonPk);
+      const fd = new FormData();
+      fd.append("file", normalized.file);
+      const res = await fetch(
+        `/api/merchant/stores/${storeId}/menu/customization-options/${addonPk}/images`,
+        { method: "POST", body: fd }
+      );
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j?.image_url) {
+        setAddonImageError(j?.error || "Image upload failed");
+        return;
+      }
+      handleUpdateAddon(custIndex, addonIndex, "addon_image_url", String(j.image_url));
+      setAddonLocalPreview(previewKey, null);
+    } catch (e) {
+      setAddonImageError(e instanceof Error ? e.message : "Image upload failed");
+    } finally {
+      setAddonImageUploading(null);
+    }
+  };
+
+  const handleRemoveAddonImage = async (custIndex: number, addonIndex: number) => {
+    const addon = customizations[custIndex]?.addons?.[addonIndex];
+    const addonPk = toFiniteMenuId(addon?.id);
+    setAddonLocalPreview(addonPreviewKey(custIndex, addonIndex), null);
+    if (!storeId || addonPk == null) {
+      handleUpdateAddon(custIndex, addonIndex, "addon_image_url", undefined);
+      return;
+    }
+    setAddonImageError(null);
+    setAddonImageUploading(addonPk);
+    try {
+      const res = await fetch(
+        `/api/merchant/stores/${storeId}/menu/customization-options/${addonPk}/images`,
+        { method: "DELETE" }
+      );
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAddonImageError(j?.error || "Could not remove image");
+        return;
+      }
+      handleUpdateAddon(custIndex, addonIndex, "addon_image_url", undefined);
+      setAddonLocalPreview(addonPreviewKey(custIndex, addonIndex), null);
+    } catch (e) {
+      setAddonImageError(e instanceof Error ? e.message : "Could not remove image");
+    } finally {
+      setAddonImageUploading(null);
+    }
+  };
+
+  const handleDeleteAddon = async (custIndex: number, addonIndex: number) => {
+    const addon = customizations[custIndex]?.addons?.[addonIndex];
+    const addonPk = toFiniteMenuId(addon?.id);
+    if (storeId && addonPk != null && addon?.addon_image_url) {
+      try {
+        await fetch(
+          `/api/merchant/stores/${storeId}/menu/customization-options/${addonPk}/images`,
+          { method: "DELETE" }
+        );
+      } catch {
+        /* still remove from form */
+      }
+    }
     const updated = [...customizations];
     const addons = (updated[custIndex].addons || []).filter((_, i) => i !== addonIndex);
     updated[custIndex] = { ...updated[custIndex], addons };
-    setCustomizations(updated);
-    setFormData({ ...formData, customizations: updated, has_customizations: updated.length > 0 });
+    patchCustomizations(updated);
   };
 
   const baseNum = Number(formData.base_price);
@@ -472,7 +646,7 @@ export function MenuItemForm({
   const lockOptionsTab = Boolean(onSaveAndNext) && !currentItemId;
 
   return (
-    <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl mx-2 md:mx-0 border border-gray-100">
+    <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl mx-2 md:mx-0 border border-gray-100">
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100">
         <div>
           <h2 className="text-base font-bold text-gray-900">{title}</h2>
@@ -521,23 +695,14 @@ export function MenuItemForm({
         </button>
       </div>
 
-      <form
+      <div
         className="px-4 py-3 max-h-[70vh] overflow-y-auto"
-        autoComplete="off"
-        onSubmit={async (e) => {
-          e.preventDefault();
-          try {
-            if (activeSection === "main") {
-              if (onSaveAndNext) {
-                await onSaveAndNext();
-                setActiveSection("customization");
-              } else if (onSubmit) onSubmit();
-            } else {
-              if (onSubmitOptions) await onSubmitOptions();
-              else if (onSubmit) onSubmit();
-            }
-          } catch {
-            /* parent sets error / toast; do not advance tab */
+        onKeyDown={(e) => {
+          if (e.key !== "Enter") return;
+          const tag = (e.target as HTMLElement).tagName;
+          if (tag === "TEXTAREA") return;
+          if (tag === "INPUT" && (e.target as HTMLInputElement).type !== "submit") {
+            e.preventDefault();
           }
         }}
       >
@@ -1302,10 +1467,20 @@ export function MenuItemForm({
         )}
 
         {activeSection === "customization" && (
-          <div className="space-y-3">
+          <div className="space-y-3 relative">
+            {optionsLoading ? (
+              <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-white/80">
+                <p className="text-sm text-gray-600">Loading customizations & variants…</p>
+              </div>
+            ) : null}
             <p className="text-xs text-gray-500">
               Customizations & add-ons (extra cheese, spice level, etc.). Max {CUSTOMIZATION_VARIANT_LIMIT} total. Current: {totalOptionsCount}/{CUSTOMIZATION_VARIANT_LIMIT}
             </p>
+            {addonImageError ? (
+              <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded px-2 py-1.5">
+                {addonImageError}
+              </p>
+            ) : null}
             <div className="bg-gray-50 p-3 rounded-lg">
               <h3 className="text-xs font-semibold text-gray-700 mb-2">
                 {editingCustomizationIndex !== null ? "Edit" : "Add"} customization group
@@ -1403,7 +1578,10 @@ export function MenuItemForm({
                   Existing groups ({customizations.length})
                 </h3>
                 {customizations.map((cust, custIndex) => (
-                  <div key={custIndex} className="border border-gray-200 rounded-lg p-2.5">
+                  <div
+                    key={`cust-${toFiniteMenuId(cust.id) ?? `new-${custIndex}`}`}
+                    className="border border-gray-200 rounded-lg p-2.5"
+                  >
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
                         <span className="text-sm font-medium text-gray-900">{cust.customization_title}</span>
@@ -1447,38 +1625,182 @@ export function MenuItemForm({
                     </div>
                     {cust.addons && cust.addons.length > 0 ? (
                       <div className="mt-2 pl-2 border-l border-gray-200 space-y-1">
-                        {cust.addons.map((addon, addonIndex) => (
-                          <div key={addonIndex} className="flex items-center gap-2">
-                            <input
-                              type="text"
-                              className="flex-1 min-w-0 px-2 py-1 border border-gray-200 rounded text-xs"
-                              value={addon.addon_name}
-                              onChange={(e) =>
-                                handleUpdateAddon(custIndex, addonIndex, "addon_name", e.target.value)
-                              }
-                              placeholder="Add-on name (e.g. Extra cheese)"
-                            />
-                            <span className="text-gray-500 text-xs">₹</span>
-                            <input
-                              type="number"
-                              min={0}
-                              step={0.01}
-                              className="w-14 px-2 py-1 border border-gray-200 rounded text-xs"
-                              value={addon.addon_price}
-                              onChange={(e) =>
-                                handleUpdateAddon(custIndex, addonIndex, "addon_price", Number(e.target.value))
-                              }
-                              placeholder="0"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteAddon(custIndex, addonIndex)}
-                              className="text-xs font-medium text-red-600 hover:bg-red-50 px-1.5 py-0.5 rounded"
+                        {cust.addons.map((addon, addonIndex) => {
+                          const addonPk = toFiniteMenuId(addon.id);
+                          const uploading = addonPk != null && addonImageUploading === addonPk;
+                          const previewKey = addonPreviewKey(custIndex, addonIndex);
+                          const addonPreviewSrc =
+                            addonLocalPreviews[previewKey] ?? addon.addon_image_url ?? "";
+                          const addonFileRefKey = `${custIndex}-${addonIndex}`;
+                          return (
+                            <div
+                              key={`addon-${addonPk ?? `new-${addonIndex}`}`}
+                              className="flex flex-wrap items-start gap-2 py-1"
                             >
-                              Remove
-                            </button>
-                          </div>
-                        ))}
+                              <div className="relative shrink-0">
+                                {storeId ? (
+                                  <>
+                                    <div
+                                      role="button"
+                                      tabIndex={uploading ? -1 : 0}
+                                      title={
+                                        addonPk == null
+                                          ? "Preview only — save options once, then upload persists"
+                                          : "Click to upload image"
+                                      }
+                                      className={`relative block w-11 h-11 rounded border border-gray-200 overflow-hidden bg-gray-50 cursor-pointer hover:border-orange-400 hover:ring-1 hover:ring-orange-200 ${
+                                        uploading ? "opacity-60 pointer-events-none" : ""
+                                      }`}
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        if (uploading) return;
+                                        addonFileInputRefs.current[addonFileRefKey]?.click();
+                                      }}
+                                      onKeyDown={(e) => {
+                                        if (e.key !== "Enter" && e.key !== " ") return;
+                                        e.preventDefault();
+                                        if (!uploading) addonFileInputRefs.current[addonFileRefKey]?.click();
+                                      }}
+                                    >
+                                      {addonPreviewSrc ? (
+                                        addonPreviewSrc.startsWith("blob:") ||
+                                        addonPreviewSrc.startsWith("data:") ? (
+                                          <img
+                                            src={addonPreviewSrc}
+                                            alt=""
+                                            className="w-full h-full object-cover"
+                                          />
+                                        ) : (
+                                          <R2Image
+                                            src={addonPreviewSrc}
+                                            alt=""
+                                            className="w-full h-full object-cover"
+                                          />
+                                        )
+                                      ) : (
+                                        <div className="w-full h-full flex items-center justify-center">
+                                          <ImageIcon size={14} className="text-gray-300" />
+                                        </div>
+                                      )}
+                                      {uploading ? (
+                                        <div className="absolute inset-0 flex items-center justify-center bg-white/70 text-[10px] text-gray-600">
+                                          …
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                    <input
+                                      ref={(el) => {
+                                        addonFileInputRefs.current[addonFileRefKey] = el;
+                                      }}
+                                      type="file"
+                                      accept="image/jpeg,image/png,image/webp"
+                                      className="sr-only"
+                                      tabIndex={-1}
+                                      aria-hidden
+                                      disabled={uploading}
+                                      onClick={(e) => e.stopPropagation()}
+                                      onChange={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        const f = e.target.files?.[0];
+                                        e.target.value = "";
+                                        if (f) void handleUploadAddonImage(custIndex, addonIndex, f);
+                                      }}
+                                    />
+                                  </>
+                                ) : (
+                                  <div
+                                    className="w-11 h-11 rounded border border-dashed border-gray-200 bg-gray-50 flex items-center justify-center"
+                                    title="Save options once to add image"
+                                  >
+                                    <ImageIcon size={14} className="text-gray-300" />
+                                  </div>
+                                )}
+                                {addonPreviewSrc && addonPk != null && storeId && !uploading ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleRemoveAddonImage(custIndex, addonIndex)}
+                                    className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-600 text-white flex items-center justify-center shadow hover:bg-red-700"
+                                    aria-label="Remove image"
+                                    title="Remove image"
+                                  >
+                                    <X size={10} strokeWidth={3} />
+                                  </button>
+                                ) : null}
+                              </div>
+                              <input
+                                type="text"
+                                className="flex-1 min-w-[120px] px-2 py-1 border border-gray-200 rounded text-xs"
+                                value={addon.addon_name}
+                                onChange={(e) =>
+                                  handleUpdateAddon(custIndex, addonIndex, "addon_name", e.target.value)
+                                }
+                                placeholder="Add-on name"
+                              />
+                              <span className="text-gray-500 text-xs self-center">₹</span>
+                              <input
+                                type="number"
+                                min={0}
+                                step={0.01}
+                                className="w-14 px-2 py-1 border border-gray-200 rounded text-xs"
+                                value={addon.addon_price}
+                                onChange={(e) =>
+                                  handleUpdateAddon(
+                                    custIndex,
+                                    addonIndex,
+                                    "addon_price",
+                                    Number(e.target.value)
+                                  )
+                                }
+                                placeholder="0"
+                              />
+                              <input
+                                type="number"
+                                min={0}
+                                step={0.01}
+                                className="w-14 px-2 py-1 border border-gray-200 rounded text-xs"
+                                value={addon.addon_size_value ?? ""}
+                                onChange={(e) =>
+                                  handleUpdateAddon(
+                                    custIndex,
+                                    addonIndex,
+                                    "addon_size_value",
+                                    e.target.value === "" ? null : Number(e.target.value)
+                                  )
+                                }
+                                placeholder="Size"
+                                title="Size amount"
+                              />
+                              <select
+                                className="w-20 px-1 py-1 border border-gray-200 rounded text-xs"
+                                value={addon.addon_size_unit ?? ""}
+                                onChange={(e) =>
+                                  handleUpdateAddon(
+                                    custIndex,
+                                    addonIndex,
+                                    "addon_size_unit",
+                                    e.target.value || null
+                                  )
+                                }
+                              >
+                                <option value="">Unit</option>
+                                {SIZE_UNITS.map((u) => (
+                                  <option key={u} value={u}>
+                                    {u}
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                onClick={() => void handleDeleteAddon(custIndex, addonIndex)}
+                                className="text-xs font-medium text-red-600 hover:bg-red-50 px-1.5 py-0.5 rounded self-center"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
                     ) : (
                       <p className="text-xs text-gray-500 mt-2">No add-ons in this group.</p>
@@ -1489,6 +1811,11 @@ export function MenuItemForm({
             ) : (
               <p className="text-xs text-gray-500 py-2">No customizations added yet. Create a group above.</p>
             )}
+            {variantActionError ? (
+              <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded px-2 py-1.5">
+                {variantActionError}
+              </p>
+            ) : null}
             <div className="border-t border-gray-200 pt-3">
               <h3 className="text-xs font-semibold text-gray-700 mb-2">
                 Variants (optional) — size, half/full, etc.
@@ -1534,21 +1861,58 @@ export function MenuItemForm({
                       onChange={(e) => {
                         const vars = [...(formData.variants || [])];
                         vars[idx] = { ...vars[idx], variant_price: Number(e.target.value) || 0 };
-                        setFormData({
-                          ...formData,
+                        setFormData((prev) => ({
+                          ...prev,
                           variants: vars,
-                          has_variants: vars.some((v) => (v.variant_name || "").trim().length > 0),
-                        });
+                          has_variants: vars.some((x) => (x.variant_name || "").trim().length > 0),
+                        }));
                       }}
                       placeholder="0"
                     />
                   </div>
+                  <div className="min-w-[88px]">
+                    <label className="text-xs text-gray-600 block mb-0.5">Size (optional)</label>
+                    <input
+                      type="text"
+                      className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm"
+                      value={variantSizeValueForInput(v.variant_size_value)}
+                      onChange={(e) => {
+                        const vars = [...(formData.variants || [])];
+                        const raw = e.target.value.trim();
+                        vars[idx] = {
+                          ...vars[idx],
+                          variant_size_value: raw === "" ? null : raw,
+                        };
+                        setFormData((prev) => ({ ...prev, variants: vars }));
+                      }}
+                      placeholder="e.g. 500 or 1500-1700"
+                    />
+                  </div>
+                  <div className="min-w-[88px]">
+                    <label className="text-xs text-gray-600 block mb-0.5">Unit</label>
+                    <select
+                      className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm"
+                      value={v.variant_size_unit ?? ""}
+                      onChange={(e) => {
+                        const vars = [...(formData.variants || [])];
+                        vars[idx] = {
+                          ...vars[idx],
+                          variant_size_unit: e.target.value || null,
+                        };
+                        setFormData((prev) => ({ ...prev, variants: vars }));
+                      }}
+                    >
+                      <option value="">—</option>
+                      {SIZE_UNITS.map((u) => (
+                        <option key={u} value={u}>
+                          {u}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                   <button
                     type="button"
-                    onClick={() => {
-                      const vars = (formData.variants || []).filter((_, i) => i !== idx);
-                      setFormData({ ...formData, variants: vars, has_variants: vars.length > 0 });
-                    }}
+                    onClick={() => void handleRemoveVariant(idx)}
                     className="p-1.5 text-red-600 hover:bg-red-50 rounded self-end"
                     aria-label="Remove variant"
                   >
@@ -1708,7 +2072,8 @@ export function MenuItemForm({
           </button>
           {activeSection === "main" ? (
             <button
-              type="submit"
+              type="button"
+              onClick={() => void handleFormSubmit()}
               className="px-4 py-1.5 rounded-lg text-sm font-bold text-white bg-orange-500 hover:bg-orange-600 disabled:opacity-60 flex items-center gap-2"
               disabled={
                 isSaving ||
@@ -1726,7 +2091,8 @@ export function MenuItemForm({
             </button>
           ) : (
             <button
-              type="submit"
+              type="button"
+              onClick={() => void handleFormSubmit()}
               className="px-4 py-1.5 rounded-lg text-sm font-bold text-white bg-orange-500 hover:bg-orange-600 disabled:opacity-60 flex items-center gap-2"
               disabled={isSaving}
             >
@@ -1738,7 +2104,7 @@ export function MenuItemForm({
           )}
         </div>
         {error && <div className="text-red-500 text-xs mt-2">{error}</div>}
-      </form>
+      </div>
     </div>
   );
 }

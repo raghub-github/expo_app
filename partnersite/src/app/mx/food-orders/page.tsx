@@ -53,6 +53,10 @@ import {
   type MerchantOrderActionRow,
 } from '@/lib/merchantOrderFoodActions';
 import { OrderPanel } from '@/components/orders/OrderPanel';
+import { MerchantOrderItemsList } from '@/components/orders/MerchantOrderItemsList';
+import { MerchantOrderBillSummary } from '@/components/orders/MerchantOrderBillSummary';
+import { resolveMerchantInstructionsForDisplay } from '@/lib/merchant-order-instructions';
+import type { NormalizedOrderLineItem } from '@/lib/orderLineItems';
 import { OrderRidersHistorySidesheet } from '@/components/orders/OrderRidersHistorySidesheet';
 import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
 import { GatiMitraOrderPrintBill } from '@/components/orders/GatiMitraOrderPrintBill';
@@ -1576,8 +1580,8 @@ function OrdersPageContent() {
               <>
             {rightPanelOpen && selectedOrder && selectedOrderBelongsToFilter ? (
               <>
-                <div className="hidden lg:grid lg:grid-cols-[minmax(0,1fr)_16rem] flex-1 min-h-0 min-w-0 w-full items-start overflow-y-auto overflow-x-hidden">
-                  <div className="min-w-0 border-r border-gray-200 bg-gray-50/80 p-3">
+                <div className="hidden lg:grid lg:grid-cols-[minmax(0,1fr)_16rem] flex-1 min-h-0 min-w-0 h-full w-full overflow-hidden">
+                  <div className="min-w-0 min-h-0 h-full overflow-y-auto overflow-x-hidden border-r border-gray-200 bg-gray-50/80 p-3 hide-scrollbar">
                       {selectedOrderPricing ? (
                         <OrderPanel
                           className="w-full"
@@ -1642,8 +1646,8 @@ function OrdersPageContent() {
                         />
                       ) : null}
                   </div>
-                  <div className="min-h-0 overflow-hidden flex flex-col bg-gray-50/80 p-3 pl-4">
-                    <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden hide-scrollbar">
+                  <div className="flex min-h-0 h-full flex-col overflow-hidden bg-gray-50/80 p-3 pl-4">
+                    <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain hide-scrollbar">
                       <div className="space-y-3 pr-1">
                       {displayOrders.map((order) => (
                         <OrderCard
@@ -2772,75 +2776,39 @@ function OrderDetailMobile({
           </div>
         ) : null}
 
-        {/* Items - Detailed format with QTY | Price | Amount */}
-        <div className="bg-white rounded-xl border border-gray-200 p-3 shadow-sm">
-          <div className="flex items-center justify-between mb-2.5">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Items</p>
+        <div className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+          <div className="mb-2 flex items-center justify-between">
             <span className="text-xs text-gray-500">{order.preparation_time_minutes ?? '—'}m prep</span>
           </div>
-          {/* Header row */}
-          {order.items && Array.isArray(order.items) && order.items.length > 0 && (
-            <div className="grid grid-cols-12 gap-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1.5 pb-1 border-b border-gray-200">
-              <div className="col-span-5">Item</div>
-              <div className="col-span-2 text-center">QTY</div>
-              <div className="col-span-2 text-right">Price</div>
-              <div className="col-span-3 text-right">Amount</div>
-            </div>
-          )}
-          {previewItems.length > 0 ? (
-            <div className="space-y-2">
-              {previewItems.map((item: any, idx: number) => {
-                const qty = item.quantity || 1;
-                const itemPrice = Number(item.price || 0);
-                const amount = Number(item.total || itemPrice * qty);
-                return (
-                  <div key={idx} className="grid grid-cols-12 gap-2 text-xs items-center py-1 border-b border-gray-100 last:border-0">
-                    <div className="col-span-5 min-w-0">
-                      <p className="font-medium text-gray-900 truncate">{item.name || `Item ${idx + 1}`}</p>
-                      {item.customizations && Array.isArray(item.customizations) && item.customizations.length > 0 && (
-                        <p className="text-[10px] text-gray-500 mt-0.5 truncate">{item.customizations.join(', ')}</p>
-                      )}
-                    </div>
-                    <div className="col-span-2 text-center">
-                      <p className="text-gray-600 font-medium">{qty}</p>
-                    </div>
-                    <div className="col-span-2 text-right">
-                      <p className="text-gray-600">₹{itemPrice.toFixed(2)}</p>
-                    </div>
-                    <div className="col-span-3 text-right">
-                      <p className="font-semibold text-gray-900">₹{amount.toFixed(2)}</p>
-                    </div>
-                  </div>
-                );
-              })}
-              {moreItemsCount > 0 && onOpenAllItems ? (
-                <button
-                  type="button"
-                  onClick={onOpenAllItems}
-                  className="w-full pt-1 text-left text-xs font-semibold text-blue-600 hover:underline"
-                >
-                  +{moreItemsCount} more
-                </button>
-              ) : null}
-            </div>
-          ) : (
-            <p className="text-xs text-gray-500">{computeOrderItemQuantityCount(order)} items</p>
-          )}
-          <button
-            type="button"
-            onClick={onOpenBill}
-            className="mt-2.5 pt-2.5 border-t border-gray-100 w-full flex justify-between items-center gap-2 text-left"
-          >
-            <span className="flex items-center gap-2">
-              <span className="text-xs font-medium text-gray-800 underline decoration-dashed decoration-gray-400">
-                Total Bill
-              </span>
-              <span className="rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-bold text-teal-700 border border-teal-100">
-                PAID
-              </span>
-            </span>
-            <span className="font-bold text-gray-900">₹{Number(order.food_items_total_value || 0).toFixed(2)}</span>
-          </button>
+          <MerchantOrderItemsList
+            items={(previewItems.length ? previewItems : orderItems) as NormalizedOrderLineItem[]}
+            showUtensilsBanner={false}
+            maxItems={ORDER_ITEMS_PREVIEW_MAX}
+            compact
+          />
+          {moreItemsCount > 0 && onOpenAllItems ? (
+            <button
+              type="button"
+              onClick={onOpenAllItems}
+              className="mt-2 w-full text-left text-xs font-semibold text-blue-600 hover:underline"
+            >
+              +{moreItemsCount} more
+            </button>
+          ) : null}
+          <MerchantOrderBillSummary
+            className="mt-2"
+            items={orderItems as NormalizedOrderLineItem[]}
+            pricing={
+              order.pricing ?? {
+                subtotal: 0,
+                packaging: 0,
+                taxes: 0,
+                discount: 0,
+                total: Number(order.food_items_total_value || 0),
+              }
+            }
+            onTotalClick={onOpenBill}
+          />
         </div>
 
         {/* Delivery Instructions */}
@@ -2876,6 +2844,7 @@ function OrderDetailMobile({
           pickupVerified={pickupVerified}
           rtoVerified={rtoVerified}
           compact
+          merchantInstructions={resolveMerchantInstructionsForDisplay(order)}
         />
 
         {/* Order Status Timeline */}
@@ -3372,9 +3341,12 @@ function ActionBtns({
     const prepExpired =
       nowMs != null &&
       (isPrepCountdownExpired(order, nowMs) || !prepCountdown.label.includes('('));
+    const showNeedMore = prepExpired && onNeedMoreTime && !compact;
+    const prepBtnPair =
+      'w-full min-h-[44px] rounded-xl px-3 py-2.5 text-sm font-semibold';
     return (
-      <div className={`flex gap-2 items-center ${topRightLayout ? 'w-full' : 'flex-wrap'}`}>
-        {prepExpired && onNeedMoreTime && !compact && (
+      <div className={`w-full ${showNeedMore ? 'grid grid-cols-2 gap-2' : 'flex gap-2 items-stretch'}`}>
+        {showNeedMore ? (
           <button
             type="button"
             onClick={(e) => {
@@ -3382,32 +3354,24 @@ function ActionBtns({
               onNeedMoreTime();
             }}
             disabled={dis}
-            className={`${btnBase} ${topRightLayout ? 'flex-1 px-3 py-2.5 text-sm font-semibold' : ''} border-2 border-blue-500 bg-white text-blue-600 hover:bg-blue-50`}
+            className={`${btnBase} ${prepBtnPair} border border-blue-600 bg-white text-blue-700 hover:bg-blue-50`}
           >
             Need more time
           </button>
-        )}
+        ) : null}
         <MarkAsReadyCountdownButton
           order={order}
           nowMs={nowMs}
           disabled={dis}
           compact={compact}
-          fullWidth={!prepExpired || !onNeedMoreTime ? topRightLayout : false}
-          className={
-            prepExpired && onNeedMoreTime
-              ? topRightLayout
-                ? 'flex-[1.2] min-w-0'
-                : 'min-w-0'
-              : topRightLayout
-                ? 'flex-1 min-w-0'
-                : 'min-w-0'
-          }
+          fullWidth={topRightLayout || showNeedMore || !compact}
+          className={`${prepBtnPair} ${showNeedMore ? 'min-w-0' : topRightLayout ? 'flex-1 min-w-0' : 'min-w-0'}`}
           onClick={(e) => {
             e.stopPropagation();
             onReady();
           }}
         />
-        <RtoMenu />
+        {!showNeedMore ? <RtoMenu /> : null}
       </div>
     );
   }

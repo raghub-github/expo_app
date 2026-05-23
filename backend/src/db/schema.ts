@@ -1425,6 +1425,9 @@ export const ordersCoreItemAddons = pgTable(
       .notNull()
       .references(() => ordersCoreItems.id, { onDelete: "cascade" }),
     addonId: bigint("addon_id", { mode: "number" }),
+    menuAddonId: text("menu_addon_id"),
+    customizationId: text("customization_id"),
+    menuAddonPk: bigint("menu_addon_pk", { mode: "number" }),
     addonName: text("addon_name"),
     addonPrice: numeric("addon_price", { precision: 12, scale: 2 }),
     quantity: integer("quantity").default(1),
@@ -1432,6 +1435,41 @@ export const ordersCoreItemAddons = pgTable(
   },
   (table) => ({
     orderItemIdIdx: index("orders_core_item_addons_order_item_id_idx").on(table.orderItemId),
+  })
+);
+
+export const orderItemAddonCommissionSnapshots = pgTable(
+  "order_item_addon_commission_snapshots",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: bigint("order_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    orderItemId: bigint("order_item_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCoreItems.id, { onDelete: "cascade" }),
+    orderItemAddonId: bigint("order_item_addon_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCoreItemAddons.id, { onDelete: "cascade" }),
+    storeId: bigint("store_id", { mode: "number" }).notNull(),
+    menuAddonId: text("menu_addon_id").notNull(),
+    customizationId: text("customization_id"),
+    menuAddonPk: bigint("menu_addon_pk", { mode: "number" }),
+    addonName: text("addon_name"),
+    quantity: integer("quantity").notNull().default(1),
+    merchantBasePrice: numeric("merchant_base_price", { precision: 12, scale: 2 }).notNull(),
+    commissionPercent: numeric("commission_percent", { precision: 5, scale: 2 }).notNull(),
+    customerVisiblePrice: numeric("customer_visible_price", { precision: 12, scale: 2 }).notNull(),
+    platformEarning: numeric("platform_earning", { precision: 12, scale: 2 }).notNull(),
+    sourceRuleKind: text("source_rule_kind").notNull(),
+    sourceRuleId: bigint("source_rule_id", { mode: "number" }),
+    sourcePlanId: bigint("source_plan_id", { mode: "number" }),
+    sourceSubscriptionId: bigint("source_subscription_id", { mode: "number" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    orderIdx: index("idx_oiacs_order").on(table.orderId),
+    orderItemIdx: index("idx_oiacs_order_item").on(table.orderItemId),
   })
 );
 

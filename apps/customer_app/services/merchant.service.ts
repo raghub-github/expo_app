@@ -3,6 +3,7 @@
  */
 
 import api from "./api";
+import { getCachedMenuItemFullConfig, setCachedMenuItemFullConfig } from "@/lib/menu-item-config-query";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 const MERCHANTS_PREFIX = "/v1/merchants";
@@ -87,6 +88,8 @@ export type MenuItemFullConfig = {
     id: string;
     name: string;
     type: string | null;
+    sizeValue?: string | null;
+    sizeUnit?: string | null;
     price: number;
     isDefault: boolean;
     displayOrder: number;
@@ -104,6 +107,8 @@ export type MenuItemFullConfig = {
       name: string;
       price: number;
       imageUrl: string | null;
+      sizeValue?: string | null;
+      sizeUnit?: string | null;
       displayOrder: number;
       isMostOrdered?: boolean;
     }>;
@@ -385,12 +390,18 @@ export const merchantService = {
   /** Full config for item customization sheet: item + variants + customizations (with addons). Lazy-loaded on item tap. */
   async getMenuItemFullConfig(
     storeId: string,
-    itemId: string
+    itemId: string,
+    options?: { skipMemoryCache?: boolean }
   ): Promise<MenuItemFullConfig | null> {
+    if (!options?.skipMemoryCache) {
+      const cached = getCachedMenuItemFullConfig(storeId, itemId);
+      if (cached) return cached;
+    }
     try {
       const { data } = await api.get<MenuItemFullConfig>(
         `${MERCHANTS_PREFIX}/${storeId}/menu/items/${itemId}/full-config`
       );
+      if (data) setCachedMenuItemFullConfig(storeId, itemId, data);
       return data ?? null;
     } catch {
       return null;
