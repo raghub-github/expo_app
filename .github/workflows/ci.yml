@@ -52,7 +52,12 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 2 }
+        with: { fetch-depth: 0 }
+      - name: Ensure origin/main ref exists
+        # On PR builds checkout fetches the PR head only; turbo's [origin/main]
+        # filter needs the remote-tracking branch to compute the affected graph.
+        # On push-to-main this is a no-op since HEAD already equals origin/main.
+        run: git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main || true
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
       - run: npm ci --no-audit --no-fund --ignore-scripts
@@ -74,7 +79,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 2 }
+        with: { fetch-depth: 0 }
+      - name: Ensure origin/main ref exists
+        run: git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
       - run: npm ci --no-audit --no-fund --ignore-scripts
