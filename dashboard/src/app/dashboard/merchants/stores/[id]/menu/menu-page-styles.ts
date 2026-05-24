@@ -7,7 +7,7 @@ export const MENU_PAGE_GLOBAL_STYLES = `
 `;
 
 export const menuStatCard =
-  "bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[100px]";
+  "bg-gray-50 border border-gray-200 rounded-md px-2 py-1 min-w-[72px] shrink-0";
 
 export const menuCategoryChipActive = "bg-orange-500 text-white shadow-sm ring-1 ring-orange-200";
 export const menuCategoryChipIdle =

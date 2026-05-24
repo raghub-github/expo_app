@@ -20,6 +20,7 @@ import {
   Layers,
   LayoutGrid,
   ListTree,
+  SlidersHorizontal,
 } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
 import { R2Image } from "@/components/ui/R2Image";
@@ -43,6 +44,7 @@ import {
   normalizeFoodTypeForForm,
   normalizeSpiceLevelForForm,
   getFoodTypeLabel,
+  itemHasCustomizationContent,
   type MenuItem,
   type MenuCategory,
   type Customization,
@@ -325,6 +327,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [categoryPillMode, setCategoryPillMode] = useState<"category" | "sub-category">("category");
   const [viewMode, setViewMode] = useState<"card" | "tree">("card");
+  const [contentScope, setContentScope] = useState<"item" | "cust">("item");
+  const [custStockBusy, setCustStockBusy] = useState<string | null>(null);
   const [openTreeGroups, setOpenTreeGroups] = useState<Record<string, boolean>>({});
   const [categoryChipDropdownId, setCategoryChipDropdownId] = useState<number | null>(null);
   const [subcategoryRowOffset, setSubcategoryRowOffset] = useState(0);
@@ -807,6 +811,11 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
             item.item_description.toLowerCase().includes(searchTerm.toLowerCase()))
       )
     : filteredByVisibility;
+
+  const custScopeItems = useMemo(
+    () => searchedItems.filter(itemHasCustomizationContent),
+    [searchedItems]
+  );
 
   const treeGroups = useMemo(() => {
     const byCat = new Map<
@@ -1946,48 +1955,138 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     setIsDeletingCategory(false);
   };
 
+  async function handleCustOptionStockToggle(
+    item: MenuItem,
+    targetType: "variant" | "addon" | "modifier_option",
+    optionId: number,
+    inStock: boolean
+  ) {
+    const busyKey = `${targetType}-${optionId}`;
+    setCustStockBusy(busyKey);
+    try {
+      const url =
+        targetType === "variant"
+          ? `/api/merchant/stores/${storeId}/menu/variants/${optionId}`
+          : targetType === "addon"
+            ? `/api/merchant/stores/${storeId}/menu/customization-options/${optionId}`
+            : `/api/merchant/stores/${storeId}/menu/modifier-options/${optionId}`;
+      const res = await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ in_stock: inStock }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        throw new Error(data?.error || "Failed to update stock");
+      }
+      setMenuItems((prev) =>
+        prev.map((it) => {
+          if (it.id !== item.id) return it;
+          if (targetType === "variant") {
+            return {
+              ...it,
+              variants: (it.variants ?? []).map((v) =>
+                v.id === optionId ? { ...v, in_stock: inStock } : v
+              ),
+            };
+          }
+          if (targetType === "addon") {
+            return {
+              ...it,
+              customizations: (it.customizations ?? []).map((g) => ({
+                ...g,
+                addons: (g.addons ?? []).map((a) =>
+                  a.id === optionId ? { ...a, in_stock: inStock } : a
+                ),
+              })),
+            };
+          }
+          return {
+            ...it,
+            linked_modifier_groups: (it.linked_modifier_groups ?? []).map((g) => ({
+              ...g,
+              options: (g.options ?? []).map((o) =>
+                o.id === optionId ? { ...o, in_stock: inStock } : o
+              ),
+            })),
+          };
+        })
+      );
+      toast(inStock ? "Marked in stock" : "Marked out of stock");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed to update stock");
+    } finally {
+      setCustStockBusy(null);
+    }
+  }
+
   return (
     <div className="menu-page-root flex h-full min-h-0 flex-col bg-white">
       <style>{MENU_PAGE_GLOBAL_STYLES}</style>
       <header className="sticky top-0 z-40 shrink-0 border-b border-gray-200 bg-white shadow-sm">
-        <div className="px-3 sm:px-4 lg:px-6 flex flex-wrap items-center gap-2 justify-between py-2.5">
-          <div className="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
-            <div className="flex flex-wrap gap-2 items-center">
+        <div className="px-3 sm:px-4 lg:px-6 flex items-center gap-2 justify-between flex-nowrap py-2">
+          <div className="flex items-center gap-1.5 min-w-0 shrink overflow-x-auto scrollbar-hide">
+            <div className="flex items-center gap-1.5 flex-nowrap">
               <div className={menuStatCard}>
-                <div className="text-gray-500 text-xs font-medium">
+                <div className="text-gray-500 text-[10px] font-medium leading-tight whitespace-nowrap">
                   Total Items
                   {planLimits != null && (
-                    <span className="ml-1 text-gray-400">
+                    <span className="text-gray-400">
                       / {(planLimits as { maxMenuItems?: number })?.maxMenuItems ?? "—"}
                     </span>
                   )}
                 </div>
-                <div className="text-lg font-bold text-gray-900 leading-tight">{menuItems.length}</div>
+                <div className="text-base font-bold text-gray-900 leading-tight">{menuItems.length}</div>
               </div>
               <div className={menuStatCard}>
-                <div className="text-gray-500 text-xs font-medium">In Stock</div>
-                <div className="text-lg font-bold text-green-600 leading-tight">{inStock}</div>
+                <div className="text-gray-500 text-[10px] font-medium leading-tight whitespace-nowrap">In Stock</div>
+                <div className="text-base font-bold text-green-600 leading-tight">{inStock}</div>
               </div>
               <div className={menuStatCard}>
-                <div className="text-gray-500 text-xs font-medium">Out of Stock</div>
-                <div className="text-lg font-bold text-red-600 leading-tight">
+                <div className="text-gray-500 text-[10px] font-medium leading-tight whitespace-nowrap">Out of Stock</div>
+                <div className="text-base font-bold text-red-600 leading-tight">
                   {outStock} ({outStockPercent}%)
                 </div>
               </div>
               <div className={menuStatCard}>
-                <div className="text-gray-500 text-xs font-medium">
+                <div className="text-gray-500 text-[10px] font-medium leading-tight whitespace-nowrap">
                   Categories
                   {planLimits != null && (
-                    <span className="ml-1 text-gray-400">
+                    <span className="text-gray-400">
                       / {(planLimits as { maxMenuCategories?: number })?.maxMenuCategories ?? "—"}
                     </span>
                   )}
                 </div>
-                <div className="text-lg font-bold text-blue-600 leading-tight">{categories.length}</div>
+                <div className="text-base font-bold text-blue-600 leading-tight">{categories.length}</div>
               </div>
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end min-w-0">
+            <div className="inline-flex rounded-lg border border-gray-200 bg-white overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setContentScope("item")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold transition-colors ${
+                  contentScope === "item" ? "bg-gray-900 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
+                }`}
+                aria-pressed={contentScope === "item"}
+              >
+                <Package size={16} />
+                Item
+              </button>
+              <button
+                type="button"
+                onClick={() => setContentScope("cust")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold transition-colors border-l border-gray-200 ${
+                  contentScope === "cust" ? "bg-gray-900 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
+                }`}
+                aria-pressed={contentScope === "cust"}
+              >
+                <SlidersHorizontal size={16} />
+                Cust
+              </button>
+            </div>
+            {contentScope === "item" ? (
             <div className="inline-flex rounded-lg border border-gray-200 bg-white overflow-hidden">
               <button
                 type="button"
@@ -2012,6 +2111,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 Tree
               </button>
             </div>
+            ) : null}
             <button
               type="button"
               onClick={() => setShowManageCategoriesModal(true)}
@@ -2137,22 +2237,216 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         <div ref={menuScrollRef} className="flex-1 min-w-0 overflow-y-auto px-3 sm:px-4 py-3 bg-white">
           {loading ? (
             <MenuItemsGridSkeleton />
-          ) : searchedItems.length === 0 ? (
+          ) : (contentScope === "item"
+              ? searchedItems.length === 0
+              : custScopeItems.length === 0) ? (
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <Package size={48} className="text-gray-300 mb-4" />
               <h3 className="text-xl font-bold text-gray-700">
-                {menuItems.length > 0 ? "No items match current filters" : "No menu items found"}
+                {contentScope === "cust"
+                  ? "No customization items found"
+                  : menuItems.length > 0
+                    ? "No items match current filters"
+                    : "No menu items found"}
               </h3>
               <p className="text-gray-500 mt-2">
-                {menuItems.length > 0
-                  ? "Try clearing or changing filters to see items."
-                  : searchTerm
-                    ? "Try a different search term"
-                    : "Add your first menu item to get started"}
+                {contentScope === "cust"
+                  ? searchTerm
+                    ? "Try a different search term or switch to Item view"
+                    : "Items with add-ons or variants will appear here"
+                  : menuItems.length > 0
+                    ? "Try clearing or changing filters to see items."
+                    : searchTerm
+                      ? "Try a different search term"
+                      : "Add your first menu item to get started"}
               </p>
-              {menuItems.length === 0 && categories.length === 0 && (
+              {contentScope === "item" && menuItems.length === 0 && categories.length === 0 && (
                 <p className="text-sm text-gray-400 mt-2">You need to create a category first</p>
               )}
+            </div>
+          ) : contentScope === "cust" ? (
+            <div className="space-y-4">
+              {custScopeItems.map((item) => {
+                const categoryDisplayLabel = formatCategoryLabel(categories, item.category_id);
+                const variants = item.variants ?? [];
+                const custGroups = item.customizations ?? [];
+                const linkedGroups = item.linked_modifier_groups ?? [];
+                return (
+                  <div
+                    key={item.id}
+                    className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden"
+                  >
+                    <div className="flex items-center gap-3 border-b border-gray-100 bg-gray-50/80 p-3">
+                      <div className="h-12 w-12 shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-100">
+                        <R2Image
+                          src={item.item_image_url}
+                          alt={item.item_name}
+                          className="h-full w-full object-cover"
+                          fallbackSrc={ITEM_PLACEHOLDER_SVG}
+                        />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-bold text-gray-900">{item.item_name}</p>
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                          {categoryDisplayLabel}
+                        </p>
+                      </div>
+                      <p className="shrink-0 text-sm font-bold text-orange-600">₹{item.selling_price}</p>
+                    </div>
+                    <div className="space-y-3 p-3">
+                      {variants.length > 0 ? (
+                        <div>
+                          <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-indigo-700">
+                            Variants
+                          </p>
+                          <ul className="space-y-1">
+                            {variants.map((v, i) => {
+                              const variantInStock = v.in_stock !== false;
+                              return (
+                              <li
+                                key={v.variant_id || i}
+                                className="flex items-center justify-between gap-2 rounded-lg border border-indigo-100 bg-indigo-50/40 px-2.5 py-1.5 text-sm"
+                              >
+                                <span className="min-w-0 flex-1 text-gray-800">
+                                  {v.variant_name || v.variant_type || "Variant"}
+                                  {v.variant_size_value && v.variant_size_unit
+                                    ? ` (${v.variant_size_value} ${v.variant_size_unit})`
+                                    : ""}
+                                </span>
+                                <span className="font-semibold tabular-nums text-gray-900 shrink-0">
+                                  ₹{v.variant_price ?? 0}
+                                </span>
+                                {v.id ? (
+                                  <MenuItemStockToggle
+                                    inStock={variantInStock}
+                                    disabled={custStockBusy === `variant-${v.id}`}
+                                    onToggle={() =>
+                                      handleCustOptionStockToggle(item, "variant", v.id!, !variantInStock)
+                                    }
+                                  />
+                                ) : null}
+                              </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      ) : null}
+                      {custGroups.length > 0 ? (
+                        <div>
+                          <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-blue-700">
+                            Add-ons / Customizations
+                          </p>
+                          <div className="space-y-2">
+                            {custGroups.map((group, idx) => (
+                              <div
+                                key={group.customization_id || idx}
+                                className="rounded-lg border border-blue-100 bg-blue-50/30 p-2.5"
+                              >
+                                <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                                  <p className="text-sm font-semibold text-gray-900">
+                                    {group.customization_title}
+                                  </p>
+                                  <span className="rounded bg-white px-1.5 py-0.5 text-[10px] font-medium text-gray-600 ring-1 ring-gray-200">
+                                    {group.customization_type || "Checkbox"}
+                                  </span>
+                                </div>
+                                <ul className="space-y-1">
+                                  {(group.addons ?? []).map((addon, j) => {
+                                    const addonInStock = addon.in_stock !== false;
+                                    return (
+                                    <li
+                                      key={addon.addon_id || j}
+                                      className="flex items-center justify-between gap-2 rounded border border-white bg-white px-2 py-1 text-sm"
+                                    >
+                                      <span className="min-w-0 flex-1 text-gray-700">{addon.addon_name}</span>
+                                      <span className="font-medium tabular-nums text-gray-900 shrink-0">
+                                        ₹{addon.addon_price ?? 0}
+                                      </span>
+                                      {addon.id ? (
+                                        <MenuItemStockToggle
+                                          inStock={addonInStock}
+                                          disabled={custStockBusy === `addon-${addon.id}`}
+                                          onToggle={() =>
+                                            handleCustOptionStockToggle(item, "addon", addon.id!, !addonInStock)
+                                          }
+                                        />
+                                      ) : null}
+                                    </li>
+                                    );
+                                  })}
+                                </ul>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      {linkedGroups.length > 0 ? (
+                        <div>
+                          <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-emerald-700">
+                            Linked Add-on Groups
+                          </p>
+                          <div className="space-y-2">
+                            {linkedGroups.map((group) => (
+                              <div
+                                key={group.id}
+                                className="rounded-lg border border-emerald-100 bg-emerald-50/30 p-2.5"
+                              >
+                                <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                                  <p className="text-sm font-semibold text-gray-900">{group.title}</p>
+                                  {group.is_required ? (
+                                    <span className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700 ring-1 ring-red-100">
+                                      Required
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <ul className="space-y-1">
+                                  {(group.options ?? []).map((opt) => {
+                                    const optInStock = opt.in_stock !== false;
+                                    return (
+                                    <li
+                                      key={opt.id}
+                                      className="flex items-center justify-between gap-2 rounded border border-white bg-white px-2 py-1 text-sm"
+                                    >
+                                      <span className="min-w-0 flex-1 text-gray-700">{opt.name}</span>
+                                      {opt.price_delta !== "0" && opt.price_delta ? (
+                                        <span className="font-medium tabular-nums text-gray-900 shrink-0">
+                                          +₹{opt.price_delta}
+                                        </span>
+                                      ) : (
+                                        <span className="text-xs text-gray-400 shrink-0">Included</span>
+                                      )}
+                                      <MenuItemStockToggle
+                                        inStock={optInStock}
+                                        disabled={custStockBusy === `modifier_option-${opt.id}`}
+                                        onToggle={() =>
+                                          handleCustOptionStockToggle(
+                                            item,
+                                            "modifier_option",
+                                            opt.id,
+                                            !optInStock
+                                          )
+                                        }
+                                      />
+                                    </li>
+                                    );
+                                  })}
+                                </ul>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      {variants.length === 0 &&
+                      custGroups.length === 0 &&
+                      linkedGroups.length === 0 ? (
+                        <p className="text-xs text-gray-500">
+                          Customization flags set — open item to view full details.
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           ) : viewMode === "card" ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

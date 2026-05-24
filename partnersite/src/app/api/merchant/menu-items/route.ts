@@ -112,10 +112,67 @@ export async function GET(req: NextRequest) {
       variantsByItemId[mid].push(v)
     }
 
+    const linkedByItemId: Record<number, any[]> = {}
+    try {
+      const { data: modifierLinks } = await supabase
+        .from('merchant_item_modifier_groups')
+        .select('id, menu_item_id, modifier_group_id, display_order')
+        .in('menu_item_id', itemIds)
+        .order('display_order', { ascending: true })
+      const linkList = modifierLinks ?? []
+      const modifierGroupIds = [...new Set(linkList.map((l: { modifier_group_id: number }) => l.modifier_group_id))]
+      const modifierGroupsById: Record<number, any> = {}
+      const modifierOptionsByGroupId: Record<number, any[]> = {}
+      if (modifierGroupIds.length > 0) {
+        const { data: groups } = await supabase
+          .from('merchant_modifier_groups')
+          .select('id, title, description, is_required, min_selection, max_selection')
+          .in('id', modifierGroupIds)
+        for (const g of groups ?? []) modifierGroupsById[g.id] = g
+        const { data: opts } = await supabase
+          .from('merchant_modifier_options')
+          .select('id, modifier_group_id, option_code, name, price_delta, in_stock, display_order')
+          .in('modifier_group_id', modifierGroupIds)
+          .order('display_order', { ascending: true })
+        for (const o of opts ?? []) {
+          const gid = o.modifier_group_id
+          if (!modifierOptionsByGroupId[gid]) modifierOptionsByGroupId[gid] = []
+          modifierOptionsByGroupId[gid].push(o)
+        }
+      }
+      for (const link of linkList) {
+        const mid = link.menu_item_id
+        const g = modifierGroupsById[link.modifier_group_id]
+        if (!g) continue
+        if (!linkedByItemId[mid]) linkedByItemId[mid] = []
+        linkedByItemId[mid].push({
+          id: link.id,
+          modifier_group_id: link.modifier_group_id,
+          display_order: link.display_order ?? 0,
+          title: g.title,
+          description: g.description ?? null,
+          is_required: g.is_required ?? false,
+          min_selection: g.min_selection ?? 0,
+          max_selection: g.max_selection ?? 1,
+          options: (modifierOptionsByGroupId[link.modifier_group_id] ?? []).map((o: any) => ({
+            id: o.id,
+            option_id: o.option_code,
+            name: o.name,
+            price_delta: o.price_delta,
+            in_stock: o.in_stock ?? true,
+            display_order: o.display_order ?? 0,
+          })),
+        })
+      }
+    } catch (linkErr) {
+      console.warn('[menu-items GET] linked modifier groups skipped', linkErr)
+    }
+
     const enriched = list.map((item: any) => ({
       ...item,
       customizations: custByItemId[item.id] ?? [],
       variants: variantsByItemId[item.id] ?? [],
+      linked_modifier_groups: linkedByItemId[item.id] ?? [],
     }))
 
     return NextResponse.json(enriched)

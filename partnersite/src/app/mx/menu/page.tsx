@@ -59,6 +59,24 @@ interface MenuItem {
   item_tags?: string[] | null;
   customizations?: Customization[];
   variants?: Variant[];
+  linked_modifier_groups?: Array<{
+    id: number;
+    modifier_group_id: number;
+    title: string;
+    description?: string | null;
+    is_required?: boolean;
+    min_selection?: number;
+    max_selection?: number;
+    display_order?: number;
+    options?: Array<{
+      id: number;
+      option_id?: string;
+      name: string;
+      price_delta?: number | string;
+      in_stock?: boolean;
+      display_order?: number;
+    }>;
+  }>;
   food_type?: string;
   spice_level?: string;
   cuisine_type?: string;
@@ -119,11 +137,19 @@ type MenuCombo = {
   out_of_stock_until?: string | null;
 };
 
+function itemHasCustomizationContent(item: MenuItem): boolean {
+  if (item.has_customizations || item.has_variants || item.has_addons) return true;
+  if ((item.customizations?.length ?? 0) > 0) return true;
+  if ((item.variants?.length ?? 0) > 0) return true;
+  if ((item.linked_modifier_groups?.length ?? 0) > 0) return true;
+  return false;
+}
+
 import React, { useState, useEffect, Suspense, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'next/navigation'
 import { toast } from 'sonner'
-import { Plus, Edit2, Trash2, X, Upload, Package, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Image as ImageIcon, Info, Search, FileText, Eye, LayoutGrid, ListTree } from 'lucide-react'
+import { Plus, Edit2, Trash2, X, Upload, Package, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Image as ImageIcon, Info, Search, FileText, Eye, LayoutGrid, ListTree, SlidersHorizontal } from 'lucide-react'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
@@ -1617,6 +1643,7 @@ function MenuContent() {
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [categoryPillMode, setCategoryPillMode] = useState<'category' | 'sub-category'>('category');
   const [viewMode, setViewMode] = useState<'card' | 'tree'>('card');
+  const [contentScope, setContentScope] = useState<'item' | 'cust'>('item');
   const [openTreeGroups, setOpenTreeGroups] = useState<Record<string, boolean>>({});
   const [categoryLoading, setCategoryLoading] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
@@ -1636,6 +1663,7 @@ function MenuContent() {
   const rootCategories = useMemo(() => categories.filter((c) => !c.parent_category_id), [categories]);
   const subCategories = useMemo(() => categories.filter((c) => !!c.parent_category_id), [categories]);
   const categoryScrollRef = React.useRef<HTMLDivElement>(null);
+  const menuListScrollRef = React.useRef<HTMLDivElement>(null);
 
   const categoryNameConflictSet = React.useMemo(() => {
     const set = new Set<string>();
@@ -1697,6 +1725,7 @@ function MenuContent() {
     | { kind: "combo"; comboId: number; comboName: string }
   >(null);
   const [oosBusy, setOosBusy] = useState(false);
+  const [custStockBusy, setCustStockBusy] = useState<string | null>(null);
   const [oosChoice, setOosChoice] = useState<"HOURS" | "NEXT_OPEN" | "CUSTOM" | "MANUAL">("HOURS");
   const [oosHours, setOosHours] = useState(5);
   const [oosDate, setOosDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -1845,7 +1874,6 @@ function MenuContent() {
   const [menuReplaceError, setMenuReplaceError] = useState('');
   const [csvValidationError, setCsvValidationError] = useState('');
   const [showMenuFileSection, setShowMenuFileSection] = useState(false);
-  const menuFileSectionRef = React.useRef<HTMLDivElement>(null);
   const menuImageInputRef = React.useRef<HTMLInputElement>(null);
   const menuFileInputRef = React.useRef<HTMLInputElement>(null);
   const MAX_MENU_IMAGES = 3;
@@ -3352,6 +3380,64 @@ function MenuContent() {
     }
   }
 
+  async function handleCustOptionStockToggle(
+    item: MenuItem,
+    targetType: 'variant' | 'addon' | 'modifier_option',
+    optionId: number,
+    inStock: boolean
+  ) {
+    if (!storeId || !optionId) return;
+    const busyKey = `${targetType}-${optionId}`;
+    setCustStockBusy(busyKey);
+    try {
+      const res = await fetch('/api/merchant/menu-option-stock', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeId, targetType, id: optionId, in_stock: inStock }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as { error?: string })?.error || 'Failed to update stock');
+      setMenuItems((prev) =>
+        prev.map((it) => {
+          if (it.id !== item.id && it.item_id !== item.item_id) return it;
+          if (targetType === 'variant') {
+            return {
+              ...it,
+              variants: (it.variants ?? []).map((v) =>
+                v.id === optionId ? { ...v, in_stock: inStock } : v
+              ),
+            };
+          }
+          if (targetType === 'addon') {
+            return {
+              ...it,
+              customizations: (it.customizations ?? []).map((g) => ({
+                ...g,
+                addons: (g.addons ?? []).map((a) =>
+                  a.id === optionId ? { ...a, in_stock: inStock } : a
+                ),
+              })),
+            };
+          }
+          return {
+            ...it,
+            linked_modifier_groups: (it.linked_modifier_groups ?? []).map((g) => ({
+              ...g,
+              options: (g.options ?? []).map((o) =>
+                o.id === optionId ? { ...o, in_stock: inStock } : o
+              ),
+            })),
+          };
+        })
+      );
+      toast.success(inStock ? 'Marked in stock' : 'Marked out of stock');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to update stock');
+    } finally {
+      setCustStockBusy(null);
+    }
+  }
+
   async function clearOutOfStockForCategory(categoryId: number) {
     if (!storeId) return;
     setOosBusy(true);
@@ -3569,6 +3655,11 @@ function MenuContent() {
       )
     : filteredItems;
 
+  const custScopeItems = useMemo(
+    () => searchedItems.filter(itemHasCustomizationContent),
+    [searchedItems]
+  );
+
   const searchedCombos = useMemo(() => {
     if (selectedCategoryId !== null) return [];
     if (!searchTerm.trim()) return combos;
@@ -3617,6 +3708,19 @@ function MenuContent() {
     }
   }, [viewMode]);
 
+  // Lock shell scroll — only the menu list scrolls, toolbar stays fixed below partner header.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const html = document.documentElement;
+    const body = document.body;
+    html.classList.add('mx-no-page-scroll');
+    body.classList.add('mx-no-page-scroll');
+    return () => {
+      html.classList.remove('mx-no-page-scroll');
+      body.classList.remove('mx-no-page-scroll');
+    };
+  }, []);
+
   // Plan-driven: no hardcoding. When planLimits is null (no plan) = no restrictions
   const canAddItem = planLimits == null || planLimits.maxMenuItems == null || menuItems.length < planLimits.maxMenuItems;
   const canAddCategory = planLimits == null || planLimits.maxMenuCategories == null || categories.length < planLimits.maxMenuCategories;
@@ -3662,42 +3766,64 @@ function MenuContent() {
     <MXLayoutWhite restaurantName={store?.store_name || "Loading..."} restaurantId={storeId || "No ID"}>
       <PartnerPageHeader title="Menu Management" subtitle={menuPageSubtitle} />
       <style>{globalStyles}</style>
-      
-      <div className="sticky top-0 z-40 bg-white border-b border-gray-200 shadow-sm shrink-0">
-        <div className="mx-shell-header !px-3 sm:!px-4 lg:!px-6 flex flex-wrap items-center gap-2 justify-between">
-          <div className="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
+
+      <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white">
+      <header id="mx-menu-toolbar" className="shrink-0 z-20 bg-white border-b border-gray-200 shadow-sm">
+        <div className="mx-shell-header !px-3 sm:!px-4 lg:!px-6 flex items-center gap-2 justify-between flex-nowrap">
+          <div className="flex items-center gap-1.5 min-w-0 shrink">
             <MobileHamburgerButton />
-            <div className="flex flex-wrap gap-2 items-center">
-              <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[100px]">
-                <div className="text-gray-500 text-xs font-medium">
+            <div className="flex items-center gap-1.5 flex-nowrap overflow-x-auto scrollbar-hide">
+              <div className="bg-gray-50 border border-gray-200 rounded-md px-2 py-1 min-w-[72px] shrink-0">
+                <div className="text-gray-500 text-[10px] font-medium leading-tight whitespace-nowrap">
                   Total Items
                   {planLimits?.maxMenuItems != null && (
-                    <span className="ml-1 text-gray-400">/ {planLimits.maxMenuItems}</span>
+                    <span className="text-gray-400">/ {planLimits.maxMenuItems}</span>
                   )}
                 </div>
-                <div className="text-lg font-bold text-gray-900 leading-tight">{menuItems.length}</div>
+                <div className="text-base font-bold text-gray-900 leading-tight">{menuItems.length}</div>
               </div>
-              <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[100px]">
-                <div className="text-gray-500 text-xs font-medium">In Stock</div>
-                <div className="text-lg font-bold text-green-600 leading-tight">{inStock}</div>
+              <div className="bg-gray-50 border border-gray-200 rounded-md px-2 py-1 min-w-[72px] shrink-0">
+                <div className="text-gray-500 text-[10px] font-medium leading-tight whitespace-nowrap">In Stock</div>
+                <div className="text-base font-bold text-green-600 leading-tight">{inStock}</div>
               </div>
-              <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[120px]">
-                <div className="text-gray-500 text-xs font-medium">Out of Stock</div>
-                <div className="text-lg font-bold text-red-600 leading-tight">{outStock} ({outStockPercent}%)</div>
+              <div className="bg-gray-50 border border-gray-200 rounded-md px-2 py-1 min-w-[80px] shrink-0">
+                <div className="text-gray-500 text-[10px] font-medium leading-tight whitespace-nowrap">Out of Stock</div>
+                <div className="text-base font-bold text-red-600 leading-tight">{outStock} ({outStockPercent}%)</div>
               </div>
-              <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[110px]">
-                <div className="text-gray-500 text-xs font-medium">
+              <div className="bg-gray-50 border border-gray-200 rounded-md px-2 py-1 min-w-[72px] shrink-0">
+                <div className="text-gray-500 text-[10px] font-medium leading-tight whitespace-nowrap">
                   Categories
                   {planLimits?.maxMenuCategories != null && (
-                    <span className="ml-1 text-gray-400">/ {planLimits.maxMenuCategories}</span>
+                    <span className="text-gray-400">/ {planLimits.maxMenuCategories}</span>
                   )}
                 </div>
-                <div className="text-lg font-bold text-blue-600 leading-tight">{categories.length}</div>
+                <div className="text-base font-bold text-blue-600 leading-tight">{categories.length}</div>
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end min-w-0">
+            <div className="inline-flex rounded-lg border border-gray-200 bg-white overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setContentScope('item')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold transition-colors ${contentScope === 'item' ? 'bg-gray-900 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                aria-pressed={contentScope === 'item'}
+              >
+                <Package size={16} />
+                Item
+              </button>
+              <button
+                type="button"
+                onClick={() => setContentScope('cust')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold transition-colors border-l border-gray-200 ${contentScope === 'cust' ? 'bg-gray-900 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                aria-pressed={contentScope === 'cust'}
+              >
+                <SlidersHorizontal size={16} />
+                Cust
+              </button>
+            </div>
+            {contentScope === 'item' ? (
             <div className="inline-flex rounded-lg border border-gray-200 bg-white overflow-hidden">
               <button
                 type="button"
@@ -3718,6 +3844,7 @@ function MenuContent() {
                 Tree
               </button>
             </div>
+            ) : null}
             <button
               disabled
               title="Adding categories manually is disabled. Upload a menu file instead."
@@ -3742,10 +3869,7 @@ function MenuContent() {
             </button>
             <button
               type="button"
-              onClick={() => {
-                setShowMenuFileSection(true);
-                setTimeout(() => menuFileSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
-              }}
+              onClick={() => setShowMenuFileSection(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg border border-amber-600 text-amber-700 bg-white hover:bg-amber-50 transition-colors"
             >
               <Upload size={16} />
@@ -3772,244 +3896,6 @@ function MenuContent() {
             </div>
           );
         })()}
-
-        {/* Menu file upload section — shown when "Menu file" button is clicked */}
-        {showMenuFileSection && (
-        <div ref={menuFileSectionRef} className="mx-3 sm:mx-4 mb-3 rounded-2xl border border-amber-200/90 bg-gradient-to-br from-amber-50/95 to-orange-50/80 shadow-sm overflow-hidden">
-          <div className="flex items-start justify-between gap-3 p-4 sm:p-5">
-            <div className="min-w-0 flex-1">
-              <h3 className="text-base font-semibold text-gray-900 flex items-center gap-2">
-                <span className="flex items-center justify-center w-9 h-9 rounded-xl bg-amber-100 text-amber-700">
-                  <FileText size={20} />
-                </span>
-                Menu Files
-              </h3>
-              <p className="text-sm text-gray-600 mt-1.5">
-                Upload up to {MAX_MENU_IMAGES} images, or 1 PDF, or 1 CSV. Our team will add items from it.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowMenuFileSection(false)}
-              aria-label="Close menu file section"
-              className="flex-shrink-0 p-2 rounded-xl text-gray-500 hover:text-gray-700 hover:bg-white/80 border border-transparent hover:border-gray-200 transition-colors"
-            >
-              <X size={20} strokeWidth={2} />
-            </button>
-          </div>
-
-          <div className="px-4 sm:px-5 pb-4 sm:pb-5 pt-0 space-y-4">
-            {/* Existing uploaded files with remove buttons */}
-            {hasAnyUploadedMenuFiles && (
-              <div className="rounded-xl bg-white/80 border border-amber-100 overflow-hidden">
-                <div className="px-3 pt-3 pb-2">
-                  <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Uploaded Files</p>
-                </div>
-                <ul className="list-none m-0 p-0 flex flex-col gap-0 divide-y divide-gray-100">
-                  {menuFiles.map((file) => {
-                    const fullUrl = file.url.startsWith('http') ? file.url : (typeof window !== 'undefined' ? window.location.origin : '') + file.url;
-                    const isDeleting = menuDeleting === file.id;
-                    return (
-                      <li key={file.id} className="flex items-center gap-3 px-3 py-2.5">
-                        {file.type === 'image' ? (
-                          <div className="w-12 h-12 rounded-lg bg-gray-100 overflow-hidden shrink-0 border border-gray-200">
-                            <img src={fullUrl} alt={file.fileName} className="w-full h-full object-cover" loading="lazy" />
-                          </div>
-                        ) : (
-                          <div className="w-12 h-12 rounded-lg bg-gray-100 flex items-center justify-center shrink-0 border border-gray-200">
-                            <span className="text-xs font-bold text-gray-500 uppercase">{file.type}</span>
-                          </div>
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-medium text-gray-800 truncate">{file.fileName}</p>
-                          <div className="flex items-center gap-2 mt-0.5">
-                            <a href={fullUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:underline">View</a>
-                            {file.verificationStatus === 'VERIFIED' ? (
-                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700">Verified</span>
-                            ) : (
-                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700">Pending</span>
-                            )}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          disabled={isDeleting}
-                          onClick={() => handleMenuFileDelete(file.id)}
-                          className="text-xs text-rose-600 hover:text-rose-700 font-medium shrink-0 px-2 py-1.5 rounded-lg hover:bg-rose-50 transition-colors disabled:opacity-50"
-                        >
-                          {isDeleting ? (
-                            <span className="inline-block w-3.5 h-3.5 border-2 border-rose-300 border-t-rose-600 rounded-full animate-spin" />
-                          ) : (
-                            <Trash2 size={15} />
-                          )}
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )}
-
-            {/* Pending files (selected but not yet uploaded) */}
-            {menuPendingFiles.length > 0 && (
-              <div className="rounded-xl bg-white/80 border border-blue-100 overflow-hidden">
-                <div className="px-3 pt-3 pb-2">
-                  <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide">Ready to Upload</p>
-                </div>
-                <ul className="list-none m-0 p-0 flex flex-col gap-0 divide-y divide-gray-100">
-                  {menuPendingFiles.map((file, idx) => (
-                    <li key={`pending-${idx}`} className="flex items-center gap-3 px-3 py-2.5">
-                      <div className="w-12 h-12 rounded-lg bg-gray-100 overflow-hidden shrink-0 border border-gray-200 flex items-center justify-center">
-                        {file.type.startsWith('image/') ? (
-                          <img src={URL.createObjectURL(file)} alt={file.name} className="w-full h-full object-cover" />
-                        ) : (
-                          <span className="text-xs font-bold text-gray-500 uppercase">{file.name.split('.').pop()}</span>
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-gray-800 truncate">{file.name}</p>
-                        <p className="text-xs text-gray-500">{(file.size / (1024 * 1024)).toFixed(2)} MB</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setMenuPendingFiles(prev => prev.filter((_, i) => i !== idx))}
-                        className="text-xs text-rose-600 hover:text-rose-700 font-medium shrink-0 px-2 py-1.5 rounded-lg hover:bg-rose-50 transition-colors"
-                      >
-                        <X size={15} />
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {/* Upload controls */}
-            <div>
-              <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-2">Upload New File</p>
-              <div className="flex flex-wrap items-center gap-2 mb-3">
-                {(['image', 'pdf', 'csv'] as const).map((mode) => {
-                  const label = mode === 'image' ? `Images (max ${MAX_MENU_IMAGES})` : mode === 'pdf' ? 'PDF' : 'CSV';
-                  return (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => { setMenuUploadMode(mode); setMenuPendingFiles([]); setCsvValidationError(''); setMenuReplaceError(''); }}
-                      className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${menuUploadMode === mode ? 'bg-amber-600 text-white shadow-sm' : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'}`}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {menuUploadMode === 'image' && (
-                <div className="space-y-3">
-                  <input
-                    ref={menuImageInputRef}
-                    type="file"
-                    accept="image/jpeg,image/jpg,image/png,image/webp"
-                    multiple
-                    className="hidden"
-                    onChange={(e) => {
-                      const selected = Array.from(e.target.files || []);
-                      const remaining = MAX_MENU_IMAGES - menuImages.length - menuPendingFiles.length;
-                      if (remaining <= 0) {
-                        setMenuReplaceError(`Maximum ${MAX_MENU_IMAGES} images allowed. Remove existing images first.`);
-                        return;
-                      }
-                      const toAdd = selected.slice(0, remaining);
-                      if (toAdd.length < selected.length) {
-                        setMenuReplaceError(`Only ${remaining} more image(s) can be added. ${selected.length - toAdd.length} file(s) skipped.`);
-                      } else {
-                        setMenuReplaceError('');
-                      }
-                      setMenuPendingFiles(prev => [...prev, ...toAdd]);
-                      e.target.value = '';
-                    }}
-                  />
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => menuImageInputRef.current?.click()}
-                      disabled={menuImages.length + menuPendingFiles.length >= MAX_MENU_IMAGES}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <Upload size={18} />
-                      Choose images
-                    </button>
-                    <span className="text-xs text-gray-500">
-                      {menuImages.length + menuPendingFiles.length} of {MAX_MENU_IMAGES} · JPG, PNG, WEBP · 5 MB each
-                    </span>
-                  </div>
-                  {menuPendingFiles.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={handleMenuFileUpload}
-                      disabled={menuUploading}
-                      className="px-5 py-2 rounded-xl bg-amber-600 text-white text-sm font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-sm transition-colors"
-                    >
-                      {menuUploading ? (
-                        <><span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Uploading…</>
-                      ) : (
-                        <>Upload {menuPendingFiles.length} image{menuPendingFiles.length > 1 ? 's' : ''}</>
-                      )}
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {(menuUploadMode === 'pdf' || menuUploadMode === 'csv') && (
-                <div className="space-y-3">
-                  <input
-                    ref={menuFileInputRef}
-                    type="file"
-                    accept={menuUploadMode === 'pdf' ? '.pdf,application/pdf' : '.csv,text/csv,application/csv'}
-                    className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) setMenuPendingFiles([f]);
-                      setCsvValidationError('');
-                      setMenuReplaceError('');
-                      e.target.value = '';
-                    }}
-                  />
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => menuFileInputRef.current?.click()}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 cursor-pointer transition-colors"
-                    >
-                      <Upload size={18} />
-                      {menuPendingFiles.length > 0 ? menuPendingFiles[0].name : `Choose ${menuUploadMode.toUpperCase()} file`}
-                    </button>
-                    <span className="text-xs text-gray-500">
-                      {menuUploadMode === 'pdf' ? '1 PDF · max 5 MB' : 'CSV with item_name + price columns'}
-                    </span>
-                  </div>
-                  {menuPendingFiles.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={handleMenuFileUpload}
-                      disabled={menuUploading}
-                      className="px-5 py-2 rounded-xl bg-amber-600 text-white text-sm font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-sm transition-colors"
-                    >
-                      {menuUploading ? (
-                        <><span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Uploading…</>
-                      ) : (
-                        <>{(menuUploadMode === 'pdf' ? menuPdfs : menuCsvs).length > 0 ? 'Replace' : 'Upload'} {menuUploadMode.toUpperCase()} file</>
-                      )}
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {(csvValidationError || menuReplaceError) && (
-                <p className="text-sm text-red-600 mt-2" role="alert">{csvValidationError || menuReplaceError}</p>
-              )}
-            </div>
-          </div>
-        </div>
-        )}
 
         {/* Search and Categories - single row, sticky All + horizontal scroll */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 sm:px-4 py-3">
@@ -4087,22 +3973,200 @@ function MenuContent() {
             </div>
           </div>
         </div>
-      </div>
+      </header>
 
-      {/* Menu Items Grid */}
-      <div className="px-3 sm:px-4 py-3 relative">
+      <div
+        ref={menuListScrollRef}
+        className="flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-hide px-3 sm:px-4 py-3 relative bg-white"
+      >
         {isLoading ? (
           <MenuItemsGridSkeleton />
-        ) : ((searchedItems.length === 0 && searchedCombos.length === 0) ? (
+        ) : ((contentScope === 'item'
+            ? searchedItems.length === 0 && searchedCombos.length === 0
+            : custScopeItems.length === 0) ? (
           <div className="flex flex-col items-center justify-center py-12 text-center">
             <Package size={48} className="text-gray-300 mb-4" />
-            <h3 className="text-xl font-bold text-gray-700">No menu items found</h3>
+            <h3 className="text-xl font-bold text-gray-700">
+              {contentScope === 'cust' ? 'No customization items found' : 'No menu items found'}
+            </h3>
             <p className="text-gray-500 mt-2">
-              {searchTerm ? 'Try a different search term' : 'Add your first menu item to get started'}
+              {contentScope === 'cust'
+                ? searchTerm
+                  ? 'Try a different search term or switch to Item view'
+                  : 'Items with add-ons or variants will appear here'
+                : searchTerm
+                  ? 'Try a different search term'
+                  : 'Add your first menu item to get started'}
             </p>
-            {categories.length === 0 && (
+            {contentScope === 'item' && categories.length === 0 && (
               <p className="text-sm text-gray-400 mt-2">You need to create a category first</p>
             )}
+          </div>
+        ) : contentScope === 'cust' ? (
+          <div className="space-y-4">
+            {custScopeItems.map((item) => {
+              const category = categories.find((cat) => cat.id === item.category_id);
+              const variants = item.variants ?? [];
+              const custGroups = item.customizations ?? [];
+              const linkedGroups = item.linked_modifier_groups ?? [];
+              return (
+                <div key={item.item_id || item.id} className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+                  <div className="flex items-center gap-3 border-b border-gray-100 bg-gray-50/80 p-3">
+                    <div className="h-12 w-12 shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-100">
+                      <R2Image
+                        src={item.item_image_url}
+                        alt={item.item_name}
+                        className="h-full w-full object-cover"
+                        fallbackSrc={ITEM_PLACEHOLDER_SVG}
+                      />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-bold text-gray-900">{item.item_name}</p>
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                        {category?.category_name || 'Uncategorized'}
+                      </p>
+                    </div>
+                    <p className="shrink-0 text-sm font-bold text-orange-600">₹{item.selling_price}</p>
+                  </div>
+                  <div className="space-y-3 p-3">
+                    {variants.length > 0 ? (
+                      <div>
+                        <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-indigo-700">Variants</p>
+                        <ul className="space-y-1">
+                          {variants.map((v, i) => {
+                            const variantInStock = v.in_stock !== false;
+                            const variantBusy = custStockBusy === `variant-${v.id}`;
+                            return (
+                            <li
+                              key={v.variant_id || i}
+                              className="flex items-center justify-between gap-2 rounded-lg border border-indigo-100 bg-indigo-50/40 px-2.5 py-1.5 text-sm"
+                            >
+                              <span className="min-w-0 flex-1 text-gray-800">
+                                {v.variant_name || v.variant_type || 'Variant'}
+                                {v.variant_size_value && v.variant_size_unit
+                                  ? ` (${v.variant_size_value} ${v.variant_size_unit})`
+                                  : ''}
+                              </span>
+                              <span className="font-semibold tabular-nums text-gray-900 shrink-0">₹{v.variant_price ?? 0}</span>
+                              {v.id ? (
+                                <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                                  <input
+                                    type="checkbox"
+                                    checked={variantInStock}
+                                    disabled={variantBusy}
+                                    onChange={() => handleCustOptionStockToggle(item, 'variant', v.id!, !variantInStock)}
+                                    className="sr-only peer"
+                                  />
+                                  <div className={`relative h-4 w-7 rounded-full bg-gray-200 transition-all peer-checked:bg-green-500 ${variantBusy ? 'opacity-50' : ''}`}>
+                                    <div className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${variantInStock ? 'translate-x-3' : ''}`} />
+                                  </div>
+                                </label>
+                              ) : null}
+                            </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {custGroups.length > 0 ? (
+                      <div>
+                        <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-blue-700">Add-ons / Customizations</p>
+                        <div className="space-y-2">
+                          {custGroups.map((group, idx) => (
+                            <div key={group.customization_id || idx} className="rounded-lg border border-blue-100 bg-blue-50/30 p-2.5">
+                              <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                                <p className="text-sm font-semibold text-gray-900">{group.customization_title}</p>
+                                <span className="rounded bg-white px-1.5 py-0.5 text-[10px] font-medium text-gray-600 ring-1 ring-gray-200">
+                                  {group.customization_type || 'Checkbox'}
+                                </span>
+                              </div>
+                              <ul className="space-y-1">
+                                {(group.addons ?? (group as { options?: Addon[] }).options ?? []).map((addon, j) => {
+                                  const addonInStock = addon.in_stock !== false;
+                                  const addonBusy = custStockBusy === `addon-${addon.id}`;
+                                  return (
+                                  <li
+                                    key={addon.addon_id || j}
+                                    className="flex items-center justify-between gap-2 rounded border border-white bg-white px-2 py-1 text-sm"
+                                  >
+                                    <span className="min-w-0 flex-1 text-gray-700">{addon.addon_name}</span>
+                                    <span className="font-medium tabular-nums text-gray-900 shrink-0">₹{addon.addon_price ?? 0}</span>
+                                    {addon.id ? (
+                                      <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                                        <input
+                                          type="checkbox"
+                                          checked={addonInStock}
+                                          disabled={addonBusy}
+                                          onChange={() => handleCustOptionStockToggle(item, 'addon', addon.id!, !addonInStock)}
+                                          className="sr-only peer"
+                                        />
+                                        <div className={`relative h-4 w-7 rounded-full bg-gray-200 transition-all peer-checked:bg-green-500 ${addonBusy ? 'opacity-50' : ''}`}>
+                                          <div className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${addonInStock ? 'translate-x-3' : ''}`} />
+                                        </div>
+                                      </label>
+                                    ) : null}
+                                  </li>
+                                  );
+                                })}
+                              </ul>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    {linkedGroups.length > 0 ? (
+                      <div>
+                        <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-violet-700">Linked add-on groups</p>
+                        <div className="space-y-2">
+                          {linkedGroups.map((group, idx) => (
+                            <div key={group.id || idx} className="rounded-lg border border-violet-100 bg-violet-50/30 p-2.5">
+                              <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                                <p className="text-sm font-semibold text-gray-900">{group.title}</p>
+                                <span className="rounded bg-white px-1.5 py-0.5 text-[10px] font-medium text-gray-600 ring-1 ring-gray-200">
+                                  {group.max_selection === 1 ? 'Single' : 'Multiple'}
+                                </span>
+                              </div>
+                              <ul className="space-y-1">
+                                {(group.options ?? []).map((opt, j) => {
+                                  const optInStock = opt.in_stock !== false;
+                                  const optBusy = custStockBusy === `modifier_option-${opt.id}`;
+                                  return (
+                                    <li
+                                      key={opt.option_id || j}
+                                      className="flex items-center justify-between gap-2 rounded border border-white bg-white px-2 py-1 text-sm"
+                                    >
+                                      <span className="min-w-0 flex-1 text-gray-700">{opt.name}</span>
+                                      <span className="font-medium tabular-nums text-gray-900 shrink-0">₹{opt.price_delta ?? 0}</span>
+                                      {opt.id ? (
+                                        <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                                          <input
+                                            type="checkbox"
+                                            checked={optInStock}
+                                            disabled={optBusy}
+                                            onChange={() => handleCustOptionStockToggle(item, 'modifier_option', opt.id!, !optInStock)}
+                                            className="sr-only peer"
+                                          />
+                                          <div className={`relative h-4 w-7 rounded-full bg-gray-200 transition-all peer-checked:bg-green-500 ${optBusy ? 'opacity-50' : ''}`}>
+                                            <div className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${optInStock ? 'translate-x-3' : ''}`} />
+                                          </div>
+                                        </label>
+                                      ) : null}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    {variants.length === 0 && custGroups.length === 0 && linkedGroups.length === 0 ? (
+                      <p className="text-xs text-gray-500">Customization flags set — open item to view full details.</p>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         ) : viewMode === 'card' ? (
           <div className="space-y-4">
@@ -4585,6 +4649,7 @@ function MenuContent() {
           </div>
         ))}
       </div>
+      </div>
 
       {/* Modals - portaled to body so overlay covers sidebar and blurs */}
       {/* Add Item Modal */}
@@ -4791,6 +4856,257 @@ function MenuContent() {
               storeDefaults={itemFormStoreDefaults}
             />
           </div>
+        </div>,
+        document.body
+      )}
+
+
+      {showMenuFileSection && typeof document !== 'undefined' && createPortal(
+        <div
+          className="fixed inset-0 z-[9998] flex justify-end bg-black/40 backdrop-blur-sm"
+          onClick={() => setShowMenuFileSection(false)}
+        >
+          <aside
+            className="relative flex h-dvh w-full max-w-md flex-col border-l border-gray-200 bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="mx-menu-file-sheet-title"
+          >
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-200 bg-gradient-to-br from-amber-50/80 to-orange-50/50 px-4 py-4">
+              <div className="min-w-0">
+                <h2 id="mx-menu-file-sheet-title" className="text-base font-semibold text-gray-900 flex items-center gap-2">
+                  <span className="flex items-center justify-center w-9 h-9 rounded-xl bg-amber-100 text-amber-700">
+                    <FileText size={20} />
+                  </span>
+                  Menu Files
+                </h2>
+                <p className="text-sm text-gray-600 mt-1.5">
+                  Upload up to {MAX_MENU_IMAGES} images, or 1 PDF, or 1 CSV. Our team will add items from it.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMenuFileSection(false)}
+                aria-label="Close menu files"
+                className="flex-shrink-0 rounded-lg p-2 text-gray-500 hover:bg-white hover:text-gray-700"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+<div className="px-4 sm:px-5 pb-4 sm:pb-5 pt-0 space-y-4">
+            {/* Existing uploaded files with remove buttons */}
+            {hasAnyUploadedMenuFiles && (
+              <div className="rounded-xl bg-white/80 border border-amber-100 overflow-hidden">
+                <div className="px-3 pt-3 pb-2">
+                  <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Uploaded Files</p>
+                </div>
+                <ul className="list-none m-0 p-0 flex flex-col gap-0 divide-y divide-gray-100">
+                  {menuFiles.map((file) => {
+                    const fullUrl = file.url.startsWith('http') ? file.url : (typeof window !== 'undefined' ? window.location.origin : '') + file.url;
+                    const isDeleting = menuDeleting === file.id;
+                    return (
+                      <li key={file.id} className="flex items-center gap-3 px-3 py-2.5">
+                        {file.type === 'image' ? (
+                          <div className="w-12 h-12 rounded-lg bg-gray-100 overflow-hidden shrink-0 border border-gray-200">
+                            <img src={fullUrl} alt={file.fileName} className="w-full h-full object-cover" loading="lazy" />
+                          </div>
+                        ) : (
+                          <div className="w-12 h-12 rounded-lg bg-gray-100 flex items-center justify-center shrink-0 border border-gray-200">
+                            <span className="text-xs font-bold text-gray-500 uppercase">{file.type}</span>
+                          </div>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-gray-800 truncate">{file.fileName}</p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <a href={fullUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:underline">View</a>
+                            {file.verificationStatus === 'VERIFIED' ? (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700">Verified</span>
+                            ) : (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700">Pending</span>
+                            )}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={isDeleting}
+                          onClick={() => handleMenuFileDelete(file.id)}
+                          className="text-xs text-rose-600 hover:text-rose-700 font-medium shrink-0 px-2 py-1.5 rounded-lg hover:bg-rose-50 transition-colors disabled:opacity-50"
+                        >
+                          {isDeleting ? (
+                            <span className="inline-block w-3.5 h-3.5 border-2 border-rose-300 border-t-rose-600 rounded-full animate-spin" />
+                          ) : (
+                            <Trash2 size={15} />
+                          )}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+
+            {/* Pending files (selected but not yet uploaded) */}
+            {menuPendingFiles.length > 0 && (
+              <div className="rounded-xl bg-white/80 border border-blue-100 overflow-hidden">
+                <div className="px-3 pt-3 pb-2">
+                  <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide">Ready to Upload</p>
+                </div>
+                <ul className="list-none m-0 p-0 flex flex-col gap-0 divide-y divide-gray-100">
+                  {menuPendingFiles.map((file, idx) => (
+                    <li key={`pending-${idx}`} className="flex items-center gap-3 px-3 py-2.5">
+                      <div className="w-12 h-12 rounded-lg bg-gray-100 overflow-hidden shrink-0 border border-gray-200 flex items-center justify-center">
+                        {file.type.startsWith('image/') ? (
+                          <img src={URL.createObjectURL(file)} alt={file.name} className="w-full h-full object-cover" />
+                        ) : (
+                          <span className="text-xs font-bold text-gray-500 uppercase">{file.name.split('.').pop()}</span>
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-gray-800 truncate">{file.name}</p>
+                        <p className="text-xs text-gray-500">{(file.size / (1024 * 1024)).toFixed(2)} MB</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setMenuPendingFiles(prev => prev.filter((_, i) => i !== idx))}
+                        className="text-xs text-rose-600 hover:text-rose-700 font-medium shrink-0 px-2 py-1.5 rounded-lg hover:bg-rose-50 transition-colors"
+                      >
+                        <X size={15} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Upload controls */}
+            <div>
+              <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-2">Upload New File</p>
+              <div className="flex flex-wrap items-center gap-2 mb-3">
+                {(['image', 'pdf', 'csv'] as const).map((mode) => {
+                  const label = mode === 'image' ? `Images (max ${MAX_MENU_IMAGES})` : mode === 'pdf' ? 'PDF' : 'CSV';
+                  return (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => { setMenuUploadMode(mode); setMenuPendingFiles([]); setCsvValidationError(''); setMenuReplaceError(''); }}
+                      className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${menuUploadMode === mode ? 'bg-amber-600 text-white shadow-sm' : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'}`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {menuUploadMode === 'image' && (
+                <div className="space-y-3">
+                  <input
+                    ref={menuImageInputRef}
+                    type="file"
+                    accept="image/jpeg,image/jpg,image/png,image/webp"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => {
+                      const selected = Array.from(e.target.files || []);
+                      const remaining = MAX_MENU_IMAGES - menuImages.length - menuPendingFiles.length;
+                      if (remaining <= 0) {
+                        setMenuReplaceError(`Maximum ${MAX_MENU_IMAGES} images allowed. Remove existing images first.`);
+                        return;
+                      }
+                      const toAdd = selected.slice(0, remaining);
+                      if (toAdd.length < selected.length) {
+                        setMenuReplaceError(`Only ${remaining} more image(s) can be added. ${selected.length - toAdd.length} file(s) skipped.`);
+                      } else {
+                        setMenuReplaceError('');
+                      }
+                      setMenuPendingFiles(prev => [...prev, ...toAdd]);
+                      e.target.value = '';
+                    }}
+                  />
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => menuImageInputRef.current?.click()}
+                      disabled={menuImages.length + menuPendingFiles.length >= MAX_MENU_IMAGES}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Upload size={18} />
+                      Choose images
+                    </button>
+                    <span className="text-xs text-gray-500">
+                      {menuImages.length + menuPendingFiles.length} of {MAX_MENU_IMAGES} · JPG, PNG, WEBP · 5 MB each
+                    </span>
+                  </div>
+                  {menuPendingFiles.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleMenuFileUpload}
+                      disabled={menuUploading}
+                      className="px-5 py-2 rounded-xl bg-amber-600 text-white text-sm font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-sm transition-colors"
+                    >
+                      {menuUploading ? (
+                        <><span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Uploading…</>
+                      ) : (
+                        <>Upload {menuPendingFiles.length} image{menuPendingFiles.length > 1 ? 's' : ''}</>
+                      )}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {(menuUploadMode === 'pdf' || menuUploadMode === 'csv') && (
+                <div className="space-y-3">
+                  <input
+                    ref={menuFileInputRef}
+                    type="file"
+                    accept={menuUploadMode === 'pdf' ? '.pdf,application/pdf' : '.csv,text/csv,application/csv'}
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) setMenuPendingFiles([f]);
+                      setCsvValidationError('');
+                      setMenuReplaceError('');
+                      e.target.value = '';
+                    }}
+                  />
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => menuFileInputRef.current?.click()}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 cursor-pointer transition-colors"
+                    >
+                      <Upload size={18} />
+                      {menuPendingFiles.length > 0 ? menuPendingFiles[0].name : `Choose ${menuUploadMode.toUpperCase()} file`}
+                    </button>
+                    <span className="text-xs text-gray-500">
+                      {menuUploadMode === 'pdf' ? '1 PDF · max 5 MB' : 'CSV with item_name + price columns'}
+                    </span>
+                  </div>
+                  {menuPendingFiles.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleMenuFileUpload}
+                      disabled={menuUploading}
+                      className="px-5 py-2 rounded-xl bg-amber-600 text-white text-sm font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-sm transition-colors"
+                    >
+                      {menuUploading ? (
+                        <><span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Uploading…</>
+                      ) : (
+                        <>{(menuUploadMode === 'pdf' ? menuPdfs : menuCsvs).length > 0 ? 'Replace' : 'Upload'} {menuUploadMode.toUpperCase()} file</>
+                      )}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {(csvValidationError || menuReplaceError) && (
+                <p className="text-sm text-red-600 mt-2" role="alert">{csvValidationError || menuReplaceError}</p>
+              )}
+            </div>
+          </div>
+            </div>
+          </aside>
         </div>,
         document.body
       )}
