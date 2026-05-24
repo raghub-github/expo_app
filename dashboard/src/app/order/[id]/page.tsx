@@ -1,4 +1,3 @@
-import OrderHeader from "./OrderHeader";
 import OrderPageClient from "./OrderPageClient";
 
 export const dynamic = "force-dynamic";
@@ -13,11 +12,8 @@ export default async function StandaloneOrderPage({
 
   if (!publicId) {
     return (
-      <div className="min-h-screen bg-[#F8FAFC]">
-        <OrderHeader />
-        <main className="px-3 py-4 sm:px-4 md:px-6 md:py-6">
-          <p className="mt-4 text-sm font-medium text-red-600">Invalid order ID.</p>
-        </main>
+      <div className="flex min-h-screen w-full items-center justify-center bg-[#F8FAFC] px-4">
+        <p className="text-center text-sm font-medium text-red-600">Invalid order ID.</p>
       </div>
     );
   }

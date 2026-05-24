@@ -108,16 +108,6 @@ const USER_TYPE_OPTIONS = [
   "Fraud",
 ] as const;
 
-/** True when any panel filter is applied (URL foodFilters). */
-function hasAppliedFoodFilters(p: FoodFiltersPayload | undefined): boolean {
-  if (!p) return false;
-  return (
-    (p.delivery?.length ?? 0) > 0 ||
-    (p.userType?.length ?? 0) > 0 ||
-    Boolean(p.pickUp || p.food || p.fashion || p.grocery || p.pharma || p.overview)
-  );
-}
-
 interface OrdersApiResponse {
   success: boolean;
   data?: OrdersCoreRow[];
@@ -255,7 +245,15 @@ export default function FoodOrdersClient() {
     }
   }, [foodFiltersRaw]);
 
-  const selectedStatus = urlStatus ?? null;
+  const selectedStatus: OrderStatusFilter = urlStatus ?? "PAYMENT DONE";
+
+  // Default tab: PAYMENT DONE when URL has no statusFilter
+  useEffect(() => {
+    if (urlStatus) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("statusFilter", "PAYMENT DONE");
+    router.replace(`/dashboard/orders/food?${params.toString()}`, { scroll: false });
+  }, [urlStatus, searchParams, router]);
   const [page] = useState(1);
   const [limit] = useState(20);
   const debouncedSearch = useDebouncedValue(urlSearch, 400);
@@ -275,9 +273,9 @@ export default function FoodOrdersClient() {
 
   const setStatusFilter = useCallback(
     (status: OrderStatusFilter) => {
+      if (!status) return;
       const params = new URLSearchParams(searchParams.toString());
-      if (status) params.set("statusFilter", status);
-      else params.delete("statusFilter");
+      params.set("statusFilter", status);
       params.delete("page");
       router.replace(`/dashboard/orders/food?${params.toString()}`, { scroll: false });
     },
@@ -296,19 +294,11 @@ export default function FoodOrdersClient() {
     [selectedStatus, debouncedSearch, urlSearchType, page, limit, foodFiltersPayload]
   );
 
-  const hasListCriteria = useMemo(
-    () =>
-      Boolean(debouncedSearch.trim()) ||
-      selectedStatus != null ||
-      hasAppliedFoodFilters(foodFiltersPayload),
-    [debouncedSearch, selectedStatus, foodFiltersPayload]
-  );
-
   const SNAPSHOT_TTL_MS = 10_000;
   const snapshotKey = useMemo(() => {
-    if (!shouldFetch || !hasListCriteria) return null;
+    if (!shouldFetch) return null;
     return `dashboard_snapshot:orders_food:${pathname}:${JSON.stringify(filtersForQuery)}`;
-  }, [shouldFetch, hasListCriteria, pathname, filtersForQuery]);
+  }, [shouldFetch, pathname, filtersForQuery]);
 
   const initialSnapshot = useMemo(() => {
     if (!snapshotKey) return null;
@@ -320,11 +310,12 @@ export default function FoodOrdersClient() {
     isFetching,
     isLoading,
     refetch: refetchOrders,
-  } = useFoodOrdersQuery(filtersForQuery, shouldFetch && hasListCriteria, snapshotKey, initialSnapshot);
+  } = useFoodOrdersQuery(filtersForQuery, shouldFetch, snapshotKey, initialSnapshot);
 
   const orders = ordersData?.orders ?? [];
   const total = ordersData?.total ?? 0;
-  const loading = hasListCriteria && (isFetching || (isLoading && !ordersData));
+  const loading = isFetching || (isLoading && !ordersData);
+  const hasActiveSearch = Boolean(debouncedSearch.trim());
   // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -731,7 +722,7 @@ export default function FoodOrdersClient() {
       <div className="p-2 mt-3" style={{ backgroundColor: CONTENT_BG }}>
         <div className="flex items-center gap-2 w-full">
           <button
-            onClick={() => setStatusFilter(selectedStatus === "PAYMENT DONE" ? null : "PAYMENT DONE")}
+            onClick={() => setStatusFilter("PAYMENT DONE")}
             className={`flex-1 px-3 py-2 rounded-md text-xs transition-colors border cursor-pointer ${
               selectedStatus === "PAYMENT DONE" ? "font-bold" : "font-medium"
             }`}
@@ -740,7 +731,7 @@ export default function FoodOrdersClient() {
             PAYMENT DONE
           </button>
           <button
-            onClick={() => setStatusFilter(selectedStatus === "ACCEPTED" ? null : "ACCEPTED")}
+            onClick={() => setStatusFilter("ACCEPTED")}
             className={`flex-1 px-3 py-2 rounded-md text-xs transition-colors border cursor-pointer ${
               selectedStatus === "ACCEPTED" ? "font-bold" : "font-medium"
             }`}
@@ -749,7 +740,7 @@ export default function FoodOrdersClient() {
             ACCEPTED
           </button>
           <button
-            onClick={() => setStatusFilter(selectedStatus === "DESPATCH READY" ? null : "DESPATCH READY")}
+            onClick={() => setStatusFilter("DESPATCH READY")}
             className={`flex-1 px-3 py-2 rounded-md text-xs transition-colors border cursor-pointer ${
               selectedStatus === "DESPATCH READY" ? "font-bold" : "font-medium"
             }`}
@@ -758,7 +749,7 @@ export default function FoodOrdersClient() {
             DESPATCH READY
           </button>
           <button
-            onClick={() => setStatusFilter(selectedStatus === "DESPATCHED" ? null : "DESPATCHED")}
+            onClick={() => setStatusFilter("DESPATCHED")}
             className={`flex-1 px-3 py-2 rounded-md text-xs transition-colors border cursor-pointer ${
               selectedStatus === "DESPATCHED" ? "font-bold" : "font-medium"
             }`}
@@ -767,7 +758,7 @@ export default function FoodOrdersClient() {
             DESPATCHED
           </button>
           <button
-            onClick={() => setStatusFilter(selectedStatus === "BULK" ? null : "BULK")}
+            onClick={() => setStatusFilter("BULK")}
             className={`flex-1 px-3 py-2 rounded-md text-xs transition-colors border cursor-pointer ${
               selectedStatus === "BULK" ? "font-bold" : "font-medium"
             }`}
@@ -783,14 +774,14 @@ export default function FoodOrdersClient() {
         <div className="flex items-center gap-1.5">
           <CheckCircle2 className="h-4 w-4" style={{ color: CHECKMARK_COLOR }} />
           <span className="text-xs font-medium" style={{ color: DARK_TEXT }}>
-            {selectedStatus ? selectedStatus.substring(0, 3).toUpperCase() : "ALL"} - {orderCount} / Out Of {orderCount}
+            {selectedStatus ? selectedStatus.substring(0, 3).toUpperCase() : "PAY"} - {orderCount} / Out Of {orderCount}
           </span>
         </div>
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={refreshData}
-            disabled={loading || !hasListCriteria}
+            disabled={loading}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border cursor-pointer disabled:opacity-60"
             style={{ backgroundColor: MINT_GREEN, color: DARK_TEXT, borderColor: BORDER_COLOR }}
           >
@@ -849,16 +840,7 @@ export default function FoodOrdersClient() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200" style={{ backgroundColor: CONTENT_BG }}>
-            {!hasListCriteria ? (
-              <tr>
-                <td
-                  colSpan={10}
-                  className="px-2 py-6"
-                  style={{ backgroundColor: CONTENT_BG }}
-                  aria-hidden
-                />
-              </tr>
-            ) : loading ? (
+            {loading ? (
               <tr>
                 <td colSpan={10} className="px-2 py-4 text-center" style={{ color: TABLE_TEXT }}>
                   Loading…
@@ -867,7 +849,9 @@ export default function FoodOrdersClient() {
             ) : orders.length === 0 ? (
               <tr>
                 <td colSpan={10} className="px-2 py-4 text-center text-xs" style={{ color: TABLE_TEXT }}>
-                  We couldn&apos;t find any data for this ID.
+                  {hasActiveSearch
+                    ? "We couldn't find any data for this ID."
+                    : "No orders found."}
                 </td>
               </tr>
             ) : (

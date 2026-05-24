@@ -22,6 +22,10 @@ import {
 import type { CustomerTrustTier } from "@/lib/customers/trust-tier";
 import { TRUST_TIER_LABEL } from "@/lib/customers/trust-tier";
 import { sqlCustomerPrimaryMobileOrderSearch } from "./customers";
+import {
+  sqlFoodOrderActiveListScope,
+  sqlFoodOrderDashboardStageFilter,
+} from "./food-orders-dashboard-stages";
 
 export type OrderStatusFilter =
   | "PAYMENT DONE"
@@ -69,6 +73,15 @@ export interface ListOrdersCoreFilters {
     pharma?: boolean;
     overview?: boolean;
   };
+}
+
+/** Direct order lookup by public/internal id — skip dashboard tab filters. */
+function isFoodOrderDirectLookup(filters: ListOrdersCoreFilters): boolean {
+  if (filters.id != null && Number.isFinite(filters.id)) return true;
+  const search = filters.search?.trim();
+  if (!search) return false;
+  const searchType = filters.searchType ?? "Order Id";
+  return searchType === "Order Id" || searchType === "Internal Order Id";
 }
 
 /** Restaurant / meal vertical store types (not grocery/pharma/fashion). Matches merchant onboarding `store_type`. */
@@ -152,34 +165,6 @@ export interface OrdersCoreRow {
 }
 
 /**
- * Food orders status tabs → `orders_core.status` values (order_status_type enum).
- * Each tab shows only orders whose current `status` is in that list (no payment_status shortcut).
- */
-const STATUS_FILTER_TO_DB = {
-  "PAYMENT DONE": {
-    status: ["assigned", "payment_done"] as const,
-  },
-  ACCEPTED: {
-    status: ["accepted"] as const,
-  },
-  "DESPATCH READY": {
-    status: [
-      "reached_store",
-      "bill_ready",
-      "payment_initiated_at",
-      "pymt_assign_rx",
-      "created",
-    ] as const,
-  },
-  DESPATCHED: {
-    status: ["picked_up", "in_transit", "dispatched"] as const,
-  },
-  BULK: {
-    isBulkOrder: true,
-  },
-};
-
-/**
  * List orders from orders_core with optional search and status filter.
  * For food orders page: orderType = 'food'.
  */
@@ -204,15 +189,25 @@ export async function listOrdersCore(
     conditions.push(eq(ordersCore.customerId, filters.customerDbId));
   }
 
-  // Status filter
   const statusFilter = filters.statusFilter ?? null;
-  if (statusFilter && statusFilter in STATUS_FILTER_TO_DB) {
-    const mapping = STATUS_FILTER_TO_DB[statusFilter as keyof typeof STATUS_FILTER_TO_DB];
-    if ("status" in mapping) {
-      conditions.push(inArray(ordersCore.status, [...mapping.status]));
-    } else if ("isBulkOrder" in mapping) {
+  const skipDashboardStageFilters = orderType === "food" && isFoodOrderDirectLookup(filters);
+  const effectiveStatusFilter =
+    orderType === "food" && !skipDashboardStageFilters
+      ? (statusFilter ?? "PAYMENT DONE")
+      : statusFilter;
+
+  // Food orders dashboard list: hide delivered/cancelled and filter by stage tab.
+  // Direct order-id lookups (detail page / search by Order Id) skip these filters.
+  if (orderType === "food" && !skipDashboardStageFilters) {
+    conditions.push(sqlFoodOrderActiveListScope());
+    if (effectiveStatusFilter === "BULK") {
       conditions.push(eq(ordersCore.isBulkOrder, true));
+    } else {
+      const stageSql = sqlFoodOrderDashboardStageFilter(effectiveStatusFilter);
+      if (stageSql) conditions.push(stageSql);
     }
+  } else if (effectiveStatusFilter === "BULK") {
+    conditions.push(eq(ordersCore.isBulkOrder, true));
   }
 
   const trustTierDb = userTypeLabelsToDbTiers(filters.userTypeLabels ?? []);
