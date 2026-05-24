@@ -181,6 +181,17 @@ export interface MenuItem {
   }>;
 }
 
+export function itemHasCustomizationContent(item: MenuItem): boolean {
+  return (
+    !!item.has_customizations ||
+    !!item.has_addons ||
+    !!item.has_variants ||
+    (item.customizations?.length ?? 0) > 0 ||
+    (item.variants?.length ?? 0) > 0 ||
+    (item.linked_modifier_groups?.length ?? 0) > 0
+  );
+}
+
 export interface MenuCategory {
   id: number;
   store_id: number;
