@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import type { OrdersFoodRow } from '@/lib/types/food-orders';
 import { FormattedOrderId, formatTimeAgo } from '@/components/merchant/merchant-incoming-order-ui';
+import { MerchantOrderItemsList } from '@/components/orders/MerchantOrderItemsList';
+import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
 import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
 import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';
@@ -224,34 +226,13 @@ export function MerchantOrderPipelineCard({
 
         {/* Middle — items & actions */}
         <div className="border-t border-dashed border-gray-200 p-4 lg:border-t-0" onClick={(e) => e.stopPropagation()}>
-          {order.requires_utensils && (
-            <p className="mb-2 flex items-center gap-1.5 text-sm font-medium text-green-700">
-              <UtensilsCrossed size={14} /> Send cutlery
-            </p>
-          )}
-          <div className="space-y-2 border-b border-gray-100 pb-3">
-            {order.items && order.items.length > 0 ? (
-              order.items.map((item, idx) => {
-                const qty = item.quantity || 1;
-                const amount = Number(item.total || Number(item.price || 0) * qty);
-                return (
-                  <div key={idx} className="flex items-start justify-between gap-2 text-sm">
-                    <div className="flex min-w-0 items-start gap-2">
-                      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-sm ${vegDot(item.vegNonveg)}`} />
-                      <span className="font-medium text-gray-900">
-                        {qty} × {item.name || `Item ${idx + 1}`}
-                      </span>
-                    </div>
-                    <span className="shrink-0 text-gray-800">₹{amount.toFixed(2)}</span>
-                  </div>
-                );
-              })
-            ) : (
-              <p className="text-sm text-gray-600">
-                {itemCount} item{itemCount !== 1 ? 's' : ''}
-              </p>
-            )}
-          </div>
+          <MerchantOrderItemsList
+            items={order.items ?? []}
+            requiresUtensils={order.requires_utensils}
+            utensilsLabel={getUtensilsCustomerLabel(order)}
+            compact
+            className="border-b border-gray-100 pb-3"
+          />
           <div className="mt-3 flex items-center justify-between">
             <span className="text-sm font-medium text-gray-700">Total Bill</span>
             <div className="flex items-center gap-2">
@@ -290,14 +271,16 @@ export function MerchantOrderPipelineCard({
           )}
 
           {isPreparing && (
-            <div className="mt-4 flex gap-2">
+            <div
+              className={`mt-4 w-full ${prepExpired ? 'grid grid-cols-2 gap-2' : ''}`}
+            >
               {prepExpired ? (
                 <>
                   <button
                     type="button"
                     disabled={loading}
                     onClick={onNeedMoreTime}
-                    className="flex-1 rounded-lg border-2 border-blue-500 bg-white py-2.5 text-sm font-semibold text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+                    className="min-h-[44px] w-full rounded-xl border border-blue-600 bg-white px-3 py-2.5 text-sm font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-50"
                   >
                     Need more time
                   </button>
@@ -305,7 +288,8 @@ export function MerchantOrderPipelineCard({
                     order={order}
                     nowMs={nowMs}
                     disabled={loading}
-                    className="flex-[1.2] rounded-lg"
+                    fullWidth
+                    className="min-h-[44px] w-full min-w-0 rounded-xl"
                     onClick={(e) => {
                       e.stopPropagation();
                       onReady();
@@ -318,7 +302,7 @@ export function MerchantOrderPipelineCard({
                   nowMs={nowMs}
                   disabled={loading}
                   fullWidth
-                  className="rounded-lg"
+                  className="min-h-[44px] w-full rounded-xl"
                   onClick={(e) => {
                     e.stopPropagation();
                     onReady();

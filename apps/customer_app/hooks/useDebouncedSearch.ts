@@ -3,8 +3,8 @@
  * Never throws: returns empty results on error. Used by full-screen search.
  */
 
-import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { merchantService, type MerchantSummary } from "@/services/merchant.service";
 import { SEARCH_CATEGORIES, type SearchCategory, type SearchDish } from "@/constants/search";
 
@@ -73,11 +73,3 @@ export function useDebouncedSearch(query: string, lat?: number, lng?: number) {
   };
 }
 
-function useDebouncedValue<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const t = setTimeout(() => setDebounced(value), delayMs);
-    return () => clearTimeout(t);
-  }, [value, delayMs]);
-  return debounced;
-}

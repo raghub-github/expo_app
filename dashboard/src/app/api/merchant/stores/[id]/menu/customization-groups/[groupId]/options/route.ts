@@ -39,21 +39,33 @@ export async function POST(
     `;
     if (!g) return NextResponse.json({ success: false, error: "Customization group not found" }, { status: 404 });
 
-    const addon_image_url = body.addon_image_url != null ? String(body.addon_image_url) : null;
-    const in_stock = body.in_stock === false ? false : true;
-    const display_order = Number(body.display_order) || 0;
-
     const addonId = genId("ADN_");
     const addonImageUrl =
       body.addon_image_url != null && String(body.addon_image_url).trim() !== ""
-        ? String(body.addon_image_url)
+        ? String(body.addon_image_url).trim()
+        : null;
+    const sizeRaw = body.addon_size_value;
+    const addonSizeValue =
+      sizeRaw != null && sizeRaw !== "" && Number.isFinite(Number(sizeRaw))
+        ? Number(sizeRaw)
+        : null;
+    const addonSizeUnit =
+      body.addon_size_unit != null && String(body.addon_size_unit).trim() !== ""
+        ? String(body.addon_size_unit).trim()
         : null;
     const inStock = typeof body.in_stock === "boolean" ? body.in_stock : true;
     const displayOrderRaw = Number(body.display_order);
     const displayOrder = Number.isFinite(displayOrderRaw) ? displayOrderRaw : 0;
     const [row] = await sql`
-      INSERT INTO merchant_menu_item_addons (customization_id, addon_id, addon_name, addon_price, addon_image_url, in_stock, display_order)
-      VALUES (${gId}, ${addonId}, ${addon_name}, ${addon_price}, ${addonImageUrl}, ${inStock}, ${displayOrder})      RETURNING id
+      INSERT INTO merchant_menu_item_addons (
+        customization_id, addon_id, addon_name, addon_price,
+        addon_image_url, addon_size_value, addon_size_unit, in_stock, display_order
+      )
+      VALUES (
+        ${gId}, ${addonId}, ${addon_name}, ${addon_price},
+        ${addonImageUrl}, ${addonSizeValue}, ${addonSizeUnit}, ${inStock}, ${displayOrder}
+      )
+      RETURNING id
     `;
     try {
       await logStoreActivity({ storeId, section: "addon", action: "create", summary: `Agent added addon option to group #${groupId}`, actorType: "agent", source: "dashboard" });

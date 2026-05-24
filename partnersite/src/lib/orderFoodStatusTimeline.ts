@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { MerchantOrderActionSource } from '@/lib/merchantOrderFoodActions';
 
 export const TIMELINE_STATUS_READY = 'Ready';
+export const TIMELINE_STATUS_DISPATCHED = 'Dispatched';
 export const TIMELINE_STATUS_HANDOVER = 'Handed Over to Rider';
 export const TIMELINE_STATUS_PICKED_UP = 'Picked Up';
 
@@ -86,6 +87,30 @@ export async function appendReadyTimeline(
     metadata: {
       action_source: input.actionSource ?? 'website',
       prep_ready_by_at: input.prepReadyByAt ?? null,
+    },
+  });
+}
+
+export async function appendDispatchedTimeline(
+  db: SupabaseClient,
+  input: {
+    orderCorePk: number;
+    previousStatus?: string | null;
+    actionSource?: MerchantOrderActionSource;
+    dispatchedAt?: string | null;
+    actorName?: string | null;
+  }
+): Promise<void> {
+  await appendOrderFoodStatusTimeline(db, {
+    orderCorePk: input.orderCorePk,
+    status: TIMELINE_STATUS_DISPATCHED,
+    previousStatus: input.previousStatus,
+    actorType: input.actionSource === 'admin' ? 'agent' : 'store',
+    actorName: input.actorName ?? null,
+    statusMessage: 'Order dispatched',
+    occurredAt: input.dispatchedAt ?? undefined,
+    metadata: {
+      action_source: input.actionSource ?? 'website',
     },
   });
 }

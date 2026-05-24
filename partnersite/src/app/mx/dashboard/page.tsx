@@ -468,7 +468,10 @@ function DashboardContent() {
 
   const switchOutlet = React.useCallback(
     (id: string) => {
-      if (typeof window !== 'undefined') localStorage.setItem('selectedStoreId', id)
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('selectedStoreId', id)
+        void import('@/lib/partner-selected-store').then((m) => m.notifyPartnerSelectedStoreChanged(id))
+      }
       const params = new URLSearchParams(searchParams?.toString() || '')
       params.set('storeId', id)
       const base = pathname || '/mx/dashboard'
@@ -577,6 +580,10 @@ function DashboardContent() {
       }
 
       setStoreId(id)
+      if (typeof window !== 'undefined' && id) {
+        localStorage.setItem('selectedStoreId', id)
+        void import('@/lib/partner-selected-store').then((m) => m.notifyPartnerSelectedStoreChanged(id))
+      }
     }
 
     getStoreId()

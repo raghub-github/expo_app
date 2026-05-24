@@ -15,14 +15,18 @@ import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import type { OrderPricingBreakdown } from '@/lib/orderLineItems';
 import { openMxNeedHelp } from '@/lib/openMxNeedHelp';
 import { OrderItemDetailModal, type OrderLineItem } from '@/components/orders/OrderItemDetailModal';
+import { MerchantOrderItemsList } from '@/components/orders/MerchantOrderItemsList';
+import { MerchantOrderBillSummary } from '@/components/orders/MerchantOrderBillSummary';
 import { OrderCancellationBanner } from '@/components/orders/OrderCancellationBanner';
 import { OrderOtpSection } from '@/components/orders/OrderOtpSection';
 import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';
 import { formatRtoOtpDisplay, resolveOrderOtps, type CachedOrderOtps } from '@/lib/orderOtps';
-import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
+import { resolveMerchantInstructionsForDisplay } from '@/lib/merchant-order-instructions';
+import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
 import { formatOrderDropAddress } from '@/lib/formatOrderAddress';
 
-const ITEMS_PREVIEW_MAX = 8;
+/** Panel preview only — full list via sidesheet (+N more). No scroll on items. */
+const ITEMS_PREVIEW_MAX = 4;
 
 function resolveItemVegType(vegNonveg?: string | null, name?: string | null): 'veg' | 'non_veg' | null {
   const t = (vegNonveg ?? '').toLowerCase();
@@ -149,6 +153,8 @@ export type OrderPanelProps = {
   onOrderHelp?: () => void;
   className?: string;
   nowMs?: number;
+  /** Live pipeline vs completed order history (badge label). */
+  panelMode?: 'live' | 'history';
 };
 
 export function OrderPanel({
@@ -172,10 +178,12 @@ export function OrderPanel({
   onOrderHelp,
   className,
   nowMs,
+  panelMode = 'live',
 }: OrderPanelProps) {
   const items = order.items ?? [];
   const previewItems = items.slice(0, ITEMS_PREVIEW_MAX);
   const hasMoreItems = items.length > ITEMS_PREVIEW_MAX;
+  const totalItemCount = computeOrderItemQuantityCount(order);
   const [showPhone, setShowPhone] = useState(false);
   const [selectedItem, setSelectedItem] = useState<OrderLineItem | null>(null);
 
@@ -195,7 +203,7 @@ export function OrderPanel({
     legacyOtp.pickup || legacyOtp.rto
       ? { pickup: legacyOtp.pickup ?? otps.pickup, rto: legacyOtp.rto ?? otps.rto }
       : otps;
-  const utensilsLabel = getUtensilsCustomerLabel(order);
+  const merchantInstructions = resolveMerchantInstructionsForDisplay(order);
   const rtoDisplay = formatRtoOtpDisplay(status, displayOtps.rto);
   const showRiderCard =
     !!riderName || !!displayOtps.pickup || !!displayOtps.rto || !!otpCode || !!onViewPastRiders;
@@ -207,8 +215,14 @@ export function OrderPanel({
       <div className="flex flex-col xl:flex-row divide-y xl:divide-y-0 xl:divide-x divide-dashed divide-gray-200 overflow-y-auto hide-scrollbar flex-1 min-h-0">
         <div className="flex flex-col p-4 xl:w-[32%] min-w-0 shrink-0">
           <div className="flex items-center justify-between gap-2 mb-3">
-            <span className="inline-flex w-fit items-center rounded-md bg-violet-100 px-2.5 py-1 text-[10px] font-bold tracking-wide text-violet-800">
-              GatiMitra - LiveOps
+            <span
+              className={`inline-flex w-fit items-center rounded-md px-2.5 py-1 text-[10px] font-bold tracking-wide ${
+                panelMode === 'history'
+                  ? 'bg-slate-100 text-slate-700'
+                  : 'bg-violet-100 text-violet-800'
+              }`}
+            >
+              {panelMode === 'history' ? 'Order history' : 'GatiMitra - LiveOps'}
             </span>
             <button
               type="button"
@@ -275,6 +289,7 @@ export function OrderPanel({
               pickupVerified={pickupVerified}
               rtoVerified={rtoVerified}
               compact
+              merchantInstructions={merchantInstructions}
             />
           </div>
 
@@ -300,87 +315,41 @@ export function OrderPanel({
               />
             </div>
           ) : null}
-        </div>
 
-        <div className="flex flex-col p-4 flex-1 min-w-0">
-          {utensilsLabel ? (
-            <div className="mb-3 flex items-start gap-2 rounded-lg border border-emerald-100 bg-emerald-50/80 px-3 py-2.5 text-sm text-emerald-900">
-              <UtensilsCrossed size={16} className="mt-0.5 shrink-0 text-emerald-600" />
-              <span className="font-medium leading-snug">{utensilsLabel}</span>
-            </div>
-          ) : null}
-
-          <div className="space-y-3">
-            {previewItems.length > 0 ? (
-              <>
-                {previewItems.map((item, idx) => {
-                  const qty = item.quantity || 1;
-                  const amount = Number(item.total || (item.price || 0) * qty);
-                  return (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => setSelectedItem(item)}
-                      className="w-full flex items-start justify-between gap-3 text-sm text-left rounded-lg px-1 py-0.5 -mx-1 hover:bg-gray-50 transition-colors cursor-pointer"
-                    >
-                      <div className="flex items-start gap-2 min-w-0 flex-1">
-                        <ItemVegCheckbox vegNonveg={item.vegNonveg} name={item.name} />
-                        <span className="text-gray-900">
-                          <span className="font-medium">{qty} x </span>
-                          <span className="underline decoration-gray-400 underline-offset-2">
-                            {item.name || `Item ${idx + 1}`}
-                          </span>
-                        </span>
-                      </div>
-                      <span className="font-semibold text-gray-900 tabular-nums shrink-0">
-                        ₹{amount.toFixed(0)}
-                      </span>
-                    </button>
-                  );
-                })}
-                {hasMoreItems && (
-                  <button
-                    type="button"
-                    onClick={onOpenAllItems}
-                    className="text-sm font-semibold text-blue-600 hover:underline"
-                  >
-                    +{items.length - ITEMS_PREVIEW_MAX} more
-                  </button>
-                )}
-              </>
-            ) : (
-              <p className="text-sm text-gray-500">No items listed</p>
-            )}
-          </div>
-
-          <div className="mt-4 pt-3 border-t border-gray-200">
-            <button
-              type="button"
-              onClick={onOpenBill}
-              className="w-full flex items-center justify-between gap-2 text-left group"
-            >
-              <span className="flex items-center gap-2">
-                <span className="text-sm font-medium text-gray-800 underline decoration-dashed decoration-gray-400 underline-offset-4 group-hover:decoration-blue-500 group-hover:text-blue-700">
-                  Total Bill
-                </span>
-                <span className="rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-bold text-teal-700 border border-teal-100">
-                  PAID
-                </span>
-              </span>
-              <span className="text-lg font-bold text-gray-900 tabular-nums">
-                ₹{pricing.total.toFixed(0)}
-              </span>
-            </button>
-          </div>
-
-          {primaryAction && !isReadyForPickup ? (
-            <div className="mt-4 shrink-0 w-full [&_button]:w-full [&_[aria-label='More actions']]:hidden">
+          {primaryAction ? (
+            <div className="mt-3 shrink-0 w-full [&_button]:min-h-[44px] [&_[aria-label='More actions']]:hidden">
               {primaryAction}
             </div>
           ) : null}
         </div>
 
-        <div className="relative flex flex-col p-4 xl:w-[28%] min-w-[240px] shrink-0 gap-3">
+        <div className="flex flex-col p-4 flex-1 min-w-0 min-h-0">
+          <MerchantOrderItemsList
+            items={previewItems}
+            totalItemCount={totalItemCount}
+            totalLineCount={items.length}
+            showUtensilsBanner={false}
+            onItemClick={(item) => setSelectedItem(item as OrderLineItem)}
+          />
+          {hasMoreItems ? (
+            <button
+              type="button"
+              onClick={onOpenAllItems}
+              className="mt-2 w-full rounded-lg border border-blue-200 bg-blue-50 py-2.5 text-sm font-bold text-blue-700 hover:bg-blue-100"
+            >
+              +{items.length - ITEMS_PREVIEW_MAX} more items — view all
+            </button>
+          ) : null}
+
+          <MerchantOrderBillSummary
+            className="mt-4 shrink-0"
+            items={items}
+            pricing={pricing}
+            onTotalClick={onOpenBill}
+          />
+        </div>
+
+        <div className="relative flex flex-col p-4 xl:w-[28%] min-w-[240px] shrink-0 gap-2 min-h-0">
           {onClose && (
             <button
               type="button"
@@ -392,11 +361,11 @@ export function OrderPanel({
             </button>
           )}
           {showRiderCard && (
-            <div className="mt-8 flex min-h-[180px] flex-col rounded-xl border border-gray-200 bg-gradient-to-b from-slate-50 to-white p-4 shadow-sm">
-              <div className="mb-3">
+            <div className="mt-6 shrink-0 flex flex-col rounded-xl border border-gray-200 bg-gradient-to-b from-slate-50 to-white p-3 shadow-sm">
+              <div className="mb-2">
                 <p className="text-xs font-bold uppercase tracking-wide text-gray-500">Delivery partner</p>
               </div>
-              <div className="flex flex-1 flex-col gap-3">
+              <div className="flex flex-col gap-2">
               <div className="flex gap-3">
                 {riderPhoto ? (
                   <img
@@ -450,7 +419,7 @@ export function OrderPanel({
             </div>
           )}
 
-          <div className="mt-auto flex flex-col gap-2 pt-2">
+          <div className="mt-3 shrink-0 flex flex-col gap-2">
             {onViewPastRiders ? (
               <button
                 type="button"

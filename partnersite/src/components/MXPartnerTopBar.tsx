@@ -1121,7 +1121,10 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   }, [rushStorePick, resolvedStoreId, refreshRushStatus, refreshStoreOperations, refetchStoreOp]);
 
   const switchToStore = (id: string) => {
-    if (typeof localStorage !== 'undefined') localStorage.setItem('selectedStoreId', id);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('selectedStoreId', id);
+      void import('@/lib/partner-selected-store').then((m) => m.notifyPartnerSelectedStoreChanged(id));
+    }
     setSheet(null);
     const base = (pathname || '/partners/dashboard').split('?')[0];
     const params = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');

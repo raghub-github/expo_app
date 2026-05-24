@@ -706,6 +706,50 @@ const STATUS_TO_LABEL: Record<UpdateableOrderStatus, string> = {
   delivered: "Delivered",
 };
 
+async function syncOrdersFoodForDashboardStatus(
+  orderId: number,
+  status: UpdateableOrderStatus,
+  now: Date
+): Promise<void> {
+  const db = getDb();
+  const nowIso = now.toISOString();
+
+  if (status === "picked_up") {
+    await db.execute(sql`
+      UPDATE orders_food
+      SET
+        order_status = 'READY_FOR_PICKUP',
+        updated_at = ${nowIso}::timestamptz,
+        prepared_at = COALESCE(prepared_at, ${nowIso}::timestamptz)
+      WHERE order_id = ${orderId}
+    `);
+    return;
+  }
+
+  if (status === "in_transit") {
+    await db.execute(sql`
+      UPDATE orders_food
+      SET
+        order_status = 'OUT_FOR_DELIVERY',
+        updated_at = ${nowIso}::timestamptz,
+        dispatched_at = COALESCE(dispatched_at, ${nowIso}::timestamptz)
+      WHERE order_id = ${orderId}
+    `);
+    return;
+  }
+
+  if (status === "delivered") {
+    await db.execute(sql`
+      UPDATE orders_food
+      SET
+        order_status = 'DELIVERED',
+        updated_at = ${nowIso}::timestamptz,
+        delivered_at = COALESCE(delivered_at, ${nowIso}::timestamptz)
+      WHERE order_id = ${orderId}
+    `);
+  }
+}
+
 /**
  * Insert a single order timeline entry (immutable event log). Call whenever status changes from any source.
  */
@@ -1042,6 +1086,13 @@ export async function updateOrderStatus(
     actorName: updatedByEmail,
     expectedByAt: etaToSet,
   });
+
+  try {
+    await syncOrdersFoodForDashboardStatus(orderId, status, now);
+  } catch (foodSyncErr) {
+    console.warn("[updateOrderStatus] orders_food sync failed:", foodSyncErr);
+  }
+
   return { updated: true };
 }
 

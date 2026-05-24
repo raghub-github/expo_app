@@ -73,6 +73,7 @@ export type OrderTrackingResponse = {
 
 export type CreateOrderItemAddon = {
   addonId: string;
+  customizationId?: string | null;
   addonName: string;
   addonPrice: number;
   quantity: number;
@@ -126,6 +127,7 @@ export type CreateOrderPayload = {
   deliveryType?: "delivery" | "self_pickup";
   checkoutMetadata?: CheckoutMetadataPayload;
   selectedPlatformOfferId?: number | null;
+  selectedMerchantOfferId?: number | null;
   forceNoAutoOffer?: boolean;
 };
 

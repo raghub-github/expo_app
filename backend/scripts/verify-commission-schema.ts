@@ -48,6 +48,20 @@ async function main() {
         ).length > 0,
     },
     {
+      name: "order_item_addon_commission_snapshots table",
+      query: async () =>
+        (
+          await sql`SELECT 1 FROM information_schema.tables WHERE table_name='order_item_addon_commission_snapshots'`
+        ).length > 0,
+    },
+    {
+      name: "orders_core_item_addons.menu_addon_id",
+      query: async () =>
+        (
+          await sql`SELECT 1 FROM information_schema.columns WHERE table_name='orders_core_item_addons' AND column_name='menu_addon_id'`
+        ).length > 0,
+    },
+    {
       name: "commission_audit_log table",
       query: async () =>
         (

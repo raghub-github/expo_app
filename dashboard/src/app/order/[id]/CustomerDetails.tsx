@@ -2,6 +2,11 @@
 
 import { useState } from "react";
 import { Check, Copy } from "lucide-react";
+import {
+  TRUST_TIER_LABEL,
+  trustTierUserTypeClass,
+  type CustomerTrustTier,
+} from "@/lib/customers/trust-tier";
 
 interface Order {
   userId?: string | number | null;
@@ -23,6 +28,15 @@ interface CustomerDetailsProps {
   order: Order;
   onCopy: (text: string) => void;
   onPhoneClick: (title: string, phone: string) => void;
+}
+
+function userTypeTierClass(label: string | null | undefined): string {
+  const trimmed = label?.trim();
+  if (!trimmed || trimmed === "—") return "text-slate-600";
+  const tier = (Object.entries(TRUST_TIER_LABEL).find(([, v]) => v === trimmed)?.[0] ??
+    null) as CustomerTrustTier | null;
+  if (tier && tier in TRUST_TIER_LABEL) return trustTierUserTypeClass(tier);
+  return "font-semibold text-slate-800";
 }
 
 export default function CustomerDetails({
@@ -267,8 +281,10 @@ export default function CustomerDetails({
             User Type:
           </div>
           <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-gati-text-primary">
-            <span className="inline-flex items-center bg-gradient-to-br from-gati-primary to-gati-primary-light text-white px-1.5 py-0.5 rounded-full text-[10px] font-semibold tracking-wide whitespace-nowrap">
-              {order.userType || order.accountStatus || "Customer"}
+            <span
+              className={`inline-flex items-center rounded-full bg-slate-50 px-2 py-0.5 text-[10px] font-semibold tracking-wide whitespace-nowrap ring-1 ring-slate-200 ${userTypeTierClass(order.userType)}`}
+            >
+              {order.userType?.trim() || "—"}
             </span>
           </div>
         </div>

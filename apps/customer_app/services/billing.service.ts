@@ -99,6 +99,7 @@ export type CalculateBillResponse = {
 
 export type CalculateBillItemAddon = {
   addonId: string;
+  customizationId?: string | null;
   addonName: string;
   addonPrice: number;
   quantity: number;
@@ -137,10 +138,20 @@ export type CalculateBillPayload = {
   forceNoAutoOffer?: boolean;
 };
 
+export type CheckoutOfferMerchantRow = {
+  id: number;
+  title: string;
+  summary: string;
+  autoApply?: boolean;
+  requiresCouponCode?: string | null;
+  minOrderAmount?: number | null;
+};
+
 export type CheckoutOffersResponse = {
   ok: true;
   coupons: { code: string; discountType: string; description: string }[];
-  merchantOffers: { id: number; title: string; summary: string }[];
+  merchantOffers: CheckoutOfferMerchantRow[];
+  merchantOffersIneligible?: Array<CheckoutOfferMerchantRow & { reason: string; lockReason: string }>;
   platformOffers: { id: number; name: string | null; offerKind: string; summary: string }[];
   /**
    * Offers the server filtered out for this cart. We render them disabled with
@@ -156,9 +167,13 @@ export type CheckoutOffersResponse = {
 };
 
 export const billingService = {
-  async calculateBill(payload: CalculateBillPayload): Promise<CalculateBillResponse> {
+  async calculateBill(
+    payload: CalculateBillPayload,
+    options?: { signal?: AbortSignal }
+  ): Promise<CalculateBillResponse> {
     const { data } = await api.post<CalculateBillResponse>(`${BILLING_PREFIX}/calculate`, payload, {
       timeout: BILLING_CALCULATE_TIMEOUT_MS,
+      signal: options?.signal,
     });
     return data;
   },
@@ -167,6 +182,7 @@ export const billingService = {
     merchantId: string;
     addressId: string;
     cartSubtotal: number;
+    qualifyingCartTotal?: number;
     serviceType?: "FOOD" | "PARCEL" | "RIDE" | "ALL";
     userSegment?: "NEW" | "EXISTING" | "ALL";
     /** Live location from the location store — preferred over saved address fields. */
@@ -179,6 +195,9 @@ export const billingService = {
         merchantId: params.merchantId,
         addressId: params.addressId,
         cartSubtotal: params.cartSubtotal,
+        ...(params.qualifyingCartTotal != null && params.qualifyingCartTotal > 0
+          ? { qualifyingCartTotal: params.qualifyingCartTotal }
+          : {}),
         ...(params.serviceType != null ? { serviceType: params.serviceType } : {}),
         ...(params.userSegment != null ? { userSegment: params.userSegment } : {}),
         ...(params.pincode ? { pincode: params.pincode } : {}),

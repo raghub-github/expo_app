@@ -4,6 +4,7 @@ import React from 'react';
 import { Check } from 'lucide-react';
 import {
   formatTimelineClock,
+  formatTimelineDate,
   type MerchantVisibleTimelineStep,
 } from '@/lib/merchantVisibleTimeline';
 
@@ -61,7 +62,14 @@ export function MerchantOrderTimelineStrip({
               </p>
 
               {step.at ? (
-                <p className="mt-0.5 text-xs font-semibold text-gray-900">{formatTimelineClock(step.at)}</p>
+                <div className="mt-0.5 text-center leading-tight">
+                  <p className="text-[10px] font-medium text-gray-600 tabular-nums">
+                    {formatTimelineDate(step.at)}
+                  </p>
+                  <p className="text-xs font-semibold text-gray-900 tabular-nums">
+                    {formatTimelineClock(step.at)}
+                  </p>
+                </div>
               ) : (
                 <p className="mt-0.5 text-xs text-gray-300">—</p>
               )}

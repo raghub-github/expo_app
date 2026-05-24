@@ -2,7 +2,8 @@
  * DB-driven item customization bottom sheet — Zomato-style UI, GatiMitra mint accents.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   View,
   Text,
@@ -23,12 +24,25 @@ import { DietIndicator } from "@/components/store/DietIndicator";
 import { MenuItemImagePlaceholder } from "@/components/store/MenuItemImagePlaceholder";
 import type { MenuItem, MenuItemFullConfig } from "@/services/merchant.service";
 import { merchantService } from "@/services/merchant.service";
+import {
+  clearCachedMenuItemFullConfig,
+  menuItemConfigQueryKey,
+  resolveFullConfigItemId,
+} from "@/lib/menu-item-config-query";
+import {
+  normalizeMenuItemFullConfig,
+  resolveInitialVariantId,
+} from "@/lib/normalize-menu-item-full-config";
+import {
+  formatMenuOptionDisplayName,
+  formatMenuPortionLabel,
+} from "@/lib/format-menu-portion-label";
 
-const SHEET_MAX_HEIGHT_RATIO = 0.78;
-const SECTION_CARD_RADIUS = 12;
+const SHEET_MAX_HEIGHT_RATIO = 0.84;
 
 export type ItemCustomizationInitialSelection = {
   variantId?: string | null;
+  variantName?: string | null;
   addons?: Array<{ addonId: string }>;
   quantity?: number;
 };
@@ -57,18 +71,179 @@ export type ItemCustomizationSheetProps = {
 };
 
 function sectionSubtitle(isRequired: boolean, maxSelection: number): string {
-  if (isRequired && maxSelection === 1) return "Required • Select any 1 option";
-  if (isRequired) return `Required • Select up to ${maxSelection} options`;
+  if (isRequired && maxSelection === 1) return "Select any 1 option";
+  if (isRequired) return `Select up to ${maxSelection} options`;
   if (maxSelection === 1) return "Select any 1 option";
   return `Select up to ${maxSelection} options`;
 }
 
-/** API accepts merchant_menu_items.item_id; cart often stores numeric menuItemId PK instead. */
-function resolveFullConfigItemId(item: MenuItem): string {
-  const idStr = String(item.id ?? "").trim();
-  const pkStr = item.menuItemId != null ? String(item.menuItemId) : "";
-  if (idStr && idStr !== pkStr) return idStr;
-  return pkStr || idStr;
+function SectionHeader({
+  title,
+  subtitle,
+  required,
+}: {
+  title: string;
+  subtitle: string;
+  required?: boolean;
+}) {
+  return (
+    <View style={styles.sectionHeader}>
+      <View style={styles.sectionTitleRow}>
+        <Text style={styles.sectionTitle}>{title}</Text>
+        {required ? (
+          <View style={styles.requiredPill}>
+            <Text style={styles.requiredPillText}>Required</Text>
+          </View>
+        ) : null}
+      </View>
+      <Text style={styles.sectionSub}>{subtitle}</Text>
+    </View>
+  );
+}
+
+type CustomizationOptionRowProps = {
+  name: string;
+  sizeValue?: string | null;
+  sizeUnit?: string | null;
+  price: number;
+  selected: boolean;
+  disabled?: boolean;
+  singleSelect: boolean;
+  imageUrl?: string | null;
+  showImage?: boolean;
+  highlight?: boolean;
+  onPress: () => void;
+};
+
+function CustomizationOptionRow({
+  name,
+  sizeValue,
+  sizeUnit,
+  price,
+  selected,
+  disabled = false,
+  singleSelect,
+  imageUrl,
+  showImage = false,
+  highlight = false,
+  onPress,
+}: CustomizationOptionRowProps) {
+  const showPrice = price > 0;
+  const portionLabel = formatMenuPortionLabel(sizeValue, sizeUnit);
+  const a11yLabel = formatMenuOptionDisplayName(name, sizeValue, sizeUnit);
+
+  const control = singleSelect ? (
+    <View style={[styles.radioOuter, selected && styles.radioOuterSelected]}>
+      {selected ? <View style={styles.radioInner} /> : null}
+    </View>
+  ) : (
+    <View
+      style={[
+        styles.checkboxOuter,
+        selected && styles.checkboxOuterSelected,
+        disabled && styles.checkboxOuterDisabled,
+      ]}
+    >
+      {selected ? <Ionicons name="checkmark" size={14} color="#fff" /> : null}
+    </View>
+  );
+
+  const labelLine = portionLabel ? (
+    <Text
+      style={[styles.optionLineText, disabled && styles.optionNameDisabled]}
+      numberOfLines={1}
+      ellipsizeMode="tail"
+    >
+      <Text style={styles.optionNameInline}>{name.trim()}</Text>
+      <Text style={styles.optionQtyInline}> · {portionLabel}</Text>
+    </Text>
+  ) : (
+    <Text
+      style={[styles.optionNameInline, styles.optionLineText, disabled && styles.optionNameDisabled]}
+      numberOfLines={1}
+      ellipsizeMode="tail"
+    >
+      {name.trim()}
+    </Text>
+  );
+
+  return (
+    <Pressable
+      style={({ pressed }) => [
+        styles.optionRowCard,
+        selected && styles.optionRowCardSelected,
+        highlight && !selected && styles.optionRowCardHighlight,
+        pressed && !disabled && styles.rowPressed,
+        disabled && styles.optionRowDisabled,
+      ]}
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole={singleSelect ? "radio" : "checkbox"}
+      accessibilityState={{ selected, disabled }}
+      accessibilityLabel={a11yLabel}
+    >
+      <View style={styles.optionRowInner}>
+        {showImage ? (
+          <View style={styles.optionThumbWrap}>
+            {highlight ? (
+              <View style={styles.mostOrderedBadge}>
+                <Text style={styles.mostOrderedText} numberOfLines={1}>
+                  Most Ordered
+                </Text>
+              </View>
+            ) : null}
+            <View style={styles.optionThumb}>
+              {imageUrl ? (
+                <Image source={{ uri: imageUrl }} style={styles.optionThumbImage} resizeMode="cover" />
+              ) : (
+                <View style={styles.optionThumbPlaceholder}>
+                  <MenuItemImagePlaceholder size="sm" />
+                </View>
+              )}
+              <View style={styles.dietOnThumbSmall}>
+                <DietIndicator type="veg" />
+              </View>
+            </View>
+          </View>
+        ) : null}
+
+        <View style={styles.optionCenter}>{labelLine}</View>
+
+        <View style={styles.optionTrailing}>
+          {showPrice ? <Text style={styles.optionPrice}>₹{Math.round(price)}</Text> : null}
+          {control}
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
+function applyInitialSelection(
+  c: MenuItemFullConfig,
+  initialSelection: ItemCustomizationInitialSelection | null | undefined,
+  setSelectedVariantId: (id: string | null) => void,
+  setSelectedAddons: (v: Record<string, string[]>) => void,
+  setQuantity: (n: number) => void
+) {
+  setQuantity(initialSelection?.quantity ?? 1);
+  const addonIdsFromCart = new Set(
+    (initialSelection?.addons ?? []).map((a) => String(a.addonId))
+  );
+
+  setSelectedVariantId(resolveInitialVariantId(c.variants ?? [], initialSelection));
+
+  if (c.customizations?.length && addonIdsFromCart.size > 0) {
+    const next: Record<string, string[]> = {};
+    for (const group of c.customizations) {
+      const picked = group.addons
+        .filter((a) => addonIdsFromCart.has(String(a.id)))
+        .map((a) => a.id);
+      if (picked.length) next[group.id] = picked;
+    }
+    setSelectedAddons(next);
+  } else {
+    setSelectedAddons({});
+  }
 }
 
 export function ItemCustomizationSheet({
@@ -82,125 +257,169 @@ export function ItemCustomizationSheet({
   onAdd,
 }: ItemCustomizationSheetProps) {
   const insets = useSafeAreaInsets();
+  const queryClient = useQueryClient();
   const { height: screenHeight } = useWindowDimensions();
   const sheetMaxHeight = Math.round(screenHeight * SHEET_MAX_HEIGHT_RATIO);
 
-  const [config, setConfig] = useState<MenuItemFullConfig | null>(null);
-  const [loading, setLoading] = useState(false);
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
   const [selectedAddons, setSelectedAddons] = useState<Record<string, string[]>>({});
   const [quantity, setQuantity] = useState(1);
+  const appliedConfigKeyRef = useRef<string | null>(null);
 
-  const hasConfigFlags = item.hasVariants || item.hasAddons || item.hasCustomizations;
   const configItemKey = resolveFullConfigItemId(item);
   const isEditMode = initialSelection != null;
+  const hasConfigFlags = item.hasVariants || item.hasAddons || item.hasCustomizations;
 
   useEffect(() => {
-    if (!visible || !storeId || !configItemKey) {
-      setConfig(null);
+    if (visible && storeId && configItemKey) {
+      clearCachedMenuItemFullConfig(storeId, configItemKey);
+      void queryClient.invalidateQueries({
+        queryKey: menuItemConfigQueryKey(storeId, configItemKey),
+      });
+    }
+  }, [visible, storeId, configItemKey, queryClient]);
+
+  const {
+    data: config,
+    isLoading: configLoading,
+    isFetching: configFetching,
+  } = useQuery({
+    queryKey: menuItemConfigQueryKey(storeId, configItemKey),
+    queryFn: () =>
+      merchantService.getMenuItemFullConfig(storeId, configItemKey, { skipMemoryCache: true }),
+    enabled: visible && !!storeId && !!configItemKey,
+    staleTime: 0,
+    gcTime: 30 * 60 * 1000,
+    refetchOnMount: "always",
+  });
+
+  const displayConfig = useMemo(
+    () => (config ? normalizeMenuItemFullConfig(config) : null),
+    [config]
+  );
+
+  const loading = visible && !displayConfig && (configLoading || configFetching);
+
+  useEffect(() => {
+    if (!visible) {
+      appliedConfigKeyRef.current = null;
       return;
     }
-    setLoading(true);
-    setSelectedAddons({});
-    setQuantity(initialSelection?.quantity ?? 1);
-    setSelectedVariantId(null);
-    merchantService
-      .getMenuItemFullConfig(storeId, configItemKey)
-      .then((c) => {
-        setConfig(c);
-        const addonIdsFromCart = new Set(
-          (initialSelection?.addons ?? []).map((a) => String(a.addonId))
-        );
-
-        if (c?.variants?.length) {
-          const fromCart =
-            initialSelection?.variantId &&
-            c.variants.some((v) => v.id === initialSelection.variantId)
-              ? initialSelection.variantId
-              : null;
-          const defaultVariant = c.variants.find((v) => v.isDefault) ?? c.variants[0];
-          setSelectedVariantId(fromCart ?? defaultVariant?.id ?? null);
-        }
-
-        if (c?.customizations?.length && addonIdsFromCart.size > 0) {
-          const next: Record<string, string[]> = {};
-          for (const group of c.customizations) {
-            const picked = group.addons
-              .filter((a) => addonIdsFromCart.has(String(a.id)))
-              .map((a) => a.id);
-            if (picked.length) next[group.id] = picked;
-          }
-          setSelectedAddons(next);
-        }
-      })
-      .finally(() => setLoading(false));
-  }, [visible, storeId, configItemKey, initialSelection]);
+    if (!displayConfig) return;
+    const key = `${storeId}:${configItemKey}:${JSON.stringify(initialSelection ?? null)}`;
+    if (appliedConfigKeyRef.current === key) return;
+    appliedConfigKeyRef.current = key;
+    applyInitialSelection(
+      displayConfig,
+      initialSelection,
+      setSelectedVariantId,
+      setSelectedAddons,
+      setQuantity
+    );
+  }, [visible, displayConfig, storeId, configItemKey, initialSelection]);
 
   const variantPrice = useMemo(() => {
-    if (!config?.variants?.length) return config?.item?.price ?? item.price;
-    const v = config.variants.find((x) => x.id === selectedVariantId);
-    return v ? v.price : config.variants[0]?.price ?? item.price;
-  }, [config, selectedVariantId, item.price]);
+    if (!displayConfig?.variants?.length) return displayConfig?.item?.price ?? item.price;
+    const v = displayConfig.variants.find((x) => x.id === selectedVariantId);
+    return v ? v.price : displayConfig.variants[0]?.price ?? item.price;
+  }, [displayConfig, selectedVariantId, item.price]);
 
   const addonsTotal = useMemo(() => {
-    if (!config?.customizations) return 0;
+    if (!displayConfig?.customizations) return 0;
     let total = 0;
-    config.customizations.forEach((c) => {
+    displayConfig.customizations.forEach((c) => {
       (selectedAddons[c.id] ?? []).forEach((addonId) => {
         const addon = c.addons.find((a) => a.id === addonId);
         if (addon) total += addon.price;
       });
     });
     return total;
-  }, [config, selectedAddons]);
+  }, [displayConfig, selectedAddons]);
 
   const totalPrice = (variantPrice + addonsTotal) * quantity;
 
   const requiredVariantSelected = useMemo(() => {
-    if (!config?.variants?.length) return true;
+    if (!displayConfig?.variants?.length) return true;
     return selectedVariantId != null;
-  }, [config?.variants?.length, selectedVariantId]);
+  }, [displayConfig?.variants?.length, selectedVariantId]);
 
   const requiredCustomizationsMet = useMemo(() => {
-    if (!config?.customizations) return true;
-    return config.customizations.every((c) => {
+    if (!displayConfig?.customizations) return true;
+    return displayConfig.customizations.every((c) => {
       if (!c.isRequired) return true;
       const count = (selectedAddons[c.id] ?? []).length;
-      return count >= c.minSelection;
+      return count >= Math.max(1, c.minSelection);
     });
-  }, [config?.customizations, selectedAddons]);
+  }, [displayConfig?.customizations, selectedAddons]);
 
   const canAdd = !isStoreClosed && requiredVariantSelected && requiredCustomizationsMet;
+
+  const selectedVariant = useMemo(() => {
+    if (!displayConfig?.variants?.length || !selectedVariantId) return null;
+    return displayConfig.variants.find((v) => v.id === selectedVariantId) ?? null;
+  }, [displayConfig?.variants, selectedVariantId]);
+
+  const selectedVariantDisplayName = useMemo(
+    () =>
+      selectedVariant
+        ? formatMenuOptionDisplayName(
+            selectedVariant.name,
+            selectedVariant.sizeValue,
+            selectedVariant.sizeUnit
+          )
+        : null,
+    [selectedVariant]
+  );
 
   const toggleAddon = useCallback(
     (customizationId: string, addonId: string) => {
       setSelectedAddons((prev) => {
+        const group = displayConfig?.customizations.find((c) => c.id === customizationId);
+        const max = group?.maxSelection ?? 1;
         const list = prev[customizationId] ?? [];
-        const max = config?.customizations.find((c) => c.id === customizationId)?.maxSelection ?? 1;
+
+        if (max === 1) {
+          if (list[0] === addonId) {
+            if (group?.isRequired && (group.minSelection ?? 1) >= 1) return prev;
+            return { ...prev, [customizationId]: [] };
+          }
+          return { ...prev, [customizationId]: [addonId] };
+        }
+
         if (list.includes(addonId)) {
           return { ...prev, [customizationId]: list.filter((id) => id !== addonId) };
-        }
-        if (max === 1) {
-          return { ...prev, [customizationId]: [addonId] };
         }
         if (list.length >= max) return prev;
         return { ...prev, [customizationId]: [...list, addonId] };
       });
     },
-    [config?.customizations]
+    [displayConfig?.customizations]
   );
 
   const handleAdd = useCallback(() => {
     if (!canAdd) return;
-    const addonIds = config?.customizations?.flatMap((c) => selectedAddons[c.id] ?? []) ?? [];
-    const addonsList: Array<{ addonId: string; addonName: string; addonPrice: number; quantity: number }> = [];
-    config?.customizations?.forEach((c) => {
+    const addonIds = displayConfig?.customizations?.flatMap((c) => selectedAddons[c.id] ?? []) ?? [];
+    const addonsList: Array<{
+      addonId: string;
+      customizationId: string;
+      addonName: string;
+      addonPrice: number;
+      quantity: number;
+    }> = [];
+    displayConfig?.customizations?.forEach((c) => {
       (selectedAddons[c.id] ?? []).forEach((addonId) => {
         const addon = c.addons.find((a) => a.id === addonId);
         if (addon) {
+          const stableAddonId = String(addon.id ?? "").trim();
+          if (!stableAddonId || stableAddonId === "0") return;
           addonsList.push({
-            addonId: addon.id,
-            addonName: addon.name,
+            addonId: stableAddonId,
+            customizationId: c.id,
+            addonName: formatMenuOptionDisplayName(
+              addon.name,
+              addon.sizeValue,
+              addon.sizeUnit
+            ),
             addonPrice: addon.price,
             quantity: 1,
           });
@@ -208,26 +427,50 @@ export function ItemCustomizationSheet({
       });
     });
     const variant =
-      config?.variants?.length && selectedVariantId
-        ? config.variants.find((v) => v.id === selectedVariantId)
+      displayConfig?.variants?.length && selectedVariantId
+        ? displayConfig.variants.find((v) => v.id === selectedVariantId)
         : null;
     const baseMenuItemId = String(item.menuItemId != null ? item.menuItemId : item.id);
     onAdd({
-      menuItemId: config?.variants?.length
+      menuItemId: displayConfig?.variants?.length
         ? `${baseMenuItemId}_${selectedVariantId ?? ""}_${addonIds.sort().join(",")}`
         : baseMenuItemId,
       name: item.name,
       price: totalPrice / quantity,
       quantity,
       isVeg: item.isVeg,
-      basePrice: variant ? variant.price : (config?.item?.price ?? item.price),
+      basePrice: variant ? variant.price : (displayConfig?.item?.price ?? item.price),
       variantId: selectedVariantId ?? undefined,
-      variantName: variant?.name,
-      addons: addonsList.length ? addonsList : undefined,
-      imageUrl: config?.item?.imageUrl ?? item.imageUrl ?? null,
+      variantName: selectedVariantDisplayName ?? variant?.name,
+      variantSizeValue: variant?.sizeValue ?? null,
+      variantSizeUnit: variant?.sizeUnit ?? null,
+      addons: addonsList.length
+        ? addonsList.map((a) => {
+            const src = displayConfig?.customizations
+              ?.flatMap((c) => c.addons)
+              .find((x) => String(x.id) === a.addonId);
+            return {
+              ...a,
+              addonSizeValue: src?.sizeValue ?? null,
+              addonSizeUnit: src?.sizeUnit ?? null,
+            };
+          })
+        : undefined,
+      imageUrl: displayConfig?.item?.imageUrl ?? item.imageUrl ?? null,
     });
     onClose();
-  }, [canAdd, config, item, selectedVariantId, selectedAddons, quantity, totalPrice, onAdd, onClose]);
+  }, [
+    canAdd,
+    displayConfig,
+    item,
+    selectedVariantId,
+    selectedVariantDisplayName,
+    selectedAddons,
+    quantity,
+    totalPrice,
+    onAdd,
+    onClose,
+  ]);
 
   if (!visible) return null;
 
@@ -249,6 +492,7 @@ export function ItemCustomizationSheet({
           </TouchableOpacity>
 
           <View style={[styles.sheet, { maxHeight: sheetMaxHeight - 54 }]}>
+            <View style={styles.sheetHandle} />
             {loading ? (
               <View style={styles.loadingWrap}>
                 <ActivityIndicator size="large" color={StoreTheme.accentMint} />
@@ -257,28 +501,39 @@ export function ItemCustomizationSheet({
             ) : (
               <View style={styles.sheetBody}>
                 <View style={styles.header}>
-                  <View style={styles.headerImageWrap}>
-                    {item.imageUrl ? (
-                      <Image source={{ uri: item.imageUrl }} style={styles.headerImage} resizeMode="cover" />
-                    ) : (
-                      <MenuItemImagePlaceholder size="sm" />
-                    )}
-                    <View style={styles.dietOnThumb}>
-                      <DietIndicator type={item.isVeg ? "veg" : "nonveg"} />
+                  <View style={styles.headerTopRow}>
+                    <View style={styles.headerImageWrap}>
+                      {item.imageUrl ? (
+                        <Image source={{ uri: item.imageUrl }} style={styles.headerImage} resizeMode="cover" />
+                      ) : (
+                        <View style={styles.headerImagePlaceholder}>
+                          <MenuItemImagePlaceholder size="sm" />
+                        </View>
+                      )}
+                      <View style={styles.dietOnThumb}>
+                        <DietIndicator type={item.isVeg ? "veg" : "nonveg"} />
+                      </View>
                     </View>
-                  </View>
 
-                  <Text style={styles.headerName} numberOfLines={2}>
-                    {item.name}
-                  </Text>
+                    <View style={styles.headerTitleCol}>
+                      <Text style={styles.headerName} numberOfLines={2}>
+                        {item.name}
+                      </Text>
+                      {selectedVariantDisplayName ? (
+                        <Text style={styles.headerPortion} numberOfLines={2}>
+                          {selectedVariantDisplayName}
+                        </Text>
+                      ) : null}
+                    </View>
 
-                  <View style={styles.headerIcons}>
-                    <TouchableOpacity hitSlop={8} style={styles.headerIconCircle} activeOpacity={0.75}>
-                      <Ionicons name="bookmark-outline" size={18} color={StoreTheme.textPrimary} />
-                    </TouchableOpacity>
-                    <TouchableOpacity hitSlop={8} style={styles.headerIconCircle} activeOpacity={0.75}>
-                      <Feather name="share-2" size={17} color={StoreTheme.textPrimary} />
-                    </TouchableOpacity>
+                    <View style={styles.headerIcons}>
+                      <TouchableOpacity hitSlop={8} style={styles.headerIconCircle} activeOpacity={0.75}>
+                        <Ionicons name="bookmark-outline" size={18} color={StoreTheme.textPrimary} />
+                      </TouchableOpacity>
+                      <TouchableOpacity hitSlop={8} style={styles.headerIconCircle} activeOpacity={0.75}>
+                        <Feather name="share-2" size={17} color={StoreTheme.textPrimary} />
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 </View>
 
@@ -288,36 +543,10 @@ export function ItemCustomizationSheet({
                   showsVerticalScrollIndicator={false}
                   keyboardShouldPersistTaps="handled"
                 >
-                  {config?.variants && config.variants.length > 0 ? (
-                    <View style={styles.sectionCard}>
-                      <Text style={styles.sectionTitle}>Quantity</Text>
-                      <Text style={styles.sectionSub}>Required • Select any 1 option</Text>
-                      {config.variants.map((v, idx) => {
-                        const selected = selectedVariantId === v.id;
-                        return (
-                          <TouchableOpacity
-                            key={v.id}
-                            style={[styles.optionRow, idx > 0 && styles.optionRowBorder]}
-                            onPress={() => setSelectedVariantId(v.id)}
-                            activeOpacity={0.75}
-                          >
-                            <Text style={styles.optionLabel} numberOfLines={2}>
-                              {v.name}
-                            </Text>
-                            <Text style={styles.optionPrice}>₹{Math.round(v.price)}</Text>
-                            <View style={[styles.radioOuter, selected && styles.radioOuterSelected]}>
-                              {selected ? <View style={styles.radioInner} /> : null}
-                            </View>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                  ) : null}
-
                   {!loading &&
-                  !config?.variants?.length &&
-                  !config?.customizations?.length ? (
-                    <View style={styles.sectionCard}>
+                  !displayConfig?.variants?.length &&
+                  !displayConfig?.customizations?.length ? (
+                    <View style={styles.sectionBlock}>
                       <Text style={styles.sectionSub}>
                         {hasConfigFlags
                           ? "Customization options could not be loaded. Try again."
@@ -326,102 +555,93 @@ export function ItemCustomizationSheet({
                     </View>
                   ) : null}
 
-                  {config?.customizations?.map((c) => (
-                    <View key={c.id} style={styles.sectionCard}>
-                      <Text style={styles.sectionTitle}>{c.title}</Text>
-                      <Text style={styles.sectionSub}>
-                        {sectionSubtitle(c.isRequired, c.maxSelection)}
-                      </Text>
-                      {c.addons.map((a, idx) => {
-                        const selected = (selectedAddons[c.id] ?? []).includes(a.id);
-                        const atMax = (selectedAddons[c.id] ?? []).length >= c.maxSelection;
-                        const disabled = !selected && atMax;
-                        const showMostOrdered = a.isMostOrdered === true;
-                        const isSingleSelect = c.maxSelection === 1;
-                        return (
-                          <TouchableOpacity
-                            key={a.id}
-                            style={[styles.addonRow, idx > 0 && styles.optionRowBorder]}
-                            onPress={() => !disabled && toggleAddon(c.id, a.id)}
-                            activeOpacity={0.75}
-                            disabled={disabled}
-                          >
-                            <View style={styles.addonImageCol}>
-                              {showMostOrdered ? (
-                                <View style={styles.mostOrderedBadge}>
-                                  <Text style={styles.mostOrderedText} numberOfLines={1}>
-                                    Most Ordered
-                                  </Text>
-                                </View>
-                              ) : null}
-                              <View style={styles.addonImageWrap}>
-                                {a.imageUrl ? (
-                                  <Image
-                                    source={{ uri: a.imageUrl }}
-                                    style={styles.addonImage}
-                                    resizeMode="cover"
-                                  />
-                                ) : (
-                                  <MenuItemImagePlaceholder size="sm" />
-                                )}
-                                <View style={styles.dietOnAddon}>
-                                  <DietIndicator type="veg" />
-                                </View>
-                              </View>
-                            </View>
-                            <Text
-                              style={[styles.addonLabel, disabled && styles.addonLabelDisabled]}
-                              numberOfLines={2}
-                            >
-                              {a.name}
-                            </Text>
-                            <Text style={styles.addonPrice}>₹{Math.round(a.price)}</Text>
-                            {isSingleSelect ? (
-                              <View style={[styles.radioOuter, selected && styles.radioOuterSelected]}>
-                                {selected ? <View style={styles.radioInner} /> : null}
-                              </View>
-                            ) : (
-                              <View
-                                style={[
-                                  styles.checkboxOuter,
-                                  selected && styles.checkboxOuterSelected,
-                                  disabled && styles.checkboxOuterDisabled,
-                                ]}
-                              >
-                                {selected ? (
-                                  <Ionicons name="checkmark" size={13} color="#fff" />
-                                ) : null}
-                              </View>
-                            )}
-                          </TouchableOpacity>
-                        );
-                      })}
+                  {displayConfig?.variants && displayConfig.variants.length > 0 ? (
+                    <View style={styles.sectionBlock}>
+                      <SectionHeader
+                        title="Choose size"
+                        subtitle={sectionSubtitle(true, 1)}
+                        required
+                      />
+                      <View style={styles.optionList}>
+                        {displayConfig.variants.map((v) => (
+                          <CustomizationOptionRow
+                            key={v.id}
+                            name={v.name}
+                            sizeValue={v.sizeValue}
+                            sizeUnit={v.sizeUnit}
+                            price={v.price}
+                            selected={selectedVariantId === v.id}
+                            singleSelect
+                            onPress={() => setSelectedVariantId(v.id)}
+                          />
+                        ))}
+                      </View>
+                    </View>
+                  ) : null}
+
+                  {displayConfig?.customizations?.map((c, groupIdx) => (
+                    <View
+                      key={c.id}
+                      style={[styles.sectionBlock, groupIdx > 0 && styles.sectionBlockGap]}
+                    >
+                      <SectionHeader
+                        title={c.title}
+                        subtitle={sectionSubtitle(c.isRequired, c.maxSelection)}
+                        required={c.isRequired}
+                      />
+                      <View style={styles.optionList}>
+                        {c.addons.map((a) => {
+                          const selected = (selectedAddons[c.id] ?? []).includes(a.id);
+                          const isSingleSelect = c.maxSelection === 1;
+                          const atMax = (selectedAddons[c.id] ?? []).length >= c.maxSelection;
+                          const disabled = !isSingleSelect && !selected && atMax;
+                          return (
+                            <CustomizationOptionRow
+                              key={`${c.id}-${a.id}`}
+                              name={a.name}
+                              sizeValue={a.sizeValue}
+                              sizeUnit={a.sizeUnit}
+                              price={a.price}
+                              selected={selected}
+                              disabled={disabled}
+                              singleSelect={isSingleSelect}
+                              imageUrl={a.imageUrl}
+                              showImage
+                              highlight={a.isMostOrdered === true}
+                              onPress={() => toggleAddon(c.id, a.id)}
+                            />
+                          );
+                        })}
+                      </View>
                     </View>
                   ))}
                 </ScrollView>
 
-                <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 10) }]}>
-                  <View style={styles.qtyRow}>
-                    <TouchableOpacity
-                      style={styles.qtyBtn}
-                      onPress={() => setQuantity((q) => Math.max(1, q - 1))}
-                      disabled={quantity <= 1}
-                      hitSlop={6}
-                    >
-                      <Ionicons
-                        name="remove"
-                        size={18}
-                        color={quantity <= 1 ? StoreTheme.textMuted : StoreTheme.accentMint}
-                      />
-                    </TouchableOpacity>
-                    <Text style={styles.qtyValue}>{quantity}</Text>
-                    <TouchableOpacity
-                      style={styles.qtyBtn}
-                      onPress={() => setQuantity((q) => q + 1)}
-                      hitSlop={6}
-                    >
-                      <Ionicons name="add" size={18} color={StoreTheme.accentMint} />
-                    </TouchableOpacity>
+                <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+                  <View style={styles.footerQtyBlock}>
+                    <Text style={styles.footerQtyLabel}>How many?</Text>
+                    <View style={styles.qtyRow}>
+                      <TouchableOpacity
+                        style={[styles.qtyBtnCircle, quantity <= 1 && styles.qtyBtnCircleDisabled]}
+                        onPress={() => setQuantity((q) => Math.max(1, q - 1))}
+                        disabled={quantity <= 1}
+                        hitSlop={6}
+                      >
+                        <Ionicons
+                          name="remove"
+                          size={20}
+                          color={quantity <= 1 ? StoreTheme.textMuted : StoreTheme.accentMintDark}
+                        />
+                      </TouchableOpacity>
+                      <Text style={styles.qtyValue}>{quantity}</Text>
+                      <TouchableOpacity
+                        style={styles.qtyBtnCircle}
+                        onPress={() => setQuantity((q) => q + 1)}
+                        hitSlop={6}
+                      >
+                        <Ionicons name="add" size={20} color={StoreTheme.accentMintDark} />
+                      </TouchableOpacity>
+                    </View>
                   </View>
 
                   <TouchableOpacity
@@ -430,13 +650,19 @@ export function ItemCustomizationSheet({
                     style={[styles.addBtn, !canAdd && styles.addBtnDisabled]}
                     activeOpacity={0.9}
                   >
-                    <Text style={styles.addBtnText}>
+                    <Text style={[styles.addBtnText, !canAdd && styles.addBtnTextDisabled]}>
                       {isStoreClosed
                         ? "Store closed"
                         : isEditMode
-                          ? `Update item  ₹${Math.round(totalPrice)}`
-                          : `Add item  ₹${Math.round(totalPrice)}`}
+                          ? "Update item"
+                          : "Add item"}
                     </Text>
+                    {!isStoreClosed && canAdd ? (
+                      <Text style={styles.addBtnSub}>
+                        ₹{Math.round(totalPrice)}
+                        {quantity > 1 ? ` · ${quantity} × ₹${Math.round(totalPrice / quantity)}` : ""}
+                      </Text>
+                    ) : null}
                   </TouchableOpacity>
                 </View>
               </View>
@@ -448,8 +674,8 @@ export function ItemCustomizationSheet({
   );
 }
 
-const THUMB = 56;
-const ADDON_IMG = 44;
+const THUMB = 48;
+const ADDON_IMG = 40;
 
 const styles = StyleSheet.create({
   root: {
@@ -484,9 +710,19 @@ const styles = StyleSheet.create({
   sheet: {
     width: "100%",
     backgroundColor: "#fff",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
     overflow: "hidden",
+    ...StoreTheme.cardShadow,
+  },
+  sheetHandle: {
+    alignSelf: "center",
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#D1D5DB",
+    marginTop: 10,
+    marginBottom: 4,
   },
   sheetBody: {
     flexDirection: "column",
@@ -503,26 +739,50 @@ const styles = StyleSheet.create({
     color: StoreTheme.textSecondary,
   },
   header: {
-    flexDirection: "row",
-    alignItems: "center",
     paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 12,
-    gap: 12,
+    paddingTop: 8,
+    paddingBottom: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: StoreTheme.border,
+    backgroundColor: "#fff",
+  },
+  headerTopRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  headerTitleCol: {
+    flex: 1,
+    minWidth: 0,
+    gap: 6,
+  },
+  headerPortion: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: StoreTheme.textSecondary,
+    lineHeight: 18,
+    marginTop: 2,
   },
   headerImageWrap: {
     width: THUMB,
     height: THUMB,
     borderRadius: 10,
     overflow: "hidden",
-    backgroundColor: "#F3F4F6",
+    backgroundColor: "#F5F5F5",
+    borderWidth: 1,
+    borderColor: "#EEEEEE",
     position: "relative",
   },
+  headerImagePlaceholder: {
+    width: THUMB,
+    height: THUMB,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F5F5F5",
+  },
   headerImage: {
-    width: "100%",
-    height: "100%",
+    width: THUMB,
+    height: THUMB,
   },
   dietOnThumb: {
     position: "absolute",
@@ -533,11 +793,11 @@ const styles = StyleSheet.create({
     padding: 1,
   },
   headerName: {
-    flex: 1,
-    fontSize: 16,
-    fontWeight: "700",
+    fontSize: 17,
+    fontWeight: "800",
     color: StoreTheme.textPrimary,
-    lineHeight: 21,
+    lineHeight: 22,
+    letterSpacing: -0.2,
   },
   headerIcons: {
     flexDirection: "row",
@@ -557,64 +817,177 @@ const styles = StyleSheet.create({
   scroll: {
     flexGrow: 0,
     flexShrink: 1,
-  },
-  scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 12,
-    gap: 12,
-  },
-  sectionCard: {
-    borderWidth: 1,
-    borderColor: StoreTheme.border,
-    borderRadius: SECTION_CARD_RADIUS,
-    paddingHorizontal: 14,
-    paddingTop: 14,
-    paddingBottom: 6,
     backgroundColor: "#fff",
   },
-  sectionTitle: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: StoreTheme.textPrimary,
+  scrollContent: {
+    paddingBottom: 8,
+  },
+  sectionBlock: {
+    backgroundColor: "#fff",
+    paddingHorizontal: 16,
+    paddingBottom: 4,
+  },
+  sectionBlockGap: {
+    borderTopWidth: 8,
+    borderTopColor: "#F4F4F5",
+  },
+  sectionHeader: {
+    paddingTop: 12,
+    paddingBottom: 8,
     marginBottom: 2,
+  },
+  sectionTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: StoreTheme.textPrimary,
+    letterSpacing: -0.2,
+  },
+  requiredPill: {
+    backgroundColor: StoreTheme.accentMintSoft,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "rgba(34, 197, 94, 0.3)",
+  },
+  requiredPillText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: StoreTheme.accentMintDark,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
   },
   sectionSub: {
     fontSize: 12,
     color: StoreTheme.textSecondary,
-    marginBottom: 10,
-    lineHeight: 16,
+    marginTop: 4,
+    lineHeight: 17,
   },
-  optionRow: {
+  rowPressed: {
+    opacity: 0.92,
+  },
+  optionList: {
+    gap: 8,
+    paddingTop: 4,
+    paddingBottom: 8,
+    width: "100%",
+  },
+  optionRowCard: {
+    width: "100%",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#F0F0F0",
+    backgroundColor: "#FCFCFC",
+    overflow: "hidden",
+  },
+  optionRowInner: {
     flexDirection: "row",
     alignItems: "center",
+    width: "100%",
     paddingVertical: 12,
-    gap: 10,
+    paddingHorizontal: 12,
+    minHeight: 52,
+    flexWrap: "nowrap",
   },
-  optionRowBorder: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: StoreTheme.border,
+  optionRowCardSelected: {
+    borderColor: StoreTheme.accentMint,
+    backgroundColor: StoreTheme.accentMintSoft,
   },
-  optionLabel: {
+  optionRowCardHighlight: {
+    borderColor: "rgba(34, 197, 94, 0.35)",
+    backgroundColor: "#F6FEF9",
+  },
+  optionRowDisabled: {
+    opacity: 0.45,
+  },
+  optionThumbWrap: {
+    width: ADDON_IMG,
+    height: ADDON_IMG,
+    marginRight: 10,
+    flexShrink: 0,
+    flexGrow: 0,
+    position: "relative",
+  },
+  optionThumb: {
+    width: ADDON_IMG,
+    height: ADDON_IMG,
+    borderRadius: 8,
+    overflow: "hidden",
+    backgroundColor: "#F5F5F5",
+    borderWidth: 1,
+    borderColor: "#EEEEEE",
+    position: "relative",
+  },
+  optionThumbPlaceholder: {
+    width: ADDON_IMG,
+    height: ADDON_IMG,
+    overflow: "hidden",
+    backgroundColor: "#F5F5F5",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  optionThumbImage: {
+    width: ADDON_IMG,
+    height: ADDON_IMG,
+  },
+  dietOnThumbSmall: {
+    position: "absolute",
+    top: 3,
+    left: 3,
+    backgroundColor: "#fff",
+    borderRadius: 2,
+    padding: 1,
+  },
+  optionCenter: {
     flex: 1,
-    fontSize: 14,
-    fontWeight: "500",
-    color: StoreTheme.textPrimary,
-    lineHeight: 19,
+    minWidth: 0,
+    marginRight: 8,
+    justifyContent: "center",
   },
-  optionPrice: {
-    fontSize: 14,
+  optionLineText: {
+    fontSize: 15,
+    lineHeight: 20,
+  },
+  optionNameInline: {
+    fontSize: 15,
     fontWeight: "600",
     color: StoreTheme.textPrimary,
-    minWidth: 44,
+  },
+  optionQtyInline: {
+    fontSize: 14,
+    fontWeight: "500",
+    color: StoreTheme.textSecondary,
+  },
+  optionNameDisabled: {
+    color: StoreTheme.textMuted,
+  },
+  optionTrailing: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexShrink: 0,
+    flexGrow: 0,
+    gap: 12,
+    marginLeft: "auto",
+  },
+  optionPrice: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: StoreTheme.textPrimary,
     textAlign: "right",
+    flexShrink: 0,
   },
   radioOuter: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     borderWidth: 2,
-    borderColor: "#D1D5DB",
+    borderColor: "#CFCFCF",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -627,27 +1000,15 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     backgroundColor: StoreTheme.accentMint,
   },
-  addonRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 12,
-    gap: 10,
-  },
-  addonImageCol: {
-    width: ADDON_IMG,
-    alignItems: "center",
-    position: "relative",
-    paddingTop: 8,
-  },
   mostOrderedBadge: {
     position: "absolute",
-    top: 0,
-    left: -6,
-    right: -6,
+    top: -8,
+    left: -4,
+    right: -4,
     zIndex: 2,
-    backgroundColor: StoreTheme.accentRed,
+    backgroundColor: StoreTheme.accentMint,
     borderRadius: 3,
-    paddingHorizontal: 3,
+    paddingHorizontal: 4,
     paddingVertical: 2,
     alignItems: "center",
   },
@@ -658,49 +1019,12 @@ const styles = StyleSheet.create({
     letterSpacing: 0,
     includeFontPadding: false,
   },
-  addonImageWrap: {
-    width: ADDON_IMG,
-    height: ADDON_IMG,
-    borderRadius: 8,
-    overflow: "hidden",
-    backgroundColor: "#F3F4F6",
-    position: "relative",
-  },
-  addonImage: {
-    width: "100%",
-    height: "100%",
-  },
-  dietOnAddon: {
-    position: "absolute",
-    top: 3,
-    left: 3,
-    backgroundColor: "#fff",
-    borderRadius: 2,
-    padding: 1,
-  },
-  addonLabel: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: "500",
-    color: StoreTheme.textPrimary,
-    lineHeight: 19,
-  },
-  addonLabelDisabled: {
-    opacity: 0.45,
-  },
-  addonPrice: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: StoreTheme.textPrimary,
-    minWidth: 36,
-    textAlign: "right",
-  },
   checkboxOuter: {
-    width: 20,
-    height: 20,
+    width: 22,
+    height: 22,
     borderRadius: 4,
     borderWidth: 2,
-    borderColor: "#D1D5DB",
+    borderColor: StoreTheme.accentMint,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#fff",
@@ -714,51 +1038,107 @@ const styles = StyleSheet.create({
   },
   footer: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-end",
     paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingTop: 14,
     gap: 12,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: StoreTheme.border,
     backgroundColor: "#fff",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 6,
+      },
+      android: { elevation: 8 },
+    }),
+  },
+  footerQtyBlock: {
+    minWidth: 118,
+    gap: 6,
+  },
+  footerQtyLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: StoreTheme.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
   },
   qtyRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: StoreTheme.accentMint,
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    minWidth: 108,
-    backgroundColor: "#fff",
+    borderRadius: 12,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    backgroundColor: StoreTheme.accentMintSoft,
+    gap: 4,
   },
-  qtyBtn: {
-    padding: 2,
+  qtyBtnCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(34, 197, 94, 0.35)",
+  },
+  qtyBtnCircleDisabled: {
+    backgroundColor: "#F9FAFB",
+    borderColor: StoreTheme.border,
   },
   qtyValue: {
-    fontSize: 15,
-    fontWeight: "700",
+    fontSize: 17,
+    fontWeight: "800",
     color: StoreTheme.textPrimary,
-    minWidth: 22,
+    minWidth: 28,
     textAlign: "center",
   },
   addBtn: {
     flex: 1,
     backgroundColor: StoreTheme.accentMint,
-    borderRadius: 8,
-    paddingVertical: 14,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     alignItems: "center",
     justifyContent: "center",
+    gap: 2,
+    minHeight: 52,
+    ...Platform.select({
+      ios: {
+        shadowColor: StoreTheme.accentMintDark,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.28,
+        shadowRadius: 4,
+      },
+      android: { elevation: 3 },
+    }),
   },
   addBtnDisabled: {
-    backgroundColor: "#D1D5DB",
+    backgroundColor: "#BBF7D0",
+    opacity: 0.75,
+    ...Platform.select({
+      ios: { shadowOpacity: 0 },
+      android: { elevation: 0 },
+    }),
   },
   addBtnText: {
     fontSize: 16,
-    fontWeight: "700",
+    fontWeight: "800",
     color: "#fff",
     letterSpacing: 0.2,
+  },
+  addBtnTextDisabled: {
+    color: StoreTheme.accentMintDark,
+  },
+  addBtnSub: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.92)",
   },
 });

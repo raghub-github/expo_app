@@ -34,6 +34,8 @@ export type MenuItemVariantRow = {
   menu_item_id: number;
   variant_name: string;
   variant_type: string | null;
+  variant_size_value?: string | number | null;
+  variant_size_unit?: string | null;
   variant_price: string;
   price_difference: string | null;
   in_stock: boolean | null;
@@ -60,6 +62,8 @@ export type MenuItemAddonRow = {
   addon_name: string;
   addon_price: string | null;
   addon_image_url: string | null;
+  addon_size_value?: string | number | null;
+  addon_size_unit?: string | null;
   in_stock: boolean | null;
   display_order: number | null;
 };

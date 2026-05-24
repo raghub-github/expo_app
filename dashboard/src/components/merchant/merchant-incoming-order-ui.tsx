@@ -14,6 +14,9 @@ import {
 } from 'lucide-react';
 import type { OrdersFoodRow } from '@/lib/types/food-orders';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
+import { MerchantOrderItemsList } from '@/components/orders/MerchantOrderItemsList';
+import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
+import type { NormalizedOrderLineItem } from '@/lib/orderLineItems';
 
 export const INCOMING_STATUS_LABEL: Record<string, string> = {
   CREATED: 'Created',
@@ -444,51 +447,18 @@ export function MerchantIncomingOrderPanel({
             </div>
 
             <div className="w-full rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
-              <div className="mb-2.5 flex items-center justify-between">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Items</p>
+              <div className="mb-2 flex justify-end">
                 <span className="text-xs text-gray-500">{order.preparation_time_minutes ?? '—'}m prep</span>
               </div>
-              {order.items && Array.isArray(order.items) && order.items.length > 0 && (
-                <div className="mb-1.5 grid grid-cols-12 gap-2 border-b border-gray-200 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
-                  <div className="col-span-5">Item</div>
-                  <div className="col-span-2 text-center">QTY</div>
-                  <div className="col-span-2 text-right">Price</div>
-                  <div className="col-span-3 text-right">Amount</div>
-                </div>
-              )}
-              {order.items && Array.isArray(order.items) && order.items.length > 0 ? (
-                <div className="space-y-2">
-                  {order.items.map((item, idx) => {
-                    const qty = item.quantity || 1;
-                    const itemPrice = Number(item.price || 0);
-                    const amount = Number(item.total || itemPrice * qty);
-                    return (
-                      <div
-                        key={idx}
-                        className="grid grid-cols-12 items-center gap-2 border-b border-gray-100 py-1 text-xs last:border-0"
-                      >
-                        <div className="col-span-5 min-w-0">
-                          <p className="truncate font-medium text-gray-900">{item.name || `Item ${idx + 1}`}</p>
-                          {item.customizations && Array.isArray(item.customizations) && item.customizations.length > 0 && (
-                            <p className="mt-0.5 truncate text-[10px] text-gray-500">{item.customizations.join(', ')}</p>
-                          )}
-                        </div>
-                        <div className="col-span-2 text-center">
-                          <p className="font-medium text-gray-600">{qty}</p>
-                        </div>
-                        <div className="col-span-2 text-right">
-                          <p className="text-gray-600">₹{itemPrice.toFixed(2)}</p>
-                        </div>
-                        <div className="col-span-3 text-right">
-                          <p className="font-semibold text-gray-900">₹{amount.toFixed(2)}</p>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
+              <MerchantOrderItemsList
+                items={(order.items ?? []) as NormalizedOrderLineItem[]}
+                requiresUtensils={order.requires_utensils}
+                utensilsLabel={getUtensilsCustomerLabel(order)}
+                compact
+              />
+              {(order.items?.length ?? 0) === 0 ? (
                 <p className="text-xs text-gray-500">{computeOrderItemQuantityCount(order)} items</p>
-              )}
+              ) : null}
               <div className="mt-2.5 flex items-center justify-between border-t border-gray-100 pt-2.5">
                 <span className="text-xs text-gray-600">Total</span>
                 <span className="font-bold text-gray-900">₹{Number(order.food_items_total_value || 0).toFixed(2)}</span>

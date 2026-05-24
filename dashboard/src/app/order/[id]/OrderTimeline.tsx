@@ -16,15 +16,14 @@ export interface OrderTimelineEntry {
   expectedByAt?: string | null;
 }
 
-/** First 4 stages always shown on every order page once order is created. */
-const FOUR_ALWAYS_STAGES = [
-  "Created",
+type DisplayEntry = OrderTimelineEntry & { placeholder?: boolean };
+
+/** Always visible on the order progress bar (filled from DB or shown as pending). */
+const ALWAYS_PAYMENT_STAGES = [
   "Bill Ready",
   "Payment Initiated At",
-  "Payment Done",
+  "Pymt Assign RX",
 ] as const;
-
-type DisplayEntry = OrderTimelineEntry & { placeholder?: boolean };
 
 interface OrderTimelineProps {
   orderId: number;
@@ -219,61 +218,83 @@ export default function OrderTimeline({ orderId, initialEntries, currentStatus, 
     );
   }
 
-  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  const norm = (s: string) => s.toLowerCase().replace(/_/g, " ").replace(/\s+/g, " ").trim();
   const matchStage = (entry: OrderTimelineEntry, stage: string) =>
     norm(entry.status) === norm(stage);
 
-  // Build display entries: first 4 stages always (real or placeholder), then any other statuses
-  let displayEntries: DisplayEntry[] = [];
-  if (entries.length === 0 && orderCreatedAt) {
-    displayEntries = FOUR_ALWAYS_STAGES.map((stage, idx) =>
-      stage === "Created"
-        ? {
-            id: 0,
-            orderId,
-            status: "Created",
-            previousStatus: null,
-            actorType: "system",
-            actorId: null,
-            actorName: null,
-            statusMessage: null,
-            occurredAt: orderCreatedAt.toISOString(),
-            placeholder: false,
-          }
-        : {
-            id: -idx,
-            orderId,
-            status: stage,
-            previousStatus: null,
-            actorType: "system",
-            actorId: null,
-            actorName: null,
-            statusMessage: null,
-            occurredAt: "",
-            placeholder: true,
-          }
-    );
-  } else if (entries.length > 0) {
-    const fourSlots: DisplayEntry[] = FOUR_ALWAYS_STAGES.map((stage, idx) => {
-      const found = entries.find((e) => matchStage(e, stage));
-      if (found) return { ...found, placeholder: false };
-      return {
-        id: -idx,
+  const makePlaceholder = (stage: string, idx: number): DisplayEntry => ({
+    id: -(idx + 100),
+    orderId,
+    status: stage,
+    previousStatus: null,
+    actorType: "system",
+    actorId: null,
+    actorName: null,
+    statusMessage: null,
+    occurredAt: "",
+    placeholder: true,
+  });
+
+  const pipelineSlots: DisplayEntry[] = ALWAYS_PAYMENT_STAGES.map((stage, idx) => {
+    const found = entries.find((e) => matchStage(e, stage));
+    return found ? { ...found, placeholder: false } : makePlaceholder(stage, idx);
+  });
+
+  let others: DisplayEntry[] = [...entries]
+    .filter((e) => !ALWAYS_PAYMENT_STAGES.some((s) => matchStage(e, s)))
+    .sort(
+      (a, b) =>
+        new Date(a.occurredAt || 0).getTime() - new Date(b.occurredAt || 0).getTime()
+    )
+    .map((e) => ({ ...e, placeholder: false }));
+
+  const hasCreated = others.some((e) => matchStage(e, "Created"));
+  if (!hasCreated && orderCreatedAt) {
+    others = [
+      {
+        id: 0,
         orderId,
-        status: stage,
+        status: "Created",
         previousStatus: null,
         actorType: "system",
         actorId: null,
         actorName: null,
         statusMessage: null,
-        occurredAt: "",
-        placeholder: true,
-      };
-    });
-    const other = entries.filter(
-      (e) => !FOUR_ALWAYS_STAGES.some((s) => matchStage(e, s))
-    );
-    displayEntries = [...fourSlots, ...other];
+        occurredAt: orderCreatedAt.toISOString(),
+        placeholder: false,
+      },
+      ...others,
+    ];
+  }
+
+  const createdIdx = others.findIndex((e) => matchStage(e, "Created"));
+  let displayEntries: DisplayEntry[];
+  if (createdIdx >= 0) {
+    displayEntries = [
+      ...others.slice(0, createdIdx + 1),
+      ...pipelineSlots,
+      ...others.slice(createdIdx + 1),
+    ];
+  } else {
+    displayEntries = [...pipelineSlots, ...others];
+  }
+
+  if (displayEntries.length === 0 && orderCreatedAt) {
+    displayEntries = [
+      {
+        id: 0,
+        orderId,
+        status: "Created",
+        previousStatus: null,
+        actorType: "system",
+        actorId: null,
+        actorName: null,
+        statusMessage: null,
+        occurredAt: orderCreatedAt.toISOString(),
+        placeholder: false,
+      },
+      ...pipelineSlots,
+    ];
   }
 
   const hasDisplay = displayEntries.length > 0;

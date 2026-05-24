@@ -6924,6 +6924,44 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
+      /** GET /merchant-partner/stores/:storeId/food-orders/:orderId/activity — merchant status actions for timeline. */
+      protectedApp.get<{ Params: { storeId: string; orderId: string } }>(
+        "/stores/:storeId/food-orders/:orderId/activity",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          const ordersFoodId = parseInt(req.params.orderId, 10);
+          if (!Number.isInteger(storeId) || storeId < 1 || !Number.isFinite(ordersFoodId)) {
+            return reply.code(400).send({ error: "invalid_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const foodRows = await sql`
+            SELECT id FROM orders_food
+            WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
+            LIMIT 1
+          `;
+          if (foodRows.length === 0) return reply.code(404).send({ error: "order_not_found" });
+
+          const actionRows = await sql`
+            SELECT id, from_status, to_status, action_source, actor_label, metadata, created_at
+            FROM merchant_order_food_actions
+            WHERE orders_food_id = ${ordersFoodId}
+            ORDER BY created_at DESC
+            LIMIT 30
+          `;
+          return reply.send({ actions: actionRows });
+        }
+      );
+
       /** PATCH /merchant-partner/stores/:storeId/food-orders/:orderId — status transition (Partner Site rules). */
       protectedApp.patch<{
         Params: { storeId: string; orderId: string };

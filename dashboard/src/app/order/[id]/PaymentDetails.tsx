@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useRef, useEffect, useState } from 'react';
+import type { OrderPaymentDetail, OrderPaymentRecord } from '@/lib/orders/order-payment-detail';
 
 interface OrderForPaymentCard {
   id: number;
@@ -28,21 +29,8 @@ interface OrderRefundForDisplay {
 interface PaymentDetailsProps {
   order: OrderForPaymentCard;
   displayId: string;
-  /** Refunds for this order; when present, show Refunded tag and refund details. */
   orderRefunds?: OrderRefundForDisplay[];
-}
-
-interface PaymentRecord {
-  paymentId: string;
-  transactionId?: string;
-  mpTransactionId?: string;
-  paymentStatus: string;
-  redemptionType?: string;
-  productType?: string;
-  refunded: boolean;
-  partialRefunded: boolean;
-  amount?: number;
-  deliveryFee?: number;
+  paymentDetail?: OrderPaymentDetail | null;
 }
 
 const formatCurrency = (value?: number | null) => {
@@ -58,11 +46,22 @@ const formatCurrency = (value?: number | null) => {
 interface PaymentDetailsModalProps {
   isOpen: boolean;
   onClose: () => void;
-  records: PaymentRecord[];
+  records: OrderPaymentRecord[];
   orderRefunds?: OrderRefundForDisplay[];
+  summary: {
+    totalAmount: number | null;
+    totalCtm: number | null;
+    deliveryFee: number | null;
+  };
 }
 
-function PaymentDetailsModal({ isOpen, onClose, records, orderRefunds = [] }: PaymentDetailsModalProps) {
+function PaymentDetailsModal({
+  isOpen,
+  onClose,
+  records,
+  orderRefunds = [],
+  summary,
+}: PaymentDetailsModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -76,9 +75,10 @@ function PaymentDetailsModal({ isOpen, onClose, records, orderRefunds = [] }: Pa
 
   if (!isOpen) return null;
 
-  const totalAmount = records.reduce((sum, r) => sum + (r.amount ?? 0), 0);
-  const refundedCount = records.filter((r) => r.refunded).length;
-  const totalDeliveryFee = records.reduce((sum, r) => sum + (r.deliveryFee ?? 0), 0);
+  const totalAmount = summary.totalAmount ?? records.reduce((sum, r) => sum + (r.amount ?? 0), 0);
+  const refundedCount = records.filter((r) => r.refunded || r.partialRefunded).length;
+  const totalDeliveryFee =
+    summary.deliveryFee ?? records.reduce((sum, r) => sum + (r.deliveryFee ?? 0), 0);
   const totalRefundAmount = orderRefunds.reduce((sum, r) => sum + Number(r.refundAmount) || 0, 0);
 
   return (
@@ -151,7 +151,7 @@ function PaymentDetailsModal({ isOpen, onClose, records, orderRefunds = [] }: Pa
                     <td className="py-3 px-4 text-sm text-gray-900 font-medium">
                       {record.paymentId}
                     </td>
-                    <td className="py-3 px-4 text-sm text-gray-900">
+                    <td className="py-3 px-4 text-sm text-gray-900 font-mono">
                       {record.transactionId || '—'}
                     </td>
                     <td className="py-3 px-4 text-sm text-gray-900 font-mono">
@@ -178,7 +178,7 @@ function PaymentDetailsModal({ isOpen, onClose, records, orderRefunds = [] }: Pa
                     <td className="py-3 px-4 text-sm text-gray-900 font-medium">
                       {record.redemptionType || '—'}
                     </td>
-                    <td className="py-3 px-4 text-sm text-gray-900">
+                    <td className="py-3 px-4 text-sm text-gray-900 capitalize">
                       {record.productType || '—'}
                     </td>
                     <td className="py-3 px-4">
@@ -223,7 +223,7 @@ function PaymentDetailsModal({ isOpen, onClose, records, orderRefunds = [] }: Pa
 
         <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200 text-[12px]">
           <h4 className="text-xs font-semibold text-slate-800 mb-3">Summary</h4>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <div className="bg-white p-3 rounded-md border border-gray-200">
               <div className="flex items-center justify-between">
                 <div>
@@ -238,13 +238,26 @@ function PaymentDetailsModal({ isOpen, onClose, records, orderRefunds = [] }: Pa
             <div className="bg-white p-3 rounded-md border border-gray-200">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-[11px] font-medium text-gray-600">Total Amount</p>
+                  <p className="text-[11px] font-medium text-gray-600">Customer paid</p>
                   <p className="text-lg font-bold text-gray-900 mt-1">
                     {formatCurrency(totalAmount)}
                   </p>
                 </div>
                 <div className="p-2 bg-emerald-100 rounded-md">
                   <i className="bi bi-currency-rupee text-emerald-600 text-base" />
+                </div>
+              </div>
+            </div>
+            <div className="bg-white p-3 rounded-md border border-emerald-200">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-medium text-emerald-800">Payable to merchant (CTM)</p>
+                  <p className="text-lg font-bold text-emerald-900 mt-1">
+                    {formatCurrency(summary.totalCtm)}
+                  </p>
+                </div>
+                <div className="p-2 bg-emerald-50 rounded-md">
+                  <i className="bi bi-shop text-emerald-700 text-base" />
                 </div>
               </div>
             </div>
@@ -255,14 +268,14 @@ function PaymentDetailsModal({ isOpen, onClose, records, orderRefunds = [] }: Pa
                   <p className="text-lg font-bold text-red-900 mt-1">{refundedCount}</p>
                 </div>
                 <div className="p-2 bg-red-100 rounded-md">
-                  <i className="bi bi-arrow-clockwise text-red-600 text-base" />
+                  <i className="bi bi-arrow-counterclockwise text-red-600 text-base" />
                 </div>
               </div>
             </div>
             <div className="bg-white p-3 rounded-md border border-gray-200">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-[11px] font-medium text-gray-600">Delivery Charges</p>
+                  <p className="text-[11px] font-medium text-gray-600">Delivery charges</p>
                   <p className="text-lg font-bold text-gray-900 mt-1">
                     {formatCurrency(totalDeliveryFee)}
                   </p>
@@ -302,52 +315,79 @@ function PaymentDetailsModal({ isOpen, onClose, records, orderRefunds = [] }: Pa
   );
 }
 
-export default function PaymentDetails({ order, displayId, orderRefunds = [] }: PaymentDetailsProps) {
+export default function PaymentDetails({
+  order,
+  displayId,
+  orderRefunds = [],
+  paymentDetail = null,
+}: PaymentDetailsProps) {
   const [isModalOpen, setIsModalOpen] = useState(false);
 
-  const paymentStatus = order.paymentStatus ?? '—';
   const hasRefundRecords = orderRefunds.length > 0;
-  const isRefunded =
-    hasRefundRecords ||
-    paymentStatus.toLowerCase().includes('refund') ||
-    order.orderType.toLowerCase() === 'refund';
-  const totalRefundAmount = orderRefunds.reduce((sum, r) => sum + (Number(r.refundAmount) || 0), 0);
-
-  const sourceLabel = order.orderSource ? order.orderSource.toString() : '—';
-  const records: PaymentRecord[] = useMemo(
-    () => [
-      {
-        paymentId: displayId || `ORDER-${order.id}`,
-        transactionId: undefined,
-        mpTransactionId: undefined,
-        paymentStatus,
-        redemptionType: order.orderSource ?? undefined,
-        productType: order.orderType ?? undefined,
-        refunded: isRefunded,
-        partialRefunded: false,
-        amount:
-          (order.totalAmount as number | null | undefined) ??
-          (order.fareAmount as number | null | undefined) ??
-          undefined,
-        deliveryFee: undefined,
-      },
-    ],
-    [displayId, order.totalAmount, order.fareAmount, order.id, order.orderSource, order.orderType, isRefunded, paymentStatus]
+  const totalRefundFromRefunds = orderRefunds.reduce(
+    (sum, r) => sum + (Number(r.refundAmount) || 0),
+    0
   );
 
-  const totalAmount =
-    (order.grandTotal as number | null | undefined) ??
-    (order.totalAmount as number | null | undefined) ??
-    (order.fareAmount as number | null | undefined) ??
-    null;
+  const resolved = useMemo(() => {
+    if (paymentDetail) {
+      const isRefunded =
+        hasRefundRecords ||
+        paymentDetail.records.some((r) => r.refunded) ||
+        (paymentDetail.refundAmount != null && paymentDetail.refundAmount > 0);
+      return {
+        totalAmount: paymentDetail.totalAmount,
+        totalCtm: paymentDetail.totalCtm,
+        totalCashbackEarned: paymentDetail.totalCashbackEarned,
+        deliveryFee: paymentDetail.deliveryFee,
+        source: paymentDetail.source,
+        paymentMode: paymentDetail.paymentMode,
+        partialRefunded: paymentDetail.partialRefunded,
+        refundAmount:
+          paymentDetail.refundAmount ??
+          (hasRefundRecords ? totalRefundFromRefunds : null),
+        isRefunded,
+        records: paymentDetail.records,
+      };
+    }
 
-  const deliveryFee =
-    totalAmount != null &&
-    order.itemTotal != null &&
-    order.addonTotal != null &&
-    order.tipAmount != null
-      ? totalAmount - order.itemTotal - order.addonTotal - order.tipAmount
-      : null;
+    const paymentStatus = order.paymentStatus ?? '—';
+    const isRefunded =
+      hasRefundRecords ||
+      paymentStatus.toLowerCase().includes('refund') ||
+      order.orderType.toLowerCase() === 'refund';
+    const totalAmount =
+      (order.grandTotal as number | null | undefined) ??
+      (order.totalAmount as number | null | undefined) ??
+      (order.fareAmount as number | null | undefined) ??
+      null;
+
+    return {
+      totalAmount,
+      totalCtm: null,
+      totalCashbackEarned: null,
+      deliveryFee: null,
+      source: order.orderSource ? order.orderSource.toString() : '—',
+      paymentMode: order.paymentMethod ? order.paymentMethod.toString().toUpperCase() : '—',
+      partialRefunded: false,
+      refundAmount: hasRefundRecords ? totalRefundFromRefunds : null,
+      isRefunded,
+      records: [
+        {
+          paymentId: displayId || `ORDER-${order.id}`,
+          transactionId: null,
+          mpTransactionId: null,
+          paymentStatus,
+          redemptionType: order.orderSource ?? undefined,
+          productType: order.orderType ?? undefined,
+          refunded: isRefunded,
+          partialRefunded: false,
+          amount: totalAmount,
+          deliveryFee: null,
+        },
+      ] as OrderPaymentRecord[],
+    };
+  }, [paymentDetail, order, displayId, hasRefundRecords, totalRefundFromRefunds]);
 
   return (
     <>
@@ -361,7 +401,7 @@ export default function PaymentDetails({ order, displayId, orderRefunds = [] }: 
               <span>Payment details</span>
             </span>
           </span>
-          {isRefunded && (
+          {resolved.isRefunded && (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-purple-50 text-purple-700 border border-purple-100">
               <i className="bi bi-check-circle-fill text-[12px]" />
               Refunded
@@ -372,34 +412,38 @@ export default function PaymentDetails({ order, displayId, orderRefunds = [] }: 
           <p className="text-[12px]">
             <span className="text-gati-text-secondary font-medium">Total Amount:</span>{' '}
             <span className="text-gati-text-primary font-semibold">
-              {formatCurrency(totalAmount)}
+              {formatCurrency(resolved.totalAmount)}
             </span>
           </p>
           <p className="text-[12px]">
             <span className="text-gati-text-secondary font-medium">Total CTM:</span>{' '}
-            <span className="text-gati-text-primary font-medium">—</span>
+            <span className="text-gati-text-primary font-semibold">
+              {formatCurrency(resolved.totalCtm)}
+            </span>
           </p>
           <p className="text-[12px]">
             <span className="text-gati-text-secondary font-medium">
               Total Cashback Earned:
             </span>{' '}
-            <span className="text-gati-text-primary font-medium">—</span>
+            <span className="text-gati-text-primary font-medium">
+              {formatCurrency(resolved.totalCashbackEarned)}
+            </span>
           </p>
           <p className="text-[12px]">
             <span className="text-gati-text-secondary font-medium">Delivery Fee:</span>{' '}
             <span className="text-gati-text-primary font-medium">
-              {deliveryFee != null ? formatCurrency(deliveryFee) : '—'}
+              {formatCurrency(resolved.deliveryFee)}
             </span>
           </p>
           <p className="text-[12px]">
             <span className="text-gati-text-secondary font-medium">Source:</span>{' '}
-            <span className="text-gati-text-primary font-medium">{sourceLabel}</span>
+            <span className="text-gati-text-primary font-medium">{resolved.source ?? '—'}</span>
           </p>
           <p className="text-[12px]">
             <span className="text-gati-text-secondary font-medium">PaymentMode:</span>{' '}
             <span className="text-gati-text-primary font-medium">
-              {order.paymentMethod
-                ? order.paymentMethod.toString().toUpperCase()
+              {resolved.paymentMode
+                ? resolved.paymentMode.toString().toUpperCase()
                 : '—'}
             </span>
           </p>
@@ -408,7 +452,7 @@ export default function PaymentDetails({ order, displayId, orderRefunds = [] }: 
               Partial Refunded:
             </span>{' '}
             <span className="text-gati-text-primary font-medium">
-              {isRefunded ? 'True' : 'False'}
+              {resolved.partialRefunded ? 'True' : 'False'}
             </span>
             <button
               type="button"
@@ -421,7 +465,9 @@ export default function PaymentDetails({ order, displayId, orderRefunds = [] }: 
           <p className="text-[12px]">
             <span className="text-gati-text-secondary font-medium">Refund Amount:</span>{' '}
             <span className="text-gati-text-primary font-medium">
-              {isRefunded ? formatCurrency(hasRefundRecords ? totalRefundAmount : totalAmount ?? null) : '—'}
+              {resolved.isRefunded
+                ? formatCurrency(resolved.refundAmount)
+                : '—'}
             </span>
           </p>
         </div>
@@ -440,10 +486,14 @@ export default function PaymentDetails({ order, displayId, orderRefunds = [] }: 
       <PaymentDetailsModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
-        records={records}
+        records={resolved.records}
         orderRefunds={orderRefunds}
+        summary={{
+          totalAmount: resolved.totalAmount,
+          totalCtm: resolved.totalCtm,
+          deliveryFee: resolved.deliveryFee,
+        }}
       />
     </>
   );
 }
-

@@ -47,9 +47,18 @@ export type OrdersFoodRow = {
     vegNonveg?: string | null;
     menuItemId?: number | null;
     variantName?: string | null;
+    variantTag?: string | null;
     categoryName?: string | null;
     description?: string | null;
     imageUrl?: string | null;
+    customizationLines?: Array<{
+      name: string;
+      amount: number;
+      kind: "variant" | "addon" | "note";
+    }>;
+    baseAmount?: number;
+    customizationsTotal?: number;
+    hasCustomizations?: boolean;
   }> | null;
   pricing?: OrderPricingBreakdown;
   veg_non_veg?: string | null;

@@ -11,6 +11,7 @@ import type { BillingResult } from "./types.js";
 
 const addonSchema = z.object({
   addonId: z.union([z.string(), z.number()]),
+  customizationId: z.union([z.string(), z.number()]).optional().nullable(),
   addonName: z.string(),
   addonPrice: z.number(),
   quantity: z.number().int().positive(),
@@ -40,6 +41,8 @@ const checkoutOffersQuerySchema = z.object({
   pincode: z.string().optional(),
   state: z.string().optional(),
   city: z.string().optional(),
+  /** Pre-discount payable cart (items + addons + fees) — aligns with bill apply. */
+  qualifyingCartTotal: z.coerce.number().nonnegative().optional(),
 });
 
 const calculateBodySchema = z.object({
@@ -480,6 +483,7 @@ export async function billingRoutes(app: FastifyInstance) {
         livePincode: q.pincode,
         liveState: q.state,
         liveCity: q.city,
+        qualifyingCartTotal: q.qualifyingCartTotal,
       });
 
       if (!result.ok) {

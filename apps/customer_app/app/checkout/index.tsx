@@ -58,8 +58,18 @@ import { reverseGeocode } from "@/services/location.service";
 import { getRoute } from "@/services/distance.service";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { isNetworkError, getNetworkErrorMessage } from "@/utils/networkError";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { CouponApplyCelebration } from "@/components/checkout/CouponApplyCelebration";
 import { CheckoutOffersSheet } from "@/components/checkout/CheckoutOffersSheet";
+import { cartLineBaseUnitPrice } from "@/lib/cart-line-pricing";
+import {
+  prefetchMenuItemFullConfig,
+  prefetchMenuItemFullConfigsForMenu,
+  resolveFullConfigItemId,
+} from "@/lib/menu-item-config-query";
+
+/** Wait before POST /billing/calculate after tip/donation slider moves. */
+const BILLING_INPUT_DEBOUNCE_MS = 400;
 
 function roundBillAmount(n: number): number {
   return Math.round(n * 100) / 100;
@@ -434,6 +444,7 @@ export default function CheckoutScreen() {
   const [couponCelebrationVisible, setCouponCelebrationVisible] = useState(false);
   const [couponCelebrationCode, setCouponCelebrationCode] = useState("");
   const [selectedPlatformOfferId, setSelectedPlatformOfferId] = useState<number | null>(null);
+  const [selectedMerchantOfferId, setSelectedMerchantOfferId] = useState<number | null>(null);
   const [forceNoAutoOffer, setForceNoAutoOffer] = useState(false);
   const [currentLocationDisplay, setCurrentLocationDisplay] = useState<{ label: string; fullAddress: string } | null>(null);
   const [currentLocationCoords, setCurrentLocationCoords] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -684,6 +695,35 @@ export default function CheckoutScreen() {
     staleTime: 0,
   });
 
+  useEffect(() => {
+    if (!merchantId || !merchant?.menu?.length) return;
+    prefetchMenuItemFullConfigsForMenu(queryClient, merchantId, merchant.menu);
+  }, [merchantId, merchant?.menu, queryClient]);
+
+  useEffect(() => {
+    if (!merchantId || !merchant?.menu?.length || items.length === 0) return;
+    for (const line of items) {
+      const baseId = cartItemBaseId(line.menuItemId);
+      const menuItem = findMenuItemByCartBaseId(merchant.menu, baseId);
+      if (!isCartItemCustomizable(line, menuItem)) continue;
+      const refItem = menuItem ?? {
+        id: baseId,
+        menuItemId: /^\d+$/.test(baseId) ? Number(baseId) : undefined,
+        name: line.name,
+        price: line.price,
+        isVeg: line.isVeg,
+        hasVariants: !!line.variantId,
+        hasAddons: (line.addons?.length ?? 0) > 0,
+        hasCustomizations: !!(line.variantId || line.variantName || (line.addons?.length ?? 0) > 0),
+      };
+      void prefetchMenuItemFullConfig(
+        queryClient,
+        merchantId,
+        resolveFullConfigItemId(refItem)
+      );
+    }
+  }, [merchantId, merchant?.menu, items, queryClient]);
+
   // Whenever the menu refreshes, push the live per-item price into the cart
   // store so the cart UI displays the same number the menu list shows. This
   // matters for items added before a commission rate change or before a
@@ -930,7 +970,7 @@ export default function CheckoutScreen() {
   const cartSubtotalForOffers = useMemo(
     () =>
       items.reduce((s, i) => {
-        const base = i.basePrice ?? i.price;
+        const base = cartLineBaseUnitPrice(i);
         const line = base * i.quantity;
         const addonLine = (i.addons ?? []).reduce(
           (a, ad) => a + ad.addonPrice * ad.quantity * i.quantity,
@@ -1003,6 +1043,9 @@ export default function CheckoutScreen() {
     ? (donationPreset !== "custom" && donationPreset != null ? Number(donationPreset) : parseFloat(donationAmount) || 0)
     : 0;
 
+  const debouncedTipForBilling = useDebouncedValue(tipValue, BILLING_INPUT_DEBOUNCE_MS);
+  const debouncedDonationForBilling = useDebouncedValue(donationValue, BILLING_INPUT_DEBOUNCE_MS);
+
   const clearCheckoutDonation = useCallback(() => {
     setDonationEnabled(false);
     setDonationPreset(null);
@@ -1024,6 +1067,9 @@ export default function CheckoutScreen() {
         (menuItem as { packagingCharges?: number } | undefined)?.packagingCharges;
       const packNum = rawPack != null ? Number(rawPack) : NaN;
       const snap: Record<string, unknown> = { isVeg: i.isVeg };
+      if (i.variantName) snap.variant_name = i.variantName;
+      if (i.variantSizeValue) snap.variant_size_value = i.variantSizeValue;
+      if (i.variantSizeUnit) snap.variant_size_unit = i.variantSizeUnit;
       if (categoryName) snap.category_name = categoryName;
       if (Number.isFinite(packNum) && packNum > 0) {
         snap.packaging_enabled = true;
@@ -1033,62 +1079,89 @@ export default function CheckoutScreen() {
         menuItemId: bid,
         itemName: i.name,
         quantity: i.quantity,
-        basePrice: i.basePrice ?? i.price,
+        basePrice: cartLineBaseUnitPrice(i),
         variantId: i.variantId ?? null,
         variantName: i.variantName ?? null,
-        addons: (i.addons ?? []).map((a) => ({
-          addonId: a.addonId,
-          addonName: a.addonName,
-          addonPrice: a.addonPrice,
-          quantity: a.quantity,
-        })),
+        addons: (i.addons ?? [])
+          .filter((a) => {
+            const id = String(a.addonId ?? "").trim();
+            return id.length > 0 && id !== "0";
+          })
+          .map((a) => ({
+            addonId: String(a.addonId).trim(),
+            customizationId: a.customizationId ?? null,
+            addonName: a.addonName,
+            addonPrice: a.addonPrice,
+            quantity: a.quantity,
+            addon_size_value: a.addonSizeValue ?? undefined,
+            addon_size_unit: a.addonSizeUnit ?? undefined,
+          })),
         itemSnapshot: snap,
       };
     });
   }, [items, merchant?.menu]);
+
+  const billingCartKey = useMemo(
+    () =>
+      JSON.stringify(
+        itemsWithSnapshots.map((i) => ({
+          id: i.menuItemId,
+          q: i.quantity,
+          p: i.basePrice,
+          v: i.variantId ?? null,
+          a: (i.addons ?? []).map((ad) => [ad.addonId, ad.quantity, ad.addonPrice]),
+        }))
+      ),
+    [itemsWithSnapshots]
+  );
 
   const billingQuery = useQuery({
     queryKey: [
       "billing-calculate",
       merchantId,
       selectedAddress?.id,
-      itemsWithSnapshots,
-      tipValue,
-      donationValue,
+      billingCartKey,
+      debouncedTipForBilling,
+      debouncedDonationForBilling,
       appliedCouponCode,
       selectedPlatformOfferId,
+      selectedMerchantOfferId,
       forceNoAutoOffer,
       subscriptionOptIn,
       deliveryType,
     ],
-    queryFn: () =>
-      billingService.calculateBill({
-        merchantId: merchantId!,
-        addressId: String(selectedAddress!.id),
-        items: itemsWithSnapshots,
-        tipAmount: tipValue,
-        donationAmount: donationValue,
-        couponCode: appliedCouponCode ?? undefined,
-        selectedPlatformOfferId,
-        forceNoAutoOffer,
-        serviceType: "FOOD",
-        subscriptionOptIn,
-        deliveryType,
-        ...(selectedAddress?.city != null && String(selectedAddress.city).trim() !== ""
-          ? { cityName: String(selectedAddress.city).trim() }
-          : {}),
-        ...(merchant?.latitude != null &&
-          merchant?.longitude != null && {
-            pickupLat: Number(merchant.latitude),
-            pickupLon: Number(merchant.longitude),
-          }),
-      }),
+    queryFn: ({ signal }) =>
+      billingService.calculateBill(
+        {
+          merchantId: merchantId!,
+          addressId: String(selectedAddress!.id),
+          items: itemsWithSnapshots,
+          tipAmount: debouncedTipForBilling,
+          donationAmount: debouncedDonationForBilling,
+          couponCode: appliedCouponCode ?? undefined,
+          selectedPlatformOfferId,
+          selectedMerchantOfferId,
+          forceNoAutoOffer,
+          serviceType: "FOOD",
+          subscriptionOptIn,
+          deliveryType,
+          ...(selectedAddress?.city != null && String(selectedAddress.city).trim() !== ""
+            ? { cityName: String(selectedAddress.city).trim() }
+            : {}),
+          ...(merchant?.latitude != null &&
+            merchant?.longitude != null && {
+              pickupLat: Number(merchant.latitude),
+              pickupLon: Number(merchant.longitude),
+            }),
+        },
+        { signal }
+      ),
     enabled: !!merchantId && !!selectedAddress && items.length > 0 && !merchantLoading,
     /** Keeps last bill on screen while cart/tip/donation refetch — avoids skeleton layout jump. */
     placeholderData: keepPreviousData,
     staleTime: 15_000,
     refetchOnWindowFocus: false,
-    retry: 2,
+    retry: (failureCount, error) => isNetworkError(error) && failureCount < 1,
   });
 
   // Live location from the location store — geocoded by Mapbox in the app, fresh every session.
@@ -1098,12 +1171,35 @@ export default function CheckoutScreen() {
   const liveState = liveLocationAddress?.state ?? undefined;
   const liveCity = liveLocationAddress?.city ?? undefined;
 
+  const serverBill = billingQuery.data ?? null;
+
+  /** Pre-discount payable cart — same basis as server min-order checks (items + addons + fees). */
+  const qualifyingCartForOffers = useMemo(() => {
+    if (!serverBill) return undefined;
+    const deliveryPart =
+      deliveryType === "self_pickup"
+        ? 0
+        : Math.max(0, serverBill.deliveryFeeQuotedInr ?? serverBill.deliveryFee ?? 0);
+    return (
+      serverBill.itemTotal +
+      serverBill.addonTotal +
+      deliveryPart +
+      serverBill.packagingFee +
+      serverBill.platformFee +
+      serverBill.surgeFee +
+      serverBill.smallOrderFee +
+      serverBill.convenienceFee +
+      serverBill.miscFee
+    );
+  }, [serverBill, deliveryType]);
+
   const checkoutOffersQuery = useQuery({
     queryKey: [
       "billing-checkout-offers",
       merchantId,
       selectedAddress?.id,
       cartSubtotalForOffers,
+      qualifyingCartForOffers,
       livePincode,
       liveState,
     ],
@@ -1112,6 +1208,7 @@ export default function CheckoutScreen() {
         merchantId: merchantId!,
         addressId: String(selectedAddress!.id),
         cartSubtotal: cartSubtotalForOffers,
+        qualifyingCartTotal: qualifyingCartForOffers,
         serviceType: "FOOD",
         pincode: livePincode,
         state: liveState,
@@ -1120,8 +1217,6 @@ export default function CheckoutScreen() {
     enabled: !!merchantId && !!selectedAddress && items.length > 0 && !merchantLoading,
     staleTime: 60 * 1000,
   });
-
-  const serverBill = billingQuery.data ?? null;
 
   /** Store→drop km from backend routing (authoritative for pricing); client route is for UI hint only. */
   const serverDistanceKm = serverBill?.distanceKm ?? null;
@@ -1186,8 +1281,16 @@ export default function CheckoutScreen() {
       const id = d.meta?.platformOfferId;
       if (typeof id === "number" && id > 0) return id;
     }
-    return null;
-  }, [visibleDiscounts]);
+    return selectedPlatformOfferId;
+  }, [visibleDiscounts, selectedPlatformOfferId]);
+
+  const appliedMerchantOfferId = useMemo(() => {
+    for (const d of visibleDiscounts) {
+      const id = d.meta?.merchantOfferId;
+      if (typeof id === "number" && id > 0) return id;
+    }
+    return selectedMerchantOfferId;
+  }, [visibleDiscounts, selectedMerchantOfferId]);
 
   const appliedDiscountRows = useMemo(
     () =>
@@ -1196,6 +1299,8 @@ export default function CheckoutScreen() {
         amount: d.amount,
         platformOfferId:
           typeof d.meta?.platformOfferId === "number" ? (d.meta.platformOfferId as number) : null,
+        merchantOfferId:
+          typeof d.meta?.merchantOfferId === "number" ? (d.meta.merchantOfferId as number) : null,
       })),
     [visibleDiscounts]
   );
@@ -1205,6 +1310,7 @@ export default function CheckoutScreen() {
     if (!trimmed) return;
     setCouponApplyError(null);
     setSelectedPlatformOfferId(null);
+    setSelectedMerchantOfferId(null);
     setForceNoAutoOffer(false);
     setAppliedCouponCode(trimmed);
     setAppliedCouponLabel(label ?? trimmed);
@@ -1217,6 +1323,7 @@ export default function CheckoutScreen() {
   const applyPlatformOfferById = useCallback((offerId: number, _name: string | null) => {
     setAppliedCouponCode(null);
     setAppliedCouponLabel(null);
+    setSelectedMerchantOfferId(null);
     setSelectedPlatformOfferId(offerId);
     setForceNoAutoOffer(false);
     setCouponSheetVisible(false);
@@ -1224,10 +1331,24 @@ export default function CheckoutScreen() {
     setCouponCelebrationVisible(false);
   }, []);
 
+  const applyMerchantOfferById = useCallback((offerId: number, couponCode?: string | null) => {
+    setSelectedPlatformOfferId(null);
+    setAppliedCouponLabel(null);
+    setForceNoAutoOffer(false);
+    setSelectedMerchantOfferId(offerId);
+    if (couponCode?.trim()) {
+      setAppliedCouponCode(couponCode.trim());
+    } else {
+      setAppliedCouponCode(null);
+    }
+    setCouponSheetVisible(false);
+  }, []);
+
   const removeAllCheckoutOffers = useCallback(() => {
     setAppliedCouponCode(null);
     setAppliedCouponLabel(null);
     setSelectedPlatformOfferId(null);
+    setSelectedMerchantOfferId(null);
     setForceNoAutoOffer(true);
     setCouponCelebrationVisible(false);
   }, []);
@@ -1235,15 +1356,20 @@ export default function CheckoutScreen() {
   const removeAppliedCoupon = useCallback(() => {
     setAppliedCouponCode(null);
     setAppliedCouponLabel(null);
-    if (!selectedPlatformOfferId) setForceNoAutoOffer(true);
+    if (!selectedPlatformOfferId && !selectedMerchantOfferId) setForceNoAutoOffer(true);
     setCouponCelebrationVisible(false);
-  }, [selectedPlatformOfferId]);
+  }, [selectedPlatformOfferId, selectedMerchantOfferId]);
 
   const removeAppliedPlatformOffer = useCallback(() => {
     setSelectedPlatformOfferId(null);
-    setForceNoAutoOffer(true);
+    if (!appliedCouponCode && !selectedMerchantOfferId) setForceNoAutoOffer(true);
     if (!appliedCouponCode) setCouponCelebrationVisible(false);
-  }, [appliedCouponCode]);
+  }, [appliedCouponCode, selectedMerchantOfferId]);
+
+  const removeAppliedMerchantOffer = useCallback(() => {
+    setSelectedMerchantOfferId(null);
+    if (!appliedCouponCode && !selectedPlatformOfferId) setForceNoAutoOffer(true);
+  }, [appliedCouponCode, selectedPlatformOfferId]);
 
   const showItemTotalStrike = useMemo(() => {
     if (!serverBill || serverBill.discountTotal <= 0.005) return false;
@@ -1379,6 +1505,7 @@ export default function CheckoutScreen() {
       ...(donationValue > 0 && { donationAmount: donationValue }),
       ...(appliedCouponCode && { couponCode: appliedCouponCode }),
       ...(selectedPlatformOfferId != null && { selectedPlatformOfferId }),
+      ...(selectedMerchantOfferId != null && { selectedMerchantOfferId }),
       ...(forceNoAutoOffer && { forceNoAutoOffer: true }),
       ...(subscriptionOptIn && { subscriptionOptIn: true }),
       checkoutMetadata: {
@@ -1404,6 +1531,7 @@ export default function CheckoutScreen() {
     donationValue,
     appliedCouponCode,
     selectedPlatformOfferId,
+    selectedMerchantOfferId,
     forceNoAutoOffer,
     subscriptionOptIn,
     leaveAtDoor,
@@ -1861,6 +1989,7 @@ export default function CheckoutScreen() {
     if (!cartLine) return null;
     return {
       variantId: cartLine.variantId ?? null,
+      variantName: cartLine.variantName ?? null,
       addons: (cartLine.addons ?? []).map((a) => ({ addonId: a.addonId })),
       quantity: cartLine.quantity,
     };
@@ -1872,6 +2001,21 @@ export default function CheckoutScreen() {
       const baseId = cartItemBaseId(cartLine.menuItemId);
       const menuItem = findMenuItemByCartBaseId(merchant?.menu, baseId);
       if (isCartItemCustomizable(cartLine, menuItem)) {
+        const refItem = menuItem ?? {
+          id: baseId,
+          menuItemId: /^\d+$/.test(baseId) ? Number(baseId) : undefined,
+          name: cartLine.name,
+          price: cartLine.price,
+          isVeg: cartLine.isVeg,
+          hasVariants: !!cartLine.variantId,
+          hasAddons: (cartLine.addons?.length ?? 0) > 0,
+          hasCustomizations: !!(cartLine.variantId || cartLine.variantName || (cartLine.addons?.length ?? 0) > 0),
+        };
+        void prefetchMenuItemFullConfig(
+          queryClient,
+          merchantId,
+          resolveFullConfigItemId(refItem)
+        );
         setEditingCartItemId(cartLine.menuItemId);
         return;
       }
@@ -2823,6 +2967,7 @@ export default function CheckoutScreen() {
         couponError={couponApplyError}
         appliedCouponCode={appliedCouponCode}
         appliedPlatformOfferId={appliedPlatformOfferId}
+        appliedMerchantOfferId={appliedMerchantOfferId}
         appliedDiscounts={appliedDiscountRows}
         onApplyCouponCode={(code, description) => {
           const trimmed = (code || couponCodeInput).trim();
@@ -2833,8 +2978,10 @@ export default function CheckoutScreen() {
           applyCouponCode(trimmed, description);
         }}
         onApplyPlatformOffer={applyPlatformOfferById}
+        onApplyMerchantOffer={applyMerchantOfferById}
         onRemoveCoupon={removeAppliedCoupon}
         onRemovePlatformOffer={removeAppliedPlatformOffer}
+        onRemoveMerchantOffer={removeAppliedMerchantOffer}
         onRemoveAllOffers={removeAllCheckoutOffers}
       />
 

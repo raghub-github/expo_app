@@ -5,6 +5,16 @@ import { STANDARD_REMARKS } from "@/lib/remarks/standardRemarks";
 import { useAuthOptional } from "@/providers/AuthProvider";
 import { ClipboardCheck, MessageCircle, Pencil, UserCircle2, X } from "lucide-react";
 import ItemsRefundModal from "./ItemsRefundModal";
+import type { OrderItemsPayload } from "@/lib/orderItemsPayload";
+import { computeOrderItemQuantityCount } from "@/lib/merchantOrderFoodActions";
+import {
+  formatFirstEtaAt,
+  formatKptMinutes,
+  formatOrderDeliveryTypeLabel,
+  formatOrderInitiatedByLabel,
+  formatScheduledOrderLabel,
+  shouldShowMerchantUpdatedKpt,
+} from "@/lib/orders/order-detail-display";
 
 interface OrderRightSidebarProps {
   order: {
@@ -27,11 +37,26 @@ interface OrderRightSidebarProps {
     riderMobile?: string | null;
     distanceKm?: number | null;
     routedToEmail?: string | null;
-    /** Delivery instructions from orders_food (food orders only). */
+    /** Legacy single-line delivery instructions (orders_food). */
     deliveryInstructions?: string | null;
+    riderInstructionsList?: string[];
+    merchantInstructionsList?: string[];
     /** First ETA (expected delivery) when order accepted. */
     firstEtaAt?: string | null;
+    estimatedDeliveryTime?: string | null;
+    etaSeconds?: number | null;
+    itemCount?: number | null;
+    systemKptMinutes?: number | null;
+    merchantUpdatedKptMinutes?: number | null;
+    isScheduledOrder?: boolean;
+    scheduledDeliverySummary?: string | null;
+    deliveryType?: string | null;
+    contactlessDelivery?: boolean | null;
+    localityIsSafe?: boolean | null;
+    deliveryInitiator?: string | null;
   };
+  /** Line-item count (prefetched items or API enrichment). */
+  itemCount?: number;
   /** Counts from order API so "See all (N)" shows instantly without waiting for list fetch. */
   initialRemarksCount?: number;
   initialReconsCount?: number;
@@ -49,6 +74,8 @@ interface OrderRightSidebarProps {
   }>;
   /** Called after a refund is successfully created so parent can refetch refunds. */
   onRefundCreated?: () => void;
+  /** Preloaded from GET /api/orders/[id]/items so Items modal opens instantly. */
+  prefetchedOrderItems?: OrderItemsPayload | null;
 }
 
 interface Remark {
@@ -103,10 +130,12 @@ interface Notification {
 
 export default function OrderRightSidebar({
   order,
+  itemCount: itemCountProp,
   initialRemarksCount = 0,
   initialReconsCount = 0,
   onRoutedToChange,
   orderRefunds = [],
+  prefetchedOrderItems = null,
   onRefundCreated,
 }: OrderRightSidebarProps) {
   const auth = useAuthOptional();
@@ -141,10 +170,42 @@ export default function OrderRightSidebar({
   );
   const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null);
   const [showItemsRefundModal, setShowItemsRefundModal] = useState(false);
+
+  const prefetchedQtyCount =
+    prefetchedOrderItems?.items && prefetchedOrderItems.items.length > 0
+      ? computeOrderItemQuantityCount({
+          items: prefetchedOrderItems.items.filter((i) => i.id > 0),
+        })
+      : 0;
+  const displayItemCount =
+    (itemCountProp != null && itemCountProp > 0 ? itemCountProp : null) ??
+    (prefetchedQtyCount > 0 ? prefetchedQtyCount : null) ??
+    (order.itemCount != null && order.itemCount > 0 ? order.itemCount : null);
+  const displayOrderId =
+    order.formattedOrderId?.trim() ||
+    (order.orderId ? `#${order.orderId}` : `#${order.id}`);
+  const deliveryTypeLabel = formatOrderDeliveryTypeLabel(order.deliveryType);
+  const initiatedByLabel = formatOrderInitiatedByLabel(
+    order.orderSource,
+    order.deliveryInitiator
+  );
+  const showMerchantKpt = shouldShowMerchantUpdatedKpt(
+    order.systemKptMinutes,
+    order.merchantUpdatedKptMinutes
+  );
+  const riderInstructionLines =
+    order.riderInstructionsList?.length
+      ? order.riderInstructionsList
+      : order.deliveryInstructions?.trim()
+        ? order.deliveryInstructions
+            .split("|")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [];
+  const merchantInstructionLines =
+    order.merchantInstructionsList?.filter((s) => s?.trim()) ?? [];
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [showCxInstructions, setShowCxInstructions] = useState(false);
-  const [cxInstructions, setCxInstructions] = useState<string | null>(null);
-  const [cxError, setCxError] = useState<string | null>(null);
 
   // Auto-hide recon warning after 2 seconds
   useEffect(() => {
@@ -769,14 +830,6 @@ export default function OrderRightSidebar({
 
   const openCxInstructions = () => {
     setShowCxInstructions(true);
-    // Use delivery_instructions from orders_food (passed on order); no fetch needed.
-    if (order.deliveryInstructions != null && order.deliveryInstructions !== "") {
-      setCxInstructions(order.deliveryInstructions);
-      setCxError(null);
-    } else {
-      setCxInstructions(null);
-      setCxError(null);
-    }
   };
 
   const startEditRemark = (remark: Remark) => {
@@ -979,7 +1032,7 @@ export default function OrderRightSidebar({
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">Items:</dt>
             <dd className="flex min-w-0 items-center justify-end gap-1.5 font-medium text-slate-700">
-              <span>(1)</span>
+              <span>({displayItemCount ?? "—"})</span>
               <span
                 role="button"
                 tabIndex={0}
@@ -1006,65 +1059,94 @@ export default function OrderRightSidebar({
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0">Scheduled order:</dt>
+            <dd className="font-medium text-slate-700">
+              {formatScheduledOrderLabel(Boolean(order.isScheduledOrder))}
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">Delivery type:</dt>
             <dd>
-              <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-100">
-                DELIVERY
-              </span>
+              {deliveryTypeLabel !== "—" ? (
+                <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-100">
+                  {deliveryTypeLabel}
+                </span>
+              ) : (
+                <span className="font-medium text-slate-700">—</span>
+              )}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">Initiated by:</dt>
-            <dd className="font-medium text-slate-700">Merchant</dd>
+            <dd className="font-medium text-slate-700">{initiatedByLabel}</dd>
           </div>
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">Locality:</dt>
             <dd>
-              <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-100">
-                GREEN
-              </span>
-            </dd>
-          </div>
-          <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0">Delivered by:</dt>
-            <dd>
-              <span className="inline-flex items-center rounded-full bg-cyan-50 px-2 py-0.5 text-[10px] font-medium text-cyan-700 ring-1 ring-cyan-100">
-                GATIMITRA_DIRECT
-              </span>
+              {order.localityIsSafe === true ? (
+                <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 ring-1 ring-emerald-100">
+                  GREEN
+                </span>
+              ) : order.localityIsSafe === false ? (
+                <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-bold text-red-700 ring-1 ring-red-100">
+                  RED
+                </span>
+              ) : (
+                <span className="font-medium text-slate-700">—</span>
+              )}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">System KPT:</dt>
-            <dd className="font-medium text-slate-700">18 mins</dd>
+            <dd className="font-medium text-slate-700">
+              {formatKptMinutes(order.systemKptMinutes)}
+            </dd>
           </div>
+          {showMerchantKpt ? (
+            <div className="flex items-center justify-between gap-2">
+              <dt className="shrink-0">Merchant updated KPT:</dt>
+              <dd className="font-medium text-slate-700">
+                {formatKptMinutes(order.merchantUpdatedKptMinutes)}
+              </dd>
+            </div>
+          ) : null}
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">Contactless:</dt>
             <dd>
-              <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-100">
-                TRUE
-              </span>
+              {order.contactlessDelivery === true ? (
+                <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-100">
+                  TRUE
+                </span>
+              ) : order.contactlessDelivery === false ? (
+                <span className="inline-block rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-semibold text-white">
+                  FALSE
+                </span>
+              ) : (
+                <span className="font-medium text-slate-700">—</span>
+              )}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">Order ID:</dt>
-            <dd className="flex min-w-0 items-center justify-end gap-1 font-medium text-slate-700">
-              <i className="bi bi-clipboard text-slate-500 cursor-pointer shrink-0" />
-              <span className="truncate">{order.orderId ?? `#${order.id}`}</span>
+            <dd className="min-w-0 truncate font-medium text-slate-700 text-right">
+              {displayOrderId}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">First ETA:</dt>
             <dd className="min-w-0 font-medium text-slate-700 text-right">
-              {order.firstEtaAt
-                ? new Date(order.firstEtaAt).toLocaleString("en-IN", {
-                    day: "2-digit",
-                    month: "2-digit",
-                    year: "2-digit",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    hour12: true,
-                  })
-                : "—"}
+              {formatFirstEtaAt(
+                order.firstEtaAt ??
+                  order.estimatedDeliveryTime ??
+                  (order.etaSeconds != null &&
+                  order.createdAt &&
+                  Number.isFinite(order.etaSeconds)
+                    ? new Date(
+                        new Date(order.createdAt).getTime() +
+                          Number(order.etaSeconds) * 1000
+                      ).toISOString()
+                    : null)
+              )}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
@@ -1732,6 +1814,7 @@ export default function OrderRightSidebar({
       onClose={() => setShowItemsRefundModal(false)}
       onToast={(msg) => setToastMessage(msg)}
       orderId={order.id}
+      prefetchedOrderItems={prefetchedOrderItems}
       onRefundCreated={onRefundCreated}
     />
 
@@ -1743,7 +1826,7 @@ export default function OrderRightSidebar({
         }}
       >
         <div
-          className="bg-white rounded-lg shadow-lg max-w-lg w-full p-5 text-[12px] text-slate-800"
+          className="bg-white rounded-lg shadow-lg max-w-2xl w-full p-5 text-[12px] text-slate-800"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="flex items-center justify-between mb-3">
@@ -1765,16 +1848,43 @@ export default function OrderRightSidebar({
           </div>
 
           <div className="mt-1 max-h-[60vh] overflow-y-auto rounded-md border border-slate-200 bg-slate-50/60 p-3">
-            {cxError ? (
-              <p className="text-[12px] text-red-600">{cxError}</p>
-            ) : cxInstructions ? (
-              <pre className="whitespace-pre-wrap text-[12px] text-slate-700">
-                {cxInstructions}
-              </pre>
-            ) : (
+            {riderInstructionLines.length === 0 && merchantInstructionLines.length === 0 ? (
               <p className="text-[12px] text-slate-500">
-                No delivery instructions for this order.
+                No instructions for this order.
               </p>
+            ) : (
+              <div
+                className={`grid gap-3 ${
+                  riderInstructionLines.length > 0 && merchantInstructionLines.length > 0
+                    ? "grid-cols-1 sm:grid-cols-2"
+                    : "grid-cols-1"
+                }`}
+              >
+                {riderInstructionLines.length > 0 ? (
+                  <div className="min-w-0 rounded-md border border-sky-100 bg-white p-3">
+                    <span className="mb-2 inline-flex items-center rounded-full bg-sky-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-800 ring-1 ring-sky-100">
+                      Rider
+                    </span>
+                    <ul className="list-disc space-y-1 pl-4 text-[12px] text-slate-700">
+                      {riderInstructionLines.map((line, i) => (
+                        <li key={`rider-${i}`}>{line}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {merchantInstructionLines.length > 0 ? (
+                  <div className="min-w-0 rounded-md border border-amber-100 bg-white p-3">
+                    <span className="mb-2 inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-900 ring-1 ring-amber-100">
+                      Merchant
+                    </span>
+                    <ul className="list-disc space-y-1 pl-4 text-[12px] text-slate-700">
+                      {merchantInstructionLines.map((line, i) => (
+                        <li key={`mx-${i}`}>{line}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
             )}
           </div>
         </div>

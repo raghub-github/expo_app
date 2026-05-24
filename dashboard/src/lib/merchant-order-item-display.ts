@@ -1,0 +1,194 @@
+import type { NormalizedOrderLineItem } from "@/lib/orderLineItems";
+
+export function formatOrderRs(amount: number, decimals = 0): string {
+  const n = Number.isFinite(amount) ? amount : 0;
+  if (decimals === 0) return `₹${Math.round(n)}`;
+  return `₹${n.toFixed(decimals)}`;
+}
+
+export function orderItemHasBreakdown(item: NormalizedOrderLineItem): boolean {
+  return Boolean(
+    item.hasCustomizations ||
+      (item.customizationLines && item.customizationLines.length > 0) ||
+      (item.customizations && item.customizations.length > 0)
+  );
+}
+
+function normLabel(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/** Variant + size label (e.g. "Half (500 ml)") — not listed under add-ons. */
+export function orderItemVariantLabel(item: NormalizedOrderLineItem): string | null {
+  const variantLine = item.customizationLines?.find((l) => l.kind === "variant");
+  if (variantLine?.name?.trim()) return variantLine.name.trim();
+
+  const tag = String(item.variantTag ?? item.variantName ?? "").trim();
+  if (tag) return tag;
+
+  for (const line of item.customizations ?? []) {
+    const t = line.trim();
+    if (!t || t.startsWith("+")) continue;
+    if (/₹\s*[\d.]+\s*$/.test(t)) continue;
+    if (normLabel(t).startsWith("category:")) continue;
+    return t.replace(/\s*·\s*₹[\d.]+\s*$/, "").trim() || null;
+  }
+  return null;
+}
+
+/** Line title without duplicating variant already embedded in `item.name`. */
+export function orderItemDisplayName(item: NormalizedOrderLineItem): string {
+  const name = String(item.name ?? "Item").trim();
+  const variant = orderItemVariantLabel(item);
+  if (!variant) return name;
+  const vNorm = normLabel(variant);
+  if (normLabel(name).includes(vNorm)) return name;
+  const suffix = `(${variant.trim()})`;
+  if (name.endsWith(suffix) || name.includes(suffix)) return name;
+  return `${name} (${variant})`;
+}
+
+/** Add-on / extra lines only (excludes variant size and category notes). */
+export function orderItemCustomizationRows(
+  item: NormalizedOrderLineItem
+): Array<{ label: string; amount: number | null }> {
+  const variant = orderItemVariantLabel(item);
+
+  if (item.customizationLines?.length) {
+    return item.customizationLines
+      .filter((l) => l.kind === "addon")
+      .map((l) => ({
+        label: l.name,
+        amount: l.amount > 0 ? l.amount : null,
+      }));
+  }
+
+  return (item.customizations ?? [])
+    .map((line) => {
+      const m = line.match(/₹\s*([\d.]+)\s*$/);
+      return {
+        label: line.replace(/\s*·\s*₹[\d.]+\s*$/, "").trim(),
+        amount: m ? Number(m[1]) : null,
+      };
+    })
+    .filter((row) => {
+      const label = normLabel(row.label);
+      if (label.startsWith("category:")) return false;
+      if (variant && normLabel(variant) === label) return false;
+      return true;
+    });
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/** Add-on / variant line amounts (excludes zero-amount notes). */
+function customizationTotalForItem(item: NormalizedOrderLineItem): number {
+  const fromField = Number(item.customizationsTotal) || 0;
+  if (fromField > 0.005) return fromField;
+  if (Number(item.capturedAddonAmount) > 0.005) {
+    return Number(item.capturedAddonAmount);
+  }
+  if (item.customizationLines?.length) {
+    return round2(
+      item.customizationLines
+        .filter((l) => l.kind === "addon")
+        .reduce((s, l) => s + (Number(l.amount) || 0), 0)
+    );
+  }
+  return orderItemCustomizationRows(item).reduce((s, r) => s + (r.amount ?? 0), 0);
+}
+
+/**
+ * Item base at order time: orders_core_items.base_price × qty, or breakdown base_amount.
+ * Never derive as (line total − addons) — that produced wrong values like ₹87.
+ */
+function baseAmountForItem(item: NormalizedOrderLineItem): number {
+  const qty = Math.max(1, item.quantity || 1);
+  const fromBreakdown = Number(item.baseAmount) || 0;
+  if (fromBreakdown > 0.005) return round2(fromBreakdown);
+
+  const captured = Number(item.capturedBaseAmount) || 0;
+  if (captured > 0.005) return round2(captured);
+
+  if (item.customizationLines?.length) {
+    const variantOnly = item.customizationLines
+      .filter((l) => l.kind === "variant")
+      .reduce((s, l) => s + (Number(l.amount) || 0), 0);
+    if (variantOnly > 0.005) return round2(variantOnly);
+  }
+
+  const unit = Number(item.price) || 0;
+  if (unit > 0.005) return round2(unit * qty);
+
+  const lineTotal = Number(item.total) || 0;
+  const cust = customizationTotalForItem(item);
+  if (lineTotal > cust + 0.005) return round2(lineTotal - cust);
+  return 0;
+}
+
+/** Line total = base + customizations (single source; no double-add). */
+export function merchantLineTotalForItem(item: NormalizedOrderLineItem): number {
+  const base = baseAmountForItem(item);
+  const cust = customizationTotalForItem(item);
+  if (base > 0.005 || cust > 0.005) return round2(base + cust);
+
+  const qty = Math.max(1, item.quantity || 1);
+  return round2(Number(item.total) || Number(item.price) * qty);
+}
+
+export function orderItemsTotals(items: NormalizedOrderLineItem[]) {
+  const itemsLineTotal = items.reduce((acc, it) => acc + merchantLineTotalForItem(it), 0);
+  const baseSubtotal = items.reduce((acc, it) => acc + baseAmountForItem(it), 0);
+  const customizationsTotal = items.reduce(
+    (acc, it) => acc + customizationTotalForItem(it),
+    0
+  );
+  return { itemsLineTotal, baseSubtotal, customizationsTotal };
+}
+
+export function computeMerchantBillTotal(parts: {
+  itemPrice: number;
+  customizationsTotal: number;
+  packaging: number;
+  discount: number;
+}): number {
+  const { itemPrice, customizationsTotal, packaging, discount } = parts;
+  return round2(
+    Math.max(0, itemPrice + customizationsTotal + packaging - discount)
+  );
+}
+
+export function merchantItemLineParts(item: NormalizedOrderLineItem) {
+  const base = round2(baseAmountForItem(item));
+  const customizations = round2(customizationTotalForItem(item));
+  const total = merchantLineTotalForItem(item);
+  return {
+    base,
+    customizations,
+    total,
+    hasCustomizations: customizations > 0.005,
+    capturedBase: Number(item.capturedBaseAmount) || undefined,
+    capturedAddon: Number(item.capturedAddonAmount) || undefined,
+  };
+}
+
+export function merchantBillPartsFromItems(
+  items: NormalizedOrderLineItem[],
+  pricing: { subtotal: number; packaging: number; discount: number; total: number }
+) {
+  const { itemsLineTotal, baseSubtotal, customizationsTotal } = orderItemsTotals(items);
+  const packaging = pricing.packaging ?? 0;
+  const discount = pricing.discount ?? 0;
+  const total = round2(Math.max(0, itemsLineTotal + packaging - discount));
+  return {
+    itemsSubtotal: itemsLineTotal,
+    itemBaseTotal: round2(baseSubtotal),
+    customizationsTotal: round2(customizationsTotal),
+    showCustomizations: customizationsTotal > 0.005,
+    packaging,
+    discount,
+    total,
+  };
+}

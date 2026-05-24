@@ -9,7 +9,7 @@ import {
 } from '@/lib/merchantOrderFoodActions';
 import { appendAcceptanceTimeline } from '@/lib/orderAcceptanceTimeline';
 import { appendCancellationTimeline } from '@/lib/orderCancellationTimeline';
-import { appendReadyTimeline } from '@/lib/orderFoodStatusTimeline';
+import { appendDispatchedTimeline, appendReadyTimeline } from '@/lib/orderFoodStatusTimeline';
 import { loadPartnerOrderItemsForFoodRow } from '@/lib/partnerFoodOrderItems';
 import {
   PLATFORM_DEFAULT_PREP_MINUTES,
@@ -315,6 +315,20 @@ export async function PATCH(
         });
       } catch (tlErr) {
         console.warn('[food-orders PATCH] ready timeline failed:', tlErr);
+      }
+    }
+
+    if (newStatus === 'OUT_FOR_DELIVERY') {
+      try {
+        await appendDispatchedTimeline(db, {
+          orderCorePk: existing.order_id as number,
+          previousStatus: currentStatus,
+          actionSource,
+          dispatchedAt: (updates.dispatched_at as string) ?? now,
+          actorName: actionLabels.actor_label,
+        });
+      } catch (tlErr) {
+        console.warn('[food-orders PATCH] dispatched timeline failed:', tlErr);
       }
     }
 

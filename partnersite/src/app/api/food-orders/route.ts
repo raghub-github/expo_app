@@ -8,6 +8,13 @@ import {
   loadCoreDbItemsByOrderTextIds,
   resolvePartnerOrderItems,
 } from '@/lib/partnerFoodOrderItems';
+import { merchantFundedDiscountFromBilling } from '@/lib/merchant-billing-discount';
+import {
+  applyMerchantBaseToOrderItems,
+  loadSnapshotsByOrderTexts,
+} from '@/lib/merchant-visible-pricing';
+import { merchantBillPartsFromItems } from '@/lib/merchant-order-item-display';
+import { parseMerchantInstructionsList } from '@/lib/merchant-order-instructions';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -311,6 +318,11 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    const orderTexts = coreRows
+      .map((c) => String((c as CoreRow).order_id ?? '').trim())
+      .filter(Boolean);
+    const snapshotsByOrderText = await loadSnapshotsByOrderTexts(db, orderTexts, store.id);
+
     const ordersWithDetails = await Promise.all(
       coreRows.map(async (core) => {
         const coreId = Number(core.id);
@@ -323,7 +335,68 @@ export async function GET(req: NextRequest) {
           currentSt
         );
 
-        const items = resolvePartnerOrderItems(core, food, rawItemsByOrderTextId);
+        let items = resolvePartnerOrderItems(core, food, rawItemsByOrderTextId);
+        const orderText = String(core.order_id ?? '').trim();
+        const snaps = orderText ? snapshotsByOrderText.get(orderText) ?? [] : [];
+        const { items: merchantMapped, merchantSubtotal } = applyMerchantBaseToOrderItems(
+          items.map((it) => ({
+            ...it,
+            qty: it.quantity,
+            price: it.total,
+            total: it.total,
+            base_amount: it.baseAmount,
+            baseAmount: it.baseAmount,
+            customizations_total: it.customizationsTotal,
+            customizationsTotal: it.customizationsTotal,
+            customization_lines: it.customizationLines,
+            customizationLines: it.customizationLines,
+          })),
+          snaps
+        );
+        items = items.map((it, i) => {
+          const m = merchantMapped[i];
+          if (!m) return it;
+          const qty = Math.max(1, it.quantity || 1);
+          const lineTotal = Number(m.total ?? m.price ?? it.total);
+          const oldBase =
+            Number(it.baseAmount) > 0.005
+              ? Number(it.baseAmount)
+              : Number(it.capturedBaseAmount) > 0.005
+                ? Number(it.capturedBaseAmount)
+                : 0;
+          const oldCust =
+            Number(it.customizationsTotal) > 0.005
+              ? Number(it.customizationsTotal)
+              : Number(it.capturedAddonAmount) > 0.005
+                ? Number(it.capturedAddonAmount)
+                : 0;
+          const oldLine =
+            oldBase + oldCust > 0.005 ? oldBase + oldCust : Number(it.total) || lineTotal;
+          const factor = oldLine > 0.005 ? lineTotal / oldLine : 1;
+          const newBase = Math.round(oldBase * factor * 100) / 100;
+          const newCust = Math.round(oldCust * factor * 100) / 100;
+          const finalLine =
+            Math.round((newBase + newCust) * 100) / 100 || lineTotal;
+          return {
+            ...it,
+            baseAmount: newBase > 0.005 ? newBase : it.baseAmount,
+            customizationsTotal: newCust > 0.005 ? newCust : it.customizationsTotal,
+            capturedBaseAmount:
+              it.capturedBaseAmount != null
+                ? Math.round(Number(it.capturedBaseAmount) * factor * 100) / 100
+                : undefined,
+            capturedAddonAmount:
+              it.capturedAddonAmount != null
+                ? Math.round(Number(it.capturedAddonAmount) * factor * 100) / 100
+                : undefined,
+            customizationLines: it.customizationLines?.map((l) => ({
+              ...l,
+              amount: Math.round((Number(l.amount) || 0) * factor * 100) / 100,
+            })),
+            total: finalLine,
+            price: finalLine / qty,
+          };
+        });
 
         const riderId = core.rider_id != null ? Number(core.rider_id) : null;
         const riderDetails = riderId != null ? riderById.get(riderId) ?? null : null;
@@ -347,7 +420,26 @@ export async function GET(req: NextRequest) {
             : coreGrandRaw != null && coreGrandRaw !== ''
               ? Number(coreGrandRaw)
               : null;
-        const pricing = parseMerchantBillingBreakdown(core, pricingTotal);
+        const customerPricing = parseMerchantBillingBreakdown(core, pricingTotal);
+        const billingSnap =
+          core.billing_snapshot && typeof core.billing_snapshot === 'object'
+            ? (core.billing_snapshot as Record<string, unknown>)
+            : null;
+        const merchantDiscount = merchantFundedDiscountFromBilling(billingSnap);
+        const bill = merchantBillPartsFromItems(items, {
+          subtotal: merchantSubtotal,
+          packaging: customerPricing.packaging,
+          taxes: 0,
+          discount: merchantDiscount,
+          total: 0,
+        });
+        const pricing = {
+          subtotal: bill.itemsSubtotal,
+          packaging: bill.packaging,
+          taxes: 0,
+          discount: merchantDiscount,
+          total: bill.total,
+        };
         const displayItemCount = computeOrderItemQuantityCount({
           items,
           food_items_count: food?.food_items_count != null ? Number(food.food_items_count) : null,
@@ -377,12 +469,17 @@ export async function GET(req: NextRequest) {
             food?.prepared_late_minutes != null ? Number(food.prepared_late_minutes) : null,
           food_items_count: displayItemCount,
           display_item_count: displayItemCount,
-          food_items_total_value: pricingTotal ?? 0,
+          food_items_total_value: bill.total,
+          customer_paid_total: pricingTotal ?? customerPricing.total,
           requires_utensils: food?.requires_utensils ?? null,
           is_fragile: food?.is_fragile ?? false,
           is_high_value: food?.is_high_value ?? false,
           veg_non_veg: food?.veg_non_veg ?? null,
           delivery_instructions: (food?.delivery_instructions as string | null) ?? null,
+          merchant_instructions_list: parseMerchantInstructionsList(
+            food?.merchant_instructions_list ??
+              (core as Record<string, unknown>).merchant_instructions_list
+          ),
           customer_id: custId,
           customer_name:
             (food?.customer_name as string | null) ??

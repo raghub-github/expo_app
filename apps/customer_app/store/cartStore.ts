@@ -9,9 +9,13 @@ import { STORAGE_KEYS } from "@/constants";
 
 export type CartItemAddon = {
   addonId: string;
+  /** merchant_menu_item_customizations.customization_id at add time */
+  customizationId?: string;
   addonName: string;
   addonPrice: number;
   quantity: number;
+  addonSizeValue?: string | null;
+  addonSizeUnit?: string | null;
 };
 
 export type CartItem = {
@@ -26,6 +30,8 @@ export type CartItem = {
   basePrice?: number;
   variantId?: string;
   variantName?: string;
+  variantSizeValue?: string | null;
+  variantSizeUnit?: string | null;
   addons?: CartItemAddon[];
 };
 
@@ -213,8 +219,11 @@ export const useCartStore = create<CartState>((set, get) => ({
     if (items.length === 0) return;
     let changed = false;
     const next = items.map((i) => {
-      const fresh = pricesByMenuItemId[i.menuItemId];
-      // Tolerate minor float jitter; only update if the new price differs by >= 1 paise.
+      const baseMenuId = i.menuItemId.includes("_") ? i.menuItemId.split("_")[0]! : i.menuItemId;
+      if (i.variantId || (i.addons?.length ?? 0) > 0 || i.menuItemId.includes("_")) {
+        return i;
+      }
+      const fresh = pricesByMenuItemId[baseMenuId];
       if (fresh != null && Number.isFinite(fresh) && Math.abs(fresh - i.price) > 0.005) {
         changed = true;
         return { ...i, price: fresh, basePrice: fresh };

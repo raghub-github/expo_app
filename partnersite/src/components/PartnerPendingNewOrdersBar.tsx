@@ -4,33 +4,17 @@ import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { ChevronUp, Bell } from 'lucide-react';
-import { fetchStoreById } from '@/lib/database';
-import { DEMO_RESTAURANT_ID } from '@/lib/constants';
 import { createClient } from '@/lib/supabase/client';
+import {
+  PARTNER_INCOMING_MODAL_CLOSED,
+  PARTNER_INCOMING_MODAL_OPEN,
+  PARTNER_PENDING_ORDERS_REFRESH,
+  PARTNER_SELECTED_STORE_CHANGED,
+  readPartnerSelectedStoreId,
+  usePartnerSelectedStore,
+} from '@/lib/partner-selected-store';
 
-const POLL_MS = 12_000;
-
-const INVALID_STORE_PLACEHOLDERS = new Set([
-  '',
-  'no id',
-  'loading...',
-  'unknown store',
-  '—',
-  '-',
-]);
-
-function resolveStoreIdFromEnv(restaurantIdProp?: string): string {
-  const raw = (restaurantIdProp || '').trim();
-  const lower = raw.toLowerCase();
-  if (raw && !INVALID_STORE_PLACEHOLDERS.has(lower)) {
-    return raw;
-  }
-  if (typeof window !== 'undefined') {
-    const ls = (localStorage.getItem('selectedStoreId') || '').trim();
-    if (ls) return ls;
-  }
-  return DEMO_RESTAURANT_ID;
-}
+const POLL_MS = 8_000;
 
 function ordersHref(pathname: string, storeId: string): string {
   const q = `filter=NEW_ORDERS&store_id=${encodeURIComponent(storeId)}`;
@@ -56,25 +40,14 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
   const filterParam = searchParams?.get('filter') ?? null;
   const onNewOrdersList = isOnNewOrdersSection(pathname, filterParam);
 
-  const [storeId, setStoreId] = useState<string | null>(null);
-  const [internalId, setInternalId] = useState<number | null>(null);
+  const { storeId, storeInternalId: internalId, ready: storeReady } =
+    usePartnerSelectedStore(restaurantId);
   const [pending, setPending] = useState<number>(0);
   const [showFloatingOrders, setShowFloatingOrders] = useState(true);
-
-  useEffect(() => {
-    setStoreId(resolveStoreIdFromEnv(restaurantId));
-  }, [restaurantId]);
-
-  useEffect(() => {
-    if (!storeId) return;
-    void (async () => {
-      const s = await fetchStoreById(storeId);
-      setInternalId(s?.id ?? null);
-    })();
-  }, [storeId]);
+  const [incomingModalOpen, setIncomingModalOpen] = useState(false);
 
   const loadPending = useCallback(async () => {
-    const sid = resolveStoreIdFromEnv(restaurantId);
+    const sid = readPartnerSelectedStoreId(restaurantId);
     if (!sid) return;
     try {
       const res = await fetch(
@@ -88,7 +61,7 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
   }, [restaurantId]);
 
   const loadFloatingSetting = useCallback(async () => {
-    const sid = resolveStoreIdFromEnv(restaurantId);
+    const sid = readPartnerSelectedStoreId(restaurantId);
     if (!sid) return;
     try {
       const res = await fetch(`/api/merchant/store-settings?storeId=${encodeURIComponent(sid)}`, {
@@ -119,21 +92,42 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
     const onStorage = (e: StorageEvent) => {
       if (e.key === 'selectedStoreId') void loadPending();
     };
+    const onStore = () => void loadPending();
     window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
+    window.addEventListener(PARTNER_SELECTED_STORE_CHANGED, onStore);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener(PARTNER_SELECTED_STORE_CHANGED, onStore);
+    };
   }, [loadPending]);
 
   useEffect(() => {
     const onRefresh = () => void loadPending();
-    window.addEventListener('partner-pending-orders-refresh', onRefresh);
-    return () => window.removeEventListener('partner-pending-orders-refresh', onRefresh);
+    window.addEventListener(PARTNER_PENDING_ORDERS_REFRESH, onRefresh);
+    return () => window.removeEventListener(PARTNER_PENDING_ORDERS_REFRESH, onRefresh);
   }, [loadPending]);
+
+  useEffect(() => {
+    const onOpen = () => setIncomingModalOpen(true);
+    const onClose = () => setIncomingModalOpen(false);
+    window.addEventListener(PARTNER_INCOMING_MODAL_OPEN, onOpen);
+    window.addEventListener(PARTNER_INCOMING_MODAL_CLOSED, onClose);
+    return () => {
+      window.removeEventListener(PARTNER_INCOMING_MODAL_OPEN, onOpen);
+      window.removeEventListener(PARTNER_INCOMING_MODAL_CLOSED, onClose);
+    };
+  }, []);
 
   useEffect(() => {
     const onSettings = () => void loadFloatingSetting();
     window.addEventListener('partner-store-settings-changed', onSettings);
     return () => window.removeEventListener('partner-store-settings-changed', onSettings);
   }, [loadFloatingSetting]);
+
+  useEffect(() => {
+    if (!storeReady) return;
+    void loadPending();
+  }, [storeReady, loadPending]);
 
   useEffect(() => {
     if (!internalId) return;
@@ -170,9 +164,9 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
     };
   }, [internalId, loadPending]);
 
-  if (!showFloatingOrders || onNewOrdersList || pending <= 0) return null;
+  if (!showFloatingOrders || onNewOrdersList || pending <= 0 || incomingModalOpen) return null;
 
-  const sid = storeId || resolveStoreIdFromEnv(restaurantId);
+  const sid = storeId || readPartnerSelectedStoreId(restaurantId);
   if (!sid) return null;
 
   const label =
@@ -182,6 +176,9 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
     <div className="pointer-events-none fixed inset-x-0 bottom-4 z-[200] flex justify-center px-3 sm:bottom-5">
       <Link
         href={ordersHref(pathname, sid)}
+        onClick={() => {
+          window.dispatchEvent(new CustomEvent('partner-incoming-order-rescan'));
+        }}
         className="pointer-events-auto flex max-w-lg items-center gap-3 rounded-full bg-emerald-600 px-5 py-3.5 text-white shadow-xl shadow-emerald-900/30 ring-2 ring-white/20 transition hover:bg-emerald-700 hover:scale-[1.02] active:scale-[0.98]"
         aria-label={label}
       >

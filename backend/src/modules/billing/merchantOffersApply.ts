@@ -6,6 +6,7 @@ import type {
   MerchantOfferRow,
   MutableBillState,
 } from "./types.js";
+import { qualifyingCartFromRem } from "./platformOffersApply.js";
 
 function num(v: unknown): number {
   if (v == null) return 0;
@@ -342,14 +343,39 @@ export function applyMerchantStoreOffers(
   itemPlusAddon: number,
   rem: FeeRem
 ): void {
-  const grossCart = itemPlusAddon;
+  const grossCart = qualifyingCartFromRem(itemPlusAddon, rem);
   const now = ctx.now;
+
+  if (ctx.forceNoAutoOffer === true && (ctx.selectedMerchantOfferId == null || ctx.selectedMerchantOfferId <= 0)) {
+    return;
+  }
 
   const sorted = [...dataset.merchantOffers].sort(
     (a, b) => b.displayPriority - a.displayPriority || a.id - b.id
   );
 
-  for (const offer of sorted) {
+  let toApply = sorted;
+  const selectedId = ctx.selectedMerchantOfferId;
+  if (selectedId != null && selectedId > 0) {
+    toApply = sorted.filter((o) => o.id === selectedId);
+  } else {
+    toApply = sorted.filter((o) => {
+      const t = o.offerType.toUpperCase();
+      if (t === "COUPON") {
+        const code = (o.couponCode ?? "").trim();
+        if (!code) return false;
+        const entered = (ctx.couponCode ?? "").trim().toUpperCase();
+        return entered.length > 0 && entered === code.toUpperCase();
+      }
+      return o.autoApply !== false;
+    });
+  }
+
+  let appliedNonStackable = false;
+
+  for (const offer of toApply) {
+    if (!selectedId && appliedNonStackable && !offer.isStackable) continue;
+
     // Per-user usage cap
     if (usageCapExceeded(offer, ctx)) continue;
 
@@ -406,5 +432,7 @@ export function applyMerchantStoreOffers(
         // Unknown type — skip silently
         break;
     }
+
+    if (!offer.isStackable) appliedNonStackable = true;
   }
 }

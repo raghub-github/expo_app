@@ -19,7 +19,7 @@ function num(v: unknown): number {
  * + all fees — so a cart with items=189 + delivery=45 + packaging=11 = 245 qualifies
  * for an offer with min_order_amount=199. Item subtotal alone would be too strict.
  */
-function qualifyingCartFromRem(itemPlusAddon: number, rem: FeeRem): number {
+export function qualifyingCartFromRem(itemPlusAddon: number, rem: FeeRem): number {
   return (
     Math.max(0, itemPlusAddon) +
     Math.max(0, rem.delivery) +

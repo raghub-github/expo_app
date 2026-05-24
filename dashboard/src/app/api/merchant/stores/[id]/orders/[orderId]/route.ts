@@ -83,11 +83,35 @@ export async function PATCH(
     const db = getDb();
 
     const resolved = await resolveMerchantFoodOrder(db, storeInternalId, orderIdNum);
-    if (!resolved?.foodRowId) {
-      return NextResponse.json({ error: "Food order row not found" }, { status: 404 });
+    if (!resolved) {
+      return NextResponse.json({ error: "Order not found" }, { status: 404 });
     }
 
-    const foodRowId = resolved.foodRowId;
+    let foodRowId = resolved.foodRowId;
+    if (foodRowId == null && Number.isFinite(resolved.coreOrderId)) {
+      for (let attempt = 0; attempt < 6 && foodRowId == null; attempt += 1) {
+        if (attempt > 0) {
+          await new Promise((r) => setTimeout(r, 350 * attempt));
+        }
+        const { data: foodForCore } = await db
+          .from("orders_food")
+          .select("id")
+          .eq("order_id", resolved.coreOrderId)
+          .maybeSingle();
+        if (foodForCore?.id != null) {
+          foodRowId = Number(foodForCore.id);
+          break;
+        }
+        const retry = await resolveMerchantFoodOrder(db, storeInternalId, orderIdNum);
+        if (retry?.foodRowId != null) {
+          foodRowId = retry.foodRowId;
+          break;
+        }
+      }
+    }
+    if (foodRowId == null) {
+      return NextResponse.json({ error: "Food order row not found" }, { status: 404 });
+    }
 
     const { data: existing, error: fetchErr } = await db
       .from("orders_food")

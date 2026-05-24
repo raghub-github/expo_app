@@ -6,6 +6,7 @@ import { getSql } from "@/lib/db/client";
 import { mergeBool, mergeNum, mergeOptionalStr } from "@/lib/db/sql-json-body";
 import { assertStoreAccess } from "../../assert-store-access";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
+import { deleteR2ObjectForStoredUrl } from "@/lib/r2-proxy-url";
 
 export const runtime = "nodejs";
 
@@ -25,7 +26,8 @@ export async function PUT(
 
     const sql = getSql();
     const [o] = await sql`
-      SELECT a.id, a.addon_name, a.addon_price, a.addon_image_url, a.in_stock, a.display_order
+      SELECT a.id, a.addon_name, a.addon_price, a.addon_image_url,
+             a.addon_size_value::text, a.addon_size_unit, a.in_stock, a.display_order
       FROM merchant_menu_item_addons a
       INNER JOIN merchant_menu_item_customizations c ON c.id = a.customization_id
       INNER JOIN merchant_menu_items m ON m.id = c.menu_item_id AND m.store_id = ${storeId}
@@ -43,7 +45,29 @@ export async function PUT(
       return NextResponse.json({ success: false, error: "Invalid addon_price" }, { status: 400 });
     }
 
-    const addon_image_url = mergeOptionalStr(body.addon_image_url, e.addon_image_url);
+    const clearingImage =
+      body.addon_image_url === null ||
+      (body.addon_image_url !== undefined && String(body.addon_image_url).trim() === "");
+    const addon_image_url = clearingImage
+      ? null
+      : mergeOptionalStr(body.addon_image_url, e.addon_image_url);
+    if (clearingImage && e.addon_image_url) {
+      await deleteR2ObjectForStoredUrl(e.addon_image_url);
+    }
+    const addon_size_value =
+      body.addon_size_value !== undefined
+        ? body.addon_size_value == null || body.addon_size_value === ""
+          ? null
+          : Number(body.addon_size_value)
+        : e.addon_size_value != null
+          ? Number(e.addon_size_value)
+          : null;
+    const addon_size_unit =
+      body.addon_size_unit !== undefined
+        ? body.addon_size_unit == null || String(body.addon_size_unit).trim() === ""
+          ? null
+          : String(body.addon_size_unit).trim()
+        : e.addon_size_unit;
     const in_stock = mergeBool(body.in_stock, e.in_stock);
     const display_order = mergeNum(body.display_order, e.display_order);
 
@@ -52,6 +76,8 @@ export async function PUT(
       SET addon_name = ${addon_name},
           addon_price = ${addon_price},
           addon_image_url = ${addon_image_url},
+          addon_size_value = ${Number.isFinite(addon_size_value as number) ? addon_size_value : null},
+          addon_size_unit = ${addon_size_unit},
           in_stock = ${in_stock},
           display_order = ${display_order},
           updated_at = NOW()
@@ -83,7 +109,7 @@ export async function DELETE(
 
     const sql = getSql();
     const [o] = await sql`
-      SELECT a.id FROM merchant_menu_item_addons a
+      SELECT a.id, a.addon_image_url FROM merchant_menu_item_addons a
       INNER JOIN merchant_menu_item_customizations c ON c.id = a.customization_id
       INNER JOIN merchant_menu_items m ON m.id = c.menu_item_id AND m.store_id = ${storeId}
       WHERE a.id = ${oId}
@@ -91,6 +117,7 @@ export async function DELETE(
     `;
     if (!o) return NextResponse.json({ success: false, error: "Customization option not found" }, { status: 404 });
 
+    await deleteR2ObjectForStoredUrl((o as { addon_image_url?: string | null }).addon_image_url);
     await sql`DELETE FROM merchant_menu_item_addons WHERE id = ${oId}`;
     try {
       await logStoreActivity({ storeId, section: "addon", action: "delete", entityId: oId, summary: `Agent deleted addon option #${oId}`, actorType: "agent", source: "dashboard" });

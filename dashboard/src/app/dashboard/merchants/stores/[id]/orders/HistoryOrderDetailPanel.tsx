@@ -4,6 +4,11 @@ import React, { useState } from 'react';
 import { Check, Printer, X } from 'lucide-react';
 import type { OrdersFoodRow } from '@/lib/types/food-orders';
 import { normalizeOrderItems, type NormalizedOrderLineItem } from '@/lib/orderLineItems';
+import {
+  formatOrderRs,
+  merchantBillPartsFromItems,
+  merchantLineTotalForItem,
+} from '@/lib/merchant-order-item-display';
 import { historyBadgeClass, historyStatusLabel } from './orders-page-ui';
 import { OrderHistoryItemDetailsModal } from '@/components/merchant/OrderHistoryItemDetailsModal';
 
@@ -60,13 +65,14 @@ export function HistoryOrderDetailPanel({
   const [itemDetailModal, setItemDetailModal] =
     useState<NormalizedOrderLineItem | null>(null);
   const lineItems = normalizeOrderItems(order.items ?? []);
-  const lineSum = lineItems.reduce((acc, it) => acc + it.total, 0);
-  const pricing = order.pricing;
-  const subtotalItems = pricing?.subtotal ?? (lineSum > 0 ? lineSum : 0);
-  const packaging = pricing?.packaging ?? 0;
-  const taxes = pricing?.taxes ?? 0;
-  const discount = pricing?.discount ?? 0;
-  const orderTotal = pricing?.total ?? Number(order.food_items_total_value ?? lineSum);
+  const pricing = order.pricing ?? {
+    subtotal: 0,
+    packaging: 0,
+    taxes: 0,
+    discount: 0,
+    total: Number(order.food_items_total_value ?? 0),
+  };
+  const bill = merchantBillPartsFromItems(lineItems, pricing);
 
   const placedAgo = (() => {
     const mins = Math.floor((Date.now() - new Date(order.created_at).getTime()) / 60000);
@@ -141,33 +147,25 @@ export function HistoryOrderDetailPanel({
                       {it.name}
                     </button>
                   </p>
-                  <span className="font-medium text-gray-900 shrink-0 tabular-nums pt-0.5">₹{it.total.toFixed(2)}</span>
+                  <span className="font-medium text-gray-900 shrink-0 tabular-nums pt-0.5">
+                    {formatOrderRs(merchantLineTotalForItem(it), 2)}
+                  </span>
                 </li>
               ))}
             </ul>
           )}
         </div>
 
-        <div className="mt-4 pt-3 border-t border-gray-200 space-y-1.5 text-sm">
-          <div className="flex justify-between text-gray-600">
-            <span>Subtotal</span>
-            <span className="tabular-nums">₹{subtotalItems.toFixed(2)}</span>
-          </div>
-          <div className="flex justify-between text-gray-600">
-            <span>Restaurant packaging</span>
-            <span className="tabular-nums">₹{packaging.toFixed(2)}</span>
-          </div>
-          <div className="flex justify-between text-gray-600">
-            <span>Taxes</span>
-            <span className="tabular-nums">₹{taxes.toFixed(2)}</span>
-          </div>
-          <div className="flex justify-between text-gray-600">
-            <span>Discount</span>
-            <span className="tabular-nums">{discount > 0 ? `−₹${discount.toFixed(2)}` : '₹0.00'}</span>
-          </div>
-          <div className="flex justify-between font-bold text-gray-900 pt-2">
+        <div className="mt-4 pt-3 border-t border-gray-200">
+          <p className="text-xs font-extrabold tracking-wide text-gray-500 mb-2">TOTAL BILL</p>
+          {bill.discount > 0 ? (
+            <p className="text-xs text-emerald-700 mb-2">
+              Restaurant discount −{formatOrderRs(bill.discount, 2)} included in total
+            </p>
+          ) : null}
+          <div className="flex justify-between font-bold text-gray-900 text-sm">
             <span>Total</span>
-            <span className="tabular-nums">₹{orderTotal.toFixed(2)}</span>
+            <span className="tabular-nums">{formatOrderRs(bill.total, 0)}</span>
           </div>
         </div>
       </div>

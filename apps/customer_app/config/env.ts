@@ -36,12 +36,48 @@ function asNonEmptyString(v: unknown): string | null {
   return s.length ? s : null;
 }
 
+function isLocalhostApiUrl(url: string): boolean {
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(\b|:)/.test(url.replace(/\/+$/, ""));
+}
+
+/** Metro / Expo dev server LAN IP (e.g. 192.168.x.x from hostUri) — avoids localhost on a physical phone. */
+function inferLanHostFromExpoBundler(): string | null {
+  const hostUri =
+    Constants.expoConfig?.hostUri ??
+    (Constants.expoGoConfig as { hostUri?: string } | undefined)?.hostUri;
+  if (typeof hostUri === "string" && hostUri.length > 0) {
+    const host = hostUri.split(":")[0]?.trim();
+    if (host && host !== "localhost" && host !== "127.0.0.1") return host;
+  }
+  const debuggerHost = (Constants.manifest as { debuggerHost?: string } | null)?.debuggerHost;
+  if (typeof debuggerHost === "string" && debuggerHost.length > 0) {
+    const host = debuggerHost.split(":")[0]?.trim();
+    if (host && host !== "localhost" && host !== "127.0.0.1") return host;
+  }
+  return null;
+}
+
 /** Replace localhost/127.0.0.1 with Android emulator host so backend on PC is reachable. */
 function resolveApiBaseUrl(raw: string): string {
   const trimmed = raw.replace(/\/+$/, "");
-  if (Platform.OS === "android" && (/^https?:\/\/localhost(\b|:)/.test(trimmed) || /^https?:\/\/127\.0\.0\.1(\b|:)/.test(trimmed))) {
+  if (!isLocalhostApiUrl(trimmed)) return trimmed;
+
+  const portMatch = trimmed.match(/:(\d+)(?:\/|$)/);
+  const port = portMatch?.[1] ?? apiDevPort();
+
+  if (Platform.OS === "android") {
+    if (Constants.isDevice) {
+      const lan = inferLanHostFromExpoBundler();
+      if (lan) return `http://${lan}:${port}`;
+    }
     return trimmed.replace(/localhost|127\.0\.0\.1/, "10.0.2.2");
   }
+
+  if (Constants.isDevice) {
+    const lan = inferLanHostFromExpoBundler();
+    if (lan) return `http://${lan}:${port}`;
+  }
+
   return trimmed;
 }
 

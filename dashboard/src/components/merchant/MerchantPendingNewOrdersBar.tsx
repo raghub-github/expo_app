@@ -6,6 +6,7 @@ import { Bell, ChevronUp } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useStoreContext } from '@/app/dashboard/merchants/stores/[id]/StoreContext';
+import { subscribeMenuItemFormModalOpen } from '@/lib/merchant-menu-form-modal-bus';
 
 function isOnNewOrdersSection(pathname: string, filterParam: string | null): boolean {
   const onOrdersPage = pathname.includes('/orders');
@@ -25,6 +26,7 @@ function MerchantPendingNewOrdersBarInner() {
   const searchParams = useSearchParams();
   const onNewOrdersList = isOnNewOrdersSection(pathname, searchParams?.get('filter') ?? null);
   const [pending, setPending] = useState(0);
+  const [menuItemFormOpen, setMenuItemFormOpen] = useState(false);
   const [showFloatingOrders, setShowFloatingOrders] = useState(true);
   const prevPendingRef = useRef(0);
   const storeInternalId = parseInt(storeId, 10);
@@ -42,11 +44,17 @@ function MerchantPendingNewOrdersBarInner() {
     }
   }, [storeId]);
 
+  useEffect(() => subscribeMenuItemFormModalOpen(setMenuItemFormOpen), []);
+
   useEffect(() => {
+    if (menuItemFormOpen) return;
     void load();
-    const t = window.setInterval(() => void load(), POLL_MS);
+    const t = window.setInterval(() => {
+      if (document.body?.dataset?.menuItemFormOpen === '1') return;
+      void load();
+    }, POLL_MS);
     return () => window.clearInterval(t);
-  }, [load]);
+  }, [load, menuItemFormOpen]);
 
   useEffect(() => {
     if (!storeId) return;
@@ -90,6 +98,10 @@ function MerchantPendingNewOrdersBarInner() {
   }, [load]);
 
   useEffect(() => {
+    if (menuItemFormOpen) {
+      prevPendingRef.current = pending;
+      return;
+    }
     if (pending > prevPendingRef.current) {
       try {
         window.dispatchEvent(new CustomEvent('merchant-incoming-order-scan'));
@@ -98,7 +110,7 @@ function MerchantPendingNewOrdersBarInner() {
       }
     }
     prevPendingRef.current = pending;
-  }, [pending]);
+  }, [pending, menuItemFormOpen]);
 
   if (!showFloatingOrders || onNewOrdersList || pending <= 0 || !storeId) return null;
 

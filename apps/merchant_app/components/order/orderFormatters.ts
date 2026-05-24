@@ -1,3 +1,5 @@
+import { cancellationReasonsAreDuplicate } from "@/lib/merchant-cancellation-display";
+
 /** Shared order display formatting (IST). */
 
 const IST = "Asia/Kolkata";
@@ -39,7 +41,10 @@ export function splitRejectionMessage(
       : { prefix: label || "Return to origin", detail: "" };
   }
   if (label) {
-    return { prefix: label, detail: r || "" };
+    if (!r || cancellationReasonsAreDuplicate(r, label)) {
+      return { prefix: label, detail: "" };
+    }
+    return { prefix: label, detail: r };
   }
   if (/^auto cancelled/i.test(r)) {
     return { prefix: "Auto Cancelled", detail: r.replace(/^auto cancelled:\s*/i, "").trim() };

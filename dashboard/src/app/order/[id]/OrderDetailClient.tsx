@@ -3,9 +3,15 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import OrderTimeline, { type OrderTimelineEntry } from "./OrderTimeline";
 import OrderRightSidebar from "./OrderRightSidebar";
+import {
+  parseOrderItemsApiResponse,
+  type OrderItemsPayload,
+} from "@/lib/orderItemsPayload";
+import { computeOrderItemQuantityCount } from "@/lib/merchantOrderFoodActions";
 import CustomerDetails from "./CustomerDetails";
 import MerchantDetails from "./MerchantDetails";
 import PaymentDetails from "./PaymentDetails";
+import type { OrderPaymentDetail } from "@/lib/orders/order-payment-detail";
 import RiderDetails from "./RiderDetails";
 import RiderRouteMap from "./RiderRouteMap";
 import { useAuthOptional } from "@/providers/AuthProvider";
@@ -87,6 +93,24 @@ interface OrderDetail {
   etaBreachedAt?: string | null;
   /** order_timelines.id of stage current when ETA was first breached (red dot). */
   etaBreachedTimelineId?: number | null;
+  /** From orders_core.placed_at or created_at */
+  orderTimeIso?: string | null;
+  orderTimeSource?: "placed_at" | "created_at";
+  itemCount?: number | null;
+  systemKptMinutes?: number | null;
+  merchantUpdatedKptMinutes?: number | null;
+  isScheduledOrder?: boolean;
+  scheduledDeliverySummary?: string | null;
+  deliveryType?: string | null;
+  contactlessDelivery?: boolean | null;
+  localityType?: string | null;
+  localityIsSafe?: boolean | null;
+  deliveredBy?: string | null;
+  deliveryInitiator?: string | null;
+  customerTrustTierLabel?: string | null;
+  customerUserType?: string | null;
+  riderInstructionsList?: string[];
+  merchantInstructionsList?: string[];
 }
 
 /** Merchant summary from order API for MX card (show immediately on load) */
@@ -224,11 +248,13 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
   >("picked_up");
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
   const [orderRefunds, setOrderRefunds] = useState<OrderRefundListItem[]>([]);
+  const [orderItemsPayload, setOrderItemsPayload] = useState<OrderItemsPayload | null>(null);
   const [orderTickets, setOrderTickets] = useState<OrderTicketSummary[]>([]);
   const [showTicketsModal, setShowTicketsModal] = useState(false);
   const [statusHistory, setStatusHistory] = useState<OrderStatusHistoryEntry[]>([]);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [timelineEntries, setTimelineEntries] = useState<OrderTimelineEntry[] | null>(null);
+  const [paymentDetail, setPaymentDetail] = useState<OrderPaymentDetail | null>(null);
   const [copiedOrderId, setCopiedOrderId] = useState(false);
   const copyOrderIdResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const auth = useAuthOptional();
@@ -269,11 +295,15 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
 
     if (!orderPublicId) {
       setOrder(null);
+      setPaymentDetail(null);
       setTimelineEntries(null);
+      setOrderItemsPayload(null);
       setError("Invalid order ID.");
       setLoading(false);
       return;
     }
+
+    setOrderItemsPayload(null);
 
     if (refetchTrigger === 0) setLoading(true);
     else setIsRefreshing(true);
@@ -346,7 +376,26 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
             return Number.isFinite(n) ? n : null;
           };
 
-          setTimelineEntries(timeline);
+          const paymentFromApi =
+            (body as { paymentDetail?: OrderPaymentDetail }).paymentDetail ??
+            (row.paymentDetail as OrderPaymentDetail | undefined);
+          setPaymentDetail(paymentFromApi ?? null);
+
+          setTimelineEntries(
+            timeline.map((e) => ({
+              ...e,
+              occurredAt:
+                e.occurredAt instanceof Date
+                  ? e.occurredAt.toISOString()
+                  : String(e.occurredAt ?? ""),
+              expectedByAt:
+                e.expectedByAt instanceof Date
+                  ? e.expectedByAt.toISOString()
+                  : e.expectedByAt != null
+                    ? String(e.expectedByAt)
+                    : null,
+            }))
+          );
           setOrder({
             id: row.id,
             formattedOrderId: row.formattedOrderId,
@@ -399,9 +448,53 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
             firstEtaAt: row.firstEtaAt != null ? String(row.firstEtaAt) : null,
             etaBreachedAt: row.etaBreachedAt != null ? String(row.etaBreachedAt) : null,
             etaBreachedTimelineId: row.etaBreachedTimelineId != null ? Number(row.etaBreachedTimelineId) : null,
+            orderTimeIso: row.orderTimeIso != null ? String(row.orderTimeIso) : null,
+            orderTimeSource:
+              row.orderTimeSource === "placed_at" ? "placed_at" : "created_at",
+            itemCount: row.itemCount != null ? Number(row.itemCount) : null,
+            systemKptMinutes:
+              row.systemKptMinutes != null ? Number(row.systemKptMinutes) : null,
+            merchantUpdatedKptMinutes:
+              row.merchantUpdatedKptMinutes != null
+                ? Number(row.merchantUpdatedKptMinutes)
+                : null,
+            isScheduledOrder: Boolean(row.isScheduledOrder),
+            scheduledDeliverySummary:
+              row.scheduledDeliverySummary != null
+                ? String(row.scheduledDeliverySummary)
+                : null,
+            deliveryType: row.deliveryType != null ? String(row.deliveryType) : null,
+            contactlessDelivery:
+              row.contactlessDelivery === true
+                ? true
+                : row.contactlessDelivery === false
+                  ? false
+                  : null,
+            localityType: row.localityType != null ? String(row.localityType) : null,
+            localityIsSafe:
+              row.localityIsSafe === true ? true : row.localityIsSafe === false ? false : null,
+            deliveredBy: row.deliveredBy != null ? String(row.deliveredBy) : null,
+            deliveryInitiator:
+              row.deliveryInitiator != null ? String(row.deliveryInitiator) : null,
+            customerTrustTierLabel:
+              row.customerTrustTierLabel != null
+                ? String(row.customerTrustTierLabel)
+                : null,
+            customerUserType:
+              row.customerUserType != null
+                ? String(row.customerUserType)
+                : row.customerTrustTierLabel != null
+                  ? String(row.customerTrustTierLabel)
+                  : null,
+            riderInstructionsList: Array.isArray(row.riderInstructionsList)
+              ? (row.riderInstructionsList as string[])
+              : [],
+            merchantInstructionsList: Array.isArray(row.merchantInstructionsList)
+              ? (row.merchantInstructionsList as string[])
+              : [],
           });
 
-          // Refunds load in background so the page can render without waiting on a second round trip.
+          // Refunds + line items load in background so the page renders without extra round trips.
           void (async () => {
             try {
               const refundsRes = await fetch(`/api/orders/${row.id}/refunds`);
@@ -413,6 +506,17 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
               }
             } catch {
               if (!cancelled) setOrderRefunds([]);
+            }
+          })();
+
+          void (async () => {
+            try {
+              const itemsRes = await fetch(`/api/orders/${row.id}/items`, { credentials: "include" });
+              const itemsBody = await itemsRes.json().catch(() => null);
+              const parsed = parseOrderItemsApiResponse(itemsBody);
+              if (!cancelled && parsed) setOrderItemsPayload(parsed);
+            } catch {
+              if (!cancelled) setOrderItemsPayload(null);
             }
           })();
 
@@ -563,9 +667,28 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
   }
 
   const statusLabel = order.currentStatus ?? order.status;
-  const createdLabel = order.createdAt
-    ? new Date(order.createdAt).toLocaleString()
-    : "—";
+  const orderTimeLabel = order.orderTimeIso
+    ? new Date(order.orderTimeIso).toLocaleString("en-IN", {
+        day: "numeric",
+        month: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: true,
+      })
+    : order.createdAt
+      ? new Date(order.createdAt).toLocaleString("en-IN", {
+          day: "numeric",
+          month: "numeric",
+          year: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: true,
+        })
+      : "—";
+  const createdLabel = orderTimeLabel;
   const updatedLabel = order.updatedAt
     ? new Date(order.updatedAt).toLocaleString()
     : "—";
@@ -942,7 +1065,7 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
                 dropAddressRaw: order.dropAddressRaw,
                 dropAddressNormalized: order.dropAddressNormalized,
                 dropAddressGeocoded: order.dropAddressGeocoded,
-                userType: order.customerAccountStatus ?? "Customer",
+                userType: order.customerUserType ?? order.customerTrustTierLabel ?? null,
                 locationMismatch: isLocationMismatch,
                 accountStatus: order.customerAccountStatus,
                 riskFlag: order.customerRiskFlag,
@@ -966,7 +1089,12 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
             />
 
             {/* Payment details */}
-            <PaymentDetails order={order} displayId={displayId} orderRefunds={orderRefunds} />
+            <PaymentDetails
+              order={order}
+              displayId={displayId}
+              orderRefunds={orderRefunds}
+              paymentDetail={paymentDetail}
+            />
           </div>
 
           {/* Rider details + map */}
@@ -1004,6 +1132,15 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
         <OrderRightSidebar
           order={order}
           orderRefunds={orderRefunds}
+          prefetchedOrderItems={orderItemsPayload}
+          itemCount={
+            orderItemsPayload?.items?.length
+              ? computeOrderItemQuantityCount({
+                  items: orderItemsPayload.items.filter((i) => i.id > 0),
+                  food_items_count: order.itemCount,
+                })
+              : order.itemCount ?? undefined
+          }
           initialRemarksCount={initialRemarksCount}
           initialReconsCount={initialReconsCount}
           onRoutedToChange={(email) =>

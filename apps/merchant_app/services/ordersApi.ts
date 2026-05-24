@@ -3,11 +3,34 @@ import { authFetch } from "@/services/authFetch";
 
 const getBase = () => getConfig().apiBaseUrl.replace(/\/+$/, "");
 
+export type ApiFoodOrderCustomizationLine = {
+  name: string;
+  amount: number;
+  kind: "variant" | "addon" | "note";
+};
+
 export type ApiFoodOrderItem = {
   qty: number;
   name: string;
   price: number;
   veg_nonveg?: string | null;
+  customizations?: string[];
+  variant_tag?: string | null;
+  category_name?: string | null;
+  customization_lines?: ApiFoodOrderCustomizationLine[];
+  base_amount?: number;
+  customizations_total?: number;
+  captured_base_amount?: number;
+  captured_addon_amount?: number;
+  has_customizations?: boolean;
+};
+
+export type ApiFoodOrderPricing = {
+  subtotal: number;
+  packaging: number;
+  taxes: number;
+  discount: number;
+  total: number;
 };
 
 export type ApiFoodOrder = {
@@ -29,6 +52,9 @@ export type ApiFoodOrder = {
   delivery_type: "GATIMITRA_RIDER" | "SELF_DELIVERY" | "SELF_PICKUP" | string;
   rider_id: number | null;
   grand_total: number;
+  pricing?: ApiFoodOrderPricing | null;
+  billing_snapshot?: Record<string, unknown> | null;
+  payment_status?: string | null;
   items: ApiFoodOrderItem[];
   pickup_otp: string | null;
   rto_otp: string | null;
@@ -44,6 +70,7 @@ export type ApiFoodOrder = {
   rejected_reason: string | null;
   accepted_by_label: string | null;
   cancelled_by_label: string | null;
+  cancelled_by_type?: string | null;
 };
 
 export async function fetchFoodOrders(
@@ -122,6 +149,28 @@ export async function fetchFoodOrderTimeline(
   if (!res.ok) return [];
   const data = (await res.json()) as { timeline?: FoodOrderTimelineEntry[] };
   return Array.isArray(data.timeline) ? data.timeline : [];
+}
+
+export type MerchantOrderActionForTimeline = {
+  to_status: string;
+  action_source?: string | null;
+  actor_label?: string | null;
+  metadata?: Record<string, unknown> | null;
+  created_at?: string;
+};
+
+export async function fetchFoodOrderActions(
+  storeId: number,
+  ordersFoodId: number,
+  token: string
+): Promise<MerchantOrderActionForTimeline[]> {
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}/activity`,
+    token
+  );
+  if (!res.ok) return [];
+  const data = (await res.json()) as { actions?: MerchantOrderActionForTimeline[] };
+  return Array.isArray(data.actions) ? data.actions : [];
 }
 
 export async function fetchFoodOrderRidersLog(

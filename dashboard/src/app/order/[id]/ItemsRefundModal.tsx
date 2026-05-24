@@ -5,7 +5,19 @@ import { usePermission } from '@/hooks/usePermission';
 import { usePathname } from 'next/navigation';
 import { getDashboardTypeFromPath } from '@/lib/permissions/path-mapping';
 import type { DashboardType } from '@/lib/db/schema';
-import { Package, X, Image, Truck, RotateCcw, CheckCircle, AlertTriangle } from 'lucide-react';
+import { Package, X, Image, Truck, RotateCcw, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
+
+import { DELIVERY_FEE_ITEM_ID } from '@/lib/foodOrderItems';
+import {
+  parseOrderItemsApiResponse,
+  preloadOrderItemImages,
+  type OrderItemsPayload,
+  type OrderItemsPricing,
+} from '@/lib/orderItemsPayload';
+import {
+  formatCustomisationLine,
+  type OrderItemCustomisationDetail,
+} from '@/lib/order-item-customisation';
 
 interface ItemsRefundModalProps {
   isOpen: boolean;
@@ -13,18 +25,60 @@ interface ItemsRefundModalProps {
   onToast?: (message: string) => void;
   /** Order id (orders_core.id / orders.id) for creating refund record. */
   orderId?: number | null;
+  /** Preloaded on order page — modal shows items immediately without spinner. */
+  prefetchedOrderItems?: OrderItemsPayload | null;
   /** Dashboard context for permission checks (e.g. ORDER_FOOD). Defaults from path or ORDER_FOOD. */
   dashboardType?: DashboardType;
   /** Called after a refund is successfully created so parent can refetch refund list. */
   onRefundCreated?: () => void;
 }
 
+function CustomisationCell({
+  detail,
+  fallback,
+  compact = false,
+}: {
+  detail?: OrderItemCustomisationDetail | null;
+  fallback: string;
+  compact?: boolean;
+}) {
+  const lines = detail?.lines?.length ? detail.lines : [];
+
+  if (lines.length === 0) {
+    const text = fallback?.trim();
+    if (!text || text === '-') {
+      return <span className="text-slate-400">—</span>;
+    }
+    return (
+      <span
+        className={`text-left whitespace-normal break-words text-slate-800 ${compact ? 'text-[10px]' : 'text-[11px]'}`}
+      >
+        {text}
+      </span>
+    );
+  }
+
+  return (
+    <div
+      className={`text-left align-top space-y-1 min-w-[200px] max-w-[340px] whitespace-normal break-words text-slate-800 leading-snug ${compact ? 'text-[10px]' : 'text-[11px]'}`}
+    >
+      {lines.map((line, i) => (
+        <p key={i}>{formatCustomisationLine(line)}</p>
+      ))}
+    </div>
+  );
+}
+
 interface RefundItem {
   id: number;
   name: string;
   customisation: string;
+  customisationDetail?: OrderItemCustomisationDetail | null;
   quantity: number;
   amountPerQuantity: number;
+  taxPerQuantity: number;
+  chargesPerQuantity: number;
+  totalPerQuantity: number;
   refundType: 'NONE' | 'FULL' | 'PARTIAL';
   selectedQuantity: number;
   remark: string;
@@ -34,9 +88,70 @@ interface RefundItem {
   hasImage: boolean;
   imageUrl?: string;
   refundPercentage: number;
+  isDeliveryFee: boolean;
 }
 
-export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: orderIdProp, dashboardType: dashboardTypeProp, onRefundCreated }: ItemsRefundModalProps) {
+function payloadToRefundState(payload: OrderItemsPayload): {
+  items: RefundItem[];
+  pricing: OrderItemsPricing;
+} {
+  return {
+    items: payload.items.map((row) => mapApiItemToRefundItem(row)),
+    pricing: payload.pricing,
+  };
+}
+
+function isDeliveryFeeRow(item: { id: number; isDeliveryFee?: boolean }): boolean {
+  return item.isDeliveryFee === true || item.id === DELIVERY_FEE_ITEM_ID;
+}
+
+function mapApiItemToRefundItem(row: {
+  id: number;
+  name: string;
+  customisation: string;
+  customisationDetail?: OrderItemCustomisationDetail | null;
+  quantity: number;
+  amountPerQuantity: number;
+  taxPerQuantity: number;
+  chargesPerQuantity: number;
+  totalPerQuantity: number;
+  hasImage: boolean;
+  imageUrl: string | null;
+  status: string;
+}): RefundItem {
+  const delivery = row.id === DELIVERY_FEE_ITEM_ID;
+  return {
+    id: row.id,
+    name: row.name,
+    customisation: row.customisation,
+    customisationDetail: row.customisationDetail ?? null,
+    quantity: row.quantity,
+    amountPerQuantity: row.amountPerQuantity,
+    taxPerQuantity: row.taxPerQuantity,
+    chargesPerQuantity: row.chargesPerQuantity,
+    totalPerQuantity: row.totalPerQuantity,
+    refundType: 'NONE',
+    selectedQuantity: 0,
+    remark: '',
+    showDropdown: false,
+    customAmount: row.amountPerQuantity,
+    isSelected: false,
+    hasImage: row.hasImage && Boolean(row.imageUrl),
+    imageUrl: row.imageUrl ?? undefined,
+    refundPercentage: 0,
+    isDeliveryFee: delivery,
+  };
+}
+
+export default function ItemsRefundModal({
+  isOpen,
+  onClose,
+  onToast,
+  orderId: orderIdProp,
+  prefetchedOrderItems,
+  dashboardType: dashboardTypeProp,
+  onRefundCreated,
+}: ItemsRefundModalProps) {
   const pathname = usePathname();
   const resolvedDashboard = dashboardTypeProp ?? getDashboardTypeFromPath(pathname ?? '') ?? 'ORDER_FOOD';
   const { canPerformAction, isSuperAdmin } = usePermission();
@@ -63,6 +178,8 @@ export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: or
 
   const [showImageModal, setShowImageModal] = useState(false);
   const [selectedItemImage, setSelectedItemImage] = useState<{ id: number; name: string; imageUrl: string } | null>(null);
+  const [loadedImageUrls, setLoadedImageUrls] = useState<Set<string>>(() => new Set());
+  const [imagePanelLoading, setImagePanelLoading] = useState(false);
 
   const refundTypeRef = useRef<HTMLDivElement>(null);
   const faultRef = useRef<HTMLDivElement>(null);
@@ -71,70 +188,20 @@ export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: or
   const submitButtonRef = useRef<HTMLButtonElement>(null);
   const imageModalRef = useRef<HTMLDivElement>(null);
 
-  const [refundItems, setRefundItems] = useState<RefundItem[]>([
-    {
-      id: 71150283,
-      name: 'Schezwan Chicken Rice Bowl',
-      customisation: '-',
-      quantity: 3,
-      amountPerQuantity: 299,
-      refundType: 'NONE',
-      selectedQuantity: 0,
-      remark: '',
-      showDropdown: false,
-      customAmount: 299,
-      isSelected: false,
-      hasImage: true,
-      imageUrl: 'https://images.unsplash.com/photo-1603133872878-684f208fb84b?w=400&h=400&fit=crop',
-      refundPercentage: 0
-    },
-    {
-      id: 71150296,
-      name: 'Singapore Chilli Chicken',
-      customisation: '-',
-      quantity: 1,
-      amountPerQuantity: 249,
-      refundType: 'NONE',
-      selectedQuantity: 0,
-      remark: '',
-      showDropdown: false,
-      customAmount: 249,
-      isSelected: false,
-      hasImage: true,
-      imageUrl: 'https://images.unsplash.com/photo-1604908176997-125f25cc6f3d?w=400&h=400&fit=crop',
-      refundPercentage: 0
-    },
-    {
-      id: 89228408,
-      name: 'Crispy Corn',
-      customisation: '-',
-      quantity: 1,
-      amountPerQuantity: 158,
-      refundType: 'NONE',
-      selectedQuantity: 0,
-      remark: '',
-      showDropdown: false,
-      customAmount: 158,
-      isSelected: false,
-      hasImage: false,
-      refundPercentage: 0
-    },
-    {
-      id: 99999999,
-      name: 'Delivery Fee',
-      customisation: '-',
-      quantity: 1,
-      amountPerQuantity: 0,
-      refundType: 'NONE',
-      selectedQuantity: 0,
-      remark: '',
-      showDropdown: false,
-      customAmount: 0,
-      isSelected: false,
-      hasImage: false,
-      refundPercentage: 0
-    }
-  ]);
+  const initialFromPrefetch = prefetchedOrderItems?.items?.length
+    ? payloadToRefundState(prefetchedOrderItems)
+    : null;
+
+  const [refundItems, setRefundItems] = useState<RefundItem[]>(
+    () => initialFromPrefetch?.items ?? []
+  );
+  const [itemsLoading, setItemsLoading] = useState(
+    () => !(initialFromPrefetch?.items?.length)
+  );
+  const [itemsError, setItemsError] = useState<string | null>(null);
+  const [pricing, setPricing] = useState<OrderItemsPricing | null>(
+    () => initialFromPrefetch?.pricing ?? null
+  );
 
   const shouldModalBeOpen = () => {
     if (isOpen) return true;
@@ -195,7 +262,6 @@ export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: or
           setShowFault(parsedState.showFault || false);
           setShowMerchantDebit(parsedState.showMerchantDebit || false);
           setShowSubmit(parsedState.showSubmit || false);
-          if (parsedState.refundItems) setRefundItems(parsedState.refundItems);
           if (parsedState.rejectionOptions) setRejectionOptions(parsedState.rejectionOptions);
           if (parsedState.selectAll !== undefined) setSelectAll(parsedState.selectAll);
         } catch {
@@ -204,6 +270,77 @@ export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: or
       }
     }
   }, [modalOpen]);
+
+  useEffect(() => {
+    if (prefetchedOrderItems?.items?.length) {
+      const next = payloadToRefundState(prefetchedOrderItems);
+      setRefundItems(next.items);
+      setPricing(next.pricing);
+      setItemsError(null);
+      setItemsLoading(false);
+    }
+  }, [prefetchedOrderItems]);
+
+  useEffect(() => {
+    const urls = refundItems
+      .filter((i) => i.hasImage && i.imageUrl)
+      .map((i) => i.imageUrl as string);
+    preloadOrderItemImages(urls);
+    urls.forEach((url) => {
+      if (loadedImageUrls.has(url)) return;
+      const img = new window.Image();
+      img.decoding = 'async';
+      img.onload = () => {
+        setLoadedImageUrls((prev) => {
+          if (prev.has(url)) return prev;
+          const next = new Set(prev);
+          next.add(url);
+          return next;
+        });
+      };
+      img.src = url;
+    });
+  }, [refundItems]);
+
+  useEffect(() => {
+    if (!modalOpen || orderIdProp == null) return;
+
+    let cancelled = false;
+    if (!refundItems.length) setItemsLoading(true);
+    setItemsError(null);
+    void (async () => {
+      try {
+        const res = await fetch(`/api/orders/${orderIdProp}/items`, { credentials: 'include' });
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!res.ok || !data.success) {
+          setItemsError(data?.error ?? 'Failed to load order items');
+          setRefundItems([]);
+          setPricing(null);
+          return;
+        }
+        const rows = Array.isArray(data.items) ? data.items : [];
+        setRefundItems(rows.map((row: Parameters<typeof mapApiItemToRefundItem>[0]) => mapApiItemToRefundItem(row)));
+        if (data.pricing && typeof data.pricing === 'object') {
+          const parsed = parseOrderItemsApiResponse({ success: true, items: rows, pricing: data.pricing });
+          setPricing(parsed?.pricing ?? null);
+        } else {
+          setPricing(null);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setItemsError(e instanceof Error ? e.message : 'Failed to load order items');
+          setRefundItems([]);
+          setPricing(null);
+        }
+      } finally {
+        if (!cancelled) setItemsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [modalOpen, orderIdProp, prefetchedOrderItems]);
 
   useEffect(() => {
     const allItemsSelected = refundItems.every(item => item.isSelected);
@@ -294,7 +431,7 @@ export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: or
     if (value === 'refund_without_cancellation') {
       setRefundItems(prev => prev.map(item => ({
         ...item,
-        selectedQuantity: item.id !== 99999999 ? 1 : 0
+        selectedQuantity: !isDeliveryFeeRow(item) ? 1 : 0
       })));
     }
   };
@@ -404,7 +541,7 @@ export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: or
 
   const calculateTotalPercentageRefundAmount = () => {
     return refundItems
-      .filter(item => item.id !== 99999999)
+      .filter(item => !isDeliveryFeeRow(item))
       .reduce((total, item) => {
         if (item.refundPercentage === 0) return total;
         const qty = item.selectedQuantity > 0 ? item.selectedQuantity : 1;
@@ -413,10 +550,16 @@ export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: or
   };
 
   const handleImageClick = (item: RefundItem) => {
-    if (item.hasImage && item.imageUrl) {
-      setSelectedItemImage({ id: item.id, name: item.name, imageUrl: item.imageUrl });
-      setShowImageModal(true);
-    }
+    if (!item.hasImage || !item.imageUrl) return;
+    const url = item.imageUrl;
+    setSelectedItemImage({ id: item.id, name: item.name, imageUrl: url });
+    setImagePanelLoading(!loadedImageUrls.has(url));
+    setShowImageModal(true);
+  };
+
+  const handleImageHover = (item: RefundItem) => {
+    if (!item.imageUrl) return;
+    preloadOrderItemImages([item.imageUrl]);
   };
 
   const closeImageModal = () => {
@@ -566,7 +709,7 @@ export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: or
       return;
     }
     const fullOrderAmount = refundItems.reduce(
-      (sum, i) => sum + (i.amountPerQuantity * (i.id === 99999999 ? 1 : i.quantity)),
+      (sum, i) => sum + (i.amountPerQuantity * (isDeliveryFeeRow(i) ? 1 : i.quantity)),
       0
     );
     const refundAmount = refundType === 'refund_with_cancellation' ? fullOrderAmount : totalAmount;
@@ -685,12 +828,24 @@ export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: or
             </div>
             <div className="p-5">
               <h4 className="text-lg font-semibold text-gray-800 text-center mb-4">{selectedItemImage.name}</h4>
-              <div className="rounded-xl overflow-hidden border border-gray-200 shadow-lg">
+              <div className="rounded-xl overflow-hidden border border-gray-200 shadow-lg min-h-[200px] flex items-center justify-center bg-gray-50 relative">
+                {imagePanelLoading ? (
+                  <Loader2 className="w-8 h-8 animate-spin text-emerald-600 absolute" aria-hidden />
+                ) : null}
                 <img
                   src={selectedItemImage.imageUrl}
                   alt={selectedItemImage.name}
-                  className="w-full h-auto object-cover max-h-[400px]"
-                  onError={(e) => { (e.target as HTMLImageElement).src = 'https://via.placeholder.com/400x300?text=Image+Not+Available'; }}
+                  loading="eager"
+                  decoding="sync"
+                  className={`w-full h-auto object-cover max-h-[400px] transition-opacity duration-150 ${imagePanelLoading ? 'opacity-0' : 'opacity-100'}`}
+                  onLoad={() => {
+                    setLoadedImageUrls((prev) => new Set(prev).add(selectedItemImage.imageUrl));
+                    setImagePanelLoading(false);
+                  }}
+                  onError={(e) => {
+                    setImagePanelLoading(false);
+                    (e.target as HTMLImageElement).src = 'https://via.placeholder.com/400x300?text=Image+Not+Available';
+                  }}
                 />
               </div>
             </div>
@@ -707,7 +862,7 @@ export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: or
         className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9999] p-5"
         onClick={(e) => { if (e.target === e.currentTarget) handleModalClose(); }}
       >
-        <div className="bg-white rounded-lg w-full max-w-[900px] max-h-[85vh] overflow-y-auto shadow-[0_20px_40px_rgba(0,0,0,0.2)] animate-[fadeIn_0.3s_ease]" onClick={(e) => e.stopPropagation()}>
+        <div className="bg-white rounded-lg w-full max-w-[min(1100px,96vw)] max-h-[85vh] overflow-y-auto shadow-[0_20px_40px_rgba(0,0,0,0.2)] animate-[fadeIn_0.3s_ease]" onClick={(e) => e.stopPropagation()}>
           <div className="bg-emerald-50 px-4 py-2.5 border-b border-slate-200 flex justify-between items-center rounded-t-lg sticky top-0 z-10">
             <h3 className="text-base font-semibold text-slate-800 flex items-center gap-2 m-0">
               <span className="flex items-center justify-center w-8 h-8 rounded-md bg-emerald-100 text-emerald-600 shrink-0" aria-hidden>
@@ -739,18 +894,35 @@ export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: or
                 </span>
               </div>
               <div className="w-full min-w-[120px] max-w-[180px] h-1 bg-slate-200 rounded-full overflow-hidden">
-                <div className="h-full bg-emerald-500 rounded-full transition-all duration-300" style={{ width: `${(refundItems.filter(item => item.isSelected).length / refundItems.length) * 100}%` }} />
+                <div className="h-full bg-emerald-500 rounded-full transition-all duration-300" style={{ width: `${refundItems.length > 0 ? (refundItems.filter(item => item.isSelected).length / refundItems.length) * 100 : 0}%` }} />
               </div>
             </div>
 
-            <table className="w-full border-collapse text-xs mb-3">
+            {itemsLoading && refundItems.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-10 text-slate-500 gap-2">
+                <Loader2 className="w-8 h-8 animate-spin text-emerald-600" />
+                <p className="text-sm">Loading order items…</p>
+              </div>
+            ) : itemsError && refundItems.length === 0 ? (
+              <div className="mb-3 px-3 py-2 bg-red-50 border border-red-200 rounded-md text-sm text-red-700">
+                {itemsError}
+              </div>
+            ) : refundItems.length === 0 ? (
+              <div className="mb-3 px-3 py-4 text-center text-sm text-slate-500 border border-dashed border-slate-200 rounded-md">
+                No items found for this order.
+              </div>
+            ) : null}
+
+            {refundItems.length > 0 ? (
+            <div className="overflow-x-auto -mx-1 px-1">
+            <table className="w-full min-w-[960px] border-collapse text-xs mb-3">
               <thead>
                 <tr>
                   <th className="px-2 py-1.5 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Select</th>
                   <th className="px-2 py-1.5 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Id</th>
                   <th className="px-2 py-1.5 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Status</th>
                   <th className="px-2 py-1.5 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Name</th>
-                  <th className="px-2 py-1.5 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Customisation</th>
+                  <th className="px-2 py-1.5 border border-slate-200 text-left bg-emerald-50 font-semibold text-slate-800 min-w-[200px]">Customisation</th>
                   <th className="px-2 py-1.5 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Qty</th>
                   <th className="px-2 py-1.5 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Amount</th>
                   <th className="px-2 py-1.5 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Tax</th>
@@ -766,62 +938,72 @@ export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: or
                     </td>
                     <td className="px-2 py-1.5 border border-slate-200 text-center">
                       <div className="font-mono text-[11px] font-medium">
-                        {item.hasImage && item.id !== 99999999 && (
-                          <span onClick={() => handleImageClick(item)} className="text-emerald-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100 inline-flex items-center gap-1 cursor-pointer hover:bg-blue-100" title="View image">
+                        {item.hasImage && !isDeliveryFeeRow(item) && (
+                          <span
+                            onClick={() => handleImageClick(item)}
+                            onMouseEnter={() => handleImageHover(item)}
+                            className="text-emerald-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100 inline-flex items-center gap-1 cursor-pointer hover:bg-blue-100"
+                            title="View image"
+                          >
                             <Image className="w-3 h-3 text-blue-500 shrink-0" /> {item.id}
                           </span>
                         )}
-                        {!item.hasImage && item.id !== 99999999 && (
+                        {!item.hasImage && !isDeliveryFeeRow(item) && (
                           <span className="text-green-600 bg-green-50 px-1.5 py-0.5 rounded border border-green-100 inline-block">{item.id}</span>
                         )}
-                        {item.id === 99999999 && (
+                        {isDeliveryFeeRow(item) && (
                           <span className="text-slate-500 bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100 inline-block">
                             DEL-FEE <span className="text-gray-400 inline-flex"><Truck className="w-3 h-3" /></span>
                           </span>
                         )}
                       </div>
                     </td>
-                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600">{item.id === 99999999 ? 'FIXED' : 'AVAILABLE'}</td>
+                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600">{isDeliveryFeeRow(item) ? 'FIXED' : 'AVAILABLE'}</td>
                     <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600">{item.name}</td>
-                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600">{item.customisation}</td>
-                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600">{item.id === 99999999 ? '-' : item.quantity}</td>
-                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600">{item.id === 99999999 ? '0' : item.amountPerQuantity}</td>
-                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600">{item.id === 99999999 ? '0' : (item.amountPerQuantity * 0.05).toFixed(2)}</td>
-                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600">{item.id === 99999999 ? '0' : (item.amountPerQuantity * 0.05).toFixed(2)}</td>
-                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600">{item.id === 99999999 ? '0' : (item.amountPerQuantity * 1.1).toFixed(2)}</td>
+                    <td className="px-2 py-1.5 border border-slate-200 text-left align-top text-slate-600 min-w-[200px]">
+                      <CustomisationCell
+                        detail={item.customisationDetail}
+                        fallback={item.customisation}
+                      />
+                    </td>
+                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600">{isDeliveryFeeRow(item) ? '-' : item.quantity}</td>
+                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">{isDeliveryFeeRow(item) ? item.amountPerQuantity.toFixed(2) : item.amountPerQuantity}</td>
+                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">{item.taxPerQuantity.toFixed(2)}</td>
+                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">{item.chargesPerQuantity.toFixed(2)}</td>
+                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">{item.totalPerQuantity.toFixed(2)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            </div>
+            ) : null}
 
-            <div className="mt-3 max-w-[320px] ml-auto bg-slate-50 p-3 rounded-md border border-slate-200">
+            {pricing ? (
+            <div className="mt-3 max-w-[340px] ml-auto bg-slate-50 p-3 rounded-md border border-slate-200">
               <div className="space-y-1">
-                <div className="flex justify-between items-center py-0.5 text-[11px] border-b border-slate-200">
-                  <span className="text-slate-600">Items Amount Total</span>
-                  <span className="font-medium text-slate-800">706</span>
-                </div>
-                <div className="flex justify-between items-center py-0.5 text-[11px] border-b border-slate-200">
-                  <span className="text-slate-600">Packaging</span>
-                  <span className="font-medium text-slate-800">25</span>
-                </div>
-                <div className="flex justify-between items-center py-0.5 text-[11px] border-b border-slate-200">
-                  <span className="text-slate-600">Packaging Tax</span>
-                  <span className="font-medium text-slate-800">1.25</span>
-                </div>
-                <div className="flex justify-between items-center py-0.5 text-[11px] border-b border-slate-200">
-                  <span className="text-slate-600">GST</span>
-                  <span className="font-medium text-slate-800">35.3</span>
-                </div>
-                <div className="flex justify-between items-center py-0.5 text-[11px] border-b border-slate-200">
-                  <span className="text-slate-600">Delivery Fee</span>
-                  <span className="font-medium text-slate-800">0</span>
-                </div>
+                {(pricing.lines?.length ? pricing.lines : []).map((line) => (
+                  <div
+                    key={line.key}
+                    className="flex justify-between items-center py-0.5 text-[11px] border-b border-slate-200 last:border-0"
+                  >
+                    <span className="text-slate-600">{line.label}</span>
+                    <span
+                      className={`font-medium tabular-nums ${
+                        line.kind === 'discount' ? 'text-red-600' : 'text-slate-800'
+                      }`}
+                    >
+                      {line.kind === 'discount' ? '−' : ''}
+                      {line.amount.toFixed(2)}
+                    </span>
+                  </div>
+                ))}
                 <div className="flex justify-between items-center pt-1.5 mt-1 border-t border-slate-200 font-semibold text-slate-800 text-xs">
                   <span>Total Order Amount</span>
-                  <span className="text-emerald-600">₹767.55</span>
+                  <span className="text-emerald-600 tabular-nums">₹{pricing.totalOrderAmount.toFixed(2)}</span>
                 </div>
               </div>
             </div>
+            ) : null}
 
             {canCreateRefund && (
               <>
@@ -878,10 +1060,16 @@ export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: or
                             </tr>
                           </thead>
                           <tbody>
-                            {refundItems.filter(item => item.id !== 99999999).map((item) => (
+                            {refundItems.filter(item => !isDeliveryFeeRow(item)).map((item) => (
                               <tr key={item.id} className={item.refundPercentage > 0 ? 'bg-green-50/50' : ''}>
                                 <td className="px-1.5 py-1 border border-slate-200 text-slate-600">({item.id}) {item.name}</td>
-                                <td className="px-1.5 py-1 border border-slate-200 text-center text-slate-600">{item.customisation}</td>
+                                <td className="px-1.5 py-1 border border-slate-200 text-left align-top text-slate-600 min-w-[120px]">
+                                  <CustomisationCell
+                                    detail={item.customisationDetail}
+                                    fallback={item.customisation}
+                                    compact
+                                  />
+                                </td>
                                 <td className="px-1.5 py-1 border border-slate-200">
                                   <input type="text" value={item.remark} onChange={(e) => handleRemarkChange(item.id, e.target.value)} placeholder="Remark" className="w-full h-6 px-1.5 border border-slate-200 rounded text-[10px] bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500" />
                                 </td>

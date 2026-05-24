@@ -38,9 +38,18 @@ export interface OrdersFoodRow {
     vegNonveg?: string | null;
     menuItemId?: number | null;
     variantName?: string | null;
+    variantTag?: string | null;
     categoryName?: string | null;
     description?: string | null;
     imageUrl?: string | null;
+    customizationLines?: Array<{
+      name: string;
+      amount: number;
+      kind: 'variant' | 'addon' | 'note';
+    }>;
+    baseAmount?: number;
+    customizationsTotal?: number;
+    hasCustomizations?: boolean;
   }>;
   item_total?: number | null;
   addon_total?: number | null;
@@ -57,6 +66,8 @@ export interface OrdersFoodRow {
   is_high_value: boolean | null;
   veg_non_veg: 'veg' | 'non_veg' | 'mixed' | 'na' | null;
   delivery_instructions: string | null;
+  /** Kitchen / merchant notes from checkout (orders_food.merchant_instructions_list). */
+  merchant_instructions_list?: string[] | null;
   // Customer details
   customer_id?: number | null;
   customer_name?: string | null;
