@@ -141,11 +141,31 @@ export async function merchantRoutes(app: FastifyInstance) {
       const storeInternalIds = items
         .map((s) => Number((s as { id?: number }).id))
         .filter((id) => Number.isFinite(id) && id > 0);
+      // These four lookups enrich the card (offer labels, rating, schedule,
+      // order count) but none of them are load-bearing — if any one fails
+      // (e.g. pgBouncer statement_timeout under burst load), we still want
+      // the list to render. Wrap each so its failure can't 500 the route.
+      const settleEnrichment = async <T>(
+        label: string,
+        p: Promise<T>,
+        empty: T,
+      ): Promise<T> => {
+        try {
+          return await p;
+        } catch (err) {
+          const e = err as { code?: string; message?: string };
+          request.log.warn(
+            { label, code: e?.code, msg: e?.message },
+            "merchant-list enrichment failed; returning empty",
+          );
+          return empty;
+        }
+      };
       const [offerHeadlines, ratingSummaries, scheduleTimes, orderCounts] = await Promise.all([
-        getPrimaryOfferHeadlinesForStores(storeInternalIds),
-        getStoreRatingsForStores(storeInternalIds),
-        getScheduleTimesForStores(storeInternalIds),
-        getCompletedOrderCountsForStores(storeInternalIds),
+        settleEnrichment("offer-headlines", getPrimaryOfferHeadlinesForStores(storeInternalIds), new Map()),
+        settleEnrichment("rating-summaries", getStoreRatingsForStores(storeInternalIds), new Map()),
+        settleEnrichment("schedule-times", getScheduleTimesForStores(storeInternalIds), new Map()),
+        settleEnrichment("order-counts", getCompletedOrderCountsForStores(storeInternalIds), new Map()),
       ]);
 
       const body = items.map((s) => {
