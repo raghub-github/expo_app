@@ -82,6 +82,17 @@ export function formatCustomerStoreOrderLabel(n: number | null | undefined): str
   return `${ord} from your store`;
 }
 
+/** e.g. "Monisha 3rd order" — uses per-order ordinal only (never total order count). */
+export function formatCustomerPossessiveOrderLabel(
+  customerName: string,
+  ordinal?: number | null
+): string {
+  const name = (customerName || "Customer").trim();
+  const short = formatCustomerOrderOrdinalShort(ordinal);
+  if (short) return `${name} ${short} order`;
+  return name;
+}
+
 /** Beside name on cards / detail hero: "2nd order with you" */
 export function formatCustomerOrderOrdinalWithYou(n: number | null | undefined): string | null {
   const ord = formatCustomerOrderOrdinal(n);

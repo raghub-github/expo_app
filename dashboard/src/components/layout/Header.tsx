@@ -25,7 +25,7 @@ import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useLogout } from "@/hooks/queries/useAuthQuery";
 import { Logo } from "@/components/brand/Logo";
 import { getUserAvatarUrl, getUserInitials } from "@/lib/user-avatar";
-import { getCurrentPageName, getCurrentDashboard, getCurrentDashboardSubRoutes } from "@/lib/navigation/dashboard-routes";
+import { getCurrentPageName, getCurrentDashboard, getCurrentDashboardSubRoutes, orderDashboardRoutes } from "@/lib/navigation/dashboard-routes";
 import { DashboardSearch } from "./DashboardSearch";
 import { GlobalSearch } from "@/components/search/GlobalSearch";
 const AgentStatusToggle = dynamic(
@@ -41,6 +41,8 @@ import { useRightSidebar } from "@/context/RightSidebarContext";
 import { useCurrentRoute } from "@/context/CurrentRouteContext";
 import { useAuth } from "@/providers/AuthProvider";
 import { usePermissions } from "@/hooks/usePermissions";
+import { usePermission } from "@/hooks/usePermission";
+import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
 import { useDashboardAccessQuery } from "@/hooks/queries/useDashboardAccessQuery";
 import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
 import { TicketsHubGearButton } from "@/components/tickets/TicketsHubGearButton";
@@ -72,6 +74,106 @@ function writeStoredMerchantsPortal(value: "admin" | "merchant") {
     /* ignore */
   }
 }
+// Order type switcher — replaces the orders right sidebar (Food / Parcel / Person Ride)
+function OrderTypeDropdown() {
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const { hasDashboardAccess, isSuperAdmin } = usePermission();
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [hoveredItem, setHoveredItem] = useState<string | null>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const MINT_GREEN = "#4EE5C1";
+
+  const routes = useMemo(() => {
+    return orderDashboardRoutes.filter((route) => {
+      if (isSuperAdmin) return true;
+      const dashboardType = getDashboardTypeFromPath(route.href);
+      if (!dashboardType) return true;
+      return hasDashboardAccess(dashboardType);
+    });
+  }, [hasDashboardAccess, isSuperAdmin]);
+
+  const cleanPath = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
+  const currentRoute =
+    routes.find((route) => cleanPath === route.href || cleanPath.startsWith(`${route.href}/`)) ??
+    routes[0];
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setShowDropdown(false);
+      }
+    };
+    if (showDropdown) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [showDropdown]);
+
+  const handleSelect = (href: string) => {
+    const qs = searchParams.toString();
+    router.push(qs ? `${href}?${qs}` : href);
+    setShowDropdown(false);
+  };
+
+  if (!currentRoute) return null;
+
+  const CurrentIcon = currentRoute.icon;
+
+  return (
+    <div ref={dropdownRef} className="relative flex-shrink-0">
+      <button
+        type="button"
+        onClick={() => setShowDropdown((prev) => !prev)}
+        className="flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium text-gray-700 cursor-pointer whitespace-nowrap"
+        style={{ borderColor: "#D9DCE0", backgroundColor: "#F0F2F5" }}
+        aria-haspopup="listbox"
+        aria-expanded={showDropdown}
+      >
+        {CurrentIcon ? <CurrentIcon className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
+        <span>{currentRoute.name}</span>
+        <ChevronDown className="h-3.5 w-3.5 text-gray-600 shrink-0" />
+      </button>
+      {showDropdown && (
+        <div
+          className="absolute top-full left-0 mt-1 w-52 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1"
+          role="listbox"
+        >
+          {routes.map((route) => {
+            const Icon = route.icon;
+            const isActive = route.href === currentRoute.href;
+            return (
+              <button
+                key={route.href}
+                type="button"
+                role="option"
+                aria-selected={isActive}
+                onClick={() => handleSelect(route.href)}
+                onMouseEnter={() => setHoveredItem(route.href)}
+                onMouseLeave={() => setHoveredItem(null)}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-xs cursor-pointer transition-colors text-left"
+                style={{
+                  backgroundColor:
+                    hoveredItem === route.href || isActive ? MINT_GREEN : "transparent",
+                  color: "#000000",
+                  fontWeight: isActive ? 600 : 400,
+                }}
+              >
+                {Icon ? <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
+                <span>{route.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Order Search Bar Component – syncs with URL so Food/Parcel/Ride order pages can read search params
 function OrderSearchBar() {
   const pathname = usePathname();
@@ -278,7 +380,8 @@ function HeaderComponent() {
     currentDashboard &&
       cleanPathname !== "/dashboard" &&
       currentSubRoutes.length > 0 &&
-      !cleanPathname.startsWith("/dashboard/customers")
+      !cleanPathname.startsWith("/dashboard/customers") &&
+      !cleanPathname.startsWith("/dashboard/orders")
   );
   const { canTogglePortal = false, isSuperAdmin = false } = usePermissions();
   const { data: dashboardAccessData } = useDashboardAccessQuery();
@@ -630,7 +733,8 @@ function HeaderComponent() {
 
       {/* Center: Order Search on orders; Dashboard Search only on main list pages (hide on verification, store detail, etc.) */}
       {effectivePathname.startsWith("/dashboard/orders") ? (
-        <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4">
+        <div className="hidden lg:flex items-center justify-center flex-1 max-w-3xl mx-4 gap-2 min-w-0">
+          <OrderTypeDropdown />
           <OrderSearchBar />
         </div>
       ) : !effectivePathname.startsWith("/dashboard/tickets") &&

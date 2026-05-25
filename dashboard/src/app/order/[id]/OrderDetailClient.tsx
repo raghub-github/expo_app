@@ -231,9 +231,14 @@ function InfinitySpinner() {
 interface OrderDetailClientProps {
   orderPublicId: string;
   onLoadingChange?: (loading: boolean) => void;
+  onNotFoundChange?: (notFound: boolean) => void;
 }
 
-export default function OrderDetailClient({ orderPublicId, onLoadingChange }: OrderDetailClientProps) {
+export default function OrderDetailClient({
+  orderPublicId,
+  onLoadingChange,
+  onNotFoundChange,
+}: OrderDetailClientProps) {
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [merchantSummary, setMerchantSummary] = useState<MerchantSummaryFromApi | null>(null);
   const [initialRemarksCount, setInitialRemarksCount] = useState<number>(0);
@@ -263,6 +268,10 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
   useEffect(() => {
     onLoadingChange?.(loading);
   }, [loading, onLoadingChange]);
+
+  useEffect(() => {
+    onNotFoundChange?.(!loading && Boolean(error || !order));
+  }, [loading, error, order, onNotFoundChange]);
 
   useEffect(() => {
     if (!order?.id) {
@@ -650,18 +659,15 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
     );
   }
 
-  if (error) {
+  if (error || !order) {
     return (
-      <div className="rounded-xl border border-red-100 bg-red-50 p-4 text-sm text-red-700 shadow-sm">
-        {error}
-      </div>
-    );
-  }
-
-  if (!order) {
-    return (
-      <div className="rounded-xl border border-gray-200 bg-white p-6 text-sm text-gray-500 shadow-sm">
-        Order not found.
+      <div
+        className="flex min-h-screen w-full items-center justify-center bg-[#F8FAFC] px-4"
+        role="alert"
+      >
+        <p className="text-center text-sm font-medium text-red-600">
+          {error ?? "Order not found."}
+        </p>
       </div>
     );
   }

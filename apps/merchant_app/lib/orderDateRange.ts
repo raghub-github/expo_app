@@ -1,5 +1,7 @@
 /** IST date-range presets for order history (Partner / Zomato style). */
 
+import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
+
 const IST = "Asia/Kolkata";
 
 export type DateRangePresetId =
@@ -146,4 +148,13 @@ export function isWithinLast24Hours(createdAt: string, nowMs = Date.now()): bool
   const t = new Date(createdAt).getTime();
   if (!Number.isFinite(t)) return false;
   return nowMs - t <= TWENTY_FOUR_H_MS;
+}
+
+/** Live orders board: pending/active orders always visible; terminal orders only in last 24h. */
+export function isVisibleOnLiveOrdersBoard(
+  order: { createdAt: string; status: string },
+  nowMs = Date.now()
+): boolean {
+  if (isActiveMerchantOrderStage(order.status)) return true;
+  return isWithinLast24Hours(order.createdAt, nowMs);
 }

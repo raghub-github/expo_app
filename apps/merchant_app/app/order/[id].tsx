@@ -30,14 +30,12 @@ import { apiFoodOrderToTimelineOrder } from "@/lib/merchantVisibleTimeline";
 import { MerchantOrderVerticalTimeline } from "@/components/order/MerchantOrderVerticalTimeline";
 import { OrderItemDetails } from "@/components/order/OrderItemDetails";
 import { OrderBillDetails } from "@/components/order/OrderBillDetails";
-import { OrderCancellationBanner } from "@/components/order/OrderCancellationBanner";
+import { OrderDetailCustomerCard } from "@/components/order/OrderDetailCustomerCard";
 import { fetchOrderEta, minutesUntil, prepDeadlineIso, type OrderEtaResponse } from "@/services/etaApi";
 import { apiStatusToStage, type OrderStage } from "@/hooks/useOrders";
 import { OrderDetailSkeleton } from "@/components/order/OrderDetailSkeleton";
 import {
-  formatOrderDateTime,
   formatOrderIdDisplay,
-  formatCustomerOrderOrdinalWithYou,
 } from "@/components/order/orderFormatters";
 import {
   GatiMitraMerchant,
@@ -290,65 +288,43 @@ export default function OrderDetailScreen() {
           </View>
         ) : order ? (
           <>
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Order #{displayId}</Text>
-              <DetailRow label="Customer" value={order.customer_name?.trim() || "Guest"} />
-              {order.customer_phone ? (
-                <DetailRow label="Phone" value={order.customer_phone} />
-              ) : null}
-              <DetailRow label="Placed" value={formatOrderDateTime(order.created_at)} />
-              {formatCustomerOrderOrdinalWithYou(order.customer_store_order_ordinal) ? (
-                <DetailRow
-                  label="Repeat"
-                  value={formatCustomerOrderOrdinalWithYou(order.customer_store_order_ordinal)!}
-                />
-              ) : null}
-              {stage !== "rejected" && stage !== "rto" ? (
-                <View style={[styles.statusPill, { backgroundColor: statusStyle.bg }]}>
-                  <Text style={[styles.statusPillText, { color: statusStyle.color }]}>
-                    {statusStyle.label}
-                  </Text>
-                </View>
-              ) : null}
-
-              {stage === "rejected" || stage === "rto" ? (
-                <OrderCancellationBanner
-                  rejectedReason={order.rejected_reason}
-                  cancelledByLabel={order.cancelled_by_label}
-                  cancelledByType={order.cancelled_by_type}
-                  cancelledAt={order.cancelled_at}
-                  orderStatus={order.order_status}
-                />
-              ) : null}
-
-              {prepByIso ? (
-                <View style={styles.prepBanner}>
-                  <Ionicons name="alarm" size={18} color="#c2410c" />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.prepBannerTitle}>
-                      Hand to rider by{" "}
-                      {new Date(prepByIso).toLocaleTimeString(undefined, {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                      {prepMinsLeft != null
-                        ? prepMinsLeft <= 0
-                          ? " · OVERDUE"
-                          : ` · ${prepMinsLeft} min left`
-                        : ""}
-                    </Text>
-                    {eta?.promise.promisedDeliveryAt ? (
-                      <Text style={styles.prepBannerSub}>
-                        Customer promised by{" "}
-                        {new Date(eta.promise.promisedDeliveryAt).toLocaleTimeString(undefined, {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </Text>
-                    ) : null}
-                  </View>
-                </View>
-              ) : null}
+            <View style={{ marginHorizontal: H_PADDING, marginTop: 14 }}>
+              <OrderDetailCustomerCard
+                order={order}
+                displayId={displayId}
+                stage={stage}
+                statusStyle={statusStyle}
+                prepBanner={
+                  prepByIso ? (
+                    <View style={styles.prepBanner}>
+                      <Ionicons name="alarm" size={18} color="#c2410c" />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.prepBannerTitle}>
+                          Hand to rider by{" "}
+                          {new Date(prepByIso).toLocaleTimeString(undefined, {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                          {prepMinsLeft != null
+                            ? prepMinsLeft <= 0
+                              ? " · OVERDUE"
+                              : ` · ${prepMinsLeft} min left`
+                            : ""}
+                        </Text>
+                        {eta?.promise.promisedDeliveryAt ? (
+                          <Text style={styles.prepBannerSub}>
+                            Customer promised by{" "}
+                            {new Date(eta.promise.promisedDeliveryAt).toLocaleTimeString(undefined, {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </Text>
+                        ) : null}
+                      </View>
+                    </View>
+                  ) : null
+                }
+              />
             </View>
 
             <View style={styles.detailSection}>
@@ -509,14 +485,6 @@ const styles = StyleSheet.create({
     textAlign: "right",
   },
   detailMuted: { color: GatiMitraMerchant.textTertiary, fontWeight: "500" },
-  statusPill: {
-    alignSelf: "flex-start",
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 20,
-    marginTop: 8,
-  },
-  statusPillText: { fontSize: 12, fontWeight: "600" },
   prepBanner: {
     marginTop: 12,
     flexDirection: "row",

@@ -18,6 +18,7 @@ import { MerchantOrderItemsList } from '@/components/orders/MerchantOrderItemsLi
 import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
 import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
+import { MerchantPreparingOrderCard } from '@/components/merchant/MerchantPreparingOrderCard';
 import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';
 import {
   deliveryEtaMinutesLabel,
@@ -116,6 +117,23 @@ export function MerchantOrderPipelineCard({
     order.distance_km != null
       ? `${Number(order.distance_km).toFixed(0)} kms${order.eta_seconds ? `, ${Math.max(1, Math.round(Number(order.eta_seconds) / 60))} mins away` : ''}`
       : null;
+
+  if (isPreparing) {
+    return (
+      <MerchantPreparingOrderCard
+        order={order}
+        storeName={order.restaurant_name}
+        selected={selected}
+        onClick={onClick}
+        onReady={onReady}
+        onNeedMoreTime={onNeedMoreTime}
+        onPrintKot={onPrintKot}
+        onPrint={onPrintOrder}
+        loading={loading}
+        nowMs={nowMs}
+      />
+    );
+  }
 
   return (
     <div

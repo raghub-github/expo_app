@@ -13,7 +13,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
-import { useStoreSettings } from "@/context/StoreSettingsContext";
 import {
   useOrders,
   type OrderRecord,
@@ -83,7 +82,6 @@ export default function IncomingOrderModal() {
   const insets = useSafeAreaInsets();
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
-  const { settings: storeSettings } = useStoreSettings();
   const storeId = selectedStore?.id ?? null;
   const { orders, refetch } = useOrders(8000);
 
@@ -127,9 +125,16 @@ export default function IncomingOrderModal() {
   const openIfNew = useCallback(
     async (order: OrderRecord) => {
       if (!storeId || !token) return;
-      if (storeSettings.show_floating_orders === false) return;
-      if (!deviceAlerts.orderAlertsEnabled) return;
       if (order.status !== "created" || order.id.startsWith("core-")) return;
+
+      const [dev, acc] = await Promise.all([
+        readDeviceOrderAlertsAsync(storeId),
+        fetchOrderAcceptanceSettings(storeId, token).catch(() => acceptanceSettings),
+      ]);
+      setDeviceAlerts(dev);
+      setAcceptanceSettings(acc);
+
+      if (!dev.orderAlertsEnabled) return;
 
       const dismissed = await getDismissed();
       if (dismissed.has(order.ordersCoreId)) return;
@@ -150,31 +155,24 @@ export default function IncomingOrderModal() {
 
       setModalOrder(order);
 
-      if (deviceAlerts.soundAlertsEnabled && acceptanceSettings.alert_sound_enabled) {
+      if (dev.soundAlertsEnabled && acc.alert_sound_enabled) {
         const slots =
-          acceptanceSettings.alert_sound_urls_by_slot ??
-          ([acceptanceSettings.alert_sound_url, null, null] as [
+          acc.alert_sound_urls_by_slot ??
+          ([acc.alert_sound_url, null, null] as [
             string | null,
             string | null,
             string | null,
           ]);
         const chimeUrl =
-          resolveAlertUrlFromSlots(slots, deviceAlerts.alertSoundSlot) ??
-          acceptanceSettings.alert_sound_url;
+          resolveAlertUrlFromSlots(slots, dev.alertSoundSlot) ?? acc.alert_sound_url;
         void playOrderAlertSound(
           chimeUrl,
-          acceptanceSettings.alert_sound_repeat_count,
-          volumeStepTo01(deviceAlerts.volumeStep)
+          acc.alert_sound_repeat_count,
+          volumeStepTo01(dev.volumeStep)
         );
       }
     },
-    [
-      storeId,
-      token,
-      storeSettings.show_floating_orders,
-      deviceAlerts,
-      acceptanceSettings,
-    ]
+    [storeId, token, acceptanceSettings]
   );
 
   useEffect(() => {
@@ -267,10 +265,22 @@ export default function IncomingOrderModal() {
     void patchStatus("CANCELLED", { rejected_reason: "Auto Cancelled" }, "auto");
   }, [secondsLeft, modalOrder, actionLoading, patchStatus]);
 
-  if (!storeId || storeSettings.show_floating_orders === false) return null;
+  if (!storeId) return null;
 
   const visible = !!modalOrder && !rejectOpen;
   const order = modalOrder;
+  const acceptProgress =
+    acceptWindowMs > 0
+      ? Math.min(
+          100,
+          Math.max(
+            0,
+            Math.round(
+              (1 - secondsLeft / Math.max(1, Math.round(acceptWindowMs / 1000))) * 100
+            )
+          )
+        )
+      : 0;
 
   return (
     <>
@@ -319,22 +329,23 @@ export default function IncomingOrderModal() {
 
             <View style={styles.actions}>
               <Pressable
-                style={[styles.acceptBtn, (actionLoading || secondsLeft <= 0) && styles.btnDisabled]}
-                disabled={actionLoading || secondsLeft <= 0}
-                onPress={() => void patchStatus("ACCEPTED", undefined, "manual")}
-              >
-                {actionLoading ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Text style={styles.acceptText}>Accept ({mmss})</Text>
-                )}
-              </Pressable>
-              <Pressable
                 style={[styles.rejectBtn, actionLoading && styles.btnDisabled]}
                 disabled={actionLoading}
                 onPress={() => setRejectOpen(true)}
               >
                 <Text style={styles.rejectText}>Reject</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.acceptBtn, (actionLoading || secondsLeft <= 0) && styles.btnDisabled]}
+                disabled={actionLoading || secondsLeft <= 0}
+                onPress={() => void patchStatus("ACCEPTED", undefined, "manual")}
+              >
+                <View style={[styles.acceptFill, { width: `${acceptProgress}%` }]} />
+                {actionLoading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.acceptText}>Accept order ({mmss})</Text>
+                )}
               </Pressable>
             </View>
           </View>
@@ -419,21 +430,30 @@ const styles = StyleSheet.create({
   },
   actions: { flexDirection: "row", gap: 10, paddingTop: 12 },
   acceptBtn: {
-    flex: 2,
-    backgroundColor: "#16A34A",
+    flex: 1.35,
+    backgroundColor: "#059669",
     borderRadius: 12,
     paddingVertical: 14,
     alignItems: "center",
+    overflow: "hidden",
+    position: "relative",
   },
-  acceptText: { color: "#fff", fontSize: 16, fontWeight: "700" },
+  acceptFill: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    backgroundColor: "rgba(249, 115, 22, 0.35)",
+  },
+  acceptText: { color: "#fff", fontSize: 15, fontWeight: "700", zIndex: 1 },
   rejectBtn: {
     flex: 1,
-    backgroundColor: "#FEE2E2",
+    backgroundColor: "#FFFFFF",
     borderRadius: 12,
     paddingVertical: 14,
     alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#FECACA",
+    borderWidth: 2,
+    borderColor: "#EF4444",
   },
   rejectText: { color: "#B91C1C", fontSize: 15, fontWeight: "600" },
   btnDisabled: { opacity: 0.55 },

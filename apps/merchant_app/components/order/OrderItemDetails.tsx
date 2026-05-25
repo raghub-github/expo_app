@@ -6,28 +6,16 @@ import {
   OrderItemPriceBreakdownModal,
   itemHasBreakdown,
 } from "@/components/order/OrderItemPriceBreakdownModal";
+import { OrderItemDetailsSheet } from "@/components/order/OrderItemDetailsSheet";
+import { ItemVegMark } from "@/components/order/ItemVegMark";
+import type { LineItem } from "@/hooks/useOrders";
 import { GatiMitraMerchant, CARD_PADDING, CARD_RADIUS, FONT_LABEL } from "@/constants/theme";
 import { merchantLineTotalForFoodItem } from "@/lib/merchant-line-total";
 import {
   foodOrderAddonRows,
+  foodOrderHasCustomizations,
   foodOrderVariantLabel,
 } from "@/lib/merchant-order-food-item-display";
-
-function VegNonVegMark({ vegNonveg }: { vegNonveg?: string | null }) {
-  const t = (vegNonveg ?? "").toLowerCase();
-  const isVeg = t.includes("veg") && !t.includes("non");
-  const isNonVeg = t.includes("non") || t === "non_veg" || t === "nonveg";
-
-  if (!isVeg && !isNonVeg) {
-    return <View style={[styles.vegBox, styles.vegNeutral]} />;
-  }
-
-  return (
-    <View style={[styles.vegBox, isVeg ? styles.vegGreen : styles.vegBrown]}>
-      <View style={[styles.vegDot, isVeg ? styles.vegDotGreen : styles.vegDotBrown]} />
-    </View>
-  );
-}
 
 function formatRs(amount: number): string {
   return `₹${Math.round(Number(amount) || 0)}`;
@@ -37,9 +25,23 @@ type Props = {
   order: ApiFoodOrder;
 };
 
+function foodItemToLineItem(item: ApiFoodOrderItem): LineItem {
+  return {
+    qty: Math.max(1, item.qty || 1),
+    name: item.name,
+    price: merchantLineTotalForFoodItem(item),
+    menuItemId:
+      item.menu_item_id != null && Number.isFinite(Number(item.menu_item_id))
+        ? Number(item.menu_item_id)
+        : null,
+    vegNonveg: item.veg_nonveg ?? null,
+  };
+}
+
 export function OrderItemDetails({ order }: Props) {
   const items = order.items ?? [];
   const [breakdownItem, setBreakdownItem] = useState<ApiFoodOrderItem | null>(null);
+  const [detailsItem, setDetailsItem] = useState<LineItem | null>(null);
 
   return (
     <View style={styles.section}>
@@ -53,9 +55,7 @@ export function OrderItemDetails({ order }: Props) {
         </View>
       ) : null}
 
-      <Text style={styles.sectionHeading}>
-        ORDER ITEMS ({items.length})
-      </Text>
+      <Text style={styles.sectionHeading}>ORDER ITEMS ({items.length})</Text>
 
       <View style={styles.itemsCard}>
         {items.length === 0 ? (
@@ -67,23 +67,38 @@ export function OrderItemDetails({ order }: Props) {
             const variantLabel = foodOrderVariantLabel(item);
             const custRows = foodOrderAddonRows(item);
             const showCust = custRows.length > 0;
+            const hasCustomizations = foodOrderHasCustomizations(item);
 
             return (
               <View
                 key={`${item.name}-${i}`}
                 style={[styles.itemCard, i < items.length - 1 && styles.itemCardBorder]}
               >
-                <View style={styles.itemHeader}>
-                  <VegNonVegMark vegNonveg={item.veg_nonveg} />
+                <Pressable
+                  onPress={() => setDetailsItem(foodItemToLineItem(item))}
+                  style={({ pressed }) => [styles.itemHeader, pressed && styles.itemHeaderPressed]}
+                >
+                  <ItemVegMark
+                    vegNonveg={item.veg_nonveg ?? order.veg_non_veg}
+                    name={item.name}
+                    size={16}
+                  />
                   <View style={styles.itemTitleWrap}>
                     <Text style={styles.itemName} numberOfLines={2}>
                       {qty} × {item.name}
                     </Text>
-                    {variantLabel ? (
-                      <View style={styles.variantBadge}>
-                        <Text style={styles.variantBadgeText}>{variantLabel}</Text>
-                      </View>
-                    ) : null}
+                    <View style={styles.tagRow}>
+                      {variantLabel ? (
+                        <View style={styles.variantBadge}>
+                          <Text style={styles.variantBadgeText}>{variantLabel}</Text>
+                        </View>
+                      ) : null}
+                      {hasCustomizations ? (
+                        <View style={styles.customizedTag}>
+                          <Text style={styles.customizedTagText}>Customized</Text>
+                        </View>
+                      ) : null}
+                    </View>
                   </View>
                   {clickable ? (
                     <Pressable
@@ -105,7 +120,7 @@ export function OrderItemDetails({ order }: Props) {
                       {formatRs(merchantLineTotalForFoodItem(item))}
                     </Text>
                   )}
-                </View>
+                </Pressable>
 
                 {showCust ? (
                   <View style={styles.custSection}>
@@ -125,15 +140,6 @@ export function OrderItemDetails({ order }: Props) {
                     ))}
                   </View>
                 ) : null}
-
-                {item.category_name ? (
-                  <>
-                    <View style={styles.itemDivider} />
-                    <Text style={styles.categoryText}>
-                      Category: {item.category_name}
-                    </Text>
-                  </>
-                ) : null}
               </View>
             );
           })
@@ -144,6 +150,12 @@ export function OrderItemDetails({ order }: Props) {
         visible={breakdownItem != null}
         item={breakdownItem}
         onClose={() => setBreakdownItem(null)}
+      />
+
+      <OrderItemDetailsSheet
+        visible={detailsItem != null}
+        lineItem={detailsItem}
+        onClose={() => setDetailsItem(null)}
       />
     </View>
   );
@@ -210,10 +222,35 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     gap: 10,
   },
+  itemHeaderPressed: {
+    opacity: 0.85,
+  },
   itemTitleWrap: {
     flex: 1,
     minWidth: 0,
     gap: 6,
+  },
+  tagRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 6,
+  },
+  customizedTag: {
+    alignSelf: "flex-start",
+    backgroundColor: "#CCFBF1",
+    borderWidth: 1,
+    borderColor: "#99F6E4",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  customizedTagText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#0F766E",
+    letterSpacing: 0.3,
+    textTransform: "uppercase",
   },
   itemName: {
     fontSize: FONT_LABEL,
@@ -259,7 +296,7 @@ const styles = StyleSheet.create({
   },
   custSection: {
     marginTop: 10,
-    marginLeft: 24,
+    marginLeft: 26,
     paddingLeft: 10,
     borderLeftWidth: 2,
     borderLeftColor: "#5EEAD4",
@@ -296,45 +333,5 @@ const styles = StyleSheet.create({
   custDash: {
     fontSize: 12,
     color: GatiMitraMerchant.textTertiary,
-  },
-  itemDivider: {
-    marginTop: 10,
-    marginBottom: 6,
-    borderStyle: "dashed",
-    borderTopWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-  },
-  categoryText: {
-    fontSize: 11,
-    color: GatiMitraMerchant.textTertiary,
-  },
-  vegBox: {
-    width: 14,
-    height: 14,
-    borderRadius: 3,
-    borderWidth: 1.5,
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 3,
-  },
-  vegNeutral: {
-    borderColor: GatiMitraMerchant.border,
-  },
-  vegGreen: {
-    borderColor: "#16A34A",
-  },
-  vegBrown: {
-    borderColor: "#92400E",
-  },
-  vegDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  vegDotGreen: {
-    backgroundColor: "#16A34A",
-  },
-  vegDotBrown: {
-    backgroundColor: "#92400E",
   },
 });
