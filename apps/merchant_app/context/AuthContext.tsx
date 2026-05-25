@@ -28,6 +28,7 @@ export type ChildStore = {
   store_name: string;
   full_address: string;
   approval_status: string;
+  banner_url?: string | null;
   current_step: number;
   total_steps: number;
   payment_status: string;

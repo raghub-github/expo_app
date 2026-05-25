@@ -266,6 +266,7 @@ export async function authRoutes(app: FastifyInstance) {
 
         const storeRows = await sql`
           SELECT ms.id, ms.store_id, ms.store_name, ms.full_address, ms.approval_status,
+                 ms.banner_url,
                  msrp.current_step, msrp.total_steps, msrp.registration_status
           FROM merchant_stores ms
           LEFT JOIN merchant_store_registration_progress msrp ON msrp.store_id = ms.id AND msrp.parent_id = ${parentId}
@@ -300,6 +301,7 @@ export async function authRoutes(app: FastifyInstance) {
             store_id: s?.store_id,
             store_name: s?.store_name,
             full_address: s?.full_address,
+            banner_url: s?.banner_url ?? null,
             approval_status: s?.approval_status ?? "DRAFT",
             current_step: step,
             total_steps: total,
@@ -541,6 +543,7 @@ export async function authRoutes(app: FastifyInstance) {
 
           const storeRows = await sql`
             SELECT ms.id, ms.store_id, ms.store_name, ms.full_address, ms.approval_status,
+                   ms.banner_url,
                    msrp.current_step, msrp.total_steps, msrp.registration_status
             FROM merchant_stores ms
             LEFT JOIN merchant_store_registration_progress msrp ON msrp.store_id = ms.id AND msrp.parent_id = ${parentId}
@@ -575,6 +578,7 @@ export async function authRoutes(app: FastifyInstance) {
               store_id: s?.store_id,
               store_name: s?.store_name,
               full_address: s?.full_address,
+            banner_url: s?.banner_url ?? null,
               approval_status: s?.approval_status ?? "DRAFT",
               operational_status: s?.operational_status,
               current_step: step,
@@ -1066,6 +1070,7 @@ export async function authRoutes(app: FastifyInstance) {
 
         const storeRows = await sql`
           SELECT ms.id, ms.store_id, ms.store_name, ms.full_address, ms.approval_status,
+                 ms.banner_url,
                  msrp.current_step, msrp.total_steps, msrp.registration_status
           FROM merchant_stores ms
           LEFT JOIN merchant_store_registration_progress msrp ON msrp.store_id = ms.id AND msrp.parent_id = ${parentId}
@@ -1105,6 +1110,7 @@ export async function authRoutes(app: FastifyInstance) {
             store_id: s?.store_id,
             store_name: s?.store_name,
             full_address: s?.full_address,
+            banner_url: s?.banner_url ?? null,
             approval_status: s?.approval_status ?? "DRAFT",
             operational_status: s?.operational_status,
             current_step: step,

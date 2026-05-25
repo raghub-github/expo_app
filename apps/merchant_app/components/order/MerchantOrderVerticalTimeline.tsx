@@ -5,6 +5,7 @@ import {
   buildMerchantVisibleTimeline,
   displayLabelForStep,
   findActionForStep,
+  formatTimelineClock,
   parseActorDetailFromAction,
   timelineSourceShort,
   type MerchantOrderActionForTimeline,
@@ -12,34 +13,37 @@ import {
   type MerchantVisibleTimelineStep,
   type TimelineEntryLike,
 } from "@/lib/merchantVisibleTimeline";
-import { formatOrderDateTime } from "@/components/order/orderFormatters";
 import { GatiMitraMerchant } from "@/constants/theme";
 
-const ICON_SIZE = 26;
+const DOT_SIZE = 20;
 const RAIL_WIDTH = 2;
+const TIME_COL_WIDTH = 72;
 
-function stepIcon(step: MerchantVisibleTimelineStep) {
-  const isCancel = step.tone === "cancel";
-  const isRto = step.tone === "rto";
-  if (isCancel) {
-    return (
-      <View style={[styles.iconCircle, styles.iconCancel]}>
-        <Ionicons name="close" size={16} color="#FFFFFF" />
-      </View>
-    );
-  }
-  if (isRto) {
-    return (
-      <View style={[styles.iconCircle, styles.iconRto]}>
-        <Ionicons name="return-down-back" size={14} color="#FFFFFF" />
-      </View>
-    );
-  }
-  return (
-    <View style={[styles.iconCircle, styles.iconDone]}>
-      <Ionicons name="checkmark" size={16} color="#FFFFFF" />
-    </View>
-  );
+/** Zomato-style short labels for the vertical timeline rows. */
+const COMPACT_LABELS: Record<string, string> = {
+  placed: "Placed",
+  accepted: "Accepted",
+  preparing: "Preparing",
+  rider_arrived: "Delivery partner arrived",
+  ready: "Ready",
+  picked_up: "Picked up",
+  delivered: "Delivered",
+  cancelled: "Cancelled",
+  rto: "RTO",
+};
+
+function compactLabelForStep(
+  step: MerchantVisibleTimelineStep,
+  order: MerchantTimelineOrder
+): string {
+  if (step.key === "cancelled") return displayLabelForStep(step, order);
+  return COMPACT_LABELS[step.key] ?? step.label;
+}
+
+function stepDotStyle(step: MerchantVisibleTimelineStep) {
+  if (step.tone === "cancel") return styles.dotCancel;
+  if (step.tone === "rto") return styles.dotRto;
+  return styles.dotDone;
 }
 
 function actorDetailForStep(
@@ -99,54 +103,57 @@ export function MerchantOrderVerticalTimeline({
     [order, riderReachedAt, actions, timelineEntries]
   );
 
-  const firstExpandable = steps.find((s) => s.showView && s.actorAction)?.key ?? null;
-  const [expandedKey, setExpandedKey] = useState<string | null>(firstExpandable);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
 
   if (steps.length === 0) {
     return <Text style={styles.empty}>No timeline events yet.</Text>;
   }
 
   return (
-    <View style={styles.card}>
+    <View style={styles.list}>
       {steps.map((step, index) => {
         const isLast = index === steps.length - 1;
-        const title = displayLabelForStep(step, order);
+        const title = compactLabelForStep(step, order);
         const canExpand = step.showView && !!step.actorAction;
         const expanded = canExpand && expandedKey === step.key;
         const detail = canExpand ? actorDetailForStep(step, order, actions) : null;
         const meta = expanded ? expandedMeta(detail) : null;
+        const timeLabel = step.at ? formatTimelineClock(step.at) : "—";
 
         return (
-          <View key={step.key} style={styles.stepWrap}>
+          <View key={step.key} style={[styles.row, !isLast && styles.rowWithRail]}>
+            <Text style={styles.timeText}>{timeLabel}</Text>
+
             <View style={styles.railCol}>
-              {index > 0 ? <View style={styles.lineTop} /> : null}
-              {stepIcon(step)}
-              {!isLast ? <View style={styles.lineBottom} /> : null}
+              {!isLast ? <View style={styles.railLine} /> : null}
+              <View style={[styles.dot, stepDotStyle(step)]}>
+                {step.tone === "cancel" ? (
+                  <Ionicons name="close" size={12} color="#FFFFFF" />
+                ) : step.tone === "rto" ? (
+                  <Ionicons name="return-down-back" size={11} color="#FFFFFF" />
+                ) : (
+                  <Ionicons name="checkmark" size={12} color="#FFFFFF" />
+                )}
+              </View>
             </View>
 
-            <View style={styles.contentCol}>
-              <Pressable
-                onPress={() => {
-                  if (!canExpand) return;
-                  setExpandedKey((k) => (k === step.key ? null : step.key));
-                }}
-                style={styles.titleRow}
-                disabled={!canExpand}
-              >
-                <View style={styles.titleBlock}>
-                  <Text style={styles.stepTitle}>{title}</Text>
-                  {step.at ? (
-                    <Text style={styles.stepTime}>{formatOrderDateTime(step.at)}</Text>
-                  ) : null}
-                </View>
+            <View style={styles.labelCol}>
+              <View style={styles.labelRow}>
+                <Text style={styles.labelText}>{title}</Text>
                 {canExpand ? (
-                  <Ionicons
-                    name={expanded ? "chevron-up" : "chevron-down"}
-                    size={18}
-                    color={GatiMitraMerchant.textTertiary}
-                  />
+                  <Pressable
+                    onPress={() => setExpandedKey((k) => (k === step.key ? null : step.key))}
+                    hitSlop={8}
+                    style={styles.infoBtn}
+                  >
+                    <Ionicons
+                      name="information-circle-outline"
+                      size={16}
+                      color={GatiMitraMerchant.textTertiary}
+                    />
+                  </Pressable>
                 ) : null}
-              </Pressable>
+              </View>
 
               {expanded && meta ? (
                 <View style={styles.metaBlock}>
@@ -161,7 +168,7 @@ export function MerchantOrderVerticalTimeline({
               ) : null}
 
               {!expanded && step.detail ? (
-                <Text style={styles.detailText} numberOfLines={3}>
+                <Text style={styles.detailText} numberOfLines={2}>
                   {step.detail}
                 </Text>
               ) : null}
@@ -174,86 +181,86 @@ export function MerchantOrderVerticalTimeline({
 }
 
 const styles = StyleSheet.create({
-  card: {
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
-    borderRadius: 12,
-    paddingVertical: 16,
-    paddingHorizontal: 14,
+  list: {
+    paddingTop: 4,
+    paddingBottom: 8,
   },
   empty: {
-    fontSize: 13,
+    fontSize: 14,
     color: GatiMitraMerchant.textTertiary,
-    paddingVertical: 8,
+    textAlign: "center",
+    paddingVertical: 24,
   },
-  stepWrap: {
+  row: {
     flexDirection: "row",
-    minHeight: 56,
+    alignItems: "flex-start",
+    minHeight: 44,
+  },
+  rowWithRail: {
+    paddingBottom: 20,
+  },
+  timeText: {
+    width: TIME_COL_WIDTH,
+    paddingTop: 1,
+    fontSize: 13,
+    fontWeight: "500",
+    color: GatiMitraMerchant.textSecondary,
+    fontVariant: ["tabular-nums"],
   },
   railCol: {
-    width: ICON_SIZE + 8,
+    width: DOT_SIZE + 12,
     alignItems: "center",
+    position: "relative",
   },
-  lineTop: {
+  railLine: {
+    position: "absolute",
+    top: DOT_SIZE,
+    bottom: -20,
     width: RAIL_WIDTH,
-    flex: 1,
-    minHeight: 8,
-    backgroundColor: "#CBD5E1",
-    marginBottom: 2,
+    backgroundColor: "#22C55E",
+    left: (DOT_SIZE + 12) / 2 - RAIL_WIDTH / 2,
   },
-  lineBottom: {
-    width: RAIL_WIDTH,
-    flex: 1,
-    minHeight: 12,
-    backgroundColor: "#CBD5E1",
-    marginTop: 2,
-  },
-  iconCircle: {
-    width: ICON_SIZE,
-    height: ICON_SIZE,
-    borderRadius: ICON_SIZE / 2,
+  dot: {
+    width: DOT_SIZE,
+    height: DOT_SIZE,
+    borderRadius: DOT_SIZE / 2,
     alignItems: "center",
     justifyContent: "center",
     zIndex: 1,
   },
-  iconDone: {
-    backgroundColor: "#111827",
+  dotDone: {
+    backgroundColor: "#22C55E",
   },
-  iconCancel: {
-    backgroundColor: "#DC2626",
+  dotCancel: {
+    backgroundColor: "#EF4444",
   },
-  iconRto: {
-    backgroundColor: "#EA580C",
+  dotRto: {
+    backgroundColor: "#F59E0B",
   },
-  contentCol: {
+  labelCol: {
     flex: 1,
-    paddingLeft: 10,
-    paddingBottom: 20,
-  },
-  titleRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 8,
-  },
-  titleBlock: {
-    flex: 1,
+    paddingTop: 1,
+    paddingLeft: 4,
     minWidth: 0,
   },
-  stepTitle: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: GatiMitraMerchant.textPrimary,
-    letterSpacing: -0.2,
+  labelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
   },
-  stepTime: {
-    marginTop: 4,
-    fontSize: 13,
-    fontWeight: "400",
-    color: GatiMitraMerchant.textSecondary,
+  labelText: {
+    flexShrink: 1,
+    fontSize: 15,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+    lineHeight: 20,
+  },
+  infoBtn: {
+    padding: 2,
   },
   metaBlock: {
-    marginTop: 8,
-    gap: 4,
+    marginTop: 6,
+    gap: 2,
   },
   metaText: {
     fontSize: 13,
@@ -261,7 +268,7 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   detailText: {
-    marginTop: 6,
+    marginTop: 4,
     fontSize: 12,
     color: GatiMitraMerchant.textSecondary,
     lineHeight: 17,

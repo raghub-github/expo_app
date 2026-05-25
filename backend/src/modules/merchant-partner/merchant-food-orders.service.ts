@@ -25,6 +25,7 @@ export type MerchantFoodOrderItem = {
   qty: number;
   name: string;
   price: number;
+  menu_item_id?: number | null;
   veg_nonveg?: string | null;
   customizations?: string[];
   variant_tag?: string | null;
@@ -72,6 +73,8 @@ export type MerchantFoodOrderDto = {
   accepted_at: string | null;
   preparing_at: string | null;
   prepared_at: string | null;
+  handed_over_to_rider_at: string | null;
+  rider_picked_up_at: string | null;
   dispatched_at: string | null;
   delivered_at: string | null;
   cancelled_at: string | null;
@@ -84,10 +87,14 @@ export type MerchantFoodOrderDto = {
   /** 1-based: customer's Nth order at this store (Partner Site ordinal). */
   customer_store_order_ordinal: number | null;
   customer_store_orders_total: number | null;
+  customer_platform_orders_total: number | null;
   is_bulk_order: boolean;
   veg_non_veg: string | null;
   requires_utensils: boolean | null;
   delivery_instructions: string | null;
+  merchant_instructions_list: unknown;
+  is_scheduled_order?: boolean;
+  scheduled_delivery_summary?: string | null;
 };
 
 function num(v: unknown): number {
@@ -98,6 +105,86 @@ function num(v: unknown): number {
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+function toIsoOrNull(v: unknown): string | null {
+  if (v == null || v === "") return null;
+  try {
+    const d = new Date(v as string | number | Date);
+    return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+  } catch {
+    return null;
+  }
+}
+
+type TimelineMilestoneSnapshot = {
+  accepted_at: string | null;
+  preparing_at: string | null;
+  prepared_at: string | null;
+  handed_over_to_rider_at: string | null;
+  rider_picked_up_at: string | null;
+  dispatched_at: string | null;
+  delivered_at: string | null;
+  cancelled_at: string | null;
+};
+
+function emptyTimelineSnapshot(): TimelineMilestoneSnapshot {
+  return {
+    accepted_at: null,
+    preparing_at: null,
+    prepared_at: null,
+    handed_over_to_rider_at: null,
+    rider_picked_up_at: null,
+    dispatched_at: null,
+    delivered_at: null,
+    cancelled_at: null,
+  };
+}
+
+function mapTimelineStatusToMilestone(status: string): keyof TimelineMilestoneSnapshot | null {
+  const u = String(status || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+  if (!u) return null;
+  if (u.includes("accept")) return "accepted_at";
+  if (u.includes("prepar")) return "preparing_at";
+  if (
+    u.includes("ready_for_pickup") ||
+    u === "dispatch_ready" ||
+    (u.includes("ready") && !u.includes("prepar"))
+  ) {
+    return "prepared_at";
+  }
+  if (u.includes("handover") || u.includes("handed")) return "handed_over_to_rider_at";
+  if (
+    u === "dispatched" ||
+    u === "despatched" ||
+    u.includes("picked") ||
+    u.includes("pick_up") ||
+    u.includes("out_for") ||
+    (u.includes("dispatch") && !u.includes("ready"))
+  ) {
+    return "dispatched_at";
+  }
+  if (u.includes("deliver")) return "delivered_at";
+  if (u.includes("cancel")) return "cancelled_at";
+  if (u === "rto" || u.includes("return")) return "cancelled_at";
+  return null;
+}
+
+function absorbTimelineRow(
+  snap: TimelineMilestoneSnapshot,
+  status: string,
+  occurredAt: unknown
+): void {
+  const field = mapTimelineStatusToMilestone(status);
+  const at = toIsoOrNull(occurredAt);
+  if (!field || !at) return;
+  const prev = snap[field];
+  if (!prev || new Date(at).getTime() > new Date(prev).getTime()) {
+    snap[field] = at;
+  }
 }
 
 /** Postgres bigint/numeric often arrives as string — normalize for Map keys and IN lists. */
@@ -135,6 +222,7 @@ function mergeDbItemFields(
     captured_base_amount: db.captured_base_amount ?? it.captured_base_amount,
     captured_addon_amount: db.captured_addon_amount ?? it.captured_addon_amount,
     has_customizations: db.has_customizations ?? it.has_customizations,
+    menu_item_id: db.menu_item_id ?? it.menu_item_id,
   };
 }
 
@@ -245,6 +333,8 @@ type CoreRow = {
   distance_km: unknown;
   cancelled_at: string | null;
   is_bulk_order: boolean | null;
+  merchant_instructions_list: unknown;
+  checkout_metadata: unknown;
 };
 
 type FoodRow = {
@@ -263,6 +353,8 @@ type FoodRow = {
   accepted_at: string | null;
   preparing_at: string | null;
   prepared_at: string | null;
+  handed_over_to_rider_at: string | null;
+  rider_picked_up_at: string | null;
   dispatched_at: string | null;
   delivered_at: string | null;
   cancelled_at: string | null;
@@ -274,6 +366,7 @@ type FoodRow = {
   rto_otp: string | null;
   requires_utensils: boolean | null;
   delivery_instructions: string | null;
+  merchant_instructions_list: unknown;
 };
 
 export type MerchantFoodOrderRiderLogEntry = {
@@ -330,6 +423,24 @@ function matchFoodToCore(core: CoreRow, foodByCorePk: Map<number, FoodRow>, food
   return null;
 }
 
+function readRecord(value: unknown): Record<string, unknown> | null {
+  if (value != null && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
+function resolveScheduledMeta(core: CoreRow): { isScheduled: boolean; summary: string | null } {
+  const checkout = readRecord(core.checkout_metadata);
+  const summary =
+    typeof checkout?.scheduledDeliverySummary === "string"
+      ? checkout.scheduledDeliverySummary.trim()
+      : null;
+  const isScheduled =
+    Boolean(summary) || checkout?.isScheduled === true || checkout?.scheduled === true;
+  return { isScheduled, summary: summary || null };
+}
+
 async function loadCoreRows(
   sql: Sql,
   storeId: number,
@@ -351,6 +462,7 @@ async function loadCoreRows(
         oc.item_total,
         oc.addon_total,
         oc.billing_snapshot,
+        oc.checkout_metadata,
         oc.payment_status,
         oc.created_at,
         oc.customer_id,
@@ -391,6 +503,7 @@ async function loadCoreRows(
       oc.item_total,
       oc.addon_total,
       oc.billing_snapshot,
+      oc.checkout_metadata,
       oc.payment_status,
       oc.created_at,
       oc.customer_id,
@@ -401,7 +514,8 @@ async function loadCoreRows(
       oc.drop_address_raw,
       oc.distance_km,
       oc.cancelled_at,
-      oc.is_bulk_order
+      oc.is_bulk_order,
+      oc.merchant_instructions_list
     FROM orders_core oc
     LEFT JOIN customers cust ON cust.id = oc.customer_id
     WHERE oc.merchant_store_id = ${storeId}
@@ -437,7 +551,10 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.items,
         of.formatted_order_id,
         of.accepted_at,
+        of.preparing_at,
         of.prepared_at,
+        of.handed_over_to_rider_at,
+        of.rider_picked_up_at,
         of.dispatched_at,
         of.delivered_at,
         of.cancelled_at,
@@ -448,7 +565,8 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.pickup_otp,
         of.rto_otp,
         of.requires_utensils,
-        of.delivery_instructions
+        of.delivery_instructions,
+        of.merchant_instructions_list
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
         AND (of.order_id IN ${sql(corePks)} OR of.core_order_id IN ${sql(textIds)})
@@ -469,7 +587,10 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.items,
         of.formatted_order_id,
         of.accepted_at,
+        of.preparing_at,
         of.prepared_at,
+        of.handed_over_to_rider_at,
+        of.rider_picked_up_at,
         of.dispatched_at,
         of.delivered_at,
         of.cancelled_at,
@@ -480,7 +601,8 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.pickup_otp,
         of.rto_otp,
         of.requires_utensils,
-        of.delivery_instructions
+        of.delivery_instructions,
+        of.merchant_instructions_list
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
         AND of.order_id IN ${sql(corePks)}
@@ -501,7 +623,10 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.items,
         of.formatted_order_id,
         of.accepted_at,
+        of.preparing_at,
         of.prepared_at,
+        of.handed_over_to_rider_at,
+        of.rider_picked_up_at,
         of.dispatched_at,
         of.delivered_at,
         of.cancelled_at,
@@ -512,7 +637,8 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.pickup_otp,
         of.rto_otp,
         of.requires_utensils,
-        of.delivery_instructions
+        of.delivery_instructions,
+        of.merchant_instructions_list
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
         AND of.core_order_id IN ${sql(textIds)}
@@ -555,6 +681,8 @@ async function buildOrderDto(
     customerById: Map<number, CustomerRow>;
     storeOrdinalByCoreId: Map<number, number>;
     customerStoreOrdersTotalById: Map<number, number>;
+    customerPlatformOrdersTotalById: Map<number, number>;
+    timelineSnapByCoreId: Map<number, TimelineMilestoneSnapshot>;
     itemsByOrderTextId: Map<string, MerchantFoodOrderItem[]>;
     otpByCoreId: Map<number, { pickup: string | null; rto: string | null }>;
   }
@@ -613,6 +741,8 @@ async function buildOrderDto(
 
   const otps = opts.otpByCoreId.get(core.id);
   const coreOnly = food == null;
+  const tl = opts.timelineSnapByCoreId?.get(core.id);
+  const scheduledMeta = resolveScheduledMeta(core);
 
   return {
     orders_food_id: food != null ? Number(food.id) : core.id,
@@ -635,12 +765,15 @@ async function buildOrderDto(
     pickup_otp: food?.pickup_otp ?? otps?.pickup ?? null,
     rto_otp: food?.rto_otp ?? otps?.rto ?? null,
     payment_method: core.payment_method,
-    accepted_at: food?.accepted_at ?? null,
-    preparing_at: null,
-    prepared_at: food?.prepared_at ?? null,
-    dispatched_at: food?.dispatched_at ?? null,
-    delivered_at: food?.delivered_at ?? null,
-    cancelled_at: resolveCancelledAt(food, core),
+    accepted_at: toIsoOrNull(food?.accepted_at) ?? tl?.accepted_at ?? null,
+    preparing_at: toIsoOrNull(food?.preparing_at) ?? tl?.preparing_at ?? null,
+    prepared_at: toIsoOrNull(food?.prepared_at) ?? tl?.prepared_at ?? null,
+    handed_over_to_rider_at:
+      toIsoOrNull(food?.handed_over_to_rider_at) ?? tl?.handed_over_to_rider_at ?? null,
+    rider_picked_up_at: toIsoOrNull(food?.rider_picked_up_at) ?? tl?.rider_picked_up_at ?? null,
+    dispatched_at: toIsoOrNull(food?.dispatched_at) ?? tl?.dispatched_at ?? null,
+    delivered_at: toIsoOrNull(food?.delivered_at) ?? tl?.delivered_at ?? null,
+    cancelled_at: resolveCancelledAt(food, core) ?? tl?.cancelled_at ?? null,
     rejected_reason: food?.rejected_reason ?? null,
     accepted_by_label: food?.accepted_by_label ?? null,
     cancelled_by_label: food?.cancelled_by_label ?? null,
@@ -655,10 +788,18 @@ async function buildOrderDto(
       customerId != null
         ? opts.customerStoreOrdersTotalById?.get(customerId) ?? null
         : null,
+    customer_platform_orders_total:
+      customerId != null
+        ? opts.customerPlatformOrdersTotalById?.get(customerId) ?? null
+        : null,
     is_bulk_order: Boolean(core.is_bulk_order),
     veg_non_veg: food?.veg_non_veg != null ? String(food.veg_non_veg) : null,
     requires_utensils: food?.requires_utensils ?? null,
     delivery_instructions: food?.delivery_instructions ?? null,
+    merchant_instructions_list:
+      food?.merchant_instructions_list ?? core.merchant_instructions_list ?? [],
+    is_scheduled_order: scheduledMeta.isScheduled,
+    scheduled_delivery_summary: scheduledMeta.summary,
   };
 }
 
@@ -804,38 +945,148 @@ export async function loadMerchantFoodOrders(
   const storeOrdinalByCoreId = new Map<number, number>();
   if (coreIds.length > 0) {
     const ordRows = await sql`
-      SELECT ranked.id, ranked.ord
-      FROM (
-        SELECT
-          oc.id,
-          ROW_NUMBER() OVER (
-            PARTITION BY oc.customer_id
-            ORDER BY oc.created_at ASC, oc.id ASC
-          )::int AS ord
-        FROM orders_core oc
-        WHERE oc.merchant_store_id = ${storeId}
-          AND oc.customer_id IS NOT NULL
-      ) ranked
-      WHERE ranked.id IN ${sql(coreIds)}
+      SELECT
+        oc.id,
+        (
+          SELECT COUNT(*)::int
+          FROM orders_core prior
+          LEFT JOIN LATERAL (
+            SELECT pf.customer_id
+            FROM orders_food pf
+            WHERE pf.order_id = prior.id
+               OR (pf.core_order_id IS NOT NULL AND pf.core_order_id = prior.order_id)
+            ORDER BY pf.id DESC
+            LIMIT 1
+          ) pfood ON TRUE
+          WHERE prior.merchant_store_id = ${storeId}
+            AND COALESCE(prior.customer_id, pfood.customer_id) IS NOT NULL
+            AND COALESCE(prior.customer_id, pfood.customer_id) = eff.cust_id
+            AND prior.created_at <= oc.created_at
+        ) AS ord
+      FROM orders_core oc
+      LEFT JOIN LATERAL (
+        SELECT pf.customer_id
+        FROM orders_food pf
+        WHERE pf.order_id = oc.id
+           OR (pf.core_order_id IS NOT NULL AND pf.core_order_id = oc.order_id)
+        ORDER BY pf.id DESC
+        LIMIT 1
+      ) ofood ON TRUE
+      CROSS JOIN LATERAL (
+        SELECT COALESCE(oc.customer_id, ofood.customer_id) AS cust_id
+      ) eff
+      WHERE oc.id IN ${sql(coreIds)}
+        AND eff.cust_id IS NOT NULL
     `;
     for (const row of ordRows as unknown as Array<{ id: number; ord: number }>) {
       const ord = Number(row.ord);
       if (Number.isFinite(ord) && ord > 0) storeOrdinalByCoreId.set(Number(row.id), ord);
     }
+
+    const missingIds = coreIds.filter((id) => !storeOrdinalByCoreId.has(id));
+    if (missingIds.length > 0) {
+      const phoneOrdRows = await sql`
+        SELECT
+          oc.id,
+          (
+            SELECT COUNT(*)::int
+            FROM orders_core prior
+            LEFT JOIN customers pc ON pc.id = prior.customer_id
+            LEFT JOIN LATERAL (
+              SELECT pf.customer_phone
+              FROM orders_food pf
+              WHERE pf.order_id = prior.id
+                 OR (pf.core_order_id IS NOT NULL AND pf.core_order_id = prior.order_id)
+              ORDER BY pf.id DESC
+              LIMIT 1
+            ) pfood ON TRUE
+            WHERE prior.merchant_store_id = ${storeId}
+              AND prior.created_at <= oc.created_at
+              AND NULLIF(
+                REGEXP_REPLACE(COALESCE(pc.primary_mobile, pfood.customer_phone, ''), '\\D', '', 'g'),
+                ''
+              ) = oc_phone.phone_norm
+          ) AS ord
+        FROM orders_core oc
+        INNER JOIN LATERAL (
+          SELECT NULLIF(
+            REGEXP_REPLACE(
+              COALESCE(
+                (SELECT c.primary_mobile FROM customers c WHERE c.id = oc.customer_id LIMIT 1),
+                (SELECT pf.customer_phone FROM orders_food pf
+                  WHERE pf.order_id = oc.id OR pf.core_order_id = oc.order_id
+                  ORDER BY pf.id DESC LIMIT 1),
+                ''
+              ),
+              '\\D',
+              '',
+              'g'
+            ),
+            ''
+          ) AS phone_norm
+        ) oc_phone ON TRUE
+        WHERE oc.id IN ${sql(missingIds)}
+          AND oc_phone.phone_norm IS NOT NULL
+      `;
+      for (const row of phoneOrdRows as unknown as Array<{ id: number; ord: number }>) {
+        const ord = Number(row.ord);
+        if (Number.isFinite(ord) && ord > 0) storeOrdinalByCoreId.set(Number(row.id), ord);
+      }
+    }
+  }
+
+  const timelineSnapByCoreId = new Map<number, TimelineMilestoneSnapshot>();
+  if (coreIds.length > 0) {
+    try {
+      const tlRows = await sql`
+        SELECT order_id, status, occurred_at
+        FROM order_timelines
+        WHERE order_id IN ${sql(coreIds)}
+        ORDER BY occurred_at ASC, id ASC
+      `;
+      for (const row of tlRows as unknown as Array<{
+        order_id: number;
+        status: string;
+        occurred_at: unknown;
+      }>) {
+        const cid = Number(row.order_id);
+        if (!Number.isFinite(cid)) continue;
+        let snap = timelineSnapByCoreId.get(cid);
+        if (!snap) {
+          snap = emptyTimelineSnapshot();
+          timelineSnapByCoreId.set(cid, snap);
+        }
+        absorbTimelineRow(snap, String(row.status ?? ""), row.occurred_at);
+      }
+    } catch {
+      /* optional table */
+    }
   }
 
   const customerStoreOrdersTotalById = new Map<number, number>();
+  const customerPlatformOrdersTotalById = new Map<number, number>();
   if (customerIds.length > 0) {
-    const countRows = await sql`
+    const storeCountRows = await sql`
       SELECT customer_id, COUNT(*)::int AS cnt
       FROM orders_core
       WHERE merchant_store_id = ${storeId}
         AND customer_id IN ${sql(customerIds)}
       GROUP BY customer_id
     `;
-    for (const row of countRows as unknown as Array<{ customer_id: number; cnt: number }>) {
+    for (const row of storeCountRows as unknown as Array<{ customer_id: number; cnt: number }>) {
       const cid = coerceCustomerId(row.customer_id);
       if (cid != null) customerStoreOrdersTotalById.set(cid, Number(row.cnt) || 0);
+    }
+
+    const platformCountRows = await sql`
+      SELECT customer_id, COUNT(*)::int AS cnt
+      FROM orders_core
+      WHERE customer_id IN ${sql(customerIds)}
+      GROUP BY customer_id
+    `;
+    for (const row of platformCountRows as unknown as Array<{ customer_id: number; cnt: number }>) {
+      const cid = coerceCustomerId(row.customer_id);
+      if (cid != null) customerPlatformOrdersTotalById.set(cid, Number(row.cnt) || 0);
     }
   }
 
@@ -855,6 +1106,8 @@ export async function loadMerchantFoodOrders(
     customerById,
     storeOrdinalByCoreId,
     customerStoreOrdersTotalById,
+    customerPlatformOrdersTotalById,
+    timelineSnapByCoreId,
     itemsByOrderTextId,
     otpByCoreId,
   };
@@ -1136,13 +1389,23 @@ export async function loadMerchantFoodOrderTimeline(
   storeId: number,
   ordersFoodId: number
 ): Promise<MerchantOrderTimelineEntry[]> {
-  const owner = await sql`
-    SELECT order_id AS core_id
+  const ownerRows = await sql`
+    SELECT order_id, core_order_id
     FROM orders_food
     WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
     LIMIT 1
   `;
-  const coreId = Number((owner[0] as { core_id?: number } | undefined)?.core_id);
+  const owner = ownerRows[0] as { order_id?: number | null; core_order_id?: string | null } | undefined;
+  let coreId = Number(owner?.order_id);
+  if (!Number.isFinite(coreId) || coreId < 1) {
+    const textId = String(owner?.core_order_id ?? "").trim();
+    if (textId) {
+      const coreRows = await sql`
+        SELECT id FROM orders_core WHERE order_id = ${textId} LIMIT 1
+      `;
+      coreId = Number((coreRows[0] as { id?: number } | undefined)?.id);
+    }
+  }
   if (!Number.isFinite(coreId) || coreId < 1) return [];
 
   const rows = await sql`

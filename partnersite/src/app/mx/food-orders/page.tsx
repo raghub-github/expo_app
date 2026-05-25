@@ -75,6 +75,7 @@ import {
   writePartnerDeviceOrderAlerts,
 } from '@/lib/partner-device-order-alerts';
 import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
+import { MerchantPreparingOrderCard } from '@/components/orders/MerchantPreparingOrderCard';
 import { MerchantPrepDelayModal } from '@/components/orders/MerchantPrepDelayModal';
 import { StoreClosedActiveOrdersNotice } from '@/components/orders/StoreClosedActiveOrdersNotice';
 import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';
@@ -144,9 +145,9 @@ function orderMatchesFoodOrdersSidebar(order: OrdersFoodRow, filterId: string): 
   return false;
 }
 
-/** Zomato-style pills: orange active, white inactive (GatiMitra partner shell) */
-const SIDEBAR_ACTIVE_CLASS = 'bg-orange-500 text-white border-orange-500 shadow-sm';
-const SIDEBAR_INACTIVE_CLASS = 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50';
+/** Zomato-style pills: white active tab, light grey inactive */
+const SIDEBAR_ACTIVE_CLASS = 'bg-white text-gray-900 border-gray-300 shadow-sm';
+const SIDEBAR_INACTIVE_CLASS = 'bg-[#F0F0F0] text-gray-700 border-transparent hover:bg-[#E8E8E8]';
 
 function prepDeadlineMs(order: OrdersFoodRow): number {
   const base = order.accepted_at || order.created_at;
@@ -1533,11 +1534,18 @@ function OrdersPageContent() {
                     key={id}
                     type="button"
                     onClick={() => handleFilterChange(id)}
-                    className={`px-3.5 py-2 rounded-full text-sm font-semibold border transition-colors shrink-0 ${
+                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm font-semibold border transition-colors shrink-0 ${
                       filter === id ? SIDEBAR_ACTIVE_CLASS : SIDEBAR_INACTIVE_CLASS
                     }`}
                   >
-                    {label} ({sidebarFilterCounts[id]})
+                    {label}
+                    <span
+                      className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-bold leading-none ${
+                        filter === id ? 'bg-gray-900 text-white' : 'bg-gray-500 text-white'
+                      }`}
+                    >
+                      {sidebarFilterCounts[id]}
+                    </span>
                   </button>
                 ))}
               </div>
@@ -1738,7 +1746,13 @@ function OrdersPageContent() {
                 displayOrders.length === 0 ? (
                   <FoodOrdersEmptyState variant={foodOrdersEmptyVariant} />
                 ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-3">
+                  <div
+                    className={
+                      filter === 'PREPARING'
+                        ? 'mx-auto grid w-full max-w-md grid-cols-1 gap-3'
+                        : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-3'
+                    }
+                  >
                     {displayOrders.map((order) => (
                       <OrderCard
                         key={order.id}
@@ -2924,6 +2938,24 @@ function OrderCard({
   hideDetails?: boolean;
 }) {
   const status = order.order_status || 'CREATED';
+  const isPreparingPipeline =
+    status === 'PREPARING' || status === 'ACCEPTED';
+
+  if (isPreparingPipeline && nowMs != null) {
+    return (
+      <MerchantPreparingOrderCard
+        order={order}
+        storeName={order.restaurant_name}
+        selected={selected}
+        onClick={onClick}
+        onReady={onReady}
+        onNeedMoreTime={onNeedMoreTime}
+        loading={loading}
+        nowMs={nowMs}
+      />
+    );
+  }
+
   const isNew = status === 'CREATED' || status === 'NEW';
   const value = Number(order.food_items_total_value || 0);
   const label = statusLabel ?? STATUS_LABEL[status] ?? status;

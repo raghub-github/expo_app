@@ -85,6 +85,7 @@ import {
 } from '@/lib/order-prep-time';
 import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
 import { MerchantOrderPipelineCard } from '@/components/merchant/MerchantOrderPipelineCard';
+import { MerchantPreparingOrderCard } from '@/components/merchant/MerchantPreparingOrderCard';
 import { MerchantPrepDelayModal } from '@/components/merchant/MerchantPrepDelayModal';
 import { StoreClosedActiveOrdersNotice } from '@/components/orders/StoreClosedActiveOrdersNotice';
 import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';
@@ -2528,7 +2529,13 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                 {displayOrders.map((order) => renderPipelineCard(order))}
               </div>
               ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-3">
+              <div
+                className={
+                  filter === 'PREPARING'
+                    ? 'mx-auto grid w-full max-w-md grid-cols-1 gap-3'
+                    : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-3'
+                }
+              >
                 {displayOrders.map((order) => (
                   <OrderCard
                     key={order.id}
@@ -3604,6 +3611,24 @@ function OrderCard({
   nowMs?: number;
 }) {
   const status = order.order_status || 'CREATED';
+  const isPreparingPipeline =
+    status === 'PREPARING' || status === 'ACCEPTED';
+
+  if (isPreparingPipeline && nowMs != null) {
+    return (
+      <MerchantPreparingOrderCard
+        order={order}
+        storeName={order.restaurant_name}
+        selected={selected}
+        onClick={onClick}
+        onReady={onReady}
+        onNeedMoreTime={onNeedMoreTime}
+        loading={loading}
+        nowMs={nowMs}
+      />
+    );
+  }
+
   const isNew = status === 'CREATED' || status === 'NEW';
   const value = Number(order.food_items_total_value || 0);
   const label = statusLabel ?? STATUS_LABEL[status] ?? status;

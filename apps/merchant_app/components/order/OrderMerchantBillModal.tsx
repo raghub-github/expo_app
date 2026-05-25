@@ -1,13 +1,9 @@
 import {
-  Modal,
   View,
   Text,
   StyleSheet,
-  Pressable,
   ScrollView,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { ApiFoodOrder, ApiFoodOrderItem } from "@/services/ordersApi";
 import {
   merchantBillPartsFromFoodItems,
@@ -18,11 +14,21 @@ import {
   foodOrderAddonRows,
   foodOrderVariantLabel,
 } from "@/lib/merchant-order-food-item-display";
+import { ItemVegMark } from "@/components/order/ItemVegMark";
+import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
 
 function formatRs(amount: number, decimals = 2): string {
   const n = Number.isFinite(amount) ? amount : 0;
   if (decimals === 0) return `₹${Math.round(n)}`;
   return `₹${n.toFixed(decimals)}`;
+}
+
+function isPaidOrder(order: ApiFoodOrder): boolean {
+  const st = (order.payment_status ?? "").trim().toUpperCase();
+  if (st === "PAID" || st === "COMPLETED" || st === "SUCCESS") return true;
+  const method = (order.payment_method ?? "").trim().toLowerCase();
+  if (method.includes("cod") || method.includes("cash")) return false;
+  return true;
 }
 
 type Props = {
@@ -31,112 +37,64 @@ type Props = {
   order: ApiFoodOrder;
 };
 
-export function OrderMerchantBillModal({ visible, onClose, order }: Props) {
-  const insets = useSafeAreaInsets();
-  const items = order.items ?? [];
-  const packaging = order.pricing?.packaging ?? 0;
-  const discount = order.pricing?.discount ?? 0;
-  const bill = merchantBillPartsFromFoodItems(items, { packaging, discount });
-  const displayTotal =
-    Number(order.pricing?.total) > 0 ? Number(order.pricing!.total) : bill.total;
+function BillItemRow({
+  item,
+  orderVeg,
+}: {
+  item: ApiFoodOrderItem;
+  orderVeg?: string | null;
+}) {
+  const qty = Math.max(1, item.qty || 1);
+  const parts = merchantItemLineParts(item);
+  const variantLabel = foodOrderVariantLabel(item);
+  const custRows = foodOrderAddonRows(item);
+  const showValueSplit = parts.hasCustomizations;
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable
-          style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}
-          onPress={(e) => e.stopPropagation()}
-        >
-          <View style={styles.handle} />
-          <View style={styles.header}>
-            <Text style={styles.title}>Bill details</Text>
-            <Pressable onPress={onClose} hitSlop={12} style={styles.closeBtn}>
-              <Ionicons name="close" size={22} color={GatiMitraMerchant.textSecondary} />
-            </Pressable>
+    <View style={styles.itemBlock}>
+      <View style={styles.itemTopRow}>
+        <View style={styles.itemNameCol}>
+          <View style={styles.itemTitleRow}>
+            <ItemVegMark vegNonveg={item.veg_nonveg ?? orderVeg} name={item.name} size={14} />
+            <Text style={styles.itemTitle} numberOfLines={3}>
+              {qty} × {item.name}
+            </Text>
           </View>
-
-          <ScrollView
-            style={styles.scroll}
-            contentContainerStyle={styles.scrollContent}
-            showsVerticalScrollIndicator={false}
-          >
-            <Text style={styles.sectionLabel}>Items ({items.length})</Text>
-            {items.map((item, idx) => {
-              const qty = Math.max(1, item.qty || 1);
-              const parts = merchantItemLineParts(item);
-              const variantLabel = foodOrderVariantLabel(item);
-              const custRows = foodOrderAddonRows(item);
-              return (
-                <View key={`${item.name}-${idx}`} style={styles.itemBlock}>
-                  <View style={styles.itemHeader}>
-                    <View style={styles.itemTitleCol}>
-                      <Text style={styles.itemTitle} numberOfLines={2}>
-                        {qty} × {item.name}
-                      </Text>
-                      {variantLabel ? (
-                        <View style={styles.variantBadge}>
-                          <Text style={styles.variantBadgeText}>{variantLabel}</Text>
-                        </View>
-                      ) : null}
-                    </View>
-                    <Text style={styles.itemTotal}>{formatRs(parts.total, 0)}</Text>
-                  </View>
-                  <View style={styles.itemMeta}>
-                    <Text style={styles.metaLine}>Base price (merchant) {formatRs(parts.base)}</Text>
-                    {parts.capturedBase != null && parts.capturedBase > 0.005 ? (
-                      <Text style={styles.metaMuted}>Base at order (DB) {formatRs(parts.capturedBase)}</Text>
-                    ) : null}
-                    {parts.hasCustomizations ? (
-                      <Text style={styles.metaAccent}>
-                        Add-ons total {formatRs(parts.customizations)}
-                      </Text>
-                    ) : null}
-                  </View>
-                  {custRows.length > 0 ? (
-                    <View style={styles.custList}>
-                      {custRows.map((row, j) => (
-                        <View key={j} style={styles.custRow}>
-                          <Text style={styles.custLabel} numberOfLines={2}>
-                            ↳ {row.label}
-                          </Text>
-                          {row.amount != null ? (
-                            <Text style={styles.custAmount}>{formatRs(row.amount)}</Text>
-                          ) : null}
-                        </View>
-                      ))}
-                    </View>
-                  ) : null}
-                </View>
-              );
-            })}
-
-            <Text style={[styles.sectionLabel, styles.sectionGap]}>Bill summary</Text>
-            <View style={styles.summaryCard}>
-              <SummaryRow label="Item base (total)" amount={bill.itemBaseTotal} />
-              {bill.showCustomizations ? (
-                <SummaryRow label="Customizations (total)" amount={bill.customizationsTotal} />
-              ) : null}
-              <SummaryRow label="All items subtotal" amount={bill.itemsSubtotal} bold />
-              {bill.packaging > 0 ? (
-                <SummaryRow label="Packaging charges" amount={bill.packaging} />
-              ) : null}
-              {bill.discount > 0 ? (
-                <SummaryRow label="Restaurant discount" amount={bill.discount} discount />
-              ) : (
-                <Text style={styles.platformNote}>
-                  Platform (GatiMitra) offers are not deducted from your bill.
-                </Text>
-              )}
-              <View style={styles.divider} />
-              <SummaryRow label="Total" amount={displayTotal} bold />
-              <Text style={styles.formulaHint}>
-                Item price + customizations + packaging − restaurant discount
-              </Text>
+          {variantLabel ? (
+            <View style={styles.variantBadge}>
+              <Text style={styles.variantBadgeText}>{variantLabel}</Text>
             </View>
-          </ScrollView>
-        </Pressable>
-      </Pressable>
-    </Modal>
+          ) : null}
+        </View>
+        <Text style={styles.itemLineTotal}>{formatRs(parts.total, 2)}</Text>
+      </View>
+
+      {showValueSplit ? (
+        <>
+          <View style={styles.splitRow}>
+            <Text style={styles.splitLabel}>Item value</Text>
+            <Text style={styles.splitAmount}>{formatRs(parts.base, 2)}</Text>
+          </View>
+          <View style={styles.splitRow}>
+            <Text style={styles.splitLabelCust}>Customization value</Text>
+            <Text style={styles.splitAmountCust}>{formatRs(parts.customizations, 2)}</Text>
+          </View>
+        </>
+      ) : null}
+
+      {custRows.map((row, j) => (
+        <View key={j} style={styles.addonRow}>
+          <Text style={styles.addonLabel} numberOfLines={2}>
+            ↳ {row.label}
+          </Text>
+          {row.amount != null ? (
+            <Text style={styles.addonAmount}>{formatRs(row.amount, 2)}</Text>
+          ) : (
+            <View style={styles.addonSpacer} />
+          )}
+        </View>
+      ))}
+    </View>
   );
 }
 
@@ -161,25 +119,80 @@ function SummaryRow({
           bold && styles.summaryAmountBold,
         ]}
       >
-        {discount ? `−${formatRs(amount)}` : formatRs(amount, bold ? 0 : 2)}
+        {discount ? `−${formatRs(amount, 2)}` : formatRs(amount, bold ? 2 : 2)}
       </Text>
     </View>
   );
 }
 
+export function OrderMerchantBillModal({ visible, onClose, order }: Props) {
+  const items = order.items ?? [];
+  const packaging = order.pricing?.packaging ?? 0;
+  const discount = order.pricing?.discount ?? 0;
+  const bill = merchantBillPartsFromFoodItems(items, { packaging, discount });
+  const displayTotal =
+    Number(order.pricing?.total) > 0 ? Number(order.pricing!.total) : bill.total;
+  const showPaid = isPaidOrder(order);
+
+  return (
+    <MerchantBottomSheetShell
+      visible={visible}
+      onClose={onClose}
+      footer={
+        <View style={styles.footer}>
+          <View style={styles.footerRow}>
+            <Text style={styles.footerLabel}>Total bill</Text>
+            <Text style={styles.footerAmount}>{formatRs(displayTotal, 2)}</Text>
+          </View>
+        </View>
+      }
+    >
+      <View style={styles.handle} />
+      <Text style={styles.title}>Bill details</Text>
+
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <Text style={styles.sectionLabel}>
+          Items ({items.length})
+        </Text>
+
+        {items.map((item, idx) => (
+          <BillItemRow key={`${item.name}-${idx}`} item={item} orderVeg={order.veg_non_veg} />
+        ))}
+
+        <Text style={[styles.sectionLabel, styles.sectionGap]}>Bill summary</Text>
+        <View style={styles.summaryCard}>
+          <SummaryRow label="All items subtotal" amount={bill.itemsSubtotal} bold />
+          {bill.packaging > 0 ? (
+            <SummaryRow label="Packaging charges" amount={bill.packaging} />
+          ) : null}
+          {bill.discount > 0 ? (
+            <SummaryRow label="Restaurant discount" amount={bill.discount} discount />
+          ) : (
+            <Text style={styles.platformNote}>
+              Restaurant discount — none. Platform (GatiMitra) offers are not deducted from
+              your bill.
+            </Text>
+          )}
+          <View style={styles.divider} />
+          <SummaryRow label="Total bill" amount={displayTotal} bold />
+          {showPaid ? (
+            <View style={styles.paidBadge}>
+              <Text style={styles.paidBadgeText}>PAID</Text>
+            </View>
+          ) : null}
+        </View>
+      </ScrollView>
+    </MerchantBottomSheetShell>
+  );
+}
+
+const AMOUNT_WIDTH = 88;
+
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: "rgba(15, 23, 42, 0.45)",
-    justifyContent: "flex-end",
-  },
-  sheet: {
-    backgroundColor: GatiMitraMerchant.cardBg,
-    borderTopLeftRadius: CARD_RADIUS + 4,
-    borderTopRightRadius: CARD_RADIUS + 4,
-    maxHeight: "82%",
-    paddingHorizontal: H_PADDING,
-  },
   handle: {
     alignSelf: "center",
     width: 40,
@@ -189,25 +202,19 @@ const styles = StyleSheet.create({
     marginTop: 10,
     marginBottom: 8,
   },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 12,
-  },
   title: {
     fontSize: 18,
     fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
-  },
-  closeBtn: {
-    padding: 4,
+    paddingHorizontal: H_PADDING,
+    marginBottom: 12,
   },
   scroll: {
-    maxHeight: 520,
+    maxHeight: 480,
   },
   scrollContent: {
-    paddingBottom: 8,
+    paddingHorizontal: H_PADDING,
+    paddingBottom: 12,
   },
   sectionLabel: {
     fontSize: 11,
@@ -221,24 +228,32 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
   itemBlock: {
-    marginBottom: 14,
-    paddingBottom: 14,
+    marginBottom: 10,
+    paddingBottom: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: GatiMitraMerchant.divider,
   },
-  itemHeader: {
+  itemTopRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
+    alignItems: "flex-start",
     gap: 10,
   },
-  itemTitleCol: {
+  itemNameCol: {
     flex: 1,
+    minWidth: 0,
     gap: 4,
   },
+  itemTitleRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+  },
   itemTitle: {
+    flex: 1,
     fontSize: 14,
-    fontWeight: "600",
+    fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
+    lineHeight: 20,
   },
   variantBadge: {
     alignSelf: "flex-start",
@@ -246,6 +261,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingHorizontal: 10,
     paddingVertical: 2,
+    marginLeft: 22,
   },
   variantBadgeText: {
     fontSize: 11,
@@ -253,53 +269,74 @@ const styles = StyleSheet.create({
     color: "#065F46",
     textTransform: "capitalize",
   },
-  itemTotal: {
+  itemLineTotal: {
+    width: AMOUNT_WIDTH,
+    textAlign: "right",
     fontSize: 14,
     fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
     fontVariant: ["tabular-nums"],
   },
-  itemMeta: {
-    marginTop: 6,
-    marginLeft: 4,
-    gap: 3,
+  splitRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 4,
+    paddingLeft: 22,
+    gap: 8,
   },
-  metaLine: {
+  splitLabel: {
+    flex: 1,
     fontSize: 11,
     color: GatiMitraMerchant.textSecondary,
   },
-  metaMuted: {
-    fontSize: 11,
-    color: GatiMitraMerchant.textTertiary,
-  },
-  metaAccent: {
-    fontSize: 11,
-    color: "#0D9488",
-    fontWeight: "600",
-  },
-  custList: {
-    marginTop: 8,
-    marginLeft: 8,
-    borderLeftWidth: 2,
-    borderLeftColor: "#5EEAD4",
-    paddingLeft: 8,
-    gap: 4,
-  },
-  custRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 8,
-  },
-  custLabel: {
+  splitLabelCust: {
     flex: 1,
     fontSize: 11,
-    color: GatiMitraMerchant.textTertiary,
+    color: "#115E59",
   },
-  custAmount: {
+  splitAmount: {
+    width: AMOUNT_WIDTH,
+    textAlign: "right",
     fontSize: 11,
     fontWeight: "600",
     color: GatiMitraMerchant.textPrimary,
     fontVariant: ["tabular-nums"],
+  },
+  splitAmountCust: {
+    width: AMOUNT_WIDTH,
+    textAlign: "right",
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#115E59",
+    fontVariant: ["tabular-nums"],
+  },
+  addonRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    marginTop: 4,
+    paddingLeft: 22,
+    gap: 8,
+  },
+  addonLabel: {
+    flex: 1,
+    fontSize: 11,
+    color: GatiMitraMerchant.textSecondary,
+    borderLeftWidth: 1,
+    borderLeftColor: "#99F6E4",
+    paddingLeft: 8,
+    lineHeight: 16,
+  },
+  addonAmount: {
+    width: AMOUNT_WIDTH,
+    textAlign: "right",
+    fontSize: 11,
+    color: GatiMitraMerchant.textPrimary,
+    fontVariant: ["tabular-nums"],
+  },
+  addonSpacer: {
+    width: AMOUNT_WIDTH,
   },
   summaryCard: {
     backgroundColor: "#F9FAFB",
@@ -332,9 +369,9 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
   },
   summaryAmountBold: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: "800",
-    color: "#059669",
+    color: GatiMitraMerchant.textPrimary,
   },
   discountAmount: {
     color: "#059669",
@@ -349,9 +386,43 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraMerchant.divider,
     marginVertical: 4,
   },
-  formulaHint: {
-    fontSize: 11,
-    color: GatiMitraMerchant.textTertiary,
+  paidBadge: {
+    alignSelf: "flex-start",
     marginTop: 4,
+    backgroundColor: "#CCFBF1",
+    borderWidth: 1,
+    borderColor: "#99F6E4",
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  paidBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#0F766E",
+    letterSpacing: 0.3,
+  },
+  footer: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: GatiMitraMerchant.divider,
+    backgroundColor: "#F9FAFB",
+    paddingHorizontal: H_PADDING,
+    paddingVertical: 14,
+  },
+  footerRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  footerLabel: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  footerAmount: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: GatiMitraMerchant.textPrimary,
+    fontVariant: ["tabular-nums"],
   },
 });

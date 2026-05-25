@@ -4,6 +4,7 @@ import {
   type MerchantOrderActionSource,
 } from "@/lib/merchantOrderFoodActions";
 import type { ApiFoodOrder } from "@/services/ordersApi";
+import type { OrderRecord } from "@/hooks/useOrders";
 
 export type TimelineActorDetail =
   | {
@@ -110,7 +111,30 @@ export function apiFoodOrderToTimelineOrder(o: ApiFoodOrder): MerchantTimelineOr
     rejected_reason: o.rejected_reason,
     accepted_by_label: o.accepted_by_label,
     cancelled_by_label: o.cancelled_by_label,
+    rider_picked_up_at: o.rider_picked_up_at?.trim() || null,
+    handed_over_to_rider_at: o.handed_over_to_rider_at?.trim() || null,
     is_rto: st === "RTO",
+  };
+}
+
+/** Build timeline order from list/card data — Partner Site passes OrdersFoodRow without refetch. */
+export function orderRecordToTimelineOrder(o: OrderRecord): MerchantTimelineOrder {
+  const st = (o.pipelineStatus ?? "").trim().toUpperCase();
+  return {
+    order_status: o.pipelineStatus,
+    created_at: o.createdAt,
+    accepted_at: o.acceptedAt,
+    preparing_at: o.preparingAt,
+    prepared_at: o.preparedAt,
+    dispatched_at: o.dispatchedAt,
+    delivered_at: o.deliveredAt ?? null,
+    cancelled_at: o.cancelledAt,
+    rejected_reason: o.rejectedReason,
+    accepted_by_label: o.acceptedByLabel,
+    cancelled_by_label: o.cancelledByLabel,
+    rider_picked_up_at: o.riderPickedUpAt,
+    handed_over_to_rider_at: o.handedOverToRiderAt,
+    is_rto: st === "RTO" || o.status === "rto",
   };
 }
 
@@ -155,6 +179,59 @@ function pickTimestamp(...candidates: (string | null | undefined)[]): string | n
     }
   }
   return best;
+}
+
+/** Latest valid instant (milestone completion — avoids early stray timeline rows). */
+function pickLatestTimestamp(...candidates: (string | null | undefined)[]): string | null {
+  let best: string | null = null;
+  let bestMs = -Infinity;
+  for (const c of candidates) {
+    if (!c) continue;
+    const ms = new Date(c).getTime();
+    if (!Number.isFinite(ms)) continue;
+    if (ms > bestMs) {
+      bestMs = ms;
+      best = c;
+    }
+  }
+  return best;
+}
+
+function orderStatusRank(status: string | null | undefined): number {
+  const u = normStatus(status);
+  if (u === "CREATED" || u === "NEW" || u === "PLACED" || u === "ORDER_PLACED") return 0;
+  if (u === "ACCEPTED") return 10;
+  if (u === "PREPARING") return 20;
+  if (u === "READY_FOR_PICKUP" || u === "READY" || u === "PREPARED") return 30;
+  if (u === "OUT_FOR_DELIVERY" || u === "PICKED_UP" || u === "DISPATCHED" || u === "PICKEDUP") {
+    return 40;
+  }
+  if (u === "DELIVERED") return 50;
+  if (u === "CANCELLED") return 90;
+  if (u === "RTO" || u === "FAILED") return 91;
+  return -1;
+}
+
+/** Minimum order status rank before this milestone may appear. */
+function minRankForStepKey(key: string): number {
+  switch (key) {
+    case "placed":
+      return 0;
+    case "accepted":
+      return 10;
+    case "rider_arrived":
+      return 10;
+    case "preparing":
+      return 20;
+    case "ready":
+      return 30;
+    case "picked_up":
+      return 40;
+    case "delivered":
+      return 50;
+    default:
+      return 0;
+  }
 }
 
 function pickMetaString(meta: Record<string, unknown>, keys: string[]): string {
@@ -228,7 +305,13 @@ function mapTimelineStatusToKey(status: string): string | null {
   if (u.includes("placed") || u.includes("created") || u === "new" || u === "order_placed") return "placed";
   if (u.includes("accept")) return "accepted";
   if (u.includes("prepar")) return "preparing";
-  if (u.includes("ready") || u === "dispatch_ready") return "ready";
+  if (
+    u.includes("ready_for_pickup") ||
+    u === "dispatch_ready" ||
+    (u.includes("ready") && !u.includes("prepar"))
+  ) {
+    return "ready";
+  }
   if (u.includes("rider") && (u.includes("arriv") || u.includes("reach"))) return "rider_arrived";
   if (u.includes("handover") || u.includes("handed")) return "picked_up";
   if (
@@ -249,12 +332,17 @@ function mapTimelineStatusToKey(status: string): string | null {
 
 function absorbTimelineEntries(
   entries: TimelineEntryLike[],
-  atByKey: Record<string, string | null>
+  atByKey: Record<string, string | null>,
+  orderStatus: string | null | undefined
 ): void {
+  const rank = orderStatusRank(orderStatus);
   for (const e of entries) {
     const key = mapTimelineStatusToKey(e.status);
     if (!key) continue;
-    atByKey[key] = pickTimestamp(atByKey[key], e.occurred_at);
+    if (key !== "cancelled" && key !== "rto" && rank >= 0 && rank < minRankForStepKey(key)) {
+      continue;
+    }
+    atByKey[key] = pickLatestTimestamp(atByKey[key], e.occurred_at);
   }
 }
 
@@ -287,7 +375,7 @@ const FLOW_STEP_DEFS: StepDef[] = [
     showView: true,
     actorAction: "accepted",
     resolveAt: ({ order, actions, atByKey }) =>
-      pickTimestamp(order.accepted_at, actionAt(actions, ["ACCEPTED"]), atByKey.accepted),
+      pickLatestTimestamp(order.accepted_at, actionAt(actions, ["ACCEPTED"]), atByKey.accepted),
   },
   {
     key: "preparing",
@@ -295,40 +383,53 @@ const FLOW_STEP_DEFS: StepDef[] = [
     showView: false,
     actorAction: null,
     resolveAt: ({ order, actions, atByKey }) =>
-      pickTimestamp(order.preparing_at, actionAt(actions, ["PREPARING"]), atByKey.preparing),
+      pickLatestTimestamp(order.preparing_at, actionAt(actions, ["PREPARING"]), atByKey.preparing),
   },
   {
     key: "rider_arrived",
     label: "Delivery partner arrived",
     showView: false,
     actorAction: null,
-    resolveAt: ({ riderReachedAt, atByKey }) => pickTimestamp(riderReachedAt, atByKey.rider_arrived),
+    resolveAt: ({ riderReachedAt, atByKey }) =>
+      pickLatestTimestamp(riderReachedAt, atByKey.rider_arrived),
   },
   {
     key: "ready",
     label: "Ready",
     showView: true,
     actorAction: "ready",
-    resolveAt: ({ order, actions, atByKey }) =>
-      pickTimestamp(
+    resolveAt: ({ order, actions, atByKey }) => {
+      const rank = orderStatusRank(order.order_status);
+      const hasReadyAction = !!actionAt(actions, ["READY_FOR_PICKUP", "READY", "PREPARED"]);
+      if (rank < 30 && !order.prepared_at && !hasReadyAction) return null;
+      return pickLatestTimestamp(
         order.prepared_at,
         actionAt(actions, ["READY_FOR_PICKUP", "READY", "PREPARED"]),
         atByKey.ready
-      ),
+      );
+    },
   },
   {
     key: "picked_up",
     label: "Dispatched",
     showView: false,
     actorAction: null,
-    resolveAt: ({ order, actions, atByKey }) =>
-      pickTimestamp(
+    resolveAt: ({ order, actions, atByKey }) => {
+      const rank = orderStatusRank(order.order_status);
+      if (
+        rank < 40 &&
+        !actionAt(actions, ["OUT_FOR_DELIVERY", "PICKED_UP", "PICKEDUP", "DISPATCHED"])
+      ) {
+        return null;
+      }
+      return pickLatestTimestamp(
         order.dispatched_at,
         order.rider_picked_up_at,
         order.handed_over_to_rider_at,
         actionAt(actions, ["OUT_FOR_DELIVERY", "PICKED_UP", "PICKEDUP", "DISPATCHED"]),
         atByKey.picked_up
-      ),
+      );
+    },
   },
   {
     key: "delivered",
@@ -336,10 +437,17 @@ const FLOW_STEP_DEFS: StepDef[] = [
     showView: false,
     actorAction: null,
     tone: "success",
-    resolveAt: ({ order, actions, atByKey }) =>
-      pickTimestamp(order.delivered_at, actionAt(actions, ["DELIVERED"]), atByKey.delivered),
+    resolveAt: ({ order, actions, atByKey }) => {
+      const rank = orderStatusRank(order.order_status);
+      if (rank < 50 && !actionAt(actions, ["DELIVERED"])) return null;
+      return pickLatestTimestamp(order.delivered_at, actionAt(actions, ["DELIVERED"]), atByKey.delivered);
+    },
   },
 ];
+
+const FLOW_STEP_INDEX: Record<string, number> = Object.fromEntries(
+  FLOW_STEP_DEFS.map((d, i) => [d.key, i])
+);
 
 const CANCELLED_DEF: StepDef = {
   key: "cancelled",
@@ -375,7 +483,7 @@ export function buildMerchantVisibleTimeline(
   const actions = opts?.actions ?? [];
   const atByKey: Record<string, string | null> = {};
 
-  absorbTimelineEntries(opts?.timelineEntries ?? [], atByKey);
+  absorbTimelineEntries(opts?.timelineEntries ?? [], atByKey, order.order_status);
 
   const ctx = {
     order,
@@ -398,10 +506,21 @@ export function buildMerchantVisibleTimeline(
   if (showRto) defs.push(RTO_DEF);
 
   const steps: MerchantVisibleTimelineStep[] = [];
+  const currentRank = orderStatusRank(order.order_status);
 
   for (const def of defs) {
     const at = def.resolveAt(ctx);
     if (!at && def.key !== "placed") continue;
+
+    if (
+      def.key !== "placed" &&
+      def.key !== "cancelled" &&
+      def.key !== "rto" &&
+      currentRank >= 0 &&
+      currentRank < minRankForStepKey(def.key)
+    ) {
+      continue;
+    }
 
     steps.push({
       key: def.key,
@@ -417,7 +536,29 @@ export function buildMerchantVisibleTimeline(
 
   return steps
     .filter((s) => s.at)
-    .sort((a, b) => new Date(a.at!).getTime() - new Date(b.at!).getTime());
+    .sort((a, b) => (FLOW_STEP_INDEX[a.key] ?? 99) - (FLOW_STEP_INDEX[b.key] ?? 99));
+}
+
+export function formatTimelineDate(s: string | null | undefined): string {
+  if (!s) return "";
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+export function formatTimelineClock(s: string | null | undefined): string {
+  if (!s) return "";
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString("en-IN", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
 }
 
 /** Short source label for expanded row (reference: Source: Android). */

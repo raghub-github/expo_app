@@ -12,6 +12,8 @@ import {
   type ApiFoodOrderItem,
 } from "@/services/ordersApi";
 import { merchantOrderBillTotal } from "@/lib/merchant-line-total";
+import { prefetchMenuItemsForOrders } from "@/lib/menuItemCache";
+import { prefetchOrderTimeline } from "@/lib/orderTimelineCache";
 import { getStoreSettings } from "@/services/storeSettingsApi";
 
 export type DeliveryType = "GATIMITRA_RIDER" | "SELF_DELIVERY" | "SELF_PICKUP";
@@ -29,12 +31,14 @@ export type LineItem = {
   qty: number;
   name: string;
   price: number;
+  menuItemId?: number | null;
   vegNonveg?: string | null;
   customization_lines?: ApiFoodOrderItem["customization_lines"];
   base_amount?: number;
   customizations_total?: number;
   captured_base_amount?: number;
   captured_addon_amount?: number;
+  has_customizations?: boolean;
 };
 
 export type OrderRecord = {
@@ -58,19 +62,47 @@ export type OrderRecord = {
   cancelledByLabel?: string | null;
   cancelledByType?: string | null;
   cancelledAt?: string | null;
+  acceptedAt?: string | null;
+  preparingAt?: string | null;
+  preparedAt?: string | null;
+  dispatchedAt?: string | null;
+  handedOverToRiderAt?: string | null;
+  riderPickedUpAt?: string | null;
+  deliveredAt?: string | null;
+  preparationTimeMinutes?: number | null;
+  prepReadyByAt?: string | null;
   customerPhone?: string | null;
   customerEmail?: string | null;
   dropAddress?: string | null;
   distanceKm?: number | null;
   customerStoreOrderOrdinal?: number | null;
   customerStoreOrdersTotal?: number | null;
+  customerPlatformOrdersTotal?: number | null;
   isBulkOrder?: boolean;
   vegNonVeg?: string | null;
+  requiresUtensils?: boolean | null;
+  merchantInstructionsList?: unknown;
+  isScheduledOrder?: boolean;
+  scheduledDeliverySummary?: string | null;
 };
 
 export type OrderCounts = {
   all: number;
 } & Record<OrderStage, number>;
+
+function coerceTimestamp(value: unknown): string | null {
+  if (value == null || value === "") return null;
+  if (typeof value === "string") {
+    const t = value.trim();
+    return t.length > 0 ? t : null;
+  }
+  try {
+    const d = new Date(value as string | number | Date);
+    return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+  } catch {
+    return null;
+  }
+}
 
 function formatDisplayTime(iso: string): string {
   try {
@@ -129,7 +161,7 @@ function mapApiOrder(o: ApiFoodOrder): OrderRecord {
   const deliveryType = (o.delivery_type ?? "GATIMITRA_RIDER") as DeliveryType;
 
   const foodRowId = o.core_only ? null : o.orders_food_id;
-  const cancelledAt = o.cancelled_at?.trim() || null;
+  const cancelledAt = coerceTimestamp(o.cancelled_at);
   const customerName = (o.customer_name ?? "").trim();
 
   return {
@@ -144,12 +176,17 @@ function mapApiOrder(o: ApiFoodOrder): OrderRecord {
       qty: it.qty,
       name: it.name,
       price: Number(it.price) || 0,
+      menuItemId:
+        it.menu_item_id != null && Number.isFinite(Number(it.menu_item_id))
+          ? Number(it.menu_item_id)
+          : null,
       vegNonveg: it.veg_nonveg ?? null,
       customization_lines: it.customization_lines,
       base_amount: it.base_amount,
       customizations_total: it.customizations_total,
       captured_base_amount: it.captured_base_amount,
       captured_addon_amount: it.captured_addon_amount,
+      has_customizations: it.has_customizations,
     })),
     total: merchantOrderBillTotal(o),
     status: apiStatusToStage(o.order_status),
@@ -162,14 +199,29 @@ function mapApiOrder(o: ApiFoodOrder): OrderRecord {
     cancelledByLabel: o.cancelled_by_label ?? null,
     cancelledByType: o.cancelled_by_type ?? null,
     cancelledAt,
+    acceptedAt: coerceTimestamp(o.accepted_at),
+    preparingAt: coerceTimestamp(o.preparing_at),
+    preparedAt: coerceTimestamp(o.prepared_at),
+    dispatchedAt: coerceTimestamp(o.dispatched_at),
+    handedOverToRiderAt: coerceTimestamp(o.handed_over_to_rider_at),
+    riderPickedUpAt: coerceTimestamp(o.rider_picked_up_at),
+    deliveredAt: coerceTimestamp(o.delivered_at),
+  preparationTimeMinutes:
+      o.preparation_time_minutes != null ? Number(o.preparation_time_minutes) : null,
+    prepReadyByAt: o.prep_ready_by_at?.trim() || null,
     customerPhone: o.customer_phone?.trim() || null,
     customerEmail: o.customer_email?.trim() || null,
     dropAddress: o.drop_address?.trim() || null,
     distanceKm: o.distance_km != null ? Number(o.distance_km) : null,
     customerStoreOrderOrdinal: o.customer_store_order_ordinal ?? null,
     customerStoreOrdersTotal: o.customer_store_orders_total ?? null,
+    customerPlatformOrdersTotal: o.customer_platform_orders_total ?? null,
     isBulkOrder: Boolean(o.is_bulk_order),
     vegNonVeg: o.veg_non_veg ?? null,
+    requiresUtensils: o.requires_utensils ?? null,
+    merchantInstructionsList: o.merchant_instructions_list,
+    isScheduledOrder: Boolean(o.is_scheduled_order),
+    scheduledDeliverySummary: o.scheduled_delivery_summary?.trim() || null,
   };
 }
 
@@ -214,6 +266,16 @@ export function useOrders(pollIntervalMs = 8000) {
       ]);
       const mapped = list.map(mapApiOrder);
       setOrders(mapped);
+      prefetchMenuItemsForOrders(
+        storeId,
+        token,
+        mapped.flatMap((o) => o.lineItems)
+      );
+      for (const row of mapped) {
+        if (row.id.startsWith("core-")) continue;
+        const foodId = parseInt(row.id, 10);
+        if (Number.isFinite(foodId)) prefetchOrderTimeline(storeId, foodId, token);
+      }
 
       if (storeSettings?.auto_accept_orders) {
         const delayMs = Math.max(0, Math.min(600, storeSettings.auto_accept_time_seconds || 0)) * 1000;

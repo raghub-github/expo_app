@@ -23,7 +23,7 @@ const defaultTicketFilters: TicketFilters = {
 
 const defaultFoodOrdersFilters: OrdersFilters = {
   orderType: "food",
-  statusFilter: null,
+  statusFilter: "PAYMENT DONE",
   search: "",
   searchType: "Order Id",
   page: 1,

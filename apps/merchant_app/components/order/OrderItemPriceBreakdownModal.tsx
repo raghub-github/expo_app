@@ -1,19 +1,16 @@
 import {
-  Modal,
   View,
   Text,
   StyleSheet,
-  Pressable,
   ScrollView,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { ApiFoodOrderItem } from "@/services/ordersApi";
-import { GatiMitraMerchant, CARD_RADIUS, H_PADDING } from "@/constants/theme";
+import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 import {
   foodOrderAddonRows,
   foodOrderVariantLabel,
 } from "@/lib/merchant-order-food-item-display";
+import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
 
 function formatRs(amount: number, decimals = 2): string {
   const n = Number.isFinite(amount) ? amount : 0;
@@ -36,7 +33,6 @@ type Props = {
 };
 
 export function OrderItemPriceBreakdownModal({ visible, item, onClose }: Props) {
-  const insets = useSafeAreaInsets();
   if (!item) return null;
 
   const qty = Math.max(1, item.qty || 1);
@@ -53,87 +49,69 @@ export function OrderItemPriceBreakdownModal({ visible, item, onClose }: Props) 
     structured.reduce((s, l) => s + (l.amount || 0), 0);
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable
-          style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}
-          onPress={(e) => e.stopPropagation()}
-        >
-          <View style={styles.handle} />
-          <View style={styles.header}>
-            <Text style={styles.title}>Item price breakdown</Text>
-            <Pressable onPress={onClose} hitSlop={12}>
-              <Ionicons name="close" size={22} color={GatiMitraMerchant.textSecondary} />
-            </Pressable>
+    <MerchantBottomSheetShell visible={visible} onClose={onClose}>
+      <View style={styles.handle} />
+      <Text style={styles.title}>Item price breakdown</Text>
+
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <Text style={styles.itemTitle} numberOfLines={2}>
+          {qty} × {item.name}
+        </Text>
+        {variantLabel ? (
+          <Text style={styles.variantText}>{variantLabel}</Text>
+        ) : (
+          <View style={styles.variantSpacer} />
+        )}
+
+        <View style={styles.row}>
+          <Text style={styles.rowLabel}>Base item price</Text>
+          <Text style={styles.rowAmount}>{formatRs(baseAmount, 2)}</Text>
+        </View>
+
+        {addonRows.length > 0 ? (
+          <View style={styles.custBlock}>
+            <Text style={styles.custHeading}>Customizations</Text>
+            {addonRows.map((row, i) => (
+              <View key={i} style={styles.row}>
+                <Text style={styles.rowLabel}>{row.label}</Text>
+                <Text style={styles.rowAmount}>
+                  {row.amount != null && row.amount > 0 ? formatRs(row.amount, 2) : "—"}
+                </Text>
+              </View>
+            ))}
           </View>
+        ) : null}
 
-          <Text style={styles.itemTitle} numberOfLines={2}>
-            {qty} × {item.name}
+        {custTotal > 0 ? (
+          <View style={[styles.row, styles.custTotalRow]}>
+            <Text style={styles.custTotalLabel}>Customizations total</Text>
+            <Text style={styles.custTotalAmount}>{formatRs(custTotal, 2)}</Text>
+          </View>
+        ) : null}
+
+        <View style={styles.divider} />
+        <View style={styles.row}>
+          <Text style={styles.grandLabel}>
+            Line total ({qty} item{qty > 1 ? "s" : ""})
           </Text>
-          {variantLabel ? (
-            <View style={styles.variantBadge}>
-              <Text style={styles.variantBadgeText}>{variantLabel}</Text>
-            </View>
-          ) : null}
+          <Text style={styles.grandAmount}>{formatRs(lineTotal, 2)}</Text>
+        </View>
 
-          <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
-            <View style={styles.row}>
-              <Text style={styles.rowLabel}>Base item price</Text>
-              <Text style={styles.rowAmount}>{formatRs(baseAmount)}</Text>
-            </View>
-
-            {addonRows.length > 0 ? (
-              <View style={styles.custBlock}>
-                <Text style={styles.custHeading}>Customizations</Text>
-                {addonRows.map((row, i) => (
-                  <View key={i} style={styles.row}>
-                    <Text style={styles.rowLabel}>{row.label}</Text>
-                    <Text style={styles.rowAmount}>
-                      {row.amount != null && row.amount > 0 ? formatRs(row.amount) : "—"}
-                    </Text>
-                  </View>
-                ))}
-              </View>
-            ) : null}
-
-            {custTotal > 0 ? (
-              <View style={[styles.row, styles.custTotalRow]}>
-                <Text style={styles.custTotalLabel}>Customizations total</Text>
-                <Text style={styles.custTotalAmount}>{formatRs(custTotal)}</Text>
-              </View>
-            ) : null}
-
-            <View style={styles.divider} />
-            <View style={styles.row}>
-              <Text style={styles.grandLabel}>Line total ({qty} item{qty > 1 ? "s" : ""})</Text>
-              <Text style={styles.grandAmount}>{formatRs(lineTotal)}</Text>
-            </View>
-
-            <Text style={styles.note}>
-              Merchant base prices — same amounts shown on the order.
-            </Text>
-          </ScrollView>
-        </Pressable>
-      </Pressable>
-    </Modal>
+        <Text style={styles.note}>
+          Merchant-facing amounts for this order line.
+        </Text>
+      </ScrollView>
+    </MerchantBottomSheetShell>
   );
 }
 
 export { itemHasBreakdown };
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: "rgba(15, 23, 42, 0.45)",
-    justifyContent: "flex-end",
-  },
-  sheet: {
-    backgroundColor: GatiMitraMerchant.cardBg,
-    borderTopLeftRadius: CARD_RADIUS + 4,
-    borderTopRightRadius: CARD_RADIUS + 4,
-    maxHeight: "72%",
-    paddingHorizontal: H_PADDING,
-  },
   handle: {
     alignSelf: "center",
     width: 40,
@@ -143,39 +121,35 @@ const styles = StyleSheet.create({
     marginTop: 10,
     marginBottom: 8,
   },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 8,
-  },
   title: {
     fontSize: 17,
     fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
+    paddingHorizontal: H_PADDING,
+    marginBottom: 8,
+  },
+  scroll: {
+    maxHeight: 420,
+  },
+  scrollContent: {
+    paddingHorizontal: H_PADDING,
+    paddingBottom: 16,
   },
   itemTitle: {
     fontSize: 15,
     fontWeight: "600",
     color: GatiMitraMerchant.textPrimary,
-    marginBottom: 6,
+    marginBottom: 4,
   },
-  variantBadge: {
-    alignSelf: "flex-start",
-    backgroundColor: "#D1FAE5",
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 2,
-    marginBottom: 14,
-  },
-  variantBadgeText: {
+  variantText: {
     fontSize: 11,
     fontWeight: "600",
     color: "#065F46",
-    textTransform: "capitalize",
+    marginBottom: 14,
+    lineHeight: 16,
   },
-  scroll: {
-    maxHeight: 360,
+  variantSpacer: {
+    marginBottom: 14,
   },
   row: {
     flexDirection: "row",
@@ -195,10 +169,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: GatiMitraMerchant.textPrimary,
     fontVariant: ["tabular-nums"],
-  },
-  rowMuted: {
-    fontSize: 14,
-    color: GatiMitraMerchant.textTertiary,
   },
   custBlock: {
     marginTop: 4,
@@ -252,6 +222,5 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textTertiary,
     lineHeight: 15,
     marginTop: 8,
-    marginBottom: 8,
   },
 });

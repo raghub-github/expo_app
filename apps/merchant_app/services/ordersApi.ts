@@ -13,6 +13,7 @@ export type ApiFoodOrderItem = {
   qty: number;
   name: string;
   price: number;
+  menu_item_id?: number | null;
   veg_nonveg?: string | null;
   customizations?: string[];
   variant_tag?: string | null;
@@ -46,6 +47,7 @@ export type ApiFoodOrder = {
   distance_km: number | null;
   customer_store_order_ordinal: number | null;
   customer_store_orders_total: number | null;
+  customer_platform_orders_total: number | null;
   is_bulk_order?: boolean;
   veg_non_veg?: string | null;
   created_at: string;
@@ -60,17 +62,24 @@ export type ApiFoodOrder = {
   rto_otp: string | null;
   requires_utensils?: boolean | null;
   delivery_instructions?: string | null;
+  merchant_instructions_list?: unknown;
   payment_method: string | null;
   accepted_at: string | null;
   preparing_at: string | null;
   prepared_at: string | null;
   dispatched_at: string | null;
+  preparation_time_minutes?: number | null;
+  prep_ready_by_at?: string | null;
+  handed_over_to_rider_at?: string | null;
+  rider_picked_up_at?: string | null;
   delivered_at: string | null;
   cancelled_at: string | null;
   rejected_reason: string | null;
   accepted_by_label: string | null;
   cancelled_by_label: string | null;
   cancelled_by_type?: string | null;
+  is_scheduled_order?: boolean;
+  scheduled_delivery_summary?: string | null;
 };
 
 export async function fetchFoodOrders(
