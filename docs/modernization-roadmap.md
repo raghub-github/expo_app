@@ -234,7 +234,7 @@ Each stage **must compile, deploy, and run in production by itself**. No "big ba
   - nginx reverse proxy with routes:
     - `api.gatimitra.com` → backend (port 3000)
     - `ws.gatimitra.com` → ws‑gateway
-    - `dashboard.gatimitra.com` → dashboard
+    - `control.gatimitra.com` → dashboard
     - `partner.gatimitra.com` → partnersite
   - Prometheus/Grafana from Stage 4
 - [ ] Each Dockerfile: confirm multi‑stage, `USER node`, `HEALTHCHECK`, no dev deps in final image.

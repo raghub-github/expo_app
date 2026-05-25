@@ -64,15 +64,22 @@ export function getConfig(): {
    */
   phoneOtpUseBackendOnly: boolean;
 } {
+  // Production safety net: if EAS didn't bake EXPO_PUBLIC_API_BASE_URL into
+  // the bundle, fall back to the public domain. localhost is unreachable from
+  // a real phone, so a missing prod env was a guaranteed crash before.
+  const PROD_FALLBACK = "https://api.gatimitra.com";
+  const DEV_FALLBACK = "http://localhost:3000";
+  const fallback = __DEV__ ? DEV_FALLBACK : PROD_FALLBACK;
+
   const fromEnv = process.env.EXPO_PUBLIC_API_BASE_URL;
   const fromExtra =
     (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.API_BASE_URL ??
     (Constants.manifest2?.extra as Record<string, unknown> | undefined)?.API_BASE_URL ??
-    "http://localhost:3000"; // Fallback if manifest2 is undefined
+    fallback;
   const raw = (
     asNonEmptyString(fromEnv) ??
     asNonEmptyString(fromExtra) ??
-    "http://localhost:3000"
+    fallback
   ).trim();
   const storeIdEnv =
     process.env.EXPO_PUBLIC_STORE_ID ??

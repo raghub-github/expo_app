@@ -26,10 +26,12 @@ export function getRiderAppConfig(): RiderAppConfig {
     (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.API_BASE_URL ??
     (Constants.manifest2?.extra as Record<string, unknown> | undefined)?.API_BASE_URL;
 
+  // Production safety net — see merchant_app/config/env.ts for rationale.
+  const fallback = __DEV__ ? "http://localhost:3000" : "https://api.gatimitra.com";
   const apiBaseUrl = (
     asNonEmptyString(fromEnv) ??
     asNonEmptyString(fromExtra) ??
-    "http://localhost:3000"
+    fallback
   ).replace(/\/+$/, "");
 
   const mapboxToken = asNonEmptyString(process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN) ?? undefined;

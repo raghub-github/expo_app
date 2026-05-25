@@ -74,6 +74,9 @@ function getApiBaseUrl(): string {
   const host = (process.env.EXPO_PUBLIC_DEV_HOST ?? "").trim();
   const port = (process.env.EXPO_PUBLIC_API_PORT ?? "3000").trim();
   if (host) return `http://${host}:${port}`;
+  // Production safety net: if EAS missed baking in the URL, fall back to the
+  // public domain instead of localhost (which is unreachable from a phone).
+  if (!__DEV__) return "https://api.gatimitra.com";
   return "http://localhost:3000";
 }
 

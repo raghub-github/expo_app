@@ -106,10 +106,14 @@ export function getConfig(): {
     const fromExtra =
       (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.API_BASE_URL ??
       (Constants.manifest2?.extra as Record<string, unknown> | undefined)?.API_BASE_URL;
+    // Production safety net: a release build with no baked-in URL must NOT
+    // call localhost (unreachable from a phone). Fall back to the public
+    // domain so the app at least talks to prod backend.
+    const releaseFallback = __DEV__ ? `http://localhost:${port}` : "https://api.gatimitra.com";
     rawUrl =
       asNonEmptyString(fromEnv) ??
       asNonEmptyString(fromExtra) ??
-      `http://localhost:${port}`;
+      releaseFallback;
   }
 
   // Runtime override (from AsyncStorage, set via the in-app "Configure API URL"

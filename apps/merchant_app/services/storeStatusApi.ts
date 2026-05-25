@@ -14,6 +14,8 @@ function getBase(): string {
   } catch {
     // ignore
   }
+  // Production safety net — same reasoning as customer_app/RazorpayCheckoutModal.
+  if (!__DEV__) return "https://api.gatimitra.com";
   return "http://localhost:3000";
 }
 
