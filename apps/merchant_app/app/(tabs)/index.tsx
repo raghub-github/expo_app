@@ -3,7 +3,7 @@
  * All Orders with New/Active tabs, recent orders. Main area only; header/status card untouched.
  */
 
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -35,6 +35,8 @@ import type { MerchantCancellationReason } from "@/lib/merchantCancellationReaso
 import { fetchGrowthSummary } from "@/services/growthApi";
 import { fetchWalletSummary } from "@/services/walletApi";
 import { getActiveOrdersCount } from "@/services/storeSettingsApi";
+import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedActiveOrdersNotice";
+import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
 
 const { width } = Dimensions.get("window");
 const CARD_WIDTH = (width - H_PADDING * 2 - CARD_GAP) / 2;
@@ -143,6 +145,7 @@ export default function DashboardScreen() {
   const [rejectLoading, setRejectLoading] = useState(false);
 
   const [orderTab, setOrderTab] = useState<OrderFilterTab>("New");
+  const orderTabBootstrapped = useRef(false);
   const [todayEarning, setTodayEarning] = useState(0);
   const [deliveredToday, setDeliveredToday] = useState(0);
   const [pendingCount, setPendingCount] = useState(0);
@@ -170,7 +173,7 @@ export default function DashboardScreen() {
   }, [loadDashboardStats]);
 
   useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 30_000);
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
 
@@ -199,6 +202,18 @@ export default function DashboardScreen() {
     restriction === "manual" ||
     restriction === "manual_hold";
   const showClosedBanner = !isOnline && hasManualOrScheduledClosure;
+
+  useEffect(() => {
+    if (orderTabBootstrapped.current) return;
+    if (pendingCount <= 0) return;
+    orderTabBootstrapped.current = true;
+    setOrderTab("Active");
+  }, [pendingCount]);
+
+  const hasActiveOrders = useMemo(
+    () => orders.some((o) => isActiveMerchantOrderStage(o.status)),
+    [orders]
+  );
 
   const recentOrders = useMemo(() => {
     let list = orders;
@@ -320,6 +335,7 @@ export default function DashboardScreen() {
           <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textSecondary} />
         </Pressable>
       )}
+      <StoreClosedActiveOrdersNotice visible={!isOnline && hasActiveOrders} />
       <Text style={styles.dateText}>{formatTodayDate()}</Text>
 
       <View style={styles.section}>
@@ -345,7 +361,7 @@ export default function DashboardScreen() {
             value={String(pendingCount)}
             icon="time-outline"
             accent="primary"
-            onPress={() => router.push("/(tabs)/orders")}
+            onPress={() => router.push("/(tabs)/orders?tab=active" as any)}
           />
           <KpiCard
             title="Overall wallet balance"
@@ -384,6 +400,7 @@ export default function DashboardScreen() {
                 key={order.id}
                 order={order}
                 nowMs={nowMs}
+                storeName={selectedStore?.store_name}
                 onAccept={() => handleAccept(order)}
                 onReject={() => handleReject(order)}
                 onAdvance={() => handleAdvance(order)}

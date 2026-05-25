@@ -21,6 +21,7 @@ import {
 } from "@/components/order/orderFormatters";
 import { CustomerStoreOrdinalPill } from "@/components/order/CustomerStoreOrdinalPill";
 import { ItemVegMark } from "@/components/order/ItemVegMark";
+import { sliceOrderLineItems } from "@/lib/orderCardDisplay";
 
 const CARD_RADIUS = 12;
 const CARD_PADDING = 14;
@@ -138,8 +139,8 @@ export function TerminalOrderCard({
     order.ordersCoreId,
     numericFoodId || undefined
   );
-  const visibleItems = order.lineItems.slice(0, 2);
-  const moreItemCount = order.lineItems.length - visibleItems.length;
+  const visibleItems = sliceOrderLineItems(order.lineItems).visible;
+  const moreItemCount = Math.max(0, order.lineItems.length - visibleItems.length);
   const customerLabel = (order.customerName ?? "").trim() || "Guest";
   const isTerminalRejected = order.status === "rejected" || order.status === "rto";
   const dateIso =

@@ -229,6 +229,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const parentId = Number(parentRow.id);
           const storeRows = await sql`
             SELECT ms.id, ms.store_id, ms.store_name, ms.full_address, ms.approval_status,
+                   ms.banner_url,
                    msrp.current_step, msrp.total_steps, msrp.registration_status
             FROM merchant_stores ms
             LEFT JOIN merchant_store_registration_progress msrp ON msrp.store_id = ms.id AND msrp.parent_id = ${parentId}
@@ -259,6 +260,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               store_name: s?.store_name,
               full_address: s?.full_address ?? "",
               approval_status: s?.approval_status ?? "DRAFT",
+              banner_url: s?.banner_url ?? null,
               current_step: step,
               total_steps: total,
               payment_status: paymentStatus,

@@ -1,8 +1,7 @@
 /**
  * Orders Management — real-time operational board for GatiMitra Partner.
- * - Horizontal status nav: All | Created | Preparing | Ready | Picked Up | Delivered | Rejected | RTO
- * - Smart order cards with delivery type, OTP, timers, and slider-confirm actions.
- * - Supports multi-category stores and multiple delivery types while staying fast and clear.
+ * - Horizontal status nav: All | Created | Preparing | Ready | Picked Up | Completed | Scheduled
+ * - Swipe left/right on the list to switch tabs.
  */
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
@@ -14,11 +13,11 @@ import {
   Pressable,
   Platform,
   ScrollView,
-  FlatList,
   RefreshControl,
   ActivityIndicator,
-  Animated,
   LayoutChangeEvent,
+  FlatList,
+  PanResponder,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -36,7 +35,7 @@ import {
 } from "@/hooks/useOrders";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { TerminalOrderCard } from "@/components/order/TerminalOrderCard";
-import { LiveOrderCard } from "@/components/order/LiveOrderCard";
+import { LiveOrderCard, canMerchantMarkDelivered } from "@/components/order/LiveOrderCard";
 import { OrdersFilterSheet } from "@/components/order/OrdersFilterSheet";
 import {
   EMPTY_ORDERS_FILTERS,
@@ -47,27 +46,36 @@ import {
 import { RejectOrderSheet } from "@/components/order/RejectOrderSheet";
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
 import { PastOrdersBanner } from "@/components/order/PastOrdersBanner";
+import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedActiveOrdersNotice";
 import {
   OrderDateRangeBar,
   OrderDateRangeSheet,
 } from "@/components/order/OrderDateRangeSheet";
 import {
   DEFAULT_HISTORY_DATE_RANGE,
-  isWithinLast24Hours,
+  isVisibleOnLiveOrdersBoard,
   orderInDateRange,
   type OrderDateRange,
 } from "@/lib/orderDateRange";
+import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
+import { useStoreStatus } from "@/context/StoreStatusContext";
 
 export type OrdersListMode = "live" | "history";
 
 const SEARCH_BG = "#F1F5F9";
 const TAB_TEXT_COLOR = GatiMitraMerchant.textSecondary;
-const TAB_ACTIVE_COLOR = GatiMitraMerchant.primary;
 const STATUS_GREEN = "#22C55E";
 const STATUS_RED = "#EF4444";
 const SLIDER_DISABLED_BG = "#E5E7EB";
 const SLIDER_LABEL_TEXT = "#FFFFFF";
-type FilterKey = "all" | OrderStage;
+type FilterKey =
+  | "all"
+  | "created"
+  | "preparing"
+  | "ready"
+  | "picked_up"
+  | "completed"
+  | "scheduled";
 
 const STATUS_TABS: { key: FilterKey; label: string }[] = [
   { key: "all", label: "All" },
@@ -75,10 +83,34 @@ const STATUS_TABS: { key: FilterKey; label: string }[] = [
   { key: "preparing", label: "Preparing" },
   { key: "ready", label: "Ready" },
   { key: "picked_up", label: "Picked Up" },
-  { key: "delivered", label: "Delivered" },
-  { key: "rejected", label: "Rejected" },
-  { key: "rto", label: "RTO" },
+  { key: "completed", label: "Completed" },
 ];
+
+const SCHEDULED_TAB: { key: FilterKey; label: string } = { key: "scheduled", label: "Scheduled" };
+
+/** Tab order used for swipe navigation (left = previous, right = next). */
+const SWIPE_TAB_ORDER: FilterKey[] = [
+  ...STATUS_TABS.map((t) => t.key),
+  SCHEDULED_TAB.key,
+];
+
+const SWIPE_THRESHOLD = 48;
+
+function tabPillActiveStyle(isActive: boolean) {
+  return isActive ? styles.tabPillActive : null;
+}
+
+function isTerminalCompletedStatus(status: OrderStage): boolean {
+  return status === "delivered" || status === "rejected" || status === "rto";
+}
+
+function isScheduledOrder(order: OrderRecord): boolean {
+  return Boolean(order.isScheduledOrder);
+}
+
+function isOpenScheduledOrder(order: OrderRecord): boolean {
+  return isScheduledOrder(order) && !isTerminalCompletedStatus(order.status);
+}
 
 function SearchBar({
   value,
@@ -141,50 +173,34 @@ function StatusTabs({
   onChange,
 }: {
   activeKey: FilterKey;
-  counts: { [K in FilterKey]?: number };
+  counts: Partial<Record<FilterKey, number>>;
   onChange: (key: FilterKey) => void;
 }) {
   const scrollRef = useRef<ScrollView | null>(null);
-  const layouts = useRef<Record<FilterKey, TabLayout>>({} as any);
-  const indicatorX = useRef(new Animated.Value(0)).current;
-  const indicatorW = useRef(new Animated.Value(0)).current;
+  const layouts = useRef<Partial<Record<FilterKey, TabLayout>>>({});
 
-  const animateToKey = useCallback(
-    (key: FilterKey) => {
-      const layout = layouts.current[key];
-      if (!layout) return;
-      Animated.spring(indicatorX, {
-        toValue: layout.x,
-        useNativeDriver: false,
-        bounciness: 8,
-      }).start();
-      Animated.spring(indicatorW, {
-        toValue: layout.width,
-        useNativeDriver: false,
-        bounciness: 8,
-      }).start();
-      scrollRef.current?.scrollTo({
-        x: Math.max(0, layout.x - 40),
-        animated: true,
-      });
-    },
-    [indicatorX, indicatorW]
-  );
+  const scrollToKey = useCallback((key: FilterKey) => {
+    const layout = layouts.current[key];
+    if (!layout) return;
+    scrollRef.current?.scrollTo({
+      x: Math.max(0, layout.x - 40),
+      animated: true,
+    });
+  }, []);
 
   useEffect(() => {
-    animateToKey(activeKey);
-  }, [activeKey, animateToKey]);
+    scrollToKey(activeKey);
+  }, [activeKey, scrollToKey]);
 
   const handleLayout =
     (key: FilterKey) =>
     (e: LayoutChangeEvent): void => {
       const { x, width } = e.nativeEvent.layout;
       layouts.current[key] = { x, width };
-      if (key === activeKey) {
-        indicatorX.setValue(x);
-        indicatorW.setValue(width);
-      }
     };
+
+  const scheduledCount = counts.scheduled ?? 0;
+  const scheduledActive = activeKey === SCHEDULED_TAB.key;
 
   return (
     <View style={styles.tabsOuter}>
@@ -203,16 +219,14 @@ function StatusTabs({
               onPress={() => onChange(tab.key)}
               onLayout={handleLayout(tab.key)}
               style={({ pressed }) => [
-                styles.tabItem,
+                styles.tabPill,
+                tabPillActiveStyle(isActive),
                 pressed && styles.tabItemPressed,
                 GatiMitraMerchant.cursorPointer,
               ]}
             >
               <Text
-                style={[
-                  styles.tabLabel,
-                  isActive && styles.tabLabelActive,
-                ]}
+                style={[styles.tabLabel, isActive && styles.tabLabelActivePill]}
                 numberOfLines={1}
               >
                 {tab.label} ({count})
@@ -220,22 +234,51 @@ function StatusTabs({
             </Pressable>
           );
         })}
-        <Animated.View
-          style={[
-            styles.tabIndicator,
-            {
-              transform: [{ translateX: indicatorX }],
-              width: indicatorW,
-            },
+
+        <Pressable
+          onPress={() => onChange(SCHEDULED_TAB.key)}
+          onLayout={handleLayout(SCHEDULED_TAB.key)}
+          style={({ pressed }) => [
+            styles.tabPill,
+            styles.tabPillScheduled,
+            tabPillActiveStyle(scheduledActive),
+            pressed && styles.tabItemPressed,
+            GatiMitraMerchant.cursorPointer,
           ]}
-        />
+        >
+          <Ionicons
+            name="calendar-outline"
+            size={14}
+            color={scheduledActive ? "#FFFFFF" : GatiMitraMerchant.textSecondary}
+          />
+          <Text
+            style={[styles.tabLabel, scheduledActive && styles.tabLabelActivePill]}
+            numberOfLines={1}
+          >
+            {SCHEDULED_TAB.label} ({scheduledCount})
+          </Text>
+        </Pressable>
       </ScrollView>
     </View>
   );
 }
 
+function resolveInitialFilterKey(tabParam: string, orders: OrderRecord[]): FilterKey {
+  if (tabParam === "active") return "all";
+  if (tabParam === "new") return "created";
+  if (tabParam === "delivered" || tabParam === "rejected" || tabParam === "rto") return "completed";
+  const allowed = new Set(SWIPE_TAB_ORDER);
+  if (allowed.has(tabParam as FilterKey) && tabParam !== "all") {
+    return tabParam as FilterKey;
+  }
+  const hasCreated = orders.some((o) => o.status === "created" && !isOpenScheduledOrder(o));
+  if (hasCreated) return "created";
+  const hasActive = orders.some((o) => isActiveMerchantOrderStage(o.status) && !isOpenScheduledOrder(o));
+  return hasActive ? "all" : "created";
+}
+
 function isTerminalStatus(status: OrderStage): boolean {
-  return status === "rejected" || status === "rto" || status === "delivered";
+  return isTerminalCompletedStatus(status);
 }
 
 /** Past orders shown on history page only. */
@@ -259,6 +302,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   const params = useLocalSearchParams<{ tab?: string }>();
   const scrollBottomPadding = isHistory ? 24 : TAB_BAR_SCROLL_CONTENT_PADDING;
   const { selectedStore } = useSelectedStore();
+  const { isOnline } = useStoreStatus();
 
   const { orders, loading, error, refetch, transitionOrder } = useOrders();
 
@@ -269,17 +313,79 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   const [dateSheetOpen, setDateSheetOpen] = useState(false);
   const initialTabParam = typeof params.tab === "string" ? params.tab.toLowerCase() : "";
   const [filterKey, setFilterKey] = useState<FilterKey>(
-    isHistory ? "all" : initialTabParam === "active" ? "preparing" : "created"
+    isHistory ? "all" : resolveInitialFilterKey(initialTabParam, [])
   );
+  const userSelectedTabRef = useRef(false);
+  const lastAppliedRouteTabRef = useRef("");
+  const filterKeyBootstrapped = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
   const [rejectTarget, setRejectTarget] = useState<OrderRecord | null>(null);
   const [rejectLoading, setRejectLoading] = useState(false);
 
   useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 30_000);
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (isHistory || loading) return;
+
+    if (initialTabParam) {
+      if (lastAppliedRouteTabRef.current !== initialTabParam) {
+        lastAppliedRouteTabRef.current = initialTabParam;
+        userSelectedTabRef.current = false;
+        setFilterKey(resolveInitialFilterKey(initialTabParam, orders));
+      }
+      return;
+    }
+
+    lastAppliedRouteTabRef.current = "";
+    if (userSelectedTabRef.current || filterKeyBootstrapped.current) return;
+    filterKeyBootstrapped.current = true;
+    setFilterKey(resolveInitialFilterKey("", orders));
+  }, [isHistory, loading, initialTabParam, orders]);
+
+  const handleFilterChange = useCallback((key: FilterKey) => {
+    userSelectedTabRef.current = true;
+    setFilterKey(key);
+  }, []);
+
+  const shiftTabBySwipe = useCallback(
+    (direction: "left" | "right") => {
+      const idx = SWIPE_TAB_ORDER.indexOf(filterKey);
+      if (idx < 0) return;
+      const nextIdx = direction === "right" ? idx + 1 : idx - 1;
+      if (nextIdx < 0 || nextIdx >= SWIPE_TAB_ORDER.length) return;
+      handleFilterChange(SWIPE_TAB_ORDER[nextIdx]!);
+    },
+    [filterKey, handleFilterChange]
+  );
+
+  const tabSwipePanHandlers = useMemo(() => {
+    if (isHistory) return {};
+    return PanResponder.create({
+      onMoveShouldSetPanResponder: (_, g) =>
+        Math.abs(g.dx) > 16 && Math.abs(g.dx) > Math.abs(g.dy),
+      onPanResponderRelease: (_, g) => {
+        if (g.dx >= SWIPE_THRESHOLD) {
+          shiftTabBySwipe("right");
+        } else if (g.dx <= -SWIPE_THRESHOLD) {
+          shiftTabBySwipe("left");
+        }
+      },
+    }).panHandlers;
+  }, [isHistory, shiftTabBySwipe]);
+
+  const liveBoardOrders = useMemo(
+    () => orders.filter((o) => isVisibleOnLiveOrdersBoard(o, nowMs)),
+    [orders, nowMs]
+  );
+
+  const hasActiveOrders = useMemo(
+    () => liveBoardOrders.some((o) => isActiveMerchantOrderStage(o.status)),
+    [liveBoardOrders]
+  );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -303,9 +409,25 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
         return matchesSearch;
       }
 
-      const matchesStatus = filterKey === "all" ? true : o.status === filterKey;
       const matchesSheet = orderMatchesSheetFilters(o, sheetFilters);
-      const matchesTime = isWithinLast24Hours(o.createdAt, nowMs);
+      const matchesTime = isVisibleOnLiveOrdersBoard(o, nowMs);
+
+      if (filterKey === "scheduled") {
+        return matchesSearch && matchesSheet && isOpenScheduledOrder(o);
+      }
+
+      if (filterKey === "completed") {
+        return (
+          matchesSearch &&
+          matchesSheet &&
+          matchesTime &&
+          isTerminalCompletedStatus(o.status)
+        );
+      }
+
+      if (isOpenScheduledOrder(o)) return false;
+
+      const matchesStatus = filterKey === "all" ? true : o.status === filterKey;
       return matchesSearch && matchesStatus && matchesSheet && matchesTime;
     });
 
@@ -320,20 +442,34 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   }, [orders, search, filterKey, sheetFilters, isHistory, dateRange, nowMs]);
 
   const liveCounts = useMemo(() => {
-    const live = orders.filter((o) => isWithinLast24Hours(o.createdAt, nowMs));
-    const base = {
-      all: live.length,
+    const base: Partial<Record<FilterKey, number>> = {
+      all: 0,
       created: 0,
       preparing: 0,
       ready: 0,
       picked_up: 0,
-      delivered: 0,
-      rejected: 0,
-      rto: 0,
-    } as OrderCounts;
-    for (const o of live) base[o.status] += 1;
+      completed: 0,
+      scheduled: 0,
+    };
+    for (const o of liveBoardOrders) {
+      if (isOpenScheduledOrder(o)) {
+        base.scheduled! += 1;
+        continue;
+      }
+      base.all! += 1;
+      if (isTerminalCompletedStatus(o.status)) {
+        base.completed! += 1;
+      } else if (
+        o.status === "created" ||
+        o.status === "preparing" ||
+        o.status === "ready" ||
+        o.status === "picked_up"
+      ) {
+        base[o.status]! += 1;
+      }
+    }
     return base;
-  }, [orders, nowMs]);
+  }, [liveBoardOrders]);
 
   const handleAccept = useCallback(
     (order: OrderRecord) => {
@@ -395,7 +531,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   );
 
   const renderOrder = ({ item }: { item: OrderRecord }) => {
-    if (isHistory) {
+    if (isHistory || filterKey === "completed") {
       return (
         <TerminalOrderCard
           order={item}
@@ -409,6 +545,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
       <LiveOrderCard
         order={item}
         nowMs={nowMs}
+        storeName={selectedStore?.store_name}
         onAccept={() => handleAccept(item)}
         onReject={() => handleReject(item)}
         onAdvance={() => handleAdvance(item)}
@@ -440,7 +577,8 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
         showFilter
       />
       <PastOrdersBanner onPress={() => router.push("/order-history" as any)} />
-      <StatusTabs activeKey={filterKey} counts={liveCounts} onChange={setFilterKey} />
+      <StoreClosedActiveOrdersNotice visible={!isOnline && hasActiveOrders} />
+      <StatusTabs activeKey={filterKey} counts={liveCounts} onChange={handleFilterChange} />
     </>
   );
 
@@ -495,59 +633,67 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
         onClose={() => !rejectLoading && setRejectTarget(null)}
         onConfirm={confirmReject}
       />
-      <FlatList
-        data={filteredOrders}
-        keyExtractor={(item) => item.id}
-        renderItem={renderOrder}
-        ListHeaderComponent={listHeader}
-        contentContainerStyle={[
-          styles.listContent,
-          { paddingBottom: scrollBottomPadding },
-        ]}
-        ItemSeparatorComponent={() => <View style={styles.separator} />}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            colors={[GatiMitraMerchant.primary]}
-            tintColor={GatiMitraMerchant.primary}
+      <View style={styles.listSwipeArea} {...tabSwipePanHandlers}>
+          <FlatList
+            data={filteredOrders}
+            keyExtractor={(item) => item.id}
+            renderItem={renderOrder}
+            ListHeaderComponent={listHeader}
+            contentContainerStyle={[
+              styles.listContent,
+              { paddingBottom: scrollBottomPadding },
+            ]}
+            ItemSeparatorComponent={() => <View style={styles.separator} />}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                colors={[GatiMitraMerchant.primary]}
+                tintColor={GatiMitraMerchant.primary}
+              />
+            }
+            ListEmptyComponent={
+              loading ? (
+                <View style={styles.loadingWrap}>
+                  <ActivityIndicator
+                    size="large"
+                    color={GatiMitraMerchant.primary}
+                  />
+                  <Text style={styles.loadingText}>Loading orders…</Text>
+                </View>
+              ) : (
+                <View style={styles.emptyWrap}>
+                  <Ionicons
+                    name="receipt-outline"
+                    size={40}
+                    color={GatiMitraMerchant.textTertiary}
+                  />
+                  <Text style={styles.emptyText}>
+                    {search.trim()
+                      ? "No orders match your search"
+                      : isHistory
+                        ? activeFilterCount > 0
+                          ? "No orders match your filters in this date range"
+                          : "No completed, rejected, or RTO orders in this date range"
+                        : filterKey === "scheduled"
+                          ? "No scheduled orders right now"
+                          : filterKey === "completed"
+                            ? "No completed orders in the last 24 hours"
+                            : filterKey === "all"
+                              ? "No orders to show"
+                              : isActiveMerchantOrderStage(filterKey)
+                                ? `No ${filterKey.replace("_", " ")} orders`
+                                : `No orders in ${filterKey.replace("_", " ")}`}
+                  </Text>
+                </View>
+              )
+            }
+            showsVerticalScrollIndicator={false}
+            initialNumToRender={8}
+            windowSize={5}
+            removeClippedSubviews
           />
-        }
-        ListEmptyComponent={
-          loading ? (
-            <View style={styles.loadingWrap}>
-              <ActivityIndicator
-                size="large"
-                color={GatiMitraMerchant.primary}
-              />
-              <Text style={styles.loadingText}>Loading orders…</Text>
-            </View>
-          ) : (
-            <View style={styles.emptyWrap}>
-              <Ionicons
-                name="receipt-outline"
-                size={40}
-                color={GatiMitraMerchant.textTertiary}
-              />
-              <Text style={styles.emptyText}>
-                {search.trim()
-                  ? "No orders match your search"
-                  : isHistory
-                    ? activeFilterCount > 0
-                      ? "No orders match your filters in this date range"
-                      : "No completed, rejected, or RTO orders in this date range"
-                    : filterKey === "all"
-                      ? "No orders in the last 24 hours"
-                      : `No orders in ${filterKey.replace("_", " ")} (last 24h)`}
-              </Text>
-            </View>
-          )
-        }
-        showsVerticalScrollIndicator={false}
-        initialNumToRender={8}
-        windowSize={5}
-        removeClippedSubviews
-      />
+      </View>
     </View>
   );
 }
@@ -560,6 +706,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: GatiMitraMerchant.surfaceWarm,
+  },
+  listSwipeArea: {
+    flex: 1,
   },
   listContent: {
     paddingHorizontal: H_PADDING,
@@ -682,29 +831,39 @@ const styles = StyleSheet.create({
   },
   tabsRow: {
     paddingHorizontal: 0,
-    paddingBottom: 2,
+    paddingBottom: 4,
+    gap: 8,
+    alignItems: "center",
   },
-  tabItem: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+  tabPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 0,
+    borderColor: "transparent",
+    backgroundColor: "transparent",
+  },
+  tabPillActive: {
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.navy,
+    backgroundColor: GatiMitraMerchant.navy,
+  },
+  tabPillScheduled: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginLeft: 2,
   },
   tabItemPressed: {
     opacity: 0.7,
   },
   tabLabel: {
     fontSize: 13,
-    fontWeight: "500",
+    fontWeight: "600",
     color: TAB_TEXT_COLOR,
   },
-  tabLabelActive: {
-    color: TAB_ACTIVE_COLOR,
-  },
-  tabIndicator: {
-    position: "absolute",
-    height: 2,
-    backgroundColor: TAB_ACTIVE_COLOR,
-    bottom: 0,
-    borderRadius: 1,
+  tabLabelActivePill: {
+    color: "#FFFFFF",
   },
   emptyWrap: {
     paddingVertical: 40,

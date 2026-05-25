@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState, type ReactNode } from "react";
 import {
   View,
   Text,
@@ -11,10 +11,15 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, CARD_RADIUS } from "@/constants/theme";
-import type { OrderRecord, OrderStage, DeliveryType } from "@/hooks/useOrders";
+import type { OrderRecord, OrderStage, DeliveryType, LineItem } from "@/hooks/useOrders";
 import { TerminalOrderCard } from "@/components/order/TerminalOrderCard";
-import { CustomerStoreOrdinalPill } from "@/components/order/CustomerStoreOrdinalPill";
-import { ItemVegMark } from "@/components/order/ItemVegMark";
+import { MerchantPreparingOrderCard } from "@/components/order/MerchantPreparingOrderCard";
+import { MerchantReadyOrderCard } from "@/components/order/MerchantReadyOrderCard";
+import { MerchantOutForDeliveryOrderCard } from "@/components/order/MerchantOutForDeliveryOrderCard";
+import { OrderItemDetailsSheet } from "@/components/order/OrderItemDetailsSheet";
+import { sliceOrderLineItems } from "@/lib/orderCardDisplay";
+import { formatCustomerPossessiveOrderLabel } from "@/components/order/orderFormatters";
+import { OrderCardItemRow } from "@/components/order/OrderCardItemRow";
 
 const STATUS_GREEN = "#22C55E";
 const STATUS_RED = "#EF4444";
@@ -255,22 +260,31 @@ function isTerminalStatus(status: OrderStage): boolean {
 export type LiveOrderCardProps = {
   order: OrderRecord;
   nowMs: number;
+  storeName?: string | null;
   onAccept: () => void;
   onReject: () => void;
   onAdvance: () => void;
   onViewDetail: () => void;
+  actionLoading?: boolean;
 };
 
 export function LiveOrderCard({
   order,
   nowMs,
+  storeName,
   onAccept,
   onReject,
   onAdvance,
   onViewDetail,
+  actionLoading,
 }: LiveOrderCardProps) {
+  const [selectedItem, setSelectedItem] = useState<LineItem | null>(null);
+  const onItemPress = useCallback((item: LineItem) => setSelectedItem(item), []);
+
+  let card: ReactNode;
+
   if (isTerminalStatus(order.status)) {
-    return (
+    card = (
       <TerminalOrderCard
         order={order}
         formattedOrderId={order.formattedOrderId}
@@ -278,14 +292,89 @@ export function LiveOrderCard({
         onPress={onViewDetail}
       />
     );
+  } else if (
+    order.pipelineStatus === "ACCEPTED" ||
+    order.pipelineStatus === "PREPARING" ||
+    order.status === "preparing"
+  ) {
+    card = (
+      <MerchantPreparingOrderCard
+        order={order}
+        storeName={storeName}
+        nowMs={nowMs}
+        onReady={onAdvance}
+        onViewDetail={onViewDetail}
+        onItemPress={onItemPress}
+        loading={actionLoading}
+      />
+    );
+  } else if (order.status === "ready" || order.pipelineStatus === "READY_FOR_PICKUP") {
+    card = (
+      <MerchantReadyOrderCard
+        order={order}
+        storeName={storeName}
+        nowMs={nowMs}
+        onViewDetail={onViewDetail}
+        onItemPress={onItemPress}
+      />
+    );
+  } else if (order.status === "picked_up" || order.pipelineStatus === "OUT_FOR_DELIVERY") {
+    card = (
+      <MerchantOutForDeliveryOrderCard
+        order={order}
+        storeName={storeName}
+        onViewDetail={onViewDetail}
+        onItemPress={onItemPress}
+      />
+    );
+  } else {
+    card = (
+      <LiveOrderCardDefault
+        order={order}
+        nowMs={nowMs}
+        onAccept={onAccept}
+        onReject={onReject}
+        onAdvance={onAdvance}
+        onViewDetail={onViewDetail}
+        onItemPress={onItemPress}
+      />
+    );
   }
 
+  return (
+    <>
+      {card}
+      <OrderItemDetailsSheet
+        visible={selectedItem != null}
+        lineItem={selectedItem}
+        onClose={() => setSelectedItem(null)}
+      />
+    </>
+  );
+}
+
+function LiveOrderCardDefault({
+  order,
+  nowMs,
+  onAccept,
+  onReject,
+  onAdvance,
+  onViewDetail,
+  onItemPress,
+}: Omit<LiveOrderCardProps, "storeName" | "actionLoading"> & {
+  onItemPress: (item: LineItem) => void;
+}) {
   const timeSince = formatTimeSince(order.createdAt, nowMs);
   const timer = formatTimerSince(order.createdAt, nowMs);
 
   const showPickupOtp =
     (order.status === "ready" || order.status === "picked_up") && !!order.pickupOtp;
   const showRtoOtp = order.status === "rto" && !!order.rtoOtp;
+  const { visible: visibleItems, moreCount } = sliceOrderLineItems(order.lineItems);
+  const customerLabel = formatCustomerPossessiveOrderLabel(
+    order.customerName,
+    order.customerStoreOrderOrdinal
+  );
 
   const primaryActionLabel = (() => {
     switch (order.status) {
@@ -317,13 +406,9 @@ export function LiveOrderCard({
             <Text style={styles.dotSeparator}>•</Text> {order.displayTime}
           </Text>
           <View style={styles.customerNameRow}>
-            <Text style={styles.customerName} numberOfLines={1}>
-              {order.customerName}
+            <Text style={styles.customerName} numberOfLines={2}>
+              {customerLabel}
             </Text>
-            <CustomerStoreOrdinalPill
-              ordinal={order.customerStoreOrderOrdinal}
-              variant="inline"
-            />
           </View>
           <Text style={styles.timeSince}>{timeSince}</Text>
         </View>
@@ -349,28 +434,33 @@ export function LiveOrderCard({
       </View>
 
       <View style={styles.itemsSection}>
-        {order.lineItems.slice(0, 2).map((item, idx) => (
-          <View key={`${order.id}-${idx}`} style={styles.itemRow}>
-            <ItemVegMark vegNonveg={item.vegNonveg} name={item.name} size={14} />
-            <Text style={styles.itemText} numberOfLines={1}>
-              {item.qty} x {item.name}
-            </Text>
-            <Text style={styles.itemPrice}>₹ {item.price}</Text>
-          </View>
+        {visibleItems.map((item, idx) => (
+          <OrderCardItemRow
+            key={`${order.id}-${idx}`}
+            item={item}
+            orderVeg={item.vegNonveg}
+            onItemNamePress={() => onItemPress(item)}
+            onRowPress={onViewDetail}
+            showPrice
+          />
         ))}
-        {order.lineItems.length > 2 && (
-          <View style={styles.moreItemsRow}>
-            <Text style={styles.moreItemsText}>
-              +{order.lineItems.length - 2} More
-            </Text>
+        {moreCount > 0 && (
+          <Pressable
+            onPress={onViewDetail}
+            style={({ pressed }) => [styles.moreItemsRow, pressed && styles.pressed]}
+          >
+            <Text style={styles.moreItemsText}>+{moreCount} more</Text>
             <Text style={styles.moreItemsTotal}>
               ₹{order.total.toLocaleString("en-IN")}
             </Text>
-          </View>
+          </Pressable>
         )}
       </View>
 
-      <View style={styles.totalRow}>
+      <Pressable
+        onPress={onViewDetail}
+        style={({ pressed }) => [styles.totalRow, pressed && styles.pressed]}
+      >
         <Text style={styles.totalLabel}>Total bill: </Text>
         <Text style={styles.totalAmount}>₹ {order.total}</Text>
         <Ionicons
@@ -379,7 +469,7 @@ export function LiveOrderCard({
           color={GatiMitraMerchant.textTertiary}
           style={styles.totalChevron}
         />
-      </View>
+      </Pressable>
 
       {showPickupOtp && order.pickupOtp && (
         <OtpPill label="Pickup OTP" code={order.pickupOtp} />

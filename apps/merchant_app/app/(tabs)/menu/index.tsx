@@ -21,7 +21,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   GatiMitraMerchant,
   H_PADDING,
@@ -30,7 +30,7 @@ import {
 } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
-import { useMenuCategories, useMenuItems, usePatchItemStock, useDeleteCategory } from "@/hooks/useMenuQueries";
+import { useMenuCategories, useMenuItems, usePatchItemStock, useDeleteCategory, menuKeys } from "@/hooks/useMenuQueries";
 import type { MenuItemRow, MenuCategory, MenuItemDetail } from "@/services/menuApi";
 import type { ComboRow, ComboDetail } from "@/services/menuApi";
 import {
@@ -42,17 +42,19 @@ import {
   updateCombo,
   fetchMenuItem,
   fetchMenuItems,
-  fetchModifierGroups,
   patchComboOutOfStock,
   patchItemOutOfStock,
   patchCategoryOutOfStock,
   type OutOfStockMode as ApiOutOfStockMode,
-  type ModifierGroupRow,
 } from "@/services/menuApi";
 import { resolveImageUrl } from "@/services/outletApi";
 import { useRouter } from "expo-router";
 import * as SecureStore from "expo-secure-store";
 import { OutOfStockModal, type OutOfStockPayload } from "@/components/OutOfStockModal";
+import {
+  CatalogCustItemsPanel,
+  itemHasCustomizationContent,
+} from "@/components/menu/CatalogCustItemsPanel";
 
 type ApprovalFilter = "ALL" | "PENDING" | "APPROVED" | "REJECTED";
 type StockFilter = "ALL" | "IN_STOCK" | "OUT_OF_STOCK";
@@ -61,6 +63,57 @@ type ItemKindFilter = "ALL" | "ITEMS" | "COMBOS" | "ADDONS";
 
 type MenuViewMode = "card" | "tree";
 const MENU_VIEW_MODE_KEY = "gatimitra_merchant_menu_view_mode";
+const CATALOG_TOGGLE_RADIUS = 15;
+
+type CatalogKindTab = "ALL" | "COMBOS" | "ADDONS";
+
+function CatalogKindToggle({
+  active,
+  allCount,
+  comboCount,
+  addonsCount,
+  onChange,
+}: {
+  active: CatalogKindTab;
+  allCount: number;
+  comboCount: number;
+  addonsCount: number;
+  onChange: (tab: CatalogKindTab) => void;
+}) {
+  const pills: { key: CatalogKindTab; label: string; count: number }[] = [
+    { key: "ALL", label: "All items", count: allCount },
+    { key: "COMBOS", label: "Combo", count: comboCount },
+    { key: "ADDONS", label: "Add-ons", count: addonsCount },
+  ];
+
+  return (
+    <View style={styles.catalogKindToggleRow}>
+      {pills.map((pill) => {
+        const isActive = active === pill.key;
+        return (
+          <Pressable
+            key={pill.key}
+            onPress={() => onChange(pill.key)}
+            style={({ pressed }) => [
+              styles.catalogKindPill,
+              isActive && styles.catalogKindPillActive,
+              pressed && styles.catalogKindPillPressed,
+            ]}
+          >
+            <Text style={[styles.catalogKindLabel, isActive && styles.catalogKindLabelActive]}>
+              {pill.label}
+            </Text>
+            <View style={[styles.catalogKindBadge, isActive && styles.catalogKindBadgeActive]}>
+              <Text style={[styles.catalogKindBadgeText, isActive && styles.catalogKindBadgeTextActive]}>
+                {pill.count}
+              </Text>
+            </View>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
 
 const FOOD_TYPE_LABELS: Record<string, string> = {
   VEG: "Veg",
@@ -604,7 +657,7 @@ export default function MenuScreen() {
   const [searchDebounced, setSearchDebounced] = useState("");
   const [addMenuVisible, setAddMenuVisible] = useState(false);
   const [manageSheetVisible, setManageSheetVisible] = useState(false);
-  const [viewMode, setViewMode] = useState<MenuViewMode>("card");
+  const [viewMode, setViewMode] = useState<MenuViewMode>("tree");
   const [openTreeGroups, setOpenTreeGroups] = useState<Record<string, boolean>>({});
   const [categoryFilterSheetVisible, setCategoryFilterSheetVisible] = useState(false);
   const [subcategoryFilterSheetVisible, setSubcategoryFilterSheetVisible] = useState(false);
@@ -794,6 +847,7 @@ export default function MenuScreen() {
   const [combos, setCombos] = useState<ComboRow[]>([]);
   const [comboDetails, setComboDetails] = useState<Map<number, ComboDetail>>(new Map());
   const [combosLoading, setCombosLoading] = useState(false);
+  const [combosReady, setCombosReady] = useState(false);
 
   // For counts inside the Categories popup (should not change with filters)
   const { data: allItemsData } = useMenuItems(storeId, token, { limit: 2000, offset: 0 });
@@ -816,10 +870,16 @@ export default function MenuScreen() {
       if (existing) existing.count += 1;
       else byKey.set(key, { key, label, count: 1 });
     }
-    const rows = Array.from(byKey.values())
+    const rows: Array<{
+      key: string;
+      type: "category" | "combos";
+      id: number;
+      label: string;
+      count: number;
+    }> = Array.from(byKey.values())
       .sort((a, b) => a.label.localeCompare(b.label))
       .map((r) => ({ key: r.key, type: "category" as const, id: -1, label: r.label, count: r.count }));
-    rows.push({ key: "combos", type: "combos" as const, id: -1, label: "Combos", count: combos?.length ?? 0 });
+    rows.push({ key: "combos", type: "combos", id: -1, label: "Combos", count: combos?.length ?? 0 });
     return rows;
   }, [allItems, categories, combos]);
 
@@ -888,22 +948,86 @@ export default function MenuScreen() {
     });
   }, [viewMode, treeKeysSig, itemsTreeGroups]);
 
-  const [addonGroups, setAddonGroups] = useState<ModifierGroupRow[]>([]);
-  const [addonGroupsLoading, setAddonGroupsLoading] = useState(false);
+  const [custDetailsById, setCustDetailsById] = useState<Record<number, MenuItemDetail>>({});
+  const queryClient = useQueryClient();
+
+  const custItemIds = useMemo(
+    () => allItems.filter(itemHasCustomizationContent).map((i) => i.id),
+    [allItems]
+  );
+
+  const custItemIdsSig = useMemo(() => custItemIds.join(","), [custItemIds]);
+
+  const custScopeRows = useMemo(() => {
+    let list = allItems.filter(itemHasCustomizationContent);
+    if (searchDebounced) {
+      const q = searchDebounced.toLowerCase();
+      list = list.filter(
+        (i) =>
+          i.item_name.toLowerCase().includes(q) ||
+          String(i.item_id ?? "").toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [allItems, searchDebounced]);
+
+  useEffect(() => {
+    if (!storeId || !token || custItemIds.length === 0) return;
+
+    let cancelled = false;
+
+    for (const id of custItemIds) {
+      const cached = queryClient.getQueryData<MenuItemDetail>(menuKeys.item(storeId, id));
+      if (cached) {
+        setCustDetailsById((prev) => (prev[id] ? prev : { ...prev, [id]: cached }));
+      }
+    }
+
+    void Promise.all(
+      custItemIds.map(async (id) => {
+        if (cancelled) return;
+        const key = menuKeys.item(storeId, id);
+        if (queryClient.getQueryData<MenuItemDetail>(key)) return;
+        try {
+          const detail = await queryClient.fetchQuery({
+            queryKey: key,
+            queryFn: () => fetchMenuItem(storeId, id, token),
+            staleTime: 5 * 60 * 1000,
+          });
+          if (!cancelled && detail) {
+            setCustDetailsById((prev) => (prev[id] ? prev : { ...prev, [id]: detail }));
+          }
+        } catch {
+          // ignore — row stays in per-item loading state
+        }
+      })
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [storeId, token, custItemIdsSig, custItemIds, queryClient]);
+
+  const handleCustDetailsChange = useCallback((itemId: number, detail: MenuItemDetail) => {
+    setCustDetailsById((prev) => ({ ...prev, [itemId]: detail }));
+    if (storeId) {
+      queryClient.setQueryData(menuKeys.item(storeId, itemId), detail);
+    }
+  }, [queryClient, storeId]);
 
   useEffect(() => {
     if (!storeId || !token) return;
 
     let cancelled = false;
-    (async () => {
+    setCombosReady(false);
+    void (async () => {
       try {
-        setCombosLoading(true);
         const res = await fetchCombos(storeId, token);
         if (cancelled) return;
         const rows = res.combos ?? [];
         setCombos(rows);
 
-        const detailEntries = await Promise.all(
+        void Promise.all(
           rows.map(async (c) => {
             try {
               const d = await fetchCombo(storeId, c.id, token);
@@ -912,21 +1036,22 @@ export default function MenuScreen() {
               return null;
             }
           })
-        );
-        if (cancelled) return;
-        const map = new Map<number, ComboDetail>();
-        for (const entry of detailEntries) {
-          if (!entry) continue;
-          map.set(entry[0], entry[1]);
-        }
-        setComboDetails(map);
+        ).then((detailEntries) => {
+          if (cancelled) return;
+          const map = new Map<number, ComboDetail>();
+          for (const entry of detailEntries) {
+            if (!entry) continue;
+            map.set(entry[0], entry[1]);
+          }
+          setComboDetails(map);
+        });
       } catch {
         if (!cancelled) {
           setCombos([]);
           setComboDetails(new Map());
         }
       } finally {
-        if (!cancelled) setCombosLoading(false);
+        if (!cancelled) setCombosReady(true);
       }
     })();
 
@@ -935,28 +1060,8 @@ export default function MenuScreen() {
     };
   }, [storeId, token]);
 
-  useEffect(() => {
-    if (!storeId || !token || kindFilter !== "ADDONS") {
-      if (kindFilter !== "ADDONS") setAddonGroups([]);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        setAddonGroupsLoading(true);
-        const res = await fetchModifierGroups(storeId, token);
-        if (!cancelled) setAddonGroups(res.modifierGroups ?? []);
-      } catch {
-        if (!cancelled) setAddonGroups([]);
-      } finally {
-        if (!cancelled) setAddonGroupsLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [storeId, token, kindFilter]);
-
-  const patchStock = usePatchItemStock(storeId, token);
   const deleteCat = useDeleteCategory(storeId, token);
+  const patchStock = usePatchItemStock(storeId, token);
   const refreshing = categoriesRefetching || itemsRefetching;
 
   const handleDeleteCategoryFromSheet = (c: MenuCategory) => {
@@ -1097,6 +1202,34 @@ export default function MenuScreen() {
     [storeId, token, patchStock, refetchItems, refetchCategories, isItemBlockedByCategoryOos, categoryById, isOosActive]
   );
 
+  const reloadCombos = useCallback(async () => {
+    if (!storeId || !token) return;
+    setCombosLoading(true);
+    try {
+      const res = await fetchCombos(storeId, token);
+      const rows = res.combos ?? [];
+      setCombos(rows);
+      const detailEntries = await Promise.all(
+        rows.map(async (c) => {
+          try {
+            const d = await fetchCombo(storeId, c.id, token);
+            return d ? [c.id, d] as const : null;
+          } catch {
+            return null;
+          }
+        })
+      );
+      const map = new Map<number, ComboDetail>();
+      for (const entry of detailEntries) {
+        if (!entry) continue;
+        map.set(entry[0], entry[1]);
+      }
+      setComboDetails(map);
+    } finally {
+      setCombosLoading(false);
+    }
+  }, [storeId, token]);
+
   const handleConfirmOos = useCallback(
     async (payload: OutOfStockPayload) => {
       if (!storeId || !token || !oosModal) return;
@@ -1174,34 +1307,6 @@ export default function MenuScreen() {
     },
     [storeId, token]
   );
-
-  const reloadCombos = useCallback(async () => {
-    if (!storeId || !token) return;
-    setCombosLoading(true);
-    try {
-      const res = await fetchCombos(storeId, token);
-      const rows = res.combos ?? [];
-      setCombos(rows);
-      const detailEntries = await Promise.all(
-        rows.map(async (c) => {
-          try {
-            const d = await fetchCombo(storeId, c.id, token);
-            return d ? [c.id, d] as const : null;
-          } catch {
-            return null;
-          }
-        })
-      );
-      const map = new Map<number, ComboDetail>();
-      for (const entry of detailEntries) {
-        if (!entry) continue;
-        map.set(entry[0], entry[1]);
-      }
-      setComboDetails(map);
-    } finally {
-      setCombosLoading(false);
-    }
-  }, [storeId, token]);
 
   const isComboOosActive = useCallback(
     (combo: ComboRow) => isOosActive((combo as any).out_of_stock_manual, (combo as any).out_of_stock_until ?? null),
@@ -1459,7 +1564,182 @@ export default function MenuScreen() {
   const totalDisplayed =
     (showItems ? total : 0) +
     (showCombos ? (visibleCombos?.length ?? 0) : 0) +
-    (showAddons ? (addonGroups?.length ?? 0) : 0);
+    (showAddons ? custScopeRows.length : 0);
+
+  const catalogAllCount = total + (combos?.length ?? 0);
+  const catalogComboCount = combos?.length ?? 0;
+  const catalogAddonsCount = useMemo(
+    () => allItems.filter(itemHasCustomizationContent).length,
+    [allItems]
+  );
+  const catalogKindTab: CatalogKindTab =
+    kindFilter === "COMBOS" ? "COMBOS" : kindFilter === "ADDONS" ? "ADDONS" : "ALL";
+  const showCatalogKindToggle = effectiveCategoryId == null;
+
+  const handleCatalogKindChange = useCallback((tab: CatalogKindTab) => {
+    setKindFilter(tab === "COMBOS" ? "COMBOS" : tab === "ADDONS" ? "ADDONS" : "ALL");
+  }, []);
+
+  const renderComboTreeSection = () => {
+    if ((visibleCombos?.length ?? 0) === 0) return null;
+    const key = "combos";
+    const isOpen = openTreeGroups[key] ?? true;
+    const allActive =
+      visibleCombos.every((c) => effectiveComboInStock(c, comboDetails.get(c.id) ?? null, itemById));
+
+    return (
+      <View
+        style={styles.treeGroupCard}
+        onLayout={(e) => {
+          const y = e.nativeEvent.layout.y;
+          setSectionOffsets((prev) => (prev.combos === y ? prev : { ...prev, combos: y }));
+        }}
+      >
+        <View style={styles.treeGroupHeader}>
+          <TouchableOpacity
+            onPress={() =>
+              setOpenTreeGroups((prev) => ({
+                ...prev,
+                [key]: !prev[key],
+              }))
+            }
+            style={styles.treeGroupTitleBtn}
+            activeOpacity={0.85}
+          >
+            <View style={styles.treeChevronBtn}>
+              <Ionicons
+                name={isOpen ? "chevron-down" : "chevron-forward"}
+                size={18}
+                color={GatiMitraMerchant.textSecondary}
+              />
+            </View>
+            <Text style={styles.treeGroupTitle} numberOfLines={1}>
+              Combos{" "}
+              <Text style={styles.treeCountText}>({visibleCombos.length})</Text>
+            </Text>
+          </TouchableOpacity>
+          <View style={styles.treeGroupRight}>
+            <Text style={styles.treeInStockLabel}>In stock</Text>
+            <Switch
+              value={allActive}
+              onValueChange={() => {
+                if (!storeId || !token) return;
+                const next = !allActive;
+                if (!next) {
+                  const first = visibleCombos[0];
+                  if (first) setOosModal({ kind: "COMBO", comboId: first.id, comboName: first.combo_name });
+                  return;
+                }
+                setRestoreConfirm({
+                  title: "Bring back in stock?",
+                  message: "This will make it available to customers and start receiving orders.",
+                  onConfirm: async () => {
+                    setRestoreConfirm(null);
+                    setOosBusy(true);
+                    try {
+                      await Promise.all(
+                        visibleCombos.map((c) =>
+                          patchComboOutOfStock(storeId, c.id, token, { mode: "CLEAR" })
+                        )
+                      );
+                    } finally {
+                      setOosBusy(false);
+                      await reloadCombos();
+                    }
+                  },
+                });
+              }}
+              trackColor={{
+                false: GatiMitraMerchant.border,
+                true: GatiMitraMerchant.primary,
+              }}
+              thumbColor="#fff"
+            />
+          </View>
+        </View>
+
+        {isOpen ? (
+          <View style={styles.treeItemsWrap}>
+            {visibleCombos.map((combo) => (
+              <View key={`tree-combo-${combo.id}`} style={styles.treeRow}>
+                <TouchableOpacity
+                  style={styles.treeRowLeft}
+                  onPress={() =>
+                    router.push({
+                      pathname: "/menu/combos/[id]",
+                      params: { id: String(combo.id) },
+                    } as any)
+                  }
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.treeItemName} numberOfLines={1}>
+                    {combo.combo_name}
+                  </Text>
+                  {getComboOosLabel(combo, comboDetails.get(combo.id) ?? null, itemById) ? (
+                    <Text style={styles.treeOosSubtext} numberOfLines={1}>
+                      {getComboOosLabel(combo, comboDetails.get(combo.id) ?? null, itemById)}
+                    </Text>
+                  ) : (
+                    <Text style={styles.treeInStockSubtext} numberOfLines={1}>
+                      In stock
+                    </Text>
+                  )}
+                </TouchableOpacity>
+                <View style={styles.treeRowRight}>
+                  <Text style={styles.treePrice}>₹{Number(combo.combo_price).toFixed(0)}</Text>
+                  <Switch
+                    value={effectiveComboInStock(combo, comboDetails.get(combo.id) ?? null, itemById)}
+                    onValueChange={(v) => handleToggleComboStock(combo, v)}
+                    trackColor={{
+                      false: GatiMitraMerchant.border,
+                      true: GatiMitraMerchant.primary,
+                    }}
+                    thumbColor="#fff"
+                  />
+                </View>
+              </View>
+            ))}
+          </View>
+        ) : null}
+      </View>
+    );
+  };
+
+  const renderComboCards = () =>
+    visibleCombos.map((combo) => {
+      const detail = comboDetails.get(combo.id) ?? null;
+      const hasUnavailableItem =
+        detail?.components?.some((c) => {
+          const item = itemById.get(c.menu_item_id);
+          return item && !effectiveInStock(item);
+        }) ?? false;
+
+      return (
+        <ComboCard
+          key={`combo-${combo.id}`}
+          combo={combo}
+          detail={detail}
+          itemById={itemById}
+          isDisabled={hasUnavailableItem}
+          effectiveComboInStock={effectiveComboInStock}
+          onToggleComboStock={handleToggleComboStock}
+          onMoreOptions={() => handleComboOptions(combo)}
+          onPress={() =>
+            router.push({
+              pathname: "/menu/combos/[id]",
+              params: { id: String(combo.id) },
+            } as any)
+          }
+        />
+      );
+    });
+
+  const catalogListEmpty =
+    kindFilter === "COMBOS"
+      ? combosReady && visibleCombos.length === 0
+      : kindFilter === "ITEMS"
+        ? !itemsLoading && items.length === 0
+        : !itemsLoading && items.length === 0 && combosReady && combos.length === 0;
 
   if (!canFetch) {
     return (
@@ -1520,37 +1800,39 @@ export default function MenuScreen() {
           )}
         </View>
 
-          <View style={styles.viewToggleWrap}>
-            <TouchableOpacity
-              style={[
-                styles.viewToggleBtn,
-                viewMode === "card" && styles.viewToggleBtnActive,
-              ]}
-              onPress={() => setViewMode("card")}
-              activeOpacity={0.85}
-            >
-              <Ionicons
-                name="grid-outline"
-                size={18}
-                color={viewMode === "card" ? "#fff" : GatiMitraMerchant.textSecondary}
-              />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.viewToggleBtn,
-                styles.viewToggleBtnRight,
-                viewMode === "tree" && styles.viewToggleBtnActive,
-              ]}
-              onPress={() => setViewMode("tree")}
-              activeOpacity={0.85}
-            >
-              <Ionicons
-                name="list-outline"
-                size={18}
-                color={viewMode === "tree" ? "#fff" : GatiMitraMerchant.textSecondary}
-              />
-            </TouchableOpacity>
-          </View>
+          {kindFilter !== "ADDONS" ? (
+            <View style={styles.viewToggleWrap}>
+              <TouchableOpacity
+                style={[
+                  styles.viewToggleBtn,
+                  viewMode === "card" && styles.viewToggleBtnActive,
+                ]}
+                onPress={() => setViewMode("card")}
+                activeOpacity={0.85}
+              >
+                <Ionicons
+                  name="grid-outline"
+                  size={18}
+                  color={viewMode === "card" ? "#fff" : GatiMitraMerchant.textSecondary}
+                />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.viewToggleBtn,
+                  styles.viewToggleBtnRight,
+                  viewMode === "tree" && styles.viewToggleBtnActive,
+                ]}
+                onPress={() => setViewMode("tree")}
+                activeOpacity={0.85}
+              >
+                <Ionicons
+                  name="list-outline"
+                  size={18}
+                  color={viewMode === "tree" ? "#fff" : GatiMitraMerchant.textSecondary}
+                />
+              </TouchableOpacity>
+            </View>
+          ) : null}
 
         <TouchableOpacity
           style={styles.filterIconBtn}
@@ -1885,83 +2167,60 @@ export default function MenuScreen() {
       ) : null}
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>
-          {kindFilter === "ADDONS"
-            ? `Addon Library · ${addonGroups.length}`
-            : effectiveCategoryId != null
-              ? (categoryMap.get(effectiveCategoryId) ?? "Items") + ` · ${totalDisplayed}`
-              : `All items & combos · ${totalDisplayed}`}
-        </Text>
-        {kindFilter === "ADDONS" && addonGroupsLoading && addonGroups.length === 0 ? (
-          <View style={styles.loadingWrap}>
-            <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
-          </View>
-        ) : kindFilter === "ADDONS" && !addonGroupsLoading && addonGroups.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <Ionicons name="pricetag-outline" size={36} color={GatiMitraMerchant.textTertiary} />
-            <Text style={styles.emptyText}>No addon groups yet. Create one from Add menu or open Addon Library.</Text>
-            <TouchableOpacity style={styles.emptyCardCta} onPress={() => router.push("/menu/addon-library" as any)} activeOpacity={0.7}>
-              <Ionicons name="pricetag-outline" size={20} color={GatiMitraMerchant.primary} />
-              <Text style={styles.emptyCardCtaText}>Open Addon Library</Text>
-            </TouchableOpacity>
-          </View>
-        ) : loading && (items?.length ?? 0) === 0 && (!showCombos || combosLoading) && kindFilter !== "ADDONS" ? (
-          <View style={styles.loadingWrap}>
-            <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
-          </View>
-        ) : !loading && (items?.length ?? 0) === 0 && (!showCombos || (combos?.length ?? 0) === 0) && kindFilter !== "ADDONS" ? (
-          <View style={styles.emptyCard}>
-            <Ionicons name="restaurant-outline" size={36} color={GatiMitraMerchant.textTertiary} />
-            <Text style={styles.emptyText}>No items match. Add an item or change filters.</Text>
-          </View>
+        {showCatalogKindToggle ? (
+          <CatalogKindToggle
+            active={catalogKindTab}
+            allCount={catalogAllCount}
+            comboCount={catalogComboCount}
+            addonsCount={catalogAddonsCount}
+            onChange={handleCatalogKindChange}
+          />
         ) : (
-          <View style={styles.itemGrid}>
-            {showAddons &&
-              addonGroups.map((g) => (
-                <TouchableOpacity
-                  key={`addon-${g.id}`}
-                  style={styles.addonGroupCard}
-                  onPress={() =>
-                    router.push({
-                      pathname: "/menu/addon-library/[id]",
-                      params: { id: String(g.id) },
-                    } as any)
-                  }
-                  activeOpacity={0.85}
-                >
-                  <View style={styles.addonGroupCardHeader}>
-                    <Ionicons name="pricetag-outline" size={22} color={GatiMitraMerchant.primary} />
-                    <Text style={styles.addonGroupCardTitle} numberOfLines={2}>{g.title}</Text>
-                  </View>
-                  <Text style={styles.addonGroupCardMeta}>
-                    {g.options_count ?? 0} options · Used in {g.used_in_items_count ?? 0} items
-                    {g.is_required ? " · Required" : ""}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            {showItems &&
-              (viewMode === "card" ? (
-                items.map((item) => (
-                  <MenuItemCard
-                    key={item.id}
-                    item={item}
-                    categoryName={
-                      item.category_id != null
-                        ? categoryDisplayNameById.get(item.category_id) ?? null
-                        : null
-                    }
-                    onToggleEffectiveStock={handleToggleEffectiveStock}
-                    effectiveInStock={effectiveInStock}
-                    getItemOosLabel={getItemOosLabel}
-                    onEdit={handleOpenItemDetails}
-                    onMoreOptions={handleMoreOptions}
-                    storeId={storeId}
-                    token={token}
-                  />
-                ))
-              ) : (
-                <View style={styles.treeWrap}>
-                  {itemsTreeGroups.map((group) => {
+          <Text style={styles.sectionTitle}>
+            {kindFilter === "ADDONS"
+              ? `Add-ons · ${custScopeRows.length}`
+              : effectiveCategoryId != null
+                ? (categoryMap.get(effectiveCategoryId) ?? "Items") + ` · ${totalDisplayed}`
+                : `All items & combos · ${totalDisplayed}`}
+          </Text>
+        )}
+        {kindFilter === "ADDONS" ? (
+          <CatalogCustItemsPanel
+            items={allItems}
+            detailsById={custDetailsById}
+            storeId={storeId!}
+            token={token!}
+            categoryNameById={categoryDisplayNameById}
+            searchQuery={searchDebounced}
+            onOpenItem={handleOpenItemDetails}
+            onDetailsChange={handleCustDetailsChange}
+          />
+        ) : (
+          <>
+            <View style={styles.itemGrid}>
+              {showItems &&
+                (viewMode === "card" ? (
+                  items.map((item) => (
+                    <MenuItemCard
+                      key={item.id}
+                      item={item}
+                      categoryName={
+                        item.category_id != null
+                          ? categoryDisplayNameById.get(item.category_id) ?? null
+                          : null
+                      }
+                      onToggleEffectiveStock={handleToggleEffectiveStock}
+                      effectiveInStock={effectiveInStock}
+                      getItemOosLabel={getItemOosLabel}
+                      onEdit={handleOpenItemDetails}
+                      onMoreOptions={handleMoreOptions}
+                      storeId={storeId}
+                      token={token}
+                    />
+                  ))
+                ) : (
+                  <View style={styles.treeWrap}>
+                    {itemsTreeGroups.map((group) => {
                     const isOpen = !!openTreeGroups[group.key];
                     const allInStock =
                       (group.items?.length ?? 0) > 0 &&
@@ -2126,164 +2385,31 @@ export default function MenuScreen() {
                     );
                   })}
 
-                  {showCombos && (visibleCombos?.length ?? 0) > 0 && (
-                    <View
-                      style={styles.treeGroupCard}
-                      onLayout={(e) => {
-                        const y = e.nativeEvent.layout.y;
-                        setSectionOffsets((prev) => (prev.combos === y ? prev : { ...prev, combos: y }));
-                      }}
-                    >
-                      {(() => {
-                        const key = "combos";
-                        const isOpen = openTreeGroups[key] ?? true;
-                        const allActive =
-                          (visibleCombos?.length ?? 0) > 0 &&
-                          visibleCombos.every((c) => effectiveComboInStock(c, comboDetails.get(c.id) ?? null, itemById));
-                        return (
-                          <>
-                            <View style={styles.treeGroupHeader}>
-                              <TouchableOpacity
-                                onPress={() =>
-                                  setOpenTreeGroups((prev) => ({
-                                    ...prev,
-                                    [key]: !prev[key],
-                                  }))
-                                }
-                                style={styles.treeGroupTitleBtn}
-                                activeOpacity={0.85}
-                              >
-                                <View style={styles.treeChevronBtn}>
-                                  <Ionicons
-                                    name={isOpen ? "chevron-down" : "chevron-forward"}
-                                    size={18}
-                                    color={GatiMitraMerchant.textSecondary}
-                                  />
-                                </View>
-                                <Text style={styles.treeGroupTitle} numberOfLines={1}>
-                                  Combos{" "}
-                                  <Text style={styles.treeCountText}>
-                                    ({visibleCombos?.length ?? 0})
-                                  </Text>
-                                </Text>
-                              </TouchableOpacity>
-                              <View style={styles.treeGroupRight}>
-                                <Text style={styles.treeInStockLabel}>In stock</Text>
-                                <Switch
-                                  value={allActive}
-                                  onValueChange={() => {
-                                    if (!storeId || !token) return;
-                                    const next = !allActive;
-                                    if (!next) {
-                                      const first = visibleCombos[0];
-                                      if (first) setOosModal({ kind: "COMBO", comboId: first.id, comboName: first.combo_name });
-                                      return;
-                                    }
-                                    setRestoreConfirm({
-                                      title: "Bring back in stock?",
-                                      message: "This will make it available to customers and start receiving orders.",
-                                      onConfirm: async () => {
-                                        setRestoreConfirm(null);
-                                        setOosBusy(true);
-                                        try {
-                                          await Promise.all(visibleCombos.map((c) => patchComboOutOfStock(storeId, c.id, token, { mode: "CLEAR" })));
-                                        } finally {
-                                          setOosBusy(false);
-                                          await reloadCombos();
-                                        }
-                                      },
-                                    });
-                                  }}
-                                  trackColor={{
-                                    false: GatiMitraMerchant.border,
-                                    true: GatiMitraMerchant.primary,
-                                  }}
-                                  thumbColor="#fff"
-                                />
-                              </View>
-                            </View>
-
-                            {isOpen && (
-                              <View style={styles.treeItemsWrap}>
-                                {visibleCombos.map((combo) => (
-                                  <View key={`tree-combo-${combo.id}`} style={styles.treeRow}>
-                                    <TouchableOpacity
-                                      style={styles.treeRowLeft}
-                                      onPress={() =>
-                                        router.push({
-                                          pathname: "/menu/combos/[id]",
-                                          params: { id: String(combo.id) },
-                                        } as any)
-                                      }
-                                      activeOpacity={0.8}
-                                    >
-                                      <Text style={styles.treeItemName} numberOfLines={1}>
-                                        {combo.combo_name}
-                                      </Text>
-                                      {getComboOosLabel(combo, comboDetails.get(combo.id) ?? null, itemById) ? (
-                                        <Text style={styles.treeOosSubtext} numberOfLines={1}>
-                                          {getComboOosLabel(combo, comboDetails.get(combo.id) ?? null, itemById)}
-                                        </Text>
-                                      ) : (
-                                        <Text style={styles.treeInStockSubtext} numberOfLines={1}>
-                                          In stock
-                                        </Text>
-                                      )}
-                                    </TouchableOpacity>
-                                    <View style={styles.treeRowRight}>
-                                      <Text style={styles.treePrice}>
-                                        ₹{Number(combo.combo_price).toFixed(0)}
-                                      </Text>
-                                      <Switch
-                                        value={effectiveComboInStock(combo, comboDetails.get(combo.id) ?? null, itemById)}
-                                        onValueChange={(v) => handleToggleComboStock(combo, v)}
-                                        trackColor={{
-                                          false: GatiMitraMerchant.border,
-                                          true: GatiMitraMerchant.primary,
-                                        }}
-                                        thumbColor="#fff"
-                                      />
-                                    </View>
-                                  </View>
-                                ))}
-                              </View>
-                            )}
-                          </>
-                        );
-                      })()}
-                    </View>
-                  )}
+                  {kindFilter !== "COMBOS" ? renderComboTreeSection() : null}
                 </View>
               ))}
-            {showCombos && viewMode === "card" &&
-              visibleCombos.map((combo) => {
-                const detail = comboDetails.get(combo.id) ?? null;
-                const hasUnavailableItem =
-                  detail?.components?.some((c) => {
-                    const item = itemById.get(c.menu_item_id);
-                    return item && !effectiveInStock(item);
-                  }) ?? false;
-
-                return (
-                  <ComboCard
-                    key={`combo-${combo.id}`}
-                    combo={combo}
-                    detail={detail}
-                    itemById={itemById}
-                    isDisabled={hasUnavailableItem}
-                    effectiveComboInStock={effectiveComboInStock}
-                    onToggleComboStock={handleToggleComboStock}
-                    onMoreOptions={() => handleComboOptions(combo)}
-                    onPress={() =>
-                      router.push({
-                        pathname: "/menu/combos/[id]",
-                        params: { id: String(combo.id) },
-                      } as any)
-                    }
-                  />
-                );
-              })}
-          </View>
+              {showCombos && kindFilter === "COMBOS" && viewMode === "tree" ? (
+                <View style={styles.treeWrap}>{renderComboTreeSection()}</View>
+              ) : null}
+              {showCombos && viewMode === "card" ? renderComboCards() : null}
+            </View>
+            {catalogListEmpty ? (
+              <View style={styles.emptyCard}>
+                <Ionicons
+                  name={kindFilter === "COMBOS" ? "layers-outline" : "restaurant-outline"}
+                  size={36}
+                  color={GatiMitraMerchant.textTertiary}
+                />
+                <Text style={styles.emptyText}>
+                  {kindFilter === "COMBOS"
+                    ? "No combos yet. Add one from the Add menu."
+                    : search.trim()
+                      ? "No items match your search"
+                      : "No items match. Add an item or change filters."}
+                </Text>
+              </View>
+            ) : null}
+          </>
         )}
       </View>
     </ScrollView>
@@ -2441,7 +2567,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
-    borderRadius: 12,
+    borderRadius: CATALOG_TOGGLE_RADIUS,
     overflow: "hidden",
     backgroundColor: GatiMitraMerchant.cardBg,
   },
@@ -2742,6 +2868,61 @@ const styles = StyleSheet.create({
   errorWrap: { marginBottom: 12 },
   errorText: { fontSize: 13, color: GatiMitraMerchant.error },
   section: { gap: 12 },
+  catalogKindToggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 10,
+  },
+  catalogKindPill: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: CATALOG_TOGGLE_RADIUS,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  catalogKindPillActive: {
+    backgroundColor: GatiMitraMerchant.primary,
+    borderColor: GatiMitraMerchant.primaryDark,
+  },
+  catalogKindPillPressed: {
+    opacity: 0.92,
+  },
+  catalogKindLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  catalogKindLabelActive: {
+    color: "#FFFFFF",
+  },
+  catalogKindBadge: {
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 6,
+    borderRadius: CATALOG_TOGGLE_RADIUS,
+    backgroundColor: GatiMitraMerchant.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  catalogKindBadgeActive: {
+    backgroundColor: GatiMitraMerchant.navy,
+  },
+  catalogKindBadgeText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: GatiMitraMerchant.textPrimary,
+    fontVariant: ["tabular-nums"],
+  },
+  catalogKindBadgeTextActive: {
+    color: "#FFFFFF",
+  },
   sectionTitle: {
     fontSize: 15,
     fontWeight: "700",

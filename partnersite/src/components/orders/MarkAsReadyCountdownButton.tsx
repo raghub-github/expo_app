@@ -16,6 +16,7 @@ export type MarkAsReadyCountdownButtonProps = {
   compact?: boolean;
   fullWidth?: boolean;
   theme?: 'dark' | 'light';
+  labelPrefix?: string;
 };
 
 export function MarkAsReadyCountdownButton({
@@ -27,14 +28,15 @@ export function MarkAsReadyCountdownButton({
   compact,
   fullWidth,
   theme = 'dark',
+  labelPrefix = 'Mark as ready',
 }: MarkAsReadyCountdownButtonProps) {
   const { label } =
     nowMs != null
       ? prepReadyCountdownLabel(order, nowMs, {
-          prefix: 'Mark as ready',
-          expiredLabel: 'Mark as ready',
+          prefix: labelPrefix,
+          expiredLabel: labelPrefix,
         })
-      : { label: 'Mark as ready', disabled: false, secondsLeft: 0 };
+      : { label: labelPrefix, disabled: false, secondsLeft: 0 };
 
   const fillRatio = nowMs != null ? prepReadyTimeRemainingRatio(order, nowMs) : 1;
   const fillPct = `${Math.round(fillRatio * 100)}%`;
@@ -42,8 +44,26 @@ export function MarkAsReadyCountdownButton({
   const sizeClass = compact
     ? 'px-2.5 py-1.5 text-xs'
     : fullWidth
-      ? 'w-full px-4 py-2.5 text-sm font-semibold'
-      : 'px-4 py-2 text-sm';
+      ? 'w-full px-4 py-3 text-sm font-bold'
+      : 'px-4 py-2.5 text-sm font-bold';
+
+  if (theme === 'light') {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        className={`relative overflow-hidden rounded-xl border border-[#D4D4D4] bg-[#E8E8E8] text-[#1A1A1A] disabled:opacity-50 min-w-0 transition-all duration-200 active:scale-[0.99] ${sizeClass} ${className}`}
+      >
+        <span
+          className="absolute inset-y-0 left-0 bg-white transition-[width] duration-1000 ease-linear"
+          style={{ width: fillPct }}
+          aria-hidden
+        />
+        <span className="relative z-10">{label}</span>
+      </button>
+    );
+  }
 
   return (
     <button

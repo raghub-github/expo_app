@@ -11,6 +11,7 @@ export type MerchantOrderLineItem = {
   qty: number;
   name: string;
   price: number;
+  menu_item_id?: number | null;
   veg_nonveg?: string | null;
   customizations?: string[];
   variant_tag?: string | null;
@@ -236,6 +237,10 @@ export async function loadMerchantOrderLineItemsByTextIds(
         qty,
         name: String(row.item_name ?? "Item").trim() || "Item",
         price: lineTotal,
+        menu_item_id:
+          row.menu_item_id != null && Number.isFinite(Number(row.menu_item_id))
+            ? Number(row.menu_item_id)
+            : null,
         veg_nonveg: veg,
         customizations: customizations.length ? customizations : undefined,
         variant_tag: breakdown.variantTag,

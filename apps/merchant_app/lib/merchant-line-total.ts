@@ -112,3 +112,32 @@ export function merchantOrderTotalFromItems(
 ): number {
   return merchantBillPartsFromFoodItems(items, { packaging, discount }).total;
 }
+
+/** Merchant-facing item value before add-ons / commission markup (line base). */
+export function merchantBasePriceForLineItem(item: {
+  qty?: number;
+  price?: number;
+  base_amount?: number;
+  captured_base_amount?: number;
+  customizations_total?: number;
+  customization_lines?: ApiFoodOrderItem["customization_lines"];
+}): number {
+  const base = Number(item.base_amount) || 0;
+  if (base > 0.005) return Math.round(base);
+
+  const captured = Number(item.captured_base_amount) || 0;
+  if (captured > 0.005) return Math.round(captured);
+
+  const fromField = Number(item.customizations_total) || 0;
+  let cust = fromField;
+  if (cust <= 0.005) {
+    const lines = item.customization_lines ?? [];
+    cust = round2(
+      lines.filter((l) => l.kind === "addon").reduce((s, l) => s + (Number(l.amount) || 0), 0)
+    );
+  }
+
+  const stored = Number(item.price) || 0;
+  if (stored > cust + 0.005) return Math.round(stored - cust);
+  return stored > 0.005 ? Math.round(stored) : 0;
+}
