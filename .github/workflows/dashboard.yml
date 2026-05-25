@@ -1,36 +1,32 @@
-name: backend-deploy
+name: dashboard-deploy
 
-# Builds + ships the Fastify backend image. Triggered on:
-#   - push to main with changes under backend/** or shared packages it uses
+# Builds + ships the Next.js admin dashboard image. Triggered on:
+#   - push to main with changes under dashboard/** or shared packages it uses
 #   - manual run (workflow_dispatch) for emergency rollbacks
 #
-# The job pushes a tagged image to GHCR and SSHes into the Hostinger VPS to
-# pull + restart. Mirrors the existing partnersite/.github/workflows pattern.
+# Selective: this workflow is the ONLY one that should restart the dashboard
+# container. A backend-only push will not trigger it (paths filter below).
 #
 # Required repo secrets:
-#   GHCR_USERNAME, GHCR_TOKEN     — read+write packages
-#   VPS_HOST, VPS_USER, VPS_SSH_KEY — deploy target
+#   GHCR_USERNAME, GHCR_TOKEN
+#   VPS_HOST, VPS_USER, VPS_SSH_KEY
+#   NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, NEXT_PUBLIC_APP_URL
+#       — baked into the build because Next bundles them at compile time
 
 on:
   push:
     branches: [main]
     paths:
-      - "backend/**"
-      - "packages/redis/**"
-      - "packages/queue/**"
-      - "packages/logger/**"
-      - "packages/event-contracts/**"
+      - "dashboard/**"
       - "packages/contracts/**"
-      - "packages/shared-config/**"
       - "packages/shared-utils/**"
-      - "packages/constants/**"
-      - "packages/auth/**"
-      - ".github/workflows/backend.yml"
+      - "packages/shared-config/**"
+      - ".github/workflows/dashboard.yml"
       - "infra/scripts/deploy-service.sh"
   workflow_dispatch:
 
 concurrency:
-  group: backend-${{ github.ref }}
+  group: dashboard-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -48,7 +44,7 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: Typecheck (turbo affected)
-        run: npx turbo run typecheck --filter='backend' --filter='@gatimitra/*'
+        run: npx turbo run typecheck --filter='dashboard' --filter='@gatimitra/*'
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -64,13 +60,17 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: backend/Dockerfile
+          file: dashboard/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/gm-backend:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/gm-backend:latest
-          cache-from: type=gha,scope=backend
-          cache-to: type=gha,mode=max,scope=backend
+            ghcr.io/${{ github.repository_owner }}/gm-dashboard:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/gm-dashboard:latest
+          build-args: |
+            NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_APP_URL=${{ secrets.NEXT_PUBLIC_APP_URL }}
+          cache-from: type=gha,scope=dashboard
+          cache-to: type=gha,mode=max,scope=dashboard
 
       - name: Zero-downtime deploy on VPS
         uses: appleboy/ssh-action@v1.2.0
@@ -84,5 +84,5 @@ jobs:
             git fetch --depth 1 origin main
             git reset --hard origin/main
             chmod +x infra/scripts/deploy-service.sh
-            # Healthcheck hits backend's internal port directly; failure → rollback.
-            infra/scripts/deploy-service.sh backend http://localhost:3000/v1/health 90
+            # Health check hits port 3001 inside the container (compose env var).
+            infra/scripts/deploy-service.sh dashboard http://localhost:3001/api/health 90
