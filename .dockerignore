@@ -1,0 +1,67 @@
+# Repo-wide docker context exclusions.
+# Every service Dockerfile uses `context: ../..` from infra/docker/, so this
+# applies to ALL builds. Keeps Docker context small (otherwise the daemon
+# tarballs ~3GB of mobile + dashboard node_modules every time).
+
+# ── Heavy dependency dirs ────────────────────────────────────────────────
+**/node_modules
+**/.next
+**/dist
+**/build
+**/out
+**/.turbo
+**/coverage
+**/.tsbuildinfo
+**/*.tsbuildinfo
+
+# ── Mobile apps (never deployed to VPS) ──────────────────────────────────
+apps/customer_app
+apps/merchant_app
+apps/gatimitra-riderApp
+
+# ── Test artefacts & local caches ────────────────────────────────────────
+.cache
+.eslintcache
+.parcel-cache
+.pnpm-store
+.npm
+
+# ── Logs ─────────────────────────────────────────────────────────────────
+**/*.log
+**/logs
+
+# ── Env files (passed in via env_file: at runtime, not baked in) ─────────
+**/.env
+**/.env.*
+!**/.env.example
+!**/env.example
+
+# ── Git, IDE, OS ─────────────────────────────────────────────────────────
+.git
+.gitignore
+.gitattributes
+.github
+.vscode
+.idea
+.cursor
+.claude
+**/.DS_Store
+**/Thumbs.db
+*.swp
+*.swo
+
+# ── Docs / READMEs (image doesn't need them) ─────────────────────────────
+**/*.md
+!backend/README.md
+
+# ── Infra files don't need to be in app images ──────────────────────────
+infra/monitoring
+infra/nginx
+
+# ── Misc dev files ──────────────────────────────────────────────────────
+docs
+agent-transcripts
+**/archive-output
+*.tmp
+tmp
+temp
