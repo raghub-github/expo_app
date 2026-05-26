@@ -37,6 +37,14 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund --ignore-scripts
 
+      - name: Audit workspace dependency declarations
+        # Catches any import of a bare package that isn't declared in the
+        # importing workspace's package.json. Prevents the class of bug where
+        # `npm install` at root hoists a transitive dep and an app silently
+        # uses it locally — then the isolated Docker build fails because the
+        # hoisted dep isn't installed there.
+        run: node scripts/audit-undeclared-deps.mjs
+
       - name: Cache turbo
         uses: actions/cache@v4
         with:

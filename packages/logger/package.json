@@ -10,6 +10,14 @@
   "dependencies": {
     "pino": "^9.9.5"
   },
+  "peerDependencies": {
+    "@sentry/node": "*"
+  },
+  "peerDependenciesMeta": {
+    "@sentry/node": {
+      "optional": true
+    }
+  },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "echo 'TODO'",

@@ -7,9 +7,11 @@ name: partnersite-deploy
 # Selective: only restarts the partnersite container.
 #
 # Required repo secrets:
-#   GHCR_USERNAME, GHCR_TOKEN
 #   VPS_HOST, VPS_USER, VPS_SSH_KEY
 #   NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, NEXT_PUBLIC_APP_URL
+#
+# GHCR auth uses the auto-provisioned GITHUB_TOKEN (no manual secret setup
+# needed). The `permissions: packages: write` block grants it.
 
 on:
   push:
@@ -31,6 +33,9 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 2 }
@@ -51,8 +56,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ secrets.GHCR_USERNAME }}
-          password: ${{ secrets.GHCR_TOKEN }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build + push image
         uses: docker/build-push-action@v5
