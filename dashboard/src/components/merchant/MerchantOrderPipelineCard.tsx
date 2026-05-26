@@ -245,7 +245,7 @@ export function MerchantOrderPipelineCard({
         {/* Middle — items & actions */}
         <div className="border-t border-dashed border-gray-200 p-4 lg:border-t-0" onClick={(e) => e.stopPropagation()}>
           <MerchantOrderItemsList
-            items={order.items ?? []}
+            items={(order.items ?? []) as unknown as Parameters<typeof MerchantOrderItemsList>[0]["items"]}
             requiresUtensils={order.requires_utensils}
             utensilsLabel={getUtensilsCustomerLabel(order)}
             compact

@@ -429,7 +429,6 @@ export async function GET(req: NextRequest) {
         const bill = merchantBillPartsFromItems(items, {
           subtotal: merchantSubtotal,
           packaging: customerPricing.packaging,
-          taxes: 0,
           discount: merchantDiscount,
           total: 0,
         });

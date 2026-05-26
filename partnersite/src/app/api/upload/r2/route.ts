@@ -74,7 +74,7 @@ export async function POST(request: NextRequest) {
         Bucket: process.env.R2_BUCKET_NAME,
         Key: fullPath,
       });
-      signedUrl = await getSignedUrl(s3Client, getObjectCommand, {
+      signedUrl = await getSignedUrl(s3Client as unknown as Parameters<typeof getSignedUrl>[0], getObjectCommand, {
         expiresIn: 60 * 60 * 24 * 7,
       }); // 7 days
     }
@@ -89,7 +89,7 @@ export async function POST(request: NextRequest) {
         Bucket: process.env.R2_BUCKET_NAME,
         Key: fullPath,
       });
-      const menuImageUrl = await getSignedUrl(s3Client, getForMenu, {
+      const menuImageUrl = await getSignedUrl(s3Client as unknown as Parameters<typeof getSignedUrl>[0], getForMenu, {
         expiresIn: 60 * 60 * 24 * 7,
       });
       const { error } = await supabase

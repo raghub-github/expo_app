@@ -538,7 +538,11 @@ export async function createPendingOrder(
     merchantStoreId = Number(store.id);
     storeForOrder = {
       parentId: store.parent_id != null ? Number(store.parent_id) : null,
+      storeId: store.store_id ?? null,
       fullAddress: store.full_address ?? null,
+      bannerUrl: store.banner_url ?? null,
+      storeName: store.store_name ?? null,
+      storeDisplayName: store.store_display_name ?? null,
       latitude: store.latitude != null ? Number(store.latitude) : null,
       longitude: store.longitude != null ? Number(store.longitude) : null,
       is_accepting_orders: store.is_accepting_orders === true,
@@ -822,7 +826,10 @@ export async function finalizeOrder(
           itemName: i.itemName,
           categoryName: null,
           vegNonveg: vegNonvegForPlacementItem(i.itemSnapshot),
-          variantId: i.variantKey ?? (i.variantId != null ? String(i.variantId) : undefined),
+          // DB column is bigint — only the numeric variant PK belongs here.
+          // The text key (variantKey like "half/full") is captured in
+          // itemSnapshot, and the human-readable label is in variantName.
+          variantId: i.variantId ?? null,
           variantName: sanitizeOptional(i.variantName ?? "") ?? undefined,
           quantity: i.quantity,
           basePrice: sanitizeNumeric(i.basePrice),
@@ -1270,7 +1277,10 @@ export async function finalizePendingOrderFromWebhook(
           itemName: i.itemName,
           categoryName: null as string | null,
           vegNonveg: vegNonvegForPlacementItem(i.itemSnapshot),
-          variantId: i.variantKey ?? (i.variantId != null ? String(i.variantId) : undefined),
+          // DB column is bigint — only the numeric variant PK belongs here.
+          // The text key (variantKey like "half/full") is captured in
+          // itemSnapshot, and the human-readable label is in variantName.
+          variantId: i.variantId ?? null,
           variantName: sanitizeOptional(i.variantName ?? "") ?? undefined,
           quantity: i.quantity,
           basePrice: sanitizeNumeric(i.basePrice),

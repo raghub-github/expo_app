@@ -516,7 +516,6 @@ export async function loadMerchantStoreFoodOrders(
         const bill = merchantBillPartsFromItems(items, {
           subtotal: merchantSubtotal,
           packaging: customerPricing.packaging,
-          taxes: 0,
           discount: merchantDiscount,
           total: 0,
         });

@@ -2780,7 +2780,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             return reply.code(400).send({ error: "invalid_date_range" });
           }
 
-          const insights = await loadMerchantOfferInsights(sql, storeId, startMs, endMs);
+          const insights = await loadMerchantOfferInsights(sql as unknown as Parameters<typeof loadMerchantOfferInsights>[0], storeId, startMs, endMs);
           return reply.send({ success: true, insights });
         }
       );

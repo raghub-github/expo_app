@@ -311,7 +311,7 @@ export function OrderPanel({
 
         <div className="flex flex-col p-4 flex-1 min-w-0 min-h-0">
           <MerchantOrderItemsList
-            items={previewItems}
+            items={previewItems as unknown as Parameters<typeof MerchantOrderItemsList>[0]["items"]}
             requiresUtensils={order.requires_utensils}
             utensilsLabel={utensilsLabel}
             onItemClick={(item) => setSelectedItem(item as OrderLineItem)}
@@ -328,7 +328,7 @@ export function OrderPanel({
 
           <MerchantOrderBillSummary
             className="mt-4 shrink-0"
-            items={items}
+            items={items as unknown as Parameters<typeof MerchantOrderBillSummary>[0]["items"]}
             pricing={pricing}
             onTotalClick={onOpenBill}
           />

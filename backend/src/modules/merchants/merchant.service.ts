@@ -523,6 +523,46 @@ export async function getStoreBillingRates(
   };
 }
 
+/**
+ * Lightweight store lookup used by order-placement enrichment. Returns the
+ * fields the enrichment step writes onto orders_food (restaurant display
+ * name, phone, prep time) plus the pure-veg flag used for veg aggregation.
+ */
+export async function getStoreDetailsForFoodOrder(
+  merchantStoreId: number,
+): Promise<{
+  isPureVeg: boolean;
+  storeName: string | null;
+  storeDisplayName: string | null;
+  storePhones: string[] | null;
+  avgPreparationTimeMinutes: number | null;
+} | null> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("merchant_stores")
+    .select("is_pure_veg, store_name, store_display_name, store_phones, avg_preparation_time_minutes")
+    .eq("id", merchantStoreId)
+    .single();
+  if (error || !data) return null;
+  const row = data as {
+    is_pure_veg?: boolean | null;
+    store_name?: string | null;
+    store_display_name?: string | null;
+    store_phones?: string[] | null;
+    avg_preparation_time_minutes?: number | string | null;
+  };
+  return {
+    isPureVeg: row.is_pure_veg === true,
+    storeName: row.store_name ?? null,
+    storeDisplayName: row.store_display_name ?? null,
+    storePhones: Array.isArray(row.store_phones) ? row.store_phones : null,
+    avgPreparationTimeMinutes:
+      row.avg_preparation_time_minutes != null
+        ? Number(row.avg_preparation_time_minutes)
+        : null,
+  };
+}
+
 export async function getStoreByIdForOrder(
   merchantStoreId: number
 ): Promise<{ parentId: number | null; storeId: string | null; fullAddress: string | null; bannerUrl: string | null; storeName: string | null; storeDisplayName: string | null; latitude: number | null; longitude: number | null; is_accepting_orders: boolean } | null> {
@@ -769,7 +809,9 @@ async function fetchAddonOrderCounts(
         AND oc.status IS DISTINCT FROM 'cancelled'
       GROUP BY oia.addon_id
     `);
-    const rows = (result.rows ?? result) as Array<{ addon_id: number | string; order_count: number | string }>;
+    // postgres-js returns RowList directly (iterable); drizzle's execute()
+    // returns it as-is. Coerce through unknown for typed access.
+    const rows = (result as unknown) as Array<{ addon_id: number | string; order_count: number | string }>;
     for (const row of rows) {
       const addonPk = Number(row.addon_id);
       const count = Number(row.order_count);
@@ -848,7 +890,7 @@ export async function getOrderedTogetherPairs(
       LIMIT 8
     `);
 
-    const rows = (result.rows ?? result) as Array<{
+    const rows = (result as unknown) as Array<{
       item_a_pk: number | string;
       item_b_pk: number | string;
       order_count: number | string;

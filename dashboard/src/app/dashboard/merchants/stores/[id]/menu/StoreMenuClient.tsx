@@ -1979,8 +1979,14 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       if (!res.ok || data?.success === false) {
         throw new Error(data?.error || "Failed to update stock");
       }
-      setMenuItems((prev) =>
-        prev.map((it) => {
+      // menuItems is a useMemo over the react-query cache — update the cache
+      // directly so the memo re-derives.
+      queryClient.setQueryData(queryKeys.merchantStore.menu(storeId), (prev: unknown) => {
+        if (!prev || typeof prev !== "object") return prev;
+        const current = prev as { items?: unknown[] };
+        if (!Array.isArray(current.items)) return prev;
+        const items = current.items.map((row) => {
+          const it = row as MenuItem;
           if (it.id !== item.id) return it;
           if (targetType === "variant") {
             return {
@@ -2010,8 +2016,9 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
               ),
             })),
           };
-        })
-      );
+        });
+        return { ...(current as Record<string, unknown>), items };
+      });
       toast(inStock ? "Marked in stock" : "Marked out of stock");
     } catch (e) {
       toast(e instanceof Error ? e.message : "Failed to update stock");

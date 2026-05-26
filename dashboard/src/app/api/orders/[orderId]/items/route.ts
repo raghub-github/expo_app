@@ -349,7 +349,7 @@ export async function GET(
     const snapshotsByText = await loadSnapshotsByOrderTexts(
       db,
       textOrderId ? [textOrderId] : [],
-      storeId
+      storeId ?? undefined
     );
     const commissionSnaps = textOrderId ? snapshotsByText.get(textOrderId) ?? [] : [];
     let commissionPercent: number | undefined;
@@ -470,7 +470,7 @@ export async function GET(
           id: idx + 1,
           menuItemId: it.menuItemId ?? null,
           name: it.name,
-          variant: it.variantName,
+          variant: it.variantName ?? null,
           qty,
           baseUnit,
           addonUnit,
@@ -484,7 +484,7 @@ export async function GET(
             lineIndex: idx,
             menuItemId: it.menuItemId ?? null,
             name: it.name,
-            variant: it.variantName,
+            variant: it.variantName ?? null,
           }),
           storedAddonPrice: 0,
         });

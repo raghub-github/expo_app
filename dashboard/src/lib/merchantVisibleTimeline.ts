@@ -137,7 +137,9 @@ export function buildMerchantVisibleTimeline(
   const status = normStatus(order.order_status);
   const isTerminal = status === 'CANCELLED' || status === 'RTO';
 
-  const defs: Array<Omit<MerchantVisibleTimelineStep, 'completed'> & { atFn: () => string | null }> = [
+  // `at` is computed from `atFn()` further down in `withAt`; the def literals
+  // don't include it. Omit both so the literal type-checks.
+  const defs: Array<Omit<MerchantVisibleTimelineStep, 'completed' | 'at'> & { atFn: () => string | null }> = [
     {
       key: 'placed',
       label: 'Placed',

@@ -391,19 +391,23 @@ export default function OrderDetailClient({
           setPaymentDetail(paymentFromApi ?? null);
 
           setTimelineEntries(
-            timeline.map((e) => ({
-              ...e,
-              occurredAt:
-                e.occurredAt instanceof Date
-                  ? e.occurredAt.toISOString()
-                  : String(e.occurredAt ?? ""),
-              expectedByAt:
-                e.expectedByAt instanceof Date
-                  ? e.expectedByAt.toISOString()
-                  : e.expectedByAt != null
-                    ? String(e.expectedByAt)
-                    : null,
-            }))
+            timeline.map((e) => {
+              // API may hand back Date objects when serialized through some
+              // paths; type says string but be defensive.
+              const occ = e.occurredAt as unknown;
+              const exp = e.expectedByAt as unknown;
+              return {
+                ...e,
+                occurredAt:
+                  occ instanceof Date ? occ.toISOString() : String(occ ?? ""),
+                expectedByAt:
+                  exp instanceof Date
+                    ? exp.toISOString()
+                    : exp != null
+                      ? String(exp)
+                      : null,
+              };
+            })
           );
           setOrder({
             id: row.id,

@@ -83,7 +83,9 @@ export async function uploadToR2(
     // Generate signed URL with 7-day expiration (Cloudflare R2 requirement)
     // Signed URLs can be regenerated using the stored r2Key if they expire
     const signedUrl = await getSignedUrl(
-      client,
+      // @aws-sdk private-property variance bug between getSignedUrl's Client
+      // generic and S3Client — cast through unknown is the documented fix.
+      client as unknown as Parameters<typeof getSignedUrl>[0],
       new GetObjectCommand({
         Bucket: bucket,
         Key: key,
@@ -130,7 +132,7 @@ export async function getR2SignedUrl(key: string, expiresIn: number = 604800): P
 
   try {
     const signedUrl = await getSignedUrl(
-      client,
+      client as unknown as Parameters<typeof getSignedUrl>[0],
       new GetObjectCommand({
         Bucket: bucket,
         Key: key,

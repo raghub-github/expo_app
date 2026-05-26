@@ -462,7 +462,12 @@ export async function orderRoutes(app: FastifyInstance) {
         customerId: customerPk,
         merchantId: body.merchantId,
         merchantParentId: body.merchantParentId != null ? Number(body.merchantParentId) : null,
-        items: body.items,
+        // addonId is `string | number` in the wire schema (legacy clients send
+        // numeric PKs). PendingOrderInput requires string — coerce here.
+        items: body.items.map((it) => ({
+          ...it,
+          addons: (it.addons ?? []).map((a) => ({ ...a, addonId: String(a.addonId) })),
+        })),
         addressId: addressIdNum,
         paymentMethod: body.paymentMethod,
         tipAmount: body.tipAmount,
@@ -1093,7 +1098,11 @@ export async function orderRoutes(app: FastifyInstance) {
         merchantStoreId = Number(store.id);
         storeForOrder = {
           parentId: store.parent_id != null ? Number(store.parent_id) : null,
+          storeId: store.store_id ?? null,
           fullAddress: store.full_address ?? null,
+          bannerUrl: store.banner_url ?? null,
+          storeName: store.store_name ?? null,
+          storeDisplayName: store.store_display_name ?? null,
           latitude: store.latitude != null ? Number(store.latitude) : null,
           longitude: store.longitude != null ? Number(store.longitude) : null,
           is_accepting_orders: store.is_accepting_orders === true,
@@ -1149,17 +1158,21 @@ export async function orderRoutes(app: FastifyInstance) {
       const merchantParentId = storeForOrder?.parentId ?? null;
 
       const deliveryAddressForDb = sanitizeOptional(deliveryAddress) ?? null;
-      const { sql } = await import("drizzle-orm");
+      const { sql: drizzleSql } = await import("drizzle-orm");
 
       let orderIdText: string;
       try {
         const txResult = await db.transaction(async (tx) => {
           const seqResult = await tx.execute(
-            sql`SELECT ('GM' || nextval('order_id_seq'))::text as order_id`
+            drizzleSql`SELECT ('GM' || nextval('order_id_seq'))::text as order_id`
           );
-          const rows = Array.isArray(seqResult) ? seqResult : (seqResult as { rows?: { order_id: string }[] }).rows ?? [];
-          const idText = rows[0]?.order_id ?? (rows as { order_id?: string }[])[0]?.order_id;
-          if (!idText) throw new Error("Failed to generate order_id");
+          // drizzle returns the rows in different shapes depending on driver;
+          // coerce through unknown so the typed access compiles cleanly.
+          const rowsRaw = (Array.isArray(seqResult) ? seqResult : (seqResult as { rows?: unknown[] }).rows ?? []) as unknown[];
+          const firstRow = rowsRaw[0] as { order_id?: unknown } | undefined;
+          const idTextMaybe = firstRow?.order_id != null ? String(firstRow.order_id) : undefined;
+          if (!idTextMaybe) throw new Error("Failed to generate order_id");
+          const idText: string = idTextMaybe;
 
           const coreInsert = tx.insert(ordersCore) as any;
           await coreInsert.values({
@@ -1200,7 +1213,8 @@ export async function orderRoutes(app: FastifyInstance) {
               itemName: i.itemName,
               categoryName: null,
               vegNonveg: null,
-              variantId: i.variantKey ?? (i.variantId != null ? String(i.variantId) : undefined),
+              // DB column is bigint — only the numeric variant PK belongs here.
+              variantId: i.variantId ?? null,
               variantName: i.variantName ?? undefined,
               quantity: i.quantity,
               basePrice: String(i.basePrice.toFixed(2)),

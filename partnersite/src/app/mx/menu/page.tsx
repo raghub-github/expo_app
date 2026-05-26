@@ -122,6 +122,9 @@ interface Variant {
   barcode?: string;
   display_order?: number;
   is_default?: boolean;
+  /** Optional packaging-size display (e.g. "500 ml") rendered next to the name. */
+  variant_size_value?: string | number | null;
+  variant_size_unit?: string | null;
 }
 
 type MenuCombo = {

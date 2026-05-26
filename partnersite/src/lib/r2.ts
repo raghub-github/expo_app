@@ -469,7 +469,12 @@ export async function getR2SignedUrl(key: string, expiresInSeconds = 3600): Prom
     Bucket: bucketName,
     Key: objectKey,
   });
-  return getSignedUrl(s3, command, { expiresIn: expiresInSeconds });
+  // @aws-sdk private-property variance bug — cast through unknown.
+  return getSignedUrl(
+    s3 as unknown as Parameters<typeof getSignedUrl>[0],
+    command,
+    { expiresIn: expiresInSeconds },
+  );
 }
 
 const DEFAULT_MENU_SIGNED_URL_TTL_SEC = 86400 * 7;

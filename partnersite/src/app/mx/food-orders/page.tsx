@@ -3100,6 +3100,7 @@ function OrderListRow({
   onReject,
   onPreparing,
   onReady,
+  onNeedMoreTime,
   onDispatch,
   onRto,
   onComplete,
@@ -3120,6 +3121,7 @@ function OrderListRow({
   onReject?: () => void;
   onPreparing: () => void;
   onReady: () => void;
+  onNeedMoreTime?: () => void;
   onDispatch: () => void;
   onRto: () => void;
   onComplete: () => void;

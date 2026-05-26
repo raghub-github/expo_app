@@ -53,7 +53,11 @@ export async function generateSignedUrl(
       Key: r2Key,
     });
 
-    const url = await getSignedUrl(r2Client, command, { expiresIn });
+    const url = await getSignedUrl(
+      r2Client as unknown as Parameters<typeof getSignedUrl>[0],
+      command,
+      { expiresIn },
+    );
     return url;
   } catch (error) {
     console.error('Error generating R2 signed URL:', error);

@@ -61,6 +61,8 @@ export type OrdersFoodRow = {
     hasCustomizations?: boolean;
   }> | null;
   pricing?: OrderPricingBreakdown;
+  /** orders_core.grand_total — partial fallback when pricing snapshot is unavailable. */
+  grand_total?: number | string | null;
   veg_non_veg?: string | null;
   requires_utensils?: boolean | null;
   is_fragile?: boolean | null;

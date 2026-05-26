@@ -1422,5 +1422,5 @@ export async function loadMerchantFoodOrderTimeline(
     WHERE order_id = ${coreId}
     ORDER BY occurred_at ASC, id ASC
   `;
-  return rows as MerchantOrderTimelineEntry[];
+  return rows as unknown as MerchantOrderTimelineEntry[];
 }

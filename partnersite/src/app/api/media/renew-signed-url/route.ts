@@ -62,7 +62,11 @@ export async function GET(req: NextRequest) {
       Key: fileKey,
     });
 
-    const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: DEFAULT_EXPIRY_SEC });
+    const signedUrl = await getSignedUrl(
+      s3Client as unknown as Parameters<typeof getSignedUrl>[0],
+      command,
+      { expiresIn: DEFAULT_EXPIRY_SEC },
+    );
 
     return NextResponse.json({ signedUrl });
   } catch (err: unknown) {

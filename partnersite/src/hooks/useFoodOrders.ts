@@ -123,6 +123,8 @@ export interface OrdersFoodRow {
   cancellation_details?: any; // JSONB
   pickup_otp?: string | null;
   rto_otp?: string | null;
+  /** True when this order has been returned to merchant (RTO). */
+  is_rto?: boolean | null;
   created_at: string;
   updated_at: string;
   /** True when this pipeline row is backed only by orders_core (e.g. parcel / before kitchen row exists). */
