@@ -41,12 +41,20 @@ RUN npm ci --no-audit --no-fund --ignore-scripts
 # ────────────────────────────────────────────────────────────────────────
 FROM node:22-alpine AS build
 WORKDIR /repo
-COPY --from=deps /repo/node_modules ./node_modules
-COPY --from=deps /repo/package.json /repo/package-lock.json ./
 
-# Bring in source for backend and the 5 shared packages only. We deliberately
-# do NOT `COPY . .` — that would pull mobile apps + dashboard + partnersite
-# into this image's build context and balloon the layer size.
+# Copy the ENTIRE deps stage tree (root node_modules + every workspace's
+# local node_modules). npm cannot always hoist devDeps when sibling
+# workspaces pin different versions — e.g. backend wants
+# @types/nodemailer@^8.0.0 while dashboard wants ^7.0.11, so npm installs
+# each into its own `<workspace>/node_modules`. Copying only the root
+# node_modules (as the original Dockerfile did) silently dropped those
+# workspace-local types, producing TS7016 "Could not find a declaration
+# file for module 'nodemailer'" at build time. Copying the whole /repo
+# tree keeps both layouts intact.
+COPY --from=deps /repo /repo
+
+# Overlay source files. Docker COPY merges into the destination — the
+# node_modules dirs already present from the deps stage are preserved.
 COPY backend                  ./backend
 COPY packages/contracts       ./packages/contracts
 COPY packages/event-contracts ./packages/event-contracts
