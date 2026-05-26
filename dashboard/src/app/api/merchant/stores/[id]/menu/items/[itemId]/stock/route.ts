@@ -8,7 +8,7 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
-import { getSql } from "@/lib/db/client";
+import { patchMenuItemStockToggle } from "@/lib/merchant-menu-out-of-stock-server";
 
 export const runtime = "nodejs";
 
@@ -48,14 +48,8 @@ export async function PATCH(
       return NextResponse.json({ success: false, error: "in_stock boolean required" }, { status: 400 });
     }
 
-    const sql = getSql();
-    const result = await sql`
-      UPDATE merchant_menu_items
-      SET in_stock = ${body.in_stock}, updated_at = NOW()
-      WHERE id = ${menuItemId} AND store_id = ${storeId}
-    `;
-    if ((result as any)?.count === 0) return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
-    return NextResponse.json({ success: true, ok: true });
+    const result = await patchMenuItemStockToggle(storeId, menuItemId, body.in_stock);
+    return NextResponse.json({ success: true, ...result });
   } catch (e) {
     console.error("[PATCH /api/merchant/stores/[id]/menu/items/[itemId]/stock]", e);
     return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });

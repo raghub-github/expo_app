@@ -465,6 +465,8 @@ export async function GET(req: NextRequest) {
           prep_time_source: (food?.prep_time_source as string | null) ?? null,
           prep_delay_minutes:
             food?.prep_delay_minutes != null ? Number(food.prep_delay_minutes) : 0,
+          prep_delay_use_count:
+            food?.prep_delay_use_count != null ? Number(food.prep_delay_use_count) : 0,
           prepared_late_minutes:
             food?.prepared_late_minutes != null ? Number(food.prepared_late_minutes) : null,
           food_items_count: displayItemCount,

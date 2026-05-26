@@ -18,9 +18,7 @@ import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheet
 import { OutOfStockModal, type OutOfStockPayload } from "@/components/OutOfStockModal";
 import {
   fetchMenuItem,
-  patchCategoryOutOfStock,
   patchItemOutOfStock,
-  patchItemStock,
   type MenuItemDetail,
   type OutOfStockMode,
 } from "@/services/menuApi";
@@ -40,14 +38,6 @@ function itemInStock(menu: MenuItemDetail | null): boolean {
   if (!menu) return true;
   if (menu.effective_in_stock != null) return menu.effective_in_stock;
   return menu.in_stock !== false;
-}
-
-function categoryBlockedByOos(menu: MenuItemDetail): boolean {
-  return Boolean(
-    menu.category_out_of_stock_manual ||
-      (menu.category_out_of_stock_until &&
-        new Date(menu.category_out_of_stock_until).getTime() > Date.now())
-  );
 }
 
 function resolveMerchantItemPrice(lineItem: LineItem, menu: MenuItemDetail | null): number {
@@ -166,16 +156,10 @@ export function OrderItemDetailsSheet({ visible, lineItem, onClose }: Props) {
   );
 
   const restoreInStock = useCallback(async () => {
-    if (!storeId || !token || !menu || menuItemId == null) return;
+    if (!storeId || !token || menuItemId == null) return;
     setOosBusy(true);
     try {
-      if (menu.category_id != null && categoryBlockedByOos(menu)) {
-        await patchCategoryOutOfStock(storeId, menu.category_id, token, { mode: "CLEAR" });
-      }
       await patchItemOutOfStock(storeId, menuItemId, token, { mode: "CLEAR" });
-      if (menu.in_stock === false) {
-        await patchItemStock(storeId, menuItemId, token, { in_stock: true });
-      }
       await refreshMenu();
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not restore stock";
@@ -184,22 +168,13 @@ export function OrderItemDetailsSheet({ visible, lineItem, onClose }: Props) {
       setOosBusy(false);
       setRestoreConfirm(null);
     }
-  }, [storeId, token, menu, menuItemId, refreshMenu]);
+  }, [storeId, token, menuItemId, refreshMenu]);
 
   const handleStockToggle = useCallback(
     (nextInStock: boolean) => {
       if (!canManageStock || !menu || oosBusy) return;
       if (!nextInStock) {
         setOosModalOpen(true);
-        return;
-      }
-      if (menu.category_id != null && categoryBlockedByOos(menu)) {
-        setRestoreConfirm({
-          title: "Category is out of stock",
-          message:
-            "This item's category is currently out of stock. Restore the category to bring this item back in stock.",
-          onConfirm: () => void restoreInStock(),
-        });
         return;
       }
       setRestoreConfirm({

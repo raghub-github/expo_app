@@ -1,50 +1,220 @@
+import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from "expo-av";
 import { Platform, Vibration } from "react-native";
+import type { OrderAcceptanceSettings } from "@/services/orderAcceptanceApi";
+import {
+  resolveAlertUrlFromSlots,
+  resolveStrictAlertUrlFromSlot,
+  volumeStepTo01,
+  type DeviceOrderAlerts,
+} from "@/lib/deviceOrderAlerts";
+import { normalizeAlertSoundSlots, resolveAlertSoundUrl } from "@/lib/resolveAlertSoundUrl";
+
+const BUNDLED_NOTIFICATION = require("../assets/sounds/notification.wav");
 
 let chimeRunId = 0;
+let activeSound: Audio.Sound | null = null;
+
+function acceptanceSoundSlots(
+  settings: Pick<OrderAcceptanceSettings, "alert_sound_url" | "alert_sound_urls_by_slot">
+): [string | null, string | null, string | null] {
+  const raw =
+    settings.alert_sound_urls_by_slot ??
+    ([settings.alert_sound_url, null, null] as [string | null, string | null, string | null]);
+  return normalizeAlertSoundSlots(raw);
+}
+
+/** Incoming alert playback — uses this device's chosen slot (partnersite parity). */
+export function resolveIncomingOrderChimeUrl(
+  settings: Pick<
+    OrderAcceptanceSettings,
+    "alert_sound_url" | "alert_sound_urls_by_slot" | "alert_sound_slot_choice"
+  >,
+  device: Pick<DeviceOrderAlerts, "alertSoundSlot">
+): string | null {
+  const slots = acceptanceSoundSlots(settings);
+  return (
+    resolveAlertUrlFromSlots(slots, device.alertSoundSlot) ??
+    resolveAlertSoundUrl(settings.alert_sound_url) ??
+    null
+  );
+}
+
+async function playSingleChime(
+  source: number | { uri: string },
+  volume: number,
+  myRun: number
+): Promise<boolean> {
+  if (chimeRunId !== myRun) return false;
+
+  let sound: Audio.Sound | null = null;
+  try {
+    if (activeSound) {
+      await activeSound.stopAsync().catch(() => undefined);
+      await activeSound.unloadAsync().catch(() => undefined);
+      activeSound = null;
+    }
+
+    const downloadFirst = typeof source === "object" && "uri" in source;
+    const created = await Audio.Sound.createAsync(
+      source,
+      {
+        volume,
+        shouldPlay: false,
+        isLooping: false,
+      },
+      undefined,
+      downloadFirst
+    );
+    sound = created.sound;
+
+    if (chimeRunId !== myRun) {
+      await sound.unloadAsync().catch(() => undefined);
+      return false;
+    }
+
+    activeSound = sound;
+
+    const initial = await sound.getStatusAsync();
+    if (!initial.isLoaded) {
+      await sound.unloadAsync().catch(() => undefined);
+      if (activeSound === sound) activeSound = null;
+      return false;
+    }
+
+    await sound.playAsync();
+
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        void sound?.unloadAsync().catch(() => undefined);
+        if (activeSound === sound) activeSound = null;
+        resolve();
+      };
+      const timeout = setTimeout(finish, 12_000);
+      sound!.setOnPlaybackStatusUpdate((status) => {
+        if (status.isLoaded && status.didJustFinish) {
+          clearTimeout(timeout);
+          finish();
+        }
+      });
+    });
+    return true;
+  } catch {
+    if (sound) {
+      await sound.unloadAsync().catch(() => undefined);
+      if (activeSound === sound) activeSound = null;
+    }
+    return false;
+  }
+}
+
+export type PlayOrderAlertOptions = {
+  /** Default true — incoming alerts vibrate; preview passes false. */
+  vibrate?: boolean;
+};
 
 /**
  * Play configured alert URL (best-effort) + vibration — partnersite parity.
- * Uses expo-av when installed; otherwise vibration only.
+ * Falls back to bundled notification.wav when no remote URL is configured or it fails.
  */
 export async function playOrderAlertSound(
   url: string | null | undefined,
   repeatCount: number,
-  volume01: number
-): Promise<void> {
+  volume01: number,
+  ringInSilent = true,
+  opts?: PlayOrderAlertOptions
+): Promise<boolean> {
   const myRun = ++chimeRunId;
-  const src = (url || "").trim();
-  if (Platform.OS !== "web") {
+  const trimmed = resolveAlertSoundUrl(url) ?? "";
+  const shouldVibrate = opts?.vibrate !== false;
+
+  if (Platform.OS !== "web" && shouldVibrate) {
     Vibration.vibrate([0, 450, 120, 450, 120, 450]);
   }
-  if (!src) return;
 
   try {
-    const av = await import("expo-av");
-    await av.Audio.setAudioModeAsync({
-      playsInSilentModeIOS: true,
-      shouldDuckAndroid: true,
+    await Audio.setAudioModeAsync({
+      allowsRecordingIOS: false,
+      playsInSilentModeIOS: ringInSilent,
+      staysActiveInBackground: true,
+      shouldDuckAndroid: false,
+      interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+      interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+      playThroughEarpieceAndroid: false,
     });
-    const safeRepeats = Math.max(1, Math.min(25, Math.floor(repeatCount || 1)));
-    for (let i = 0; i < safeRepeats; i += 1) {
-      if (chimeRunId !== myRun) break;
-      const { sound } = await av.Audio.Sound.createAsync(
-        { uri: src },
-        { volume: Math.min(1, Math.max(0, volume01)), shouldPlay: true }
-      );
-      await new Promise<void>((resolve) => {
-        sound.setOnPlaybackStatusUpdate((status) => {
-          if (status.isLoaded && status.didJustFinish) {
-            void sound.unloadAsync();
-            resolve();
-          }
-        });
-      });
-    }
   } catch {
-    /* expo-av missing or URL invalid — vibration already fired */
+    /* non-fatal */
   }
+
+  const safeRepeats = Math.max(1, Math.min(25, Math.floor(repeatCount || 1)));
+  const volume = Math.min(1, Math.max(0, volume01));
+  let anyPlayed = false;
+
+  for (let i = 0; i < safeRepeats; i += 1) {
+    if (chimeRunId !== myRun) break;
+
+    let played = false;
+    if (trimmed) {
+      played = await playSingleChime({ uri: trimmed }, volume, myRun);
+    }
+    // Only fall back to bundled tone when no remote URL is configured (not on load failure).
+    if (!played && !trimmed) {
+      played = await playSingleChime(BUNDLED_NOTIFICATION, volume, myRun);
+    }
+    if (played) anyPlayed = true;
+  }
+
+  return anyPlayed;
+}
+
+/** Settings-screen preview — always audible (even in silent), no vibration. */
+export async function previewOrderAlertSound(args: {
+  settings: Pick<
+    OrderAcceptanceSettings,
+    "alert_sound_url" | "alert_sound_urls_by_slot" | "alert_sound_slot_choice"
+  >;
+  selectedSlot: number;
+  volume01: number;
+}): Promise<boolean> {
+  stopOrderAlertSound();
+  const slots = acceptanceSoundSlots(args.settings);
+  const url = resolveStrictAlertUrlFromSlot(slots, args.selectedSlot);
+  return playOrderAlertSound(url, 1, args.volume01, true, { vibrate: false });
 }
 
 export function stopOrderAlertSound(): void {
   chimeRunId += 1;
+  if (activeSound) {
+    void activeSound.stopAsync().catch(() => undefined);
+    void activeSound.unloadAsync().catch(() => undefined);
+    activeSound = null;
+  }
+}
+
+export async function playIncomingOrderAlert(
+  settings: Pick<
+    OrderAcceptanceSettings,
+    | "alert_sound_enabled"
+    | "alert_sound_url"
+    | "alert_sound_urls_by_slot"
+    | "alert_sound_slot_choice"
+    | "alert_sound_repeat_count"
+  >,
+  device: DeviceOrderAlerts
+): Promise<void> {
+  if (!device.orderAlertsEnabled || !device.soundAlertsEnabled) {
+    return;
+  }
+  const chimeUrl =
+    settings.alert_sound_enabled === false
+      ? null
+      : resolveIncomingOrderChimeUrl(settings, device);
+  await playOrderAlertSound(
+    chimeUrl,
+    settings.alert_sound_repeat_count ?? 1,
+    volumeStepTo01(device.volumeStep),
+    device.ringInSilent
+  );
 }

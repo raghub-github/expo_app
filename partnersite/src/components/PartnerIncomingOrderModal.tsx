@@ -25,11 +25,14 @@ import {
   type PartnerOrderActionToastKind,
 } from '@/lib/partner-order-action-toast';
 import { RejectOrderSidesheet } from '@/components/orders/RejectOrderSidesheet';
+import { RejectFollowUpHost, useRejectFollowUp } from '@/components/orders/RejectFollowUpHost';
 import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
 import { MerchantOrderItemsList } from '@/components/orders/MerchantOrderItemsList';
 import { MerchantOrderBillSummary } from '@/components/orders/MerchantOrderBillSummary';
 import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import type { NormalizedOrderLineItem, OrderPricingBreakdown } from '@/lib/orderLineItems';
+import { rejectReasonNeedsFollowUp } from '@/lib/merchantCancellationReasons';
+import type { MerchantCancellationReason } from '@/lib/merchantCancellationReasons';
 import {
   PREP_TIME_MIN,
   PREP_TIME_MAX,
@@ -44,9 +47,25 @@ const MAX_PREVIEW_ITEMS = 3;
 
 const MUTE_KEY = 'partner_incoming_order_mute_sound';
 const DEFAULT_ALERT_SOUND = '/notification.wav';
-const FALLBACK_POLL_MS = 8_000;
+const FALLBACK_POLL_MS = 12_000;
+const OPEN_ORDER_SYNC_MS = 2_500;
 const FALLBACK_SCAN_LIMIT = 12;
 const DISMISS_KEY = 'partner_incoming_order_dismissed_v1';
+
+function isPartnerIncomingPending(row: OrdersFoodRow | null): boolean {
+  if (!row) return false;
+  const ext = row as OrdersFoodRow & { core_status?: string; current_status?: string | null };
+  const st = resolvePartnerPipeline(
+    row.order_status,
+    ext.core_status ?? 'assigned',
+    ext.current_status ?? null
+  );
+  return st === 'CREATED';
+}
+
+function isInvalidOrderTransitionError(message: string): boolean {
+  return /invalid transition/i.test(message);
+}
 
 type AcceptanceSettings = {
   store_type?: string;
@@ -189,6 +208,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   /** Dedupe by orders_core.id */
   const shownInsertIds = useRef<Set<string>>(new Set());
   const hydrateBusyRef = useRef(false);
+  const menuIdHydrateAttemptedRef = useRef<Set<number>>(new Set());
   const chimeRunIdRef = useRef(0);
   const chimeAudioRef = useRef<HTMLAudioElement | null>(null);
   const autoAcceptTimerRef = useRef<number | null>(null);
@@ -197,7 +217,15 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const [storeOpsSettings, setStoreOpsSettings] = useState<{ auto_accept_orders: boolean; auto_accept_time_seconds: number; show_floating_orders: boolean } | null>(null);
   const [prepMinutes, setPrepMinutes] = useState(PLATFORM_DEFAULT_PREP_MINUTES);
   const [maxPrepMinutes, setMaxPrepMinutes] = useState(PREP_TIME_MAX);
+  const [storeDisplayName, setStoreDisplayName] = useState('');
   const storeDefaultPrepRef = useRef(PLATFORM_DEFAULT_PREP_MINUTES);
+  const modalOrderRef = useRef<OrdersFoodRow | null>(null);
+  const closeModalRef = useRef<() => void>(() => {});
+  const { followUp, beginFollowUp, dismissFollowUp, setFollowUp } = useRejectFollowUp();
+
+  useEffect(() => {
+    modalOrderRef.current = modalOrder;
+  }, [modalOrder]);
 
   const getDismissed = () => {
     if (typeof window === 'undefined') return new Set<number>();
@@ -295,6 +323,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     if (!storeId) return;
     void (async () => {
       const s = await fetchStoreById(storeId);
+      setStoreDisplayName(String(s?.store_name ?? storeId));
       const def = resolveStoreDefaultPrepMinutes(s?.avg_preparation_time_minutes);
       storeDefaultPrepRef.current = def;
       setPrepMinutes(def);
@@ -337,6 +366,12 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     // in case it was opened from a partial row or older cached data.
     if (!storeId || !modalOrder) return;
     const itemsArr = Array.isArray(modalOrder.items) ? modalOrder.items : [];
+    const missingMenuIds =
+      itemsArr.length > 0 &&
+      itemsArr.every((it) => {
+        const id = (it as NormalizedOrderLineItem).menuItemId;
+        return id == null || !Number.isFinite(Number(id));
+      });
     const needsHydrate =
       !modalOrder.customer_name ||
       itemsArr.length === 0 ||
@@ -350,9 +385,11 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
         const hasStructured =
           (row.customizationLines?.length ?? 0) > 0 || Boolean(row.variantTag);
         return hasCust && !hasStructured;
-      });
+      }) ||
+      (missingMenuIds && !menuIdHydrateAttemptedRef.current.has(modalOrder.order_id));
     if (!needsHydrate) return;
     if (hydrateBusyRef.current) return;
+    if (missingMenuIds) menuIdHydrateAttemptedRef.current.add(modalOrder.order_id);
     hydrateBusyRef.current = true;
     void (async () => {
       try {
@@ -432,9 +469,16 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
 
   const scanForNewOrders = useCallback(async () => {
     if (!storeId || !storeReady) return;
-    // If user already has a modal open, don't steal focus; next scan will run again.
     if (modalOrder) return;
     try {
+      const countRes = await fetch(
+        `/api/merchant/pending-new-orders-count?store_id=${encodeURIComponent(storeId)}`,
+        { credentials: 'include' }
+      );
+      const countData = (await countRes.json().catch(() => ({}))) as { count?: number };
+      const pending = Number(countData.count ?? 0);
+      if (!Number.isFinite(pending) || pending <= 0) return;
+
       const res = await fetch(
         `/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=${FALLBACK_SCAN_LIMIT}`
       );
@@ -472,13 +516,20 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
           const prev = payload.old as { status?: string } | null;
           const nextStatus = String(row.status || '').toLowerCase();
           const prevStatus = String(prev?.status || '').toLowerCase();
+          const open = modalOrderRef.current;
+          const coreId = Number(row.id);
+          if (open && Number.isFinite(coreId) && coreId === Number(open.order_id)) {
+            if (nextStatus !== 'assigned') {
+              closeModalRef.current();
+              return;
+            }
+          }
           // Some flows create the row first, then UPDATE to assigned — handle both.
           if (nextStatus !== 'assigned') return;
           if (prevStatus === 'assigned') return;
-          const cid = Number(row.id);
-          if (!Number.isFinite(cid)) return;
+          if (!Number.isFinite(coreId)) return;
           void (async () => {
-            const full = await fetchByCoreId(cid);
+            const full = await fetchByCoreId(coreId);
             await openIfNew(full);
           })();
         }
@@ -492,10 +543,22 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
           filter: `merchant_store_id=eq.${storeInternalId}`,
         },
         (payload) => {
-          const row = payload.new as { id?: number; order_status?: string };
+          const row = payload.new as { id?: number; order_id?: number; order_status?: string };
           const prev = payload.old as { order_status?: string } | null;
           const prevSt = resolvePartnerPipeline(prev?.order_status ?? null, 'assigned', null);
           const st = resolvePartnerPipeline(row.order_status, 'assigned', null);
+          const open = modalOrderRef.current;
+          if (open) {
+            const rowFoodId = Number(row.id);
+            const rowCoreId = Number(row.order_id);
+            const matchesOpen =
+              (Number.isFinite(rowFoodId) && rowFoodId === Number(open.id)) ||
+              (Number.isFinite(rowCoreId) && rowCoreId === Number(open.order_id));
+            if (matchesOpen && st !== 'CREATED') {
+              closeModalRef.current();
+              return;
+            }
+          }
           if (st !== 'CREATED') return;
           if (prevSt === 'CREATED') return;
           const fid = Number(row.id);
@@ -649,6 +712,37 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     queueMicrotask(() => void scanForNewOrdersRef.current());
   };
 
+  closeModalRef.current = close;
+
+  const syncOpenModalOrder = useCallback(async () => {
+    const open = modalOrderRef.current;
+    if (!storeId || !open) return;
+    try {
+      const full = await fetchByCoreId(open.order_id);
+      if (!isPartnerIncomingPending(full)) {
+        closeModalRef.current();
+        return;
+      }
+      setModalOrder(full);
+    } catch {
+      /* ignore */
+    }
+  }, [storeId, fetchByCoreId]);
+
+  useEffect(() => {
+    if (!modalOrder || !storeId) return;
+    void syncOpenModalOrder();
+    const t = window.setInterval(() => void syncOpenModalOrder(), OPEN_ORDER_SYNC_MS);
+    const onRefresh = () => void syncOpenModalOrder();
+    window.addEventListener(PARTNER_PENDING_ORDERS_REFRESH, onRefresh);
+    window.addEventListener('partner-incoming-order-rescan', onRefresh);
+    return () => {
+      window.clearInterval(t);
+      window.removeEventListener(PARTNER_PENDING_ORDERS_REFRESH, onRefresh);
+      window.removeEventListener('partner-incoming-order-rescan', onRefresh);
+    };
+  }, [modalOrder?.order_id, storeId, syncOpenModalOrder]);
+
   const showOrderActionToast = (kind: PartnerOrderActionToastKind, orderId: number) => {
     if (hasShownPartnerOrderActionToast(orderId, kind)) return;
     markPartnerOrderActionToastShown(orderId, kind);
@@ -668,10 +762,12 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const patchStatus = async (
     status: 'ACCEPTED' | 'CANCELLED',
     extra?: { rejected_reason?: string; preparation_time_minutes?: number },
-    mode: 'auto' | 'manual' = 'manual'
+    mode: 'auto' | 'manual' = 'manual',
+    opts?: { closeAfter?: boolean }
   ) => {
     if (!storeId || !modalOrder) return;
     const orderIdForToast = modalOrder.order_id;
+    const closeAfter = opts?.closeAfter !== false;
     setActionLoading(true);
     try {
       const url = modalOrder.core_only
@@ -699,24 +795,34 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       });
       if (!res.ok) {
         const err = (await res.json().catch(() => ({}))) as { error?: string };
+        const errMsg = err.error || 'Update failed';
         console.debug('[partner-incoming-modal] PATCH failed', {
           url,
           httpStatus: res.status,
           err,
           payload,
         });
-        throw new Error(err.error || 'Update failed');
+        if (closeAfter && isInvalidOrderTransitionError(errMsg)) {
+          close();
+          return;
+        }
+        throw new Error(errMsg);
       }
       console.debug('[partner-incoming-modal] PATCH ok', { url, httpStatus: res.status });
       showOrderActionToast(status === 'ACCEPTED' ? 'accepted' : 'rejected', orderIdForToast);
       window.dispatchEvent(new CustomEvent(PARTNER_PENDING_ORDERS_REFRESH));
-      close();
+      if (closeAfter) close();
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
       console.debug('[partner-incoming-modal] PATCH exception', {
-        message: e instanceof Error ? e.message : String(e),
+        message: msg,
         status,
       });
-      toast.error(e instanceof Error ? e.message : 'Could not update order');
+      if (closeAfter && isInvalidOrderTransitionError(msg)) {
+        close();
+        return;
+      }
+      toast.error(msg || 'Could not update order');
     } finally {
       setActionLoading(false);
     }
@@ -1011,10 +1117,31 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
         order={modalOrder}
         loading={actionLoading}
         onClose={() => setRejectOpen(false)}
-        onConfirm={async (reason) => {
-          await patchStatus('CANCELLED', { rejected_reason: reason }, 'manual');
+        onConfirm={async (reason: MerchantCancellationReason) => {
+          const snap = modalOrder;
+          if (!snap || !storeId) return;
           setRejectOpen(false);
+          if (rejectReasonNeedsFollowUp(reason)) {
+            const items = (Array.isArray(snap.items) ? snap.items : []) as NormalizedOrderLineItem[];
+            beginFollowUp(reason, {
+              storeId,
+              storeName: storeDisplayName || storeId,
+              lineItems: items,
+              finalizeReject: async () => {
+                await patchStatus('CANCELLED', { rejected_reason: reason }, 'manual');
+              },
+            });
+            return;
+          }
+          await patchStatus('CANCELLED', { rejected_reason: reason }, 'manual');
         }}
+      />
+
+      <RejectFollowUpHost
+        followUp={followUp}
+        storeId={storeId ?? ''}
+        onDismiss={dismissFollowUp}
+        setFollowUp={setFollowUp}
       />
     </>
   );

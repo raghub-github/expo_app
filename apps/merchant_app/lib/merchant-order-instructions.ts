@@ -30,9 +30,21 @@ export function parseMerchantInstructionsList(raw: unknown): string[] {
 export function resolveMerchantInstructionsForDisplay(order: {
   merchant_instructions_list?: unknown;
   requires_utensils?: boolean | null;
+  delivery_instructions?: string | null;
 }): string[] {
   const list = parseMerchantInstructionsList(order.merchant_instructions_list);
   if (list.length > 0) return list;
+
+  const instr = (order.delivery_instructions ?? "").trim();
+  if (instr) {
+    const segments = instr
+      .split("|")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (segments.length > 0) return segments;
+    return [instr];
+  }
+
   if (order.requires_utensils === false) return ["Don't send cutlery"];
   if (order.requires_utensils === true) return ["Send cutlery"];
   return [];

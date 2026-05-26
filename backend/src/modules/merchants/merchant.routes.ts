@@ -6,6 +6,7 @@ import {
   getStoreLiveStatus,
   getMenuItemFullConfig,
   getOrderedTogetherPairs,
+  getOrderedTogetherRecommendations,
   search,
   listNearbyStoresByRoadDistance,
 } from "./merchant.service.js";
@@ -18,6 +19,56 @@ import { getScheduleTimesForStores } from "./merchant-store-schedule-times.js";
 import { getCompletedOrderCountsForStores } from "./merchant-store-order-stats.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import { previewEtaRange } from "../eta/eta.preview.js";
+import type { MerchantMenuItemRow } from "./merchant.types.js";
+
+function toFiniteInt(v: unknown): number | undefined {
+  if (v == null || v === "") return undefined;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : undefined;
+}
+
+function toFiniteNumber(v: unknown): number | undefined {
+  if (v == null || v === "") return undefined;
+  const n = typeof v === "number" ? v : parseFloat(String(v));
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function mapCustomerMenuItem(
+  m: MerchantMenuItemRow & { category_name?: string | null }
+) {
+  const menuItemId = toFiniteInt(m.id);
+  const price = toFiniteNumber(m.selling_price);
+  if (menuItemId == null || price == null) return null;
+
+  const categoryId = toFiniteInt(m.category_id);
+  const basePrice = toFiniteNumber(m.base_price);
+  const discountPercentage = toFiniteNumber(m.discount_percentage);
+  const prepTimeMinutes = toFiniteInt(m.preparation_time_minutes);
+
+  return {
+    id: String(m.item_id ?? ""),
+    menuItemId,
+    name: String(m.item_name ?? "Item"),
+    description: m.item_description ?? undefined,
+    price,
+    basePrice,
+    imageUrl: toAbsoluteClientMediaUrl(m.item_image_url ?? null) ?? undefined,
+    foodType: m.food_type ?? undefined,
+    spiceLevel: m.spice_level ?? undefined,
+    isVeg: (m.food_type ?? "").toLowerCase().startsWith("veg"),
+    category: m.cuisine_type ?? m.category_name ?? undefined,
+    categoryId: categoryId ?? undefined,
+    categoryName: m.category_name ?? undefined,
+    isPopular: m.is_popular === true ? true : m.is_popular === false ? false : undefined,
+    isRecommended:
+      m.is_recommended === true ? true : m.is_recommended === false ? false : undefined,
+    prepTimeMinutes,
+    discountPercentage,
+    hasCustomizations: m.has_customizations === true,
+    hasAddons: m.has_addons === true,
+    hasVariants: m.has_variants === true,
+  };
+}
 
 const querySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).optional().default(20),
@@ -307,12 +358,16 @@ export async function merchantRoutes(app: FastifyInstance) {
     }
   );
 
-  // GET /v1/merchants/:id/menu/ordered-together – item pairs frequently ordered together at this store.
-  app.get<{ Params: { id: string } }>(
+  // GET /v1/merchants/:id/menu/ordered-together – co-purchase pairs (optional anchor item).
+  app.get<{ Params: { id: string }; Querystring: { anchorMenuItemId?: string; limit?: string } }>(
     "/merchants/:id/menu/ordered-together",
     {
       schema: {
         params: z.object({ id: z.string().min(1) }),
+        querystring: z.object({
+          anchorMenuItemId: z.string().min(1).optional(),
+          limit: z.string().optional(),
+        }),
         response: {
           200: z.object({
             pairs: z.array(
@@ -323,6 +378,7 @@ export async function merchantRoutes(app: FastifyInstance) {
                 item1MenuItemPk: z.number(),
                 item2MenuItemPk: z.number(),
                 orderCount: z.number(),
+                source: z.enum(["co_purchase", "popular_fallback"]),
               })
             ),
           }),
@@ -335,8 +391,70 @@ export async function merchantRoutes(app: FastifyInstance) {
       const { getStoreByStoreId } = await import("./merchant.service.js");
       const store = await getStoreByStoreId(storeId);
       if (!store) return reply.status(404).send({ error: "Store not found" });
-      const pairs = await getOrderedTogetherPairs(storeId);
+      const limitRaw = request.query.limit != null ? Number(request.query.limit) : undefined;
+      const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Number(limitRaw), 1), 24) : undefined;
+      const pairs = await getOrderedTogetherPairs(storeId, {
+        anchorMenuItemId: request.query.anchorMenuItemId,
+        limit,
+      });
       return reply.send({ pairs });
+    }
+  );
+
+  // GET /v1/merchants/:id/menu/ordered-together/recommendations – store pairs + per-item map.
+  app.get<{ Params: { id: string }; Querystring: { limit?: string; perAnchorLimit?: string } }>(
+    "/merchants/:id/menu/ordered-together/recommendations",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        querystring: z.object({
+          limit: z.string().optional(),
+          perAnchorLimit: z.string().optional(),
+        }),
+        response: {
+          200: z.object({
+            pairs: z.array(
+              z.object({
+                id: z.string(),
+                item1Id: z.string(),
+                item2Id: z.string(),
+                item1MenuItemPk: z.number(),
+                item2MenuItemPk: z.number(),
+                orderCount: z.number(),
+                source: z.enum(["co_purchase", "popular_fallback"]),
+              })
+            ),
+            byAnchorItemId: z.record(
+              z.array(
+                z.object({
+                  id: z.string(),
+                  item1Id: z.string(),
+                  item2Id: z.string(),
+                  item1MenuItemPk: z.number(),
+                  item2MenuItemPk: z.number(),
+                  orderCount: z.number(),
+                  source: z.enum(["co_purchase", "popular_fallback"]),
+                })
+              )
+            ),
+          }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id: storeId } = request.params;
+      const { getStoreByStoreId } = await import("./merchant.service.js");
+      const store = await getStoreByStoreId(storeId);
+      if (!store) return reply.status(404).send({ error: "Store not found" });
+      const limit = toFiniteInt(request.query.limit);
+      const perAnchorLimit = toFiniteInt(request.query.perAnchorLimit);
+      const payload = await getOrderedTogetherRecommendations(storeId, {
+        limit: limit != null ? Math.min(Math.max(limit, 1), 24) : undefined,
+        perAnchorLimit:
+          perAnchorLimit != null ? Math.min(Math.max(perAnchorLimit, 1), 6) : undefined,
+      });
+      return reply.send(payload);
     }
   );
 
@@ -450,8 +568,11 @@ export async function merchantRoutes(app: FastifyInstance) {
                 name: z.string(),
                 description: z.string().optional(),
                 price: z.number(),
+                basePrice: z.number().optional(),
                 imageUrl: z.string().nullable().optional(),
                 isVeg: z.boolean(),
+                foodType: z.string().optional(),
+                spiceLevel: z.string().optional(),
                 category: z.string().optional(),
                 categoryId: z.number().nullable().optional(),
                 categoryName: z.string().nullable().optional(),
@@ -493,31 +614,9 @@ export async function merchantRoutes(app: FastifyInstance) {
       if (Array.isArray(gallery) && gallery.length > 0) bannerImages.push(...gallery.filter(Boolean));
       if (bannerImages.length === 0 && store.banner_url) bannerImages.push(store.banner_url);
 
-      const menu = items.map((m) => ({
-        id: m.item_id,
-        menuItemId: m.id,
-        name: m.item_name,
-        description: m.item_description ?? undefined,
-        price: parseFloat(m.selling_price),
-        basePrice:
-          m.base_price != null && Number.isFinite(parseFloat(String(m.base_price)))
-            ? parseFloat(String(m.base_price))
-            : undefined,
-        imageUrl: toAbsoluteClientMediaUrl(m.item_image_url ?? null) ?? undefined,
-        foodType: m.food_type ?? undefined,
-        spiceLevel: (m as { spice_level?: string | null }).spice_level ?? undefined,
-        isVeg: (m.food_type ?? "").toLowerCase().startsWith("veg"),
-        category: m.cuisine_type ?? (m as { category_name?: string | null }).category_name ?? undefined,
-        categoryId: m.category_id ?? undefined,
-        categoryName: (m as { category_name?: string | null }).category_name ?? undefined,
-        isPopular: m.is_popular ?? undefined,
-        isRecommended: m.is_recommended ?? undefined,
-        prepTimeMinutes: m.preparation_time_minutes ?? undefined,
-        discountPercentage: m.discount_percentage != null ? parseFloat(String(m.discount_percentage)) : undefined,
-        hasCustomizations: (m as { has_customizations?: boolean }).has_customizations ?? false,
-        hasAddons: (m as { has_addons?: boolean }).has_addons ?? false,
-        hasVariants: (m as { has_variants?: boolean }).has_variants ?? false,
-      }));
+      const menu = items
+        .map((m) => mapCustomerMenuItem(m))
+        .filter((row): row is NonNullable<ReturnType<typeof mapCustomerMenuItem>> => row != null);
 
       const rawLiveStatus = (store as { live_status?: string | null }).live_status;
       const liveStatus =

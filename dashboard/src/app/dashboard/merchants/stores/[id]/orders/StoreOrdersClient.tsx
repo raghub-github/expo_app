@@ -89,7 +89,8 @@ import { MerchantPreparingOrderCard } from '@/components/merchant/MerchantPrepar
 import { MerchantPrepDelayModal } from '@/components/merchant/MerchantPrepDelayModal';
 import { StoreClosedActiveOrdersNotice } from '@/components/orders/StoreClosedActiveOrdersNotice';
 import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';
-import { isActiveMerchantFoodOrderStatus } from '@/lib/merchantActiveOrders';
+import { isActiveMerchantFoodOrderStatus, canMerchantMarkDelivered } from '@/lib/merchantActiveOrders';
+import { countLiveSidebarPipelineOrders } from '@/lib/foodOrdersLivePipeline';
 import {
   dispatchMerchantStoreOrderUpdated,
   isIncomingOrderModalOpen,
@@ -1722,6 +1723,11 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     RTO: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'RTO')).length,
   };
 
+  const liveActiveCount = useMemo(
+    () => countLiveSidebarPipelineOrders(orders),
+    [orders]
+  );
+
   const hasActiveOrders = useMemo(
     () => orders.some((o) => isActiveMerchantFoodOrderStatus(o.order_status)),
     [orders]
@@ -1854,7 +1860,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                 {stats && (
                   <div className="flex items-center gap-2 shrink-0">
                     <StatBadge label="Today" value={String(stats.ordersTodayActive ?? stats.ordersToday)} />
-                    <StatBadge label="Active" value={String(stats.activeOrders ?? stats.ordersTodayActive ?? 0)} accent />
+                    <StatBadge label="Active" value={String(orders.length > 0 ? liveActiveCount : (stats.activeOrders ?? 0))} accent title="Pending live orders (New + Preparing + Ready + Picked up + RTO)" />
                   </div>
                 )}
                 {stats && (
@@ -4093,15 +4099,24 @@ function ActionBtns({
     );
   }
   if (status === 'OUT_FOR_DELIVERY') {
+    const showMerchantComplete = canMerchantMarkDelivered(order);
     return (
-      <div className={`flex gap-2 items-center ${topRightLayout ? 'w-full' : 'flex-wrap'}`}>
-        <button
-          onClick={(e) => { e.stopPropagation(); onComplete(); }}
-          disabled={dis}
-          className={`${btnBase} ${topRightLayout ? 'flex-[2] px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-green-600 text-white hover:bg-green-700 hover:shadow-md border-green-700/20`}
-        >
-          Complete
-        </button>
+      <div className={`flex flex-col gap-2 ${topRightLayout ? 'w-full' : ''}`}>
+        {showMerchantComplete ? (
+          <button
+            onClick={(e) => { e.stopPropagation(); onComplete(); }}
+            disabled={dis}
+            className={`${btnBase} ${topRightLayout ? 'flex-[2] px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-green-600 text-white hover:bg-green-700 hover:shadow-md border-green-700/20`}
+          >
+            Mark delivered
+          </button>
+        ) : (
+          <p
+            className={`text-center text-sm font-medium text-gray-600 ${topRightLayout ? 'w-full py-2' : 'px-2 py-1'}`}
+          >
+            Rider will complete delivery
+          </p>
+        )}
         <RtoMenu />
       </div>
     );

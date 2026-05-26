@@ -1,13 +1,9 @@
-import { useEffect, useRef, useCallback, useState, type ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import {
   View,
   Text,
   StyleSheet,
   Pressable,
-  Platform,
-  Animated,
-  PanResponder,
-  Vibration,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, CARD_RADIUS } from "@/constants/theme";
@@ -16,25 +12,16 @@ import { TerminalOrderCard } from "@/components/order/TerminalOrderCard";
 import { MerchantPreparingOrderCard } from "@/components/order/MerchantPreparingOrderCard";
 import { MerchantReadyOrderCard } from "@/components/order/MerchantReadyOrderCard";
 import { MerchantOutForDeliveryOrderCard } from "@/components/order/MerchantOutForDeliveryOrderCard";
+import { NewOrderCard } from "@/components/order/NewOrderCard";
 import { OrderItemDetailsSheet } from "@/components/order/OrderItemDetailsSheet";
+import { SlideToConfirm } from "@/components/order/SlideToConfirm";
 import { sliceOrderLineItems } from "@/lib/orderCardDisplay";
-import { formatCustomerPossessiveOrderLabel } from "@/components/order/orderFormatters";
+import { formatOrderCardCustomerLabel } from "@/components/order/orderFormatters";
+import { MerchantOrderIdRow } from "@/components/order/MerchantOrderCardToolbar";
 import { OrderCardItemRow } from "@/components/order/OrderCardItemRow";
+import { OrderCardMerchantInstructions } from "@/components/order/OrderCardMerchantInstructions";
 
 const STATUS_GREEN = "#22C55E";
-const STATUS_RED = "#EF4444";
-
-const SLIDER_STAGE_COLORS: Record<
-  "created" | "preparing" | "ready" | "picked_up",
-  { track: string; knob: string }
-> = {
-  created: { track: "#22C55E", knob: "#16A34A" },
-  preparing: { track: "#CA8A04", knob: "#A16207" },
-  ready: { track: "#0D9488", knob: "#0F766E" },
-  picked_up: { track: "#7C3AED", knob: "#5B21B6" },
-};
-const SLIDER_DISABLED_BG = "#E5E7EB";
-const SLIDER_LABEL_TEXT = "#FFFFFF";
 
 const STATUS_BADGE_COLORS: Record<
   OrderStage,
@@ -123,130 +110,7 @@ function OtpPill({ label, code }: { label: string; code: string }) {
   );
 }
 
-type SliderStage = "created" | "preparing" | "ready" | "picked_up";
-
-function SlideToConfirm({
-  label,
-  onConfirmed,
-  disabled,
-  stage = "created",
-}: {
-  label: string;
-  onConfirmed: () => void;
-  disabled?: boolean;
-  stage?: SliderStage;
-}) {
-  const trackWidth = useRef(0);
-  const translateX = useRef(new Animated.Value(0)).current;
-  const confirmedRef = useRef(false);
-  const pulseOpacity = useRef(new Animated.Value(1)).current;
-  const colors = SLIDER_STAGE_COLORS[stage];
-
-  useEffect(() => {
-    if (disabled) {
-      pulseOpacity.setValue(1);
-      return;
-    }
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseOpacity, {
-          toValue: 0.88,
-          duration: 1200,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseOpacity, {
-          toValue: 1,
-          duration: 1200,
-          useNativeDriver: true,
-        }),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [disabled, pulseOpacity]);
-
-  const reset = useCallback(() => {
-    confirmedRef.current = false;
-    Animated.timing(translateX, {
-      toValue: 0,
-      duration: 160,
-      useNativeDriver: true,
-    }).start();
-  }, [translateX]);
-
-  const handleConfirm = useCallback(() => {
-    if (confirmedRef.current) return;
-    confirmedRef.current = true;
-    Vibration.vibrate(15);
-    onConfirmed();
-    setTimeout(reset, 260);
-  }, [onConfirmed, reset]);
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => !disabled,
-      onMoveShouldSetPanResponder: (_, gesture) =>
-        !disabled && Math.abs(gesture.dx) > 6,
-      onPanResponderMove: (_, gesture) => {
-        if (disabled) return;
-        const max = Math.max(0, trackWidth.current - 46);
-        const next = Math.min(max, Math.max(0, gesture.dx));
-        translateX.setValue(next);
-      },
-      onPanResponderRelease: (_, gesture) => {
-        if (disabled) {
-          reset();
-          return;
-        }
-        const max = Math.max(0, trackWidth.current - 46);
-        const threshold = max * 0.7;
-        if (gesture.dx >= threshold) {
-          Animated.timing(translateX, {
-            toValue: max,
-            duration: 140,
-            useNativeDriver: true,
-          }).start(handleConfirm);
-        } else {
-          reset();
-        }
-      },
-      onPanResponderTerminate: () => {
-        reset();
-      },
-    })
-  ).current;
-
-  return (
-    <Animated.View
-      style={[
-        styles.sliderTrack,
-        !disabled && { backgroundColor: colors.track },
-        disabled && styles.sliderTrackDisabled,
-        !disabled && { opacity: pulseOpacity },
-      ]}
-      onLayout={(e) => {
-        trackWidth.current = e.nativeEvent.layout.width;
-      }}
-    >
-      <Text
-        style={[styles.sliderLabel, disabled && styles.sliderLabelDisabled]}
-        numberOfLines={1}
-      >
-        {label}
-      </Text>
-      <Animated.View
-        style={[
-          styles.sliderKnob,
-          !disabled && { backgroundColor: colors.knob },
-          { transform: [{ translateX }] },
-        ]}
-        {...panResponder.panHandlers}
-      >
-        <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
-      </Animated.View>
-    </Animated.View>
-  );
-}
+type SliderStage = "preparing" | "ready" | "picked_up";
 
 export function canMerchantMarkDelivered(order: OrderRecord): boolean {
   if (order.deliveryType === "GATIMITRA_RIDER") return false;
@@ -260,10 +124,12 @@ function isTerminalStatus(status: OrderStage): boolean {
 export type LiveOrderCardProps = {
   order: OrderRecord;
   nowMs: number;
+  acceptanceWindowMinutes?: number;
   storeName?: string | null;
   onAccept: () => void;
   onReject: () => void;
   onAdvance: () => void;
+  onNeedMoreTime?: () => void;
   onViewDetail: () => void;
   actionLoading?: boolean;
 };
@@ -271,10 +137,12 @@ export type LiveOrderCardProps = {
 export function LiveOrderCard({
   order,
   nowMs,
+  acceptanceWindowMinutes,
   storeName,
   onAccept,
   onReject,
   onAdvance,
+  onNeedMoreTime,
   onViewDetail,
   actionLoading,
 }: LiveOrderCardProps) {
@@ -303,6 +171,7 @@ export function LiveOrderCard({
         storeName={storeName}
         nowMs={nowMs}
         onReady={onAdvance}
+        onNeedMoreTime={onNeedMoreTime}
         onViewDetail={onViewDetail}
         onItemPress={onItemPress}
         loading={actionLoading}
@@ -327,13 +196,24 @@ export function LiveOrderCard({
         onItemPress={onItemPress}
       />
     );
+  } else if (order.status === "created") {
+    card = (
+      <NewOrderCard
+        order={order}
+        nowMs={nowMs}
+        acceptanceWindowMinutes={acceptanceWindowMinutes}
+        onAccept={onAccept}
+        onReject={onReject}
+        onViewDetail={onViewDetail}
+        onItemPress={onItemPress}
+        actionLoading={actionLoading}
+      />
+    );
   } else {
     card = (
       <LiveOrderCardDefault
         order={order}
         nowMs={nowMs}
-        onAccept={onAccept}
-        onReject={onReject}
         onAdvance={onAdvance}
         onViewDetail={onViewDetail}
         onItemPress={onItemPress}
@@ -356,12 +236,10 @@ export function LiveOrderCard({
 function LiveOrderCardDefault({
   order,
   nowMs,
-  onAccept,
-  onReject,
   onAdvance,
   onViewDetail,
   onItemPress,
-}: Omit<LiveOrderCardProps, "storeName" | "actionLoading"> & {
+}: Omit<LiveOrderCardProps, "storeName" | "actionLoading" | "onAccept" | "onReject" | "acceptanceWindowMinutes"> & {
   onItemPress: (item: LineItem) => void;
 }) {
   const timeSince = formatTimeSince(order.createdAt, nowMs);
@@ -371,15 +249,13 @@ function LiveOrderCardDefault({
     (order.status === "ready" || order.status === "picked_up") && !!order.pickupOtp;
   const showRtoOtp = order.status === "rto" && !!order.rtoOtp;
   const { visible: visibleItems, moreCount } = sliceOrderLineItems(order.lineItems);
-  const customerLabel = formatCustomerPossessiveOrderLabel(
+  const customerLabel = formatOrderCardCustomerLabel(
     order.customerName,
     order.customerStoreOrderOrdinal
   );
 
   const primaryActionLabel = (() => {
     switch (order.status) {
-      case "created":
-        return `ACCEPT ORDER ${timer}`;
       case "preparing":
         return `MARK READY ${timer}`;
       case "ready":
@@ -401,10 +277,13 @@ function LiveOrderCardDefault({
     <View style={styles.card}>
       <View style={styles.cardHeaderRow}>
         <View style={styles.cardHeaderLeft}>
-          <Text style={styles.orderIdText}>
-            {order.formattedOrderId ?? order.orderNumber}{" "}
-            <Text style={styles.dotSeparator}>•</Text> {order.displayTime}
-          </Text>
+          <View style={styles.orderIdRow}>
+            <MerchantOrderIdRow
+              formattedOrderId={order.formattedOrderId}
+              fallbackOrderId={order.ordersCoreId}
+            />
+            <Text style={styles.displayTime}>{order.displayTime}</Text>
+          </View>
           <View style={styles.customerNameRow}>
             <Text style={styles.customerName} numberOfLines={2}>
               {customerLabel}
@@ -457,6 +336,13 @@ function LiveOrderCardDefault({
         )}
       </View>
 
+      <OrderCardMerchantInstructions
+        merchantInstructionsList={order.merchantInstructionsList}
+        requiresUtensils={order.requiresUtensils}
+        deliveryInstructions={order.deliveryInstructions}
+        style={{ marginBottom: 8 }}
+      />
+
       <Pressable
         onPress={onViewDetail}
         style={({ pressed }) => [styles.totalRow, pressed && styles.pressed]}
@@ -478,28 +364,7 @@ function LiveOrderCardDefault({
         <OtpPill label="RTO OTP" code={order.rtoOtp} />
       )}
 
-      {order.status === "created" ? (
-        <View style={styles.createdActionsRow}>
-          <View style={styles.createdAcceptWrap}>
-            <SlideToConfirm
-              label={primaryActionLabel}
-              onConfirmed={onAccept}
-              disabled={false}
-              stage="created"
-            />
-          </View>
-          <Pressable
-            onPress={onReject}
-            style={({ pressed }) => [
-              styles.rejectBtn,
-              pressed && styles.pressed,
-              GatiMitraMerchant.cursorPointer,
-            ]}
-          >
-            <Text style={styles.rejectBtnText}>Reject</Text>
-          </Pressable>
-        </View>
-      ) : primaryActionLabel ? (
+      {primaryActionLabel ? (
         <View style={styles.sliderOnlyRow}>
           <SlideToConfirm
             label={primaryActionLabel}
@@ -535,16 +400,19 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     marginBottom: 10,
   },
-  cardHeaderLeft: { flexShrink: 1, paddingRight: 8 },
+  cardHeaderLeft: { flexShrink: 1, paddingRight: 8, flex: 1, minWidth: 0 },
   cardHeaderRight: { alignItems: "flex-end", gap: 6 },
-  orderIdText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: GatiMitraMerchant.textPrimary,
+  orderIdRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
   },
-  dotSeparator: {
-    color: GatiMitraMerchant.textTertiary,
-    fontWeight: "400",
+  displayTime: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: GatiMitraMerchant.textSecondary,
+    flexShrink: 0,
   },
   customerNameRow: {
     flexDirection: "row",
@@ -662,54 +530,5 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
   },
-  createdActionsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 10,
-    gap: 8,
-  },
-  createdAcceptWrap: { flex: 0.7 },
-  rejectBtn: {
-    flex: 0.3,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: STATUS_RED,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  rejectBtnText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: STATUS_RED,
-  },
   sliderOnlyRow: { marginTop: 10 },
-  sliderTrack: {
-    height: 44,
-    borderRadius: 999,
-    justifyContent: "center",
-    paddingHorizontal: 8,
-    overflow: "hidden",
-  },
-  sliderTrackDisabled: { backgroundColor: SLIDER_DISABLED_BG },
-  sliderLabel: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    textAlign: "center",
-    fontSize: 14,
-    fontWeight: "700",
-    color: SLIDER_LABEL_TEXT,
-    textShadowColor: "rgba(0,0,0,0.25)",
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 1,
-  },
-  sliderLabelDisabled: { opacity: 0.8 },
-  sliderKnob: {
-    width: 40,
-    height: 32,
-    borderRadius: 999,
-    alignItems: "center",
-    justifyContent: "center",
-  },
 });

@@ -4,7 +4,7 @@ import type { OrderRecord } from "@/hooks/useOrders";
 import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
 import {
   formatCustomerOrderOrdinalShort,
-  formatCustomerPossessiveOrderLabel,
+  formatOrderCardCustomerLabel,
 } from "@/components/order/orderFormatters";
 import { callCustomer } from "@/lib/orderCardActions";
 import { GatiMitraMerchant, CARD_RADIUS } from "@/constants/theme";
@@ -64,7 +64,7 @@ export function OrderCustomerBottomSheet({ visible, order, onClose }: Props) {
           </View>
           <Text style={styles.name}>{customerName}</Text>
           <Text style={styles.subtitle}>
-            {formatCustomerPossessiveOrderLabel(
+            {formatOrderCardCustomerLabel(
               customerName,
               order.customerStoreOrderOrdinal
             )}

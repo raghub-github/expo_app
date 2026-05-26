@@ -39,6 +39,8 @@ import type { NormalizedOrderItem } from "./orderNormalizer.js";
 import { freezeEtaForPlacedOrder } from "../eta/eta.placement.js";
 import { vegNonvegForPlacementItem } from "../../lib/order-item-veg.js";
 import { insertPlacedOrderCoreWithTimelines } from "../../lib/order-placement-persist.js";
+import { getSql } from "../../db/client.js";
+import { notifyMerchantStoreNewOrder } from "../../lib/merchant-new-order-notify.js";
 
 const EM_DASH = "\u2014";
 
@@ -980,6 +982,14 @@ export async function finalizeOrder(
     };
   }
 
+  void notifyMerchantStoreNewOrder(getSql(), {
+    merchantStoreId: pending.merchantStoreId,
+    orderIdText,
+    grandTotal: Number(pending.grandTotal),
+  }).catch((e) => {
+    console.error("[merchant-new-order-notify] finalizeOrder failed:", e);
+  });
+
   return {
     ok: true,
     orderId: orderIdText,
@@ -1389,7 +1399,7 @@ export async function finalizePendingOrderFromWebhook(
         try {
           const [oc] = await db.execute(
             sql`
-              SELECT merchant_store_id, pickup_lat::text AS pickup_lat,
+              SELECT merchant_store_id, grand_total::text AS grand_total, pickup_lat::text AS pickup_lat,
                      pickup_lon::text AS pickup_lon, drop_lat::text AS drop_lat,
                      drop_lon::text AS drop_lon, distance_km::text AS distance_km
               FROM orders_core
@@ -1398,6 +1408,11 @@ export async function finalizePendingOrderFromWebhook(
             `
           ) as unknown as Array<Record<string, unknown>>;
           if (!oc) return;
+          await notifyMerchantStoreNewOrder(getSql(), {
+            merchantStoreId: Number(oc.merchant_store_id),
+            orderIdText: result.orderId,
+            grandTotal: Number(oc.grand_total ?? 0),
+          });
           await freezeEtaForPlacedOrder({
             orderIdText: result.orderId,
             merchantStoreId: Number(oc.merchant_store_id),
@@ -1409,7 +1424,7 @@ export async function finalizePendingOrderFromWebhook(
               oc.distance_km != null ? Number(oc.distance_km) : null,
           });
         } catch (e) {
-          console.warn("[eta] webhook-path ETA freeze failed (non-fatal)", {
+          console.warn("[eta] webhook-path post-place hooks failed (non-fatal)", {
             orderId: result.orderId,
             err: (e as Error).message,
           });

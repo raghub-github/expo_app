@@ -21,6 +21,7 @@ import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import {
   isPrepCountdownExpired,
   prepReadyCountdownLabel,
+  canUseNeedMoreTime,
 } from '@/lib/order-prep-time';
 import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
 
@@ -218,6 +219,15 @@ export function MerchantPreparingOrderCard({
     isPrepCountdownExpired(order, nowMs) ||
     !prepReadyCountdownLabel(order, nowMs, { prefix: 'Order Ready' }).label.includes('(');
 
+  const canNeedMore =
+    prepExpired &&
+    !!onNeedMoreTime &&
+    canUseNeedMoreTime(
+      order.prep_delay_use_count,
+      Boolean(order.is_bulk_order),
+      order.prep_delay_minutes
+    );
+
   const restaurantLabel =
     (storeName || order.restaurant_name || '').trim() || 'Restaurant';
 
@@ -412,7 +422,7 @@ export function MerchantPreparingOrderCard({
 
       {/* Order Ready CTA */}
       <div className="px-4 pb-4 pt-0" onClick={(e) => e.stopPropagation()}>
-        {prepExpired && onNeedMoreTime ? (
+        {prepExpired && canNeedMore ? (
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"

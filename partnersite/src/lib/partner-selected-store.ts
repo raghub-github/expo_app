@@ -9,6 +9,10 @@ export const PARTNER_INCOMING_MODAL_OPEN = 'partner-incoming-order-modal-open';
 export const PARTNER_INCOMING_MODAL_CLOSED = 'partner-incoming-order-modal-closed';
 export const PARTNER_PENDING_ORDERS_REFRESH = 'partner-pending-orders-refresh';
 
+import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
+
+export { isValidPartnerStoreId };
+
 const INVALID = new Set(['', 'no id', 'loading...', 'unknown store', '—', '-']);
 
 export function readPartnerSelectedStoreId(prop?: string): string {

@@ -122,6 +122,12 @@ export type OrderedTogetherPair = {
   item1MenuItemPk: number;
   item2MenuItemPk: number;
   orderCount: number;
+  source?: "co_purchase" | "popular_fallback";
+};
+
+export type OrderedTogetherRecommendations = {
+  pairs: OrderedTogetherPair[];
+  byAnchorItemId: Record<string, OrderedTogetherPair[]>;
 };
 
 export type MerchantDetail = MerchantSummary & {
@@ -408,15 +414,39 @@ export const merchantService = {
     }
   },
 
-  /** Pairs of items frequently ordered together at this store (from completed order history). */
-  async getOrderedTogetherPairs(storeId: string): Promise<OrderedTogetherPair[]> {
+  /** Pairs frequently ordered together at this store (from order history + popular fallback). */
+  async getOrderedTogetherPairs(
+    storeId: string,
+    opts?: { anchorMenuItemId?: string; limit?: number }
+  ): Promise<OrderedTogetherPair[]> {
     try {
+      const params = new URLSearchParams();
+      if (opts?.anchorMenuItemId) params.set("anchorMenuItemId", opts.anchorMenuItemId);
+      if (opts?.limit != null) params.set("limit", String(opts.limit));
+      const qs = params.toString();
       const { data } = await api.get<{ pairs: OrderedTogetherPair[] }>(
-        `${MERCHANTS_PREFIX}/${storeId}/menu/ordered-together`
+        `${MERCHANTS_PREFIX}/${storeId}/menu/ordered-together${qs ? `?${qs}` : ""}`
       );
       return Array.isArray(data?.pairs) ? data.pairs : [];
     } catch {
       return [];
+    }
+  },
+
+  /** Store-level pairs plus per-anchor recommendations for menu UI. */
+  async getOrderedTogetherRecommendations(
+    storeId: string
+  ): Promise<OrderedTogetherRecommendations> {
+    try {
+      const { data } = await api.get<OrderedTogetherRecommendations>(
+        `${MERCHANTS_PREFIX}/${storeId}/menu/ordered-together/recommendations`
+      );
+      return {
+        pairs: Array.isArray(data?.pairs) ? data.pairs : [],
+        byAnchorItemId: data?.byAnchorItemId ?? {},
+      };
+    } catch {
+      return { pairs: [], byAnchorItemId: {} };
     }
   },
 

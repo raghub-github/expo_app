@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
 import { R2Image } from "@/components/ui/R2Image";
+import { withAttachmentCacheBust } from "@/lib/attachments/resolve-attachment-proxy-url";
 import { MenuItemsGridSkeleton } from "@/components/ui/MenuItemsGridSkeleton";
 import { MenuItemForm, type ItemFormData } from "./MenuItemForm";
 import { buildEditOptionsRefs } from "@/lib/map-menu-item-options";
@@ -105,6 +106,12 @@ function nutritionPayloadFromForm(form: ItemFormData) {
   };
 }
 
+function parseNullableInt(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
 function normalizeCategory(c: {
   id?: number;
   store_id?: number;
@@ -116,17 +123,16 @@ function normalizeCategory(c: {
   display_order?: number | null;
   is_active?: boolean;
 }): MenuCategory {
-  const parentCategoryIdNum =
-    c.parent_category_id == null ? undefined : Number(c.parent_category_id);
-  const cuisineIdNum =
-    c.cuisine_id == null ? undefined : Number(c.cuisine_id);
+  const parentCategoryIdNum = parseNullableInt(c.parent_category_id);
+  const cuisineIdNum = parseNullableInt(c.cuisine_id);
+  const idNum = parseNullableInt(c.id) ?? 0;
   return {
-    id: c.id ?? 0,
+    id: idNum,
     store_id: Number(c.store_id) ?? 0,
     category_name: c.category_name ?? c.name ?? "—",
     category_description: c.category_description ?? undefined,
-    parent_category_id: Number.isFinite(parentCategoryIdNum as number) ? parentCategoryIdNum : undefined,
-    cuisine_id: Number.isFinite(cuisineIdNum as number) ? cuisineIdNum : undefined,
+    parent_category_id: parentCategoryIdNum ?? undefined,
+    cuisine_id: cuisineIdNum ?? undefined,
     display_order: c.display_order ?? undefined,
     is_active: c.is_active !== false,
     out_of_stock_manual: Boolean((c as { out_of_stock_manual?: boolean }).out_of_stock_manual),
@@ -138,10 +144,10 @@ function normalizeCategory(c: {
 
 function formatCategoryLabel(categories: MenuCategory[], categoryId: number | null | undefined): string {
   if (categoryId == null) return "Uncategorized";
-  const cat = categories.find((c) => c.id === categoryId);
+  const cat = categories.find((c) => Number(c.id) === Number(categoryId));
   if (!cat) return "Uncategorized";
   if (cat.parent_category_id) {
-    const parent = categories.find((c) => c.id === cat.parent_category_id);
+    const parent = categories.find((c) => Number(c.id) === Number(cat.parent_category_id));
     return parent ? `${parent.category_name} (${cat.category_name})` : cat.category_name;
   }
   return cat.category_name;
@@ -151,13 +157,13 @@ function normalizeItem(
   item: Record<string, unknown>,
   index: number
 ): MenuItem {
-  const id = (item.id as number) ?? index;
+  const id = parseNullableInt(item.id) ?? index;
   const itemId = (item.item_id as string) ?? String(id);
   return {
     id,
     item_id: itemId,
     item_name: (item.item_name as string) ?? (item.name as string) ?? "—",
-    category_id: (item.category_id as number) ?? null,
+    category_id: parseNullableInt(item.category_id),
     base_price: Number(item.base_price) ?? 0,
     selling_price: Number(item.selling_price) ?? 0,
     discount_percentage: Number(item.discount_percentage) ?? 0,
@@ -294,7 +300,19 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     setShowAddModal(true);
   }, [storeMenuDefaults]);
   const refreshMenu = useCallback(async () => {
-    await queryClient.refetchQueries({ queryKey: queryKeys.merchantStore.menu(storeId), type: "active" });
+    const url = `/api/merchant/stores/${storeId}/menu?_=${Date.now()}`;
+    await queryClient.fetchQuery({
+      queryKey: queryKeys.merchantStore.menu(storeId),
+      queryFn: async () => {
+        const res = await fetch(url, { credentials: "include", cache: "no-store" });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          throw new Error((data as { error?: string })?.error ?? "Failed to refresh menu");
+        }
+        return data as { success: boolean; categories?: unknown[]; items?: unknown[] };
+      },
+      staleTime: 0,
+    });
   }, [queryClient, storeId]);
   const deleteMenuVariantsById = useCallback(async (variantIds: number[]) => {
     const base = `/api/merchant/stores/${storeId}/menu`;
@@ -313,17 +331,72 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         if (!prev || typeof prev !== "object") return prev;
         const current = prev as { items?: unknown[] };
         if (!Array.isArray(current.items)) return prev;
+        let changed = false;
+        const items = current.items.map((row) => {
+          const r = row as Record<string, unknown>;
+          const rowId = parseNullableInt(r.id);
+          if (rowId == null || rowId !== itemId) return row;
+          changed = true;
+          return { ...r, ...patch };
+        });
+        if (!changed) return prev;
         return {
           ...(current as Record<string, unknown>),
-          items: current.items.map((row) => {
-            const r = row as Record<string, unknown>;
-            return Number(r.id) === itemId ? { ...r, ...patch } : row;
-          }),
+          items,
         };
       });
     },
     [queryClient, storeId]
   );
+  /** Optimistic card thumbnails — shown until menu refetch confirms server URL. */
+  const [cardImageByItemId, setCardImageByItemId] = useState<Record<number, string>>({});
+  const applyMenuItemImageToCards = useCallback(
+    (itemId: number, imageUrl: string) => {
+      const displayUrl = withAttachmentCacheBust(imageUrl);
+      setCardImageByItemId((prev) => ({ ...prev, [itemId]: displayUrl }));
+      patchMenuItemInCache(itemId, { item_image_url: displayUrl });
+    },
+    [patchMenuItemInCache]
+  );
+  const uploadEditItemImage = useCallback(
+    async (itemId: number, file: File): Promise<string> => {
+      const fd = new FormData();
+      fd.append("file", file);
+      const imgRes = await fetch(`/api/merchant/stores/${storeId}/menu/items/${itemId}/images`, {
+        method: "POST",
+        body: fd,
+      });
+      const img = await imgRes.json().catch(() => ({}));
+      if (!imgRes.ok || img?.success === false) {
+        throw new Error(img?.error || "Image upload failed");
+      }
+      const imageUrl = String(img.image_url ?? "").trim();
+      if (!imageUrl) throw new Error("Image upload failed");
+      applyMenuItemImageToCards(itemId, imageUrl);
+      return withAttachmentCacheBust(imageUrl);
+    },
+    [storeId, applyMenuItemImageToCards]
+  );
+  const itemCardImageUrl = useCallback(
+    (item: MenuItem) => cardImageByItemId[item.id] ?? item.item_image_url,
+    [cardImageByItemId]
+  );
+
+  useEffect(() => {
+    setCardImageByItemId((prev) => {
+      if (Object.keys(prev).length === 0) return prev;
+      const next = { ...prev };
+      let changed = false;
+      for (const item of menuItems) {
+        if (next[item.id] && item.item_image_url) {
+          delete next[item.id];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [menuItems]);
+
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [categoryPillMode, setCategoryPillMode] = useState<"category" | "sub-category">("category");
   const [viewMode, setViewMode] = useState<"card" | "tree">("card");
@@ -455,6 +528,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const editImagePendingFileRef = useRef<File | null>(null);
   /** Item id for the open edit modal; null when closed. Guards in-flight reload from overwriting another session. */
   const editModalItemIdRef = useRef<number | null>(null);
+  /** Ignores stale GET /menu/items/[id] responses that can overwrite fresher cache after save. */
+  const editItemReloadSeqRef = useRef(0);
   const [addError, setAddError] = useState("");
   const [editError, setEditError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -953,15 +1028,21 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       };
       setEditOptionsRefs(deduped);
       setEditForm(deduped);
-      setEditImagePreview(item.item_image_url || "");
+      const imageUrl =
+        deduped.item_image_url || itemCardImageUrl(item) || item.item_image_url || "";
+      setEditImagePreview(imageUrl ? withAttachmentCacheBust(imageUrl) : "");
     },
-    [setEditOptionsRefs]
+    [setEditOptionsRefs, itemCardImageUrl]
   );
 
   /** Reload full edit form + menu list cache from GET /menu/items/[id] after any save. */
   const reloadEditItemFromServer = useCallback(
     async (menuItemId: number): Promise<ItemFormData> => {
-      const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${menuItemId}`);
+      const seq = ++editItemReloadSeqRef.current;
+      const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${menuItemId}`, {
+        credentials: "include",
+        cache: "no-store",
+      });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json?.success || !json?.item) {
         throw new Error(json?.error || "Failed to load saved item");
@@ -974,18 +1055,27 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         variants: dedupeVariants(form.variants),
       };
       setEditOptionsRefs(deduped);
+      const imageUrl = String(form.item_image_url ?? data.item_image_url ?? "").trim();
+      const cacheBustedImageUrl = imageUrl ? withAttachmentCacheBust(imageUrl, seq) : imageUrl;
       if (editModalItemIdRef.current === menuItemId) {
         setEditForm(deduped);
-        setEditImagePreview(String(data.item_image_url ?? ""));
+        setEditImagePreview(cacheBustedImageUrl || form.item_image_url || "");
+      }
+      if (seq !== editItemReloadSeqRef.current) {
+        return deduped;
       }
       patchMenuItemInCache(menuItemId, {
         ...data,
+        item_image_url: cacheBustedImageUrl || data.item_image_url,
         customizations: deduped.customizations,
         variants: deduped.variants,
         has_variants: deduped.has_variants,
         has_customizations: deduped.has_customizations,
         has_addons: deduped.has_addons,
       });
+      if (cacheBustedImageUrl) {
+        setCardImageByItemId((prev) => ({ ...prev, [menuItemId]: cacheBustedImageUrl }));
+      }
       return deduped;
     },
     [storeId, setEditOptionsRefs, patchMenuItemInCache]
@@ -1003,7 +1093,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   }, [toast]);
 
   const handleOpenEditModal = (item: MenuItem) => {
-    const latest = menuItems.find((m) => m.id === item.id) ?? item;
+    const latest = menuItems.find((m) => Number(m.id) === Number(item.id)) ?? item;
     editModalItemIdRef.current = latest.id;
     setEditingId(latest.id);
     setEditError("");
@@ -1441,6 +1531,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     }
     setIsSavingEdit(true);
     try {
+      editItemReloadSeqRef.current += 1;
       const packagingPayload = (() => {
         if (!editForm.packaging_enabled) return null;
         const n = Number(String(editForm.packaging_charges ?? "").replace(/,/g, ""));
@@ -1487,29 +1578,21 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         actionStatus: "SUCCESS",
         requestMethod: "PUT",
       });
-      let uploadedImageUrl: string | null = null;
       if (editImageFile) {
-        const fd = new FormData();
-        fd.append("file", editImageFile);
-        const imgRes = await fetch(`/api/merchant/stores/${storeId}/menu/items/${editingId}/images`, {
-          method: "POST",
-          body: fd,
-        });
-        const img = await imgRes.json().catch(() => ({}));
-        if (!imgRes.ok || img?.success === false) throw new Error(img?.error || "Image upload failed");
-        uploadedImageUrl = String(img.image_url ?? "");
-        setEditImagePreview(uploadedImageUrl || editImagePreview);
+        const cacheBustedImageUrl = await uploadEditItemImage(editingId, editImageFile);
+        setEditImagePreview(cacheBustedImageUrl);
         setEditImageFile(null);
         trackAudit({
           actionType: "UPDATE",
           resourceType: "merchant_menu_item_images",
-          resourceId: String(img?.id ?? ""),
+          resourceId: String(editingId),
           actionDetails: { action: "upload_item_image", menu_item_id: editingId },
           actionStatus: "SUCCESS",
           requestMethod: "POST",
         });
       }
       await reloadEditItemFromServer(editingId);
+      await refreshMenu();
       try {
         const { linked, skippedMessages } = await ensureStoreCuisinesLinkedForItemNames(
           storeId,
@@ -1677,6 +1760,19 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     if (isEdit) {
       setEditImageFile(file);
       setEditImagePreview(preview);
+      if (editingId != null) {
+        setEditImageValidating(true);
+        try {
+          const uploadedUrl = await uploadEditItemImage(editingId, file);
+          setEditImagePreview(uploadedUrl);
+          setEditImageFile(null);
+        } catch (e) {
+          setEditImageValidationError(e instanceof Error ? e.message : "Image upload failed");
+          setEditImageFile(file);
+        } finally {
+          setEditImageValidating(false);
+        }
+      }
     } else {
       setAddImageFile(file);
       setImagePreview(preview);
@@ -1979,39 +2075,31 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       if (!res.ok || data?.success === false) {
         throw new Error(data?.error || "Failed to update stock");
       }
-      setMenuItems((prev) =>
-        prev.map((it) => {
-          if (it.id !== item.id) return it;
-          if (targetType === "variant") {
-            return {
-              ...it,
-              variants: (it.variants ?? []).map((v) =>
+      patchMenuItemInCache(item.id, {
+        ...(targetType === "variant"
+          ? {
+              variants: (item.variants ?? []).map((v) =>
                 v.id === optionId ? { ...v, in_stock: inStock } : v
               ),
-            };
-          }
-          if (targetType === "addon") {
-            return {
-              ...it,
-              customizations: (it.customizations ?? []).map((g) => ({
-                ...g,
-                addons: (g.addons ?? []).map((a) =>
-                  a.id === optionId ? { ...a, in_stock: inStock } : a
-                ),
-              })),
-            };
-          }
-          return {
-            ...it,
-            linked_modifier_groups: (it.linked_modifier_groups ?? []).map((g) => ({
-              ...g,
-              options: (g.options ?? []).map((o) =>
-                o.id === optionId ? { ...o, in_stock: inStock } : o
-              ),
-            })),
-          };
-        })
-      );
+            }
+          : targetType === "addon"
+            ? {
+                customizations: (item.customizations ?? []).map((g) => ({
+                  ...g,
+                  addons: (g.addons ?? []).map((a) =>
+                    a.id === optionId ? { ...a, in_stock: inStock } : a
+                  ),
+                })),
+              }
+            : {
+                linked_modifier_groups: (item.linked_modifier_groups ?? []).map((g) => ({
+                  ...g,
+                  options: (g.options ?? []).map((o) =>
+                    o.id === optionId ? { ...o, in_stock: inStock } : o
+                  ),
+                })),
+              }),
+      });
       toast(inStock ? "Marked in stock" : "Marked out of stock");
     } catch (e) {
       toast(e instanceof Error ? e.message : "Failed to update stock");
@@ -2279,7 +2367,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                     <div className="flex items-center gap-3 border-b border-gray-100 bg-gray-50/80 p-3">
                       <div className="h-12 w-12 shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-100">
                         <R2Image
-                          src={item.item_image_url}
+                          key={`${item.id}-${itemCardImageUrl(item) ?? "none"}`}
+                          src={itemCardImageUrl(item)}
                           alt={item.item_name}
                           className="h-full w-full object-cover"
                           fallbackSrc={ITEM_PLACEHOLDER_SVG}
@@ -2472,7 +2561,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                     <div className="flex p-2.5 h-full gap-2.5">
                       <div className="w-14 h-14 flex-shrink-0 rounded-lg border border-gray-200 overflow-hidden bg-gray-100">
                         <R2Image
-                          src={item.item_image_url}
+                          key={`${item.id}-${itemCardImageUrl(item) ?? "none"}`}
+                          src={itemCardImageUrl(item)}
                           alt={item.item_name}
                           className="w-full h-full object-cover"
                           fallbackSrc={ITEM_PLACEHOLDER_SVG}

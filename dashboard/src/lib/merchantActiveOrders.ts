@@ -19,3 +19,12 @@ export function normalizeFoodOrderStatusKey(s: string | null | undefined): strin
 export function isActiveMerchantFoodOrderStatus(status: string | null | undefined): boolean {
   return ACTIVE_MERCHANT_ORDER_STATUSES.has(normalizeFoodOrderStatusKey(status));
 }
+
+/** Merchant app parity: platform riders complete delivery; merchant only for self-delivery. */
+export function canMerchantMarkDelivered(order: {
+  delivery_type?: string | null;
+}): boolean {
+  const t = String(order.delivery_type ?? 'GATIMITRA_RIDER').toUpperCase();
+  if (t === 'GATIMITRA_RIDER' || t === 'GATIMITRA') return false;
+  return t === 'SELF_DELIVERY' || t === 'SELF_PICKUP' || t === 'MX_SELF';
+}

@@ -25,6 +25,7 @@ export interface OrdersFoodRow {
   prep_ready_by_at?: string | null;
   prep_time_source?: string | null;
   prep_delay_minutes?: number | null;
+  prep_delay_use_count?: number | null;
   prepared_late_minutes?: number | null;
   food_items_count: number | null;
   display_item_count?: number | null;
@@ -79,6 +80,7 @@ export interface OrdersFoodRow {
   /** 1-based ordinal of this order for the customer at this store. */
   customer_store_order_ordinal?: number | null;
   customer_platform_order_ordinal?: number | null;
+  is_bulk_order?: boolean;
   // Rider details
   rider_id?: number | null;
   rider_name?: string | null;
@@ -139,7 +141,7 @@ export interface FoodOrderStats {
   ordersToday: number;
   /** Orders placed today that are still in the active pipeline (not delivered / cancelled / RTO). */
   ordersTodayActive?: number;
-  /** Same pipeline count as ordersTodayActive (today scope). */
+  /** Pending live-board orders (today + older) using unified pipeline status. */
   activeOrders: number;
   pendingCount?: number;
   avgPreparationTimeMinutes: number;

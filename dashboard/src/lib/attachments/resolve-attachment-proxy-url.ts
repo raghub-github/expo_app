@@ -49,6 +49,15 @@ export function resolveAttachmentProxyUrl(value: unknown): string {
   return resolved;
 }
 
+/** Append a cache-bust query param so replaced proxy images reload without a full page refresh. */
+export function withAttachmentCacheBust(url: string, version?: string | number): string {
+  const trimmed = url.trim();
+  if (!trimmed || trimmed.startsWith("blob:") || trimmed.startsWith("data:")) return trimmed;
+  const v = version ?? Date.now();
+  const sep = trimmed.includes("?") ? "&" : "?";
+  return `${trimmed}${sep}v=${encodeURIComponent(String(v))}`;
+}
+
 /** True when URL or stored file name indicates a PDF (not an image thumbnail). */
 export function isPdfAttachment(url: string, fileName?: string | null): boolean {
   const u = (url.split("?")[0] ?? "").toLowerCase();

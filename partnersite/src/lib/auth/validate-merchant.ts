@@ -211,45 +211,34 @@ export async function validateMerchantForLogin(email: string): Promise<MerchantV
 
 /**
  * Validate merchant from session user.
- * Identity is by merchant (merchant_parents.id), not email. We try all available
- * identifiers and accept if ANY finds a merchant — never block on email mismatch.
- * Order: supabase_user_id (most reliable for current session), then phone, then email.
+ * supabase_user_id is authoritative for the active session — try it before phone/email
+ * so a stale or shared phone number cannot resolve to a different merchant_parents row.
  */
 export async function validateMerchantFromSession(user: {
   id: string;
   email?: string | null;
   phone?: string | null;
 }): Promise<MerchantValidationResult> {
-  const results: Promise<MerchantValidationResult>[] = [];
-
   const hasId = !!user.id?.trim();
-  const hasPhone = !!user.phone?.trim();
   const hasEmail = !!user.email?.trim();
+  const hasPhone = !!user.phone?.trim();
 
-  // Prefer the identifier that matches the login method:
-  // - Phone present: trust phone first, then supabase_user_id, then email.
-  // - Email present (no phone): trust email first, then supabase_user_id.
-  // - Only id: fall back to supabase_user_id.
-  if (hasPhone) {
-    if (user.phone) results.push(validateMerchantByPhone(user.phone));
-    if (hasId) results.push(validateMerchantBySupabaseUserId(user.id));
-    if (hasEmail && user.email) results.push(validateMerchantForLogin(user.email));
-  } else if (hasEmail && user.email) {
-    results.push(validateMerchantForLogin(user.email));
-    if (hasId) results.push(validateMerchantBySupabaseUserId(user.id));
-  } else if (hasId) {
-    results.push(validateMerchantBySupabaseUserId(user.id));
+  if (hasId) {
+    const byId = await validateMerchantBySupabaseUserId(user.id);
+    if (byId.isValid) return byId;
+    if (byId.merchantParentId != null && byId.error) return byId;
+  }
+  if (hasEmail && user.email) {
+    const byEmail = await validateMerchantForLogin(user.email);
+    if (byEmail.isValid) return byEmail;
+  }
+  if (hasPhone && user.phone) {
+    const byPhone = await validateMerchantByPhone(user.phone);
+    if (byPhone.isValid) return byPhone;
   }
 
-  if (results.length === 0) {
-    return { isValid: false, error: "Unable to identify user. Please try again." };
-  }
-  const settled = await Promise.all(results);
-  const valid = settled.find((r) => r.isValid);
-  if (valid) return valid;
-  const firstError = settled.find((r) => r.error)?.error;
   return {
     isValid: false,
-    error: firstError ?? "No merchant account found for this login. Please register first.",
+    error: "No merchant account found for this login. Please register first.",
   };
 }

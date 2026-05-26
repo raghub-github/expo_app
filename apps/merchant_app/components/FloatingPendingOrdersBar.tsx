@@ -50,7 +50,7 @@ export function FloatingPendingOrdersBar() {
       style={[styles.host, { bottom }]}
     >
       <Pressable
-        onPress={() => router.push("/(tabs)/orders?tab=created")}
+        onPress={() => router.push("/(tabs)/")}
         style={({ pressed }) => [
           styles.pill,
           pressed && styles.pillPressed,

@@ -67,12 +67,22 @@ export function volumeStepTo01(step: number): number {
   return Math.min(1, Math.max(0, step / 10));
 }
 
-export function resolveAlertUrlFromSlots(
+export function resolveStrictAlertUrlFromSlot(
   slots: [string | null, string | null, string | null],
   slot: number
 ): string | null {
   const c = Math.max(0, Math.min(2, Math.floor(slot)));
-  if (slots[c]?.trim()) return slots[c]!.trim();
+  const picked = slots[c];
+  return picked?.trim() ? picked.trim() : null;
+}
+
+/** Resolve playback URL for chosen slot, falling back to first non-empty slot (partnersite parity). */
+export function resolveAlertUrlFromSlots(
+  slots: [string | null, string | null, string | null],
+  slot: number
+): string | null {
+  const strict = resolveStrictAlertUrlFromSlot(slots, slot);
+  if (strict) return strict;
   for (let i = 0; i < 3; i++) {
     if (slots[i]?.trim()) return slots[i]!.trim();
   }

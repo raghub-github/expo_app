@@ -2,23 +2,21 @@
  * Terminal order card — Zomato partner history layout (white card variant).
  */
 
-import { useCallback } from "react";
 import {
   View,
   Text,
   StyleSheet,
   Pressable,
   Platform,
-  Vibration,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant } from "@/constants/theme";
 import type { OrderRecord, OrderStage } from "@/hooks/useOrders";
 import {
   formatOrderDateTime,
-  formatOrderIdDisplay,
   splitRejectionMessage,
 } from "@/components/order/orderFormatters";
+import { MerchantOrderIdRow } from "@/components/order/MerchantOrderCardToolbar";
 import { CustomerStoreOrdinalPill } from "@/components/order/CustomerStoreOrdinalPill";
 import { ItemVegMark } from "@/components/order/ItemVegMark";
 import { sliceOrderLineItems } from "@/lib/orderCardDisplay";
@@ -133,12 +131,6 @@ export function TerminalOrderCard({
   onPress,
 }: Props) {
   const meta = statusMeta(order.status);
-  const numericFoodId = /^\d+$/.test(order.id) ? Number(order.id) : 0;
-  const displayId = formatOrderIdDisplay(
-    formattedOrderId ?? order.formattedOrderId,
-    order.ordersCoreId,
-    numericFoodId || undefined
-  );
   const visibleItems = sliceOrderLineItems(order.lineItems).visible;
   const moreItemCount = Math.max(0, order.lineItems.length - visibleItems.length);
   const customerLabel = (order.customerName ?? "").trim() || "Guest";
@@ -146,18 +138,6 @@ export function TerminalOrderCard({
   const dateIso =
     isTerminalRejected && order.cancelledAt ? order.cancelledAt : order.createdAt;
   const placedLabel = formatOrderDateTime(dateIso);
-
-  const onCopyId = useCallback(() => {
-    if (Platform.OS === "android") Vibration.vibrate(12);
-    void (async () => {
-      try {
-        const { setStringAsync } = await import("expo-clipboard");
-        await setStringAsync(displayId);
-      } catch {
-        /* clipboard optional */
-      }
-    })();
-  }, [displayId]);
 
   const rejection =
     meta.kind === "delivered"
@@ -188,18 +168,10 @@ export function TerminalOrderCard({
 
       <View style={styles.idRow}>
         <View style={styles.idLeft}>
-          <Text style={styles.idText}>ID: {displayId}</Text>
-          <Pressable
-            onPress={(e) => {
-              e.stopPropagation?.();
-              onCopyId();
-            }}
-            hitSlop={10}
-            style={({ pressed }) => [styles.copyBtn, pressed && { opacity: 0.5 }]}
-            accessibilityLabel="Copy order ID"
-          >
-            <Ionicons name="copy-outline" size={16} color={TEXT_MUTED} />
-          </Pressable>
+          <MerchantOrderIdRow
+            formattedOrderId={formattedOrderId ?? order.formattedOrderId}
+            fallbackOrderId={order.ordersCoreId}
+          />
         </View>
         <Text style={styles.dateText}>{placedLabel}</Text>
       </View>
@@ -337,20 +309,8 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   idLeft: {
-    flexDirection: "row",
-    alignItems: "center",
     flex: 1,
-    gap: 6,
     minWidth: 0,
-  },
-  idText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: TEXT_PRIMARY,
-    flexShrink: 1,
-  },
-  copyBtn: {
-    padding: 2,
   },
   dateText: {
     fontSize: 13,

@@ -172,6 +172,7 @@ import { R2Image } from '@/components/R2Image'
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue'
 import { linkItemCuisineSelectionsToStoreProfile } from '@/lib/linkItemCuisinesToStore'
 import { normalizeMenuItemImageFile, validateMenuItemImageFile } from '@/lib/menuItemImageValidationClient'
+import { persistPartnerSelectedStoreId } from '@/lib/partner-selected-store'
 
 // --- Menu Category interface ---
 type MerchantStore = {
@@ -1980,14 +1981,33 @@ function MenuContent() {
     }
   };
 
-  // Fetch store ID from params or localStorage
+  // Fetch store ID from params or localStorage; must belong to logged-in merchant (resolve-session).
   useEffect(() => {
     const getStoreId = async () => {
       let id = searchParams ? searchParams.get('storeId') : null;
-      if (!id) id = typeof window !== 'undefined' ? localStorage.getItem('selectedStoreId') : null;
+      if (!id && typeof window !== 'undefined') {
+        id = localStorage.getItem('selectedStoreId');
+      }
+      try {
+        const res = await fetch('/api/merchant-auth/resolve-session', { credentials: 'include' });
+        const data = await res.json().catch(() => ({}));
+        const allowed: string[] = Array.isArray(data?.stores)
+          ? data.stores
+              .map((s: { store_id?: string | null }) => String(s?.store_id ?? '').trim())
+              .filter(Boolean)
+          : [];
+        if (allowed.length > 0) {
+          if (!id || !allowed.includes(id)) {
+            id = allowed[0] ?? null;
+            if (id) persistPartnerSelectedStoreId(id);
+          }
+        }
+      } catch {
+        // keep id from URL/localStorage
+      }
       setStoreId(id);
     };
-    getStoreId();
+    void getStoreId();
   }, [searchParams]);
 
   // Fetch categories for the store
@@ -2021,37 +2041,149 @@ function MenuContent() {
       return;
     }
     
+    const loadMenuSecondaryData = async (
+      currentStoreId: string,
+      storeDbId: number | undefined,
+      comboRows: MenuCombo[]
+    ) => {
+      try {
+        await fetch(
+          `/api/merchant/subscription/enforce-limits?storeId=${encodeURIComponent(currentStoreId)}`,
+          { method: 'POST' }
+        );
+      } catch {
+        // Non-blocking
+      }
+
+      try {
+        const fullRes = await fetch(
+          `/api/merchant/menu-items?storeId=${encodeURIComponent(currentStoreId)}`,
+          { credentials: 'include' }
+        );
+        if (fullRes.ok) {
+          const fullItems = await fullRes.json();
+          if (Array.isArray(fullItems)) setMenuItems(fullItems);
+        }
+      } catch {
+        // keep list payload
+      }
+
+      try {
+        const ids = comboRows
+          .map((c) => c.id)
+          .filter((id) => typeof id === 'number' && Number.isFinite(id));
+        if (ids.length > 0) {
+          const detailPairs = await Promise.all(
+            ids.slice(0, 30).map(async (id) => {
+              try {
+                const dRes = await fetch(
+                  `/api/merchant/combos/${id}?storeId=${encodeURIComponent(currentStoreId)}`
+                );
+                const dJson = dRes.ok ? await dRes.json().catch(() => null) : null;
+                const combo = dJson && typeof dJson === 'object' ? (dJson as any).combo : null;
+                const components = combo && Array.isArray(combo.components) ? combo.components : [];
+                return [id, { components }] as const;
+              } catch {
+                return null;
+              }
+            })
+          );
+          setComboDetailsById((prev) => {
+            const next = { ...prev };
+            for (const p of detailPairs) {
+              if (!p) continue;
+              next[p[0]] = p[1];
+            }
+            return next;
+          });
+        }
+      } catch {
+        // ignore
+      }
+
+      try {
+        const [status, countRes, subRes, menuRes] = await Promise.all([
+          getImageUploadStatus(currentStoreId),
+          fetch(`/api/merchant/store-image-count?storeId=${encodeURIComponent(currentStoreId)}`),
+          fetch(`/api/merchant/subscription?storeId=${encodeURIComponent(currentStoreId)}`),
+          storeDbId != null
+            ? fetch(`/api/auth/store-menu-media-signed?storeDbId=${storeDbId}`)
+            : Promise.resolve(null),
+        ]);
+
+        setImageUploadStatus(status);
+
+        if (countRes.ok) {
+          const countData = await countRes.json();
+          setStoreImageCount({ totalUsed: countData.totalUsed ?? 0 });
+        } else {
+          setStoreImageCount(null);
+        }
+
+        if (subRes.ok) {
+          const subJson = await subRes.json();
+          const plan = subJson.plan ?? subJson.subscription?.merchant_plans ?? null;
+          if (plan && typeof plan === 'object') {
+            const maxImg = plan.max_image_uploads ?? null;
+            const canUploadImages =
+              plan.image_upload_allowed === true || (maxImg != null && maxImg > 0);
+            setPlanLimits({
+              maxMenuItems: plan.max_menu_items ?? null,
+              maxMenuCategories: plan.max_menu_categories ?? null,
+              imageUploadAllowed: canUploadImages,
+              maxImageUploads: maxImg,
+              maxCuisinesPerItem: plan.max_cuisines ?? null,
+              planName: plan.plan_name ?? undefined,
+            });
+          } else {
+            setPlanLimits(null);
+          }
+        } else {
+          setPlanLimits(null);
+        }
+
+        if (menuRes && 'ok' in menuRes && menuRes.ok) {
+          const menuData = await menuRes.json();
+          if (Array.isArray(menuData.files)) {
+            setMenuFiles(menuData.files);
+          }
+        }
+      } catch {
+        // keep defaults
+      }
+    };
+
     const loadData = async () => {
       setIsLoading(true);
       setStoreError(null);
       try {
-        let data = await fetchStoreById(storeId);
-        if (!data) {
-          data = await fetchStoreByName(storeId);
-        }
-        
+        const [data, itemsRes, comboRes] = await Promise.all([
+          (async () => {
+            let storeData = await fetchStoreById(storeId);
+            if (!storeData) storeData = await fetchStoreByName(storeId);
+            return storeData;
+          })(),
+          fetch(`/api/merchant/menu-items?storeId=${encodeURIComponent(storeId)}&view=list`, {
+            credentials: 'include',
+          }),
+          fetch(`/api/merchant/combos?storeId=${encodeURIComponent(storeId)}`, {
+            credentials: 'include',
+          }),
+        ]);
+
         if (!data) {
           setStoreError(`Store not found with ID/Name: ${storeId}`);
           setIsLoading(false);
           return;
         }
-        
+
         setStore(data);
 
-        // Ensure plan limits are enforced (lock excess items) before loading menu items
-        try {
-          await fetch(`/api/merchant/subscription/enforce-limits?storeId=${encodeURIComponent(storeId)}`, { method: 'POST' });
-        } catch {
-          // Non-blocking; menu items will still load, locking may apply on next load
-        }
-
-        const res = await fetch(`/api/merchant/menu-items?storeId=${encodeURIComponent(storeId)}`);
-        const items = res.ok ? await res.json() : [];
+        const items = itemsRes.ok ? await itemsRes.json() : [];
         setMenuItems(Array.isArray(items) ? items : []);
 
         let comboRows: MenuCombo[] = [];
         try {
-          const comboRes = await fetch(`/api/merchant/combos?storeId=${encodeURIComponent(storeId)}`);
           const comboJson = comboRes.ok ? await comboRes.json().catch(() => null) : null;
           const raw = comboJson && typeof comboJson === 'object' ? (comboJson as { combos?: unknown }).combos : [];
           comboRows = Array.isArray(raw) ? (raw as MenuCombo[]) : [];
@@ -2061,97 +2193,13 @@ function MenuContent() {
           setCombos([]);
         }
 
-        // Fetch combo details (components) to show component images on combo cards
-        try {
-          const ids = comboRows
-            .map((c) => c.id)
-            .filter((id) => typeof id === 'number' && Number.isFinite(id));
-          if (ids.length > 0) {
-            const missing = ids.filter((id) => comboDetailsById[id] == null);
-            if (missing.length > 0) {
-              const detailPairs = await Promise.all(
-                missing.slice(0, 30).map(async (id) => {
-                  try {
-                    const dRes = await fetch(`/api/merchant/combos/${id}?storeId=${encodeURIComponent(storeId)}`);
-                    const dJson = dRes.ok ? await dRes.json().catch(() => null) : null;
-                    const combo = dJson && typeof dJson === 'object' ? (dJson as any).combo : null;
-                    const components = combo && Array.isArray(combo.components) ? combo.components : [];
-                    return [id, { components }] as const;
-                  } catch {
-                    return null;
-                  }
-                })
-              );
-              setComboDetailsById((prev) => {
-                const next = { ...prev };
-                for (const p of detailPairs) {
-                  if (!p) continue;
-                  next[p[0]] = p[1];
-                }
-                return next;
-              });
-            }
-          }
-        } catch {
-          // ignore
-        }
-
-        const status = await getImageUploadStatus(storeId);
-        setImageUploadStatus(status);
-        const countRes = await fetch(`/api/merchant/store-image-count?storeId=${encodeURIComponent(storeId)}`);
-        if (countRes.ok) {
-          const countData = await countRes.json();
-          setStoreImageCount({ totalUsed: countData.totalUsed ?? 0 });
-        } else {
-          setStoreImageCount(null);
-        }
-
-        // Plan-driven limits: no hardcoding; works with any number of plans from DB
-        try {
-          const subRes = await fetch(`/api/merchant/subscription?storeId=${encodeURIComponent(storeId)}`);
-          if (subRes.ok) {
-            const subJson = await subRes.json();
-            const plan = subJson.plan ?? subJson.subscription?.merchant_plans ?? null;
-            if (plan && typeof plan === 'object') {
-              const maxImg = plan.max_image_uploads ?? null;
-              // Allow image upload if plan allows it OR has a positive limit (e.g. Free plan with 5 images)
-              const canUploadImages = plan.image_upload_allowed === true || (maxImg != null && maxImg > 0);
-              setPlanLimits({
-                maxMenuItems: plan.max_menu_items ?? null,
-                maxMenuCategories: plan.max_menu_categories ?? null,
-                imageUploadAllowed: canUploadImages,
-                maxImageUploads: maxImg,
-                maxCuisinesPerItem: plan.max_cuisines ?? null,
-                planName: plan.plan_name ?? undefined,
-              });
-            } else {
-              setPlanLimits(null); // No plan = no restrictions (allow all)
-            }
-          } else {
-            setPlanLimits(null);
-          }
-        } catch {
-          setPlanLimits(null);
-        }
+        setIsLoading(false);
 
         const storeDbId = (data as { id?: number })?.id;
-        if (storeDbId != null) {
-          try {
-            const menuRes = await fetch(`/api/auth/store-menu-media-signed?storeDbId=${storeDbId}`);
-            if (menuRes.ok) {
-              const menuData = await menuRes.json();
-              if (Array.isArray(menuData.files)) {
-                setMenuFiles(menuData.files);
-              }
-            }
-          } catch {
-            // keep defaults
-          }
-        }
+        void loadMenuSecondaryData(storeId, storeDbId, comboRows);
       } catch (error) {
         console.error('Error loading menu:', error);
         setStoreError('Error loading store data. Please try again.');
-      } finally {
         setIsLoading(false);
       }
     };
@@ -3238,6 +3286,33 @@ function MenuContent() {
     return Number.isFinite(ms) && ms > nowTick;
   }, [nowTick]);
 
+  useEffect(() => {
+    if (!storeId) return;
+    const hasStaleExpired =
+      menuItems.some(
+        (item) =>
+          !item.out_of_stock_manual &&
+          item.out_of_stock_until != null &&
+          new Date(String(item.out_of_stock_until)).getTime() <= nowTick &&
+          item.in_stock === false
+      ) ||
+      categories.some(
+        (c) =>
+          !c.out_of_stock_manual &&
+          c.out_of_stock_until != null &&
+          new Date(String(c.out_of_stock_until)).getTime() <= nowTick
+      );
+    if (!hasStaleExpired) return;
+    void fetch(`/api/merchant/menu-items?storeId=${encodeURIComponent(storeId)}&view=list`, {
+      credentials: 'include',
+    })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((items) => {
+        if (Array.isArray(items)) setMenuItems(items);
+      })
+      .catch(() => undefined);
+  }, [nowTick, storeId, menuItems, categories]);
+
   const isCategoryOos = useCallback((categoryId: number | null | undefined) => {
     if (categoryId == null) return false;
     const c = categoryById.get(categoryId);
@@ -3260,9 +3335,18 @@ function MenuContent() {
   }, [categoryById, isOosActive]);
 
   const itemInStockIgnoringCategory = useCallback((item: MenuItem) => {
-    const base = item.in_stock !== false;
-    const itemOos = isOosActive(item.out_of_stock_manual, item.out_of_stock_until ?? null);
-    return base && !itemOos;
+    if (isOosActive(item.out_of_stock_manual, item.out_of_stock_until ?? null)) {
+      return false;
+    }
+    if (
+      !item.out_of_stock_manual &&
+      item.out_of_stock_until == null &&
+      item.in_stock === false &&
+      (item.out_of_stock_updated_at == null || String(item.out_of_stock_updated_at).trim() === "")
+    ) {
+      return false;
+    }
+    return true;
   }, [isOosActive]);
 
   const effectiveInStock = useCallback((item: MenuItem) => {
@@ -3321,7 +3405,7 @@ function MenuContent() {
       const c = categoryById.get(item.category_id);
       if (c && isItemBlockedByCategoryOos(item)) {
         if (c.out_of_stock_manual) return 'Out of stock (category) · manual';
-        if (c.out_of_stock_until) {
+        if (c.out_of_stock_until && isOosActive(c.out_of_stock_manual, c.out_of_stock_until)) {
           const fmt = formatOosUntil(c.out_of_stock_until);
           return fmt ? `Out of stock (category) till ${fmt}` : 'Out of stock (category)';
         }
@@ -3329,14 +3413,14 @@ function MenuContent() {
       }
     }
     if (item.out_of_stock_manual) return 'Out of stock · manual';
-    if (item.out_of_stock_until) {
+    if (item.out_of_stock_until && isOosActive(false, item.out_of_stock_until)) {
       const fmt = formatOosUntil(item.out_of_stock_until);
       return fmt ? `Out of stock till ${fmt}` : 'Out of stock';
     }
     // Fallback: legacy base flag
     if (item.in_stock === false) return 'Out of stock';
     return 'Out of stock';
-  }, [categoryById, effectiveInStock, formatOosUntil, isOosActive]);
+  }, [categoryById, effectiveInStock, formatOosUntil, isItemBlockedByCategoryOos, isOosActive]);
 
   async function clearOutOfStockForItem(item: MenuItem) {
     if (!storeId) return;
@@ -3367,7 +3451,9 @@ function MenuContent() {
         if (catOosActive) {
           const allBack = menuItems
             .filter((it) => (it.category_id ?? null) === catId && (it as any).is_deleted !== true)
-            .every((it) => itemInStockIgnoringCategory(it));
+            .every((it) =>
+              it.item_id === item.item_id ? true : itemInStockIgnoringCategory(it)
+            );
           if (allBack) {
             await clearOutOfStockForCategory(catId);
           }
@@ -3741,7 +3827,7 @@ function MenuContent() {
   // Show error if no store is selected
   if (storeError) {
     return (
-      <MXLayoutWhite restaurantName={store?.store_name || "Unknown Store"} restaurantId={storeId || "No ID"}>
+      <MXLayoutWhite restaurantName={store?.store_name || "Unknown Store"} restaurantId={storeId ?? undefined}>
         <div className="min-h-screen bg-white flex items-center justify-center">
           <div className="text-center p-8">
             <Package size={64} className="text-gray-300 mb-4 mx-auto" />
@@ -3763,7 +3849,7 @@ function MenuContent() {
   }
 
   return (
-    <MXLayoutWhite restaurantName={store?.store_name || "Loading..."} restaurantId={storeId || "No ID"}>
+    <MXLayoutWhite restaurantName={store?.store_name || "Loading..."} restaurantId={storeId ?? undefined}>
       <PartnerPageHeader title="Menu Management" subtitle={menuPageSubtitle} />
       <style>{globalStyles}</style>
 

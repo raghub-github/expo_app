@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
+import { isLiveSidebarPipelineFromCore } from '@/lib/foodOrdersLivePipeline';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -75,10 +76,39 @@ export async function GET(req: NextRequest) {
       pipelineTodayStatuses.includes(effectiveUi(o as { status?: string; current_status?: string | null }))
     ).length;
 
-    /** Count of today’s orders still in the merchant pipeline (same as ordersTodayActive). */
-    const activeOrdersCount = list.filter((o) =>
-      pipelineTodayStatuses.includes(effectiveUi(o as { status?: string; current_status?: string | null }))
-    ).length;
+    /** Pending live-board orders (today + older) — same pipeline resolution as orders list / tabs. */
+    const { data: activeCoreRows, error: activeCoreError } = await db
+      .from('orders_core')
+      .select('id, status, current_status')
+      .eq('merchant_store_id', storeInternalId);
+    if (activeCoreError) {
+      console.error('[food-orders/stats] active core:', activeCoreError);
+    }
+    let activeOrdersCount = 0;
+    const coreForActive = activeCoreRows || [];
+    if (coreForActive.length > 0) {
+      const coreIds = coreForActive.map((c) => Number((c as { id: number }).id)).filter(Number.isFinite);
+      const { data: foodRows } = await db
+        .from('orders_food')
+        .select('order_id, order_status')
+        .in('order_id', coreIds);
+      const foodStatusByCoreId = new Map<number, string | null>();
+      for (const row of foodRows || []) {
+        const oid = Number((row as { order_id: number }).order_id);
+        if (Number.isFinite(oid)) {
+          foodStatusByCoreId.set(oid, (row as { order_status?: string | null }).order_status ?? null);
+        }
+      }
+      activeOrdersCount = coreForActive.filter((core) => {
+        const id = Number((core as { id: number }).id);
+        const c = core as { status?: string; current_status?: string | null };
+        return isLiveSidebarPipelineFromCore(
+          foodStatusByCoreId.get(id) ?? null,
+          c.status ?? 'assigned',
+          c.current_status ?? null
+        );
+      }).length;
+    }
 
     const deliveredTodayList = list.filter(
       (o) => effectiveUi(o as { status?: string; current_status?: string | null }) === 'DELIVERED'

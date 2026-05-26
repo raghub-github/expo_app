@@ -95,6 +95,10 @@ export type MerchantFoodOrderDto = {
   merchant_instructions_list: unknown;
   is_scheduled_order?: boolean;
   scheduled_delivery_summary?: string | null;
+  preparation_time_minutes: number | null;
+  prep_ready_by_at: string | null;
+  prep_delay_minutes: number | null;
+  prep_delay_use_count: number | null;
 };
 
 function num(v: unknown): number {
@@ -367,6 +371,10 @@ type FoodRow = {
   requires_utensils: boolean | null;
   delivery_instructions: string | null;
   merchant_instructions_list: unknown;
+  preparation_time_minutes: number | null;
+  prep_ready_by_at: string | null;
+  prep_delay_minutes: number | null;
+  prep_delay_use_count: number | null;
 };
 
 export type MerchantFoodOrderRiderLogEntry = {
@@ -566,7 +574,11 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.rto_otp,
         of.requires_utensils,
         of.delivery_instructions,
-        of.merchant_instructions_list
+        of.merchant_instructions_list,
+        of.preparation_time_minutes,
+        of.prep_ready_by_at,
+        of.prep_delay_minutes,
+        of.prep_delay_use_count
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
         AND (of.order_id IN ${sql(corePks)} OR of.core_order_id IN ${sql(textIds)})
@@ -602,7 +614,11 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.rto_otp,
         of.requires_utensils,
         of.delivery_instructions,
-        of.merchant_instructions_list
+        of.merchant_instructions_list,
+        of.preparation_time_minutes,
+        of.prep_ready_by_at,
+        of.prep_delay_minutes,
+        of.prep_delay_use_count
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
         AND of.order_id IN ${sql(corePks)}
@@ -638,7 +654,11 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.rto_otp,
         of.requires_utensils,
         of.delivery_instructions,
-        of.merchant_instructions_list
+        of.merchant_instructions_list,
+        of.preparation_time_minutes,
+        of.prep_ready_by_at,
+        of.prep_delay_minutes,
+        of.prep_delay_use_count
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
         AND of.core_order_id IN ${sql(textIds)}
@@ -800,7 +820,148 @@ async function buildOrderDto(
       food?.merchant_instructions_list ?? core.merchant_instructions_list ?? [],
     is_scheduled_order: scheduledMeta.isScheduled,
     scheduled_delivery_summary: scheduledMeta.summary,
+    preparation_time_minutes:
+      food?.preparation_time_minutes != null ? Number(food.preparation_time_minutes) : null,
+    prep_ready_by_at: toIsoOrNull(food?.prep_ready_by_at),
+    prep_delay_minutes:
+      food?.prep_delay_minutes != null ? Number(food.prep_delay_minutes) : null,
+    prep_delay_use_count:
+      food?.prep_delay_use_count != null ? Number(food.prep_delay_use_count) : null,
   };
+}
+
+const PREP_DELAY_OPTIONS = [5, 10, 15] as const;
+
+function extendPrepReadyByAtIso(
+  currentPrepReadyByAt: string | null | undefined,
+  additionalMinutes: number,
+  nowIso = new Date().toISOString()
+): string {
+  const add = Math.max(5, Math.min(180, Math.round(additionalMinutes)));
+  const nowMs = new Date(nowIso).getTime();
+  const baseMs = currentPrepReadyByAt
+    ? Math.max(nowMs, new Date(currentPrepReadyByAt).getTime())
+    : nowMs;
+  return new Date(baseMs + add * 60_000).toISOString();
+}
+
+export async function patchMerchantFoodOrderPrepDelay(
+  sql: Sql,
+  storeId: number,
+  ordersFoodId: number,
+  additionalMinutes: number
+): Promise<MerchantFoodOrderDto> {
+  if (
+    !PREP_DELAY_OPTIONS.includes(additionalMinutes as (typeof PREP_DELAY_OPTIONS)[number])
+  ) {
+    throw new Error("invalid_prep_delay_minutes");
+  }
+
+  const existingRows = await sql`
+    SELECT
+      of.id,
+      of.order_id,
+      of.order_status,
+      of.prep_ready_by_at,
+      of.prep_delay_minutes,
+      of.prep_delay_use_count,
+      of.merchant_store_id,
+      COALESCE(oc.is_bulk_order, false) AS is_bulk_order
+    FROM orders_food of
+    LEFT JOIN orders_core oc ON oc.id = of.order_id
+    WHERE of.id = ${ordersFoodId}
+    LIMIT 1
+  `;
+  const existing = existingRows[0] as
+    | {
+        id: number;
+        order_id: number | null;
+        order_status: string | null;
+        prep_ready_by_at: string | null;
+        prep_delay_minutes: number | null;
+        prep_delay_use_count: number | null;
+        merchant_store_id: number;
+        is_bulk_order: boolean;
+      }
+    | undefined;
+  if (!existing) throw new Error("order_not_found");
+  if (Number(existing.merchant_store_id) !== storeId) throw new Error("store_mismatch");
+
+  const st = String(existing.order_status || "").toUpperCase();
+  if (st !== "PREPARING" && st !== "ACCEPTED") {
+    throw new Error("prep_delay_not_allowed");
+  }
+
+  const prevUseCount = Number(existing.prep_delay_use_count) || 0;
+  const maxUses = existing.is_bulk_order ? 2 : 1;
+  if (prevUseCount >= maxUses) {
+    throw new Error("prep_delay_limit_reached");
+  }
+
+  const now = new Date().toISOString();
+  const prevDelay = Number(existing.prep_delay_minutes) || 0;
+  const newDelayTotal = prevDelay + additionalMinutes;
+  const newUseCount = prevUseCount + 1;
+  const newPrepReadyByAt = extendPrepReadyByAtIso(
+    existing.prep_ready_by_at,
+    additionalMinutes,
+    now
+  );
+
+  await sql`
+    UPDATE orders_food
+    SET prep_ready_by_at = ${newPrepReadyByAt}::timestamptz,
+        prep_delay_minutes = ${newDelayTotal},
+        prep_delay_use_count = ${newUseCount},
+        updated_at = ${now}::timestamptz
+    WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
+  `;
+
+  if (existing.order_id != null && Number.isFinite(Number(existing.order_id))) {
+    try {
+      await sql`
+        UPDATE orders_core
+        SET prep_ready_by_at = ${newPrepReadyByAt}::timestamptz,
+            prep_delay_minutes = ${newDelayTotal},
+            prep_delay_use_count = ${newUseCount},
+            updated_at = ${now}::timestamptz
+        WHERE id = ${Number(existing.order_id)}
+      `;
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  try {
+    await sql`
+      INSERT INTO merchant_order_food_actions (
+        orders_food_id, orders_core_id, merchant_store_id,
+        from_status, to_status, action_source, actor_type, actor_label, metadata
+      )
+      VALUES (
+        ${ordersFoodId},
+        ${existing.order_id != null ? Number(existing.order_id) : null},
+        ${storeId},
+        ${st},
+        ${st},
+        ${"app"},
+        ${"merchant"},
+        ${"Store"},
+        ${JSON.stringify({
+          prep_delay_minutes_added: additionalMinutes,
+          prep_delay_minutes_total: newDelayTotal,
+          prep_ready_by_at: newPrepReadyByAt,
+        })}
+      )
+    `;
+  } catch {
+    /* non-fatal */
+  }
+
+  const orders = await loadMerchantFoodOrders(sql, storeId, { ordersFoodId });
+  const updated = orders[0];
+  if (!updated) throw new Error("order_not_found");
+  return updated;
 }
 
 export async function loadMerchantFoodOrderRidersLog(
@@ -1032,6 +1193,26 @@ export async function loadMerchantFoodOrders(
         const ord = Number(row.ord);
         if (Number.isFinite(ord) && ord > 0) storeOrdinalByCoreId.set(Number(row.id), ord);
       }
+    }
+
+    const stillMissingCores = cores.filter((c) => !storeOrdinalByCoreId.has(c.id));
+    if (stillMissingCores.length > 0) {
+      await Promise.all(
+        stillMissingCores.map(async (core) => {
+          const food = matchFoodToCore(core, byCorePk, byTextId);
+          const cid = resolveCustomerId(core, food);
+          if (cid == null) return;
+          const rows = await sql`
+            SELECT COUNT(*)::int AS ord
+            FROM orders_core prior
+            WHERE prior.merchant_store_id = ${storeId}
+              AND prior.customer_id = ${cid}
+              AND prior.created_at <= ${new Date(core.created_at).toISOString()}::timestamptz
+          `;
+          const ord = Number((rows[0] as { ord?: number } | undefined)?.ord);
+          if (Number.isFinite(ord) && ord > 0) storeOrdinalByCoreId.set(core.id, ord);
+        })
+      );
     }
   }
 

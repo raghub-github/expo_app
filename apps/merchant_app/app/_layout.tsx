@@ -9,18 +9,22 @@ import { StoreStatusProvider } from "@/context/StoreStatusContext";
 import { AuthProvider } from "@/context/AuthContext";
 import { SelectedStoreProvider } from "@/context/SelectedStoreContext";
 import { StoreSettingsProvider } from "@/context/StoreSettingsContext";
+import { OrdersProvider } from "@/context/OrdersContext";
 import { ProfileNavProvider } from "@/context/ProfileNavContext";
 import { NotificationProvider } from "@/context/NotificationContext";
 import { SubscriptionProvider } from "@/context/SubscriptionContext";
+import { LiveSupportTicketProvider } from "@/context/LiveSupportTicketContext";
 import FloatingOrdersManager from "../components/FloatingOrdersManager";
+import { FloatingLiveSupportTicket } from "@/components/FloatingLiveSupportTicket";
 import IncomingOrderModal from "../components/IncomingOrderModal";
 import { SessionRevokedGate } from "@/components/SessionRevokedGate";
 import NotificationSetup from "../components/NotificationSetup";
+import OrderAlertPushHandler from "../components/OrderAlertPushHandler";
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 60 * 1000, // 1 min
+      staleTime: 60 * 1000,
       retry: 1,
     },
   },
@@ -33,40 +37,46 @@ export default function RootLayout() {
         <SafeAreaProvider>
           <AuthProvider>
             <SelectedStoreProvider>
-              <StoreStatusProvider>
-                <StoreSettingsProvider>
-                  <ProfileNavProvider>
-                    <NotificationProvider>
-                      <SubscriptionProvider>
-                        <StatusBar
-                          style="dark"
-                          backgroundColor={GatiMitraMerchant.background}
-                          translucent={false}
-                          hidden={false}
-                        />
-                        <NotificationSetup />
-                        <FloatingOrdersManager />
-                        <IncomingOrderModal />
-                        <SessionRevokedGate />
-                        <Stack
-                          screenOptions={{
-                            headerShown: false,
-                            contentStyle: { backgroundColor: GatiMitraMerchant.background },
-                            animation: "slide_from_right",
-                          }}
-                        >
-                          <Stack.Screen name="index" />
-                          <Stack.Screen name="(auth)" />
-                          <Stack.Screen name="(tabs)" />
-                          <Stack.Screen name="order/[id]" options={{ headerShown: false }} />
-                          <Stack.Screen name="order-history" options={{ headerShown: false }} />
-                          <Stack.Screen name="notifications" options={{ headerShown: false }} />
-                        </Stack>
-                      </SubscriptionProvider>
-                    </NotificationProvider>
-                  </ProfileNavProvider>
-                </StoreSettingsProvider>
-              </StoreStatusProvider>
+              <LiveSupportTicketProvider>
+                <StoreStatusProvider>
+                  <StoreSettingsProvider>
+                    <OrdersProvider>
+                      <ProfileNavProvider>
+                        <NotificationProvider>
+                          <SubscriptionProvider>
+                            <StatusBar
+                              style="dark"
+                              backgroundColor={GatiMitraMerchant.background}
+                              translucent={false}
+                              hidden={false}
+                            />
+                            <NotificationSetup />
+                            <OrderAlertPushHandler />
+                            <FloatingOrdersManager />
+                            <FloatingLiveSupportTicket />
+                            <IncomingOrderModal />
+                            <SessionRevokedGate />
+                            <Stack
+                              screenOptions={{
+                                headerShown: false,
+                                contentStyle: { backgroundColor: GatiMitraMerchant.background },
+                                animation: "slide_from_right",
+                              }}
+                            >
+                              <Stack.Screen name="index" />
+                              <Stack.Screen name="(auth)" />
+                              <Stack.Screen name="(tabs)" />
+                              <Stack.Screen name="order/[id]" options={{ headerShown: false }} />
+                              <Stack.Screen name="order-history" options={{ headerShown: false }} />
+                              <Stack.Screen name="notifications" options={{ headerShown: false }} />
+                            </Stack>
+                          </SubscriptionProvider>
+                        </NotificationProvider>
+                      </ProfileNavProvider>
+                    </OrdersProvider>
+                  </StoreSettingsProvider>
+                </StoreStatusProvider>
+              </LiveSupportTicketProvider>
             </SelectedStoreProvider>
           </AuthProvider>
         </SafeAreaProvider>

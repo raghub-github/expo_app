@@ -94,11 +94,11 @@ export function OutOfStockModal({
 
   const canConfirm = payload != null && !busy;
 
-  // Reset defaults whenever sheet opens.
+  // Reset defaults whenever sheet opens (Partner Site: HOURS + 5h default).
   useEffect(() => {
     if (!visible) return;
-    // Merchant app expectation: toggle-off should map to manual OOS by default.
-    setMode("MANUAL");
+    setMode("HOURS");
+    setHours(Math.max(1, Math.min(24 * 14, Math.floor(hoursDefault))));
     setCustomTouched(false);
     setCustomUntil(new Date(Date.now() + 60 * 60 * 1000));
     Animated.timing(slideY, {
@@ -157,6 +157,7 @@ export function OutOfStockModal({
                   <TouchableOpacity
                     onPress={(e) => {
                       e.stopPropagation();
+                      setMode("HOURS");
                       setHours((h) => Math.max(1, h - 1));
                     }}
                     style={styles.stepBtnCircle}
@@ -171,6 +172,7 @@ export function OutOfStockModal({
                   <TouchableOpacity
                     onPress={(e) => {
                       e.stopPropagation();
+                      setMode("HOURS");
                       setHours((h) => Math.min(24 * 14, h + 1));
                     }}
                     style={styles.stepBtnCircle}

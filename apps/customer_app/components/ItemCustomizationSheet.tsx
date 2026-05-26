@@ -24,6 +24,7 @@ import { DietIndicator } from "@/components/store/DietIndicator";
 import { MenuItemImagePlaceholder } from "@/components/store/MenuItemImagePlaceholder";
 import type { MenuItem, MenuItemFullConfig } from "@/services/merchant.service";
 import { merchantService } from "@/services/merchant.service";
+import { mapAnchorPairsToCompanionItems } from "@/components/store/storeMenuUtils";
 import {
   clearCachedMenuItemFullConfig,
   menuItemConfigQueryKey,
@@ -54,6 +55,9 @@ export type ItemCustomizationSheetProps = {
   item: MenuItem;
   merchantName: string;
   isStoreClosed?: boolean;
+  /** Full store menu — used to resolve co-purchase companion items. */
+  storeMenu?: MenuItem[];
+  onAddCompanionItem?: (item: MenuItem) => void;
   /** Pre-select variant/addons/qty when editing from checkout cart. */
   initialSelection?: ItemCustomizationInitialSelection | null;
   onAdd: (params: {
@@ -253,6 +257,8 @@ export function ItemCustomizationSheet({
   item,
   merchantName,
   isStoreClosed = false,
+  storeMenu = [],
+  onAddCompanionItem,
   initialSelection = null,
   onAdd,
 }: ItemCustomizationSheetProps) {
@@ -299,6 +305,22 @@ export function ItemCustomizationSheet({
   );
 
   const loading = visible && !displayConfig && (configLoading || configFetching);
+
+  const { data: anchorCoPurchasePairs = [] } = useQuery({
+    queryKey: ["ordered-together", storeId, configItemKey],
+    queryFn: () =>
+      merchantService.getOrderedTogetherPairs(storeId, {
+        anchorMenuItemId: configItemKey,
+        limit: 6,
+      }),
+    enabled: visible && !!storeId && !!configItemKey,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const companionItems = useMemo(
+    () => mapAnchorPairsToCompanionItems(storeMenu, configItemKey, anchorCoPurchasePairs),
+    [storeMenu, configItemKey, anchorCoPurchasePairs]
+  );
 
   useEffect(() => {
     if (!visible) {
@@ -579,6 +601,44 @@ export function ItemCustomizationSheet({
                     </View>
                   ) : null}
 
+                  {companionItems.length > 0 ? (
+                    <View style={styles.companionSection}>
+                      <Text style={styles.companionTitle}>Most ordered together</Text>
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.companionScroll}
+                      >
+                        {companionItems.map(({ item: companion, orderCount, source }) => (
+                          <View key={companion.id} style={styles.companionCard}>
+                            <Text style={styles.companionName} numberOfLines={2}>
+                              {companion.name}
+                            </Text>
+                            <Text style={styles.companionMeta}>
+                              {source === "popular_fallback"
+                                ? "Popular add-on"
+                                : `${orderCount}+ orders together`}
+                            </Text>
+                            <View style={styles.companionFooter}>
+                              <Text style={styles.companionPrice}>₹{Math.round(companion.price)}</Text>
+                              <TouchableOpacity
+                                style={[
+                                  styles.companionAddBtn,
+                                  isStoreClosed && styles.companionAddBtnDisabled,
+                                ]}
+                                disabled={isStoreClosed}
+                                onPress={() => onAddCompanionItem?.(companion)}
+                                activeOpacity={0.85}
+                              >
+                                <Text style={styles.companionAddText}>ADD</Text>
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+                        ))}
+                      </ScrollView>
+                    </View>
+                  ) : null}
+
                   {displayConfig?.customizations?.map((c, groupIdx) => (
                     <View
                       key={c.id}
@@ -830,6 +890,68 @@ const styles = StyleSheet.create({
   sectionBlockGap: {
     borderTopWidth: 8,
     borderTopColor: "#F4F4F5",
+  },
+  companionSection: {
+    marginTop: 16,
+    marginBottom: 4,
+    paddingHorizontal: 16,
+  },
+  companionTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: StoreTheme.textPrimary,
+    marginBottom: 10,
+  },
+  companionScroll: {
+    gap: 10,
+    paddingRight: 8,
+  },
+  companionCard: {
+    width: 148,
+    borderWidth: 1,
+    borderColor: StoreTheme.border,
+    borderRadius: 10,
+    padding: 10,
+    backgroundColor: "#fff",
+  },
+  companionName: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: StoreTheme.textPrimary,
+    minHeight: 34,
+  },
+  companionMeta: {
+    fontSize: 10,
+    color: StoreTheme.textSecondary,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  companionFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 6,
+  },
+  companionPrice: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: StoreTheme.textPrimary,
+  },
+  companionAddBtn: {
+    borderWidth: 1,
+    borderColor: StoreTheme.accentMint,
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  companionAddBtnDisabled: {
+    borderColor: "#9CA3AF",
+    opacity: 0.7,
+  },
+  companionAddText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: StoreTheme.accentMint,
   },
   sectionHeader: {
     paddingTop: 12,

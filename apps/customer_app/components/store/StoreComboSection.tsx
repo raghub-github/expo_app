@@ -20,6 +20,7 @@ export type ComboPair = {
   item1: MenuItem;
   item2: MenuItem;
   customerCount?: number;
+  source?: "co_purchase" | "popular_fallback";
 };
 
 export type StoreComboSectionProps = {
@@ -94,7 +95,11 @@ function ComboCard({
       {combo.customerCount != null && combo.customerCount > 0 ? (
         <View style={styles.badgeRow}>
           <Ionicons name="people-outline" size={12} color={StoreTheme.textSecondary} />
-          <Text style={styles.badgeText}>Ordered by {combo.customerCount}+ customers</Text>
+          <Text style={styles.badgeText}>
+            {combo.source === "popular_fallback"
+              ? "Popular pairing"
+              : `Ordered by ${combo.customerCount}+ customers`}
+          </Text>
         </View>
       ) : null}
       <Text style={styles.comboTitle} numberOfLines={2}>

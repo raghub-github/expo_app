@@ -182,6 +182,9 @@ export function resolvePartnerOrderItems(
           hasCustomizations: dbLine.hasCustomizations ?? it.hasCustomizations,
           categoryName: dbLine.categoryName ?? it.categoryName,
           vegNonveg: dbLine.vegNonveg ?? it.vegNonveg,
+          menuItemId: dbLine.menuItemId ?? it.menuItemId,
+          description: dbLine.description ?? it.description,
+          imageUrl: dbLine.imageUrl ?? it.imageUrl,
           total: dbLine.total > 0 ? dbLine.total : it.total,
           price: dbLine.price > 0 ? dbLine.price : it.price,
         };

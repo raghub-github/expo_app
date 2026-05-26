@@ -50,7 +50,7 @@ export async function POST(
 
     const { data: existing, error: fetchErr } = await db
       .from('orders_food')
-      .select('id, order_id, order_status, prep_ready_by_at, prep_delay_minutes, merchant_store_id')
+      .select('id, order_id, order_status, prep_ready_by_at, prep_delay_minutes, prep_delay_use_count, merchant_store_id')
       .eq('id', orderIdNum)
       .single();
 
@@ -66,9 +66,26 @@ export async function POST(
       return NextResponse.json({ error: 'Prep delay only allowed while order is preparing' }, { status: 400 });
     }
 
+    let isBulkOrder = false;
+    if (existing.order_id != null) {
+      const { data: coreRow } = await db
+        .from('orders_core')
+        .select('is_bulk_order')
+        .eq('id', existing.order_id as number)
+        .maybeSingle();
+      isBulkOrder = Boolean(coreRow?.is_bulk_order);
+    }
+
+    const prevUseCount = Number(existing.prep_delay_use_count) || 0;
+    const maxUses = isBulkOrder ? 2 : 1;
+    if (prevUseCount >= maxUses) {
+      return NextResponse.json({ error: 'prep_delay_limit_reached' }, { status: 400 });
+    }
+
     const now = new Date().toISOString();
     const prevDelay = Number(existing.prep_delay_minutes) || 0;
     const newDelayTotal = prevDelay + additional;
+    const newUseCount = prevUseCount + 1;
     const newPrepReadyByAt = extendPrepReadyByAtIso(
       existing.prep_ready_by_at as string | null,
       additional,
@@ -80,6 +97,7 @@ export async function POST(
       .update({
         prep_ready_by_at: newPrepReadyByAt,
         prep_delay_minutes: newDelayTotal,
+        prep_delay_use_count: newUseCount,
         updated_at: now,
       })
       .eq('id', orderIdNum);
@@ -94,6 +112,7 @@ export async function POST(
         .update({
           prep_ready_by_at: newPrepReadyByAt,
           prep_delay_minutes: newDelayTotal,
+          prep_delay_use_count: newUseCount,
           updated_at: now,
         })
         .eq('id', existing.order_id as number);
@@ -124,6 +143,7 @@ export async function POST(
     return NextResponse.json({
       prep_ready_by_at: newPrepReadyByAt,
       prep_delay_minutes: newDelayTotal,
+      prep_delay_use_count: newUseCount,
     });
   } catch (err) {
     console.error('[food-orders prep-delay] Error:', err);

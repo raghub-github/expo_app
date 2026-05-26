@@ -11,22 +11,20 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import Animated, {
-  cancelAnimation,
   useAnimatedStyle,
   useSharedValue,
-  withRepeat,
   withSpring,
-  withTiming,
 } from "react-native-reanimated";
 import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
 import { DietIndicator } from "./DietIndicator";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
 import { getBasePrice, getItemDiet, getSellingPrice } from "./storeMenuUtils";
+import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
 
 export type StoreMenuItemRowProps = {
   item: MenuItem;
-  quantity: number;
+  merchantId: string;
   onAdd: (item: MenuItem) => void;
   onIncrement: (itemId: string, menuItemId?: number) => void;
   onDecrement: (itemId: string, menuItemId?: number) => void;
@@ -35,13 +33,15 @@ export type StoreMenuItemRowProps = {
   isHighlyReordered?: boolean;
   isBookmarked?: boolean;
   highlighted?: boolean;
+  /** Top co-purchased companion item name from order history. */
+  goesWithName?: string | null;
   onBookmark?: (item: MenuItem) => void;
   onShare?: (item: MenuItem) => void;
 };
 
 export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   item,
-  quantity,
+  merchantId,
   onAdd,
   onIncrement,
   onDecrement,
@@ -50,24 +50,19 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   isHighlyReordered = false,
   isBookmarked = false,
   highlighted = false,
+  goesWithName = null,
   onBookmark,
   onShare,
 }: StoreMenuItemRowProps) {
+  const quantity = useMenuItemCartQty(item.id, item.menuItemId, merchantId);
   const [imageFailed, setImageFailed] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
   const addScale = useSharedValue(1);
-  const shimmerOpacity = useSharedValue(0.4);
 
   useEffect(() => {
     setImageFailed(false);
     setImageLoaded(false);
   }, [item.imageUrl]);
-
-  useEffect(() => {
-    if (imageLoaded || imageFailed || !item.imageUrl) return;
-    shimmerOpacity.value = withRepeat(withTiming(0.7, { duration: 600 }), -1, true);
-    return () => cancelAnimation(shimmerOpacity);
-  }, [item.imageUrl, imageLoaded, imageFailed, shimmerOpacity]);
 
   const handleAdd = useCallback(() => {
     if (isStoreClosed) return;
@@ -79,7 +74,6 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   }, [item, onAdd, addScale, isStoreClosed]);
 
   const addStyle = useAnimatedStyle(() => ({ transform: [{ scale: addScale.value }] }));
-  const shimmerStyle = useAnimatedStyle(() => ({ opacity: shimmerOpacity.value }));
 
   const sellingPrice = getSellingPrice(item);
   const basePrice = getBasePrice(item);
@@ -106,6 +100,10 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
               </View>
               <Text style={styles.reorderText}>Highly reordered</Text>
             </View>
+          ) : goesWithName ? (
+            <Text style={styles.goesWithText} numberOfLines={1}>
+              Often ordered with {goesWithName}
+            </Text>
           ) : null}
 
           <View style={styles.priceBlock}>
@@ -156,21 +154,16 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
           </View>
         </View>
 
-        <Animated.View style={[styles.rightCol, addStyle]}>
+        <View style={styles.rightCol}>
           <View style={styles.imageWrap}>
             {showRemoteImage ? (
               <>
-                <Animated.View style={[StyleSheet.absoluteFill, shimmerStyle]}>
-                  <View style={styles.imageShimmer} />
-                </Animated.View>
+                {!imageLoaded ? <View style={styles.imageShimmer} /> : null}
                 <Image
                   source={{ uri: item.imageUrl! }}
                   style={[styles.image, imageLoaded ? styles.imageVisible : styles.imageHidden]}
                   resizeMode="cover"
-                  onLoad={() => {
-                    setImageLoaded(true);
-                    cancelAnimation(shimmerOpacity);
-                  }}
+                  onLoad={() => setImageLoaded(true)}
                   onError={() => setImageFailed(true)}
                 />
               </>
@@ -180,7 +173,7 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
             {isStoreClosed ? <View style={styles.closedOverlay} /> : null}
           </View>
 
-          <View style={styles.addSlot}>
+          <Animated.View style={[styles.addSlot, addStyle]}>
             {quantity === 0 ? (
               <Pressable
                 onPress={handleAdd}
@@ -213,10 +206,10 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
                 </TouchableOpacity>
               </View>
             )}
-          </View>
+          </Animated.View>
 
           {isCustomisable ? <Text style={styles.customisable}>customisable</Text> : null}
-        </Animated.View>
+        </View>
       </View>
       {showDivider ? <View style={styles.divider} /> : null}
     </View>
@@ -224,7 +217,6 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
 });
 
 const IMAGE_SIZE = 118;
-const ADD_OVERLAP = 14;
 
 const styles = StyleSheet.create({
   wrap: {
@@ -232,6 +224,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 18,
     paddingBottom: 4,
+    minHeight: 172,
   },
   wrapHighlighted: {
     backgroundColor: StoreTheme.accentMintSoft,
@@ -282,6 +275,12 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: StoreTheme.textSecondary,
     fontWeight: "500",
+  },
+  goesWithText: {
+    fontSize: 11,
+    color: StoreTheme.linkBlue,
+    fontWeight: "500",
+    marginBottom: 6,
   },
   priceBlock: {
     marginBottom: 4,
@@ -365,7 +364,7 @@ const styles = StyleSheet.create({
   },
   addSlot: {
     width: IMAGE_SIZE - 16,
-    marginTop: -ADD_OVERLAP,
+    marginTop: 8,
     zIndex: 2,
   },
   addBtn: {

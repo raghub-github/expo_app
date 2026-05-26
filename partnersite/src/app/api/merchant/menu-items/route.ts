@@ -2,8 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant'
+import { assertStoreAccess } from '@/lib/auth/assert-store-access'
 import { deleteFromR2, extractR2KeyFromUrl } from '@/lib/r2'
 import { logStoreActivity } from '@/lib/store-activity-feed'
+import { buildMenuItemOosModePatch, buildMenuItemStockTogglePatch } from '@/lib/merchant-menu-item-stock'
+import { client as pgClient } from '@/lib/drizzle'
+import { expireTimedMenuOutOfStockForStore } from '@/lib/menu-oos-expiry'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -17,48 +21,28 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey, {
  */
 export async function GET(req: NextRequest) {
   try {
-    const supabaseServer = await createServerSupabaseClient()
-    const { data: { user }, error: userError } = await supabaseServer.auth.getUser()
-    if (userError || !user) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
-    }
-
-    const validation = await validateMerchantFromSession({
-      id: user.id,
-      email: user.email ?? null,
-      phone: user.phone ?? null,
-    })
-    if (!validation.isValid) {
-      return NextResponse.json(
-        { error: validation.error ?? 'Merchant not found' },
-        { status: 403 }
-      )
-    }
-
     const { searchParams } = new URL(req.url)
     const storeId = searchParams.get('storeId')
+    const view = searchParams.get('view')?.trim().toLowerCase()
     if (!storeId) {
       return NextResponse.json({ error: 'storeId query param required' }, { status: 400 })
     }
 
-    const { data: store } = await supabase
-      .from('merchant_stores')
-      .select('id, parent_id')
-      .eq('store_id', String(storeId).trim())
-      .single()
-
-    if (!store?.id || !store?.parent_id) {
-      return NextResponse.json({ error: 'Store not found' }, { status: 404 })
+    const access = await assertStoreAccess(storeId)
+    if (!access.ok) {
+      return NextResponse.json({ error: access.error }, { status: access.status })
     }
 
-    if (store.parent_id !== validation.merchantParentId) {
-      return NextResponse.json({ error: 'Store does not belong to this merchant' }, { status: 403 })
+    try {
+      await expireTimedMenuOutOfStockForStore(pgClient, access.storeIdNum)
+    } catch (expireErr) {
+      console.error('[menu-items GET] expireTimedMenuOutOfStock failed:', expireErr)
     }
 
     const { data: items, error } = await supabase
       .from('merchant_menu_items')
       .select('*')
-      .eq('store_id', store.id)
+      .eq('store_id', access.storeIdNum)
       .order('created_at', { ascending: false })
 
     if (error) {
@@ -69,12 +53,35 @@ export async function GET(req: NextRequest) {
     const list = items ?? []
     if (list.length === 0) return NextResponse.json([])
 
+    /** Card/list grid only — skip heavy customization joins for faster first paint. */
+    if (view === 'list') {
+      const lite = list.map((item: Record<string, unknown>) => ({
+        ...item,
+        customizations: [],
+        variants: [],
+        linked_modifier_groups: [],
+      }))
+      return NextResponse.json(lite)
+    }
+
     const itemIds = list.map((r: { id: number }) => r.id)
-    const { data: custRows } = await supabase
-      .from('merchant_menu_item_customizations')
-      .select('*')
-      .in('menu_item_id', itemIds)
-      .order('display_order', { ascending: true })
+    const [{ data: custRows }, { data: variantRows }, { data: modifierLinks }] = await Promise.all([
+      supabase
+        .from('merchant_menu_item_customizations')
+        .select('*')
+        .in('menu_item_id', itemIds)
+        .order('display_order', { ascending: true }),
+      supabase
+        .from('merchant_menu_item_variants')
+        .select('*')
+        .in('menu_item_id', itemIds)
+        .order('display_order', { ascending: true }),
+      supabase
+        .from('merchant_item_modifier_groups')
+        .select('id, menu_item_id, modifier_group_id, display_order')
+        .in('menu_item_id', itemIds)
+        .order('display_order', { ascending: true }),
+    ])
     const custList = custRows ?? []
     const custIds = custList.map((c: { id: number }) => c.id)
     let addonList: any[] = []
@@ -86,11 +93,6 @@ export async function GET(req: NextRequest) {
         .order('display_order', { ascending: true })
       addonList = addonRows ?? []
     }
-    const { data: variantRows } = await supabase
-      .from('merchant_menu_item_variants')
-      .select('*')
-      .in('menu_item_id', itemIds)
-      .order('display_order', { ascending: true })
     const variantList = variantRows ?? []
 
     const addonsByCustId: Record<number, any[]> = {}
@@ -114,26 +116,23 @@ export async function GET(req: NextRequest) {
 
     const linkedByItemId: Record<number, any[]> = {}
     try {
-      const { data: modifierLinks } = await supabase
-        .from('merchant_item_modifier_groups')
-        .select('id, menu_item_id, modifier_group_id, display_order')
-        .in('menu_item_id', itemIds)
-        .order('display_order', { ascending: true })
       const linkList = modifierLinks ?? []
       const modifierGroupIds = [...new Set(linkList.map((l: { modifier_group_id: number }) => l.modifier_group_id))]
       const modifierGroupsById: Record<number, any> = {}
       const modifierOptionsByGroupId: Record<number, any[]> = {}
       if (modifierGroupIds.length > 0) {
-        const { data: groups } = await supabase
-          .from('merchant_modifier_groups')
-          .select('id, title, description, is_required, min_selection, max_selection')
-          .in('id', modifierGroupIds)
+        const [{ data: groups }, { data: opts }] = await Promise.all([
+          supabase
+            .from('merchant_modifier_groups')
+            .select('id, title, description, is_required, min_selection, max_selection')
+            .in('id', modifierGroupIds),
+          supabase
+            .from('merchant_modifier_options')
+            .select('id, modifier_group_id, option_code, name, price_delta, in_stock, display_order')
+            .in('modifier_group_id', modifierGroupIds)
+            .order('display_order', { ascending: true }),
+        ])
         for (const g of groups ?? []) modifierGroupsById[g.id] = g
-        const { data: opts } = await supabase
-          .from('merchant_modifier_options')
-          .select('id, modifier_group_id, option_code, name, price_delta, in_stock, display_order')
-          .in('modifier_group_id', modifierGroupIds)
-          .order('display_order', { ascending: true })
         for (const o of opts ?? []) {
           const gid = o.modifier_group_id
           if (!modifierOptionsByGroupId[gid]) modifierOptionsByGroupId[gid] = []
@@ -559,7 +558,9 @@ export async function PATCH(req: NextRequest) {
       if (body.selling_price != null) updatePayload.selling_price = Number(body.selling_price)
       if (body.discount_percentage !== undefined) updatePayload.discount_percentage = body.discount_percentage ?? 0
       if (body.tax_percentage !== undefined) updatePayload.tax_percentage = body.tax_percentage ?? 0
-      if (body.in_stock !== undefined) updatePayload.in_stock = body.in_stock ?? true
+      if (body.in_stock !== undefined) {
+        Object.assign(updatePayload, buildMenuItemStockTogglePatch(body.in_stock !== false))
+      }
       if (body.available_quantity !== undefined) updatePayload.available_quantity = body.available_quantity ?? null
       if (body.low_stock_threshold !== undefined) updatePayload.low_stock_threshold = body.low_stock_threshold ?? null
       if (body.has_customizations !== undefined) updatePayload.has_customizations = body.has_customizations ?? false

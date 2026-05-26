@@ -154,3 +154,30 @@ export function resolveAcceptPrepCommitment(input: {
     prepTimeSource,
   };
 }
+
+export const PREP_DELAY_MAX_USES_NORMAL = 1;
+export const PREP_DELAY_MAX_USES_BULK = 2;
+
+export function maxPrepDelayUses(isBulkOrder: boolean): number {
+  return isBulkOrder ? PREP_DELAY_MAX_USES_BULK : PREP_DELAY_MAX_USES_NORMAL;
+}
+
+/** Resolve use count from API field, with legacy fallback when column is missing. */
+export function resolvePrepDelayUseCount(
+  prepDelayUseCount: number | null | undefined,
+  prepDelayMinutes: number | null | undefined
+): number {
+  if (prepDelayUseCount != null && Number.isFinite(Number(prepDelayUseCount))) {
+    return Math.max(0, Math.round(Number(prepDelayUseCount)));
+  }
+  return (Number(prepDelayMinutes) || 0) > 0 ? 1 : 0;
+}
+
+export function canUseNeedMoreTime(
+  prepDelayUseCount: number | null | undefined,
+  isBulkOrder: boolean,
+  prepDelayMinutes?: number | null
+): boolean {
+  const used = resolvePrepDelayUseCount(prepDelayUseCount, prepDelayMinutes);
+  return used < maxPrepDelayUses(isBulkOrder);
+}

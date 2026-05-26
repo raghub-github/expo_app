@@ -22,6 +22,18 @@ const nextConfig = {
       },
     ],
   },
+  async rewrites() {
+    const backend =
+      process.env.GATIMITRA_BACKEND_API_URL ||
+      process.env.MERCHANT_API_PROXY_TARGET ||
+      process.env.BACKEND_API_URL ||
+      process.env.NEXT_PUBLIC_BACKEND_API_URL ||
+      (process.env.NODE_ENV !== 'production' ? 'http://127.0.0.1:3000' : '');
+    if (!backend) return [];
+    const base = String(backend).trim().replace(/\/+$/, '');
+    if (!base) return [];
+    return [{ source: '/v1/:path*', destination: `${base}/v1/:path*` }];
+  },
 };
 
 module.exports = nextConfig;

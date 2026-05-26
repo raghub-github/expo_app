@@ -57,6 +57,10 @@ import { clientStoreOpsDebugLog } from '@/lib/store-ops-client-debug';
 import { toStoredDocumentUrl } from '@/lib/r2';
 import NeedHelpBadge from '@/components/NeedHelpBadge';
 import { usePartnerDeviceOrderAlerts } from '@/hooks/usePartnerDeviceOrderAlerts';
+import {
+  PARTNER_SELECTED_STORE_CHANGED,
+  readPartnerSelectedStoreId,
+} from '@/lib/partner-selected-store';
 import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
 import { emitPartnerStoreOperationsRefresh } from '@/lib/partnerStoreOperationsRefresh';
 import {
@@ -399,8 +403,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const merchantSession = useMerchantSession();
   const userEmail = merchantSession?.user?.email ?? merchantSession?.user?.phone ?? '';
 
-  /** SSR-safe: only props on first paint; localStorage merged after mount (fixes hydration). */
-  const [resolvedStoreId, setResolvedStoreId] = useState(() => (restaurantId || '').trim());
+  /** SSR-safe: empty until mount — never treat layout placeholders like "No ID" as store_id. */
+  const [resolvedStoreId, setResolvedStoreId] = useState('');
   const [storeList, setStoreList] = useState<
     Array<{ store_id: string; store_name: string; full_address: string; banner_url?: string | null }>
   >([]);
@@ -670,9 +674,18 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   }, [resolvedStoreId, fetchPartnerNotifications]);
 
   useEffect(() => {
-    const fromStorage =
-      typeof window !== 'undefined' ? (localStorage.getItem('selectedStoreId') || '').trim() : '';
-    setResolvedStoreId((restaurantId || '').trim() || fromStorage);
+    const sync = () => setResolvedStoreId(readPartnerSelectedStoreId(restaurantId));
+    sync();
+    const onStore = () => sync();
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'selectedStoreId') sync();
+    };
+    window.addEventListener(PARTNER_SELECTED_STORE_CHANGED, onStore);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener(PARTNER_SELECTED_STORE_CHANGED, onStore);
+      window.removeEventListener('storage', onStorage);
+    };
   }, [restaurantId]);
 
   useEffect(() => {

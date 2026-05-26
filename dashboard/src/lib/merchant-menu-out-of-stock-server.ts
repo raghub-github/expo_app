@@ -1,4 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase/server";
+import { getSql } from "@/lib/db/client";
+import { expireTimedMenuOutOfStockForStore } from "@/lib/menu-oos-expiry";
+import { buildMenuItemOosModePatch, buildMenuItemStockTogglePatch } from "@/lib/merchant-menu-item-stock";
 
 export type MenuOosMode = "CLEAR" | "MANUAL" | "HOURS" | "NEXT_OPEN" | "CUSTOM";
 
@@ -160,6 +163,8 @@ export type MenuOosPatchBody = {
 export async function patchMenuOutOfStock(storeIdNum: number, body: MenuOosPatchBody) {
   if (!supabaseAdmin) throw new Error("supabase_unavailable");
 
+  await expireTimedMenuOutOfStockForStore(getSql(), storeIdNum);
+
   const { targetType, mode } = body;
   if (!["CLEAR", "MANUAL", "HOURS", "NEXT_OPEN", "CUSTOM"].includes(mode)) {
     throw new Error("invalid_mode");
@@ -215,6 +220,7 @@ export async function patchMenuOutOfStock(storeIdNum: number, body: MenuOosPatch
           out_of_stock_manual: false,
           out_of_stock_until: (data as { out_of_stock_until?: string }).out_of_stock_until ?? null,
           out_of_stock_updated_at: markerIso,
+          in_stock: false,
           updated_at,
         })
         .eq("store_id", storeIdNum)
@@ -229,6 +235,7 @@ export async function patchMenuOutOfStock(storeIdNum: number, body: MenuOosPatch
           out_of_stock_manual: false,
           out_of_stock_until: null,
           out_of_stock_updated_at: markerIso,
+          in_stock: true,
           updated_at,
         })
         .eq("store_id", storeIdNum)
@@ -276,14 +283,10 @@ export async function patchMenuOutOfStock(storeIdNum: number, body: MenuOosPatch
 
   const itemId = String(body.id ?? "").trim();
   if (!itemId) throw new Error("item_id_required");
+  const itemPatch = buildMenuItemOosModePatch(patch.manual, patch.until, updated_at);
   const { data, error } = await supabaseAdmin
     .from("merchant_menu_items")
-    .update({
-      out_of_stock_manual: patch.manual,
-      out_of_stock_until: patch.until ? patch.until.toISOString() : null,
-      out_of_stock_updated_at: updated_at,
-      updated_at,
-    })
+    .update(itemPatch)
     .eq("store_id", storeIdNum)
     .eq("item_id", itemId)
     .select("id, out_of_stock_manual, out_of_stock_until, out_of_stock_updated_at")
@@ -296,5 +299,32 @@ export async function patchMenuOutOfStock(storeIdNum: number, body: MenuOosPatch
     out_of_stock_until: (data as { out_of_stock_until?: string | null }).out_of_stock_until ?? null,
     out_of_stock_updated_at:
       (data as { out_of_stock_updated_at?: string }).out_of_stock_updated_at ?? updated_at,
+    in_stock: (itemPatch as { in_stock?: boolean }).in_stock,
+  };
+}
+
+/** Legacy/simple toggle — same fields as out-of-stock CLEAR / MANUAL. */
+export async function patchMenuItemStockToggle(
+  storeIdNum: number,
+  menuItemNumericId: number,
+  inStock: boolean
+) {
+  if (!supabaseAdmin) throw new Error("supabase_unavailable");
+  const patch = buildMenuItemStockTogglePatch(inStock);
+  const { data, error } = await supabaseAdmin
+    .from("merchant_menu_items")
+    .update(patch)
+    .eq("store_id", storeIdNum)
+    .eq("id", menuItemNumericId)
+    .select("id, in_stock, out_of_stock_manual, out_of_stock_until, out_of_stock_updated_at")
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) throw new Error("item_not_found");
+  return {
+    ok: true,
+    in_stock: Boolean((data as { in_stock?: boolean }).in_stock),
+    out_of_stock_manual: Boolean((data as { out_of_stock_manual?: boolean }).out_of_stock_manual),
+    out_of_stock_until: (data as { out_of_stock_until?: string | null }).out_of_stock_until ?? null,
+    out_of_stock_updated_at: (data as { out_of_stock_updated_at?: string }).out_of_stock_updated_at,
   };
 }

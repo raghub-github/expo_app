@@ -14,12 +14,20 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
 
+export type MenuSheetScrollTarget =
+  | { kind: "past-orders" }
+  | { kind: "starting-at" }
+  | { kind: "section-title"; title: string }
+  | { kind: "category"; categoryId?: number | null; categoryName?: string }
+  | { kind: "menu-item"; itemId: string; menuItemId?: number };
+
 export type StoreMenuSheetSection = {
   id: string;
   title: string;
   count: number;
   /** Pink + suffix after title (category sections). */
   showPlus?: boolean;
+  scrollTarget: MenuSheetScrollTarget;
 };
 
 export type StoreMenuSheetProps = {

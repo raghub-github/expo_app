@@ -65,6 +65,8 @@ import { OrderCustomerSidesheet } from '@/components/orders/OrderCustomerSideshe
 import { OrderTimelineModal } from '@/components/orders/OrderTimelineModal';
 import { OrderRiderTrackingModal } from '@/components/orders/OrderRiderTrackingModal';
 import { RejectOrderSidesheet } from '@/components/orders/RejectOrderSidesheet';
+import { RejectFollowUpHost, useRejectFollowUp } from '@/components/orders/RejectFollowUpHost';
+import { rejectReasonNeedsFollowUp } from '@/lib/merchantCancellationReasons';
 import { OrderCancellationBanner } from '@/components/orders/OrderCancellationBanner';
 import { OrderOtpSection } from '@/components/orders/OrderOtpSection';
 import { resolveOrderOtps, type CachedOrderOtps } from '@/lib/orderOtps';
@@ -82,8 +84,10 @@ import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverR
 import {
   isPrepCountdownExpired,
   prepReadyCountdownLabel,
+  canUseNeedMoreTime,
 } from '@/lib/order-prep-time';
-import { isActiveMerchantFoodOrderStatus } from '@/lib/merchantActiveOrders';
+import { isActiveMerchantFoodOrderStatus, canMerchantMarkDelivered } from '@/lib/merchantActiveOrders';
+import { countLiveSidebarPipelineOrders } from '@/lib/foodOrdersLivePipeline';
 
 // orders_food_status enum: CREATED, ACCEPTED, PREPARING, READY_FOR_PICKUP, OUT_FOR_DELIVERY, DELIVERED, RTO, CANCELLED
 const STATUS_LABEL: Record<string, string> = {
@@ -233,6 +237,7 @@ function OrdersPageContent() {
   const [selectedOrder, setSelectedOrder] = useState<OrdersFoodRow | null>(null);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [rejectModal, setRejectModal] = useState<OrdersFoodRow | null>(null);
+  const { followUp, beginFollowUp, dismissFollowUp, setFollowUp } = useRejectFollowUp();
   const [dispatchModal, setDispatchModal] = useState<OrdersFoodRow | null>(null);
   const [rtoModalOrder, setRtoModalOrder] = useState<OrdersFoodRow | null>(null);
   const [ridersLogModalOrderId, setRidersLogModalOrderId] = useState<number | null>(null);
@@ -1134,14 +1139,20 @@ function OrdersPageContent() {
           error?: string;
           prep_ready_by_at?: string;
           prep_delay_minutes?: number;
+          prep_delay_use_count?: number;
         };
         if (!res.ok) {
-          toast.error(payload.error || 'Could not extend preparation time');
+          toast.error(
+            payload.error === 'prep_delay_limit_reached'
+              ? 'Need more time limit reached for this order'
+              : payload.error || 'Could not extend preparation time'
+          );
           return false;
         }
         const patch = {
           prep_ready_by_at: payload.prep_ready_by_at ?? order.prep_ready_by_at,
           prep_delay_minutes: payload.prep_delay_minutes ?? order.prep_delay_minutes,
+          prep_delay_use_count: payload.prep_delay_use_count ?? order.prep_delay_use_count,
         };
         setOrders((prev) =>
           prev.map((o) => (o.id === order.id ? { ...o, ...patch } : o))
@@ -1300,6 +1311,12 @@ function OrdersPageContent() {
     RTO: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'RTO')).length,
   };
 
+  /** Matches sum of live tab counts (New + Preparing + Ready + Picked up + RTO). */
+  const liveActiveCount = useMemo(
+    () => countLiveSidebarPipelineOrders(orders),
+    [orders]
+  );
+
   const foodOrdersEmptyVariant = useMemo(() => {
     if (filteredOrders.length > 0 && displayOrders.length === 0) return 'search' as const;
     if (
@@ -1433,7 +1450,8 @@ function OrdersPageContent() {
                     />
                     <StatBadge
                       label="Active"
-                      value={String(stats.activeOrders ?? stats.ordersTodayActive ?? 0)}
+                      value={String(orders.length > 0 ? liveActiveCount : (stats.activeOrders ?? 0))}
+                      title="Pending live orders (New + Preparing + Ready + Picked up + RTO)"
                       accent
                     />
                   </div>
@@ -1906,10 +1924,30 @@ function OrdersPageContent() {
         loading={rejectModal != null && actionLoading === rejectModal.id}
         onClose={() => setRejectModal(null)}
         onConfirm={async (reason) => {
-          if (!rejectModal) return;
-          await updateStatus(rejectModal, 'CANCELLED', { rejected_reason: reason });
+          if (!rejectModal || !storeId) return;
+          const snap = rejectModal;
+          if (rejectReasonNeedsFollowUp(reason)) {
+            setRejectModal(null);
+            const items = (Array.isArray(snap.items) ? snap.items : []) as NormalizedOrderLineItem[];
+            beginFollowUp(reason, {
+              storeId,
+              storeName: store?.store_name ?? storeId,
+              lineItems: items,
+              finalizeReject: () =>
+                updateStatus(snap, 'CANCELLED', { rejected_reason: reason }),
+            });
+            return;
+          }
+          await updateStatus(snap, 'CANCELLED', { rejected_reason: reason });
           setRejectModal(null);
         }}
+      />
+
+      <RejectFollowUpHost
+        followUp={followUp}
+        storeId={storeId ?? ''}
+        onDismiss={dismissFollowUp}
+        setFollowUp={setFollowUp}
       />
 
       {/* Dispatch modal – warning only; no OTP. Portaled so sidebar blurs. */}
@@ -3373,7 +3411,15 @@ function ActionBtns({
     const prepExpired =
       nowMs != null &&
       (isPrepCountdownExpired(order, nowMs) || !prepCountdown.label.includes('('));
-    const showNeedMore = prepExpired && onNeedMoreTime && !compact;
+    const showNeedMore =
+      prepExpired &&
+      onNeedMoreTime &&
+      !compact &&
+      canUseNeedMoreTime(
+        order.prep_delay_use_count,
+        Boolean(order.is_bulk_order),
+        order.prep_delay_minutes
+      );
     const prepBtnPair =
       'w-full min-h-[44px] rounded-xl px-3 py-2.5 text-sm font-semibold';
     return (
@@ -3421,15 +3467,24 @@ function ActionBtns({
     );
   }
   if (status === 'OUT_FOR_DELIVERY') {
+    const showMerchantComplete = canMerchantMarkDelivered(order);
     return (
-      <div className={`flex gap-2 items-center ${topRightLayout ? 'w-full' : 'flex-wrap'}`}>
-        <button
-          onClick={(e) => { e.stopPropagation(); onComplete(); }}
-          disabled={dis}
-          className={`${btnBase} ${topRightLayout ? 'w-full px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-green-600 text-white hover:bg-green-700 hover:shadow-md border-green-700/20`}
-        >
-          Complete
-        </button>
+      <div className={`flex flex-col gap-2 ${topRightLayout ? 'w-full' : ''}`}>
+        {showMerchantComplete ? (
+          <button
+            onClick={(e) => { e.stopPropagation(); onComplete(); }}
+            disabled={dis}
+            className={`${btnBase} ${topRightLayout ? 'w-full px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-green-600 text-white hover:bg-green-700 hover:shadow-md border-green-700/20`}
+          >
+            Mark delivered
+          </button>
+        ) : (
+          <p
+            className={`text-center text-sm font-medium text-gray-600 ${topRightLayout ? 'w-full py-2' : 'px-2 py-1'}`}
+          >
+            Rider will complete delivery
+          </p>
+        )}
         <RtoMenu />
       </div>
     );

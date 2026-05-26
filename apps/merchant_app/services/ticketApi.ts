@@ -336,7 +336,7 @@ function normalizeMerchantHelpSection(raw: Record<string, unknown>): MerchantHel
   };
 }
 
-/** Contact Us / help hub rows from ticket_titles (merchant_section_id). */
+/** Fetch merchant help hub rows from ticket_titles (Contact Us). */
 export async function fetchMerchantHelpSections(token: string): Promise<MerchantHelpSection[]> {
   const res = await authFetch(`${getBase()}/v1/merchant-partner/merchant-help-sections`, token);
   const body = await readApiBody(res);
@@ -350,6 +350,20 @@ export async function fetchMerchantHelpSections(token: string): Promise<Merchant
     .filter((x): x is MerchantHelpSection => x != null);
 }
 
+/** Live order support topics — ticket_titles under GRP_MERCHANT_ORDER (admin Help topics tree). */
+export async function fetchLiveOrderSupportTopics(token: string): Promise<MerchantHelpSection[]> {
+  const res = await authFetch(`${getBase()}/v1/merchant-partner/live-order-support-topics`, token);
+  const body = await readApiBody(res);
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(body, res.statusText || "Failed to load live order support topics"));
+  }
+  const data = body as { ok?: boolean; topics?: unknown[] };
+  const list = Array.isArray(data.topics) ? data.topics : [];
+  return list
+    .map((x) => (x && typeof x === "object" ? normalizeMerchantHelpSection(x as Record<string, unknown>) : null))
+    .filter((x): x is MerchantHelpSection => x != null);
+}
+
 export async function createStoreTicket(
   storeId: number,
   sectionCode: string,
@@ -358,6 +372,8 @@ export async function createStoreTicket(
     subject?: string;
     description?: string;
     orderId?: number | null;
+    ordersFoodId?: number | null;
+    formattedOrderId?: string | null;
     /** Disambiguates multiple help rows that share the same `merchant_section_id`. */
     ticketTitleId?: number;
   }
@@ -369,6 +385,8 @@ export async function createStoreTicket(
     subject: opts?.subject,
     description: opts?.description,
     order_id: opts?.orderId ?? null,
+    orders_food_id: opts?.ordersFoodId ?? null,
+    formatted_order_id: opts?.formattedOrderId ?? null,
   };
   ticketDebugLog("createStoreTicket:start", {
     url,

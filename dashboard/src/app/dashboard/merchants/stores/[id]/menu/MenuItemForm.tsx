@@ -225,6 +225,9 @@ export function MenuItemForm({
     rows: { id: number; parentName: string; subName: string | null }[];
   };
 
+  const categoryIdsMatch = (a: number | null | undefined, b: number | null | undefined) =>
+    a != null && b != null && Number(a) === Number(b);
+
   const categorySections = useMemo((): CategorySection[] => {
     const sortKids = (a: MenuCategory, b: MenuCategory) =>
       (a.display_order ?? 0) - (b.display_order ?? 0) || a.id - b.id;
@@ -270,7 +273,7 @@ export function MenuItemForm({
             sectionMap.set(Number(cat.id), {
               key: `p-${cat.id}`,
               title: cat.category_name,
-              rows: [],
+              rows: [{ id: Number(cat.id), parentName: cat.category_name, subName: null }],
             });
             sectionOrder.set(Number(cat.id), cat.display_order ?? 0);
           }
@@ -341,10 +344,10 @@ export function MenuItemForm({
 
   const categoryButtonLabel = useMemo(() => {
     if (formData.category_id == null) return "Select category";
-    const cat = categories.find((c) => c.id === formData.category_id);
+    const cat = categories.find((c) => categoryIdsMatch(c.id, formData.category_id));
     if (!cat) return "Select category";
     const parent = cat.parent_category_id
-      ? categories.find((c) => c.id === cat.parent_category_id)
+      ? categories.find((c) => categoryIdsMatch(c.id, cat.parent_category_id))
       : null;
     return parent ? `${parent.category_name} (${cat.category_name})` : cat.category_name;
   }, [formData.category_id, categories]);
@@ -382,6 +385,9 @@ export function MenuItemForm({
         : Array.from(new Set([...selectedCuisines, cuisine]));
     setFormData({ ...formData, cuisine_type: next.length ? next.join(", ") : "" });
   };
+
+  /** Prefer live preview (blob/new upload); fall back to stored URL on form data. */
+  const resolvedImagePreview = (imagePreview || formData.item_image_url || "").trim();
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     e.preventDefault();
@@ -771,9 +777,9 @@ export function MenuItemForm({
                                 key={row.id}
                                 type="button"
                                 role="option"
-                                aria-selected={formData.category_id === row.id}
+                                aria-selected={categoryIdsMatch(formData.category_id, row.id)}
                                 className={`w-full text-left px-3 py-3 text-sm flex items-center justify-between gap-2 transition-colors border-b border-gray-100 ${
-                                  formData.category_id === row.id
+                                  categoryIdsMatch(formData.category_id, row.id)
                                     ? "bg-gray-50 text-gray-900"
                                     : "text-gray-900 hover:bg-gray-50"
                                 }`}
@@ -961,11 +967,11 @@ export function MenuItemForm({
                   </div>
                 ) : imageLimitReached ? (
                   <div className="w-20 rounded-lg bg-gray-100 border border-red-200 flex flex-col items-center justify-center text-gray-600 text-xs px-1 text-center py-2">
-                    {imagePreview ? (
-                      imagePreview.startsWith("blob:") || imagePreview.startsWith("data:") ? (
-                        <img src={imagePreview} alt="" className="w-16 h-16 object-cover rounded" />
+                    {resolvedImagePreview ? (
+                      resolvedImagePreview.startsWith("blob:") || resolvedImagePreview.startsWith("data:") ? (
+                        <img src={resolvedImagePreview} alt="" className="w-16 h-16 object-cover rounded" />
                       ) : (
-                        <R2Image src={imagePreview} alt="" className="w-16 h-16 object-cover rounded" />
+                        <R2Image src={resolvedImagePreview} alt="" className="w-16 h-16 object-cover rounded" />
                       )
                     ) : (
                       <ImageIcon size={20} className="text-gray-400 mb-0.5" />
@@ -998,11 +1004,11 @@ export function MenuItemForm({
                       <div className="w-16 h-16 flex items-center justify-center relative">
                         {imageValidating ? (
                           <span className="inline-block w-6 h-6 border-2 border-orange-400 border-t-transparent rounded-full animate-spin" aria-hidden />
-                        ) : imagePreview ? (
-                          imagePreview.startsWith("blob:") || imagePreview.startsWith("data:") ? (
-                            <img src={imagePreview} alt="" className="w-full h-full object-cover" />
+                        ) : resolvedImagePreview ? (
+                          resolvedImagePreview.startsWith("blob:") || resolvedImagePreview.startsWith("data:") ? (
+                            <img src={resolvedImagePreview} alt="" className="w-full h-full object-cover" />
                           ) : (
-                            <R2Image src={imagePreview} alt="" className="w-full h-full object-cover" />
+                            <R2Image src={resolvedImagePreview} alt="" className="w-full h-full object-cover" />
                           )
                         ) : (
                           <ImageIcon size={20} className="text-gray-400" />

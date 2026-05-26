@@ -29,9 +29,28 @@ function trimUrl(v: unknown): string | null {
   return t === "" ? null : t;
 }
 
+/** Stored DB paths are `/api/attachments/proxy?key=...` — mobile clients need absolute backend URLs. */
+function toAbsoluteAttachmentUrl(stored: string | null): string | null {
+  if (!stored) return null;
+  let path = stored.trim();
+  if (path.startsWith("http://") || path.startsWith("https://")) return path;
+  if (path.startsWith("/api/attachments/proxy")) {
+    path = `/v1/attachments/proxy${path.slice("/api/attachments/proxy".length)}`;
+  } else if (!path.startsWith("/v1/attachments/proxy") && !path.startsWith("/")) {
+    path = `/v1/attachments/proxy?key=${encodeURIComponent(path)}`;
+  }
+  const base = (process.env.API_BASE_URL || process.env.PUBLIC_API_BASE_URL || "").replace(/\/+$/, "");
+  if (!base) return path;
+  return `${base}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 function slotsFromRow(row: Record<string, unknown> | undefined): [string | null, string | null, string | null] {
   if (!row) return [null, null, null];
-  return [trimUrl(row.alert_sound_url), trimUrl(row.alert_sound_url_2), trimUrl(row.alert_sound_url_3)];
+  return [
+    toAbsoluteAttachmentUrl(trimUrl(row.alert_sound_url)),
+    toAbsoluteAttachmentUrl(trimUrl(row.alert_sound_url_2)),
+    toAbsoluteAttachmentUrl(trimUrl(row.alert_sound_url_3)),
+  ];
 }
 
 function resolveEffectiveUrl(slots: [string | null, string | null, string | null], choice: number) {
@@ -121,4 +140,50 @@ export async function loadMerchantOrderAcceptanceSettings(
     alert_sound_urls_by_slot: slots,
     alert_sound_slot_choice: choice,
   };
+}
+
+const PLATFORM_FOOD_ALERT_SOUND_SLOT_META_KEY = "platform_food_alert_sound_slot";
+
+/** Persist merchant's chosen alert sound slot (0–2) for this store. */
+export async function patchMerchantOrderAcceptanceSoundSlot(
+  sql: Sql,
+  merchantStoreId: number,
+  slot: number
+): Promise<{ ok: true; alert_sound_slot_choice: number }> {
+  const c = Math.max(0, Math.min(2, Math.floor(slot)));
+  const settings = await loadMerchantOrderAcceptanceSettings(sql, merchantStoreId);
+  if (!settings.alert_sound_urls_by_slot[c]) {
+    throw new Error("empty_sound_slot");
+  }
+
+  const existing = await sql`
+    SELECT id, settings_metadata
+    FROM merchant_store_settings
+    WHERE store_id = ${merchantStoreId}
+    LIMIT 1
+  `;
+  const currentMeta =
+    existing[0]?.settings_metadata && typeof existing[0].settings_metadata === "object"
+      ? (existing[0].settings_metadata as Record<string, unknown>)
+      : {};
+  const nextMeta = {
+    ...currentMeta,
+    [PLATFORM_FOOD_ALERT_SOUND_SLOT_META_KEY]: c,
+  };
+  const metaJson = JSON.stringify(nextMeta);
+
+  if (existing[0]?.id != null) {
+    await sql`
+      UPDATE merchant_store_settings
+      SET settings_metadata = ${metaJson}::jsonb, updated_at = NOW()
+      WHERE store_id = ${merchantStoreId}
+    `;
+  } else {
+    await sql`
+      INSERT INTO merchant_store_settings (store_id, settings_metadata, updated_at)
+      VALUES (${merchantStoreId}, ${metaJson}::jsonb, NOW())
+    `;
+  }
+
+  return { ok: true, alert_sound_slot_choice: c };
 }

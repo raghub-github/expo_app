@@ -25,6 +25,7 @@ import {
   isPrepCountdownExpired,
   prepReadyCountdownLabel,
 } from '@/lib/order-prep-time';
+import { canMerchantMarkDelivered } from '@/lib/merchantActiveOrders';
 
 function vegDot(veg?: string | null) {
   const v = String(veg || '').toLowerCase();
@@ -336,18 +337,24 @@ export function MerchantOrderPipelineCard({
             </div>
           )}
 
-          {isPickedUp && onComplete && (
-            <button
-              type="button"
-              disabled={loading}
-              onClick={(e) => {
-                e.stopPropagation();
-                onComplete();
-              }}
-              className="mt-4 w-full rounded-lg bg-green-600 py-2.5 text-sm font-bold text-white hover:bg-green-700 disabled:opacity-50"
-            >
-              Mark delivered
-            </button>
+          {isPickedUp && (
+            canMerchantMarkDelivered(order) && onComplete ? (
+              <button
+                type="button"
+                disabled={loading}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onComplete();
+                }}
+                className="mt-4 w-full rounded-lg bg-green-600 py-2.5 text-sm font-bold text-white hover:bg-green-700 disabled:opacity-50"
+              >
+                Mark delivered
+              </button>
+            ) : (
+              <p className="mt-4 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-center text-sm font-medium text-gray-600">
+                Rider will complete delivery
+              </p>
+            )
           )}
 
           {isRto && (

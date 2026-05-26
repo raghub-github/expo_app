@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -8,9 +8,11 @@ import {
   Text,
   View,
   PanResponder,
+  Pressable,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { useQueryClient } from "@tanstack/react-query";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
@@ -19,6 +21,14 @@ import {
   updateCommunicationSettings,
   type CommunicationSettings,
 } from "@/services/storeSettingsApi";
+import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
+import { useDeviceOrderAlerts } from "@/hooks/useDeviceOrderAlerts";
+import {
+  buildNotificationSoundOptions,
+  resolveSelectedSoundSlot,
+} from "@/lib/notificationSoundOptions";
+import { patchOrderAcceptanceSoundSlot } from "@/services/orderAcceptanceApi";
+import { previewOrderAlertSound } from "@/lib/playOrderAlertSound";
 
 /** Offset from top of content area; use with insets so effective padding is never negative. */
 const CONTENT_TOP_OFFSET = -20;
@@ -48,16 +58,105 @@ export default function ManageCommunicationsScreen() {
   const insets = useSafeAreaInsets();
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
+  const queryClient = useQueryClient();
+  const storeId = selectedStore?.id ?? null;
 
   const [settings, setSettings] = useState<CommState>(DEFAULT_STATE);
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState<string | null>(null);
-   // Separate UI state for smooth slider, synced to settings on load/save.
+  const [soundSaving, setSoundSaving] = useState(false);
+  const [soundPreviewing, setSoundPreviewing] = useState(false);
+  const { settings: acceptanceSettings } = useOrderAcceptanceSettings();
+  const { deviceAlerts, update: updateDeviceAlerts } = useDeviceOrderAlerts(storeId);
   const [ringVolumePercent, setRingVolumePercent] = useState<number>(
     Math.round(DEFAULT_STATE.order_notifications.ring_volume * 100)
   );
 
-  const storeId = selectedStore?.id ?? null;
+  const notificationSoundOptions = useMemo(
+    () => buildNotificationSoundOptions(acceptanceSettings.alert_sound_urls_by_slot ?? [null, null, null]),
+    [acceptanceSettings.alert_sound_urls_by_slot]
+  );
+
+  const selectedSoundSlot = useMemo(() => {
+    const deviceChoice = deviceAlerts?.alertSoundSlot ?? acceptanceSettings.alert_sound_slot_choice ?? 0;
+    return resolveSelectedSoundSlot(notificationSoundOptions, deviceChoice);
+  }, [
+    acceptanceSettings.alert_sound_slot_choice,
+    deviceAlerts?.alertSoundSlot,
+    notificationSoundOptions,
+  ]);
+
+  const handleSelectNotificationSound = useCallback(
+    async (slot: number) => {
+      if (!storeId || !token || soundSaving) return;
+      setSoundSaving(true);
+      try {
+        await patchOrderAcceptanceSoundSlot(storeId, token, slot);
+        await updateDeviceAlerts({ alertSoundSlot: slot });
+        await queryClient.invalidateQueries({ queryKey: ["orderAcceptanceSettings", storeId] });
+        const volume01 = Math.min(
+          1,
+          Math.max(0, settings.order_notifications.ring_volume ?? ringVolumePercent / 100)
+        );
+        await previewOrderAlertSound({
+          settings: acceptanceSettings,
+          selectedSlot: slot,
+          volume01,
+        });
+      } catch (e) {
+        Alert.alert(
+          "Could not update sound",
+          e instanceof Error ? e.message : "Failed to update notification sound"
+        );
+      } finally {
+        setSoundSaving(false);
+      }
+    },
+    [
+      storeId,
+      token,
+      soundSaving,
+      updateDeviceAlerts,
+      queryClient,
+      settings.order_notifications.ring_volume,
+      ringVolumePercent,
+      acceptanceSettings,
+    ]
+  );
+
+  const handlePreviewNotificationSound = useCallback(
+    async (slotOverride?: number) => {
+      if (soundPreviewing) return;
+      setSoundPreviewing(true);
+      try {
+        const volume01 = Math.min(
+          1,
+          Math.max(0, settings.order_notifications.ring_volume ?? ringVolumePercent / 100)
+        );
+        const slot = slotOverride ?? selectedSoundSlot;
+        const played = await previewOrderAlertSound({
+          settings: acceptanceSettings,
+          selectedSlot: slot,
+          volume01,
+        });
+        if (!played) {
+          Alert.alert(
+            "Could not play sound",
+            "Check your device media volume and try again."
+          );
+        }
+      } finally {
+        setSoundPreviewing(false);
+      }
+    },
+    [
+      acceptanceSettings,
+      selectedSoundSlot,
+      settings.order_notifications.ring_volume,
+      ringVolumePercent,
+      soundPreviewing,
+    ]
+  );
 
   const load = useCallback(async () => {
     if (!token || !storeId) {
@@ -115,6 +214,21 @@ export default function ManageCommunicationsScreen() {
     const order_notifications = { ...settings.order_notifications, ...patch };
     if (typeof order_notifications.ring_volume === "number") {
       setRingVolumePercent(Math.round(order_notifications.ring_volume * 100));
+    }
+    if (storeId) {
+      const devicePatch: Partial<{ volumeStep: number; ringInSilent: boolean }> = {};
+      if (typeof order_notifications.ring_volume === "number") {
+        devicePatch.volumeStep = Math.max(
+          0,
+          Math.min(10, Math.round(order_notifications.ring_volume * 10))
+        );
+      }
+      if (typeof order_notifications.ring_in_silent === "boolean") {
+        devicePatch.ringInSilent = order_notifications.ring_in_silent;
+      }
+      if (Object.keys(devicePatch).length > 0) {
+        void updateDeviceAlerts(devicePatch);
+      }
     }
     void save({ order_notifications } as Partial<CommState>, `order.${key}`);
   };
@@ -356,6 +470,104 @@ export default function ManageCommunicationsScreen() {
           </View>
         </View>
 
+        {/* Incoming order alert sound — platform uploads + per-store choice */}
+        <Text style={styles.sectionLabel}>Order alert sound</Text>
+        <View style={styles.card}>
+          <View style={styles.rowToggle}>
+            <View style={styles.rowLabelWrap}>
+              <Ionicons
+                name="musical-notes-outline"
+                size={18}
+                color={GatiMitraMerchant.primary}
+                style={styles.rowIcon}
+              />
+              <Text style={styles.rowLabelStrong}>Sound alerts on this device</Text>
+            </View>
+            <Switch
+              value={deviceAlerts?.soundAlertsEnabled !== false}
+              onValueChange={(v) => void updateDeviceAlerts({ soundAlertsEnabled: v })}
+              trackColor={{ false: "#4B5563", true: GatiMitraMerchant.primary }}
+              thumbColor={deviceAlerts?.soundAlertsEnabled !== false ? "#FFFFFF" : "#F9FAFB"}
+              disabled={!storeId}
+            />
+          </View>
+          <Text style={styles.sectionHint}>
+            Plays when a new order arrives and the incoming order sheet opens.
+          </Text>
+
+          {notificationSoundOptions.length === 0 ? (
+            <Text style={[styles.sectionHint, { marginTop: 10 }]}>
+              No alert sounds configured yet. Ask admin to upload notification sounds for your store type.
+            </Text>
+          ) : (
+            <>
+              <Text style={[styles.rowLabelStrong, { marginTop: 14, marginBottom: 8 }]}>
+                Select notification sound
+              </Text>
+              {notificationSoundOptions.map((opt) => {
+                const active = selectedSoundSlot === opt.slot;
+                return (
+                  <View
+                    key={opt.slot}
+                    style={[styles.soundOptionRow, active && styles.soundOptionRowActive]}
+                  >
+                    <Pressable
+                      onPress={() => void handleSelectNotificationSound(opt.slot)}
+                      disabled={!storeId || soundSaving}
+                      style={({ pressed }) => [
+                        styles.soundOptionMain,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Ionicons
+                        name={active ? "radio-button-on" : "radio-button-off"}
+                        size={20}
+                        color={active ? GatiMitraMerchant.primary : GatiMitraMerchant.textTertiary}
+                      />
+                      <Text style={[styles.soundOptionLabel, active && styles.soundOptionLabelActive]}>
+                        {opt.label}
+                      </Text>
+                      {soundSaving && active ? (
+                        <ActivityIndicator size="small" color={GatiMitraMerchant.primary} />
+                      ) : null}
+                    </Pressable>
+                    <Pressable
+                      onPress={() => void handlePreviewNotificationSound(opt.slot)}
+                      disabled={!storeId || soundPreviewing || deviceAlerts?.soundAlertsEnabled === false}
+                      hitSlop={8}
+                      style={({ pressed }) => [styles.soundOptionPlay, pressed && styles.pressed]}
+                    >
+                      <Ionicons
+                        name="play-circle-outline"
+                        size={22}
+                        color={
+                          deviceAlerts?.soundAlertsEnabled === false
+                            ? GatiMitraMerchant.textTertiary
+                            : GatiMitraMerchant.primary
+                        }
+                      />
+                    </Pressable>
+                  </View>
+                );
+              })}
+              <Pressable
+                onPress={() => void handlePreviewNotificationSound()}
+                disabled={!storeId || soundPreviewing || deviceAlerts?.soundAlertsEnabled === false}
+                style={({ pressed }) => [
+                  styles.previewBtn,
+                  pressed && styles.pressed,
+                  (soundPreviewing || deviceAlerts?.soundAlertsEnabled === false) && styles.previewBtnDisabled,
+                ]}
+              >
+                <Ionicons name="play-circle-outline" size={18} color={GatiMitraMerchant.primary} />
+                <Text style={styles.previewBtnText}>
+                  {soundPreviewing ? "Playing…" : "Preview selected sound"}
+                </Text>
+              </Pressable>
+            </>
+          )}
+        </View>
+
         {/* Other notifications */}
         <View style={styles.card}>
           <View style={styles.rowToggle}>
@@ -565,6 +777,65 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textPrimary,
     fontSize: 16,
     fontWeight: "600",
+  },
+  soundOptionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 4,
+    paddingLeft: 10,
+    paddingRight: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    marginBottom: 8,
+    backgroundColor: "#FFFFFF",
+  },
+  soundOptionMain: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 6,
+  },
+  soundOptionPlay: {
+    padding: 4,
+  },
+  soundOptionRowActive: {
+    borderColor: GatiMitraMerchant.primary,
+    backgroundColor: "#ECFDF5",
+  },
+  soundOptionLabel: {
+    flex: 1,
+    fontSize: 13,
+    color: GatiMitraMerchant.textPrimary,
+  },
+  soundOptionLabelActive: {
+    fontWeight: "700",
+    color: GatiMitraMerchant.primaryDark,
+  },
+  previewBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginTop: 4,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.primary,
+    backgroundColor: "#F0FDF4",
+  },
+  previewBtnDisabled: {
+    opacity: 0.5,
+  },
+  previewBtnText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: GatiMitraMerchant.primaryDark,
+  },
+  pressed: {
+    opacity: 0.75,
   },
 });
 

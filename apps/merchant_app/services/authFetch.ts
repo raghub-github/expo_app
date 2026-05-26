@@ -31,20 +31,6 @@ export async function authFetch(
     }
   }
 
-  if (__DEV__) {
-    try {
-      const b = normalizedBody as any;
-      const type = b == null ? "null" : Object.prototype.toString.call(b);
-      if (type === "[object Date]") {
-        // eslint-disable-next-line no-console
-        console.warn("[authFetch] body is Date, normalizing", { url });
-        normalizedBody = new Date(b as any).toISOString();
-      }
-    } catch {
-      // ignore
-    }
-  }
-
   const shouldSetJsonContentType =
     normalizedBody != null &&
     // If caller passes FormData, let fetch set the correct multipart boundary.
@@ -70,22 +56,6 @@ export async function authFetch(
         ...(opts.headers || {}),
       },
     };
-
-    if (__DEV__) {
-      try {
-        const b = (finalOpts as any).body;
-        const type = b == null ? "null" : Object.prototype.toString.call(b);
-        // eslint-disable-next-line no-console
-        console.log("[authFetch] request", {
-          url,
-          method: (finalOpts.method as string) ?? "GET",
-          bodyType: type,
-          bodyPreview: typeof b === "string" ? b.slice(0, 180) : undefined,
-        });
-      } catch {
-        // ignore
-      }
-    }
 
     res = await fetch(url, finalOpts);
   } catch (e) {

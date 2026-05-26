@@ -442,6 +442,51 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       });
 
+      /** GET /merchant-partner/live-order-support-topics — order-issue topics for live order support sheet (GRP_MERCHANT_ORDER). */
+      protectedApp.get("/live-order-support-topics", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const sql = getSql();
+        try {
+          const rows = await sql.unsafe(`
+            SELECT
+              tt.id AS ticket_title_id,
+              tt.merchant_section_id AS section_id,
+              tt.title_text AS title,
+              tt.subtext AS subtitle,
+              tt.default_quick_options AS quick_options,
+              tt.display_order,
+              tt.merchant_help_icon_name AS help_hub_icon
+            FROM ticket_titles tt
+            INNER JOIN ticket_groups tg ON tg.id = tt.group_id
+            WHERE tg.group_code = 'GRP_MERCHANT_ORDER'
+              AND tg.is_active = TRUE
+              AND tt.is_active = TRUE
+              AND tt.ticket_section::text = 'merchant'
+              AND tt.merchant_section_id IS NOT NULL
+              AND TRIM(tt.merchant_section_id::text) <> ''
+              AND NOT EXISTS (
+                WITH RECURSIVE title_ancestors AS (
+                  SELECT id, parent_title_id, is_active
+                  FROM ticket_titles
+                  WHERE id = tt.parent_title_id
+                  UNION ALL
+                  SELECT p.id, p.parent_title_id, p.is_active
+                  FROM ticket_titles p
+                  INNER JOIN title_ancestors a ON p.id = a.parent_title_id
+                  WHERE a.parent_title_id IS NOT NULL
+                )
+                SELECT 1 FROM title_ancestors WHERE is_active = FALSE LIMIT 1
+              )
+            ORDER BY tt.display_order ASC NULLS LAST, tt.title_text ASC
+          `);
+          return reply.send({ ok: true, topics: rows });
+        } catch {
+          return reply.send({ ok: true, topics: [] });
+        }
+      });
+
       /** GET /merchant-partner/stores/:storeId — outlet info for partner app. */
       protectedApp.get<{ Params: { storeId: string } }>("/stores/:storeId", async (req, reply) => {
         if (req.auth?.role !== "merchant" || !req.auth?.sub) {
@@ -5816,6 +5861,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           subject?: string;
           description?: string;
           order_id?: number | null;
+          orders_food_id?: number | null;
+          formatted_order_id?: string | null;
         };
       }>("/stores/:storeId/tickets", async (req, reply) => {
         if (req.auth?.role !== "merchant" || !req.auth?.sub) {
@@ -5835,6 +5882,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           subject?: string;
           description?: string;
           order_id?: number | null;
+          orders_food_id?: number | null;
+          formatted_order_id?: string | null;
         };
         const rawTid = body.ticket_title_id;
         const ticketTitleIdFromBody =
@@ -6071,18 +6120,32 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
 
         const mapped = mapSection(sectionCode);
 
+        const rawOrderId = body.order_id as unknown;
+        const orderIdForInsert =
+          rawOrderId == null
+            ? null
+            : typeof rawOrderId === "number" && Number.isInteger(rawOrderId) && rawOrderId > 0
+              ? rawOrderId
+              : typeof rawOrderId === "string" && /^\d+$/.test(rawOrderId.trim())
+                ? Number(rawOrderId.trim())
+                : null;
+
         /** unified_tickets.ticket_title is text (migration 0201); use catalog intake or section default. */
         const rawIntakeTitle = String(helpRow?.intake_unified_title ?? "").trim();
         const ticketTitle = rawIntakeTitle || mapped.title;
         const ticketTitleForInsert = await resolveTicketTitleForUnifiedTicketsInsert(sql, ticketTitle);
         const ticketCategory = normalizeUnifiedCategory(String(helpRow?.intake_unified_category || mapped.category));
-        const priority = normalizeUnifiedPriority(String(helpRow?.intake_unified_priority || mapped.priority));
-        const serviceType = normalizeUnifiedServiceType(String(helpRow?.intake_unified_service_type || "GENERAL"));
+        let priority = normalizeUnifiedPriority(String(helpRow?.intake_unified_priority || mapped.priority));
+        if (orderIdForInsert != null) {
+          priority = "HIGH";
+        }
+        const serviceType = normalizeUnifiedServiceType(
+          orderIdForInsert != null
+            ? String(helpRow?.intake_unified_service_type || "FOOD")
+            : String(helpRow?.intake_unified_service_type || "GENERAL")
+        );
 
-        const ticketType =
-          body.order_id != null && Number.isInteger(Number(body.order_id))
-            ? "ORDER_RELATED"
-            : "NON_ORDER_RELATED";
+        const ticketType = orderIdForInsert != null ? "ORDER_RELATED" : "NON_ORDER_RELATED";
 
         const titleForSubjectFallback = ticketTitle;
         const subject =
@@ -6121,6 +6184,21 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             ticket_title_id: helpRow?.id ?? null,
             ticket_title_row_code: helpRow ? ticketTitle : null,
           },
+          ...(orderIdForInsert != null
+            ? {
+                live_order_support: true,
+                formatted_order_id:
+                  body.formatted_order_id != null && String(body.formatted_order_id).trim()
+                    ? String(body.formatted_order_id).trim()
+                    : null,
+                orders_food_id:
+                  body.orders_food_id != null &&
+                  Number.isInteger(Number(body.orders_food_id)) &&
+                  Number(body.orders_food_id) > 0
+                    ? Number(body.orders_food_id)
+                    : null,
+              }
+            : {}),
         };
         /** Avoid sql.json / sql.array here: some postgres.js paths pass internal Objects into Buffer.byteLength (ERR_INVALID_ARG_TYPE). */
         const metadataJson = JSON.stringify(metadataPayload);
@@ -6133,16 +6211,6 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                   return `"${t.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
                 })
                 .join(",")}}`;
-
-        const rawOrderId = body.order_id as unknown;
-        const orderIdForInsert =
-          rawOrderId == null
-            ? null
-            : typeof rawOrderId === "number" && Number.isInteger(rawOrderId) && rawOrderId > 0
-              ? rawOrderId
-              : typeof rawOrderId === "string" && /^\d+$/.test(rawOrderId.trim())
-                ? Number(rawOrderId.trim())
-                : null;
 
         const slugHeaderRaw = req.headers["x-merchant-app-slug"];
         const slugHeader = Array.isArray(slugHeaderRaw) ? slugHeaderRaw[0] : slugHeaderRaw;
@@ -6813,6 +6881,55 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
+      /** PATCH /merchant-partner/stores/:storeId/order-acceptance-settings — pick alert sound slot (0–2). */
+      protectedApp.patch<{
+        Params: { storeId: string };
+        Body: { platform_food_alert_sound_slot?: number };
+      }>(
+        "/stores/:storeId/order-acceptance-settings",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const slotRaw = (req.body as { platform_food_alert_sound_slot?: unknown })
+            ?.platform_food_alert_sound_slot;
+          const slot =
+            typeof slotRaw === "number"
+              ? slotRaw
+              : typeof slotRaw === "string"
+                ? parseInt(slotRaw, 10)
+                : NaN;
+          if (!Number.isInteger(slot) || slot < 0 || slot > 2) {
+            return reply.code(400).send({ error: "platform_food_alert_sound_slot must be 0, 1, or 2" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          try {
+            const { patchMerchantOrderAcceptanceSoundSlot } = await import(
+              "../../lib/merchant-order-acceptance-settings.js"
+            );
+            const out = await patchMerchantOrderAcceptanceSoundSlot(sql, storeId, slot);
+            return reply.send(out);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "update_failed";
+            if (msg === "empty_sound_slot") {
+              return reply.code(400).send({ error: "That notification sound slot is empty." });
+            }
+            return reply.code(500).send({ error: msg });
+          }
+        }
+      );
+
       /** GET /merchant-partner/stores/:storeId/food-orders — partner food orders (same pipeline as Partner Site). */
       protectedApp.get<{ Params: { storeId: string }; Querystring: { limit?: string } }>(
         "/stores/:storeId/food-orders",
@@ -7024,6 +7141,64 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             if (msg === "store_mismatch") return reply.code(403).send({ error: msg });
             if (msg.startsWith("invalid_transition:")) {
               return reply.code(400).send({ error: msg.replace("invalid_transition:", "Invalid transition: ") });
+            }
+            return reply.code(500).send({ error: msg });
+          }
+        }
+      );
+
+      /** POST /merchant-partner/stores/:storeId/food-orders/:orderId/prep-delay */
+      protectedApp.post<{
+        Params: { storeId: string; orderId: string };
+        Body: { additional_minutes?: number };
+      }>(
+        "/stores/:storeId/food-orders/:orderId/prep-delay",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          const ordersFoodId = parseInt(req.params.orderId, 10);
+          const additionalMinutes = Number(req.body?.additional_minutes);
+          if (
+            !Number.isInteger(storeId) ||
+            storeId < 1 ||
+            !Number.isFinite(ordersFoodId) ||
+            !Number.isFinite(additionalMinutes)
+          ) {
+            return reply.code(400).send({ error: "invalid_request" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const { patchMerchantFoodOrderPrepDelay } = await import("./merchant-food-orders.service.js");
+          try {
+            const order = await patchMerchantFoodOrderPrepDelay(
+              sql,
+              storeId,
+              ordersFoodId,
+              additionalMinutes
+            );
+            return reply.send({
+              order,
+              prep_ready_by_at: order.prep_ready_by_at,
+              prep_delay_minutes: order.prep_delay_minutes,
+            });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "update_failed";
+            if (msg === "order_not_found") return reply.code(404).send({ error: msg });
+            if (msg === "store_mismatch") return reply.code(403).send({ error: msg });
+            if (
+              msg === "invalid_prep_delay_minutes" ||
+              msg === "prep_delay_not_allowed" ||
+              msg === "prep_delay_limit_reached"
+            ) {
+              return reply.code(400).send({ error: msg });
             }
             return reply.code(500).send({ error: msg });
           }

@@ -63,7 +63,7 @@ export async function GET(req: NextRequest) {
       .select("id")
       .eq("id", store.parent_id)
       .maybeSingle();
-    if (!parent || parent.id !== validation.merchantParentId) {
+    if (!parent || Number(parent.id) !== Number(validation.merchantParentId)) {
       return NextResponse.json({ success: false, error: "Store not accessible" }, { status: 403 });
     }
 

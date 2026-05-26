@@ -1,6 +1,10 @@
 import { getSupabase } from "../../lib/supabase.js";
-import { getDb } from "../../db/client.js";
+import { getDb, getSql } from "../../db/client.js";
 import { sql } from "drizzle-orm";
+import {
+  getMenuItemEffectiveInStockExpr,
+  getMenuItemEffectiveInStockForAliases,
+} from "../../lib/menu-item-effective-stock.js";
 import { getEnv } from "../../config/env.js";
 import { getRoute, haversineDistanceKm } from "../distance/distance.service.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
@@ -567,7 +571,7 @@ export async function getStoreLiveStatus(storeId: string): Promise<"OPEN" | "CLO
 
 /**
  * Get menu items for a store (by string store_id).
- * Only is_active = true and in_stock = true. Groups by category_id using merchant_menu_categories.
+ * Only active, approved items that are effectively in stock (OOS fields + category cascade).
  * If searchQ is provided, filters items by item_name ILIKE %searchQ%.
  */
 export async function getMenuByStoreId(
@@ -581,41 +585,104 @@ export async function getMenuByStoreId(
   const store = await getStoreByStoreId(storeId);
   if (!store) return { store: null, items: [] };
 
-  const [categoriesRes, itemsRes] = await Promise.all([
+  const storePk = Number(store.id);
+  const trimmedSearch = searchQ?.trim() ?? "";
+  const pg = getSql();
+  const effectiveInStock = getMenuItemEffectiveInStockExpr(pg);
+
+  const [categoriesRes, itemRows] = await Promise.all([
     supabase
       .from("merchant_menu_categories")
       .select("id, category_name, display_order")
       .eq("store_id", store.id)
       .eq("is_active", true)
       .order("display_order", { ascending: true }),
-    searchQ && searchQ.trim()
-      ? supabase
-          .from("merchant_menu_items")
-          .select("id, store_id, category_id, item_id, item_name, item_description, item_image_url, food_type, spice_level, cuisine_type, base_price, selling_price, discount_percentage, packaging_charges, in_stock, is_active, is_popular, is_recommended, preparation_time_minutes, has_customizations, has_addons, has_variants")
-          .eq("store_id", store.id)
-          .eq("is_active", true)
-          .eq("in_stock", true)
-          .eq("approval_status", "APPROVED")
-          .ilike("item_name", `%${searchQ.trim()}%`)
-          .order("item_name", { ascending: true })
-      : supabase
-          .from("merchant_menu_items")
-          .select("id, store_id, category_id, item_id, item_name, item_description, item_image_url, food_type, spice_level, cuisine_type, base_price, selling_price, discount_percentage, packaging_charges, in_stock, is_active, is_popular, is_recommended, preparation_time_minutes, has_customizations, has_addons, has_variants")
-          .eq("store_id", store.id)
-          .eq("is_active", true)
-          .eq("in_stock", true)
-          .eq("approval_status", "APPROVED")
-          .order("item_name", { ascending: true }),
+    trimmedSearch
+      ? pg`
+          SELECT
+            m.id,
+            m.store_id,
+            m.category_id,
+            m.item_id,
+            m.item_name,
+            m.item_description,
+            m.item_image_url,
+            m.food_type,
+            m.spice_level,
+            m.cuisine_type,
+            m.base_price,
+            m.selling_price,
+            m.discount_percentage,
+            m.packaging_charges,
+            m.in_stock,
+            m.is_active,
+            m.is_popular,
+            m.is_recommended,
+            m.preparation_time_minutes,
+            m.has_customizations,
+            m.has_addons,
+            m.has_variants,
+            c.category_name
+          FROM merchant_menu_items m
+          LEFT JOIN merchant_menu_categories c
+            ON c.id = m.category_id
+            AND c.store_id = ${storePk}
+            AND COALESCE(c.is_deleted, FALSE) = FALSE
+          WHERE m.store_id = ${storePk}
+            AND COALESCE(m.is_deleted, FALSE) = FALSE
+            AND m.is_active = TRUE
+            AND m.approval_status = 'APPROVED'
+            AND ${effectiveInStock} = TRUE
+            AND m.item_name ILIKE ${"%" + trimmedSearch + "%"}
+          ORDER BY m.item_name ASC
+        `
+      : pg`
+          SELECT
+            m.id,
+            m.store_id,
+            m.category_id,
+            m.item_id,
+            m.item_name,
+            m.item_description,
+            m.item_image_url,
+            m.food_type,
+            m.spice_level,
+            m.cuisine_type,
+            m.base_price,
+            m.selling_price,
+            m.discount_percentage,
+            m.packaging_charges,
+            m.in_stock,
+            m.is_active,
+            m.is_popular,
+            m.is_recommended,
+            m.preparation_time_minutes,
+            m.has_customizations,
+            m.has_addons,
+            m.has_variants,
+            c.category_name
+          FROM merchant_menu_items m
+          LEFT JOIN merchant_menu_categories c
+            ON c.id = m.category_id
+            AND c.store_id = ${storePk}
+            AND COALESCE(c.is_deleted, FALSE) = FALSE
+          WHERE m.store_id = ${storePk}
+            AND COALESCE(m.is_deleted, FALSE) = FALSE
+            AND m.is_active = TRUE
+            AND m.approval_status = 'APPROVED'
+            AND ${effectiveInStock} = TRUE
+          ORDER BY m.item_name ASC
+        `,
   ]);
 
   const categories = (categoriesRes.data ?? []) as { id: number; category_name: string; display_order: number | null }[];
   const categoryMap = new Map(categories.map((c) => [c.id, c.category_name]));
-  const items = (itemsRes.data ?? []) as MerchantMenuItemRow[];
-  if (itemsRes.error) throw itemsRes.error;
+  const items = itemRows as unknown as (MerchantMenuItemRow & { category_name?: string | null })[];
 
   const itemsWithCategory = items.map((m) => ({
     ...m,
-    category_name: m.category_id != null ? categoryMap.get(m.category_id) ?? null : null,
+    category_name:
+      m.category_name ?? (m.category_id != null ? categoryMap.get(m.category_id) ?? null : null),
   }));
 
   // The merchant's stored `selling_price` is treated as their NET intended
@@ -790,14 +857,393 @@ export type OrderedTogetherPairRow = {
   item1MenuItemPk: number;
   item2MenuItemPk: number;
   orderCount: number;
+  source: "co_purchase" | "popular_fallback";
 };
 
+export type OrderedTogetherRecommendations = {
+  pairs: OrderedTogetherPairRow[];
+  byAnchorItemId: Record<string, OrderedTogetherPairRow[]>;
+};
+
+
+/** Keep only pairs whose both items are on this store's current in-stock menu. */
+async function filterPairsToAvailableStoreMenu(
+  storeId: string,
+  pairs: OrderedTogetherPairRow[]
+): Promise<OrderedTogetherPairRow[]> {
+  if (pairs.length === 0) return pairs;
+  const { items } = await getMenuByStoreId(storeId);
+  if (items.length === 0) return [];
+
+  const allowedPk = new Set(
+    items.map((i) => Number(i.id)).filter((n) => Number.isFinite(n) && n > 0)
+  );
+  const allowedPublicId = new Set(
+    items
+      .map((i) => String(i.item_id ?? "").trim())
+      .filter((id) => id.length > 0)
+  );
+
+  return pairs.filter(
+    (p) =>
+      allowedPk.has(p.item1MenuItemPk) &&
+      allowedPk.has(p.item2MenuItemPk) &&
+      allowedPublicId.has(p.item1Id) &&
+      allowedPublicId.has(p.item2Id)
+  );
+}
+
+async function resolveMenuItemPk(
+  storePk: number,
+  itemRef: string | number
+): Promise<number | null> {
+  const ref = String(itemRef ?? "").trim();
+  if (!ref) return null;
+  const asNum = Number(ref);
+  try {
+    const db = getDb();
+    if (Number.isFinite(asNum) && asNum > 0) {
+      const byPk = await db.execute(sql`
+        SELECT id FROM merchant_menu_items
+        WHERE store_id = ${storePk} AND id = ${asNum}
+        LIMIT 1
+      `);
+      const pkRow = ((byPk.rows ?? byPk) as Array<{ id: number | string }>)[0];
+      if (pkRow?.id != null) return Number(pkRow.id);
+    }
+    const byItemId = await db.execute(sql`
+      SELECT id FROM merchant_menu_items
+      WHERE store_id = ${storePk} AND item_id = ${ref}
+      LIMIT 1
+    `);
+    const idRow = ((byItemId.rows ?? byItemId) as Array<{ id: number | string }>)[0];
+    return idRow?.id != null ? Number(idRow.id) : null;
+  } catch {
+    return null;
+  }
+}
+
+function mapCoPurchaseRows(
+  rows: Array<{
+    item1_pk: number | string;
+    item2_pk: number | string;
+    order_count: number | string;
+    item1_id: string;
+    item2_id: string;
+  }>,
+  source: "co_purchase" | "popular_fallback"
+): OrderedTogetherPairRow[] {
+  return rows
+    .map((row) => {
+      const item1MenuItemPk = Number(row.item1_pk);
+      const item2MenuItemPk = Number(row.item2_pk);
+      const orderCount = Number(row.order_count);
+      const item1Id = String(row.item1_id ?? "").trim();
+      const item2Id = String(row.item2_id ?? "").trim();
+      if (
+        !Number.isFinite(item1MenuItemPk) ||
+        !Number.isFinite(item2MenuItemPk) ||
+        !Number.isFinite(orderCount) ||
+        orderCount < 1 ||
+        !item1Id ||
+        !item2Id
+      ) {
+        return null;
+      }
+      return {
+        id: `${item1Id}-${item2Id}`,
+        item1Id,
+        item2Id,
+        item1MenuItemPk,
+        item2MenuItemPk,
+        orderCount,
+        source,
+      };
+    })
+    .filter((row): row is OrderedTogetherPairRow => row != null);
+}
+
+async function queryCoPurchasePairsFromStats(
+  storePk: number,
+  opts: { anchorMenuItemPk?: number | null; limit: number }
+): Promise<OrderedTogetherPairRow[]> {
+  const db = getDb();
+  const pg = getSql();
+  const effA = getMenuItemEffectiveInStockForAliases(pg, "a", "c_a");
+  const effB = getMenuItemEffectiveInStockForAliases(pg, "b", "c_b");
+  const limit = Math.min(Math.max(opts.limit, 1), 24);
+  const anchorPk = opts.anchorMenuItemPk;
+
+  if (anchorPk != null && Number.isFinite(anchorPk)) {
+    const result = await db.execute(sql`
+      SELECT
+        cp.anchor_menu_item_id AS item1_pk,
+        cp.paired_menu_item_id AS item2_pk,
+        cp.co_order_count AS order_count,
+        a.item_id AS item1_id,
+        b.item_id AS item2_id
+      FROM merchant_menu_item_co_purchases cp
+      INNER JOIN merchant_menu_items a
+        ON a.id = cp.anchor_menu_item_id
+        AND a.store_id = ${storePk}
+        AND a.is_active = TRUE
+        AND COALESCE(a.is_deleted, FALSE) = FALSE
+        AND a.approval_status = 'APPROVED'
+      LEFT JOIN merchant_menu_categories c_a
+        ON c_a.id = a.category_id
+        AND c_a.store_id = ${storePk}
+        AND COALESCE(c_a.is_deleted, FALSE) = FALSE
+      INNER JOIN merchant_menu_items b
+        ON b.id = cp.paired_menu_item_id
+        AND b.store_id = ${storePk}
+        AND b.is_active = TRUE
+        AND COALESCE(b.is_deleted, FALSE) = FALSE
+        AND b.approval_status = 'APPROVED'
+      LEFT JOIN merchant_menu_categories c_b
+        ON c_b.id = b.category_id
+        AND c_b.store_id = ${storePk}
+        AND COALESCE(c_b.is_deleted, FALSE) = FALSE
+      WHERE cp.merchant_store_id = ${storePk}
+        AND cp.anchor_menu_item_id = ${anchorPk}
+        AND a.store_id = cp.merchant_store_id
+        AND b.store_id = cp.merchant_store_id
+        AND ${effA} = TRUE
+        AND ${effB} = TRUE
+      ORDER BY cp.co_order_count DESC, cp.paired_menu_item_id ASC
+      LIMIT ${limit}
+    `);
+    return mapCoPurchaseRows(
+      (result.rows ?? result) as Array<{
+        item1_pk: number | string;
+        item2_pk: number | string;
+        order_count: number | string;
+        item1_id: string;
+        item2_id: string;
+      }>,
+      "co_purchase"
+    );
+  }
+
+  const result = await db.execute(sql`
+    WITH deduped AS (
+      SELECT
+        LEAST(cp.anchor_menu_item_id, cp.paired_menu_item_id) AS item_a_pk,
+        GREATEST(cp.anchor_menu_item_id, cp.paired_menu_item_id) AS item_b_pk,
+        MAX(cp.co_order_count) AS order_count
+      FROM merchant_menu_item_co_purchases cp
+      WHERE cp.merchant_store_id = ${storePk}
+      GROUP BY item_a_pk, item_b_pk
+      ORDER BY order_count DESC, item_a_pk ASC
+      LIMIT ${Math.min(limit * 2, 24)}
+    )
+    SELECT
+      d.item_a_pk AS item1_pk,
+      d.item_b_pk AS item2_pk,
+      d.order_count,
+      a.item_id AS item1_id,
+      b.item_id AS item2_id
+    FROM deduped d
+    INNER JOIN merchant_menu_items a
+      ON a.id = d.item_a_pk
+      AND a.store_id = ${storePk}
+      AND a.is_active = TRUE
+      AND COALESCE(a.is_deleted, FALSE) = FALSE
+      AND a.approval_status = 'APPROVED'
+    LEFT JOIN merchant_menu_categories c_a
+      ON c_a.id = a.category_id
+      AND c_a.store_id = ${storePk}
+      AND COALESCE(c_a.is_deleted, FALSE) = FALSE
+    INNER JOIN merchant_menu_items b
+      ON b.id = d.item_b_pk
+      AND b.store_id = ${storePk}
+      AND b.is_active = TRUE
+      AND COALESCE(b.is_deleted, FALSE) = FALSE
+      AND b.approval_status = 'APPROVED'
+    LEFT JOIN merchant_menu_categories c_b
+      ON c_b.id = b.category_id
+      AND c_b.store_id = ${storePk}
+      AND COALESCE(c_b.is_deleted, FALSE) = FALSE
+    WHERE a.store_id = ${storePk}
+      AND b.store_id = ${storePk}
+      AND ${effA} = TRUE
+      AND ${effB} = TRUE
+    ORDER BY d.order_count DESC, d.item_a_pk ASC
+    LIMIT ${limit}
+  `);
+  return mapCoPurchaseRows(
+    (result.rows ?? result) as Array<{
+      item1_pk: number | string;
+      item2_pk: number | string;
+      order_count: number | string;
+      item1_id: string;
+      item2_id: string;
+    }>,
+    "co_purchase"
+  );
+}
+
+async function queryPopularPairFallback(
+  storePk: number,
+  opts: { anchorMenuItemPk?: number | null; limit: number }
+): Promise<OrderedTogetherPairRow[]> {
+  const db = getDb();
+  const pg = getSql();
+  const effM = getMenuItemEffectiveInStockForAliases(pg, "m", "c");
+  const limit = Math.min(Math.max(opts.limit, 1), 12);
+  const anchorPk = opts.anchorMenuItemPk;
+
+  if (anchorPk != null && Number.isFinite(anchorPk)) {
+    const result = await db.execute(sql`
+      WITH anchor AS (
+        SELECT id, category_id FROM merchant_menu_items
+        WHERE id = ${anchorPk} AND store_id = ${storePk}
+        LIMIT 1
+      ),
+      item_scores AS (
+        SELECT
+          m.id,
+          m.item_id,
+          m.category_id,
+          (
+            COALESCE(oc_cnt.order_count, 0)
+            + CASE WHEN COALESCE(m.is_popular, FALSE) THEN 8 ELSE 0 END
+            + CASE WHEN COALESCE(m.is_recommended, FALSE) THEN 4 ELSE 0 END
+          )::INT AS score
+        FROM merchant_menu_items m
+        LEFT JOIN merchant_menu_categories c
+          ON c.id = m.category_id
+          AND c.store_id = ${storePk}
+          AND COALESCE(c.is_deleted, FALSE) = FALSE
+        LEFT JOIN (
+          SELECT oci.menu_item_id, COUNT(DISTINCT oci.order_id)::INT AS order_count
+          FROM orders_core_items oci
+          INNER JOIN orders_core oc ON oc.order_id = oci.order_id
+          WHERE oc.merchant_store_id = ${storePk}
+            AND oc.status IS DISTINCT FROM 'cancelled'
+          GROUP BY oci.menu_item_id
+        ) oc_cnt ON oc_cnt.menu_item_id = m.id
+        WHERE m.store_id = ${storePk}
+          AND m.is_active = TRUE
+          AND COALESCE(m.is_deleted, FALSE) = FALSE
+          AND m.approval_status = 'APPROVED'
+          AND ${effM} = TRUE
+          AND m.id <> ${anchorPk}
+      ),
+      ranked AS (
+        SELECT s.*
+        FROM item_scores s
+        CROSS JOIN anchor a
+        ORDER BY
+          CASE WHEN s.category_id IS NOT NULL AND s.category_id = a.category_id THEN 0 ELSE 1 END,
+          s.score DESC,
+          s.id ASC
+        LIMIT ${limit}
+      )
+      SELECT
+        a.id AS item1_pk,
+        r.id AS item2_pk,
+        GREATEST(r.score, 1) AS order_count,
+        anchor_item.item_id AS item1_id,
+        r.item_id AS item2_id
+      FROM ranked r
+      CROSS JOIN anchor a
+      INNER JOIN merchant_menu_items anchor_item ON anchor_item.id = a.id
+    `);
+    return mapCoPurchaseRows(
+      (result.rows ?? result) as Array<{
+        item1_pk: number | string;
+        item2_pk: number | string;
+        order_count: number | string;
+        item1_id: string;
+        item2_id: string;
+      }>,
+      "popular_fallback"
+    );
+  }
+
+  const result = await db.execute(sql`
+    WITH item_scores AS (
+      SELECT
+        m.id,
+        m.item_id,
+        (
+          COALESCE(oc_cnt.order_count, 0)
+          + CASE WHEN COALESCE(m.is_popular, FALSE) THEN 8 ELSE 0 END
+          + CASE WHEN COALESCE(m.is_recommended, FALSE) THEN 4 ELSE 0 END
+        )::INT AS score
+      FROM merchant_menu_items m
+      LEFT JOIN merchant_menu_categories c
+        ON c.id = m.category_id
+        AND c.store_id = ${storePk}
+        AND COALESCE(c.is_deleted, FALSE) = FALSE
+      LEFT JOIN (
+        SELECT oci.menu_item_id, COUNT(DISTINCT oci.order_id)::INT AS order_count
+        FROM orders_core_items oci
+        INNER JOIN orders_core oc ON oc.order_id = oci.order_id
+        WHERE oc.merchant_store_id = ${storePk}
+          AND oc.status IS DISTINCT FROM 'cancelled'
+        GROUP BY oci.menu_item_id
+      ) oc_cnt ON oc_cnt.menu_item_id = m.id
+      WHERE m.store_id = ${storePk}
+        AND m.is_active = TRUE
+        AND COALESCE(m.is_deleted, FALSE) = FALSE
+        AND m.approval_status = 'APPROVED'
+        AND ${effM} = TRUE
+      ORDER BY score DESC, m.id ASC
+      LIMIT ${Math.max(limit * 2, 8)}
+    ),
+    paired AS (
+      SELECT
+        s1.id AS item1_pk,
+        s2.id AS item2_pk,
+        LEAST(s1.score, s2.score) AS order_count,
+        s1.item_id AS item1_id,
+        s2.item_id AS item2_id,
+        ROW_NUMBER() OVER (ORDER BY LEAST(s1.score, s2.score) DESC, s1.id ASC) AS rn
+      FROM item_scores s1
+      INNER JOIN item_scores s2 ON s1.id < s2.id
+    )
+    SELECT item1_pk, item2_pk, order_count, item1_id, item2_id
+    FROM paired
+    WHERE rn <= ${limit}
+    ORDER BY order_count DESC, item1_pk ASC
+  `);
+  return mapCoPurchaseRows(
+    (result.rows ?? result) as Array<{
+      item1_pk: number | string;
+      item2_pk: number | string;
+      order_count: number | string;
+      item1_id: string;
+      item2_id: string;
+    }>,
+    "popular_fallback"
+  );
+}
+
+async function ensureCoPurchaseStats(storePk: number): Promise<void> {
+  try {
+    const db = getDb();
+    const existing = await db.execute(sql`
+      SELECT 1 FROM merchant_menu_item_co_purchases
+      WHERE merchant_store_id = ${storePk}
+      LIMIT 1
+    `);
+    const rows = (existing.rows ?? existing) as unknown[];
+    if (rows.length > 0) return;
+    await db.execute(sql`SELECT refresh_merchant_co_purchase_stats(${storePk})`);
+  } catch {
+    // Table may not exist yet before migration — live queries used as fallback.
+  }
+}
+
 /**
- * Pairs of menu items that appeared together in 2+ non-cancelled orders at this store.
- * Only returns pairs where both items are still active, in stock, and approved on the menu.
+ * Pairs frequently ordered together at this store (from aggregated order history).
+ * Optional anchor item returns pairs where item1 is the anchor.
+ * Falls back to popular same-category / store items when co-purchase data is sparse.
  */
 export async function getOrderedTogetherPairs(
-  storeId: string
+  storeId: string,
+  opts?: { anchorMenuItemId?: string | number; limit?: number }
 ): Promise<OrderedTogetherPairRow[]> {
   const store = await getStoreByStoreId(storeId);
   if (!store) return [];
@@ -805,87 +1251,134 @@ export async function getOrderedTogetherPairs(
   const storePk = Number(store.id);
   if (!Number.isFinite(storePk) || storePk <= 0) return [];
 
+  const limit = opts?.limit ?? 8;
+  const anchorMenuItemPk =
+    opts?.anchorMenuItemId != null
+      ? await resolveMenuItemPk(storePk, opts.anchorMenuItemId)
+      : null;
+
+  await ensureCoPurchaseStats(storePk);
+
   try {
+    let pairs = await queryCoPurchasePairsFromStats(storePk, {
+      anchorMenuItemPk,
+      limit,
+    });
+    if (pairs.length === 0) {
+      pairs = await queryPopularPairFallback(storePk, { anchorMenuItemPk, limit });
+    }
+    return filterPairsToAvailableStoreMenu(storeId, pairs);
+  } catch {
+    return filterPairsToAvailableStoreMenu(
+      storeId,
+      await queryPopularPairFallback(storePk, { anchorMenuItemPk, limit })
+    );
+  }
+}
+
+/** Store-level pairs plus top per-item recommendations for menu rows / sheets. */
+export async function getOrderedTogetherRecommendations(
+  storeId: string,
+  opts?: { limit?: number; perAnchorLimit?: number }
+): Promise<OrderedTogetherRecommendations> {
+  const limit = opts?.limit ?? 8;
+  const perAnchorLimit = opts?.perAnchorLimit ?? 3;
+  const pairs = await getOrderedTogetherPairs(storeId, { limit });
+
+  const store = await getStoreByStoreId(storeId);
+  const storePk = store ? Number(store.id) : NaN;
+  const byAnchorItemId: Record<string, OrderedTogetherPairRow[]> = {};
+
+  if (!Number.isFinite(storePk) || storePk <= 0) {
+    return { pairs, byAnchorItemId };
+  }
+
+  try {
+    await ensureCoPurchaseStats(storePk);
     const db = getDb();
+    const pg = getSql();
+    const effA = getMenuItemEffectiveInStockForAliases(pg, "a", "c_a");
+    const effB = getMenuItemEffectiveInStockForAliases(pg, "b", "c_b");
     const result = await db.execute(sql`
-      WITH pair_counts AS (
+      WITH ranked AS (
         SELECT
-          LEAST(oci1.menu_item_id, oci2.menu_item_id)::bigint AS item_a_pk,
-          GREATEST(oci1.menu_item_id, oci2.menu_item_id)::bigint AS item_b_pk,
-          COUNT(DISTINCT oci1.order_id)::int AS order_count
-        FROM orders_core_items oci1
-        INNER JOIN orders_core_items oci2
-          ON oci1.order_id = oci2.order_id
-          AND oci1.menu_item_id < oci2.menu_item_id
-        INNER JOIN orders_core oc ON oc.order_id = oci1.order_id
-        WHERE oc.merchant_store_id = ${storePk}
-          AND oc.status IS DISTINCT FROM 'cancelled'
-        GROUP BY item_a_pk, item_b_pk
-        HAVING COUNT(DISTINCT oci1.order_id) >= 2
-        ORDER BY order_count DESC
-        LIMIT 12
+          cp.anchor_menu_item_id,
+          cp.paired_menu_item_id,
+          cp.co_order_count,
+          a.item_id AS anchor_item_id,
+          b.item_id AS paired_item_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY cp.anchor_menu_item_id
+            ORDER BY cp.co_order_count DESC, cp.paired_menu_item_id ASC
+          ) AS rn
+        FROM merchant_menu_item_co_purchases cp
+        INNER JOIN merchant_menu_items a
+          ON a.id = cp.anchor_menu_item_id
+          AND a.store_id = ${storePk}
+          AND a.is_active = TRUE
+          AND COALESCE(a.is_deleted, FALSE) = FALSE
+          AND a.approval_status = 'APPROVED'
+        LEFT JOIN merchant_menu_categories c_a
+          ON c_a.id = a.category_id
+          AND c_a.store_id = ${storePk}
+          AND COALESCE(c_a.is_deleted, FALSE) = FALSE
+        INNER JOIN merchant_menu_items b
+          ON b.id = cp.paired_menu_item_id
+          AND b.store_id = ${storePk}
+          AND b.is_active = TRUE
+          AND COALESCE(b.is_deleted, FALSE) = FALSE
+          AND b.approval_status = 'APPROVED'
+        LEFT JOIN merchant_menu_categories c_b
+          ON c_b.id = b.category_id
+          AND c_b.store_id = ${storePk}
+          AND COALESCE(c_b.is_deleted, FALSE) = FALSE
+        WHERE cp.merchant_store_id = ${storePk}
+          AND a.store_id = cp.merchant_store_id
+          AND b.store_id = cp.merchant_store_id
+          AND ${effA} = TRUE
+          AND ${effB} = TRUE
       )
       SELECT
-        pc.item_a_pk,
-        pc.item_b_pk,
-        pc.order_count,
-        a.item_id AS item_a_id,
-        b.item_id AS item_b_id
-      FROM pair_counts pc
-      INNER JOIN merchant_menu_items a
-        ON a.id = pc.item_a_pk
-        AND a.store_id = ${storePk}
-        AND a.is_active = TRUE
-        AND a.in_stock = TRUE
-        AND a.approval_status = 'APPROVED'
-      INNER JOIN merchant_menu_items b
-        ON b.id = pc.item_b_pk
-        AND b.store_id = ${storePk}
-        AND b.is_active = TRUE
-        AND b.in_stock = TRUE
-        AND b.approval_status = 'APPROVED'
-      ORDER BY pc.order_count DESC
-      LIMIT 8
+        anchor_menu_item_id AS item1_pk,
+        paired_menu_item_id AS item2_pk,
+        co_order_count AS order_count,
+        anchor_item_id AS item1_id,
+        paired_item_id AS item2_id
+      FROM ranked
+      WHERE rn <= ${perAnchorLimit}
+      ORDER BY co_order_count DESC
+      LIMIT 120
     `);
 
-    const rows = (result.rows ?? result) as Array<{
-      item_a_pk: number | string;
-      item_b_pk: number | string;
-      order_count: number | string;
-      item_a_id: string;
-      item_b_id: string;
-    }>;
+    const rows = mapCoPurchaseRows(
+      (result.rows ?? result) as Array<{
+        item1_pk: number | string;
+        item2_pk: number | string;
+        order_count: number | string;
+        item1_id: string;
+        item2_id: string;
+      }>,
+      "co_purchase"
+    );
 
-    return rows
-      .map((row) => {
-        const item1MenuItemPk = Number(row.item_a_pk);
-        const item2MenuItemPk = Number(row.item_b_pk);
-        const orderCount = Number(row.order_count);
-        const item1Id = String(row.item_a_id ?? "").trim();
-        const item2Id = String(row.item_b_id ?? "").trim();
-        if (
-          !Number.isFinite(item1MenuItemPk) ||
-          !Number.isFinite(item2MenuItemPk) ||
-          !Number.isFinite(orderCount) ||
-          orderCount < 2 ||
-          !item1Id ||
-          !item2Id
-        ) {
-          return null;
-        }
-        return {
-          id: `${item1Id}-${item2Id}`,
-          item1Id,
-          item2Id,
-          item1MenuItemPk,
-          item2MenuItemPk,
-          orderCount,
-        };
-      })
-      .filter((row): row is OrderedTogetherPairRow => row != null);
+    for (const row of rows) {
+      const key = row.item1Id;
+      if (!byAnchorItemId[key]) byAnchorItemId[key] = [];
+      if (byAnchorItemId[key].length < perAnchorLimit) {
+        byAnchorItemId[key].push(row);
+      }
+    }
   } catch {
-    return [];
+    // Non-fatal — store-level pairs still returned.
   }
+
+  const filteredByAnchor: Record<string, OrderedTogetherPairRow[]> = {};
+  for (const [anchorId, anchorPairs] of Object.entries(byAnchorItemId)) {
+    const filtered = await filterPairsToAvailableStoreMenu(storeId, anchorPairs);
+    if (filtered.length > 0) filteredByAnchor[anchorId] = filtered;
+  }
+
+  return { pairs, byAnchorItemId: filteredByAnchor };
 }
 
 function markMostOrderedAddons<T extends { numericId: number }>(
