@@ -15,8 +15,8 @@ import {
 } from '@/lib/r2-paths';
 import { deleteFromR2, extractR2KeyFromUrl, normalizeR2ObjectKey, toStoredDocumentUrl } from '@/lib/r2';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 
 function getSupabase() {
   return createClient(supabaseUrl, supabaseServiceKey, {

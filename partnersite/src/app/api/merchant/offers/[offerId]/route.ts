@@ -10,8 +10,8 @@ import { getAuditActor, logMerchantAudit } from '@/lib/audit-merchant';
 import { logStoreActivity } from '@/lib/store-activity-feed';
 import { deleteFromR2, extractR2KeyFromUrl } from '@/lib/r2';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 
 function getDb() {
   return createClient(supabaseUrl, supabaseServiceKey, {

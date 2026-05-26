@@ -3,8 +3,8 @@ import { createClient } from "@supabase/supabase-js";
 import { getParentLogoKey } from "@/lib/r2-paths";
 import { uploadToR2, toStoredDocumentUrl } from "@/lib/r2";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 
 /** Service-role client bypasses RLS — required for server-side insert into merchant_parents. */
 function getSupabaseAdmin() {

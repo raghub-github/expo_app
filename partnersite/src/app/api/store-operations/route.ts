@@ -26,8 +26,8 @@ import {
 } from '@/lib/storeScheduleSync';
 import { loadMerchantLicenseEvaluation } from '@/lib/syncMerchantLicenseCompliance';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 
 /** Set `STORE_OPERATIONS_DEBUG=1` in `.env.local` to print decision traces (server terminal). */
 function storeOpsDebugEnabled(): boolean {

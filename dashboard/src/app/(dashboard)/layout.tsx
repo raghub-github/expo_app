@@ -2,6 +2,14 @@ import { Suspense } from "react";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Header } from "@/components/layout/Header";
 
+// Every page under this (dashboard) route group requires an authenticated
+// session and calls Supabase server-side at request time. Static prerender
+// during `next build` has no cookies and would crash when the build-time
+// env (which is intentionally kept empty in CI to avoid baking secrets into
+// public artifacts) does not include the Supabase service config. Marking
+// the layout as dynamic skips the SSG pass for the whole segment.
+export const dynamic = "force-dynamic";
+
 function HeaderFallback() {
   return (
     <header

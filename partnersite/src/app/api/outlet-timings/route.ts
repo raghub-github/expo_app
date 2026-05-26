@@ -4,8 +4,8 @@ import { cookies } from 'next/headers';
 import { normalizeWallTimeToHHMM } from '@/lib/wallTimeHHMM';
 import { syncStoreStatusAfterOperatingHoursChange } from '@/lib/storeScheduleSync';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;

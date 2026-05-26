@@ -3,8 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 import { assertStoreAccess } from '@/lib/auth/assert-store-access';
 import { WAITING_FOR_ORDER_TITLE } from '@/lib/partner-notification-constants';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 
 function getDb() {
   return createClient(supabaseUrl, supabaseServiceKey, {
