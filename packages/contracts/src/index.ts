@@ -196,6 +196,9 @@ export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;
 // Merchant Wallet Engine
 // =========================
 
-export * from "./wallet";
+// Explicit `.js` so the compiled ESM output passes Node's strict resolver
+// (Node ESM requires file extensions; tsc with moduleResolution: Bundler
+// tolerates the `.js` even though the source is `.ts`).
+export * from "./wallet.js";
 
 

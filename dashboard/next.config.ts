@@ -8,8 +8,11 @@ const merchantApiProxyTarget =
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  // Keep tracing inside dashboard so this repo is fully standalone
-  outputFileTracingRoot: path.join(process.cwd()),
+  // Trace from the MONOREPO ROOT, not dashboard/. In an npm-workspaces repo
+  // `next` (and most other deps) gets hoisted to `../node_modules`; tracing
+  // only from `dashboard/` left the standalone bundle without a copy of next
+  // itself, producing `Cannot find module 'next'` in the runtime container.
+  outputFileTracingRoot: path.join(__dirname, ".."),
   transpilePackages: ["@gatimitra/contracts"],
   // Disable dev indicator ("• Rendering..." / "Compiling...") at bottom-left to avoid delay and visual noise
   devIndicators: false,

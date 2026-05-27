@@ -86,11 +86,21 @@ RUN apk add --no-cache wget \
     && adduser --system --uid 1001 nextjs
 
 # Next standalone output: a self-contained directory with server.js and the
-# subset of node_modules actually used at runtime. `outputFileTracingRoot`
-# in next.config.ts is set to `dashboard/`, so the standalone tree is flat.
-COPY --from=builder --chown=nextjs:nodejs /repo/dashboard/public                 ./public
+# subset of node_modules actually used at runtime. With `outputFileTracingRoot`
+# set to the MONOREPO ROOT (so the tracer can follow hoisted workspace deps
+# like `next` itself), the standalone tree is nested:
+#   .next/standalone/
+#   ├── node_modules/                   ← traced deps (incl. next)
+#   ├── packages/                       ← traced workspace packages
+#   ├── package.json                    ← root workspace manifest
+#   └── dashboard/                      ← app subtree
+#       ├── server.js                   ← runtime entry
+#       └── .next/                      ← runtime artefacts
+# So we copy the standalone root into /app, then place public/ + static/
+# under /app/dashboard/ where server.js expects them.
 COPY --from=builder --chown=nextjs:nodejs /repo/dashboard/.next/standalone       ./
-COPY --from=builder --chown=nextjs:nodejs /repo/dashboard/.next/static           ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /repo/dashboard/public                 ./dashboard/public
+COPY --from=builder --chown=nextjs:nodejs /repo/dashboard/.next/static           ./dashboard/.next/static
 
 USER nextjs
 EXPOSE 3001
@@ -98,4 +108,4 @@ EXPOSE 3001
 HEALTHCHECK --interval=20s --timeout=4s --start-period=15s --retries=3 \
   CMD wget -qO- http://127.0.0.1:3001/api/health || exit 1
 
-CMD ["node", "server.js"]
+CMD ["node", "dashboard/server.js"]

@@ -229,5 +229,5 @@ export declare const ApiErrorResponseSchema: z.ZodObject<{
     requestId: z.ZodOptional<z.ZodString>;
 }, z.core.$strip>;
 export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;
-export * from "./wallet";
+export * from "./wallet.js";
 //# sourceMappingURL=index.d.ts.map

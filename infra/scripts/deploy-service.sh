@@ -40,6 +40,21 @@ fi
 
 compose=(docker compose -f "$compose_file")
 
+# Pre-flight: when deploying nginx, validate the new config inside a throwaway
+# container BEFORE swapping the running one. Catches `worker_processes
+# directive not allowed here` (wrong mount path) and similar syntax errors
+# before they take traffic offline.
+if [[ "$svc" == "nginx" ]]; then
+  echo "▶ deploy: $svc — running nginx -t against the new config"
+  if ! docker run --rm \
+      -v "$(dirname "$compose_file")/../nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
+      -v "$(dirname "$compose_file")/../nginx/proxy_common.conf:/etc/nginx/proxy_common.conf:ro" \
+      nginx:1.27-alpine nginx -t -q 2>&1; then
+    echo "✖ deploy: $svc — nginx config validation failed; refusing to deploy" >&2
+    exit 1
+  fi
+fi
+
 echo "▶ deploy: $svc — pulling new image"
 "${compose[@]}" pull "$svc"
 

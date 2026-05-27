@@ -99,6 +99,11 @@ COPY --from=build --chown=fastify:nodejs /repo/backend/package.json  ./package.j
 
 # Hoisted prod node_modules + workspace symlinks point into the root tree,
 # so we ship the root node_modules and the 5 shared packages it depends on.
+# Each @gatimitra/* package now points its `main` field at `./dist/index.js`
+# (not `./src/index.ts`), and the build stage emits compiled JS into those
+# `dist/` directories — so this single COPY brings the runtime-ready
+# artifacts. If a shared package is added later, no Dockerfile change is
+# needed as long as its package.json `main` resolves to compiled JS.
 COPY --from=build --chown=fastify:nodejs /repo/node_modules          ./node_modules
 COPY --from=build --chown=fastify:nodejs /repo/packages              ./packages
 

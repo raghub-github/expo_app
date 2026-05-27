@@ -3,19 +3,18 @@
 # Production image for the Next.js partner portal (partner.gatimitra.com).
 #
 # Design notes:
-#   • Multi-stage. Partnersite does NOT use Next standalone output (the
-#     comment in next.config.js explains: Turbopack + `output: 'standalone'`
-#     fails on Windows during finalize). So the runtime image carries the
-#     full `.next/` build output, the public dir, and a prod-only
-#     `node_modules` re-installed in the runner stage.
-#   • Targeted workspace build: ONLY `gmmportal` is built. The previous
-#     Dockerfile copied the root package.json to /app and then ran
-#     `npm run build` which resolved to the root's `turbo run build` —
-#     Turbo then tried to build the dashboard workspace as well, producing
-#     `sh: next: not found` because dashboard's deps weren't installed in
-#     this image.
-#   • Partnersite has ZERO @gatimitra/* shared package deps, so no
-#     workspace cross-builds are needed.
+#   • Multi-stage standalone deployment. `output: 'standalone'` is now enabled
+#     in next.config.js — the build emits .next/standalone/ which bundles
+#     `next` itself plus the minimal set of node_modules traced from actual
+#     imports. The Windows-only Turbopack finalize bug is sidestepped by
+#     using `next build --webpack` (the package.json `build` script).
+#   • Runtime image only carries: standalone server tree + public/ + static/.
+#     No separate `npm ci` step at runtime — the standalone bundle is
+#     self-contained.
+#   • Targeted workspace build: ONLY `gmmportal` (partnersite's package
+#     name) is compiled. The previous Dockerfile ran `npm run build` which
+#     resolved to the root's `turbo run build` and pulled in unrelated
+#     workspaces.
 #   • Non-root user (uid 1001) + healthcheck against /api/health.
 #
 # Build context: repo root (set in docker-compose.prod.yml as `context: ../..`).
@@ -33,14 +32,14 @@ COPY partnersite/package.json ./partnersite/package.json
 RUN npm ci --no-audit --no-fund --ignore-scripts
 
 # ────────────────────────────────────────────────────────────────────────
-# Stage 2 — build the partnersite workspace only
+# Stage 2 — build the partnersite workspace only (produces .next/standalone)
 # ────────────────────────────────────────────────────────────────────────
 FROM node:22-alpine AS builder
 WORKDIR /repo
 
 # Bring the entire deps stage tree so root + any workspace-local
-# node_modules survive (npm sometimes can't hoist due to peer-dep
-# conflicts across workspaces).
+# node_modules survive (npm can't always hoist when workspaces pin
+# conflicting peer-dep versions).
 COPY --from=deps /repo /repo
 
 # Only partnersite source — explicitly avoid `COPY . .` which would drag
@@ -58,29 +57,13 @@ ENV NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
 ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
 ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
 
-# Targeted workspace build. Critically NOT `npm run build` — that would
-# resolve to the root's `turbo run build` and pull in every workspace.
-# `gmmportal` is partnersite's package.json "name".
+# Targeted workspace build. The `build` script in partnersite/package.json
+# is `next build --webpack` — webpack on Linux Docker correctly finalizes
+# the standalone output (Turbopack standalone-finalize is the buggy combo).
 RUN npm run build --workspace=gmmportal
 
 # ────────────────────────────────────────────────────────────────────────
-# Stage 3 — production-only deps (no dev deps, no build tooling)
-# ────────────────────────────────────────────────────────────────────────
-FROM node:22-alpine AS prod-deps
-RUN apk add --no-cache libc6-compat
-WORKDIR /repo
-
-COPY package.json package-lock.json ./
-COPY partnersite/package.json ./partnersite/package.json
-
-# `--omit=dev` strips devDependencies; `--workspace=gmmportal` plus
-# `--include-workspace-root` installs only what runtime partnersite needs
-# plus root-level shared deps. Much smaller than the deps stage.
-RUN npm ci --no-audit --no-fund --ignore-scripts --omit=dev \
-      --workspace=gmmportal --include-workspace-root
-
-# ────────────────────────────────────────────────────────────────────────
-# Stage 4 — minimal runtime
+# Stage 3 — minimal runtime
 # ────────────────────────────────────────────────────────────────────────
 FROM node:22-alpine AS runner
 WORKDIR /app
@@ -93,22 +76,24 @@ RUN apk add --no-cache wget \
     && addgroup --system --gid 1001 nodejs \
     && adduser --system --uid 1001 nextjs
 
-# Root manifest first so workspace symlinks under node_modules resolve.
-COPY --from=prod-deps --chown=nextjs:nodejs /repo/package.json              ./package.json
-COPY --from=prod-deps --chown=nextjs:nodejs /repo/node_modules              ./node_modules
-
-# Build artefacts + partnersite manifest needed by `next start`.
-COPY --from=builder  --chown=nextjs:nodejs /repo/partnersite/.next          ./partnersite/.next
-COPY --from=builder  --chown=nextjs:nodejs /repo/partnersite/public         ./partnersite/public
-COPY --from=builder  --chown=nextjs:nodejs /repo/partnersite/package.json   ./partnersite/package.json
-COPY --from=builder  --chown=nextjs:nodejs /repo/partnersite/next.config.js ./partnersite/next.config.js
+# Next standalone layout (with outputFileTracingRoot = monorepo root):
+#   .next/standalone/
+#   ├── node_modules/                ← traced deps (incl. next if hoisted)
+#   ├── package.json                 ← root workspace manifest
+#   └── partnersite/                 ← app subtree
+#       ├── server.js                ← runtime entry
+#       ├── node_modules/            ← workspace-local deps (incl. next when not hoisted)
+#       └── .next/                   ← runtime artefacts
+# Copy standalone root into /app, then place public/ + static/ under
+# /app/partnersite/ where server.js expects them.
+COPY --from=builder --chown=nextjs:nodejs /repo/partnersite/.next/standalone       ./
+COPY --from=builder --chown=nextjs:nodejs /repo/partnersite/public                 ./partnersite/public
+COPY --from=builder --chown=nextjs:nodejs /repo/partnersite/.next/static           ./partnersite/.next/static
 
 USER nextjs
-WORKDIR /app/partnersite
 EXPOSE 3002
 
 HEALTHCHECK --interval=20s --timeout=4s --start-period=15s --retries=3 \
   CMD wget -qO- http://127.0.0.1:3002/api/health || exit 1
 
-# Invoke next's CLI through node — avoids needing `next` binary in PATH.
-CMD ["node", "../node_modules/next/dist/bin/next", "start", "-p", "3002"]
+CMD ["node", "partnersite/server.js"]
