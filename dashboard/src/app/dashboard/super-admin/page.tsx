@@ -82,6 +82,11 @@ const OrderAcceptanceIcon = dynamic(async () => {
   return (props: { className?: string }) => <TimerReset {...props} />;
 });
 
+const CancellationReasonsIcon = dynamic(async () => {
+  const { ListX } = await import("lucide-react");
+  return (props: { className?: string }) => <ListX {...props} />;
+});
+
 const adminOptions: AdminOption[] = [
   {
     name: "Users",
@@ -146,6 +151,14 @@ const adminOptions: AdminOption[] = [
     description: "Acceptance window + incoming sound per store",
     color: "text-slate-700",
     bgColor: "bg-slate-50 hover:bg-slate-100",
+  },
+  {
+    name: "Cancellation reasons",
+    href: "/dashboard/super-admin/cancellation-reasons",
+    Icon: CancellationReasonsIcon,
+    description: "Manage order cancellation and refund rejection options by attribute",
+    color: "text-red-700",
+    bgColor: "bg-red-50 hover:bg-red-100",
   },
 
   // ✅ YOUR MODULES

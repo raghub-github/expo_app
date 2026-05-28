@@ -1,4 +1,9 @@
-import { cancellationReasonsAreDuplicate } from "@/lib/merchant-cancellation-display";
+import {
+  cancellationReasonsAreDuplicate,
+  GATIMITRA_TEAM_REJECTION_LABEL,
+  isCatalogCancellationReason,
+  isGatiMitraTeamCancellationLabel,
+} from "@/lib/merchant-cancellation-display";
 
 /** Shared order display formatting (IST). */
 
@@ -28,19 +33,34 @@ export function formatOrderDateTime(iso: string): string {
   }
 }
 
+const GENERIC_CANCEL_REASONS = new Set([
+  "order cancelled",
+  "order cancel",
+  "cancelled",
+  "canceled",
+]);
+
 export function splitRejectionMessage(
   reason: string | null | undefined,
   status: "rejected" | "rto",
-  cancelledByLabel?: string | null
+  cancelledByLabel?: string | null,
+  cancelledByType?: string | null
 ): { prefix: string; detail: string } {
   const label = (cancelledByLabel ?? "").trim();
   const r = (reason ?? "").trim();
+  const source = (cancelledByType ?? "").trim().toLowerCase();
   if (status === "rto") {
     return r
       ? { prefix: label || "RTO:", detail: r }
       : { prefix: label || "Return to origin", detail: "" };
   }
   if (label) {
+    if (isGatiMitraTeamCancellationLabel(label)) {
+      if (!r || cancellationReasonsAreDuplicate(r, label)) {
+        return { prefix: GATIMITRA_TEAM_REJECTION_LABEL, detail: "" };
+      }
+      return { prefix: GATIMITRA_TEAM_REJECTION_LABEL, detail: r };
+    }
     if (!r || cancellationReasonsAreDuplicate(r, label)) {
       return { prefix: label, detail: "" };
     }
@@ -48,6 +68,12 @@ export function splitRejectionMessage(
   }
   if (/^auto cancelled/i.test(r)) {
     return { prefix: "Auto Cancelled", detail: r.replace(/^auto cancelled:\s*/i, "").trim() };
+  }
+  if (source === "admin" || isCatalogCancellationReason(r)) {
+    if (!r || GENERIC_CANCEL_REASONS.has(r.toLowerCase())) {
+      return { prefix: GATIMITRA_TEAM_REJECTION_LABEL, detail: "" };
+    }
+    return { prefix: GATIMITRA_TEAM_REJECTION_LABEL, detail: r };
   }
   if (r) {
     return { prefix: "Rejected by Restaurant:", detail: r };

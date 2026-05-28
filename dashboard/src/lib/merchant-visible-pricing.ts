@@ -112,6 +112,35 @@ export function applyMerchantBaseToOrderItems<
   return { items: out, merchantSubtotal: round2(subtotal) };
 }
 
+/** Merchant add-on/customization unit — scaled when base was commission-adjusted. */
+export function merchantAddonUnitForLine(
+  customerBasePerUnit: number,
+  merchantBasePerUnit: number,
+  customerAddonPerUnit: number
+): number {
+  const addon = round2(customerAddonPerUnit);
+  if (addon <= 0.005) return 0;
+  const custBase = round2(customerBasePerUnit);
+  const merchBase = round2(merchantBasePerUnit);
+  if (merchBase > 0.005 && custBase > 0.005) {
+    return round2(addon * (merchBase / custBase));
+  }
+  return addon;
+}
+
+/** Per-unit merchant line subtotal (base + scaled add-ons/customizations). */
+export function merchantLineSubtotalPerUnit(
+  customerBasePerUnit: number,
+  merchantBasePerUnit: number,
+  customerAddonPerUnit: number
+): number {
+  return round2(
+    round2(merchantBasePerUnit) +
+      merchantAddonUnitForLine(customerBasePerUnit, merchantBasePerUnit, customerAddonPerUnit)
+  );
+}
+
+/** Sum of merchant_base_price × qty only (excludes add-ons — prefer line sums for CTM). */
 export function merchantSubtotalFromSnapshots(lines: ItemCommissionSnapshot[]): number {
   return round2(lines.reduce((acc, l) => acc + l.merchantBasePerUnit * Math.max(1, l.quantity), 0));
 }

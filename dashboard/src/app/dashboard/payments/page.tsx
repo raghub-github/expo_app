@@ -1,15 +1,12 @@
 import { requireDashboardAccess } from "@/lib/permissions/page-protection";
+import { PaymentManagementClient } from "@/components/payments/PaymentManagementClient";
 
 export default async function PaymentsPage() {
-  // Check if user has access to payment dashboard (super admin only)
   await requireDashboardAccess("PAYMENT");
 
   return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-
-      <div className="rounded-lg border border-gray-200 bg-white p-6">
-        <p className="text-gray-500">Payment management functionality coming soon...</p>
-      </div>
+    <div className="w-full min-w-0 max-w-full overflow-x-hidden pl-2 pr-3 pt-3 pb-4 sm:pl-3 sm:pr-4 sm:pt-4">
+      <PaymentManagementClient />
     </div>
   );
 }

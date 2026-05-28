@@ -154,6 +154,37 @@ export async function GET(req: NextRequest) {
       // Table may not exist or RLS may block
     }
 
+    let locked_settlement_total = locked_balance;
+    let settlement_paused = false;
+    try {
+      const { data: sp } = await db
+        .from('merchant_wallet')
+        .select('settlement_paused')
+        .eq('id', walletId)
+        .single();
+      settlement_paused = Boolean(sp?.settlement_paused);
+    } catch {
+      /* pre-0239 */
+    }
+    try {
+      const { data: lockedRows } = await db
+        .from('payment_order_settlements')
+        .select('merchant_net')
+        .eq('wallet_id', walletId)
+        .in('lifecycle_status', ['LOCKED', 'HOLD']);
+      locked_settlement_total = (lockedRows ?? []).reduce(
+        (s, r) => s + Number(r.merchant_net ?? 0),
+        0
+      );
+    } catch {
+      locked_settlement_total = locked_balance;
+    }
+
+    const withdrawable_balance = roundMoney(available_balance);
+    const total_balance = roundMoney(
+      available_balance + locked_balance + hold_balance + pending_balance
+    );
+
     return NextResponse.json({
       success: true,
       wallet_id: walletId,
@@ -175,6 +206,10 @@ export async function GET(req: NextRequest) {
       yesterday_earning: roundMoney(yesterday_earning),
       pending_withdrawal_total: roundMoney(pending_withdrawal_total),
       in_process_withdrawal_total: roundMoney(in_process_withdrawal_total),
+      locked_settlement_total: roundMoney(locked_settlement_total),
+      withdrawable_balance,
+      total_balance,
+      settlement_paused,
     });
   } catch (e) {
     console.error('[merchant/wallet]', e);

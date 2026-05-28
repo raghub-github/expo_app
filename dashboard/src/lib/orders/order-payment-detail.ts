@@ -1,13 +1,12 @@
 /**
  * Order payment card + modal — amounts from orders_core, billing_snapshot,
- * order_settlement_breakdown, pending_orders / payment_events / timelines.
- * Total CTM = net payable to merchant (after commission); commission is never returned to UI.
+ * pending_orders / payment_events / timelines.
+ * Total CTM = merchant-visible bill total (same as partnersite / merchant app).
  */
 
 import { sql } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
-import { getActiveCommissionForStore } from "@/lib/db/operations/commission";
-import { merchantFundedDiscountFromBilling } from "@/lib/merchant-billing-discount";
+import { merchantOrderTotalFromBilling } from "@/lib/merchant-visible-pricing";
 
 export type OrderPaymentRecord = {
   paymentId: string;
@@ -18,13 +17,33 @@ export type OrderPaymentRecord = {
   productType: string | null;
   refunded: boolean;
   partialRefunded: boolean;
+  partiallyRefundedAmount: number | null;
   amount: number | null;
   deliveryFee: number | null;
+  /** Customer cost for this line (CTC). */
+  ctc: number | null;
+  /** Cash paid (online) for this line. */
+  cashin: number | null;
+  pointsUsed: number | null;
+  /** Merchant amount for this line (CTM). */
+  ctm: number | null;
+  cashbackEarned: number | null;
+  pgName: string | null;
+  pgTransactionId: string | null;
+  couponCode: string | null;
+  couponUserUsageCount: number | null;
+  couponExpiryDate: string | null;
+  couponValue: number | null;
+  couponMaxDiscount: number | null;
+  couponMaxUsage: number | null;
+  couponMaxRedemption: number | null;
+  couponType: string | null;
+  couponUserEligible: boolean | null;
 };
 
 export type OrderPaymentDetail = {
   totalAmount: number | null;
-  /** Net amount credited / payable to merchant after commission. */
+  /** Merchant-visible bill total (items at merchant prices + packaging − restaurant discount). */
   totalCtm: number | null;
   totalCashbackEarned: number | null;
   deliveryFee: number | null;
@@ -52,18 +71,23 @@ function readRecord(raw: unknown): Record<string, unknown> | null {
   return raw as Record<string, unknown>;
 }
 
+function merchantItemSubtotalFromBilling(
+  billing: Record<string, unknown> | null,
+  core: Record<string, unknown>
+): number {
+  return (
+    round2(
+      (asNum(billing?.item_total) ?? 0) + (asNum(billing?.addon_total) ?? 0)
+    ) ||
+    round2((asNum(core.item_total) ?? 0) + (asNum(core.addon_total) ?? 0))
+  );
+}
+
 function merchantGrossFromBilling(
   billing: Record<string, unknown> | null,
   core: Record<string, unknown>
 ): number {
-  const itemTotal =
-    round2(
-      (asNum(billing?.item_total) ?? 0) + (asNum(billing?.addon_total) ?? 0)
-    ) ||
-    round2((asNum(core.item_total) ?? 0) + (asNum(core.addon_total) ?? 0));
-  const packaging = asNum(billing?.packaging_fee) ?? 0;
-  const merchantDisc = merchantFundedDiscountFromBilling(billing);
-  return round2(Math.max(0, itemTotal + packaging - merchantDisc));
+  return merchantItemSubtotalFromBilling(billing, core);
 }
 
 function cashbackFromBilling(billing: Record<string, unknown> | null): number | null {
@@ -84,20 +108,255 @@ function cashbackFromBilling(billing: Record<string, unknown> | null): number | 
   return sum > 0 ? round2(sum) : null;
 }
 
-async function resolveCommissionAmount(
-  merchantStoreId: number | null,
-  merchantGross: number,
-  coreCommission: number | null
-): Promise<number | null> {
-  if (coreCommission != null && coreCommission >= 0) return round2(coreCommission);
-  if (merchantStoreId == null || merchantGross <= 0) return null;
-  try {
-    const trace = await getActiveCommissionForStore(merchantStoreId);
-    if (trace.percent > 0) return round2((merchantGross * trace.percent) / 100);
-  } catch {
-    /* commission tables optional */
+type CouponMeta = {
+  code: string | null;
+  value: number | null;
+  maxDiscount: number | null;
+  maxUsage: number | null;
+  maxRedemption: number | null;
+  type: string | null;
+  userUsageCount: number | null;
+  expiryDate: string | null;
+  userEligible: boolean | null;
+};
+
+function extractCouponMeta(billing: Record<string, unknown> | null): CouponMeta {
+  const empty: CouponMeta = {
+    code: null,
+    value: null,
+    maxDiscount: null,
+    maxUsage: null,
+    maxRedemption: null,
+    type: null,
+    userUsageCount: null,
+    expiryDate: null,
+    userEligible: null,
+  };
+  if (!billing) return empty;
+
+  const discounts = Array.isArray(billing.discounts) ? billing.discounts : [];
+  for (const d of discounts) {
+    if (!d || typeof d !== "object") continue;
+    const row = d as Record<string, unknown>;
+    const meta =
+      row.meta && typeof row.meta === "object"
+        ? (row.meta as Record<string, unknown>)
+        : {};
+    const label = String(row.label ?? "").toLowerCase();
+    const isCoupon =
+      String(meta.source ?? "").toLowerCase() === "coupon" ||
+      meta.couponCode != null ||
+      meta.code != null ||
+      label.includes("coupon");
+    if (!isCoupon) continue;
+
+    return {
+      code:
+        (typeof meta.couponCode === "string" && meta.couponCode.trim()) ||
+        (typeof meta.code === "string" && meta.code.trim()) ||
+        null,
+      value: asNum(meta.couponValue ?? meta.value ?? row.amount),
+      maxDiscount: asNum(meta.maxDiscount ?? meta.couponMaxDiscount),
+      maxUsage: asNum(meta.maxUsage ?? meta.couponMaxUsage),
+      maxRedemption: asNum(meta.maxRedemption ?? meta.couponMaxRedemption),
+      type:
+        (typeof meta.couponType === "string" && meta.couponType) ||
+        (typeof row.kind === "string" && row.kind) ||
+        null,
+      userUsageCount: asNum(meta.userUsageCount ?? meta.usageCount),
+      expiryDate:
+        typeof meta.expiryDate === "string"
+          ? meta.expiryDate
+          : typeof meta.expiresAt === "string"
+            ? meta.expiresAt
+            : null,
+      userEligible:
+        typeof meta.userEligible === "boolean"
+          ? meta.userEligible
+          : typeof meta.eligible === "boolean"
+            ? meta.eligible
+            : null,
+    };
   }
-  return null;
+  return empty;
+}
+
+function resolveDeliveryFee(
+  billing: Record<string, unknown> | null,
+  core: Record<string, unknown>,
+  settlementDelivery: number | null
+): number | null {
+  const fromBilling = asNum(billing?.delivery_fee);
+  const quoted = asNum(billing?.deliveryFeeQuotedInr ?? billing?.delivery_fee_quoted);
+  const fee =
+    settlementDelivery ??
+    asNum(core.total_delivery_fee) ??
+    (fromBilling != null && fromBilling > 0 ? fromBilling : null) ??
+    (quoted != null && quoted > 0 ? quoted : null);
+  return fee != null && fee > 0 ? round2(fee) : null;
+}
+
+function isOnlinePaymentMode(mode: string | null): boolean {
+  if (!mode) return false;
+  const m = mode.trim().toUpperCase();
+  return m !== "COD" && m !== "CASH" && m !== "CASH_ON_DELIVERY";
+}
+
+function buildPaymentLineRecords(args: {
+  paymentIdLabel: string;
+  transactionId: string | null;
+  mpTransactionId: string | null;
+  paymentStatus: string;
+  redemptionType: string | null;
+  orderType: string;
+  refunded: boolean;
+  partialRefunded: boolean;
+  partialRefundedAmount: number | null;
+  billing: Record<string, unknown> | null;
+  core: Record<string, unknown>;
+  merchantItemSubtotal: number | null;
+  merchantTotal: number | null;
+  deliveryFeeTotal: number | null;
+  cashbackEarned: number | null;
+  pgName: string | null;
+  pgTransactionId: string | null;
+  paymentMode: string | null;
+  coupon: CouponMeta;
+}): OrderPaymentRecord[] {
+  const billing = args.billing ?? {};
+  const core = args.core;
+  const online = isOnlinePaymentMode(args.paymentMode);
+  const attachCoupon = (row: OrderPaymentRecord, withCoupon: boolean): OrderPaymentRecord => ({
+    ...row,
+    couponCode: withCoupon ? args.coupon.code : null,
+    couponUserUsageCount: withCoupon ? args.coupon.userUsageCount : null,
+    couponExpiryDate: withCoupon ? args.coupon.expiryDate : null,
+    couponValue: withCoupon ? args.coupon.value : null,
+    couponMaxDiscount: withCoupon ? args.coupon.maxDiscount : null,
+    couponMaxUsage: withCoupon ? args.coupon.maxUsage : null,
+    couponMaxRedemption: withCoupon ? args.coupon.maxRedemption : null,
+    couponType: withCoupon ? args.coupon.type : null,
+    couponUserEligible: withCoupon ? args.coupon.userEligible : null,
+  });
+
+  const base = {
+    paymentId: args.paymentIdLabel,
+    transactionId: args.transactionId,
+    mpTransactionId: args.mpTransactionId,
+    paymentStatus: args.paymentStatus,
+    redemptionType: args.redemptionType,
+    refunded: args.refunded,
+    partialRefunded: args.partialRefunded,
+    partiallyRefundedAmount: args.partialRefunded ? args.partialRefundedAmount : null,
+    cashbackEarned: args.cashbackEarned,
+    pgName: args.pgName,
+    pgTransactionId: args.pgTransactionId ?? args.transactionId,
+    pointsUsed: null,
+    couponCode: null as string | null,
+    couponUserUsageCount: null as number | null,
+    couponExpiryDate: null as string | null,
+    couponValue: null as number | null,
+    couponMaxDiscount: null as number | null,
+    couponMaxUsage: null as number | null,
+    couponMaxRedemption: null as number | null,
+    couponType: null as string | null,
+    couponUserEligible: null as boolean | null,
+  };
+
+  const itemGross =
+    round2((asNum(billing.item_total) ?? 0) + (asNum(billing.addon_total) ?? 0)) ||
+    round2((asNum(core.item_total) ?? 0) + (asNum(core.addon_total) ?? 0));
+  const packaging = round2(asNum(billing.packaging_fee) ?? 0);
+  const delivery = args.deliveryFeeTotal ?? round2(asNum(billing.delivery_fee) ?? 0);
+  const platform = round2(asNum(billing.platform_fee) ?? 0);
+  const surge = round2(asNum(billing.surge_fee) ?? 0);
+  const smallOrder = round2(asNum(billing.small_order_fee) ?? 0);
+  const convenience = round2(asNum(billing.convenience_fee) ?? 0);
+  const misc = round2(asNum(billing.misc_fee) ?? 0);
+  const gst = round2(asNum(billing.tax_total) ?? 0);
+  const tip = round2(asNum(billing.tip_amount) ?? 0);
+  const donation = round2(asNum(billing.donation_amount) ?? 0);
+
+  const merchantItem = args.merchantItemSubtotal;
+  const itemRatio =
+    merchantItem != null && merchantItem > 0 && itemGross > 0
+      ? merchantItem / itemGross
+      : null;
+
+  const lineCtm = (customerAmt: number, merchantBillable: boolean): number | null => {
+    if (!merchantBillable || customerAmt <= 0) return null;
+    if (itemRatio != null) return round2(customerAmt * itemRatio);
+    return null;
+  };
+
+  const pushLine = (
+    productType: string,
+    amount: number,
+    opts?: { deliveryFee?: number | null; ctm?: number | null; merchantBillable?: boolean }
+  ): OrderPaymentRecord | null => {
+    if (amount <= 0) return null;
+    const ctc = round2(amount);
+    const ctm =
+      opts?.ctm != null
+        ? opts.ctm
+        : lineCtm(ctc, opts?.merchantBillable ?? false);
+    return {
+      ...base,
+      productType,
+      amount: ctc,
+      ctc,
+      cashin: online ? ctc : null,
+      ctm,
+      deliveryFee: opts?.deliveryFee ?? null,
+    };
+  };
+
+  const lines: OrderPaymentRecord[] = [];
+  let couponAttached = false;
+
+  const specs: Array<OrderPaymentRecord | null> = [
+    pushLine("FOOD", itemGross, { merchantBillable: true, ctm: merchantItem ?? undefined }),
+    pushLine("PACKAGING", packaging, { merchantBillable: true, ctm: packaging > 0 ? packaging : null }),
+    pushLine("DELIVERY_FEE", delivery, { deliveryFee: delivery > 0 ? delivery : null }),
+    pushLine("PLATFORM_FEE", platform),
+    pushLine("SURGE_FEE", surge),
+    pushLine("SMALL_ORDER_FEE", smallOrder),
+    pushLine("CONVENIENCE_FEE", convenience),
+    pushLine("MISC_FEE", misc),
+    pushLine("GST", gst),
+    pushLine("TIP", tip),
+    pushLine("DONATION", donation),
+  ];
+
+  for (const row of specs) {
+    if (!row) continue;
+    const withCoupon = !couponAttached;
+    if (withCoupon) couponAttached = true;
+    lines.push(attachCoupon(row, withCoupon));
+  }
+
+  if (lines.length === 0) {
+    const grand =
+      asNum(core.grand_total) ?? asNum(billing.final_amount) ?? asNum(billing.final_payable);
+    if (grand != null && grand > 0) {
+      lines.push(
+        attachCoupon(
+          {
+            ...base,
+            productType: args.orderType?.toUpperCase() || "ORDER",
+            amount: round2(grand),
+            ctc: round2(grand),
+            cashin: online ? round2(grand) : null,
+            ctm: args.merchantTotal,
+            deliveryFee: args.deliveryFeeTotal,
+          },
+          true
+        )
+      );
+    }
+  }
+
+  return lines;
 }
 
 async function merchantGrossFromCommissionSnapshots(
@@ -111,39 +370,61 @@ async function merchantGrossFromCommissionSnapshots(
     const rows = await db.execute(sql`
       SELECT
         s.merchant_base_price::text AS merchant_base_price,
-        oci.quantity
+        oci.quantity,
+        oci.base_price::text AS base_price,
+        oci.addon_price::text AS addon_price
       FROM order_item_commission_snapshots s
       JOIN orders_core_items oci ON oci.id = s.order_item_id
       WHERE s.order_id = ${orderCoreId}
         ${merchantStoreId != null && merchantStoreId > 0 ? sql`AND s.store_id = ${merchantStoreId}` : sql``}
     `);
-    const list = rows as unknown as Array<{ merchant_base_price: string; quantity: number }>;
+    const list = rows as unknown as Array<{
+      merchant_base_price: string;
+      quantity: number;
+      base_price: string;
+      addon_price: string;
+    }>;
     if (list.length === 0) return null;
     let itemSum = 0;
     for (const r of list) {
-      itemSum += (asNum(r.merchant_base_price) ?? 0) * Math.max(1, Number(r.quantity) || 1);
+      const qty = Math.max(1, Number(r.quantity) || 1);
+      const merchantBase = asNum(r.merchant_base_price) ?? 0;
+      const customerBase = asNum(r.base_price) ?? 0;
+      const customerAddonPerUnit = asNum(r.addon_price) ?? 0;
+      let merchantAddonPerUnit = customerAddonPerUnit;
+      if (
+        customerAddonPerUnit > 0.005 &&
+        merchantBase > 0.005 &&
+        customerBase > 0.005
+      ) {
+        merchantAddonPerUnit = round2(
+          customerAddonPerUnit * (merchantBase / customerBase)
+        );
+      }
+      itemSum += (merchantBase + merchantAddonPerUnit) * qty;
     }
     if (itemSum <= 0) return null;
-    const packaging = asNum(billing?.packaging_fee) ?? 0;
-    const merchantDisc = merchantFundedDiscountFromBilling(billing);
-    return round2(Math.max(0, itemSum + packaging - merchantDisc));
+    return round2(itemSum);
   } catch {
     return null;
   }
 }
 
-/** Net payable to merchant (CTM) — uses merchant_base subtotal when snapshots exist. */
+/** Merchant bill total — matches partnersite / merchant app (not settlement net). */
 async function resolveTotalCtm(
   merchantStoreId: number | null,
   core: Record<string, unknown>,
   billing: Record<string, unknown> | null,
-  settlementNet: number | null,
-  settlementCommission: number | null,
   orderCoreId?: number
 ): Promise<number | null> {
-  if (settlementNet != null && settlementNet > 0) return round2(settlementNet);
+  const db = getDb();
+  const packagingFallback = asNum(billing?.packaging_fee) ?? 0;
+  const customerGrand =
+    asNum(core.grand_total) ??
+    asNum(billing?.final_amount) ??
+    asNum(billing?.final_payable);
 
-  let merchantGross =
+  let merchantItemSubtotal =
     orderCoreId != null && orderCoreId > 0
       ? await merchantGrossFromCommissionSnapshots(
           orderCoreId,
@@ -152,39 +433,42 @@ async function resolveTotalCtm(
           core
         )
       : null;
-  if (merchantGross == null || merchantGross <= 0) {
-    merchantGross = merchantGrossFromBilling(billing, core);
+  if (merchantItemSubtotal == null || merchantItemSubtotal <= 0) {
+    merchantItemSubtotal = merchantGrossFromBilling(billing, core);
   }
-  const commission =
-    settlementCommission != null && settlementCommission >= 0
-      ? settlementCommission
-      : await resolveCommissionAmount(
-          merchantStoreId,
-          merchantGross,
-          asNum(core.commission_amount)
-        );
 
-  const storedCtm = asNum(core.total_ctm);
-  const grand =
-    asNum(core.grand_total) ??
-    asNum(billing?.final_amount) ??
-    asNum(billing?.final_payable);
+  const computed =
+    merchantItemSubtotal > 0
+      ? merchantOrderTotalFromBilling(
+          merchantItemSubtotal,
+          billing,
+          packagingFallback
+        )
+      : null;
 
-  if (storedCtm != null && storedCtm > 0) {
-    if (commission != null && commission > 0 && Math.abs(storedCtm - commission) < 0.02) {
-      return round2(Math.max(0, merchantGross - commission));
+  if (computed != null && computed > 0) return computed;
+
+  if (orderCoreId != null && orderCoreId > 0) {
+    try {
+      const foodRows = await db.execute(sql`
+        SELECT food_items_total_value::text AS food_items_total_value
+        FROM orders_food
+        WHERE order_id = ${orderCoreId}
+        LIMIT 1
+      `);
+      const foodTotal = asNum(
+        (foodRows as unknown as Record<string, unknown>[])[0]?.food_items_total_value
+      );
+      if (foodTotal > 0) {
+        const looksLikeCustomerTotal =
+          customerGrand != null && foodTotal >= customerGrand - 0.02;
+        if (!looksLikeCustomerTotal) return round2(foodTotal);
+      }
+    } catch {
+      /* orders_food optional */
     }
-    if (grand != null && grand > 0 && storedCtm < grand * 0.98) {
-      return round2(storedCtm);
-    }
-    if (commission == null) return round2(storedCtm);
   }
 
-  if (merchantGross > 0 && commission != null) {
-    return round2(Math.max(0, merchantGross - commission));
-  }
-
-  if (merchantGross > 0) return merchantGross;
   return null;
 }
 
@@ -238,20 +522,16 @@ export async function fetchOrderPaymentDetail(input: {
 
   const billing = readRecord(core.billing_snapshot);
 
-  let settlementNet: number | null = null;
-  let settlementCommission: number | null = null;
   let settlementDelivery: number | null = null;
   try {
     const sb = await db.execute(sql`
-      SELECT merchant_net, commission_amount, delivery_fee
+      SELECT delivery_fee
       FROM order_settlement_breakdown
       WHERE order_id = ${orderCoreId}
       LIMIT 1
     `);
     const row = (sb as unknown as Record<string, unknown>[])[0];
     if (row) {
-      settlementNet = asNum(row.merchant_net);
-      settlementCommission = asNum(row.commission_amount);
       settlementDelivery = asNum(row.delivery_fee);
     }
   } catch {
@@ -260,6 +540,7 @@ export async function fetchOrderPaymentDetail(input: {
 
   let razorpayOrderId: string | null = null;
   let razorpayPaymentId: string | null = null;
+  let pgName: string | null = null;
 
   try {
     const tl = await db.execute(sql`
@@ -289,7 +570,7 @@ export async function fetchOrderPaymentDetail(input: {
   if (orderText) {
     try {
       const pending = await db.execute(sql`
-        SELECT razorpay_order_id, razorpay_payment_id
+        SELECT razorpay_order_id, razorpay_payment_id, payment_method
         FROM pending_orders
         WHERE finalized_order_id = ${orderText}
         ORDER BY updated_at DESC
@@ -303,6 +584,9 @@ export async function fetchOrderPaymentDetail(input: {
         razorpayPaymentId =
           razorpayPaymentId ??
           (p.razorpay_payment_id != null ? String(p.razorpay_payment_id) : null);
+        if (!pgName && p.payment_method != null) {
+          pgName = String(p.payment_method);
+        }
       }
     } catch {
       /* ignore */
@@ -310,7 +594,7 @@ export async function fetchOrderPaymentDetail(input: {
 
     try {
       const pe = await db.execute(sql`
-        SELECT razorpay_order_id, razorpay_payment_id
+        SELECT razorpay_order_id, razorpay_payment_id, payload, source
         FROM payment_events
         WHERE order_id = ${orderText}
           AND razorpay_payment_id IS NOT NULL
@@ -325,6 +609,18 @@ export async function fetchOrderPaymentDetail(input: {
         razorpayPaymentId =
           razorpayPaymentId ??
           (e.razorpay_payment_id != null ? String(e.razorpay_payment_id) : null);
+        if (!pgName) {
+          const payload = readRecord(e.payload);
+          const method =
+            payload?.method ??
+            payload?.payment_method ??
+            (payload?.payment && typeof payload.payment === "object"
+              ? (payload.payment as Record<string, unknown>).method
+              : null);
+          pgName =
+            (method != null ? String(method) : null) ??
+            (e.source != null ? String(e.source) : null);
+        }
       }
     } catch {
       /* ignore */
@@ -337,18 +633,25 @@ export async function fetchOrderPaymentDetail(input: {
     input.grandTotal ??
     null;
 
-  const deliveryFee =
-    settlementDelivery ??
-    asNum(core.total_delivery_fee) ??
-    asNum(billing?.delivery_fee) ??
-    null;
+  const deliveryFee = resolveDeliveryFee(billing, core, settlementDelivery);
+
+  let merchantItemSubtotal =
+    orderCoreId > 0
+      ? await merchantGrossFromCommissionSnapshots(
+          orderCoreId,
+          input.merchantStoreId,
+          billing,
+          core
+        )
+      : null;
+  if (merchantItemSubtotal == null || merchantItemSubtotal <= 0) {
+    merchantItemSubtotal = merchantGrossFromBilling(billing, core);
+  }
 
   const totalCtm = await resolveTotalCtm(
     input.merchantStoreId,
     core,
     billing,
-    settlementNet,
-    settlementCommission,
     orderCoreId
   );
 
@@ -361,6 +664,14 @@ export async function fetchOrderPaymentDetail(input: {
     input.paymentStatus ??
     "—";
 
+  const paymentMode =
+    (core.payment_method != null ? String(core.payment_method) : null) ??
+    input.paymentMethod;
+
+  if (!pgName) {
+    pgName = razorpayPaymentId ? "razorpay" : paymentMode;
+  }
+
   const isRefunded =
     paymentStatus.toLowerCase().includes("refund") ||
     (totalRefunded != null && totalRefunded > 0);
@@ -372,36 +683,47 @@ export async function fetchOrderPaymentDetail(input: {
     totalRefunded > 0 &&
     totalRefunded < totalAmount - 0.01;
 
-  const record: OrderPaymentRecord = {
-    paymentId: paymentIdLabel,
+  const coupon = extractCouponMeta(billing);
+  const cashbackEarned = cashbackFromBilling(billing);
+
+  const records = buildPaymentLineRecords({
+    paymentIdLabel,
     transactionId: razorpayPaymentId,
     mpTransactionId: razorpayOrderId,
     paymentStatus,
     redemptionType:
       (core.order_source != null ? String(core.order_source) : null) ??
       input.orderSource,
-    productType: input.orderType,
+    orderType: input.orderType,
     refunded: isRefunded && !partialRefunded,
     partialRefunded,
-    amount: totalAmount,
-    deliveryFee: deliveryFee != null ? round2(Math.max(0, deliveryFee)) : null,
-  };
+    partialRefundedAmount:
+      totalRefunded != null && totalRefunded > 0 ? round2(totalRefunded) : null,
+    billing,
+    core,
+    merchantItemSubtotal: merchantItemSubtotal > 0 ? merchantItemSubtotal : null,
+    merchantTotal: totalCtm,
+    deliveryFeeTotal: deliveryFee,
+    cashbackEarned,
+    pgName,
+    pgTransactionId: razorpayPaymentId,
+    paymentMode,
+    coupon,
+  });
 
   return {
     totalAmount: totalAmount != null ? round2(totalAmount) : null,
     totalCtm,
-    totalCashbackEarned: cashbackFromBilling(billing),
-    deliveryFee: deliveryFee != null ? round2(Math.max(0, deliveryFee)) : null,
+    totalCashbackEarned: cashbackEarned,
+    deliveryFee,
     source:
       (core.order_source != null ? String(core.order_source) : null) ??
       input.orderSource,
-    paymentMode:
-      (core.payment_method != null ? String(core.payment_method) : null) ??
-      input.paymentMethod,
+    paymentMode,
     partialRefunded,
     refundAmount: totalRefunded != null && totalRefunded > 0 ? round2(totalRefunded) : null,
     totalRefunded: totalRefunded != null ? round2(totalRefunded) : null,
     totalPaid: totalPaid != null ? round2(totalPaid) : null,
-    records: [record],
+    records,
   };
 }

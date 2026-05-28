@@ -83,11 +83,9 @@ export function useDashboardAccessQuery() {
     queryKey: queryKeys.dashboardAccess(),
     queryFn: fetchDashboardAccess,
     ...staticConfig,
-    // Access grants can change while a user session is active (e.g. super admin updates).
-    // Revalidate on mount/focus so queue/status-toggle gating reflects latest permissions.
-    staleTime: 60 * 1000,
-    refetchOnMount: true,
-    refetchOnWindowFocus: true,
+    staleTime: 10 * 60 * 1000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
     placeholderData: (previousData) => previousData,
     retry: (failureCount, error) => {
       if (failureCount >= 3) return false;

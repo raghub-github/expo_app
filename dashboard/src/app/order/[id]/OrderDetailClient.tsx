@@ -15,26 +15,41 @@ import type { OrderPaymentDetail } from "@/lib/orders/order-payment-detail";
 import RiderDetails from "./RiderDetails";
 import RiderRouteMap from "./RiderRouteMap";
 import { useAuthOptional } from "@/providers/AuthProvider";
+import { useIsActiveRoute } from "@/hooks/useIsActiveRoute";
+import { usePageVisible } from "@/hooks/usePageVisible";
 import { ChevronDown, History, RefreshCw, X } from "lucide-react";
+import Link from "next/link";
+import type { OrderCancellationInfo } from "@/lib/merchant-cancellation-display";
+import {
+  isManualStatusOptionDisabled,
+  canApplyManualStatusUpdate,
+  resolveDispatchManualStage,
+  MANUAL_STATUS_LABELS,
+  type ManualStatusValue,
+} from "@/lib/orders/order-dispatch-status";
 
 /** Status options for "Update order status" modal (value = DB enum) */
 const STATUS_OPTIONS = [
-  { value: "picked_up" as const, label: "Dispatch Ready" },
-  { value: "in_transit" as const, label: "Dispatched" },
-  { value: "delivered" as const, label: "Delivered" },
+  { value: "picked_up" as const, label: MANUAL_STATUS_LABELS.picked_up },
+  { value: "in_transit" as const, label: MANUAL_STATUS_LABELS.in_transit },
+  { value: "delivered" as const, label: MANUAL_STATUS_LABELS.delivered },
 ] as const;
-
-const STATUS_TO_LABEL: Record<string, string> = {
-  picked_up: "Dispatch Ready",
-  in_transit: "Dispatched",
-  delivered: "Delivered",
-};
 
 /** Single entry from GET /api/orders/core statusHistory (manual status updates). */
 export interface OrderStatusHistoryEntry {
   toStatus: string;
   updatedByEmail: string;
+  updatedByRole: string;
   createdAt: string;
+}
+
+function AgentRoleBadge({ role }: { role: string }) {
+  const label = role?.trim() || "AGENT";
+  return (
+    <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-[2px] text-[9px] font-medium text-slate-700 whitespace-nowrap">
+      {label}
+    </span>
+  );
 }
 
 interface OrderDetail {
@@ -111,6 +126,10 @@ interface OrderDetail {
   customerUserType?: string | null;
   riderInstructionsList?: string[];
   merchantInstructionsList?: string[];
+  cancellationInfo?: OrderCancellationInfo | null;
+  pickupOtp?: string | null;
+  rtoOtp?: string | null;
+  deliveryOtp?: string | null;
 }
 
 /** Merchant summary from order API for MX card (show immediately on load) */
@@ -134,6 +153,13 @@ interface MerchantSummaryFromApi {
   merchantType?: string | null;
   assignedUserEmail?: string | null;
   assignedUserDepartment?: string | null;
+  approval_status?: string | null;
+  operational_status?: string | null;
+  is_active?: boolean | null;
+  is_accepting_orders?: boolean | null;
+  is_available?: boolean | null;
+  deleted_at?: string | null;
+  delisted_at?: string | null;
 }
 
 /** Refund list item from GET /api/orders/[id]/refunds */
@@ -182,6 +208,13 @@ function toMerchantProfile(summary: MerchantSummaryFromApi) {
     merchantType: summary.merchantType ?? null,
     assignedUserEmail: summary.assignedUserEmail ?? null,
     assignedUserDepartment: summary.assignedUserDepartment ?? null,
+    approval_status: summary.approval_status ?? null,
+    operational_status: summary.operational_status ?? null,
+    is_active: summary.is_active ?? null,
+    is_accepting_orders: summary.is_accepting_orders ?? null,
+    is_available: summary.is_available ?? null,
+    deleted_at: summary.deleted_at ?? null,
+    delisted_at: summary.delisted_at ?? null,
   };
 }
 
@@ -254,16 +287,42 @@ export default function OrderDetailClient({
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
   const [orderRefunds, setOrderRefunds] = useState<OrderRefundListItem[]>([]);
   const [orderItemsPayload, setOrderItemsPayload] = useState<OrderItemsPayload | null>(null);
+  const itemsPrefetchInFlight = useRef(false);
   const [orderTickets, setOrderTickets] = useState<OrderTicketSummary[]>([]);
   const [showTicketsModal, setShowTicketsModal] = useState(false);
   const [statusHistory, setStatusHistory] = useState<OrderStatusHistoryEntry[]>([]);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [statusUpdateError, setStatusUpdateError] = useState<string | null>(null);
   const [timelineEntries, setTimelineEntries] = useState<OrderTimelineEntry[] | null>(null);
   const [paymentDetail, setPaymentDetail] = useState<OrderPaymentDetail | null>(null);
   const [copiedOrderId, setCopiedOrderId] = useState(false);
   const copyOrderIdResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const ensureOrderItemsPrefetch = useCallback(() => {
+    const orderId = order?.id;
+    if (orderId == null || !Number.isFinite(orderId)) return;
+    if (orderItemsPayload?.items?.length) return;
+    if (itemsPrefetchInFlight.current) return;
+
+    itemsPrefetchInFlight.current = true;
+    void fetch(`/api/orders/${orderId}/items`, { credentials: "include" })
+      .then((res) => res.json())
+      .then((body) => parseOrderItemsApiResponse(body))
+      .then((parsed) => {
+        if (parsed) setOrderItemsPayload(parsed);
+      })
+      .catch(() => {
+        /* modal may fetch on miss */
+      })
+      .finally(() => {
+        itemsPrefetchInFlight.current = false;
+      });
+  }, [order?.id, orderItemsPayload?.items?.length]);
+
   const auth = useAuthOptional();
   const loggedInEmail = auth?.user?.email ?? null;
+  const isOrderPage = useIsActiveRoute("/order");
+  const pageVisible = usePageVisible();
 
   useEffect(() => {
     onLoadingChange?.(loading);
@@ -300,9 +359,13 @@ export default function OrderDetailClient({
   }, [order?.id]);
 
   useEffect(() => {
+    if (!isOrderPage || !pageVisible) return;
+
     let cancelled = false;
 
-    if (!orderPublicId) {
+    const normalizedPublicId = orderPublicId.trim().replace(/[-\s]/g, "");
+
+    if (!normalizedPublicId) {
       setOrder(null);
       setPaymentDetail(null);
       setTimelineEntries(null);
@@ -321,40 +384,73 @@ export default function OrderDetailClient({
     const params = new URLSearchParams({
       orderType: "food",
       searchType: "Order Id",
-      search: orderPublicId,
+      search: normalizedPublicId,
       limit: "1",
     });
     if (refetchTrigger > 0) {
       params.set("skipCache", "1");
     }
 
-    const orderIdForParallel = refetchTrigger > 0 && order?.id ? order.id : null;
+    const mapTimelineEntries = (raw: OrderTimelineEntry[]) =>
+      raw.map((e) => ({
+        ...e,
+        occurredAt:
+          e.occurredAt instanceof Date
+            ? e.occurredAt.toISOString()
+            : String(e.occurredAt ?? ""),
+        expectedByAt:
+          e.expectedByAt instanceof Date
+            ? e.expectedByAt.toISOString()
+            : e.expectedByAt != null
+              ? String(e.expectedByAt)
+              : null,
+      }));
 
-    const fetchOrder = fetch(`/api/orders/core?${params.toString()}`).then((res) => res.json());
-    const fetchTimeline =
-      orderIdForParallel != null
-        ? fetch(`/api/orders/${orderIdForParallel}/timeline`).then((res) => res.json().catch(() => null))
-        : Promise.resolve(null);
-
-    Promise.all([fetchOrder, orderIdForParallel != null ? fetchTimeline : Promise.resolve(null)])
-      .then(async ([body, timelineBodyOrNull]) => {
-        if (cancelled) return;
-        let timelineBody = timelineBodyOrNull;
-        if (timelineBody == null && body?.success && Array.isArray(body?.data) && body.data.length > 0) {
-          const row = body.data[0] as any;
-          const embedded = (body as { timeline?: unknown }).timeline;
-          if (Array.isArray(embedded)) {
-            timelineBody = { success: true, data: embedded };
-          } else {
-            timelineBody = await fetch(`/api/orders/${row.id}/timeline`).then((r) => r.json().catch(() => null));
+    const loadTimelineInBackground = (coreOrderId: number) => {
+      void fetch(`/api/orders/${coreOrderId}/timeline`)
+        .then((r) => r.json().catch(() => null))
+        .then((timelineBody) => {
+          if (cancelled) return;
+          if (timelineBody?.success && Array.isArray(timelineBody?.data)) {
+            setTimelineEntries(
+              mapTimelineEntries(timelineBody.data as OrderTimelineEntry[])
+            );
           }
+        });
+    };
+
+    fetch(`/api/orders/core?${params.toString()}`)
+      .then(async (res) => {
+        const text = await res.text();
+        if (!text.trim()) {
+          return { success: false, error: res.ok ? "Empty response" : `HTTP ${res.status}` };
         }
+        try {
+          return JSON.parse(text) as {
+            success?: boolean;
+            data?: unknown[];
+            error?: string;
+          };
+        } catch {
+          throw new Error("Invalid order response");
+        }
+      })
+      .then(async (body) => {
+        if (cancelled) return;
         if (body.success && Array.isArray(body.data) && body.data.length > 0) {
           const row = body.data[0] as any;
+          const coreOrderId =
+            row.id != null && Number.isFinite(Number(row.id)) ? Number(row.id) : null;
+          const itemsPromise =
+            coreOrderId != null
+              ? fetch(`/api/orders/${coreOrderId}/items`, { credentials: "include" })
+                  .then((res) => res.json())
+                  .then((itemsBody) => parseOrderItemsApiResponse(itemsBody))
+              : Promise.resolve(null);
+
+          const embedded = (body as { timeline?: unknown }).timeline;
           const timeline =
-            timelineBody?.success && Array.isArray(timelineBody?.data)
-              ? (timelineBody.data as OrderTimelineEntry[])
-              : [];
+            Array.isArray(embedded) ? (embedded as OrderTimelineEntry[]) : [];
           if (cancelled) return;
           if (body.merchantSummary != null && typeof body.merchantSummary === "object") {
             setMerchantSummary(body.merchantSummary as MerchantSummaryFromApi);
@@ -369,11 +465,19 @@ export default function OrderDetailClient({
           );
           if (Array.isArray(body.statusHistory)) {
             setStatusHistory(
-              body.statusHistory.map((h: { toStatus: string; updatedByEmail: string; createdAt: string }) => ({
-                toStatus: h.toStatus,
-                updatedByEmail: h.updatedByEmail,
-                createdAt: h.createdAt,
-              }))
+              body.statusHistory.map(
+                (h: {
+                  toStatus: string;
+                  updatedByEmail: string;
+                  updatedByRole?: string;
+                  createdAt: string;
+                }) => ({
+                  toStatus: h.toStatus,
+                  updatedByEmail: h.updatedByEmail,
+                  updatedByRole: h.updatedByRole?.trim() || "AGENT",
+                  createdAt: h.createdAt,
+                })
+              )
             );
           } else {
             setStatusHistory([]);
@@ -390,21 +494,10 @@ export default function OrderDetailClient({
             (row.paymentDetail as OrderPaymentDetail | undefined);
           setPaymentDetail(paymentFromApi ?? null);
 
-          setTimelineEntries(
-            timeline.map((e) => ({
-              ...e,
-              occurredAt:
-                e.occurredAt instanceof Date
-                  ? e.occurredAt.toISOString()
-                  : String(e.occurredAt ?? ""),
-              expectedByAt:
-                e.expectedByAt instanceof Date
-                  ? e.expectedByAt.toISOString()
-                  : e.expectedByAt != null
-                    ? String(e.expectedByAt)
-                    : null,
-            }))
-          );
+          setTimelineEntries(timeline.length > 0 ? mapTimelineEntries(timeline) : []);
+          if (coreOrderId != null && timeline.length === 0) {
+            loadTimelineInBackground(coreOrderId);
+          }
           setOrder({
             id: row.id,
             formattedOrderId: row.formattedOrderId,
@@ -501,6 +594,22 @@ export default function OrderDetailClient({
             merchantInstructionsList: Array.isArray(row.merchantInstructionsList)
               ? (row.merchantInstructionsList as string[])
               : [],
+            cancellationInfo:
+              row.cancellationInfo && typeof row.cancellationInfo === "object"
+                ? (row.cancellationInfo as OrderCancellationInfo)
+                : null,
+            pickupOtp:
+              row.pickupOtp != null && String(row.pickupOtp).trim()
+                ? String(row.pickupOtp).trim()
+                : null,
+            rtoOtp:
+              row.rtoOtp != null && String(row.rtoOtp).trim()
+                ? String(row.rtoOtp).trim()
+                : null,
+            deliveryOtp:
+              row.deliveryOtp != null && String(row.deliveryOtp).trim()
+                ? String(row.deliveryOtp).trim()
+                : null,
           });
 
           // Refunds + line items load in background so the page renders without extra round trips.
@@ -518,16 +627,10 @@ export default function OrderDetailClient({
             }
           })();
 
-          void (async () => {
-            try {
-              const itemsRes = await fetch(`/api/orders/${row.id}/items`, { credentials: "include" });
-              const itemsBody = await itemsRes.json().catch(() => null);
-              const parsed = parseOrderItemsApiResponse(itemsBody);
-              if (!cancelled && parsed) setOrderItemsPayload(parsed);
-            } catch {
-              if (!cancelled) setOrderItemsPayload(null);
-            }
-          })();
+          void itemsPromise.then((parsed) => {
+            if (!cancelled && parsed) setOrderItemsPayload(parsed);
+            else if (!cancelled) setOrderItemsPayload(null);
+          });
 
           // Load tickets for this order via order-scoped API (uses ORDER_FOOD access, not TICKET)
           if (!cancelled && row.id != null && Number.isFinite(Number(row.id))) {
@@ -555,7 +658,11 @@ export default function OrderDetailClient({
           setOrderTickets([]);
         }
       })
-      .catch(() => !cancelled && setError("Failed to load order."))
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        const msg = err instanceof Error ? err.message : "";
+        setError(msg ? `Failed to load order: ${msg}` : "Failed to load order.");
+      })
       .finally(() => {
         if (!cancelled) {
           setLoading(false);
@@ -565,26 +672,38 @@ export default function OrderDetailClient({
     return () => {
       cancelled = true;
     };
-  }, [orderPublicId, refetchTrigger]);
+  }, [orderPublicId, refetchTrigger, isOrderPage, pageVisible]);
+
+  const dispatchStage = useMemo(
+    () =>
+      order
+        ? resolveDispatchManualStage({
+            status: order.status,
+            currentStatus: order.currentStatus,
+          })
+        : "open",
+    [order?.status, order?.currentStatus]
+  );
 
   const openStatusModal = useCallback(() => {
-    const status = order?.status?.toLowerCase();
-    if (status === "cancelled" || status === "rejected") return;
-    if (
-      status === "picked_up" ||
-      status === "in_transit" ||
-      status === "delivered"
-    ) {
-      setSelectedStatus(status);
-    } else {
-      setSelectedStatus("picked_up");
-    }
+    if (!order) return;
+    if (dispatchStage === "cancelled" || dispatchStage === "delivered") return;
+    setStatusUpdateError(null);
+    const firstEnabled =
+      STATUS_OPTIONS.find((opt) => !isManualStatusOptionDisabled(dispatchStage, opt.value))
+        ?.value ?? "delivered";
+    setSelectedStatus(firstEnabled);
     setShowStatusModal(true);
-  }, [order?.status]);
+  }, [order, dispatchStage]);
 
   const submitStatusUpdate = useCallback(async () => {
     if (!order?.id || isUpdatingStatus) return;
+    if (!canApplyManualStatusUpdate(dispatchStage, selectedStatus)) {
+      setStatusUpdateError("This status is already set or cannot be applied again.");
+      return;
+    }
     setIsUpdatingStatus(true);
+    setStatusUpdateError(null);
     try {
       const res = await fetch(`/api/orders/${order.id}/status`, {
         method: "PATCH",
@@ -593,33 +712,47 @@ export default function OrderDetailClient({
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) {
+        const label = MANUAL_STATUS_LABELS[selectedStatus];
         setShowStatusModal(false);
-        // Optimistic update: show new status and timeline entry instantly
         setOrder((prev) =>
-          prev
-            ? { ...prev, status: selectedStatus, currentStatus: selectedStatus }
-            : prev
+          prev ? { ...prev, status: selectedStatus, currentStatus: label } : prev
         );
         setTimelineEntries((prev) => {
           const newEntry: OrderTimelineEntry = {
             id: -Date.now(),
             orderId: order.id,
-            status: selectedStatus,
-            previousStatus: order.status ?? null,
-            actorType: "system",
+            status: label,
+            previousStatus: order.currentStatus ?? order.status ?? null,
+            actorType: "agent",
             actorId: null,
-            actorName: null,
+            actorName: loggedInEmail,
             statusMessage: null,
             occurredAt: new Date().toISOString(),
           };
           return [...(prev ?? []), newEntry];
         });
         setRefetchTrigger((t) => t + 1);
+      } else {
+        setStatusUpdateError(
+          typeof data.error === "string"
+            ? data.error
+            : "Could not update order status. Please try again."
+        );
       }
+    } catch {
+      setStatusUpdateError("Could not update order status. Please try again.");
     } finally {
       setIsUpdatingStatus(false);
     }
-  }, [order?.id, selectedStatus, isUpdatingStatus]);
+  }, [
+    order?.id,
+    order?.status,
+    order?.currentStatus,
+    selectedStatus,
+    isUpdatingStatus,
+    dispatchStage,
+    loggedInEmail,
+  ]);
 
   const handleRefreshOrder = useCallback(() => {
     setRefetchTrigger((t) => t + 1);
@@ -729,22 +862,19 @@ export default function OrderDetailClient({
   })();
 
   // For the dropdown trigger, show current status label or "Select Option".
-  const dbStatus = (order.status ?? "").toString().toLowerCase();
-  const statusOptionMatch = STATUS_OPTIONS.find((opt) => opt.value === dbStatus);
+  const statusOptionMatch = STATUS_OPTIONS.find(
+    (opt) => opt.value === (order.status ?? "").toString().toLowerCase()
+  );
   const statusButtonLabel = statusOptionMatch ? statusOptionMatch.label : "Select Option";
-  const isOrderCancelledOrRejected = dbStatus === "cancelled" || dbStatus === "rejected";
+  const isOrderCancelledOrRejected = dispatchStage === "cancelled";
 
-  // Status rules: no status can be marked twice; flow follows progression.
-  // Dispatch Ready (current): Dispatched & Delivered active; Dispatch Ready not selectable again.
-  // Dispatched (current): Delivered active; Dispatch Ready & Dispatched disabled.
-  // Delivered (current): all options and Update button disabled.
-  const isOptionDisabled = (value: "picked_up" | "in_transit" | "delivered") => {
-    if (dbStatus === "delivered") return true;
-    if (dbStatus === "in_transit") return value === "picked_up" || value === "in_transit";
-    if (dbStatus === "picked_up") return value === "picked_up";
-    return false;
-  };
-  const isUpdateStatusButtonDisabled = dbStatus === "delivered";
+  const isOptionDisabled = (value: ManualStatusValue) =>
+    isManualStatusOptionDisabled(dispatchStage, value);
+
+  const isUpdateStatusButtonDisabled =
+    dispatchStage === "delivered" ||
+    dispatchStage === "cancelled" ||
+    !canApplyManualStatusUpdate(dispatchStage, selectedStatus);
 
   const lastStatusUpdaterEmail = order.manualStatusUpdatedByEmail?.trim() || null;
   const hasManualStatusUpdate = !!lastStatusUpdaterEmail;
@@ -1004,6 +1134,11 @@ export default function OrderDetailClient({
                       );
                     })}
                   </div>
+                  {statusUpdateError ? (
+                    <p className="mt-1 px-2 text-[10px] text-red-600" role="alert">
+                      {statusUpdateError}
+                    </p>
+                  ) : null}
                   <div className="mt-1 border-t border-slate-100 pt-1.5 px-1">
                     <button
                       type="button"
@@ -1100,6 +1235,7 @@ export default function OrderDetailClient({
               displayId={displayId}
               orderRefunds={orderRefunds}
               paymentDetail={paymentDetail}
+              orderItemsPricing={orderItemsPayload?.pricing ?? null}
             />
           </div>
 
@@ -1112,7 +1248,7 @@ export default function OrderDetailClient({
                 riderProvider: order.orderSource,
                 trackingOrderId: displayId,
                 trackingUrl: null,
-                otp: null,
+                deliveryOtp: order.deliveryOtp ?? null,
                 status: order.status,
                 currentStatus: order.currentStatus,
                 createdAt: order.createdAt,
@@ -1153,6 +1289,7 @@ export default function OrderDetailClient({
             setOrder((prev) => (prev ? { ...prev, routedToEmail: email } : prev))
           }
           onRefundCreated={() => setRefetchTrigger((t) => t + 1)}
+          onPrefetchOrderItems={ensureOrderItemsPrefetch}
         />
       </div>
     </div>
@@ -1189,8 +1326,9 @@ export default function OrderDetailClient({
                 <table className="w-full text-[11px] text-left border-collapse">
                   <thead>
                     <tr className="border-b border-slate-200">
-                      <th className="py-2 pr-4 font-semibold text-slate-700">Status</th>
-                      <th className="py-2 pr-4 font-semibold text-slate-700">Date & time</th>
+                      <th className="py-2 pr-3 font-semibold text-slate-700">Status</th>
+                      <th className="py-2 pr-3 font-semibold text-slate-700">Date & time</th>
+                      <th className="py-2 pr-3 font-semibold text-slate-700">Role</th>
                       <th className="py-2 font-semibold text-slate-700">Updated by</th>
                     </tr>
                   </thead>
@@ -1198,12 +1336,16 @@ export default function OrderDetailClient({
                     {statusHistory.map((entry, i) => (
                       <tr key={i} className="border-b border-slate-100 hover:bg-slate-50/50">
                         <td className="py-2 pr-4 font-medium text-slate-800">
-                          {STATUS_TO_LABEL[entry.toStatus] ?? entry.toStatus.replace(/_/g, " ")}
+                          {MANUAL_STATUS_LABELS[entry.toStatus as ManualStatusValue] ??
+                            entry.toStatus.replace(/_/g, " ")}
                         </td>
-                        <td className="py-2 pr-4 text-slate-600">
+                        <td className="py-2 pr-3 text-slate-600 whitespace-nowrap">
                           {new Date(entry.createdAt).toLocaleString()}
                         </td>
-                        <td className="py-2 text-slate-600 truncate max-w-[200px]" title={entry.updatedByEmail}>
+                        <td className="py-2 pr-3">
+                          <AgentRoleBadge role={entry.updatedByRole} />
+                        </td>
+                        <td className="py-2 text-slate-600 truncate max-w-[180px]" title={entry.updatedByEmail}>
                           {entry.updatedByEmail}
                         </td>
                       </tr>
@@ -1244,13 +1386,13 @@ export default function OrderDetailClient({
                   ? t.ticketSource.replace(/\b\w/g, (c) => c.toUpperCase())
                   : null;
                 return (
-                  <button
+                  <Link
                     key={t.id}
-                    type="button"
-                    className="w-full text-left px-3 py-2 rounded-md border border-slate-100 hover:bg-slate-50 flex flex-col gap-0.5 cursor-pointer"
-                    onClick={() => {
-                      window.open(`/dashboard/tickets/${t.id}`, "_blank");
-                    }}
+                    href={`/dashboard/tickets/${t.id}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    prefetch={false}
+                    className="w-full text-left px-3 py-2 rounded-md border border-slate-100 hover:bg-slate-50 flex flex-col gap-0.5 cursor-pointer no-underline"
                   >
                     <div className="flex items-center justify-between gap-2 flex-wrap">
                       <span className="font-mono text-[11px] text-emerald-700">
@@ -1288,7 +1430,7 @@ export default function OrderDetailClient({
                         </>
                       ) : null}
                     </p>
-                  </button>
+                  </Link>
                 );
               })}
             </div>

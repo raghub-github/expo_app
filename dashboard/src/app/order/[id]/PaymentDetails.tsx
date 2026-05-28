@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useEffect, useState } from 'react';
 import type { OrderPaymentDetail, OrderPaymentRecord } from '@/lib/orders/order-payment-detail';
+import type { OrderItemsPricing } from '@/lib/orderItemsPayload';
 
 interface OrderForPaymentCard {
   id: number;
@@ -31,6 +32,8 @@ interface PaymentDetailsProps {
   displayId: string;
   orderRefunds?: OrderRefundForDisplay[];
   paymentDetail?: OrderPaymentDetail | null;
+  /** Loaded from items API — used to correct merchant amount when payment detail is stale. */
+  orderItemsPricing?: OrderItemsPricing | null;
 }
 
 const formatCurrency = (value?: number | null) => {
@@ -43,6 +46,21 @@ const formatCurrency = (value?: number | null) => {
   })}`;
 };
 
+const formatPlain = (value?: string | number | boolean | null) => {
+  if (value == null || value === '') return '—';
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  return String(value);
+};
+
+const formatNum = (value?: number | null) => {
+  if (value == null || !Number.isFinite(Number(value))) return '—';
+  return Number(value).toFixed(2);
+};
+
+const TH =
+  'text-left py-2 px-3 text-[10px] font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200 whitespace-nowrap';
+const TD = 'py-2 px-3 text-[11px] text-gray-900 whitespace-nowrap';
+
 interface PaymentDetailsModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -52,6 +70,7 @@ interface PaymentDetailsModalProps {
     totalAmount: number | null;
     totalCtm: number | null;
     deliveryFee: number | null;
+    totalCashbackEarned?: number | null;
   };
 }
 
@@ -90,7 +109,7 @@ function PaymentDetailsModal({
     >
       <div
         ref={modalRef}
-        className="bg-white rounded-lg shadow-lg max-w-5xl w-full p-5 text-[12px] text-slate-800 max-h-[90vh] overflow-auto"
+        className="bg-white rounded-lg shadow-lg max-w-[min(96vw,1400px)] w-full p-5 text-[12px] text-slate-800 max-h-[90vh] overflow-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-3">
@@ -105,113 +124,90 @@ function PaymentDetailsModal({
         </div>
 
         <div className="overflow-x-auto rounded-lg border border-gray-200">
-            <table className="w-full border-collapse">
+            <table className="w-full min-w-[1200px] border-collapse">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200 whitespace-nowrap">
-                    Payment Id
-                  </th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200 whitespace-nowrap">
-                    Transaction Id
-                  </th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200 whitespace-nowrap">
-                    MP TransactionId
-                  </th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200 whitespace-nowrap">
-                    Payment Status
-                  </th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200 whitespace-nowrap">
-                    Redemption Type
-                  </th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200 whitespace-nowrap">
-                    Product Type
-                  </th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200 whitespace-nowrap">
-                    Refunded
-                  </th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200 whitespace-nowrap">
-                    Partial Refunded
-                  </th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200 whitespace-nowrap">
-                    Amount
-                  </th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200 whitespace-nowrap">
-                    Delivery Fee
-                  </th>
+                  <th className={TH}>Payment Id</th>
+                  <th className={TH}>Transaction Id</th>
+                  <th className={TH}>MP TransactionId</th>
+                  <th className={TH}>Payment Status</th>
+                  <th className={TH}>Redemption Type</th>
+                  <th className={TH}>Product Type</th>
+                  <th className={TH}>Refunded</th>
+                  <th className={TH}>Partial Refunded</th>
+                  <th className={TH}>Partially Refunded Amount</th>
+                  <th className={TH}>Amount</th>
+                  <th className={TH}>Delivery Fee</th>
+                  <th className={TH}>CTC</th>
+                  <th className={TH}>Cashin</th>
+                  <th className={TH}>Points Used</th>
+                  <th className={TH}>CTM</th>
+                  <th className={TH}>Cashback Earned</th>
+                  <th className={TH}>PG Name</th>
+                  <th className={TH}>PG TransactionId</th>
+                  <th className={TH}>Coupon Code</th>
+                  <th className={TH}>Coupon Usage Count</th>
+                  <th className={TH}>Coupon Expiry</th>
+                  <th className={TH}>Coupon Value</th>
+                  <th className={TH}>Coupon Max Discount</th>
+                  <th className={TH}>Coupon Max Usage</th>
+                  <th className={TH}>Coupon Max Redemption</th>
+                  <th className={TH}>Coupon Type</th>
+                  <th className={TH}>Coupon User Eligible</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {records.map((record, index) => (
                   <tr
-                    key={`${record.paymentId}-${index}`}
+                    key={`${record.paymentId}-${record.productType}-${index}`}
                     className={`hover:bg-gray-50 transition-colors ${
                       index % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'
                     }`}
                   >
-                    <td className="py-3 px-4 text-sm text-gray-900 font-medium">
-                      {record.paymentId}
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-900 font-mono">
-                      {record.transactionId || '—'}
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-900 font-mono">
-                      {record.mpTransactionId || '—'}
-                    </td>
-                    <td className="py-3 px-4">
+                    <td className={`${TD} font-medium`}>{record.paymentId}</td>
+                    <td className={`${TD} font-mono`}>{formatPlain(record.transactionId)}</td>
+                    <td className={`${TD} font-mono`}>{formatPlain(record.mpTransactionId)}</td>
+                    <td className={TD}>
                       <span
-                        className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${
                           record.paymentStatus.toLowerCase().includes('refund')
                             ? 'bg-red-100 text-red-800'
                             : 'bg-emerald-100 text-emerald-800'
                         }`}
                       >
-                        <i
-                          className={`bi ${
-                            record.paymentStatus.toLowerCase().includes('refund')
-                              ? 'bi-arrow-clockwise'
-                              : 'bi-check-circle'
-                          }`}
-                        />
                         {record.paymentStatus}
                       </span>
                     </td>
-                    <td className="py-3 px-4 text-sm text-gray-900 font-medium">
-                      {record.redemptionType || '—'}
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-900 capitalize">
-                      {record.productType || '—'}
-                    </td>
-                    <td className="py-3 px-4">
-                      {record.refunded ? (
-                        <span className="inline-flex items-center gap-1 text-sm text-emerald-600 font-medium">
-                          <i className="bi bi-check-circle" /> Yes
-                        </span>
-                      ) : (
-                        <span className="text-sm text-gray-400">—</span>
-                      )}
-                    </td>
-                    <td className="py-3 px-4">
-                      {record.partialRefunded ? (
-                        <span className="inline-flex items-center gap-1 text-sm text-amber-600 font-medium">
-                          <i className="bi bi-check-circle" /> Yes
-                        </span>
-                      ) : (
-                        <span className="text-sm text-gray-400">—</span>
-                      )}
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-900 font-medium">
-                      {formatCurrency(record.amount)}
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-900">
-                      {formatCurrency(record.deliveryFee)}
-                    </td>
+                    <td className={TD}>{formatPlain(record.redemptionType)}</td>
+                    <td className={`${TD} font-medium`}>{formatPlain(record.productType)}</td>
+                    <td className={TD}>{record.refunded ? 'Yes' : '—'}</td>
+                    <td className={TD}>{record.partialRefunded ? 'Yes' : 'False'}</td>
+                    <td className={`${TD} tabular-nums`}>{formatNum(record.partiallyRefundedAmount)}</td>
+                    <td className={`${TD} tabular-nums font-medium`}>{formatNum(record.amount)}</td>
+                    <td className={`${TD} tabular-nums`}>{formatNum(record.deliveryFee)}</td>
+                    <td className={`${TD} tabular-nums`}>{formatNum(record.ctc)}</td>
+                    <td className={`${TD} tabular-nums`}>{formatNum(record.cashin)}</td>
+                    <td className={`${TD} tabular-nums`}>{formatNum(record.pointsUsed)}</td>
+                    <td className={`${TD} tabular-nums font-medium text-emerald-800`}>{formatNum(record.ctm)}</td>
+                    <td className={`${TD} tabular-nums`}>{formatNum(record.cashbackEarned)}</td>
+                    <td className={TD}>{formatPlain(record.pgName)}</td>
+                    <td className={`${TD} font-mono`}>{formatPlain(record.pgTransactionId)}</td>
+                    <td className={TD}>{formatPlain(record.couponCode)}</td>
+                    <td className={`${TD} tabular-nums`}>{formatPlain(record.couponUserUsageCount)}</td>
+                    <td className={TD}>{formatPlain(record.couponExpiryDate)}</td>
+                    <td className={`${TD} tabular-nums`}>{formatNum(record.couponValue)}</td>
+                    <td className={`${TD} tabular-nums`}>{formatNum(record.couponMaxDiscount)}</td>
+                    <td className={`${TD} tabular-nums`}>{formatPlain(record.couponMaxUsage)}</td>
+                    <td className={`${TD} tabular-nums`}>{formatPlain(record.couponMaxRedemption)}</td>
+                    <td className={TD}>{formatPlain(record.couponType)}</td>
+                    <td className={TD}>{formatPlain(record.couponUserEligible)}</td>
                   </tr>
                 ))}
                 {records.length === 0 && (
                   <tr>
                     <td
                       className="py-4 px-4 text-sm text-gray-500 text-center"
-                      colSpan={10}
+                      colSpan={27}
                     >
                       No payment records found for this order.
                     </td>
@@ -238,7 +234,7 @@ function PaymentDetailsModal({
             <div className="bg-white p-3 rounded-md border border-gray-200">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-[11px] font-medium text-gray-600">Customer paid</p>
+                  <p className="text-[11px] font-medium text-gray-600">Total amount (CTC)</p>
                   <p className="text-lg font-bold text-gray-900 mt-1">
                     {formatCurrency(totalAmount)}
                   </p>
@@ -251,7 +247,7 @@ function PaymentDetailsModal({
             <div className="bg-white p-3 rounded-md border border-emerald-200">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-[11px] font-medium text-emerald-800">Payable to merchant (CTM)</p>
+                  <p className="text-[11px] font-medium text-emerald-800">Merchant amount (CTM)</p>
                   <p className="text-lg font-bold text-emerald-900 mt-1">
                     {formatCurrency(summary.totalCtm)}
                   </p>
@@ -320,6 +316,7 @@ export default function PaymentDetails({
   displayId,
   orderRefunds = [],
   paymentDetail = null,
+  orderItemsPricing = null,
 }: PaymentDetailsProps) {
   const [isModalOpen, setIsModalOpen] = useState(false);
 
@@ -330,16 +327,49 @@ export default function PaymentDetails({
   );
 
   const resolved = useMemo(() => {
+    const customerFromItems = orderItemsPricing?.customer?.totalOrderAmount;
+    const merchantFromItems = orderItemsPricing?.totalOrderAmount;
+    const deliveryFromItems =
+      orderItemsPricing?.customer?.deliveryFee ??
+      orderItemsPricing?.deliveryFee ??
+      null;
+
+    const pickMerchantAmount = (
+      apiCtm: number | null | undefined,
+      customerTotal: number | null | undefined
+    ): number | null => {
+      if (merchantFromItems != null && merchantFromItems > 0) {
+        if (customerTotal == null || merchantFromItems < customerTotal - 0.01) {
+          return merchantFromItems;
+        }
+      }
+      if (
+        apiCtm != null &&
+        apiCtm > 0 &&
+        (customerTotal == null || apiCtm < customerTotal - 0.01)
+      ) {
+        return apiCtm;
+      }
+      return merchantFromItems ?? apiCtm ?? null;
+    };
+
     if (paymentDetail) {
       const isRefunded =
         hasRefundRecords ||
         paymentDetail.records.some((r) => r.refunded) ||
         (paymentDetail.refundAmount != null && paymentDetail.refundAmount > 0);
+      const totalCtc =
+        paymentDetail.totalAmount ??
+        (customerFromItems != null && customerFromItems > 0 ? customerFromItems : null);
+      const totalCtm = pickMerchantAmount(paymentDetail.totalCtm, totalCtc);
+      const deliveryFee =
+        paymentDetail.deliveryFee ??
+        (deliveryFromItems != null && deliveryFromItems > 0 ? deliveryFromItems : null);
       return {
-        totalAmount: paymentDetail.totalAmount,
-        totalCtm: paymentDetail.totalCtm,
+        totalAmount: totalCtc,
+        totalCtm,
         totalCashbackEarned: paymentDetail.totalCashbackEarned,
-        deliveryFee: paymentDetail.deliveryFee,
+        deliveryFee,
         source: paymentDetail.source,
         paymentMode: paymentDetail.paymentMode,
         partialRefunded: paymentDetail.partialRefunded,
@@ -356,17 +386,19 @@ export default function PaymentDetails({
       hasRefundRecords ||
       paymentStatus.toLowerCase().includes('refund') ||
       order.orderType.toLowerCase() === 'refund';
-    const totalAmount =
+    const totalCtc =
       (order.grandTotal as number | null | undefined) ??
       (order.totalAmount as number | null | undefined) ??
       (order.fareAmount as number | null | undefined) ??
+      (customerFromItems != null && customerFromItems > 0 ? customerFromItems : null) ??
       null;
 
     return {
-      totalAmount,
-      totalCtm: null,
+      totalAmount: totalCtc,
+      totalCtm: pickMerchantAmount(null, totalCtc),
       totalCashbackEarned: null,
-      deliveryFee: null,
+      deliveryFee:
+        deliveryFromItems != null && deliveryFromItems > 0 ? deliveryFromItems : null,
       source: order.orderSource ? order.orderSource.toString() : '—',
       paymentMode: order.paymentMethod ? order.paymentMethod.toString().toUpperCase() : '—',
       partialRefunded: false,
@@ -382,12 +414,30 @@ export default function PaymentDetails({
           productType: order.orderType ?? undefined,
           refunded: isRefunded,
           partialRefunded: false,
-          amount: totalAmount,
-          deliveryFee: null,
+          partiallyRefundedAmount: null,
+          amount: totalCtc,
+          ctc: totalCtc,
+          cashin: null,
+          pointsUsed: null,
+          ctm: pickMerchantAmount(null, totalCtc),
+          cashbackEarned: null,
+          deliveryFee:
+            deliveryFromItems != null && deliveryFromItems > 0 ? deliveryFromItems : null,
+          pgName: null,
+          pgTransactionId: null,
+          couponCode: null,
+          couponUserUsageCount: null,
+          couponExpiryDate: null,
+          couponValue: null,
+          couponMaxDiscount: null,
+          couponMaxUsage: null,
+          couponMaxRedemption: null,
+          couponType: null,
+          couponUserEligible: null,
         },
       ] as OrderPaymentRecord[],
     };
-  }, [paymentDetail, order, displayId, hasRefundRecords, totalRefundFromRefunds]);
+  }, [paymentDetail, order, displayId, hasRefundRecords, totalRefundFromRefunds, orderItemsPricing]);
 
   return (
     <>
@@ -410,13 +460,13 @@ export default function PaymentDetails({
         </div>
         <div className="space-y-1.5">
           <p className="text-[12px]">
-            <span className="text-gati-text-secondary font-medium">Total Amount:</span>{' '}
+            <span className="text-gati-text-secondary font-medium">Total Amount (CTC):</span>{' '}
             <span className="text-gati-text-primary font-semibold">
               {formatCurrency(resolved.totalAmount)}
             </span>
           </p>
           <p className="text-[12px]">
-            <span className="text-gati-text-secondary font-medium">Total CTM:</span>{' '}
+            <span className="text-gati-text-secondary font-medium">Merchant amount (CTM):</span>{' '}
             <span className="text-gati-text-primary font-semibold">
               {formatCurrency(resolved.totalCtm)}
             </span>
@@ -492,6 +542,7 @@ export default function PaymentDetails({
           totalAmount: resolved.totalAmount,
           totalCtm: resolved.totalCtm,
           deliveryFee: resolved.deliveryFee,
+          totalCashbackEarned: resolved.totalCashbackEarned,
         }}
       />
     </>

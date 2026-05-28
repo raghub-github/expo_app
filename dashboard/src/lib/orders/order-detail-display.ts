@@ -17,11 +17,13 @@ export function isSelfPickupDelivery(deliveryType: string | null | undefined): b
 export function formatOrderDeliveryTypeLabel(
   deliveryType: string | null | undefined
 ): string {
-  if (!deliveryType?.trim()) return "—";
-  if (isSelfPickupDelivery(deliveryType)) return "Self";
-  const dt = deliveryType.toLowerCase();
+  const raw = String(deliveryType ?? "").trim();
+  if (!raw || raw === "—" || raw === "-") return "—";
+  if (isSelfPickupDelivery(raw)) return "Self";
+  const dt = raw.toLowerCase().replace(/-/g, "_");
   if (dt === "delivery" || dt.includes("delivery")) return "Delivery";
-  return deliveryType.charAt(0).toUpperCase() + deliveryType.slice(1).replace(/_/g, " ");
+  if (dt === "self_pickup" || dt === "pickup") return "Self";
+  return raw.charAt(0).toUpperCase() + raw.slice(1).replace(/_/g, " ");
 }
 
 export function formatOrderInitiatedByLabel(

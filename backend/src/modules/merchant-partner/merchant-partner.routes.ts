@@ -19,6 +19,10 @@ import {
 } from "./store-schedule-engine.js";
 import { resolveTicketTitleForUnifiedTicketsInsert } from "./unified-ticket-title-for-insert.js";
 import { buildGrowthBusinessInsights } from "./growth-business-insights.js";
+import {
+  countMerchantDeliveredOrdersIst,
+  sumMerchantLedgerEarningsIst,
+} from "../../lib/merchant-growth-metrics.js";
 import { loadMerchantOfferInsights } from "./merchant-offer-insights.service.js";
 import { registerMerchantSubscriptionRoutes } from "./merchant-subscription.routes.js";
 
@@ -4454,33 +4458,50 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const raw = String(req.query?.period ?? "today").toLowerCase();
           const period = ["today", "yesterday", "week", "month", "alltime"].includes(raw) ? raw : "today";
 
-          const parseAgg = (row: { total_orders?: number; total_sales?: unknown } | undefined) => {
-            const totalOrders = Number(row?.total_orders) || 0;
-            const totalSalesRaw = row?.total_sales;
-            const totalSales =
-              typeof totalSalesRaw === "number"
-                ? totalSalesRaw
-                : parseFloat(String(totalSalesRaw ?? "0")) || 0;
-            return { total_orders: totalOrders, total_sales: totalSales };
-          };
-
           type B = { key: string; label: string; orders_count: number };
 
           const slotLabels8 = ["12–3am", "3–6am", "6–9am", "9–12pm", "12–3pm", "3–6pm", "6–9pm", "9–12am"];
 
-          let totals: { total_orders: number; total_sales: number };
+          const istDates = await sql`
+            SELECT
+              (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date AS today,
+              ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date - INTERVAL '1 day')::date AS yesterday,
+              date_trunc('week', (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)::date AS week_start,
+              date_trunc('month', (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)::date AS month_start
+          `;
+          const ist = istDates[0] as {
+            today: string | Date;
+            yesterday: string | Date;
+            week_start: string | Date;
+            month_start: string | Date;
+          };
+          const ymd = (v: string | Date) => String(v).slice(0, 10);
+          const todayYmd = ymd(ist.today);
+          const yesterdayYmd = ymd(ist.yesterday);
+          const weekStartYmd = ymd(ist.week_start);
+          const monthStartYmd = ymd(ist.month_start);
+
+          let rangeStart = todayYmd;
+          let rangeEnd = todayYmd;
+          if (period === "yesterday") {
+            rangeStart = yesterdayYmd;
+            rangeEnd = yesterdayYmd;
+          } else if (period === "week") {
+            rangeStart = weekStartYmd;
+          } else if (period === "month") {
+            rangeStart = monthStartYmd;
+          } else if (period === "alltime") {
+            rangeStart = "1970-01-01";
+          }
+
+          const totals = {
+            total_orders: await countMerchantDeliveredOrdersIst(sql, storeId, rangeStart, rangeEnd),
+            total_sales: await sumMerchantLedgerEarningsIst(sql, storeId, rangeStart, rangeEnd),
+          };
+
           let buckets: B[] = [];
 
           if (period === "today") {
-            const agg = await sql`
-              SELECT COUNT(*)::int AS total_orders,
-                     COALESCE(SUM(food_items_total_value), 0)::numeric AS total_sales
-              FROM orders_food
-              WHERE merchant_store_id = ${storeId}
-                AND (created_at AT TIME ZONE 'Asia/Kolkata')::date =
-                    (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
-            `;
-            totals = parseAgg(agg[0] as { total_orders?: number; total_sales?: unknown });
             const br = await sql`
               SELECT (FLOOR(EXTRACT(HOUR FROM (created_at AT TIME ZONE 'Asia/Kolkata')) / 3))::int AS slot,
                      COUNT(*)::int AS orders_count
@@ -4500,15 +4521,6 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               buckets.push({ key: `t-${s}`, label: slotLabels8[s] ?? String(s), orders_count: byS.get(s) ?? 0 });
             }
           } else if (period === "yesterday") {
-            const agg = await sql`
-              SELECT COUNT(*)::int AS total_orders,
-                     COALESCE(SUM(food_items_total_value), 0)::numeric AS total_sales
-              FROM orders_food
-              WHERE merchant_store_id = ${storeId}
-                AND (created_at AT TIME ZONE 'Asia/Kolkata')::date =
-                    (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date - INTERVAL '1 day'
-            `;
-            totals = parseAgg(agg[0] as { total_orders?: number; total_sales?: unknown });
             const br = await sql`
               SELECT (FLOOR(EXTRACT(HOUR FROM (created_at AT TIME ZONE 'Asia/Kolkata')) / 3))::int AS slot,
                      COUNT(*)::int AS orders_count
@@ -4528,17 +4540,6 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               buckets.push({ key: `y-${s}`, label: slotLabels8[s] ?? String(s), orders_count: byS.get(s) ?? 0 });
             }
           } else if (period === "week") {
-            const agg = await sql`
-              SELECT COUNT(*)::int AS total_orders,
-                     COALESCE(SUM(food_items_total_value), 0)::numeric AS total_sales
-              FROM orders_food
-              WHERE merchant_store_id = ${storeId}
-                AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >=
-                    date_trunc('week', (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)::date
-                AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <=
-                    (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
-            `;
-            totals = parseAgg(agg[0] as { total_orders?: number; total_sales?: unknown });
             const br = await sql`
               SELECT gs::date AS d,
                      trim(to_char(gs::date, 'Dy')) AS label,
@@ -4569,17 +4570,6 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               });
             }
           } else if (period === "month") {
-            const agg = await sql`
-              SELECT COUNT(*)::int AS total_orders,
-                     COALESCE(SUM(food_items_total_value), 0)::numeric AS total_sales
-              FROM orders_food
-              WHERE merchant_store_id = ${storeId}
-                AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >=
-                    date_trunc('month', (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)::date
-                AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <=
-                    (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
-            `;
-            totals = parseAgg(agg[0] as { total_orders?: number; total_sales?: unknown });
             const br = await sql`
               SELECT gs::date AS d,
                      (EXTRACT(DAY FROM gs::date))::int::text AS label,
@@ -4610,13 +4600,6 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               });
             }
           } else {
-            const agg = await sql`
-              SELECT COUNT(*)::int AS total_orders,
-                     COALESCE(SUM(food_items_total_value), 0)::numeric AS total_sales
-              FROM orders_food
-              WHERE merchant_store_id = ${storeId}
-            `;
-            totals = parseAgg(agg[0] as { total_orders?: number; total_sales?: unknown });
             const br = await sql`
               SELECT gs::date AS m, COALESCE(o.c, 0)::int AS orders_count
               FROM generate_series(

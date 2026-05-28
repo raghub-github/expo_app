@@ -76,6 +76,38 @@ export function merchantFundedDiscountFromBilling(
 
 export type MerchantDiscountLine = { label: string; amount: number };
 
+export type DiscountFundingTag = "platform" | "store" | "mixed";
+
+/** Whether discount is funded by platform, store, or both. */
+export function discountFundingTagFromLine(
+  row: Record<string, unknown>,
+): DiscountFundingTag {
+  const amount = num(row.amount);
+  if (amount <= 0) return "platform";
+  const merchantAmt = merchantFundedAmountFromDiscountLine(row);
+  if (merchantAmt >= amount - 0.01) return "store";
+  if (merchantAmt <= 0.01) return "platform";
+  return "mixed";
+}
+
+export function customerDiscountLinesFromBilling(
+  billing: Record<string, unknown> | null | undefined,
+): Array<{ label: string; amount: number; tag: DiscountFundingTag }> {
+  const out: Array<{ label: string; amount: number; tag: DiscountFundingTag }> = [];
+  if (!billing || typeof billing !== "object") return out;
+  const discounts = Array.isArray(billing.discounts) ? billing.discounts : [];
+  for (const d of discounts) {
+    if (!d || typeof d !== "object") continue;
+    const row = d as Record<string, unknown>;
+    const amt = num(row.amount);
+    if (amt <= 0) continue;
+    const label =
+      String(row.label ?? row.step ?? "Discount").trim() || "Discount";
+    out.push({ label, amount: round2(amt), tag: discountFundingTagFromLine(row) });
+  }
+  return out;
+}
+
 export function merchantFundedDiscountLinesFromBilling(
   billing: Record<string, unknown> | null | undefined,
 ): MerchantDiscountLine[] {

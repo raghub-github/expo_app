@@ -71,11 +71,9 @@ export function foodOrderHasCustomizations(item: ApiFoodOrderItem): boolean {
 export function lineItemHasCustomizations(item: {
   has_customizations?: boolean;
   customization_lines?: ApiFoodOrderItem["customization_lines"];
+  customizations?: string[];
   customizations_total?: number;
+  variant_tag?: string | null;
 }): boolean {
-  return Boolean(
-    item.has_customizations ||
-      (item.customization_lines && item.customization_lines.length > 0) ||
-      (item.customizations_total != null && item.customizations_total > 0)
-  );
+  return foodOrderHasCustomizations(item as ApiFoodOrderItem);
 }

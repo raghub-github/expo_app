@@ -1,4 +1,5 @@
 import { View, Text, StyleSheet, Pressable } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { ItemVegMark } from "@/components/order/ItemVegMark";
 import type { LineItem } from "@/hooks/useOrders";
 import { lineItemHasCustomizations } from "@/lib/merchant-order-food-item-display";
@@ -9,6 +10,8 @@ type Props = {
   onItemNamePress: () => void;
   onRowPress: () => void;
   showPrice?: boolean;
+  /** Chevron when item has customizations (expandable row). */
+  showExpandChevron?: boolean;
 };
 
 export function OrderCardItemRow({
@@ -17,13 +20,20 @@ export function OrderCardItemRow({
   onItemNamePress,
   onRowPress,
   showPrice,
+  showExpandChevron = false,
 }: Props) {
   const hasCust = lineItemHasCustomizations(item);
+  const expandable = showExpandChevron && hasCust;
 
   return (
     <Pressable
-      onPress={onRowPress}
-      style={({ pressed }) => [styles.row, pressed && styles.pressed]}
+      onPress={expandable ? onRowPress : undefined}
+      disabled={!expandable}
+      style={({ pressed }) => [
+        styles.row,
+        expandable && styles.rowExpandable,
+        expandable && pressed && styles.pressed,
+      ]}
     >
       <ItemVegMark vegNonveg={item.vegNonveg ?? orderVeg} name={item.name} size={14} />
       <View style={styles.body}>
@@ -39,6 +49,9 @@ export function OrderCardItemRow({
           ) : null}
         </View>
       </View>
+      {expandable ? (
+        <Ionicons name="chevron-down" size={18} color="#0F766E" style={styles.chevron} />
+      ) : null}
       {showPrice ? <Text style={styles.price}>₹{item.price}</Text> : null}
     </Pressable>
   );
@@ -50,7 +63,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
+  rowExpandable: {
+    paddingVertical: 2,
+  },
   pressed: { opacity: 0.85 },
+  chevron: {
+    flexShrink: 0,
+    marginLeft: -2,
+  },
   body: { flex: 1, minWidth: 0 },
   titleRow: {
     flexDirection: "row",

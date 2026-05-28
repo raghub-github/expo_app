@@ -11,13 +11,23 @@ import { DELIVERY_FEE_ITEM_ID } from '@/lib/foodOrderItems';
 import {
   parseOrderItemsApiResponse,
   preloadOrderItemImages,
+  type OrderItemApiRow,
+  type OrderItemLineAmounts,
   type OrderItemsPayload,
   type OrderItemsPricing,
+  type OrderPricingLine,
 } from '@/lib/orderItemsPayload';
 import {
   formatCustomisationLine,
   type OrderItemCustomisationDetail,
 } from '@/lib/order-item-customisation';
+import { useCancellationReasonCatalog } from '@/hooks/useCancellationReasonCatalog';
+import {
+  catalogReasonOptionValue,
+  findCatalogReasonBySelectValue,
+  normalizeCatalogReasonId,
+  reasonsForAttribute,
+} from '@/lib/orders/orderRejectionOptions';
 
 interface ItemsRefundModalProps {
   isOpen: boolean;
@@ -31,6 +41,205 @@ interface ItemsRefundModalProps {
   dashboardType?: DashboardType;
   /** Called after a refund is successfully created so parent can refetch refund list. */
   onRefundCreated?: () => void;
+}
+
+function discountTagLabel(tag?: OrderPricingLine['discountTag']): string | null {
+  if (tag === 'platform') return 'Platform discount';
+  if (tag === 'store') return 'Store discount';
+  if (tag === 'mixed') return 'Platform + Store';
+  return null;
+}
+
+function DiscountTagBadge({ tag }: { tag?: OrderPricingLine['discountTag'] }) {
+  const label = discountTagLabel(tag);
+  if (!label) return null;
+  const styles =
+    tag === 'store'
+      ? 'bg-amber-50 text-amber-800 border-amber-200'
+      : tag === 'mixed'
+        ? 'bg-violet-50 text-violet-800 border-violet-200'
+        : 'bg-sky-50 text-sky-800 border-sky-200';
+  return (
+    <span className={`ml-1.5 inline-flex rounded px-1.5 py-0.5 text-[9px] font-semibold border ${styles}`}>
+      {label}
+    </span>
+  );
+}
+
+function PricingBreakdownPanel({
+  title,
+  subtitle,
+  lines,
+  totalLabel,
+  totalAmount,
+  accent = 'emerald',
+}: {
+  title: string;
+  subtitle?: string;
+  lines: OrderPricingLine[];
+  totalLabel: string;
+  totalAmount: number;
+  accent?: 'emerald' | 'blue';
+}) {
+  const totalClass = accent === 'blue' ? 'text-blue-600' : 'text-emerald-600';
+  const borderClass = accent === 'blue' ? 'border-blue-100' : 'border-slate-200';
+  const bgClass = accent === 'blue' ? 'bg-blue-50/60' : 'bg-slate-50';
+
+  return (
+    <div className={`rounded-md border ${borderClass} ${bgClass} p-3`}>
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-700">{title}</p>
+      {subtitle ? <p className="mt-0.5 text-[10px] text-slate-500">{subtitle}</p> : null}
+      <div className="mt-2 space-y-1">
+        {lines.map((line, idx) => (
+          <div
+            key={`${line.key}-${idx}`}
+            className="flex justify-between items-start gap-2 py-0.5 text-[11px] border-b border-slate-200/80 last:border-0"
+          >
+            <span className="text-slate-600 min-w-0">
+              {line.label}
+              {line.kind === 'discount' ? <DiscountTagBadge tag={line.discountTag} /> : null}
+            </span>
+            <span
+              className={`font-medium tabular-nums shrink-0 ${
+                line.kind === 'discount' ? 'text-red-600' : 'text-slate-800'
+              }`}
+            >
+              {line.kind === 'discount' ? '−' : ''}
+              {line.amount.toFixed(2)}
+            </span>
+          </div>
+        ))}
+        <div className="flex justify-between items-center pt-1.5 mt-1 border-t border-slate-200 font-semibold text-slate-800 text-xs">
+          <span>{totalLabel}</span>
+          <span className={`tabular-nums ${totalClass}`}>₹{totalAmount.toFixed(2)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function lineAmountsForView(
+  row: OrderItemApiRow,
+  view: 'customer' | 'merchant'
+): OrderItemLineAmounts {
+  if (view === 'customer' && row.customer) return row.customer;
+  return {
+    amountPerQuantity: row.amountPerQuantity,
+    taxPerQuantity: row.taxPerQuantity,
+    chargesPerQuantity: row.chargesPerQuantity,
+    totalPerQuantity: row.totalPerQuantity,
+  };
+}
+
+function mapApiItemToRefundItemForView(
+  row: OrderItemApiRow,
+  view: 'customer' | 'merchant'
+): RefundItem {
+  const amounts = lineAmountsForView(row, view);
+  const delivery = row.id === DELIVERY_FEE_ITEM_ID;
+  return {
+    id: row.id,
+    name: row.name,
+    customisation: row.customisation,
+    customisationDetail: row.customisationDetail ?? null,
+    quantity: row.quantity,
+    amountPerQuantity: amounts.amountPerQuantity,
+    taxPerQuantity: amounts.taxPerQuantity,
+    chargesPerQuantity: amounts.chargesPerQuantity,
+    totalPerQuantity: amounts.totalPerQuantity,
+    refundType: 'NONE',
+    selectedQuantity: 0,
+    remark: '',
+    showDropdown: false,
+    customAmount: amounts.amountPerQuantity,
+    isSelected: false,
+    hasImage: row.hasImage && Boolean(row.imageUrl),
+    imageUrl: row.imageUrl ?? undefined,
+    refundPercentage: 0,
+    isDeliveryFee: delivery,
+  };
+}
+
+function syncRefundItemAmounts(
+  items: RefundItem[],
+  source: OrderItemApiRow[],
+  view: 'customer' | 'merchant'
+): RefundItem[] {
+  const byId = new Map(source.map((r) => [r.id, r]));
+  return items.map((item) => {
+    const row = byId.get(item.id);
+    if (!row) return item;
+    const amounts = lineAmountsForView(row, view);
+    return {
+      ...item,
+      amountPerQuantity: amounts.amountPerQuantity,
+      taxPerQuantity: amounts.taxPerQuantity,
+      chargesPerQuantity: amounts.chargesPerQuantity,
+      totalPerQuantity: amounts.totalPerQuantity,
+      customAmount: amounts.amountPerQuantity,
+    };
+  });
+}
+
+function BillBreakdownSwitcher({
+  pricing,
+  billView,
+  onBillViewChange,
+}: {
+  pricing: OrderItemsPricing;
+  billView: 'customer' | 'merchant';
+  onBillViewChange: (view: 'customer' | 'merchant') => void;
+}) {
+  const hasMerchantBill = Boolean(pricing.customer);
+  const customerBill = pricing.customer ?? pricing;
+  const merchantBill = pricing;
+
+  const active =
+    billView === 'merchant' && hasMerchantBill
+      ? {
+          title: 'Merchant bill',
+          subtitle: 'Amount payable to merchant (CTM)',
+          lines: merchantBill.lines,
+          totalLabel: 'Merchant amount (CTM)',
+          totalAmount: merchantBill.totalOrderAmount,
+          accent: 'emerald' as const,
+        }
+      : {
+          title: 'Customer bill',
+          subtitle: 'Full amount paid by customer (CTC)',
+          lines: customerBill.lines,
+          totalLabel: 'Total amount (CTC)',
+          totalAmount: customerBill.totalOrderAmount,
+          accent: 'blue' as const,
+        };
+
+  return (
+    <div className="mt-3 max-w-md ml-auto">
+      <div className="mb-2 flex items-center justify-end gap-2">
+        <label htmlFor="bill-view-select" className="text-[11px] font-medium text-slate-600">
+          Bill view
+        </label>
+        <select
+          id="bill-view-select"
+          value={billView}
+          onChange={(e) => onBillViewChange(e.target.value as 'customer' | 'merchant')}
+          className="h-8 min-w-[150px] rounded border border-slate-200 bg-white px-2 text-[11px] text-slate-800 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+        >
+          <option value="customer">Customer bill</option>
+          {hasMerchantBill ? <option value="merchant">Merchant bill</option> : null}
+        </select>
+      </div>
+      <PricingBreakdownPanel
+        key={billView}
+        title={active.title}
+        subtitle={active.subtitle}
+        lines={active.lines?.length ? active.lines : []}
+        totalLabel={active.totalLabel}
+        totalAmount={active.totalAmount}
+        accent={active.accent}
+      />
+    </div>
+  );
 }
 
 function CustomisationCell({
@@ -91,56 +300,21 @@ interface RefundItem {
   isDeliveryFee: boolean;
 }
 
-function payloadToRefundState(payload: OrderItemsPayload): {
+function payloadToRefundState(
+  payload: OrderItemsPayload,
+  view: 'customer' | 'merchant'
+): {
   items: RefundItem[];
   pricing: OrderItemsPricing;
 } {
   return {
-    items: payload.items.map((row) => mapApiItemToRefundItem(row)),
+    items: payload.items.map((row) => mapApiItemToRefundItemForView(row, view)),
     pricing: payload.pricing,
   };
 }
 
 function isDeliveryFeeRow(item: { id: number; isDeliveryFee?: boolean }): boolean {
   return item.isDeliveryFee === true || item.id === DELIVERY_FEE_ITEM_ID;
-}
-
-function mapApiItemToRefundItem(row: {
-  id: number;
-  name: string;
-  customisation: string;
-  customisationDetail?: OrderItemCustomisationDetail | null;
-  quantity: number;
-  amountPerQuantity: number;
-  taxPerQuantity: number;
-  chargesPerQuantity: number;
-  totalPerQuantity: number;
-  hasImage: boolean;
-  imageUrl: string | null;
-  status: string;
-}): RefundItem {
-  const delivery = row.id === DELIVERY_FEE_ITEM_ID;
-  return {
-    id: row.id,
-    name: row.name,
-    customisation: row.customisation,
-    customisationDetail: row.customisationDetail ?? null,
-    quantity: row.quantity,
-    amountPerQuantity: row.amountPerQuantity,
-    taxPerQuantity: row.taxPerQuantity,
-    chargesPerQuantity: row.chargesPerQuantity,
-    totalPerQuantity: row.totalPerQuantity,
-    refundType: 'NONE',
-    selectedQuantity: 0,
-    remark: '',
-    showDropdown: false,
-    customAmount: row.amountPerQuantity,
-    isSelected: false,
-    hasImage: row.hasImage && Boolean(row.imageUrl),
-    imageUrl: row.imageUrl ?? undefined,
-    refundPercentage: 0,
-    isDeliveryFee: delivery,
-  };
 }
 
 export default function ItemsRefundModal({
@@ -160,12 +334,28 @@ export default function ItemsRefundModal({
   const hasCancellationPermission = isSuperAdmin || (resolvedDashboard && canPerformAction(resolvedDashboard, 'CANCEL', { access_point_group: 'ORDER_CANCEL' }));
   const canCreateRefund = hasRefundPermission && hasCancellationPermission;
 
+  const shouldModalBeOpen = () => {
+    if (isOpen) return true;
+    if (typeof window === 'undefined') return false;
+    const savedModalState = localStorage.getItem('refundModalOpen');
+    return savedModalState === 'true';
+  };
+
+  const [modalOpen, setModalOpen] = useState(shouldModalBeOpen);
+
+  const {
+    attributes: catalogAttributes,
+    grouped: catalogGrouped,
+    loading: catalogLoading,
+    error: catalogError,
+  } = useCancellationReasonCatalog({ enabled: modalOpen });
+
   const [refundAttribute, setRefundAttribute] = useState('');
+  const [catalogReasonId, setCatalogReasonId] = useState<number | null>(null);
   const [refundRejection, setRefundRejection] = useState('');
   const [refundType, setRefundType] = useState('');
   const [fault, setFault] = useState('');
   const [merchantDebit, setMerchantDebit] = useState('');
-  const [rejectionOptions, setRejectionOptions] = useState<string[]>([]);
   const [showRefundType, setShowRefundType] = useState(false);
   const [showFault, setShowFault] = useState(false);
   const [showMerchantDebit, setShowMerchantDebit] = useState(false);
@@ -187,10 +377,19 @@ export default function ItemsRefundModal({
   const refundItemsRef = useRef<HTMLDivElement>(null);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
   const imageModalRef = useRef<HTMLDivElement>(null);
+  const itemsSourceRef = useRef<OrderItemApiRow[]>([]);
+  const [billView, setBillView] = useState<'customer' | 'merchant'>('customer');
 
   const initialFromPrefetch = prefetchedOrderItems?.items?.length
-    ? payloadToRefundState(prefetchedOrderItems)
+    ? payloadToRefundState(prefetchedOrderItems, 'customer')
     : null;
+
+  const handleBillViewChange = (view: 'customer' | 'merchant') => {
+    setBillView(view);
+    if (itemsSourceRef.current.length > 0) {
+      setRefundItems((prev) => syncRefundItemAmounts(prev, itemsSourceRef.current, view));
+    }
+  };
 
   const [refundItems, setRefundItems] = useState<RefundItem[]>(
     () => initialFromPrefetch?.items ?? []
@@ -202,15 +401,6 @@ export default function ItemsRefundModal({
   const [pricing, setPricing] = useState<OrderItemsPricing | null>(
     () => initialFromPrefetch?.pricing ?? null
   );
-
-  const shouldModalBeOpen = () => {
-    if (isOpen) return true;
-    if (typeof window === 'undefined') return false;
-    const savedModalState = localStorage.getItem('refundModalOpen');
-    return savedModalState === 'true';
-  };
-
-  const [modalOpen, setModalOpen] = useState(shouldModalBeOpen());
 
   useEffect(() => {
     if (isOpen) setModalOpen(true);
@@ -228,6 +418,7 @@ export default function ItemsRefundModal({
     if (modalOpen && typeof window !== 'undefined') {
       const formState = {
         refundAttribute,
+        catalogReasonId,
         refundRejection,
         refundType,
         fault,
@@ -237,14 +428,13 @@ export default function ItemsRefundModal({
         showMerchantDebit,
         showSubmit,
         refundItems,
-        rejectionOptions,
         selectAll
       };
       localStorage.setItem('refundFormState', JSON.stringify(formState));
     }
   }, [
-    modalOpen, refundAttribute, refundRejection, refundType, fault, merchantDebit,
-    showRefundType, showFault, showMerchantDebit, showSubmit, refundItems, rejectionOptions, selectAll
+    modalOpen, refundAttribute, catalogReasonId, refundRejection, refundType, fault, merchantDebit,
+    showRefundType, showFault, showMerchantDebit, showSubmit, refundItems, selectAll
   ]);
 
   useEffect(() => {
@@ -254,6 +444,9 @@ export default function ItemsRefundModal({
         try {
           const parsedState = JSON.parse(savedFormState);
           setRefundAttribute(parsedState.refundAttribute || '');
+          setCatalogReasonId(
+            typeof parsedState.catalogReasonId === 'number' ? parsedState.catalogReasonId : null
+          );
           setRefundRejection(parsedState.refundRejection || '');
           setRefundType(parsedState.refundType || '');
           setFault(parsedState.fault || '');
@@ -262,7 +455,6 @@ export default function ItemsRefundModal({
           setShowFault(parsedState.showFault || false);
           setShowMerchantDebit(parsedState.showMerchantDebit || false);
           setShowSubmit(parsedState.showSubmit || false);
-          if (parsedState.rejectionOptions) setRejectionOptions(parsedState.rejectionOptions);
           if (parsedState.selectAll !== undefined) setSelectAll(parsedState.selectAll);
         } catch {
           localStorage.removeItem('refundFormState');
@@ -273,7 +465,8 @@ export default function ItemsRefundModal({
 
   useEffect(() => {
     if (prefetchedOrderItems?.items?.length) {
-      const next = payloadToRefundState(prefetchedOrderItems);
+      itemsSourceRef.current = prefetchedOrderItems.items;
+      const next = payloadToRefundState(prefetchedOrderItems, billView);
       setRefundItems(next.items);
       setPricing(next.pricing);
       setItemsError(null);
@@ -305,8 +498,23 @@ export default function ItemsRefundModal({
   useEffect(() => {
     if (!modalOpen || orderIdProp == null) return;
 
+    if (prefetchedOrderItems?.items?.length) {
+      itemsSourceRef.current = prefetchedOrderItems.items;
+      const next = payloadToRefundState(prefetchedOrderItems, billView);
+      setRefundItems(next.items);
+      setPricing(next.pricing);
+      setItemsError(null);
+      setItemsLoading(false);
+      return;
+    }
+
+    if (refundItems.length > 0) {
+      setItemsLoading(false);
+      return;
+    }
+
     let cancelled = false;
-    if (!refundItems.length) setItemsLoading(true);
+    setItemsLoading(true);
     setItemsError(null);
     void (async () => {
       try {
@@ -319,8 +527,9 @@ export default function ItemsRefundModal({
           setPricing(null);
           return;
         }
-        const rows = Array.isArray(data.items) ? data.items : [];
-        setRefundItems(rows.map((row: Parameters<typeof mapApiItemToRefundItem>[0]) => mapApiItemToRefundItem(row)));
+        const rows = (Array.isArray(data.items) ? data.items : []) as OrderItemApiRow[];
+        itemsSourceRef.current = rows;
+        setRefundItems(rows.map((row) => mapApiItemToRefundItemForView(row, billView)));
         if (data.pricing && typeof data.pricing === 'object') {
           const parsed = parseOrderItemsApiResponse({ success: true, items: rows, pricing: data.pricing });
           setPricing(parsed?.pricing ?? null);
@@ -376,47 +585,42 @@ export default function ItemsRefundModal({
     return refundItems.some(item => item.isSelected);
   };
 
-  const getDefaultFaultForAttribute = (attribute: string): string => {
-    const faultMapping: { [key: string]: string } = {
-      'CUSTOMER': 'customer_fault',
-      'MERCHANT': 'merchant_fault',
-      'RIDER': '3pl_fault',
-      'SYSTEM': 'exceptional',
-      'OTHER': '',
-    };
-    return faultMapping[attribute] || '';
-  };
+  const attributeRejectionOptions = reasonsForAttribute(catalogGrouped, refundAttribute);
 
   const handleAttributeChange = (value: string) => {
     if (refundAttribute === value) {
       setRefundAttribute('');
+      setCatalogReasonId(null);
       setRefundRejection('');
-      setRejectionOptions([]);
       setShowRefundType(false);
       setFault('');
       return;
     }
     setRefundAttribute(value);
+    setCatalogReasonId(null);
     setRefundRejection('');
     setShowRefundType(false);
-    setFault(getDefaultFaultForAttribute(value));
-    const options: { [key: string]: string[] } = {
-      'CUSTOMER': ['Customer denying order', 'Customer non-responsive', 'Wrong customer address'],
-      'MERCHANT': ['Merchant closed', 'Items out of stock', 'Merchant not responding', 'Merchant cancelled order'],
-      'RIDER': ['Rider not responding', 'Rider denied order', 'Rider late', 'Rider cancelled'],
-      'SYSTEM': ['Technical issue', 'Payment failure', 'System error'],
-      'OTHER': ['Weather conditions', 'Force majeure', 'Other'],
-    };
-    setRejectionOptions(options[value] || []);
+    const attrRow = catalogAttributes.find((a) => a.code === value);
+    setFault(attrRow?.defaultFault ?? '');
   };
 
   const handleRejectionChange = (value: string) => {
-    if (refundRejection === value) {
+    const id = Number(value);
+    const row = attributeRejectionOptions.find((r) => r.id === id);
+    if (!row) {
+      setCatalogReasonId(null);
       setRefundRejection('');
       setShowRefundType(false);
       return;
     }
-    setRefundRejection(value);
+    if (catalogReasonId === row.id) {
+      setCatalogReasonId(null);
+      setRefundRejection('');
+      setShowRefundType(false);
+      return;
+    }
+    setCatalogReasonId(row.id);
+    setRefundRejection(row.label);
     setShowRefundType(true);
   };
 
@@ -598,7 +802,7 @@ export default function ItemsRefundModal({
   };
 
   const handleSubmit = () => {
-    if (!refundAttribute || !refundRejection || !refundType || !fault || !merchantDebit) {
+    if (!refundAttribute || !catalogReasonId || !refundRejection || !refundType || !fault || !merchantDebit) {
       onToast?.('Please complete all refund options');
       return;
     }
@@ -626,11 +830,11 @@ export default function ItemsRefundModal({
   const resetFormAndClose = () => {
     setIsRefundCompleted(false);
     setRefundAttribute('');
+    setCatalogReasonId(null);
     setRefundRejection('');
     setRefundType('');
     setFault('');
     setMerchantDebit('');
-    setRejectionOptions([]);
     setShowRefundType(false);
     setShowFault(false);
     setShowMerchantDebit(false);
@@ -677,6 +881,7 @@ export default function ItemsRefundModal({
               refundDescription: `Fault: ${fault}, Merchant debit: ${merchantDebit}`,
               attribute: refundAttribute,
               rejection: refundRejection,
+              catalogReasonId,
               fault,
               merchantDebit,
             }),
@@ -729,6 +934,7 @@ export default function ItemsRefundModal({
           mxDebitReason: merchantDebit,
           attribute: refundAttribute,
           rejection: refundRejection,
+          catalogReasonId,
           fault,
           merchantDebit,
           refundMetadata: refundType === 'refund_without_cancellation'
@@ -979,30 +1185,11 @@ export default function ItemsRefundModal({
             ) : null}
 
             {pricing ? (
-            <div className="mt-3 max-w-[340px] ml-auto bg-slate-50 p-3 rounded-md border border-slate-200">
-              <div className="space-y-1">
-                {(pricing.lines?.length ? pricing.lines : []).map((line) => (
-                  <div
-                    key={line.key}
-                    className="flex justify-between items-center py-0.5 text-[11px] border-b border-slate-200 last:border-0"
-                  >
-                    <span className="text-slate-600">{line.label}</span>
-                    <span
-                      className={`font-medium tabular-nums ${
-                        line.kind === 'discount' ? 'text-red-600' : 'text-slate-800'
-                      }`}
-                    >
-                      {line.kind === 'discount' ? '−' : ''}
-                      {line.amount.toFixed(2)}
-                    </span>
-                  </div>
-                ))}
-                <div className="flex justify-between items-center pt-1.5 mt-1 border-t border-slate-200 font-semibold text-slate-800 text-xs">
-                  <span>Total Order Amount</span>
-                  <span className="text-emerald-600 tabular-nums">₹{pricing.totalOrderAmount.toFixed(2)}</span>
-                </div>
-              </div>
-            </div>
+              <BillBreakdownSwitcher
+                pricing={pricing}
+                billView={billView}
+                onBillViewChange={handleBillViewChange}
+              />
             ) : null}
 
             {canCreateRefund && (
@@ -1012,18 +1199,33 @@ export default function ItemsRefundModal({
                 </h4>
                 <div className="flex items-center gap-2 mb-3 flex-wrap">
                   <label className="text-xs font-medium text-slate-600 whitespace-nowrap">Refund reason</label>
-                  <select value={refundAttribute} onChange={(e) => handleAttributeChange(e.target.value)} className="h-8 px-2 border border-slate-200 rounded text-xs text-slate-800 bg-white min-w-[140px] focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer">
+                  <select value={refundAttribute} onChange={(e) => handleAttributeChange(e.target.value)} disabled={catalogLoading} className="h-8 px-2 border border-slate-200 rounded text-xs text-slate-800 bg-white min-w-[140px] focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer disabled:opacity-60">
                     <option value="">Select Attribute</option>
-                    <option value="CUSTOMER">CUSTOMER</option>
-                    <option value="MERCHANT">MERCHANT</option>
-                    <option value="RIDER">RIDER</option>
-                    <option value="SYSTEM">SYSTEM</option>
-                    <option value="OTHER">OTHER</option>
+                    {catalogAttributes.map((attr) => (
+                      <option key={attr.code} value={attr.code}>
+                        {attr.displayLabel || attr.code}
+                      </option>
+                    ))}
                   </select>
-                  <select value={refundRejection} onChange={(e) => handleRejectionChange(e.target.value)} disabled={!refundAttribute} className={`h-8 px-2 border rounded text-xs bg-white min-w-[160px] focus:outline-none focus:ring-1 focus:ring-emerald-500 ${refundAttribute ? 'border-emerald-500 text-slate-800 cursor-pointer' : 'border-slate-200 text-slate-400 cursor-not-allowed bg-slate-50'}`}>
+                  <select
+                    value={catalogReasonId != null ? String(catalogReasonId) : ''}
+                    onChange={(e) => handleRejectionChange(e.target.value)}
+                    disabled={
+                      !refundAttribute ||
+                      (catalogLoading && attributeRejectionOptions.length === 0)
+                    }
+                    className={`h-8 px-2 border rounded text-xs bg-white min-w-[160px] focus:outline-none focus:ring-1 focus:ring-emerald-500 ${refundAttribute ? 'border-emerald-500 text-slate-800 cursor-pointer' : 'border-slate-200 text-slate-400 cursor-not-allowed bg-slate-50'}`}
+                  >
                     <option value="">Rejection option</option>
-                    {rejectionOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                    {attributeRejectionOptions.map((row) => (
+                      <option key={catalogReasonOptionValue(row)} value={catalogReasonOptionValue(row)}>
+                        {row.label}
+                      </option>
+                    ))}
                   </select>
+                  {catalogError ? (
+                    <span className="text-[11px] text-red-600">{catalogError}</span>
+                  ) : null}
                 </div>
 
                 {showRefundType && (

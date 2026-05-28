@@ -142,7 +142,12 @@ export function TerminalOrderCard({
   const rejection =
     meta.kind === "delivered"
       ? null
-      : splitRejectionMessage(rejectedReason, meta.kind, order.cancelledByLabel);
+      : splitRejectionMessage(
+          rejectedReason,
+          meta.kind,
+          order.cancelledByLabel,
+          order.cancelledByType
+        );
 
   return (
     <Pressable
@@ -224,10 +229,12 @@ export function TerminalOrderCard({
           <DashedRule />
           <Text style={styles.reasonLine} numberOfLines={4}>
             <Text style={[styles.reasonPrefix, { color: meta.prefixColor }]}>
-              {rejection.prefix}
-              {rejection.detail ? " " : ""}
+              {rejection.detail && !rejection.prefix.endsWith(":")
+                ? `${rejection.prefix} - ${rejection.detail}`
+                : rejection.prefix}
+              {rejection.detail && rejection.prefix.endsWith(":") ? " " : ""}
             </Text>
-            {rejection.detail ? (
+            {rejection.detail && rejection.prefix.endsWith(":") ? (
               <Text style={styles.reasonDetail}>{rejection.detail}</Text>
             ) : null}
           </Text>

@@ -6,6 +6,27 @@ import {
   createOrderRiderRecon,
   listOrderRiderRecons,
 } from "@/lib/db/operations/order-recons";
+import {
+  getPrimaryRolesByEmails,
+  getPrimaryRolesBySystemUserIds,
+} from "@/lib/db/operations/users";
+import type { OrderRiderReconRecord } from "@/lib/db/operations/order-recons";
+
+function resolveReconActorRole(
+  recon: OrderRiderReconRecord,
+  roleByUserId: Map<number, string>,
+  roleByEmail: Map<string, string>
+): string | null {
+  if (recon.actorSystemUserId != null) {
+    const byId = roleByUserId.get(recon.actorSystemUserId);
+    if (byId) return byId;
+  }
+  const email = recon.actorEmail?.trim().toLowerCase();
+  if (email) {
+    return roleByEmail.get(email) ?? null;
+  }
+  return null;
+}
 
 export const runtime = "nodejs";
 
@@ -57,10 +78,25 @@ export async function GET(
     }
 
     const recons = await listOrderRiderRecons(orderId);
+    const [roleByUserId, roleByEmail] = await Promise.all([
+      getPrimaryRolesBySystemUserIds(
+        recons
+          .map((r) => r.actorSystemUserId)
+          .filter((id): id is number => id != null)
+      ),
+      getPrimaryRolesByEmails(
+        recons.map((r) => r.actorEmail ?? "").filter(Boolean)
+      ),
+    ]);
+
+    const data = recons.map((r) => ({
+      ...r,
+      actorRole: resolveReconActorRole(r, roleByUserId, roleByEmail),
+    }));
 
     return NextResponse.json({
       success: true,
-      data: recons,
+      data,
     });
   } catch (error) {
     // eslint-disable-next-line no-console
@@ -177,9 +213,24 @@ export async function POST(
         reasonText,
       });
 
+      const actorRole =
+        systemUser?.primary_role ??
+        resolveReconActorRole(
+          created,
+          await getPrimaryRolesBySystemUserIds(
+            created.actorSystemUserId != null ? [created.actorSystemUserId] : []
+          ),
+          created.actorEmail
+            ? await getPrimaryRolesByEmails([created.actorEmail])
+            : new Map<string, string>()
+        );
+
       return NextResponse.json({
         success: true,
-        data: created,
+        data: {
+          ...created,
+          actorRole,
+        },
       });
     } catch (error) {
       if (error instanceof Error) {

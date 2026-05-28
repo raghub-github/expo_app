@@ -11,6 +11,8 @@ import {
   buildDeliveryInstructionsArray,
   buildFoodOrderItemsPayload,
   buildMerchantInstructionsArray,
+  contactlessFromCheckout,
+  enrichBillingSnapshotForPersistence,
   etaSecondsFromBillingSnapshot,
   isScheduledOrderFromCheckout,
   requiresUtensilsFromCheckout,
@@ -70,10 +72,32 @@ export async function insertPlacedOrderCoreWithTimelines(
     pending.checkoutMetadata != null && typeof pending.checkoutMetadata === "object"
       ? (pending.checkoutMetadata as Record<string, unknown>)
       : null;
-  const billing =
+  const deliveryType = pending.deliveryType ?? "delivery";
+  const distanceKm = Number(pending.distanceKm ?? 0);
+  const storeKpt = await fetchStoreAvgPrepMinutes(tx, pending.merchantStoreId);
+  const durationMinRaw = etaSecondsFromBillingSnapshot(
+    pending.billingSnapshot as Record<string, unknown> | null
+  );
+  const durationMin =
+    durationMinRaw != null && durationMinRaw > 0
+      ? Math.round(durationMinRaw / 60)
+      : null;
+  const billingRaw =
     pending.billingSnapshot != null && typeof pending.billingSnapshot === "object"
       ? (pending.billingSnapshot as Record<string, unknown>)
       : null;
+  const billing = enrichBillingSnapshotForPersistence(billingRaw, {
+    deliveryType,
+    distanceKm: Number.isFinite(distanceKm) ? distanceKm : 0,
+    durationMin,
+    serviceable:
+      billingRaw?.serviceable === false
+        ? false
+        : billingRaw?.serviceable === true
+          ? true
+          : true,
+    storeKptMinutes: storeKpt,
+  });
 
   const pickupRaw = sanitizeStringForDb(pending.pickupAddressNormalized ?? undefined) ?? "";
   const dropRaw = sanitizeStringForDb(pending.deliveryAddress ?? undefined) ?? "";
@@ -119,8 +143,8 @@ export async function insertPlacedOrderCoreWithTimelines(
       etaSeconds: etaSeconds ?? undefined,
       paymentStatus: "completed",
       paymentMethod: input.paymentMethodEnum,
-      deliveryType: pending.deliveryType ?? "delivery",
-      billingSnapshot: billing ?? undefined,
+      deliveryType,
+      billingSnapshot: billing,
       billingRulesetVersion: pending.billingRulesetVersion ?? undefined,
       checkoutMetadata: checkoutMeta ?? undefined,
       items: foodPayload as unknown as Record<string, unknown>[],
@@ -175,6 +199,38 @@ export async function insertPlacedOrderCoreWithTimelines(
     WHERE order_id = ${orderCorePk}
        OR core_order_id = ${orderIdText}
   `);
+
+  const contactless = contactlessFromCheckout(checkoutMeta);
+  const checkoutEnriched = {
+    ...(checkoutMeta ?? {}),
+    leaveAtDoor: contactless === true ? true : checkoutMeta?.leaveAtDoor,
+    contactless: contactless ?? checkoutMeta?.contactless,
+    deliveryType,
+  };
+
+  try {
+    await tx.execute(sql`
+      UPDATE orders_core
+      SET
+        default_system_kpt_minutes = COALESCE(${storeKpt}, default_system_kpt_minutes),
+        delivery_initiator = COALESCE(delivery_initiator, 'customer'),
+        checkout_metadata = COALESCE(checkout_metadata, '{}'::jsonb) || ${JSON.stringify(checkoutEnriched)}::jsonb,
+        billing_snapshot = COALESCE(billing_snapshot, '{}'::jsonb) || ${JSON.stringify(billing)}::jsonb,
+        updated_at = now()
+      WHERE id = ${orderCorePk}
+    `);
+  } catch {
+    await tx.execute(sql`
+      UPDATE orders_core
+      SET
+        checkout_metadata = COALESCE(checkout_metadata, '{}'::jsonb) || ${JSON.stringify(checkoutEnriched)}::jsonb,
+        billing_snapshot = COALESCE(billing_snapshot, '{}'::jsonb) || ${JSON.stringify(billing)}::jsonb,
+        updated_at = now()
+      WHERE id = ${orderCorePk}
+    `);
+  }
+
+  await ensureOrderOtpsGenerated(tx, orderCorePk);
 
   return { orderCorePk };
 }

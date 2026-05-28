@@ -2,7 +2,6 @@ import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
 import { OrderCardItemRow } from "@/components/order/OrderCardItemRow";
 import type { LineItem } from "@/hooks/useOrders";
-import { lineItemHasCustomizations } from "@/lib/merchant-order-food-item-display";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
 
 type Props = {
@@ -45,10 +44,9 @@ export function IncomingOrderAllItemsSheet({
                 item={item}
                 orderVeg={orderVeg}
                 showPrice
+                showExpandChevron
                 onItemNamePress={() => onItemPress(item)}
-                onRowPress={() => {
-                  if (lineItemHasCustomizations(item)) onItemPress(item);
-                }}
+                onRowPress={() => onItemPress(item)}
               />
             </View>
           ))}

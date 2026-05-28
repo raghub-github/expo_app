@@ -239,8 +239,8 @@ export function TicketHelpdeskDashboardClient() {
     queryFn: () => fetchHelpdeskDashboard(groupId, dateFrom, dateTo),
     staleTime: 30_000,
     gcTime: 24 * 60 * 60_000,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: true,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
     /** Backup while dashboard is open (realtime + mutations also invalidate this query). */
     refetchInterval: (q) =>
       typeof document !== "undefined" && document.visibilityState === "visible" && q.state.data !== undefined

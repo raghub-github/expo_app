@@ -1,14 +1,7 @@
 import { QueryClient } from "@tanstack/react-query";
 import { createPersister } from "./query-persistence";
 
-/**
- * QueryClient configuration with optimal defaults for smooth loading and updates:
- * - Keep previous data visible while refetching (no flash of empty state)
- * - Smart caching and persistence (see cache-strategies.ts)
- * - 10 minute stale window so cached dashboard data is reused on navigation
- * - 30 minute cache window so inactive tabs can resume instantly
- */
-export const queryClient = new QueryClient({
+const QUERY_CLIENT_OPTIONS = {
   defaultOptions: {
     queries: {
       staleTime: 10 * 60 * 1000, // 10 minutes default
@@ -16,15 +9,35 @@ export const queryClient = new QueryClient({
       refetchOnWindowFocus: false,
       refetchOnMount: false,
       refetchOnReconnect: false,
-      // Keep previous data visible during refetch for smooth, non-jarring updates
-      placeholderData: (previousData: unknown) => previousData,      retry: 1,
-      retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
+      placeholderData: (previousData: unknown) => previousData,
+      retry: 1,
+      retryDelay: (attemptIndex: number) => Math.min(1000 * 2 ** attemptIndex, 30000),
     },
     mutations: {
       retry: 0,
     },
   },
-});
+} as const;
+
+declare global {
+  interface Window {
+    __GATI_QUERY_CLIENT__?: QueryClient;
+  }
+}
+
+function createQueryClient(): QueryClient {
+  return new QueryClient(QUERY_CLIENT_OPTIONS);
+}
+
+/**
+ * QueryClient configuration with optimal defaults for smooth loading and updates.
+ * In the browser we reuse a window singleton so dev HMR / multi-tab work does not
+ * wipe in-memory caches and trigger full dashboard reloads.
+ */
+export const queryClient =
+  typeof window !== "undefined"
+    ? (window.__GATI_QUERY_CLIENT__ ??= createQueryClient())
+    : createQueryClient();
 
 /**
  * Persister instance for localStorage persistence

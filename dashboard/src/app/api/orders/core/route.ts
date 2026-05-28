@@ -12,7 +12,6 @@ import {
   getFoodDeliveryInstructions,
   recordEtaBreachIfNeeded,
   ensureOrderEtaWhenAccepted,
-  getOrderTimelineEntriesWithFallback,
   type OrderSearchType,
   type OrderStatusFilter,
   type OrdersCoreRow,
@@ -23,13 +22,52 @@ import { fetchOrderPaymentDetail } from "@/lib/orders/order-payment-detail";
 /** Row returned to the client: list shape + `storeId`, optional enrichments for single-order fetch */
 type OrderCoreApiListItem = Omit<OrdersCoreRow, "estimatedDeliveryTime"> & {
   storeId: string | null;
+  merchantLocality?: string | null;
   deliveryInstructions?: string | null;
   estimatedDeliveryTime?: Date | string | null;
 };
 import {
   getMerchantStoreSummaryByStoreId,
+  getMerchantLocalitiesByInternalIds,
   getStoreIdsByInternalIds,
+  resolveMerchantLocalityLabel,
 } from "@/lib/db/operations/merchant-stores";
+
+function resolveOrderMerchantLocality(
+  order: OrdersCoreRow,
+  storeLocality: string | null | undefined
+): string | null {
+  if (storeLocality?.trim()) return storeLocality.trim();
+  const pickup =
+    order.pickupAddressNormalized?.trim() || order.pickupAddressRaw?.trim() || null;
+  if (!pickup) return null;
+  return resolveMerchantLocalityLabel({
+    landmark: null,
+    city: null,
+    full_address: pickup,
+  });
+}
+
+async function enrichOrdersListWithStoreMeta(
+  orders: OrdersCoreRow[]
+): Promise<OrderCoreApiListItem[]> {
+  const internalIds = orders
+    .map((o) => o.merchantStoreId)
+    .filter((id): id is number => id != null && Number.isFinite(id));
+  const [storeIds, localities] = await Promise.all([
+    getStoreIdsByInternalIds(internalIds),
+    getMerchantLocalitiesByInternalIds(internalIds),
+  ]);
+  return orders.map((order) => {
+    const sid = order.merchantStoreId;
+    const storeLocality = sid != null ? localities.get(sid) ?? null : null;
+    return {
+      ...order,
+      storeId: sid != null ? storeIds.get(sid) ?? null : null,
+      merchantLocality: resolveOrderMerchantLocality(order, storeLocality),
+    };
+  });
+}
 import { getOrderRemarksCount } from "@/lib/db/operations/order-remarks";
 import { getOrderReconsCount } from "@/lib/db/operations/order-recons";
 import { getRedisClient } from "@/lib/redis";
@@ -194,17 +232,7 @@ export async function GET(request: NextRequest) {
     if (cacheKey && !skipCache) {
       const cached = getCached<Awaited<ReturnType<typeof listOrdersCore>>>(cacheKey);
       if (cached) {
-        const storeIds = await getStoreIdsByInternalIds(
-          cached.orders
-            .map((o) => (o as { merchantStoreId?: number | null }).merchantStoreId)
-            .filter((id): id is number => id != null && Number.isFinite(id))
-        );
-
-        const data = cached.orders.map((order) => {
-          const o = order as { merchantStoreId?: number | null };
-          const storeIdDisplay = o.merchantStoreId != null ? storeIds.get(o.merchantStoreId) ?? null : null;
-          return { ...order, storeId: storeIdDisplay };
-        });
+        const data = await enrichOrdersListWithStoreMeta(cached.orders);
 
         return NextResponse.json({
           success: true,
@@ -226,17 +254,7 @@ export async function GET(request: NextRequest) {
           // Populate memory cache too for immediate follow-up navigations.
           setCached(cacheKey, parsed, MEMORY_TTL_MS);
 
-          const storeIds = await getStoreIdsByInternalIds(
-            parsed.orders
-              .map((o) => (o as { merchantStoreId?: number | null }).merchantStoreId)
-              .filter((id): id is number => id != null && Number.isFinite(id))
-          );
-          const data = parsed.orders.map((order) => {
-            const o = order as { merchantStoreId?: number | null };
-            const storeIdDisplay =
-              o.merchantStoreId != null ? storeIds.get(o.merchantStoreId) ?? null : null;
-            return { ...order, storeId: storeIdDisplay };
-          });
+          const data = await enrichOrdersListWithStoreMeta(parsed.orders);
 
           return NextResponse.json({
             success: true,
@@ -255,23 +273,12 @@ export async function GET(request: NextRequest) {
 
     const result = await listOrdersCore(listParams);
 
-    const storeIds = await getStoreIdsByInternalIds(
-      result.orders
-        .map((o) => (o as { merchantStoreId?: number | null }).merchantStoreId)
-        .filter((id): id is number => id != null && Number.isFinite(id))
-    );
-    let data: OrderCoreApiListItem[] = result.orders.map((order) => {
-      const o = order as { merchantStoreId?: number | null };
-      const storeIdDisplay =
-        o.merchantStoreId != null ? storeIds.get(o.merchantStoreId) ?? null : null;
-      return { ...order, storeId: storeIdDisplay };
-    });
+    let data: OrderCoreApiListItem[] = await enrichOrdersListWithStoreMeta(result.orders);
 
     let merchantSummary: Awaited<ReturnType<typeof getMerchantStoreSummaryByStoreId>> = null;
     let remarksCount: number | undefined;
     let reconsCount: number | undefined;
     let statusHistory: Awaited<ReturnType<typeof getOrderManualStatusHistory>> | undefined;
-    let timeline: Awaited<ReturnType<typeof getOrderTimelineEntriesWithFallback>> | undefined;
     let paymentDetail: Awaited<ReturnType<typeof fetchOrderPaymentDetail>> | null = null;
     if (result.orders.length === 1) {
       const first = data[0] as {
@@ -299,7 +306,15 @@ export async function GET(request: NextRequest) {
           tipAmount?: string | number | null;
         };
 
-        const [remarks, recons, history, deliveryInstructions, etaSet, etaBreach, timelineEntries, detailExtra, paymentDetail] =
+        // ETA writes are side effects — do not block the order-detail response.
+        void ensureOrderEtaWhenAccepted(orderId).catch((err) => {
+          console.error("[GET /api/orders/core] ensureOrderEtaWhenAccepted failed", err);
+        });
+        void recordEtaBreachIfNeeded(orderId).catch((err) => {
+          console.error("[GET /api/orders/core] recordEtaBreachIfNeeded failed", err);
+        });
+
+        const [remarks, recons, history, deliveryInstructions, detailExtra, paymentDetail] =
           await Promise.all([
             getOrderRemarksCount(orderId),
             getOrderReconsCount(orderId),
@@ -307,9 +322,6 @@ export async function GET(request: NextRequest) {
             first?.orderType === "food"
               ? getFoodDeliveryInstructions(orderId)
               : Promise.resolve(null),
-            ensureOrderEtaWhenAccepted(orderId),
-            recordEtaBreachIfNeeded(orderId),
-            getOrderTimelineEntriesWithFallback(orderId),
             getOrderDetailEnrichment(orderId).catch((err) => {
               console.error("[GET /api/orders/core] order detail enrichment failed", err);
               return null;
@@ -337,24 +349,11 @@ export async function GET(request: NextRequest) {
               return null;
             }),
           ]);
-        timeline = timelineEntries;
         remarksCount = remarks;
         reconsCount = recons;
         statusHistory = history;
         if (deliveryInstructions !== undefined) {
           data = [{ ...(data[0] as Record<string, unknown>), deliveryInstructions: deliveryInstructions ?? null }] as unknown as typeof data;
-        }
-        if (etaSet != null) {
-          data = [{ ...(data[0] as Record<string, unknown>), estimatedDeliveryTime: etaSet.estimatedDeliveryTime.toISOString() }] as unknown as typeof data;
-        }
-        if (etaBreach != null) {
-          data = [
-            {
-              ...(data[0] as Record<string, unknown>),
-              etaBreachedAt: etaBreach.etaBreachedAt,
-              etaBreachedTimelineId: etaBreach.etaBreachedTimelineId,
-            },
-          ] as unknown as typeof data;
         }
         if (detailExtra != null) {
           data = [
@@ -383,6 +382,10 @@ export async function GET(request: NextRequest) {
                 (data[0] as { estimatedDeliveryTime?: string | Date | null })
                   .estimatedDeliveryTime ??
                 null,
+              cancellationInfo: detailExtra.cancellationInfo,
+              pickupOtp: detailExtra.pickupOtp,
+              rtoOtp: detailExtra.rtoOtp,
+              deliveryOtp: detailExtra.deliveryOtp,
             },
           ] as unknown as typeof data;
         }
@@ -421,7 +424,6 @@ export async function GET(request: NextRequest) {
       ...(remarksCount !== undefined && { remarksCount }),
       ...(reconsCount !== undefined && { reconsCount }),
       ...(statusHistory !== undefined && { statusHistory }),
-      ...(timeline !== undefined && { timeline }),
       ...(paymentDetail != null && { paymentDetail }),
     });
   } catch (error) {

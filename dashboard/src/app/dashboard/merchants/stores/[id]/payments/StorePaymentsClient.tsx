@@ -423,7 +423,7 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
       toast("Enter a valid amount (min ₹100)");
       return;
     }
-    const available = wallet?.available_balance ?? 0;
+    const available = wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0;
     if (available < 100) {
       toast("Available balance is below the minimum withdrawal (₹100).");
       return;
@@ -714,11 +714,18 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
           <div className="lg:col-span-1 bg-emerald-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Available Balance</p>
+                <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Withdrawable</p>
                 {walletLoading ? (
                   <div className="h-7 w-20 mt-1.5 bg-gray-200 rounded animate-pulse" />
                 ) : (
-                  <p className="text-xl font-bold text-gray-900 mt-1">{formatInr(wallet?.available_balance ?? 0)}</p>
+                  <p className="text-xl font-bold text-gray-900 mt-1">
+                    {formatInr(wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0)}
+                  </p>
+                  {(wallet?.locked_settlement_total ?? wallet?.locked_balance ?? 0) > 0 ? (
+                    <p className="text-[10px] text-amber-700 mt-1">
+                      In refund window: {formatInr(wallet?.locked_settlement_total ?? wallet?.locked_balance ?? 0)}
+                    </p>
+                  ) : null}
                 )}
               </div>
               <div className="p-2 rounded-lg bg-emerald-100 flex-shrink-0">

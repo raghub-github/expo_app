@@ -1,5 +1,9 @@
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import {
+  GATIMITRA_TEAM_REJECTION_LABEL,
+  isCatalogCancellationReason,
+} from '@/lib/merchant-cancellation-display';
+import {
   normalizeActionMode,
   normalizeActionSource,
   type MerchantOrderActionSource,
@@ -361,6 +365,17 @@ const FLOW_STEP_INDEX: Record<string, number> = Object.fromEntries(
   FLOW_STEP_DEFS.map((d, i) => [d.key, i])
 );
 
+/** Timeline row label for cancelled orders (merchant / partner UIs). */
+export function displayLabelForCancelledStep(order: OrdersFoodRow): string {
+  const lbl = (order.cancelled_by_label ?? '').trim();
+  if (lbl) return lbl;
+  const r = (order.rejected_reason ?? '').trim();
+  if (/^auto cancelled/i.test(r)) return 'Auto Cancelled';
+  if (/customer/i.test(r) && !isCatalogCancellationReason(r)) return 'Cancelled by customer';
+  if (isCatalogCancellationReason(r) || r) return GATIMITRA_TEAM_REJECTION_LABEL;
+  return GATIMITRA_TEAM_REJECTION_LABEL;
+}
+
 const CANCELLED_DEF: StepDef = {
   key: 'cancelled',
   label: 'Cancelled',
@@ -369,8 +384,12 @@ const CANCELLED_DEF: StepDef = {
   tone: 'cancel',
   resolveAt: ({ order, actions, atByKey }) =>
     pickTimestamp(order.cancelled_at, actionAt(actions, ['CANCELLED']), atByKey.cancelled),
-  resolveDetail: (order) =>
-    (order.rejected_reason || order.cancelled_by_label || null)?.trim() || null,
+  resolveDetail: (order) => {
+    const reason = (order.rejected_reason ?? '').trim();
+    const label = (order.cancelled_by_label ?? '').trim();
+    if (reason && label && reason !== label) return reason;
+    return reason || label || null;
+  },
 };
 
 const RTO_DEF: StepDef = {
@@ -453,7 +472,10 @@ export function buildMerchantVisibleTimeline(
 
   return steps
     .filter((s) => s.at)
-    .sort((a, b) => (FLOW_STEP_INDEX[a.key] ?? 99) - (FLOW_STEP_INDEX[b.key] ?? 99));
+    .sort((a, b) => (FLOW_STEP_INDEX[a.key] ?? 99) - (FLOW_STEP_INDEX[b.key] ?? 99))
+    .map((s) =>
+      s.key === 'cancelled' ? { ...s, label: displayLabelForCancelledStep(order) } : s
+    );
 }
 
 export function formatTimelineDate(s: string | null | undefined): string {

@@ -44,6 +44,12 @@ import {
 } from "@/lib/tickets/queue-supervisor-sections";
 import { queueSupervisorHref } from "@/lib/tickets/queue-supervisor-paths";
 import { usePermission } from "@/hooks/usePermission";
+import { usePermissions } from "@/hooks/usePermissions";
+import {
+  parsePortalParam,
+  readStoredMerchantsPortal,
+  resolveMerchantsPortal,
+} from "@/lib/merchants/portal-preference";
 import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
 import { StoreInfoCard, StoreInfoCardSkeleton, type StoreInfoCardData } from "@/components/layout/StoreInfoCard";
 import { WalletRequestsSummarySidebar } from "@/components/merchants/WalletRequestsSummarySidebar";
@@ -75,6 +81,7 @@ export function RightSidebar({
   const searchParams = useSearchParams();
   const rightSidebarCtx = useRightSidebar();
   const { hasDashboardAccess, isSuperAdmin, canPerformAction } = usePermission();
+  const { canTogglePortal = false } = usePermissions();
   
   // Remove query parameters for comparison
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
@@ -86,7 +93,11 @@ export function RightSidebar({
   );
 
   const isStorePath = /^\/dashboard\/merchants\/stores\/\d+/.test(cleanPathname);
-  const portal = searchParams.get("portal") || "merchant";
+  const portal = resolveMerchantsPortal({
+    portalFromUrl: parsePortalParam(searchParams.get("portal")),
+    canTogglePortal,
+    storedPortal: typeof window !== "undefined" ? readStoredMerchantsPortal() : null,
+  });
 
   // Sub-routes for current dashboard. When on merchants: admin portal = only All Merchants + Verifications; merchant portal = Dashboard, Orders, Menu, etc. When on a store page, show store-scoped links.
   const rawSubRoutes = useMemo(() => {

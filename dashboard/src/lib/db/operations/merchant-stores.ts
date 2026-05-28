@@ -926,6 +926,13 @@ export interface MerchantStoreSummaryForOrder {
   merchantType: string | null;
   assignedUserEmail: string | null;
   assignedUserDepartment: string | null;
+  approval_status: string | null;
+  operational_status: string | null;
+  is_active: boolean | null;
+  is_accepting_orders: boolean | null;
+  is_available: boolean | null;
+  deleted_at: Date | string | null;
+  delisted_at: Date | string | null;
 }
 
 function extractTime(value: unknown): string | null {
@@ -954,7 +961,9 @@ export async function getMerchantStoreSummaryByStoreId(
   const sql = getSql();
   const storeRows = await sql`
     SELECT s.id, s.store_id, s.parent_id, s.store_name, s.store_display_name, s.store_phones,
-           s.full_address, s.landmark, s.city, s.latitude, s.longitude, s.store_type, s.area_manager_id
+           s.full_address, s.landmark, s.city, s.latitude, s.longitude, s.store_type, s.area_manager_id,
+           s.approval_status, s.operational_status, s.is_active, s.is_accepting_orders, s.is_available,
+           s.deleted_at, s.delisted_at
     FROM merchant_stores s
     WHERE s.id = ${storeId} AND s.deleted_at IS NULL
     LIMIT 1
@@ -975,6 +984,13 @@ export async function getMerchantStoreSummaryByStoreId(
     longitude: number | null;
     store_type: string | null;
     area_manager_id: number | null;
+    approval_status: string | null;
+    operational_status: string | null;
+    is_active: boolean | null;
+    is_accepting_orders: boolean | null;
+    is_available: boolean | null;
+    deleted_at: Date | string | null;
+    delisted_at: Date | string | null;
   };
   let assignedUserEmail: string | null = null;
   let assignedUserDepartment: string | null = null;
@@ -1065,6 +1081,13 @@ export async function getMerchantStoreSummaryByStoreId(
     merchantType: s.store_type ?? null,
     assignedUserEmail,
     assignedUserDepartment,
+    approval_status: s.approval_status ?? null,
+    operational_status: s.operational_status ?? null,
+    is_active: s.is_active ?? null,
+    is_accepting_orders: s.is_accepting_orders ?? null,
+    is_available: s.is_available ?? null,
+    deleted_at: s.deleted_at ?? null,
+    delisted_at: s.delisted_at ?? null,
   };
 }
 
@@ -1082,13 +1105,70 @@ export async function getStoreIdsByInternalIds(
   const rows = await sql`
     SELECT id, store_id
     FROM merchant_stores
-    WHERE id = ANY(${uniq}) AND deleted_at IS NULL
+    WHERE id IN ${sql(uniq)} AND deleted_at IS NULL
   `;
   const list = Array.isArray(rows) ? rows : [rows];
   const map = new Map<number, string>();
   for (const r of list) {
     const row = r as { id: number; store_id: string | null };
     if (row?.store_id != null) map.set(Number(row.id), String(row.store_id));
+  }
+  return map;
+}
+
+export function resolveMerchantLocalityLabel(row: {
+  landmark: string | null;
+  city: string | null;
+  full_address: string | null;
+}): string | null {
+  const landmark = row.landmark?.trim();
+  if (landmark) return landmark;
+
+  const city = row.city?.trim();
+  if (city) return city;
+
+  const address = row.full_address?.trim();
+  if (!address) return null;
+
+  const parts = address
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const part = parts[i];
+    if (/^\d{5,6}$/.test(part)) continue;
+    if (/^[A-Z]{2}$/i.test(part)) continue;
+    if (part.length >= 2) return part;
+  }
+  return parts[0] ?? null;
+}
+
+/**
+ * Batch fetch merchant locality (landmark / city / address segment) by internal store ids.
+ */
+export async function getMerchantLocalitiesByInternalIds(
+  internalIds: number[]
+): Promise<Map<number, string>> {
+  if (internalIds.length === 0) return new Map();
+  const uniq = [...new Set(internalIds)].filter((n) => Number.isFinite(n));
+  if (uniq.length === 0) return new Map();
+  const sql = getSql();
+  const rows = await sql`
+    SELECT id, landmark, city, full_address
+    FROM merchant_stores
+    WHERE id IN ${sql(uniq)} AND deleted_at IS NULL
+  `;
+  const list = Array.isArray(rows) ? rows : [rows];
+  const map = new Map<number, string>();
+  for (const r of list) {
+    const row = r as {
+      id: number;
+      landmark: string | null;
+      city: string | null;
+      full_address: string | null;
+    };
+    const label = resolveMerchantLocalityLabel(row);
+    if (label) map.set(Number(row.id), label);
   }
   return map;
 }

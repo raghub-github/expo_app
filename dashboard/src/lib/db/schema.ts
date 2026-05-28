@@ -1823,6 +1823,45 @@ export const orderRemarkEdits = pgTable(
 );
 
 // ============================================================================
+// Cancellation attributes (CUSTOMER, MERCHANT, … — super-admin managed)
+export const orderCancellationAttributes = pgTable("order_cancellation_attributes", {
+  code: text("code").primaryKey(),
+  displayLabel: text("display_label").notNull(),
+  defaultFault: text("default_fault").notNull().default(""),
+  sortOrder: integer("sort_order").notNull().default(0),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// Cancellation reason catalog (configurable; super-admin managed)
+export const orderCancellationReasonCatalog = pgTable(
+  "order_cancellation_reason_catalog",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    attribute: text("attribute").notNull(),
+    label: text("label").notNull(),
+    reasonCode: text("reason_code").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    attributeIdx: index("order_cancellation_reason_catalog_attribute_idx").on(
+      table.attribute
+    ),
+  })
+);
+
 // Order cancellation reasons (orders_core.cancellation_reason_id references this)
 export const orderCancellationReasons = pgTable(
   "order_cancellation_reasons",
@@ -1838,6 +1877,14 @@ export const orderCancellationReasons = pgTable(
     penaltyApplied: boolean("penalty_applied").default(false),
     penaltyAmount: numeric("penalty_amount", { precision: 10, scale: 2 }),
     metadata: jsonb("metadata").default({}),
+    catalogReasonId: bigint("catalog_reason_id", { mode: "number" }),
+    cancelledByType: text("cancelled_by_type"),
+    cancelledByLabel: text("cancelled_by_label"),
+    displayReason: text("display_reason"),
+    attribute: text("attribute"),
+    rejectionLabel: text("rejection_label"),
+    actionSource: text("action_source"),
+    cancelMode: text("cancel_mode"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1985,6 +2032,7 @@ export const orderManualStatusHistory = pgTable(
       .references(() => ordersCore.id, { onDelete: "cascade" }),
     toStatus: text("to_status").notNull(),
     updatedByEmail: text("updated_by_email").notNull(),
+    updatedByRole: text("updated_by_role"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

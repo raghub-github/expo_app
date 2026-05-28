@@ -9,6 +9,12 @@ import {
 } from '@/lib/merchantOrderFoodActions';
 import { appendAcceptanceTimeline } from '@/lib/orderAcceptanceTimeline';
 import { appendCancellationTimeline } from '@/lib/orderCancellationTimeline';
+import {
+  actorTypeFromSource,
+  recordOrderCancellation,
+} from '@/lib/record-order-cancellation';
+import { resolveOrderCancellationRefund } from '@/lib/order-cancellation-refund';
+import { creditMerchantOrderEarningOnDelivered } from '@/lib/credit-merchant-order-on-delivered';
 import { appendDispatchedTimeline, appendReadyTimeline } from '@/lib/orderFoodStatusTimeline';
 import { loadPartnerOrderItemsForFoodRow } from '@/lib/partnerFoodOrderItems';
 import {
@@ -209,6 +215,15 @@ export async function PATCH(
       updates.cancelled_at = now;
       if (rejectedReason) updates.rejected_reason = rejectedReason;
       if (actionLabels.cancelled_by_label) updates.cancelled_by_label = actionLabels.cancelled_by_label;
+      updates.cancelled_by_type = actorTypeFromSource(actionSource);
+      updates.cancellation_details = {
+        version: 1,
+        source: actorTypeFromSource(actionSource),
+        cancelled_by_label: actionLabels.cancelled_by_label,
+        rejected_reason: rejectedReason,
+        action_source: actionSource,
+        cancel_mode: actionMode,
+      };
     } else if (newStatus === 'RTO') {
       updates.is_rto = true;
       updates.rto_at = now;
@@ -302,6 +317,53 @@ export async function PATCH(
       } catch (tlErr) {
         console.warn('[food-orders PATCH] cancellation timeline failed:', tlErr);
       }
+      const displayReason = (rejectedReason ?? '').trim() || 'Order cancelled';
+      const { data: coreMoney } = await db
+        .from('orders_core')
+        .select('grand_total')
+        .eq('id', existing.order_id as number)
+        .maybeSingle();
+      const refund = resolveOrderCancellationRefund({
+        previousStatus: currentStatus,
+        acceptedAt: (existing.accepted_at as string | null) ?? null,
+        grandTotal: coreMoney?.grand_total ?? 0,
+        cancelMode: actionMode,
+        rejectedReason: displayReason,
+      });
+      try {
+        await recordOrderCancellation(db, {
+          orderCorePk: existing.order_id as number,
+          cancelledBy: 'merchant',
+          displayReason,
+          cancelledByType: actorTypeFromSource(actionSource),
+          cancelledByLabel:
+            actionLabels.cancelled_by_label ?? 'Cancelled',
+          actionSource,
+          cancelMode: actionMode,
+          previousStatus: currentStatus,
+          acceptedAt: (existing.accepted_at as string | null) ?? null,
+          grandTotal: coreMoney?.grand_total ?? 0,
+          refundStatus: refund.refundStatus,
+          refundAmount: refund.refundAmount,
+        });
+      } catch (cancelRowErr) {
+        console.warn('[food-orders PATCH] order_cancellation_reasons failed:', cancelRowErr);
+      }
+      try {
+        const { applyPaymentCancellationPayment } = await import(
+          '@/lib/payment/apply-cancellation-payment'
+        );
+        await applyPaymentCancellationPayment({
+          orderCoreId: existing.order_id as number,
+          ordersFoodId: orderIdNum,
+          merchantStoreId: existing.merchant_store_id as number,
+          previousStatus: currentStatus,
+          cancelledByType: actorTypeFromSource(actionSource),
+          orderGross: Number(existing.food_items_total_value ?? 0),
+        });
+      } catch (payErr) {
+        console.warn('[food-orders PATCH] payment_apply_cancellation:', payErr);
+      }
     }
 
     if (newStatus === 'READY_FOR_PICKUP') {
@@ -352,39 +414,14 @@ export async function PATCH(
       console.warn('[food-orders PATCH] action log failed (run migration 0146?):', logErr);
     }
 
-    // When order transitions to DELIVERED, credit merchant wallet (ORDER_EARNING) so dashboard/payments show correct earnings
-    const didJustDeliver = newStatus === 'DELIVERED' && currentStatus !== 'DELIVERED';
-    if (didJustDeliver) {
-      const amount = Number(existing.food_items_total_value ?? 0);
-      if (amount > 0) {
-        try {
-          const { data: walletId, error: rpcWalletErr } = await db.rpc('get_or_create_merchant_wallet', {
-            p_merchant_store_id: existing.merchant_store_id,
-          });
-          if (rpcWalletErr || walletId == null) {
-            console.error('[food-orders PATCH] get_or_create_merchant_wallet:', rpcWalletErr);
-          } else {
-            const idempotencyKey = `order_earning_${orderIdNum}`;
-            const { error: creditErr } = await db.rpc('merchant_wallet_credit', {
-              p_wallet_id: walletId,
-              p_amount: amount,
-              p_category: 'ORDER_EARNING',
-              p_balance_type: 'AVAILABLE',
-              p_reference_type: 'ORDER',
-              p_reference_id: orderIdNum,
-              p_idempotency_key: idempotencyKey,
-              p_description: `Order #${existing.order_id} delivered`,
-              p_metadata: {},
-            });
-            if (creditErr) {
-              console.error('[food-orders PATCH] merchant_wallet_credit:', creditErr);
-            }
-          }
-        } catch (e) {
-          console.error('[food-orders PATCH] wallet credit failed:', e);
-        }
-      }
-    }
+    await creditMerchantOrderEarningOnDelivered(db, {
+      merchantStoreId: existing.merchant_store_id as number,
+      ordersFoodId: orderIdNum,
+      ordersCoreId: existing.order_id as number,
+      amount: Number(existing.food_items_total_value ?? 0),
+      newStatus,
+      previousStatus: currentStatus,
+    });
 
     const enrichedItems = await loadPartnerOrderItemsForFoodRow(db, data as Record<string, unknown>);
     const itemCount = computeOrderItemQuantityCount({

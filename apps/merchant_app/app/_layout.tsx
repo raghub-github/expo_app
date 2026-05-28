@@ -17,6 +17,7 @@ import { LiveSupportTicketProvider } from "@/context/LiveSupportTicketContext";
 import FloatingOrdersManager from "../components/FloatingOrdersManager";
 import { FloatingLiveSupportTicket } from "@/components/FloatingLiveSupportTicket";
 import IncomingOrderModal from "../components/IncomingOrderModal";
+import { IncomingOrderSheetProvider } from "@/context/IncomingOrderSheetContext";
 import { SessionRevokedGate } from "@/components/SessionRevokedGate";
 import NotificationSetup from "../components/NotificationSetup";
 import OrderAlertPushHandler from "../components/OrderAlertPushHandler";
@@ -50,13 +51,14 @@ export default function RootLayout() {
                               translucent={false}
                               hidden={false}
                             />
-                            <NotificationSetup />
-                            <OrderAlertPushHandler />
-                            <FloatingOrdersManager />
-                            <FloatingLiveSupportTicket />
-                            <IncomingOrderModal />
-                            <SessionRevokedGate />
-                            <Stack
+                            <IncomingOrderSheetProvider>
+                              <NotificationSetup />
+                              <OrderAlertPushHandler />
+                              <FloatingOrdersManager />
+                              <FloatingLiveSupportTicket />
+                              <IncomingOrderModal />
+                              <SessionRevokedGate />
+                              <Stack
                               screenOptions={{
                                 headerShown: false,
                                 contentStyle: { backgroundColor: GatiMitraMerchant.background },
@@ -70,6 +72,7 @@ export default function RootLayout() {
                               <Stack.Screen name="order-history" options={{ headerShown: false }} />
                               <Stack.Screen name="notifications" options={{ headerShown: false }} />
                             </Stack>
+                            </IncomingOrderSheetProvider>
                           </SubscriptionProvider>
                         </NotificationProvider>
                       </ProfileNavProvider>

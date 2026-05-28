@@ -642,6 +642,19 @@ export async function createPendingOrder(
   const pendingId = `PEND-${Date.now()}-${randomBytes(4).toString("hex")}`;
   const expiresAt = new Date(Date.now() + PENDING_TTL_MS);
 
+  const { enrichBillingSnapshotForPersistence } = await import("../../lib/food-order-payload.js");
+  billingSnapshot = enrichBillingSnapshotForPersistence(billingSnapshot, {
+    deliveryType: input.deliveryType ?? "delivery",
+    distanceKm,
+    serviceable:
+      billingSnapshot?.serviceable === false
+        ? false
+        : billingSnapshot?.serviceable === true
+          ? true
+          : true,
+    storeKptMinutes: null,
+  });
+
   await db.insert(pendingOrders).values({
     pendingId,
     customerId,

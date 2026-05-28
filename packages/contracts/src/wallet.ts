@@ -39,6 +39,10 @@ export const WalletTransactionCategory = z.enum([
   "HOLD_LOCK",
   "HOLD_RELEASE",
   "FAILED_SETTLEMENT_REVERSAL",
+  "SETTLEMENT_REVERSAL",
+  "CHARGEBACK",
+  "PAYOUT_HOLD",
+  "PAYOUT_RELEASE",
   "ONBOARDING_FEE",
   "SUBSCRIPTION_DEBIT",
 ]);
@@ -134,6 +138,15 @@ export const WalletSummarySchema = z.object({
   today_earning: z.number(),
   yesterday_earning: z.number(),
   pending_withdrawal_total: z.number(),
+  /** Sum in LOCKED lifecycle (refund window) — same across all merchant portals */
+  locked_settlement_total: z.number().optional(),
+  /** withdrawable = available_balance (after hold rules) */
+  withdrawable_balance: z.number().optional(),
+  /** available + locked + hold + pending (merchant-facing total) */
+  total_balance: z.number().optional(),
+  settlement_paused: z.boolean().optional(),
+  /** Orders with Delivered timeline event today (IST). Home dashboard only. */
+  delivered_today: z.number().optional(),
 });
 export type WalletSummary = z.infer<typeof WalletSummarySchema>;
 
@@ -239,4 +252,20 @@ export function roundMoney(n: number): number {
 
 export function idempotencyKey(prefix: string, ...parts: (string | number)[]): string {
   return [prefix, ...parts].join("_");
+}
+
+/** Unified balance buckets for merchant app, partnersite, and dashboard. */
+export function normalizeMerchantWalletDisplay(summary: WalletSummary) {
+  const available = summary.available_balance;
+  const locked = summary.locked_settlement_total ?? summary.locked_balance;
+  const hold = summary.hold_balance;
+  const pending = summary.pending_balance;
+  return {
+    withdrawable: roundMoney(summary.withdrawable_balance ?? available),
+    locked: roundMoney(locked),
+    hold: roundMoney(hold),
+    pending: roundMoney(pending),
+    total: roundMoney(summary.total_balance ?? available + locked + hold + pending),
+    settlement_paused: summary.settlement_paused ?? false,
+  };
 }

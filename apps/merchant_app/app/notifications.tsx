@@ -20,6 +20,16 @@ import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 import { useNotifications, type MerchantNotification, type NotificationType } from "@/context/NotificationContext";
 import { RadarLiveIndicator } from "@/components/RadarLiveIndicator";
 import { WAITING_FOR_ORDER_TITLE } from "@/services/storeNotificationsApi";
+import { useOrders, mapApiOrder } from "@/hooks/useOrders";
+import {
+  findOrderForNotification,
+  isNewOrderAcceptNotification,
+  merchantNotificationDisplayBody,
+} from "@/lib/merchant-notification-display";
+import { useIncomingOrderSheet } from "@/context/IncomingOrderSheetContext";
+import { useAuth } from "@/context/AuthContext";
+import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { fetchFoodOrder } from "@/services/ordersApi";
 
 const ICON_MAP: Record<NotificationType, keyof typeof Ionicons.glyphMap> = {
   order: "receipt-outline",
@@ -47,10 +57,12 @@ const SWIPE_OPEN_THRESHOLD = 40;
 
 function NotificationItem({
   item,
+  displayBody,
   onPress,
   onDeletePress,
 }: {
   item: MerchantNotification;
+  displayBody: string;
   onPress: () => void;
   onDeletePress: () => void;
 }) {
@@ -174,7 +186,7 @@ function NotificationItem({
               </Text>
             </View>
             <Text style={styles.body} numberOfLines={2}>
-              {item.body}
+              {displayBody}
             </Text>
             <Text style={styles.time}>{item.dateTime || item.timeAgo || ""}</Text>
           </View>
@@ -191,7 +203,12 @@ function NotificationItem({
 export default function NotificationsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { token } = useAuth();
+  const { selectedStore } = useSelectedStore();
+  const storeId = selectedStore?.id ?? null;
   const { notifications, markAllAsRead, markAsRead, removeNotification, loading } = useNotifications();
+  const { orders } = useOrders();
+  const { openIncomingOrderSheet } = useIncomingOrderSheet();
   const [selected, setSelected] = useState<MerchantNotification | null>(null);
   const modalVisible = selected != null;
   const [pendingDelete, setPendingDelete] = useState<MerchantNotification | null>(null);
@@ -202,9 +219,47 @@ export default function NotificationsScreen() {
     return Boolean(selected.actionUrl || selected.orderId);
   }, [selected]);
 
-  const handleItemPress = (item: MerchantNotification) => {
-    setSelected(item);
+  const selectedDisplayBody = useMemo(
+    () => (selected ? merchantNotificationDisplayBody(selected, orders) : ""),
+    [selected, orders]
+  );
+
+  const handleItemPress = async (item: MerchantNotification) => {
     markAsRead(item.id);
+
+    if (isNewOrderAcceptNotification(item)) {
+      try {
+        let order = findOrderForNotification(item, orders);
+        if (!order && storeId && token && item.orderId) {
+          const foodId = parseInt(String(item.orderId), 10);
+          if (Number.isFinite(foodId)) {
+            const api = await fetchFoodOrder(storeId, foodId, token);
+            order = mapApiOrder(api);
+          }
+        }
+        if (order?.status === "created" && !order.id.startsWith("core-")) {
+          openIncomingOrderSheet(order);
+          return;
+        }
+        if (order) {
+          router.push(`/order/${order.id}` as never);
+          return;
+        }
+        if (item.orderId) {
+          router.push(`/order/${item.orderId}` as never);
+          return;
+        }
+      } catch {
+        if (item.orderId) router.push(`/order/${item.orderId}` as never);
+      }
+    }
+
+    if (item.actionUrl) {
+      router.push(item.actionUrl as never);
+      return;
+    }
+
+    setSelected(item);
   };
 
   const handleOpenSelected = () => {
@@ -281,7 +336,7 @@ export default function NotificationsScreen() {
               </Pressable>
             </View>
             {!!selected?.dateTime && <Text style={styles.modalTime}>{selected.dateTime}</Text>}
-            <Text style={styles.modalBody}>{selected?.body ?? ""}</Text>
+            <Text style={styles.modalBody}>{selectedDisplayBody}</Text>
             <View style={styles.modalActions}>
               {canOpenSelected && (
                 <Pressable
@@ -338,6 +393,7 @@ export default function NotificationsScreen() {
             <NotificationItem
               key={item.id}
               item={item}
+              displayBody={merchantNotificationDisplayBody(item, orders)}
               onPress={() => handleItemPress(item)}
               onDeletePress={() => requestDelete(item)}
             />

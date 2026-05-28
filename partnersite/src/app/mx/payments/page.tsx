@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
@@ -77,6 +77,12 @@ const LEDGER_CATEGORIES = [
 interface WalletSummary {
   available_balance: number
   pending_balance: number
+  hold_balance?: number
+  locked_balance?: number
+  withdrawable_balance?: number
+  locked_settlement_total?: number
+  total_balance?: number
+  settlement_paused?: boolean
   today_earning: number
   yesterday_earning: number
   total_earned: number
@@ -315,7 +321,7 @@ function PaymentsContent() {
       toast.error('Enter a valid amount (min ₹100)')
       return
     }
-    const available = wallet?.available_balance ?? 0
+    const available = wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0
     if (available < 100) {
       toast.error('Available balance is below the minimum withdrawal (₹100).')
       return
@@ -615,23 +621,40 @@ function PaymentsContent() {
 
           <div className="px-4 sm:px-6 lg:px-8 py-4 max-w-7xl mx-auto w-full space-y-3">
             {/* Wallet summary cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
-              {/* Available Balance - Primary Card */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-3">
+              {/* Withdrawable - Primary Card */}
               <div className="lg:col-span-1 bg-emerald-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
                 <div className="flex items-start justify-between">
                   <div>
-                    <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Available Balance</p>
+                    <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Withdrawable</p>
                     {walletLoading ? (
                       <div className="h-7 w-20 mt-1.5 bg-gray-200 rounded animate-pulse" />
                     ) : (
                       <p className="text-xl font-bold text-gray-900 mt-1">
-                        {formatInr(wallet?.available_balance ?? 0)}
+                        {formatInr(wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0)}
                       </p>
                     )}
                     <button className="text-xs font-medium text-emerald-700 hover:text-emerald-800 mt-1">View Details →</button>
                   </div>
                   <div className="p-2 rounded-lg bg-emerald-100 flex-shrink-0">
                     <Wallet size={16} className="text-emerald-700" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Locked (refund window) */}
+              <div className="bg-amber-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">In refund window</p>
+                    {walletLoading ? (
+                      <div className="h-7 w-20 mt-1.5 bg-gray-200 rounded animate-pulse" />
+                    ) : (
+                      <p className="text-xl font-bold text-gray-900 mt-1">
+                        {formatInr(wallet?.locked_settlement_total ?? wallet?.locked_balance ?? 0)}
+                      </p>
+                    )}
+                    <p className="text-[10px] text-amber-800 mt-1">Releases per admin hold rules</p>
                   </div>
                 </div>
               </div>

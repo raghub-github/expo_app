@@ -2,6 +2,7 @@
  * Push + in-app notification when a new CREATED food order lands for a merchant store.
  */
 import type { Sql } from "postgres";
+import { resolveMerchantVisibleOrderTotal } from "./merchant-visible-pricing.js";
 
 type PushPayload = {
   title: string;
@@ -44,10 +45,6 @@ export async function notifyMerchantStoreNewOrder(
   }
 ): Promise<void> {
   const { merchantStoreId, orderIdText } = args;
-  const total =
-    args.grandTotal != null && Number.isFinite(Number(args.grandTotal))
-      ? Math.round(Number(args.grandTotal))
-      : null;
 
   const foodRows = await sql`
     SELECT f.id::text AS food_id, f.formatted_order_id
@@ -61,6 +58,19 @@ export async function notifyMerchantStoreNewOrder(
   const food = foodRows[0] as { food_id?: string; formatted_order_id?: string } | undefined;
   const foodId = food?.food_id ?? null;
   const displayId = (food?.formatted_order_id as string | undefined) ?? orderIdText;
+
+  let total: number | null = null;
+  try {
+    const merchantTotal = await resolveMerchantVisibleOrderTotal(sql, {
+      merchantStoreId,
+      orderIdText,
+    });
+    if (merchantTotal != null && merchantTotal > 0) {
+      total = Math.round(merchantTotal);
+    }
+  } catch {
+    /* omit amount rather than show customer grand_total */
+  }
 
   const title = "New order!";
   const body =

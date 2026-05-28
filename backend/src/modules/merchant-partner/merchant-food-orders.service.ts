@@ -18,8 +18,13 @@ import {
 } from "../../lib/merchant-order-food-action-labels.js";
 import { recordAcceptanceTimeline } from "../../lib/order-acceptance-timeline.js";
 import { recordCancellationTimeline } from "../../lib/order-cancellation-timeline.js";
+import { applyPaymentCancellationPayment } from "../../lib/apply-cancellation-payment.js";
+import { recordOrderCancellation } from "../../lib/record-order-cancellation.js";
+import { resolveOrderCancellationRefund } from "../../lib/order-cancellation-refund.js";
+import { creditMerchantOrderEarningOnDelivered } from "../../lib/credit-merchant-order-on-delivered.js";
 import { recordReadyTimeline } from "../../lib/order-food-status-timeline.js";
 import { loadMerchantOrderLineItemsByTextIds } from "../../lib/load-merchant-order-line-items.js";
+import { resolveMerchantCancellationFields } from "../../lib/merchant-cancellation-fields.js";
 
 export type MerchantFoodOrderItem = {
   qty: number;
@@ -81,6 +86,7 @@ export type MerchantFoodOrderDto = {
   rejected_reason: string | null;
   accepted_by_label: string | null;
   cancelled_by_label: string | null;
+  cancelled_by_type: string | null;
   customer_email: string | null;
   drop_address: string | null;
   distance_km: number | null;
@@ -797,6 +803,10 @@ async function buildOrderDto(
     rejected_reason: food?.rejected_reason ?? null,
     accepted_by_label: food?.accepted_by_label ?? null,
     cancelled_by_label: food?.cancelled_by_label ?? null,
+    cancelled_by_type:
+      (food as { cancelled_by_type?: string | null } | null)?.cancelled_by_type ??
+      (core as { cancelled_by_type?: string | null }).cancelled_by_type ??
+      null,
     drop_address:
       (core.drop_address_normalized as string | null)?.trim() ||
       (core.drop_address_raw as string | null)?.trim() ||
@@ -1293,10 +1303,105 @@ export async function loadMerchantFoodOrders(
     otpByCoreId,
   };
 
+  type CancelCatalogRow = {
+    order_id: number;
+    reason_text: string | null;
+    metadata: unknown;
+    refund_reason: string | null;
+    food_rejected_reason: string | null;
+    food_cancelled_by_label: string | null;
+    cancelled_by_type: string | null;
+    cancellation_details: unknown;
+    display_reason: string | null;
+    ocr_cancelled_by_label: string | null;
+    ocr_cancelled_by_type: string | null;
+    attribute: string | null;
+    rejection_label: string | null;
+  };
+  const cancelCatalogByCore = new Map<number, CancelCatalogRow>();
+  if (coreIds.length > 0) {
+    try {
+      const rows = await sql<CancelCatalogRow[]>`
+        SELECT
+          c.id AS order_id,
+          f.rejected_reason AS food_rejected_reason,
+          f.cancelled_by_label AS food_cancelled_by_label,
+          COALESCE(f.cancelled_by_type, c.cancelled_by_type) AS cancelled_by_type,
+          COALESCE(f.cancellation_details, c.cancellation_details) AS cancellation_details,
+          ocr.reason_text,
+          ocr.metadata,
+          ocr.display_reason,
+          ocr.cancelled_by_label AS ocr_cancelled_by_label,
+          ocr.cancelled_by_type AS ocr_cancelled_by_type,
+          ocr.attribute,
+          ocr.rejection_label,
+          (
+            SELECT r.refund_reason
+            FROM order_refunds r
+            WHERE r.order_id = c.id
+            ORDER BY r.created_at DESC
+            LIMIT 1
+          ) AS refund_reason
+        FROM orders_core c
+        LEFT JOIN orders_food f ON f.order_id = c.id
+        LEFT JOIN LATERAL (
+          SELECT
+            reason_text,
+            metadata,
+            display_reason,
+            cancelled_by_label,
+            cancelled_by_type,
+            attribute,
+            rejection_label
+          FROM order_cancellation_reasons
+          WHERE id = c.cancellation_reason_id
+             OR (c.cancellation_reason_id IS NULL AND order_id = c.id)
+          ORDER BY created_at DESC
+          LIMIT 1
+        ) ocr ON TRUE
+        WHERE c.id IN ${sql(coreIds)}
+      `;
+      for (const row of rows) {
+        cancelCatalogByCore.set(Number(row.order_id), row);
+      }
+    } catch {
+      /* optional tables */
+    }
+  }
+
   return Promise.all(
     cores.map(async (core) => {
       const food = matchFoodToCore(core, byCorePk, byTextId);
-      return buildOrderDto(core, food, buildOpts);
+      const dto = await buildOrderDto(core, food, buildOpts);
+      const catalog = cancelCatalogByCore.get(core.id);
+      if (!catalog || dto.order_status !== "CANCELLED") return dto;
+      const meta =
+        catalog.metadata && typeof catalog.metadata === "object" && !Array.isArray(catalog.metadata)
+          ? (catalog.metadata as Record<string, unknown>)
+          : null;
+      const resolved = resolveMerchantCancellationFields({
+        rejected_reason: catalog.food_rejected_reason ?? dto.rejected_reason,
+        cancelled_by_label: catalog.food_cancelled_by_label ?? dto.cancelled_by_label,
+        cancelled_by_type: catalog.cancelled_by_type,
+        cancellation_details: catalog.cancellation_details,
+        catalog_attribute:
+          catalog.attribute ??
+          (meta && typeof meta.attribute === "string" ? meta.attribute : null),
+        catalog_rejection:
+          catalog.rejection_label ??
+          (meta && typeof meta.rejection === "string" ? meta.rejection : null),
+        reason_text: catalog.reason_text,
+        refund_reason: catalog.refund_reason,
+        ocr_display_reason: catalog.display_reason,
+        ocr_cancelled_by_label: catalog.ocr_cancelled_by_label,
+        ocr_cancelled_by_type: catalog.ocr_cancelled_by_type,
+      });
+      return {
+        ...dto,
+        rejected_reason: resolved.rejected_reason,
+        cancelled_by_label: resolved.cancelled_by_label,
+        cancelled_by_type: resolved.cancelled_by_type,
+      };
     })
   );
 }
@@ -1477,6 +1582,49 @@ export async function patchMerchantFoodOrderStatus(
     } catch {
       /* non-fatal */
     }
+    const displayReason = (rejectedReason ?? "").trim() || "Order cancelled";
+    const coreMoney = await sql`
+      SELECT grand_total, accepted_at FROM orders_core WHERE id = ${corePk} LIMIT 1
+    `;
+    const coreRow = coreMoney[0] as { grand_total?: unknown; accepted_at?: string | null } | undefined;
+    const refund = resolveOrderCancellationRefund({
+      previousStatus: currentStatus,
+      acceptedAt: coreRow?.accepted_at ?? null,
+      grandTotal: coreRow?.grand_total ?? 0,
+      cancelMode: actionMode,
+      rejectedReason: displayReason,
+    });
+    try {
+      await recordOrderCancellation(sql, {
+        orderCorePk: corePk,
+        cancelledBy: "merchant",
+        reasonText: displayReason,
+        displayReason,
+        cancelledByType,
+        cancelledByLabel: cancelLabel ?? actionLabels.cancelled_by_label ?? "Cancelled",
+        actionSource,
+        cancelMode: actionMode,
+        previousStatus: currentStatus,
+        acceptedAt: coreRow?.accepted_at ?? null,
+        grandTotal: coreRow?.grand_total ?? 0,
+        refundStatus: refund.refundStatus,
+        refundAmount: refund.refundAmount,
+      });
+    } catch {
+      /* non-fatal */
+    }
+    try {
+      await applyPaymentCancellationPayment({
+        orderCoreId: corePk,
+        ordersFoodId,
+        merchantStoreId: storeId,
+        previousStatus: currentStatus,
+        cancelledByType,
+        orderGross: num(coreRow?.grand_total ?? existing.food_items_total_value),
+      });
+    } catch {
+      /* non-fatal */
+    }
   } else if (status === "RTO") {
     try {
       await sql`SELECT convert_food_order_otp_to_rto(${corePk})`;
@@ -1525,31 +1673,26 @@ export async function patchMerchantFoodOrderStatus(
     /* non-fatal */
   }
 
-  const didJustDeliver = status === "DELIVERED" && currentStatus !== "DELIVERED";
-  if (didJustDeliver) {
-    const amount = num(existing.food_items_total_value);
-    if (amount > 0) {
-      try {
-        const walletRows = await sql`SELECT get_or_create_merchant_wallet(${storeId}) AS wallet_id`;
-        const walletId = Number((walletRows[0] as { wallet_id?: number | string } | undefined)?.wallet_id);
-        if (Number.isFinite(walletId) && walletId > 0) {
-          await sql`
-            SELECT merchant_wallet_credit(
-              ${walletId}, ${amount}, ${"ORDER_EARNING"}, ${"AVAILABLE"},
-              ${"ORDER"}, ${ordersFoodId}, ${`order_earning_${ordersFoodId}`},
-              ${`Order #${corePk} delivered`}, ${"{}"}::jsonb
-            )
-          `;
-        }
-      } catch {
-        /* non-fatal */
-      }
-    }
-  }
-
   const loaded = await loadMerchantFoodOrders(sql, storeId, { ordersFoodId, limit: 1 });
   const order = loaded[0];
   if (!order) throw new Error("order_not_found_after_update");
+
+  const merchantGross =
+    num(order.pricing?.total) > 0
+      ? num(order.pricing?.total)
+      : num(order.grand_total) > 0
+        ? num(order.grand_total)
+        : num(existing.food_items_total_value);
+
+  await creditMerchantOrderEarningOnDelivered({
+    merchantStoreId: storeId,
+    ordersFoodId,
+    ordersCoreId: corePk,
+    amount: merchantGross,
+    newStatus: status,
+    previousStatus: currentStatus,
+  });
+
   return order;
 }
 

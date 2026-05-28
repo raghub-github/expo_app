@@ -20,6 +20,7 @@ import {
   User,
   ArrowLeft,
   IndianRupee,
+  SlidersHorizontal,
 } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useLogout } from "@/hooks/queries/useAuthQuery";
@@ -53,52 +54,49 @@ import {
   ticketDetailHasQueueContext,
   TICKETS_QUEUE_HOME_PATH,
 } from "@/lib/tickets/ticket-path-utils";
+import {
+  parsePortalParam,
+  readStoredMerchantsPortal,
+  resolveMerchantsPortal,
+  writeStoredMerchantsPortal,
+} from "@/lib/merchants/portal-preference";
 
 const HEADER_IDENTITY_CACHE_KEY = "dashboard_header_identity_v1";
-const MERCHANTS_PORTAL_STORAGE_KEY = "dashboard_merchants_portal_v1";
+const ORDER_HUB_MINT = "#4EE5C1";
 
-function readStoredMerchantsPortal(): "admin" | "merchant" | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const s = sessionStorage.getItem(MERCHANTS_PORTAL_STORAGE_KEY);
-    return s === "admin" || s === "merchant" ? s : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredMerchantsPortal(value: "admin" | "merchant") {
-  try {
-    sessionStorage.setItem(MERCHANTS_PORTAL_STORAGE_KEY, value);
-  } catch {
-    /* ignore */
-  }
-}
 // Order type switcher — replaces the orders right sidebar (Food / Parcel / Person Ride)
 function OrderTypeDropdown() {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { hasDashboardAccess, isSuperAdmin } = usePermission();
+  const { hasDashboardAccess, isSuperAdmin, loading: permissionsLoading } = usePermission();
   const [showDropdown, setShowDropdown] = useState(false);
-  const [hoveredItem, setHoveredItem] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const MINT_GREEN = "#4EE5C1";
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const routes = useMemo(() => {
+    if (permissionsLoading) return orderDashboardRoutes;
     return orderDashboardRoutes.filter((route) => {
       if (isSuperAdmin) return true;
       const dashboardType = getDashboardTypeFromPath(route.href);
       if (!dashboardType) return true;
       return hasDashboardAccess(dashboardType);
     });
-  }, [hasDashboardAccess, isSuperAdmin]);
+  }, [hasDashboardAccess, isSuperAdmin, permissionsLoading]);
 
   const cleanPath = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
-  const currentRoute =
-    routes.find((route) => cleanPath === route.href || cleanPath.startsWith(`${route.href}/`)) ??
-    routes[0];
+
+  const currentRoute = useMemo(
+    () =>
+      orderDashboardRoutes.find(
+        (route) => cleanPath === route.href || cleanPath.startsWith(`${route.href}/`)
+      ) ?? orderDashboardRoutes[0],
+    [cleanPath]
+  );
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -120,27 +118,35 @@ function OrderTypeDropdown() {
     setShowDropdown(false);
   };
 
-  if (!currentRoute) return null;
+  if (!mounted) {
+    return (
+      <div className="relative flex h-10 shrink-0 items-center px-3" aria-hidden>
+        <span className="text-sm font-semibold text-slate-700">{currentRoute.name}</span>
+      </div>
+    );
+  }
 
   const CurrentIcon = currentRoute.icon;
 
   return (
-    <div ref={dropdownRef} className="relative flex-shrink-0">
+    <div ref={dropdownRef} className="relative shrink-0">
       <button
         type="button"
         onClick={() => setShowDropdown((prev) => !prev)}
-        className="flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium text-gray-700 cursor-pointer whitespace-nowrap"
-        style={{ borderColor: "#D9DCE0", backgroundColor: "#F0F2F5" }}
+        className="flex h-10 items-center gap-2 rounded-md border border-gray-300 bg-white px-3 text-sm font-medium text-gray-800 transition-colors hover:bg-gray-50 cursor-pointer"
         aria-haspopup="listbox"
         aria-expanded={showDropdown}
+        aria-label="Switch order dashboard"
       >
-        {CurrentIcon ? <CurrentIcon className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
-        <span>{currentRoute.name}</span>
-        <ChevronDown className="h-3.5 w-3.5 text-gray-600 shrink-0" />
+        {CurrentIcon ? <CurrentIcon className="h-4 w-4 shrink-0 text-gray-600" aria-hidden /> : null}
+        <span className="whitespace-nowrap">{currentRoute.name}</span>
+        <ChevronDown
+          className={`h-4 w-4 shrink-0 text-gray-500 transition-transform ${showDropdown ? "rotate-180" : ""}`}
+        />
       </button>
       {showDropdown && (
         <div
-          className="absolute top-full left-0 mt-1 w-52 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1"
+          className="absolute top-full left-0 z-50 mt-1 w-52 overflow-hidden rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
           role="listbox"
         >
           {routes.map((route) => {
@@ -153,15 +159,14 @@ function OrderTypeDropdown() {
                 role="option"
                 aria-selected={isActive}
                 onClick={() => handleSelect(route.href)}
-                onMouseEnter={() => setHoveredItem(route.href)}
-                onMouseLeave={() => setHoveredItem(null)}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-xs cursor-pointer transition-colors text-left"
-                style={{
-                  backgroundColor:
-                    hoveredItem === route.href || isActive ? MINT_GREEN : "transparent",
-                  color: "#000000",
-                  fontWeight: isActive ? 600 : 400,
-                }}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors cursor-pointer ${
+                  isActive ? "font-semibold" : "font-medium hover:bg-gray-50"
+                }`}
+                style={
+                  isActive
+                    ? { backgroundColor: ORDER_HUB_MINT, color: "#000000" }
+                    : { color: "#000000" }
+                }
               >
                 {Icon ? <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
                 <span>{route.name}</span>
@@ -174,7 +179,7 @@ function OrderTypeDropdown() {
   );
 }
 
-// Order Search Bar Component – syncs with URL so Food/Parcel/Ride order pages can read search params
+// Order Search Bar — syncs with URL so Food/Parcel/Ride order pages can read search params
 function OrderSearchBar() {
   const pathname = usePathname();
   const router = useRouter();
@@ -185,18 +190,14 @@ function OrderSearchBar() {
   const [searchType, setSearchType] = useState(urlSearchType);
   const [searchValue, setSearchValue] = useState(urlSearch);
   const [showDropdown, setShowDropdown] = useState(false);
-  const [hoveredItem, setHoveredItem] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const MINT_GREEN = "#4EE5C1";
-
-  // Sync from URL when URL changes (e.g. back/forward or external nav)
   useEffect(() => {
     setSearchValue(searchParams.get("search") ?? "");
     setSearchType(searchParams.get("searchType") ?? "Order Id");
   }, [searchParams.get("search"), searchParams.get("searchType")]);
 
-  // All search items from the 3 dashboards
   const searchItems = [
     "Order Id",
     "Merchant Id",
@@ -211,7 +212,6 @@ function OrderSearchBar() {
     "Client Name",
   ];
 
-  // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -226,7 +226,7 @@ function OrderSearchBar() {
     };
   }, [showDropdown]);
 
-  const handleSearch = () => {
+  const handleSearch = useCallback(() => {
     const params = new URLSearchParams(searchParams.toString());
     const value = searchValue.trim();
     if (value) {
@@ -240,36 +240,37 @@ function OrderSearchBar() {
     }
     const qs = params.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
-  };
+  }, [pathname, router, searchParams, searchType, searchValue]);
 
   return (
-    <div className="flex items-center w-full max-w-md rounded-lg border" style={{ borderColor: "#D9DCE0" }}>
-      {/* Dropdown Section */}
-      <div ref={dropdownRef} className="relative">
+    <div className="flex h-10 min-w-0 flex-1 items-stretch rounded-lg border border-gray-300 bg-white">
+      <div ref={dropdownRef} className="relative shrink-0">
         <button
-          onClick={() => setShowDropdown(!showDropdown)}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-l-lg text-xs font-medium text-gray-700 cursor-pointer"
-          style={{ backgroundColor: "#F0F2F5" }}
+          type="button"
+          onClick={() => setShowDropdown((prev) => !prev)}
+          className="flex h-full items-center gap-1.5 rounded-l-lg border-r border-gray-300 bg-[#F0F2F5] px-3 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 cursor-pointer"
+          aria-haspopup="listbox"
+          aria-expanded={showDropdown}
         >
-          <span className="whitespace-nowrap">{searchType}</span>
-          <ChevronDown className="h-3.5 w-3.5 text-gray-600" />
+          <SlidersHorizontal className="h-4 w-4 text-gray-500" aria-hidden />
+          <span className="max-w-[110px] truncate whitespace-nowrap">{searchType}</span>
+          <ChevronDown className="h-4 w-4 shrink-0 text-gray-600" />
         </button>
         {showDropdown && (
-          <div className="absolute top-full left-0 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-50 max-h-80 overflow-y-auto">
+          <div className="absolute top-full left-0 z-50 mt-1 max-h-72 w-56 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
             {searchItems.map((item) => (
               <button
                 key={item}
+                type="button"
                 onClick={() => {
                   setSearchType(item);
                   setShowDropdown(false);
+                  inputRef.current?.focus();
                 }}
-                onMouseEnter={() => setHoveredItem(item)}
-                onMouseLeave={() => setHoveredItem(null)}
-                className="w-full text-left px-3 py-1.5 text-xs cursor-pointer transition-colors"
-                style={{
-                  color: hoveredItem === item ? "#000000" : "#000000",
-                  backgroundColor: hoveredItem === item ? MINT_GREEN : "transparent",
-                }}
+                className="w-full px-3 py-1.5 text-left text-xs text-gray-900 transition-colors hover:bg-gray-100 cursor-pointer"
+                style={
+                  item === searchType ? { backgroundColor: ORDER_HUB_MINT } : undefined
+                }
               >
                 {item}
               </button>
@@ -277,29 +278,27 @@ function OrderSearchBar() {
           </div>
         )}
       </div>
-      
-      {/* Input Section */}
+
       <input
+        ref={inputRef}
         type="text"
         value={searchValue}
         onChange={(e) => setSearchValue(e.target.value)}
         placeholder="Search here..."
-        className="flex-1 px-2.5 py-1.5 border-l border-r text-xs focus:outline-none"
-        style={{ borderColor: "#D9DCE0" }}
-        onKeyPress={(e) => {
-          if (e.key === "Enter") {
-            handleSearch();
-          }
+        className="min-w-0 flex-1 border-r border-gray-300 bg-white px-3 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none"
+        onKeyDown={(e) => {
+          if (e.key === "Enter") handleSearch();
         }}
       />
-      
-      {/* Search Button */}
+
       <button
+        type="button"
         onClick={handleSearch}
-        className="px-2.5 py-1.5 rounded-r-lg flex items-center justify-center cursor-pointer"
-        style={{ backgroundColor: MINT_GREEN }}
+        className="flex h-full shrink-0 items-center justify-center rounded-r-lg px-3.5 cursor-pointer"
+        style={{ backgroundColor: ORDER_HUB_MINT }}
+        aria-label="Search orders"
       >
-        <Search className="h-3.5 w-3.5 text-gray-900" />
+        <Search className="h-4 w-4 text-gray-900" />
       </button>
     </div>
   );
@@ -319,11 +318,13 @@ const ROUTE_TITLES: Record<string, string> = {
   "/dashboard/super-admin/store-onboarding-fee": "Store onboarding fee",
   "/dashboard/super-admin/ticket-settings": "Ticket Management",
   "/dashboard/super-admin/order-acceptance": "Order acceptance settings",
+  "/dashboard/super-admin/cancellation-reasons": "Cancellation reasons",
 };
 
 const STORE_ONBOARDING_FEE_PATH = "/dashboard/super-admin/store-onboarding-fee";
 const TICKET_SETTINGS_PATH = "/dashboard/super-admin/ticket-settings";
 const ORDER_ACCEPTANCE_SETTINGS_PATH = "/dashboard/super-admin/order-acceptance";
+const PAYMENTS_PATH = "/dashboard/payments";
 
 function HeaderComponent() {
   const pathname = usePathname();
@@ -354,6 +355,7 @@ function HeaderComponent() {
   const [showProfileCard, setShowProfileCard] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState(false);
+  const [identityReady, setIdentityReady] = useState(false);
   /** Avoid duplicate Image() preloads (they double-hit Google CDN → 429 in dev/HMR). */
   const gravatarUrlRef = useRef<string | null>(null);
   const primaryOauthUrlRef = useRef<string | null>(null);
@@ -399,10 +401,14 @@ function HeaderComponent() {
   }, [dashboardAccessData?.accessPoints, isSuperAdmin]);
 
   const portalParam = searchParams.get("portal");
-  const portalFromUrl = portalParam === "admin" || portalParam === "merchant" ? portalParam : null;
+  const portalFromUrl = parsePortalParam(portalParam);
   const storedPortalFallback =
     typeof window !== "undefined" && canTogglePortal ? readStoredMerchantsPortal() : null;
-  const portal = portalFromUrl ?? storedPortalFallback ?? "merchant";
+  const portal = resolveMerchantsPortal({
+    portalFromUrl,
+    canTogglePortal,
+    storedPortal: storedPortalFallback,
+  });
 
   // Keep ?portal= in sync on Merchants sub-routes when the list omits it (e.g. old verification links).
   useEffect(() => {
@@ -411,13 +417,13 @@ function HeaderComponent() {
       writeStoredMerchantsPortal(portalFromUrl);
       return;
     }
-    const stored = readStoredMerchantsPortal();
-    if (!stored) return;
+    const target = readStoredMerchantsPortal() ?? "admin";
+    writeStoredMerchantsPortal(target);
     const next = new URLSearchParams(searchParams.toString());
-    if (next.get("portal") === stored) return;
-    next.set("portal", stored);
+    if (next.get("portal") === target) return;
+    next.set("portal", target);
     const qs = next.toString();
-    router.replace(qs ? `${pathname}?${qs}` : `${pathname}?portal=${stored}`);
+    router.replace(qs ? `${pathname}?${qs}` : `${pathname}?portal=${target}`);
   }, [isMerchantsArea, canTogglePortal, portalFromUrl, pathname, router, searchParams]);
 
   const setPortal = (value: "admin" | "merchant") => {
@@ -484,6 +490,10 @@ function HeaderComponent() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showNewDropdown]);
+
+  useEffect(() => {
+    setIdentityReady(true);
+  }, []);
 
   useEffect(() => {
     const storageSnapshot = loadBootstrapFromStorage<{
@@ -703,6 +713,18 @@ function HeaderComponent() {
             </Link>
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
+        ) : cleanPathname === PAYMENTS_PATH ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <Link
+              href="/dashboard/super-admin"
+              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back to Super Admin"
+              title="Back to Super Admin"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
+          </div>
         ) : (
           <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg flex-shrink">{pageName}</h2>
         )}
@@ -733,9 +755,11 @@ function HeaderComponent() {
 
       {/* Center: Order Search on orders; Dashboard Search only on main list pages (hide on verification, store detail, etc.) */}
       {effectivePathname.startsWith("/dashboard/orders") ? (
-        <div className="hidden lg:flex items-center justify-center flex-1 max-w-3xl mx-4 gap-2 min-w-0">
+        <div className="hidden lg:flex min-w-0 flex-1 items-center justify-center gap-3 px-4">
           <OrderTypeDropdown />
-          <OrderSearchBar />
+          <div className="min-w-0 flex-1 max-w-lg">
+            <OrderSearchBar />
+          </div>
         </div>
       ) : !effectivePathname.startsWith("/dashboard/tickets") &&
         effectivePathname !== "/dashboard/area-managers" &&
@@ -870,26 +894,37 @@ function HeaderComponent() {
               isTicketsQueueWorkspace ? "cursor-default" : "hover:bg-gray-100"
             }`}
           >
-            <div className="flex flex-col items-start min-w-0 max-w-[200px]">
-              <span suppressHydrationWarning className="text-sm font-medium text-gray-900 truncate w-full">
-                {displayName}
-              </span>
-              <span suppressHydrationWarning className="text-xs text-gray-500 truncate w-full">
-                {displayEmail}
-              </span>
-            </div>
-            {/* Avatar or Fallback - show placeholder when loading so header doesn't pop in late */}
-            {!isLoading && effectiveAvatarUrl && !avatarError ? (
-              <img
-                src={effectiveAvatarUrl}
-                alt={displayName || displayEmail || "User"}
-                className="h-8 w-8 flex-shrink-0 rounded-full object-cover border border-gray-200"
-                onError={handleAvatarImgError}
-              />
+            {!identityReady ? (
+              <>
+                <div className="flex flex-col items-start min-w-0 max-w-[200px] gap-1.5" aria-hidden>
+                  <div className="h-4 w-24 rounded bg-gray-200 animate-pulse" />
+                  <div className="h-3 w-32 rounded bg-gray-100 animate-pulse" />
+                </div>
+                <div className="h-8 w-8 flex-shrink-0 rounded-full bg-gray-200 animate-pulse" />
+              </>
             ) : (
-              <div className="h-8 w-8 flex-shrink-0 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-white text-xs font-semibold shadow-sm">
-                {getUserInitials(userName ?? null, userEmail ?? null)}
-              </div>
+              <>
+                <div className="flex flex-col items-start min-w-0 max-w-[200px]">
+                  <span className="text-sm font-medium text-gray-900 truncate w-full">
+                    {displayName}
+                  </span>
+                  <span className="text-xs text-gray-500 truncate w-full">
+                    {displayEmail}
+                  </span>
+                </div>
+                {!isLoading && effectiveAvatarUrl && !avatarError ? (
+                  <img
+                    src={effectiveAvatarUrl}
+                    alt={displayName || displayEmail || "User"}
+                    className="h-8 w-8 flex-shrink-0 rounded-full object-cover border border-gray-200"
+                    onError={handleAvatarImgError}
+                  />
+                ) : (
+                  <div className="h-8 w-8 flex-shrink-0 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-white text-xs font-semibold shadow-sm">
+                    {getUserInitials(userName ?? null, userEmail ?? null)}
+                  </div>
+                )}
+              </>
             )}
           </button>
 

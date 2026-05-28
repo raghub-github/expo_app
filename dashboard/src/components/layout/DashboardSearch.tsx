@@ -5,6 +5,12 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Search, Loader2 } from "lucide-react";
 import { getCurrentDashboard } from "@/lib/navigation/dashboard-routes";
 import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
+import { usePermissions } from "@/hooks/usePermissions";
+import {
+  parsePortalParam,
+  readStoredMerchantsPortal,
+  resolveMerchantsPortal,
+} from "@/lib/merchants/portal-preference";
 
 type DashboardType = "RIDER" | "CUSTOMER" | "MERCHANT" | "AREA_MANAGER";
 
@@ -18,6 +24,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const merchantsSearch = useMerchantsSearch();
+  const { canTogglePortal = false } = usePermissions();
   const [loading, setLoading] = useState(false);
   const [merchantType, setMerchantType] = useState<"child" | "parent">("child");
   const [localSearchValue, setLocalSearchValue] = useState("");
@@ -117,9 +124,11 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
   }
 
   // Current portal (admin vs merchant) for merchant dashboard, mirroring Header logic.
-  const currentPortal =
-    searchParams.get("portal") ||
-    "merchant";
+  const currentPortal = resolveMerchantsPortal({
+    portalFromUrl: parsePortalParam(searchParams.get("portal")),
+    canTogglePortal,
+    storedPortal: typeof window !== "undefined" ? readStoredMerchantsPortal() : null,
+  });
 
   // Render merchant-specific search with dropdowns
   if (dashboardType === "MERCHANT") {

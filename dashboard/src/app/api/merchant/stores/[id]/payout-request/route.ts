@@ -8,6 +8,7 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
+import { createWithdrawalRequest } from "@/lib/db/operations/merchant-wallet";
 
 export const runtime = "nodejs";
 
@@ -49,7 +50,6 @@ export async function POST(
     if (!access.ok) {
       return NextResponse.json({ success: false, error: access.error }, { status: access.status });
     }
-    // Only the merchant (store owner) can initiate withdrawals. Agents (system_users) cannot.
     if (access.systemUser) {
       return NextResponse.json(
         { success: false, error: "Only the merchant can initiate withdrawals. Agents cannot withdraw." },
@@ -60,25 +60,31 @@ export async function POST(
     const amount = Number(body.amount);
     const bank_account_id = Number(body.bank_account_id);
     if (!Number.isFinite(amount) || amount < 100) {
-      return NextResponse.json({ success: false, error: "Valid amount (min 100) required" }, { status: 400 });
+      return NextResponse.json({ success: false, error: "Valid amount required" }, { status: 400 });
     }
     if (!Number.isFinite(bank_account_id)) {
       return NextResponse.json({ success: false, error: "Bank account required" }, { status: 400 });
     }
-    // TODO: create payout request in DB and debit wallet
-    const payout = {
-      id: Math.floor(Math.random() * 100000) + 1,
-      amount,
-      net_payout_amount: amount * 0.98,
-      commission_percentage: 2,
-      commission_amount: amount * 0.02,
-      status: "PENDING",
-      utr_reference: null as string | null,
-      requested_at: new Date().toISOString(),
-    };
-    return NextResponse.json({ success: true, payout }, { status: 201 });
+
+    const payout = await createWithdrawalRequest(storeId, amount, bank_account_id);
+    return NextResponse.json(
+      {
+        success: true,
+        payout: {
+          id: payout.payout_request_id,
+          amount: payout.amount,
+          net_payout_amount: payout.net_payout_amount,
+          commission_percentage: payout.commission_percentage,
+          commission_amount: payout.commission_amount,
+          status: payout.status,
+          requested_at: new Date().toISOString(),
+        },
+      },
+      { status: 201 }
+    );
   } catch (e) {
+    const msg = e instanceof Error ? e.message : "Internal error";
     console.error("[POST /api/merchant/stores/[id]/payout-request]", e);
-    return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });
+    return NextResponse.json({ success: false, error: msg }, { status: 400 });
   }
 }

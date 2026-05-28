@@ -1,4 +1,8 @@
 import type { Sql } from "postgres";
+import {
+  countMerchantDeliveredOrdersIst,
+  sumMerchantLedgerEarningsIst,
+} from "../../lib/merchant-growth-metrics.js";
 
 export type GrowthBusinessBucket = {
   key: string;
@@ -171,19 +175,11 @@ async function alltimeMonthSeries(
 }
 
 async function totalsForRange(sql: Sql, storeId: number, startStr: string, endStr: string): Promise<{ orders: number; sales: number }> {
-  const agg = await sql`
-    SELECT COUNT(*)::int AS total_orders,
-           COALESCE(SUM(food_items_total_value), 0)::numeric AS total_sales
-    FROM orders_food
-    WHERE merchant_store_id = ${storeId}
-      AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${startStr}::date
-      AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${endStr}::date
-  `;
-  const row = agg[0] as { total_orders?: number; total_sales?: unknown } | undefined;
-  return {
-    orders: Number(row?.total_orders) || 0,
-    sales: numSales(row?.total_sales),
-  };
+  const [orders, sales] = await Promise.all([
+    countMerchantDeliveredOrdersIst(sql, storeId, startStr, endStr),
+    sumMerchantLedgerEarningsIst(sql, storeId, startStr, endStr),
+  ]);
+  return { orders, sales };
 }
 
 /**

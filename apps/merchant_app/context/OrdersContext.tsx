@@ -215,7 +215,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       if (secondsLeft > 0) continue;
       if (!claimAutoCancelFoodOrder(foodId)) continue;
       void patchFoodOrderStatus(storeId, foodId, token, "CANCELLED", AUTO_CANCEL_REASON, {
-        action_source: "system",
+        action_source: "app",
         cancel_mode: "auto",
       })
         .then((updated) => {

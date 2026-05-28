@@ -1,7 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, Copy } from "lucide-react";
+import {
+  isStoreOperationallyOpen,
+  resolveStoreTimingsDisplay,
+} from "@/lib/merchants/store-open-display";
 
 interface Merchant {
   storeId?: number | null;
@@ -46,7 +50,17 @@ interface MerchantProfile {
   merchantType: string | null;
   assignedUserEmail: string | null;
   assignedUserDepartment: string | null;
+  approval_status?: string | null;
+  operational_status?: string | null;
+  is_active?: boolean | null;
+  is_accepting_orders?: boolean | null;
+  is_available?: boolean | null;
+  deleted_at?: string | null;
+  delisted_at?: string | null;
 }
+
+const STORE_STATUS_PILL =
+  "inline-flex items-center rounded px-1 py-px text-[9px] font-semibold leading-none border";
 
 export default function MerchantDetails({ merchant, initialProfile, onCopy }: MerchantDetailsProps) {
   const storeId = merchant.storeId ?? null;
@@ -130,6 +144,13 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
           merchantType: store.store_type ?? null,
           assignedUserEmail: areaManager?.email ?? null,
           assignedUserDepartment: areaManager ? "Area Manager" : null,
+          approval_status: store.approval_status ?? null,
+          operational_status: store.operational_status ?? null,
+          is_active: store.is_active ?? null,
+          is_accepting_orders: store.is_accepting_orders ?? null,
+          is_available: store.is_available ?? null,
+          deleted_at: store.deleted_at ?? null,
+          delisted_at: store.delisted_at ?? null,
         });
       })
       .catch(() => {
@@ -194,7 +215,18 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
     return { isOpen: true, label: parts.join(" , ") || "Open today" };
   };
 
-  const todaySummary = getTodaySummary();
+  const scheduleSummary = getTodaySummary();
+
+  const timingsDisplay = useMemo(() => {
+    if (!profile) {
+      return { isOpen: false, pill: "Closed" as const, label: "—" };
+    }
+    return resolveStoreTimingsDisplay({
+      withinHours: scheduleSummary.isOpen,
+      hoursLabel: scheduleSummary.label,
+      operationallyOpen: isStoreOperationallyOpen(profile),
+    });
+  }, [profile, scheduleSummary.isOpen, scheduleSummary.label]);
 
   const dayOrder: { key: DayKey; label: string }[] = [
     { key: "monday", label: "Monday" },
@@ -390,15 +422,15 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
                 className="inline-flex items-center gap-1.5 text-[12px] text-gati-text-primary cursor-pointer"
               >
                 <span
-                  className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold border whitespace-nowrap ${
-                    todaySummary.isOpen
+                  className={`${STORE_STATUS_PILL} whitespace-nowrap ${
+                    timingsDisplay.isOpen
                       ? "bg-emerald-50 text-emerald-700 border-emerald-100"
                       : "bg-red-50 text-red-700 border-red-100"
                   }`}
                 >
-                  {todaySummary.isOpen ? "Open" : "Closed"}
+                  {timingsDisplay.pill}
                 </span>
-                <span className="ml-1">{todaySummary.label}</span>
+                <span className="ml-1 text-[11px] text-slate-700">{timingsDisplay.label}</span>
                 <span className="ml-1 text-[10px] text-slate-500">▾</span>
               </button>
             ) : (
@@ -475,7 +507,7 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
                     <span className="w-24 text-[11px] font-medium text-slate-500">{label}</span>
                     <div className="flex-1 flex items-center justify-between gap-2">
                       <span
-                        className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold border whitespace-nowrap ${
+                        className={`${STORE_STATUS_PILL} whitespace-nowrap ${
                           isOpen
                             ? "bg-emerald-50 text-emerald-700 border-emerald-100"
                             : "bg-red-50 text-red-700 border-red-100"

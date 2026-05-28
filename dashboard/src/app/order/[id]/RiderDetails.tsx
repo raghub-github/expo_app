@@ -2,7 +2,13 @@
 
 import { useEffect, useState } from "react";
 import RiderTimeline from "./RiderTimeline";
-import { STANDARD_REMARKS } from "@/lib/remarks/standardRemarks";
+import { useCancellationReasonCatalog } from "@/hooks/useCancellationReasonCatalog";
+import {
+  catalogReasonOptionValue,
+  findCatalogReasonBySelectValue,
+  normalizeCatalogReasonId,
+  reasonsForAttribute,
+} from "@/lib/orders/orderRejectionOptions";
 
 interface RiderDetailsOrder {
   riderName?: string | null;
@@ -10,7 +16,7 @@ interface RiderDetailsOrder {
   riderProvider?: string | null;
   trackingOrderId?: string | null;
   trackingUrl?: string | null;
-  otp?: string | null;
+  deliveryOtp?: string | null;
   riderId?: number | null;
   status?: string | null;
   currentStatus?: string | null;
@@ -351,21 +357,39 @@ type CancelActionOption = "" | "CANCEL" | "CANCEL_ASSIGN";
 
 export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetailsProps) {
   const [showLogModal, setShowLogModal] = useState(false);
+  const [loadCatalog, setLoadCatalog] = useState(false);
+  const {
+    attributes: catalogAttributes,
+    grouped: catalogGrouped,
+    loading: catalogLoading,
+  } = useCancellationReasonCatalog({ enabled: loadCatalog });
   const [riderAttribute, setRiderAttribute] = useState("");
-  const [rejectionOptions, setRejectionOptions] = useState<string[]>([]);
+  const [catalogReasonId, setCatalogReasonId] = useState<number | null>(null);
   const [rejectionOption, setRejectionOption] = useState("");
   const [cancelAction, setCancelAction] = useState<CancelActionOption>("");
 
+  const attributeRejectionOptions = riderAttribute
+    ? (catalogGrouped[riderAttribute] ?? [])
+    : [];
+
   const handleAttributeChange = (value: string) => {
     setRiderAttribute(value);
-    const key = value as keyof typeof STANDARD_REMARKS;
-    setRejectionOptions(STANDARD_REMARKS[key] || []);
+    setCatalogReasonId(null);
     setRejectionOption("");
     setCancelAction("");
   };
 
   const handleRejectionOptionChange = (value: string) => {
-    setRejectionOption(value);
+    const id = Number(value);
+    const row = attributeRejectionOptions.find((r) => r.id === id);
+    if (!row) {
+      setCatalogReasonId(null);
+      setRejectionOption("");
+      setCancelAction("");
+      return;
+    }
+    setCatalogReasonId(row.id);
+    setRejectionOption(row.label);
     setCancelAction("");
   };
 
@@ -380,7 +404,7 @@ export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetai
     !rawProvider || rawProvider === "internal" ? "GatiMitra" : rawProvider;
   const trackingOrderId = order.trackingOrderId || "—";
   const trackingUrl = order.trackingUrl || "";
-  const otp = order.otp || "—";
+  const deliveryOtp = order.deliveryOtp?.trim() || "—";
 
   const statusString = (order.currentStatus || order.status || "").toString().toLowerCase();
   const statusRank: Record<string, number> = {
@@ -495,9 +519,9 @@ export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetai
               )}
             </div>
             <div className="flex justify-between items-center gap-3">
-              <span className="text-gati-text-secondary">OTP:</span>
+              <span className="text-gati-text-secondary">Delivery OTP:</span>
               <div className="px-2.5 py-0.5 border border-dashed border-emerald-400 bg-emerald-50 rounded text-emerald-700 font-mono text-[11px] font-semibold tracking-[0.15em]">
-                {otp}
+                {deliveryOtp}
               </div>
             </div>
           </div>
@@ -523,27 +547,34 @@ export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetai
               <select
                 className="relative z-10 flex-1 h-8 w-full border border-slate-300 rounded px-2 bg-white cursor-pointer"
                 value={riderAttribute}
+                onFocus={() => setLoadCatalog(true)}
                 onChange={(e) => handleAttributeChange(e.target.value)}
               >
                 <option value="">Select Attribute</option>
-                <option value="CUSTOMER">CUSTOMER</option>
-                <option value="RIDER">RIDER</option>
-                <option value="MERCHANT">MERCHANT</option>
-                <option value="OTHER">OTHER</option>
+                {catalogAttributes.map((attr) => (
+                  <option key={attr.code} value={attr.code}>
+                    {attr.displayLabel || attr.code}
+                  </option>
+                ))}
               </select>
             </div>
             <div className="relative flex-1 focus-within:z-20">
               <select
                 className={`relative z-10 flex-1 h-8 w-full border border-slate-300 rounded px-2 bg-white ${
-                  isSecondDropdownEnabled ? "cursor-pointer" : "cursor-not-allowed opacity-60"
+                  isSecondDropdownEnabled && !catalogLoading ? "cursor-pointer" : "cursor-not-allowed opacity-60"
                 }`}
-                value={rejectionOption}
+                value={catalogReasonId != null ? String(catalogReasonId) : ""}
                 onChange={(e) => handleRejectionOptionChange(e.target.value)}
-                disabled={!isSecondDropdownEnabled}
+                disabled={
+                  !isSecondDropdownEnabled ||
+                  (catalogLoading && attributeRejectionOptions.length === 0)
+                }
               >
                 <option value="">Select Rejection Option</option>
-                {rejectionOptions.map((o) => (
-                  <option key={o} value={o}>{o}</option>
+                {attributeRejectionOptions.map((row) => (
+                  <option key={catalogReasonOptionValue(row)} value={catalogReasonOptionValue(row)}>
+                    {row.label}
+                  </option>
                 ))}
               </select>
             </div>

@@ -35,7 +35,6 @@ import { MerchantPrepDelaySheet } from "@/components/order/MerchantPrepDelayShee
 import { RejectFollowUpHost, useRejectFollowUp } from "@/components/order/RejectFollowUpHost";
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
 import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
-import { fetchGrowthSummary } from "@/services/growthApi";
 import { fetchWalletSummary } from "@/services/walletApi";
 import { getActiveOrdersCount } from "@/services/storeSettingsApi";
 import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedActiveOrdersNotice";
@@ -160,17 +159,17 @@ export default function DashboardScreen() {
   const loadDashboardStats = useCallback(async () => {
     if (!token || !storeId) return;
     try {
-      const [growth, wallet, active] = await Promise.all([
-        fetchGrowthSummary(storeId, token, "today"),
+      const [wallet, active] = await Promise.all([
         fetchWalletSummary(storeId, token),
         getActiveOrdersCount(storeId, token),
       ]);
-      setTodayEarning(Number(growth.total_sales) || 0);
-      setDeliveredToday(Number(growth.total_orders) || 0);
+      setTodayEarning(Number(wallet.today_earning) || 0);
+      setDeliveredToday(Number(wallet.delivered_today ?? 0) || 0);
       setWalletBalance(Number(wallet.available_balance ?? 0) || 0);
       setPendingCount(Number(active) || 0);
     } catch {
-      /* keep previous values */
+      setTodayEarning(0);
+      setDeliveredToday(0);
     }
   }, [token, storeId]);
 

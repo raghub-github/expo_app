@@ -25,6 +25,8 @@ export type LineItem = {
   price: number;
   menuItemId?: number | null;
   vegNonveg?: string | null;
+  customizations?: string[];
+  variant_tag?: string | null;
   customization_lines?: ApiFoodOrderItem["customization_lines"];
   base_amount?: number;
   customizations_total?: number;
@@ -176,6 +178,8 @@ export function mapApiOrder(o: ApiFoodOrder): OrderRecord {
           ? Number(it.menu_item_id)
           : null,
       vegNonveg: it.veg_nonveg ?? null,
+      customizations: it.customizations,
+      variant_tag: it.variant_tag ?? null,
       customization_lines: it.customization_lines,
       base_amount: it.base_amount,
       customizations_total: it.customizations_total,

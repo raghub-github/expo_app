@@ -7,6 +7,12 @@ import { StoreDashboardSkeleton } from "./stores/[id]/StoreDashboardSkeleton";
 import { MerchantParentSkeleton } from "./MerchantParentSkeleton";
 import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
 import { useMerchantStoresStatsQuery } from "@/hooks/queries/useMerchantStoreQueries";
+import {
+  parsePortalParam,
+  readStoredMerchantsPortal,
+  resolveMerchantsPortal,
+} from "@/lib/merchants/portal-preference";
+import { usePermissions } from "@/hooks/usePermissions";
 
 type FilterMode = "child" | "parent";
 
@@ -343,13 +349,42 @@ const StatCardsRow = React.memo(function StatCardsRow({
   );
 });
 
+function buildChildStoreTargetUrl(args: {
+  child: ChildRow;
+  returnTo: string;
+  portal: "admin" | "merchant";
+}): string {
+  const { child, returnTo, portal } = args;
+  const status = (child.approval_status || "").toUpperCase();
+  const isVerified = status === "APPROVED";
+  const isDelisted = status === "DELISTED";
+  const isRejectedLike = status === "REJECTED" || status === "BLOCKED" || status === "SUSPENDED";
+
+  if (isVerified || isDelisted) {
+    const params = new URLSearchParams();
+    params.set("returnTo", returnTo);
+    params.set("portal", "merchant");
+    if (portal === "admin") params.set("fromAdmin", "1");
+    return `/dashboard/merchants/stores/${child.id}?${params.toString()}`;
+  }
+
+  const vParams = new URLSearchParams();
+  vParams.set("storeId", String(child.id));
+  vParams.set("returnTo", returnTo);
+  vParams.set("portal", portal);
+  if (isRejectedLike) vParams.set("reviewRejected", "1");
+  return `/dashboard/merchants/verifications?${vParams.toString()}`;
+}
+
 export function MerchantsSearchClient() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const merchantsSearch = useMerchantsSearch();
+  const { canTogglePortal = false } = usePermissions();
 
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
+  const [pendingSingleChildRedirect, setPendingSingleChildRedirect] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // null = not loaded yet (prevents premature "no results" UI on slow networks)
   const [parentItems, setParentItems] = useState<ParentRow[] | null>(null);
@@ -407,6 +442,7 @@ export function MerchantsSearchClient() {
     if (!shouldFetchList || lastSearchTrigger === 0) return;
     setLoading(true);
     setHasSearched(false);
+    setPendingSingleChildRedirect(false);
     setError(null);
     setParentItems(null);
     setChildItems(null);
@@ -417,14 +453,18 @@ export function MerchantsSearchClient() {
     [searchParams]
   );
 
-  const portal: "admin" | "merchant" =
-    searchParams.get("portal") === "admin" ? "admin" : "merchant";
+  const portal = resolveMerchantsPortal({
+    portalFromUrl: parsePortalParam(searchParams.get("portal")),
+    canTogglePortal,
+    storedPortal: typeof window !== "undefined" ? readStoredMerchantsPortal() : null,
+  });
 
-  /** When merchant portal has an active list search, show skeleton until API completes. Never show "Not Found" before loading finishes. */
+  /** When merchant portal has an active list search, show skeleton until API completes or redirect finishes. */
   const hasActiveListSearch = hasEffectiveSearchParams || (hasCategory && effectiveFilter === "child");
-  /** While list search is active: skeleton until first response (loading || !hasSearched). Do not key off triggeredSearch here — it stays set until URL syncs after fetch, which would hide results behind a skeleton. */
   const showSkeleton = Boolean(
-    portal === "merchant" && hasActiveListSearch && (loading || !hasSearched)
+    portal === "merchant" &&
+      hasActiveListSearch &&
+      (loading || !hasSearched || pendingSingleChildRedirect)
   );
 
   const setPortal = (value: "admin" | "merchant") => {
@@ -454,12 +494,16 @@ export function MerchantsSearchClient() {
       });
       return;
     }
-    const effectiveLoading = loading || !hasSearched;
+    const effectiveLoading = loading || !hasSearched || pendingSingleChildRedirect;
     merchantsSearch.setMerchantsSearchState({
       isLoading: effectiveLoading,
       hasSearched,
       searchResultStore:
-        !loading && hasSearched && filter === "child" && childItems != null && childItems.length === 1
+        !effectiveLoading &&
+        hasSearched &&
+        filter === "child" &&
+        childItems != null &&
+        childItems.length === 1
           ? {
               storeId: childItems[0]!.id,
               name: childItems[0]!.name,
@@ -471,7 +515,7 @@ export function MerchantsSearchClient() {
           : null,
       filter,
     });
-  }, [portal, hasActiveListSearch, loading, hasSearched, filter, childItems, merchantsSearch?.setMerchantsSearchState]);
+  }, [portal, hasActiveListSearch, loading, hasSearched, pendingSingleChildRedirect, filter, childItems, merchantsSearch?.setMerchantsSearchState]);
 
   /** router.push from the header runs after triggerMerchantSearch; clearing triggeredSearch in fetch.finally used to run before the URL updated, making shouldFetchList false and wiping results (flash of "not found"). Clear only once ?search= and child/parent match the triggered query. */
   useEffect(() => {
@@ -493,6 +537,7 @@ export function MerchantsSearchClient() {
 
     setLoading(true);
     setHasSearched(false);
+    setPendingSingleChildRedirect(false);
     setError(null);
     setParentItems(null);
     setChildItems(null);
@@ -509,7 +554,6 @@ export function MerchantsSearchClient() {
     if (toDate) params.set("toDate", toDate);
     if (storeTypeFilter) params.set("storeType", storeTypeFilter);
 
-    let didRedirect = false;
     fetch(`/api/merchant/stores?${params.toString()}`, { signal: ac.signal, method: "GET" })
       .then((res) => res.json().catch(() => null) as Promise<ApiResponse | null>)
       .then((data) => {
@@ -521,19 +565,12 @@ export function MerchantsSearchClient() {
         }
         if (portal === "merchant" && data.filter === "child" && data.items.length === 1) {
           const child = data.items[0];
-          // Populate list state so main + context stay in sync until `router.replace` runs (avoids empty "Child store" shell + sidebar mismatch).
+          setPendingSingleChildRedirect(true);
           setParentItems(null);
-          setChildItems([child]);
-          const params = new URLSearchParams();
-          params.set("returnTo", returnTo);
-          params.set("portal", "merchant");
-          didRedirect = true;
-          const targetUrl = `/dashboard/merchants/stores/${child.id}?${params.toString()}`;
-          // Prefetch store page chunk so it’s loading before we navigate (reduces ChunkLoadError)
+          setChildItems(null);
+          const targetUrl = buildChildStoreTargetUrl({ child, returnTo, portal });
           router.prefetch(targetUrl);
-          setTimeout(() => {
-            router.replace(targetUrl);
-          }, 250);
+          router.replace(targetUrl);
           return;
         }
         if (data.filter === "parent") {
@@ -592,25 +629,7 @@ export function MerchantsSearchClient() {
   };
 
   const handleChildClick = (child: ChildRow) => {
-    const returnEnc = encodeURIComponent(returnTo);
-    const status = (child.approval_status || "").toUpperCase();
-    const isVerified = status === "APPROVED";
-    const isDelisted = status === "DELISTED";
-    const isRejectedLike = status === "REJECTED" || status === "BLOCKED" || status === "SUSPENDED";
-    if (isVerified || isDelisted) {
-      const params = new URLSearchParams();
-      params.set("returnTo", returnTo);
-      params.set("portal", "merchant");
-      if (portal === "admin") params.set("fromAdmin", "1");
-      router.push(`/dashboard/merchants/stores/${child.id}?${params.toString()}`);
-    } else {
-      const vParams = new URLSearchParams();
-      vParams.set("storeId", String(child.id));
-      vParams.set("returnTo", returnTo);
-      vParams.set("portal", portal);
-      if (isRejectedLike) vParams.set("reviewRejected", "1");
-      router.push(`/dashboard/merchants/verifications?${vParams.toString()}`);
-    }
+    router.push(buildChildStoreTargetUrl({ child, returnTo, portal }));
   };
 
   const statCards: StatCardConfig[] = useMemo(
@@ -901,22 +920,6 @@ export function MerchantsSearchClient() {
         // Merchant portal + child: multiple results – ask to use Admin
         <div className="rounded-lg border border-gray-200 bg-gray-50/80 py-4 text-center">
           <p className="text-xs text-gray-600">Multiple child stores found. Use Admin portal to select one.</p>
-        </div>
-      ) : portal === "merchant" && filter === "child" && childItems != null && childItems.length === 1 ? (
-        // Merchant portal + child: single result – show child details (redirect already handled in fetch for verified)
-        <div>
-          <p className="text-[10px] font-medium uppercase text-gray-500 mb-1">Child store</p>
-          <div className="rounded-lg border border-gray-200 bg-white max-h-[520px] overflow-y-auto">
-            {childItems.map((child) => (
-              <ChildStoreRow
-                key={child.id}
-                child={child}
-                returnTo={returnTo}
-                portal={portal}
-                onChildClick={handleChildClick}
-              />
-            ))}
-          </div>
         </div>
       ) : hasSearched && !loading && childItems != null && childItems.length === 0 ? (
         <div className="rounded-xl border border-gray-200 bg-white px-5 py-10 text-center shadow-sm">

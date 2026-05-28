@@ -34,6 +34,7 @@ import { OrderRiderTrackingModal } from '@/components/orders/OrderRiderTrackingM
 import { OrderRidersHistorySidesheet } from '@/components/orders/OrderRidersHistorySidesheet';
 import { resolveOrderOtps } from '@/lib/orderOtps';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
+import { splitRejectionMessage } from '@/lib/orderRejectionDisplay';
 
 /** Order history shows completed terminal orders only (not live pipeline). */
 const HISTORY_TERMINAL_STATUSES = new Set(['DELIVERED', 'RTO', 'CANCELLED']);
@@ -775,6 +776,14 @@ function OrderHistoryInner() {
               {filteredOrders.map((o) => {
                 const { time, date } = formatListTime(o.created_at);
                 const active = selected?.id === o.id;
+                const isCancelled = normStatus(o.order_status) === 'CANCELLED';
+                const rejection = isCancelled
+                  ? splitRejectionMessage(
+                      o.rejected_reason,
+                      o.cancelled_by_label,
+                      o.cancelled_by_type
+                    )
+                  : null;
                 return (
                   <button
                     key={o.id}
@@ -798,6 +807,13 @@ function OrderHistoryInner() {
                     <p className="text-sm font-bold text-gray-900 text-right mt-2">
                       ₹{Number(o.food_items_total_value || 0).toFixed(2)}
                     </p>
+                    {rejection ? (
+                      <p className="text-[11px] text-red-700 mt-2 leading-snug line-clamp-2">
+                        {rejection.detail
+                          ? `${rejection.prefix} - ${rejection.detail}`
+                          : rejection.prefix}
+                      </p>
+                    ) : null}
                   </button>
                 );
               })}

@@ -15,6 +15,7 @@ import {
 } from '@/lib/merchant-visible-pricing';
 import { merchantBillPartsFromItems } from '@/lib/merchant-order-item-display';
 import { parseMerchantInstructionsList } from '@/lib/merchant-order-instructions';
+import { enrichOrdersWithCancellationDisplay } from '@/lib/fetch-order-cancellation-display';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -574,11 +575,13 @@ export async function GET(req: NextRequest) {
       })
     );
 
+    const ordersEnriched = await enrichOrdersWithCancellationDisplay(db, ordersWithDetails);
+
     console.log(
-      `[food-orders GET] ${ordersWithDetails.length} partner orders (orders_core–centric) for store_id=${storeId}`
+      `[food-orders GET] ${ordersEnriched.length} partner orders (orders_core–centric) for store_id=${storeId}`
     );
 
-    return NextResponse.json({ orders: ordersWithDetails });
+    return NextResponse.json({ orders: ordersEnriched });
   } catch (err) {
     console.error('[food-orders] Error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

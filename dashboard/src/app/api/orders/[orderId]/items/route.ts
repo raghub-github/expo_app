@@ -15,10 +15,14 @@ import {
 import { buildOrderPricingSummary } from "@/lib/orderItemsPayload";
 import {
   loadSnapshotsByOrderTexts,
+  merchantAddonUnitForLine,
   merchantBaseUnitForItem,
   merchantOrderTotalFromBilling,
-  merchantSubtotalFromSnapshots,
 } from "@/lib/merchant-visible-pricing";
+import {
+  merchantFundedDiscountFromBilling,
+  merchantFundedDiscountLinesFromBilling,
+} from "@/lib/merchant-billing-discount";
 import { getActiveCommissionForStore } from "@/lib/db/operations/commission";
 import {
   buildCustomisationDetail,
@@ -39,6 +43,10 @@ function parseOrderId(param: string | undefined): number | null {
 function asNum(v: unknown): number {
   const n = typeof v === "number" ? v : Number(v ?? 0);
   return Number.isFinite(n) ? n : 0;
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
 }
 
 function imageFromSnapshot(snap: Record<string, unknown> | null | undefined): string | null {
@@ -349,7 +357,7 @@ export async function GET(
     const snapshotsByText = await loadSnapshotsByOrderTexts(
       db,
       textOrderId ? [textOrderId] : [],
-      storeId
+      storeId ?? undefined
     );
     const commissionSnaps = textOrderId ? snapshotsByText.get(textOrderId) ?? [] : [];
     let commissionPercent: number | undefined;
@@ -372,9 +380,11 @@ export async function GET(
       variant: string | null;
       qty: number;
       baseUnit: number;
+      customerUnit: number;
       addonUnit: number;
       packagingUnit: number;
       lineSubtotalForGst: number;
+      lineSubtotalForGstCustomer: number;
       snap: Record<string, unknown> | null;
       addonList: Array<{ name: string; quantity: number; price: number; type?: string | null }>;
       imageUrl: string | null;
@@ -422,7 +432,8 @@ export async function GET(
             type: null,
           };
         });
-        const addonUnit = addonUnitPrice(asNum(r.addon_price), addonList);
+        const customerAddonUnit = addonUnitPrice(asNum(r.addon_price), addonList);
+        const addonUnit = merchantAddonUnitForLine(customerUnit, baseUnit, customerAddonUnit);
         const packagingUnit = packagingPerUnitFromSnapshot(snap);
 
         const menuItemId =
@@ -449,9 +460,11 @@ export async function GET(
           variant,
           qty,
           baseUnit,
+          customerUnit,
           addonUnit,
           packagingUnit,
           lineSubtotalForGst: baseUnit * qty + addonUnit * qty,
+          lineSubtotalForGstCustomer: customerUnit * qty + addonUnit * qty,
           snap,
           addonList,
           imageUrl,
@@ -473,9 +486,11 @@ export async function GET(
           variant: it.variantName,
           qty,
           baseUnit,
+          customerUnit: baseUnit,
           addonUnit,
           packagingUnit: 0,
           lineSubtotalForGst: baseUnit * qty,
+          lineSubtotalForGstCustomer: baseUnit * qty,
           snap: null,
           addonList: [],
           imageUrl: it.imageUrl ?? null,
@@ -492,6 +507,10 @@ export async function GET(
     }
 
     const totalSubtotalForGst = pendingLines.reduce((s, l) => s + l.lineSubtotalForGst, 0);
+    const totalSubtotalForGstCustomer = pendingLines.reduce(
+      (s, l) => s + l.lineSubtotalForGstCustomer,
+      0
+    );
     const totalLineSubtotalForPackaging = totalSubtotalForGst;
 
     for (const line of pendingLines) {
@@ -505,6 +524,18 @@ export async function GET(
         orderItemGst,
         orderPackagingFee,
         totalLineSubtotalForPackaging,
+        snap: line.snap,
+      });
+      const customerAmounts = computeLineAmounts({
+        qty: line.qty,
+        baseUnit: line.customerUnit,
+        addonUnit: line.addonUnit,
+        packagingUnit: line.packagingUnit,
+        lineSubtotalForGst: line.lineSubtotalForGstCustomer,
+        totalSubtotalForGst: totalSubtotalForGstCustomer,
+        orderItemGst,
+        orderPackagingFee,
+        totalLineSubtotalForPackaging: totalSubtotalForGstCustomer,
         snap: line.snap,
       });
 
@@ -529,6 +560,12 @@ export async function GET(
         taxPerQuantity: amounts.taxPerQuantity,
         chargesPerQuantity: amounts.chargesPerQuantity,
         totalPerQuantity: amounts.totalPerQuantity,
+        customer: {
+          amountPerQuantity: customerAmounts.amountPerQuantity,
+          taxPerQuantity: customerAmounts.taxPerQuantity,
+          chargesPerQuantity: customerAmounts.chargesPerQuantity,
+          totalPerQuantity: customerAmounts.totalPerQuantity,
+        },
         lineTotal: amounts.lineTotal,
         hasImage: Boolean(line.imageUrl),
         imageUrl: line.imageUrl,
@@ -538,34 +575,67 @@ export async function GET(
       });
     }
 
-    const merchantSubtotal =
-      commissionSnaps.length > 0
-        ? merchantSubtotalFromSnapshots(commissionSnaps)
-        : detailRows.reduce(
-            (s, r) =>
-              r.id === DELIVERY_FEE_ITEM_ID
-                ? s
-                : s + r.amountPerQuantity * Math.max(1, r.quantity),
-            0
-          );
+    const merchantSubtotal = round2(
+      pendingLines.reduce((s, l) => s + l.lineSubtotalForGst, 0)
+    );
+    const merchantDiscount = merchantFundedDiscountFromBilling(billingSnap);
+    const merchantDiscountLines = merchantFundedDiscountLinesFromBilling(billingSnap);
     const merchantTotal = merchantOrderTotalFromBilling(
       merchantSubtotal,
       billingSnap,
       customerPricingSummary.packaging
     );
+
+    const merchantLines: Array<{
+      key: string;
+      label: string;
+      amount: number;
+      kind: "charge" | "tax" | "discount";
+      discountTag?: "platform" | "store" | "mixed";
+    }> = [];
+    if (merchantSubtotal > 0) {
+      merchantLines.push({
+        key: "items",
+        label: "Items subtotal (merchant prices)",
+        amount: merchantSubtotal,
+        kind: "charge",
+      });
+    }
+    if (customerPricingSummary.packaging > 0) {
+      merchantLines.push({
+        key: "packaging",
+        label: "Packaging",
+        amount: customerPricingSummary.packaging,
+        kind: "charge",
+      });
+    }
+    for (const d of merchantDiscountLines) {
+      merchantLines.push({
+        key: "merchant_discount",
+        label: d.label,
+        amount: d.amount,
+        kind: "discount",
+        discountTag: "store",
+      });
+    }
+    if (merchantDiscountLines.length === 0 && merchantDiscount > 0) {
+      merchantLines.push({
+        key: "merchant_discount",
+        label: "Restaurant discount",
+        amount: merchantDiscount,
+        kind: "discount",
+        discountTag: "store",
+      });
+    }
+
     const pricing = {
-      ...customerPricingSummary,
-      lines: customerPricingSummary.lines.filter(
-        (l) =>
-          l.kind === "charge" &&
-          !["delivery", "platform", "gst", "surge", "small_order", "convenience", "misc", "tip", "donation"].includes(
-            l.key
-          )
-      ),
+      lines: merchantLines,
       itemsAmountTotal: merchantSubtotal,
-      gst: 0,
       packaging: customerPricingSummary.packaging,
+      packagingTax: 0,
+      gst: 0,
       deliveryFee: 0,
+      discount: merchantDiscount,
       platformFee: 0,
       surgeFee: 0,
       smallOrderFee: 0,
@@ -574,6 +644,7 @@ export async function GET(
       tipAmount: 0,
       donationAmount: 0,
       totalOrderAmount: merchantTotal,
+      customer: customerPricingSummary,
     };
 
     const rows = [...detailRows];

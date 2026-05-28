@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { mapPartnerUiToCoreStatus } from '@/lib/partner-orders-unify';
+import {
+  actorTypeFromSource,
+  recordOrderCancellation,
+} from '@/lib/record-order-cancellation';
+import {
+  buildCancelledByLabel,
+  normalizeActionMode,
+  normalizeActionSource,
+} from '@/lib/merchantOrderFoodActions';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -100,6 +109,31 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
     if (uErr) {
       console.error('[orders-core PATCH]', uErr);
       return NextResponse.json({ error: uErr.message }, { status: 500 });
+    }
+
+    if (newStatusUi === 'CANCELLED' || nextCore === 'cancelled' || nextCore === 'failed') {
+      const actionSource = normalizeActionSource(body.action_source);
+      const actionMode = normalizeActionMode(body.cancel_mode ?? body.accept_mode);
+      const displayReason = (rejectedReason ?? '').trim() || 'Order cancelled';
+      const cancelledByLabel = buildCancelledByLabel(
+        actionSource,
+        actionMode,
+        displayReason
+      );
+      try {
+        await recordOrderCancellation(db, {
+          orderCorePk: coreId,
+          cancelledBy: 'merchant',
+          displayReason,
+          cancelledByType: actorTypeFromSource(actionSource),
+          cancelledByLabel,
+          actionSource,
+          cancelMode: actionMode,
+          refundStatus: 'no_refund',
+        });
+      } catch (cancelErr) {
+        console.warn('[orders-core PATCH] order_cancellation_reasons failed:', cancelErr);
+      }
     }
 
     return NextResponse.json({ ok: true, core_id: coreId, status: nextCore });

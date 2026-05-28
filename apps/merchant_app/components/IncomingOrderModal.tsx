@@ -26,6 +26,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { useIncomingOrderSheet } from "@/context/IncomingOrderSheetContext";
 import { useOrders, type LineItem, type OrderRecord } from "@/hooks/useOrders";
 import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
 import { patchFoodOrderStatus } from "@/services/ordersApi";
@@ -374,6 +375,7 @@ export default function IncomingOrderModal() {
   const insets = useSafeAreaInsets();
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
+  const { registerOpenHandler } = useIncomingOrderSheet();
   const storeId = selectedStore?.id ?? null;
 
   const [sheetOrder, setSheetOrder] = useState<OrderRecord | null>(null);
@@ -428,6 +430,22 @@ export default function IncomingOrderModal() {
     },
     [storeId, token, acceptanceWindowMinutes, acceptanceSettings]
   );
+
+  const openSheetManually = useCallback(
+    (order: OrderRecord) => {
+      if (order.status !== "created" || order.id.startsWith("core-")) return;
+      setSheetOrder(order);
+      autoCancelToastShownRef.current = null;
+      const dedupeKey = `c:${order.ordersCoreId}`;
+      shownCoreIdsRef.current.add(dedupeKey);
+    },
+    []
+  );
+
+  useEffect(() => {
+    registerOpenHandler(openSheetManually);
+    return () => registerOpenHandler(null);
+  }, [registerOpenHandler, openSheetManually]);
 
   useEffect(() => {
     if (!sheetOrder || !storeId) return;
@@ -549,7 +567,7 @@ export default function IncomingOrderModal() {
       setActionLoading(true);
       try {
         await patchFoodOrderStatus(storeId, foodId, token, status, extra?.rejected_reason, {
-          action_source: status === "CANCELLED" && mode === "auto" ? "system" : "app",
+          action_source: "app",
           ...(status === "ACCEPTED" ? { accept_mode: mode } : {}),
           ...(status === "CANCELLED" ? { cancel_mode: mode } : {}),
         });
@@ -752,6 +770,7 @@ export default function IncomingOrderModal() {
                             item={item}
                             orderVeg={order.vegNonVeg}
                             showPrice
+                            showExpandChevron
                             onItemNamePress={() => openCustomizationSheet(item, setCustomizationItem)}
                             onRowPress={() => openCustomizationSheet(item, setCustomizationItem)}
                           />
@@ -796,15 +815,13 @@ export default function IncomingOrderModal() {
             total={order.total}
             orderVeg={order.vegNonVeg}
             onClose={() => setAllItemsOpen(false)}
-            onItemPress={(item) => {
-              setAllItemsOpen(false);
-              openCustomizationSheet(item, setCustomizationItem);
-            }}
+            onItemPress={(item) => openCustomizationSheet(item, setCustomizationItem)}
           />
 
           <IncomingOrderCustomizationSheet
             visible={customizationItem != null}
             item={customizationItem}
+            orderVeg={order.vegNonVeg}
             onClose={() => setCustomizationItem(null)}
           />
 
