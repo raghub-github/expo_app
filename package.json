@@ -48,6 +48,8 @@
     "typecheck:partnersite": "turbo run typecheck --filter=gmmportal...",
     "typecheck:legacy": "npm -ws run typecheck --if-present",
     "audit:deps": "node scripts/audit-undeclared-deps.mjs",
+    "audit:docker": "node scripts/audit-docker-workspace-builds.mjs",
+    "audit": "npm run audit:deps && npm run audit:docker",
     "android": "expo run:android",
     "ios": "expo run:ios"
   },

@@ -67,9 +67,21 @@ ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
 
 # Targeted workspace build. Critically NOT `npm run build` (which would
 # pick up the root script `turbo run build` and try to build every
-# workspace). `--workspace=dashboard` resolves dashboard's local
-# `build` → `next build --webpack`.
-RUN npm run build --workspace=dashboard
+# workspace).
+#
+# Build order matters: @gatimitra/contracts is consumed by dashboard
+# (imported in src/lib/db/operations/merchant-wallet.ts). Its package.json
+# `main` points to ./dist/index.js, so the dist must exist BEFORE Next's
+# webpack tries to resolve the import. npm executes --workspace flags
+# left-to-right, so contracts builds first.
+#
+# `transpilePackages: ["@gatimitra/contracts"]` in next.config.ts only
+# controls whether Next transpiles a resolved file — it does NOT change
+# how the package is resolved. The resolution still goes through
+# package.json/main, which has to exist on disk.
+RUN npm run build \
+      --workspace=@gatimitra/contracts \
+      --workspace=dashboard
 
 # ────────────────────────────────────────────────────────────────────────
 # Stage 3 — minimal runtime
