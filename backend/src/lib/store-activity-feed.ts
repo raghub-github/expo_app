@@ -3,7 +3,7 @@
  * All surfaces (merchant_app, partnersite, dashboard) call this to record
  * bank account, offer, menu, combo, addon, and other changes.
  */
-import { getSql } from "../db/client";
+import { getSql } from "../db/client.js";
 
 export type ActivitySection =
   | "bank_account"
