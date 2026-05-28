@@ -25,12 +25,18 @@ WORKDIR /repo
 # is determined by these and the root lockfile; missing any one would cause
 # npm to skip that workspace.
 COPY package.json package-lock.json ./
-COPY backend/package.json                  ./backend/package.json
-COPY packages/contracts/package.json       ./packages/contracts/package.json
-COPY packages/event-contracts/package.json ./packages/event-contracts/package.json
-COPY packages/logger/package.json          ./packages/logger/package.json
-COPY packages/queue/package.json           ./packages/queue/package.json
-COPY packages/redis/package.json           ./packages/redis/package.json
+COPY backend/package.json                    ./backend/package.json
+COPY packages/contracts/package.json         ./packages/contracts/package.json
+COPY packages/event-contracts/package.json   ./packages/event-contracts/package.json
+COPY packages/logger/package.json            ./packages/logger/package.json
+COPY packages/queue/package.json             ./packages/queue/package.json
+COPY packages/redis/package.json             ./packages/redis/package.json
+# shared-config is a config-only workspace (no source, no build step) — but
+# event-contracts/logger/queue/redis all have
+#   "extends": "@gatimitra/shared-config/tsconfig.node.json"
+# in their tsconfig. Without it in the context, `tsc` in stage 2 fails with
+#   File '@gatimitra/shared-config/tsconfig.node.json' not found.
+COPY packages/shared-config/package.json     ./packages/shared-config/package.json
 
 # --ignore-scripts skips lifecycle hooks at install time (some packages have
 # postinstalls that fail on Alpine); the build stage runs them properly.
@@ -61,6 +67,9 @@ COPY packages/event-contracts ./packages/event-contracts
 COPY packages/logger          ./packages/logger
 COPY packages/queue           ./packages/queue
 COPY packages/redis           ./packages/redis
+# shared-config carries the tsconfig.*.json files the 4 packages above extend.
+# No build step here (no source) — it's a config-only workspace.
+COPY packages/shared-config   ./packages/shared-config
 
 # Targeted build — only the 6 workspaces the backend needs. If you later
 # add a new shared package the backend imports, add it here AND to the
