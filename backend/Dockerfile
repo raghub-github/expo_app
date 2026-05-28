@@ -71,16 +71,30 @@ COPY packages/redis           ./packages/redis
 # No build step here (no source) — it's a config-only workspace.
 COPY packages/shared-config   ./packages/shared-config
 
-# Targeted build — only the 6 workspaces the backend needs. If you later
-# add a new shared package the backend imports, add it here AND to the
-# `COPY` block above AND to the `deps` stage.
+# Targeted build — only the 6 workspaces the backend needs.
+#
+# Order matters: npm processes --workspace= flags left-to-right. Each
+# package's `tsc` step imports from its declared @gatimitra/* deps, which
+# must already be compiled to ./dist by the time tsc runs. Listing backend
+# first (as the original Dockerfile did) caused
+#   error TS2307: Cannot find module '@gatimitra/redis'
+# Topological order, leaves first:
+#   1. contracts        — no @gatimitra/* deps
+#   2. redis            — no @gatimitra/* deps
+#   3. event-contracts  — no @gatimitra/* deps
+#   4. logger           — no @gatimitra/* deps
+#   5. queue            — depends on @gatimitra/redis
+#   6. backend          — depends on all 5
+#
+# If you add a new shared package the backend imports, add it here AND to
+# the `COPY` block above AND to the `deps` stage.
 RUN npm run build \
-      --workspace=@gatimitra/backend \
       --workspace=@gatimitra/contracts \
+      --workspace=@gatimitra/redis \
       --workspace=@gatimitra/event-contracts \
       --workspace=@gatimitra/logger \
       --workspace=@gatimitra/queue \
-      --workspace=@gatimitra/redis
+      --workspace=@gatimitra/backend
 
 # Drop devDependencies so the runtime image doesn't carry TypeScript, tsx,
 # pino-pretty, etc. Done after build (TS is a devDep but is required during
