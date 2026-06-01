@@ -135,19 +135,25 @@ services:
     build:
       context: ../..
       dockerfile: dashboard/Dockerfile
-    args:
-      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
-      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
+
     restart: unless-stopped
+
     env_file:
       - ../../dashboard/.env.local
+
     environment:
       NODE_ENV: production
       PORT: "3001"
+
     expose:
       - "3001"
-    networks: [app]
+
+    networks:
+      - app
 
   partnersite:
     build:
