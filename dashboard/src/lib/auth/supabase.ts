@@ -114,15 +114,15 @@ export async function verifyOTP(
     // TypeScript requires explicit property names, not computed properties
     const verifyParams = type === "email"
       ? {
-          email: emailOrPhone,
-          token,
-          type: "email" as const,
-        }
+        email: emailOrPhone,
+        token,
+        type: "email" as const,
+      }
       : {
-          phone: emailOrPhone,
-          token,
-          type: "sms" as const,
-        };
+        phone: emailOrPhone,
+        token,
+        type: "sms" as const,
+      };
 
     const { data, error } = await supabase.auth.verifyOtp(verifyParams);
 
@@ -219,21 +219,26 @@ export async function signInWithGoogle(
       return { success: false, error: "This function must be called from the client" };
     }
 
-    const baseUrl = window.location.origin;
+    // const baseUrl = window.location.origin;
     // Use absolute URL for redirectTo - Supabase requires this
     // IMPORTANT: Remove query params from redirect URL - Supabase doesn't allow them
     // We'll store the next destination in sessionStorage instead
+    // const redirectUrl = redirectTo || `${baseUrl}/auth/callback`;
+    const baseUrl =
+      process.env.NEXT_PUBLIC_APP_URL ||
+      "https://control.gatimitra.com";
+
     const redirectUrl = redirectTo || `${baseUrl}/auth/callback`;
-    
+
     // Store the destination in sessionStorage before redirect
     if (typeof window !== "undefined") {
       sessionStorage.setItem("auth_redirect", "/dashboard");
     }
-    
+
     // #region agent log - DISABLED: Agent log service not available
     // Agent log calls disabled to prevent JSON parsing errors
     // #endregion
-    
+
     console.log("[signInWithGoogle] Initiating OAuth");
     console.log("[signInWithGoogle] Redirect URL:", redirectUrl);
     console.log("[signInWithGoogle] Base URL:", baseUrl);
