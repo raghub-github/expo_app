@@ -634,7 +634,6 @@ function PaymentsContent() {
                         {formatInr(wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0)}
                       </p>
                     )}
-                    <button className="text-xs font-medium text-emerald-700 hover:text-emerald-800 mt-1">View Details →</button>
                   </div>
                   <div className="p-2 rounded-lg bg-emerald-100 flex-shrink-0">
                     <Wallet size={16} className="text-emerald-700" />
@@ -1043,7 +1042,12 @@ function PaymentsContent() {
                                 ) : null}
                               </td>
                               <td className="py-3 px-4 font-medium text-gray-900">{formatCategory(row.category)}</td>
-                              <td className="py-3 px-4 text-gray-600">{row.order_id != null ? row.order_id : '—'}</td>
+                              <td className="py-3 px-4 text-gray-600 font-mono text-xs">
+                                {row.formatted_order_id ??
+                                  (row.reference_type === 'ORDER' && row.reference_id != null
+                                    ? `#${row.reference_id}`
+                                    : '—')}
+                              </td>
                               <td className="py-3 px-4 text-gray-600 whitespace-nowrap">{new Date(row.created_at).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}</td>
                               <td className="py-3 px-4 text-gray-600 truncate max-w-xs" title={row.description ?? ''}>{row.description || '—'}</td>
                               <td className={`py-3 px-4 text-right font-semibold tabular-nums ${row.direction === 'CREDIT' ? 'text-emerald-600' : 'text-red-600'}`}>

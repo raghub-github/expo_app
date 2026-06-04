@@ -16,6 +16,7 @@
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "db:migrate": "tsx scripts/run-sql-migration.ts",
+    "db:migrate:rule-engine": "tsx scripts/run-sql-migration.ts drizzle/0246_gm_financial_rule_engine.sql && tsx scripts/run-sql-migration.ts drizzle/0247_gm_rule_engine_integrations.sql && tsx scripts/run-sql-migration.ts drizzle/0248_gm_execute_rule_finalize_hook.sql",
     "oms:backfill": "tsx scripts/backfill-oms-ledger.ts",
     "oms:reconcile": "tsx scripts/reconcile-oms-ledger.ts"
   },
@@ -30,6 +31,7 @@
     "@fastify/swagger-ui": "^5.2.3",
     "@gatimitra/contracts": "0.0.1",
     "@gatimitra/event-contracts": "*",
+    "@gatimitra/financial-rules": "*",
     "@gatimitra/logger": "*",
     "@gatimitra/queue": "*",
     "@gatimitra/redis": "*",

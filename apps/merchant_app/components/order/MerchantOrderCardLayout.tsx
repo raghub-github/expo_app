@@ -151,7 +151,6 @@ export function MerchantOrderCardLayout({
           <OrderCardMerchantInstructions
             merchantInstructionsList={order.merchantInstructionsList}
             requiresUtensils={order.requiresUtensils}
-            deliveryInstructions={order.deliveryInstructions}
             style={styles.instructionsMargin}
           />
         ) : null}

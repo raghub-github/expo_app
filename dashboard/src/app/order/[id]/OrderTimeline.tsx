@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { resolveEtaBreachTimelineIndex } from "@/lib/orders/eta-breach";
+import { isRiderOnlyOrderTimelineEntry } from "@/lib/orders/order-timeline-rider-filter";
 
 export interface OrderTimelineEntry {
   id: number;
@@ -33,20 +35,30 @@ interface OrderTimelineProps {
   currentStatus?: string;
   /** Order created_at (for ETA fallback). */
   orderCreatedAt?: Date | null;
-  /** ETA timestamp (expected delivery time). From order.estimatedDeliveryTime or order.createdAt + order.etaSeconds. */
+  /** First ETA deadline — breach is measured from this time (sidebar "First ETA"). */
   etaAt?: Date | null;
-  /** order_timelines.id of the stage that was current when ETA was first breached (red dot). From DB. */
-  etaBreachedTimelineId?: number | null;
 }
 
-export default function OrderTimeline({ orderId, initialEntries, currentStatus, orderCreatedAt, etaAt, etaBreachedTimelineId }: OrderTimelineProps) {
-  const [entries, setEntries] = useState<OrderTimelineEntry[]>(initialEntries ?? []);
+function filterOrderProgressEntries(list: OrderTimelineEntry[]): OrderTimelineEntry[] {
+  return list.filter(
+    (e) =>
+      !isRiderOnlyOrderTimelineEntry({
+        status: e.status,
+        actorType: e.actorType,
+      })
+  );
+}
+
+export default function OrderTimeline({ orderId, initialEntries, currentStatus, orderCreatedAt, etaAt }: OrderTimelineProps) {
+  const [entries, setEntries] = useState<OrderTimelineEntry[]>(() =>
+    filterOrderProgressEntries(initialEntries ?? [])
+  );
   const [loading, setLoading] = useState(!initialEntries);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialEntries != null) {
-      setEntries(initialEntries);
+      setEntries(filterOrderProgressEntries(initialEntries));
       setLoading(false);
       return;
     }
@@ -59,7 +71,7 @@ export default function OrderTimeline({ orderId, initialEntries, currentStatus, 
       .then((body) => {
         if (cancelled) return;
         if (body?.success && Array.isArray(body.data)) {
-          setEntries(body.data);
+          setEntries(filterOrderProgressEntries(body.data));
         } else {
           setEntries([]);
         }
@@ -333,21 +345,18 @@ export default function OrderTimeline({ orderId, initialEntries, currentStatus, 
     deliveredOrCancelledEntry?.occurredAt &&
     etaAt &&
     new Date(deliveredOrCancelledEntry.occurredAt).getTime() > etaAt.getTime();
-  const breachedIndex =
-    etaBreachedTimelineId != null
-      ? displayEntries.findIndex(
-          (e) => !e.placeholder && e.id === etaBreachedTimelineId
-        )
-      : -1;
   const breachedIndexResolved =
-    breachedIndex >= 0 ? breachedIndex : etaBreached ? n - 1 : -1;
+    hasEta && etaAt
+      ? resolveEtaBreachTimelineIndex(displayEntries, etaAt)
+      : -1;
+  const breachActive =
+    breachedIndexResolved >= 0 &&
+    (etaBreached || deliveredOrCancelledAfterEta);
   const breachedEntry =
     breachedIndexResolved >= 0 && breachedIndexResolved < n
       ? displayEntries[breachedIndexResolved]
       : null;
-  const showRedFromBreach =
-    breachedIndexResolved >= 0 &&
-    (etaBreached || deliveredOrCancelledAfterEta);
+  const showRedFromBreach = breachActive;
 
   return (
     <div className="bg-white/95 rounded-lg pl-2.5 pr-2.5 pt-1 pb-0 shadow-[0_1px_2px_rgba(15,23,42,0.06)] border border-slate-200 relative mb-4">
@@ -458,16 +467,8 @@ export default function OrderTimeline({ orderId, initialEntries, currentStatus, 
 
               {displayEntries.map((entry, index) => {
                 const isPlaceholder = entry.placeholder === true;
-                const isEtaBreachedStage =
-                  etaBreached &&
-                  !isPlaceholder &&
-                  (etaBreachedTimelineId != null
-                    ? entry.id === etaBreachedTimelineId
-                    : index === displayEntries.length - 1);
                 const isPastBreachPoint = Boolean(
-                  showRedFromBreach &&
-                    !isPlaceholder &&
-                    index >= breachedIndexResolved
+                  showRedFromBreach && index >= breachedIndexResolved
                 );
                 const colors = isPlaceholder
                   ? { dot: "bg-slate-300", text: "text-slate-400" }

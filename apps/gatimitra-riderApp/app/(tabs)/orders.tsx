@@ -1,6 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { View, Text, ScrollView, StyleSheet, ActivityIndicator, Linking, Platform, AppState, Alert } from "react-native";
+import {
+  View,
+  Text,
+  StyleSheet,
+  ActivityIndicator,
+  Linking,
+  Platform,
+  AppState,
+  Alert,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
 import { useTranslation } from "react-i18next";
 import * as Location from "expo-location";
 import { useSessionStore } from "@/src/stores/sessionStore";
@@ -8,101 +18,67 @@ import { useDutyStore } from "@/src/stores/dutyStore";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { createForegroundLocationTracker, type LocationTrackerState } from "@/src/services/location/locationTracker";
 import { pingLocation } from "@/src/services/location/locationPinger";
-import { useAvailableOrders, useAcceptOrder, useRejectOrder } from "@/src/hooks/useOrders";
-import { DutyToggle } from "@/src/components/DutyToggle";
+import { useAvailableOrders, useActiveOrders, RIDER_ACTIVE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
+import { useFocusEffect } from "expo-router";
+import { useQueryClient } from "@tanstack/react-query";
+import { isActiveRiderOrder } from "@/src/lib/active-order-display";
+import { ActiveRideResumePill } from "@/src/components/orders/ActiveRideResumePill";
+import { useEarningsSummary } from "@/src/hooks/useEarnings";
+import { useDutyToggle } from "@/src/hooks/useDutyToggle";
 import { colors } from "@/src/theme";
 import { Button } from "@/src/components/ui/Button";
 import { permissionManager } from "@/src/services/permissions/permissionManager";
-import { RiderMapView } from "@/src/components/RiderMapView";
-import { MapboxDebug } from "@/src/components/MapboxDebug";
-import { fetchOrderEta, pickupDeadlineIso, minutesUntil, type OrderEtaResponse } from "@/src/services/api/etaApi";
+import { RiderMapView, type RiderMapViewHandle } from "@/src/components/RiderMapView";
+import { HomeMapHeader } from "@/src/components/home/HomeMapHeader";
+import { PenaltyBanner, OffDutyBanner } from "@/src/components/home/HomeAlertBanners";
+import { MapRightControls } from "@/src/components/home/MapRightControls";
+import { SearchingOrdersPill } from "@/src/components/home/SearchingOrdersPill";
 
 export default function OrdersScreen() {
   const { t } = useTranslation();
   const session = useSessionStore((s) => s.session);
   const isOnDuty = useDutyStore((s) => s.isOnDuty);
+  const { setDuty, isPending: dutyPending } = useDutyToggle();
   const tracker = useMemo(() => createForegroundLocationTracker(), []);
   const [state, setState] = useState<LocationTrackerState>(tracker.getState());
-  const [fraud, setFraud] = useState<{ score: number; signals: string[] } | null>(null);
   const [checkingLocation, setCheckingLocation] = useState(false);
+  const mapRef = useRef<RiderMapViewHandle>(null);
 
-  // API Hooks
-  const { data: availableOrders = [], isLoading: ordersLoading } = useAvailableOrders();
-  const acceptOrder = useAcceptOrder();
-  const rejectOrder = useRejectOrder();
+  const queryClient = useQueryClient();
+  const { data: availableOrders = [] } = useAvailableOrders();
+  const { data: activeOrders = [] } = useActiveOrders();
+  const { data: earnings } = useEarningsSummary();
+  const penaltyAmount = earnings?.locked && earnings.locked > 0 ? earnings.locked : 0;
+
+  const hasActiveOrder = useMemo(
+    () => activeOrders.some(isActiveRiderOrder),
+    [activeOrders]
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
+    }, [queryClient])
+  );
 
   const lastPingAtRef = useRef<number>(0);
   const locationCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const cameraRef = useRef<any>(null);
-
-  // Per-order ETA cache. Fetched once per order id when available_orders changes.
-  // Keeps the visible cards in sync with the platform's promise time so the
-  // rider always sees "Pickup by HH:MM" / "Deliver by HH:MM" on each card.
-  const [etaByOrderId, setEtaByOrderId] = useState<Record<string, OrderEtaResponse | null>>({});
-  useEffect(() => {
-    let cancelled = false;
-    const ids = (availableOrders ?? []).map((o) => o.id).filter((id) => /^GM\d+$/i.test(id));
-    if (ids.length === 0) return;
-    void Promise.all(
-      ids.map(async (id) => {
-        if (etaByOrderId[id]) return null;
-        const r = await fetchOrderEta(id);
-        return [id, r] as const;
-      }),
-    ).then((pairs) => {
-      if (cancelled) return;
-      const updates: Record<string, OrderEtaResponse | null> = {};
-      let changed = false;
-      for (const p of pairs) {
-        if (!p) continue;
-        updates[p[0]] = p[1];
-        changed = true;
-      }
-      if (changed) setEtaByOrderId((prev) => ({ ...prev, ...updates }));
-    });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [availableOrders]);
 
   useEffect(() => tracker.subscribe(setState), [tracker]);
 
-  // Mandatory location monitoring - check every 3 seconds and show popup if disabled
   useEffect(() => {
+    if (!isOnDuty) return;
     let alertShown = false;
-    
     const checkLocationStatus = async () => {
       try {
         const { status } = await Location.getForegroundPermissionsAsync();
         const enabled = await Location.hasServicesEnabledAsync();
-        
-        if (status !== "granted") {
-          setState((prev) => ({ ...prev, status: "permission_denied" }));
-          if (!alertShown && isOnDuty) {
+        if (status !== "granted" || !enabled) {
+          if (!alertShown) {
             alertShown = true;
             Alert.alert(
               t("location.required"),
-              t("location.permissionDenied"),
-              [
-                {
-                  text: t("location.openSettings"),
-                  onPress: async () => {
-                    await permissionManager.openSettings("location_foreground");
-                    alertShown = false;
-                  },
-                },
-              ],
-              { cancelable: false }
-            );
-          }
-        } else if (!enabled) {
-          setState((prev) => ({ ...prev, status: "services_disabled" }));
-          if (!alertShown && isOnDuty) {
-            alertShown = true;
-            Alert.alert(
-              t("location.servicesRequired"),
-              t("location.servicesMessage"),
+              enabled ? t("location.permissionDenied") : t("location.servicesMessage"),
               [
                 {
                   text: t("location.openSettings"),
@@ -116,29 +92,23 @@ export default function OrdersScreen() {
             );
           }
         } else {
-          alertShown = false; // Reset if location is enabled
+          alertShown = false;
+          if (state.status !== "tracking") void tracker.start();
         }
       } catch (error) {
         console.warn("Location check error:", error);
       }
     };
-
-    checkLocationStatus();
-    locationCheckIntervalRef.current = setInterval(checkLocationStatus, 3000);
-
+    void checkLocationStatus();
+    locationCheckIntervalRef.current = setInterval(checkLocationStatus, 5000);
     const subscription = AppState.addEventListener("change", (nextAppState) => {
-      if (nextAppState === "active") {
-        checkLocationStatus();
-      }
+      if (nextAppState === "active") void checkLocationStatus();
     });
-
     return () => {
-      if (locationCheckIntervalRef.current) {
-        clearInterval(locationCheckIntervalRef.current);
-      }
+      if (locationCheckIntervalRef.current) clearInterval(locationCheckIntervalRef.current);
       subscription.remove();
     };
-  }, [isOnDuty]);
+  }, [isOnDuty, state.status, t, tracker]);
 
   useEffect(() => {
     void tracker.start();
@@ -147,54 +117,26 @@ export default function OrdersScreen() {
     };
   }, [tracker]);
 
-  // Update location and ping backend (throttled)
   useEffect(() => {
-    if (state.status !== "tracking" || !state.lastFix || !session) return;
-
+    if (state.status !== "tracking" || !state.lastFix || !session || !isOnDuty) return;
     const now = Date.now();
     if (now - lastPingAtRef.current < 3000) return;
     lastPingAtRef.current = now;
-
     void (async () => {
       try {
         const deviceId = await getOrCreateDeviceId();
-        const resp = await pingLocation({ session, deviceId, fix: state.lastFix! });
-        setFraud({ score: resp.fraudScore, signals: resp.fraudSignals });
+        await pingLocation({ session, deviceId, fix: state.lastFix! });
       } catch {
-        // Silent fail
+        // silent
       }
     })();
-  }, [state, session]);
-
-  // Update map camera when location changes (only on native platforms)
-  useEffect(() => {
-    if (
-      Platform.OS !== "web" &&
-      state.status === "tracking" &&
-      state.lastFix &&
-      cameraRef.current
-    ) {
-      const { lat, lng } = state.lastFix;
-      try {
-        cameraRef.current.setCamera({
-          centerCoordinate: [lng, lat],
-          zoomLevel: 16,
-          animationDuration: 500,
-        });
-      } catch (error) {
-        console.warn("Map camera update error:", error);
-      }
-    }
-  }, [state.lastFix, state.status]);
+  }, [state, session, isOnDuty]);
 
   const handleEnableLocation = useCallback(async () => {
     setCheckingLocation(true);
     try {
-      if (Platform.OS === "ios") {
-        await Linking.openURL("app-settings:");
-      } else {
-        await Linking.openSettings();
-      }
+      if (Platform.OS === "ios") await Linking.openURL("app-settings:");
+      else await Linking.openSettings();
     } catch (error) {
       console.error("Failed to open settings:", error);
     } finally {
@@ -202,21 +144,21 @@ export default function OrdersScreen() {
     }
   }, []);
 
-  const handleAcceptOrder = useCallback((orderId: string) => {
-    acceptOrder.mutate(orderId);
-  }, [acceptOrder]);
-
-  const handleRejectOrder = useCallback((orderId: string) => {
-    rejectOrder.mutate(orderId);
-  }, [rejectOrder]);
+  const handleRecenter = useCallback(() => {
+    mapRef.current?.recenter();
+    if (state.status !== "tracking") void tracker.start();
+  }, [state.status, tracker]);
 
   if (state.status === "permission_denied") {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: '#FFFFFF', paddingHorizontal: 16, paddingTop: 40 }} className="flex-1 bg-white px-4 pt-10">
-        <Text style={{ fontSize: 20, fontWeight: '600', color: '#111827' }} className="text-xl font-semibold text-gray-900">{t("location.required")}</Text>
-        <Text style={{ marginTop: 8, color: colors.text.primary.light }} className="mt-2 text-text-light">{t("location.permissionDenied")}</Text>
-        <Button onPress={handleEnableLocation} style={{ marginTop: 16 }} className="mt-4" disabled={checkingLocation}>
+      <SafeAreaView style={styles.permissionScreen}>
+        <Text style={styles.permissionTitle}>{t("location.required")}</Text>
+        <Text style={styles.permissionSub}>{t("location.permissionDenied")}</Text>
+        <Button onPress={handleEnableLocation} style={{ marginTop: 16 }} disabled={checkingLocation}>
           {t("location.enableLocation")}
+        </Button>
+        <Button onPress={() => void tracker.start()} variant="outline" style={{ marginTop: 12 }}>
+          {t("location.turnedOn", "I allowed location — retry")}
         </Button>
       </SafeAreaView>
     );
@@ -224,10 +166,10 @@ export default function OrdersScreen() {
 
   if (state.status === "services_disabled") {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: '#FFFFFF', paddingHorizontal: 16, paddingTop: 40 }} className="flex-1 bg-white px-4 pt-10">
-        <Text style={{ fontSize: 20, fontWeight: '600', color: '#111827' }} className="text-xl font-semibold text-gray-900">{t("location.gpsDisabled")}</Text>
-        <Text style={{ marginTop: 8, color: colors.text.primary.light }} className="mt-2 text-text-light">{t("location.gpsDisabledMessage")}</Text>
-        <Button onPress={() => void tracker.start()} style={{ marginTop: 16 }} className="mt-4">
+      <SafeAreaView style={styles.permissionScreen}>
+        <Text style={styles.permissionTitle}>{t("location.gpsDisabled")}</Text>
+        <Text style={styles.permissionSub}>{t("location.gpsDisabledMessage")}</Text>
+        <Button onPress={() => void tracker.start()} style={{ marginTop: 16 }}>
           {t("location.turnedOn")}
         </Button>
       </SafeAreaView>
@@ -235,185 +177,73 @@ export default function OrdersScreen() {
   }
 
   const fix = state.status === "tracking" ? state.lastFix : undefined;
-  const isDevice = Platform.OS !== "web";
+  const isLocating = state.status === "tracking" && !fix;
 
-  // Transform orders to map format with high precision coordinates
   const mapOrders = availableOrders
-    .filter((order) => order.pickupLat != null && order.pickupLng != null)
+    .filter((order) => order.pickup?.lat != null && order.pickup?.lng != null)
     .map((order) => ({
       id: order.id,
-      pickupLat: parseFloat(Number(order.pickupLat).toFixed(7)),
-      pickupLng: parseFloat(Number(order.pickupLng).toFixed(7)),
-      deliveryLat: order.deliveryLat ? parseFloat(Number(order.deliveryLat).toFixed(7)) : undefined,
-      deliveryLng: order.deliveryLng ? parseFloat(Number(order.deliveryLng).toFixed(7)) : undefined,
+      pickupLat: parseFloat(Number(order.pickup.lat).toFixed(7)),
+      pickupLng: parseFloat(Number(order.pickup.lng).toFixed(7)),
+      deliveryLat: order.delivery?.lat ? parseFloat(Number(order.delivery.lat).toFixed(7)) : undefined,
+      deliveryLng: order.delivery?.lng ? parseFloat(Number(order.delivery.lng).toFixed(7)) : undefined,
       estimatedEarning: order.estimatedEarning,
       category: order.category,
       distanceKm: order.distanceKm,
     }));
 
-  // Transform rider location with high precision
   const riderLocation = fix
     ? {
         lat: parseFloat(fix.lat.toFixed(7)),
         lng: parseFloat(fix.lng.toFixed(7)),
         accuracyM: fix.accuracyM,
         speedMps: fix.speedMps,
-        heading: fix.heading,
       }
     : undefined;
 
+  const showOffDutyBanner = !isOnDuty;
+  /** Pulse radar while ON-DUTY — including during active rides (rider can still receive pool offers). */
+  const showSearchingRadar =
+    isOnDuty && !!riderLocation && penaltyAmount <= 0;
+
   return (
     <View style={styles.container}>
-      {/* Debug component - remove after fixing */}
-      {__DEV__ && <MapboxDebug />}
-      
-      {/* Map View with Rider and Orders - Always render map, even without location */}
-      {isDevice ? (
+      <StatusBar style="dark" backgroundColor="#ffffff" />
+      <SafeAreaView edges={["top"]} style={styles.chrome}>
+        <HomeMapHeader />
+        <PenaltyBanner amount={penaltyAmount} />
+      </SafeAreaView>
+
+      <View style={styles.mapSection}>
         <RiderMapView
+          ref={mapRef}
           riderLocation={riderLocation}
           orders={mapOrders}
-          onOrderPress={(orderId) => {
-            // Scroll to order card when marker is pressed
-            const orderIndex = availableOrders.findIndex((o) => o.id === orderId);
-            if (orderIndex >= 0) {
-              // Could add scroll to order functionality here
-            }
-          }}
           style={styles.map}
         />
-      ) : (
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#E5E7EB' }} className="flex-1 items-center justify-center bg-gray-200">
-          {fix ? (
-            <>
-              <Text style={{ color: colors.text.primary.light, marginBottom: 8 }} className="text-text-light mb-2">{t("location.liveLocation")}</Text>
-              <Text style={{ color: colors.text.primary.light }} className="text-text-light">
-                {fix.lat.toFixed(7)}, {fix.lng.toFixed(7)}
-              </Text>
-            </>
-          ) : (
-            <>
-              <ActivityIndicator color={colors.primary[500]} size="large" />
-              <Text style={{ marginTop: 8, color: colors.text.primary.light }} className="mt-2 text-text-light">{t("location.gettingLocation")}</Text>
-            </>
-          )}
-        </View>
-      )}
 
-      {/* Top Overlay with Duty Toggle */}
-      <View style={styles.topOverlay}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }} className="flex-row items-center justify-between mb-2">
-          <Text style={styles.overlayTitle}>{t("location.liveLocation")}</Text>
-          <DutyToggle />
-        </View>
-        <Text style={styles.overlayText}>
-          {fix
-            ? `Acc: ${Math.round(fix.accuracyM ?? 0)}m · Speed: ${Math.round((fix.speedMps ?? 0) * 3.6)} km/h`
-            : t("location.waitingForFix")}
-        </Text>
-        {!!fraud && (
-          <Text style={styles.overlayText}>
-            Fraud: {fraud.score} {fraud.signals.length ? `(${fraud.signals.join(", ")})` : ""}
-          </Text>
-        )}
-        {!isOnDuty && (
-          <View style={{ marginTop: 8, backgroundColor: '#FFFBEB', borderWidth: 1, borderColor: '#FDE68A', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 }} className="mt-2 bg-warning-50 border border-warning-200 rounded-lg px-3 py-2">
-            <Text style={{ fontSize: 12, fontWeight: '500', color: colors.warning[800] }} className="text-xs font-medium text-warning-800">
-              {t("orders.goOnDutyMessage", "Go ON-DUTY to receive orders")}
-            </Text>
+        {showSearchingRadar ? <SearchingOrdersPill /> : null}
+        {hasActiveOrder ? <ActiveRideResumePill /> : null}
+
+        {isLocating ? (
+          <View style={styles.locatingPill}>
+            <ActivityIndicator size="small" color={colors.primary[500]} />
+            <Text style={styles.locatingText}>{t("location.gettingLocation", "Getting your location…")}</Text>
           </View>
-        )}
+        ) : null}
+
+        <MapRightControls
+          onRecenter={handleRecenter}
+          showOffDutyBanner={showOffDutyBanner}
+          hasActiveRideDock={hasActiveOrder}
+        />
+
+        {showOffDutyBanner ? (
+          <View style={styles.offDutyHost}>
+            <OffDutyBanner visible onTurnOn={() => void setDuty(true)} loading={dutyPending} />
+          </View>
+        ) : null}
       </View>
-
-      {/* Order Cards */}
-      <ScrollView
-        style={styles.orderCardsContainer}
-        contentContainerStyle={styles.orderCardsContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {ordersLoading ? (
-          <View style={{ padding: 16, backgroundColor: '#FFFFFF', borderRadius: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3, alignItems: 'center' }} className="p-4 bg-white rounded-lg shadow-md items-center">
-            <ActivityIndicator color={colors.primary[500]} />
-            <Text style={{ marginTop: 8, color: '#4B5563' }} className="mt-2 text-gray-600">{t("orders.loading", "Loading orders...")}</Text>
-          </View>
-        ) : availableOrders.length === 0 ? (
-          <View style={{ padding: 16, backgroundColor: '#FFFFFF', borderRadius: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3 }} className="p-4 bg-white rounded-lg shadow-md">
-            <Text style={{ fontSize: 18, fontWeight: '600', color: colors.text.primary.light }} className="text-lg font-semibold text-text-DEFAULT">{t("orders.noOrders")}</Text>
-            <Text style={{ color: colors.text.primary.light, marginTop: 4 }} className="text-text-light mt-1">
-              {isOnDuty
-                ? t("orders.noOrdersMessage")
-                : t("orders.goOnDutyMessage", "Go ON-DUTY to receive orders")}
-            </Text>
-          </View>
-        ) : (
-          availableOrders.map((order) => (
-            <View key={order.id} style={{ padding: 16, backgroundColor: '#FFFFFF', borderRadius: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3, marginBottom: 12 }} className="p-4 bg-white rounded-lg shadow-md mb-3">
-              <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 8 }} className="flex-row items-start justify-between mb-2">
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 18, fontWeight: '600', color: colors.text.primary.light }} className="text-lg font-semibold text-text-DEFAULT">Order #{order.id.slice(0, 8)}</Text>
-                  <Text style={{ fontSize: 14, color: colors.text.primary.light, marginTop: 4 }} className="text-sm text-text-light mt-1">
-                    {order.category.toUpperCase()} · ₹{order.estimatedEarning}
-                  </Text>
-                  {order.distanceKm && (
-                    <Text style={{ fontSize: 12, color: colors.text.primary.light, marginTop: 4 }} className="text-xs text-text-light mt-1">{order.distanceKm.toFixed(1)} km away</Text>
-                  )}
-                  {/* Pickup + delivery deadlines from the platform ETA snapshot. */}
-                  {(() => {
-                    const eta = etaByOrderId[order.id];
-                    if (!eta) return null;
-                    const pickupIso = pickupDeadlineIso(eta);
-                    const deliverIso = eta.live?.promisedDeliveryAt || eta.promise.promisedDeliveryAt;
-                    if (!pickupIso && !deliverIso) return null;
-                    const fmt = (iso: string) =>
-                      new Date(iso).toLocaleTimeString(undefined, {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      });
-                    const pickupLeft = minutesUntil(pickupIso);
-                    return (
-                      <View style={{ marginTop: 6, gap: 2 }}>
-                        {pickupIso ? (
-                          <Text style={{ fontSize: 11, color: "#c2410c", fontWeight: "600" }}>
-                            Pickup by {fmt(pickupIso)}
-                            {pickupLeft != null
-                              ? pickupLeft <= 0
-                                ? " · NOW"
-                                : ` · ${pickupLeft} min left`
-                              : ""}
-                          </Text>
-                        ) : null}
-                        {deliverIso ? (
-                          <Text style={{ fontSize: 11, color: "#0e7490", fontWeight: "600" }}>
-                            Deliver by {fmt(deliverIso)}
-                          </Text>
-                        ) : null}
-                      </View>
-                    );
-                  })()}
-                </View>
-              </View>
-              <View style={{ marginTop: 12, flexDirection: 'row', gap: 8 }} className="mt-3 flex-row gap-2">
-                <Button
-                  style={{ flex: 1 }}
-                  className="flex-1 bg-primary-DEFAULT"
-                  onPress={() => handleAcceptOrder(order.id)}
-                  loading={acceptOrder.isPending}
-                >
-                  {t("orders.accept")}
-                </Button>
-                <Button
-                  variant="outline"
-                  style={{ flex: 1 }}
-                  className="flex-1"
-                  onPress={() => handleRejectOrder(order.id)}
-                  disabled={rejectOrder.isPending}
-                >
-                  {t("orders.reject")}
-                </Button>
-              </View>
-            </View>
-          ))
-        )}
-      </ScrollView>
     </View>
   );
 }
@@ -421,59 +251,64 @@ export default function OrdersScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: "#ffffff",
+  },
+  mapSection: {
+    flex: 1,
+    position: "relative",
+    overflow: "visible",
+  },
+  locatingPill: {
+    position: "absolute",
+    top: 12,
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "rgba(255,255,255,0.95)",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 4,
+    zIndex: 8,
+  },
+  locatingText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: colors.gray[700],
   },
   map: {
     flex: 1,
   },
-  marker: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: colors.primary[500],
-    borderWidth: 3,
-    borderColor: colors.background.light,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 5,
+  chrome: {
+    backgroundColor: "transparent",
+    zIndex: 10,
   },
-  topOverlay: {
+  offDutyHost: {
     position: "absolute",
-    top: 12,
-    left: 12,
-    right: 12,
-    padding: 12,
-    borderRadius: 12,
-    backgroundColor: "rgba(255,255,255,0.95)",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
-    elevation: 8,
-  },
-  overlayTitle: {
-    fontWeight: "700",
-    fontSize: 16,
-    color: colors.text.primary.light,
-  },
-  overlayText: {
-    opacity: 0.75,
-    fontSize: 13,
-    color: colors.text.primary.light,
-    marginTop: 2,
-  },
-  orderCardsContainer: {
-    position: "absolute",
-    bottom: 0,
     left: 0,
     right: 0,
-    maxHeight: "40%",
-    paddingHorizontal: 12,
-    paddingBottom: 12,
+    bottom: 0,
+    zIndex: 12,
   },
-  orderCardsContent: {
-    paddingTop: 12,
+  permissionScreen: {
+    flex: 1,
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 16,
+    paddingTop: 40,
+  },
+  permissionTitle: {
+    fontSize: 20,
+    fontWeight: "600",
+    color: "#111827",
+  },
+  permissionSub: {
+    marginTop: 8,
+    color: colors.gray[600],
   },
 });
+

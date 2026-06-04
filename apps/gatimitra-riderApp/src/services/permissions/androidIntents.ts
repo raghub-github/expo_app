@@ -2,17 +2,17 @@ import { Platform, Linking, Alert } from "react-native";
 import * as IntentLauncher from "expo-intent-launcher";
 import Constants from "expo-constants";
 
-/**
- * Android-specific permission deep linking
- * Opens exact permission pages instead of just app settings
- */
-
 function getAndroidPackageName(): string {
-  // Try to get from Constants
-  const packageName = Constants.expoConfig?.android?.package || 
-                      Constants.manifest?.android?.package ||
-                      "com.gatimitra.riderapp"; // Fallback
-  return packageName;
+  // In Expo Go the host app owns runtime permissions — not the project package from app.config.
+  if (Constants.appOwnership === "expo") {
+    return "host.exp.exponent";
+  }
+
+  return (
+    Constants.expoConfig?.android?.package ||
+    Constants.manifest?.android?.package ||
+    "com.raghubhunia.gatimitrariderapp"
+  );
 }
 
 export async function openLocationPermissionSettings(): Promise<void> {

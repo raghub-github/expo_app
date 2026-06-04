@@ -315,15 +315,20 @@ const ROUTE_TITLES: Record<string, string> = {
   "/dashboard/system": "System",
   "/dashboard/analytics": "Analytics",
   "/dashboard/super-admin": "Super Admin",
-  "/dashboard/super-admin/store-onboarding-fee": "Store onboarding fee",
+  "/dashboard/super-admin/store-onboarding-fee": "Onboarding fee",
   "/dashboard/super-admin/ticket-settings": "Ticket Management",
   "/dashboard/super-admin/order-acceptance": "Order acceptance settings",
   "/dashboard/super-admin/cancellation-reasons": "Cancellation reasons",
+  "/dashboard/super-admin/rider-assignment-controls": "Rider Assignment Controls",
+  "/dashboard/super-admin/rule-engine": "Financial Rule Engine",
+  "/dashboard/super-admin/rule-engine/new": "Create rule",
 };
 
 const STORE_ONBOARDING_FEE_PATH = "/dashboard/super-admin/store-onboarding-fee";
 const TICKET_SETTINGS_PATH = "/dashboard/super-admin/ticket-settings";
 const ORDER_ACCEPTANCE_SETTINGS_PATH = "/dashboard/super-admin/order-acceptance";
+const RIDER_ASSIGNMENT_CONTROLS_PATH = "/dashboard/super-admin/rider-assignment-controls";
+const RULE_ENGINE_PATH = "/dashboard/super-admin/rule-engine";
 const PAYMENTS_PATH = "/dashboard/payments";
 
 function HeaderComponent() {
@@ -346,6 +351,7 @@ function HeaderComponent() {
       return "Queue";
     }
     if (ROUTE_TITLES[clean]) return ROUTE_TITLES[clean];
+    if (/^\/dashboard\/super-admin\/rule-engine\/\d+\/edit$/.test(clean)) return "Edit rule";
     return getCurrentPageName(clean);
   }, [effectivePathname, searchParams]);
   const isMerchantsArea = effectivePathname.startsWith("/dashboard/merchants");
@@ -387,6 +393,11 @@ function HeaderComponent() {
   );
   const { canTogglePortal = false, isSuperAdmin = false } = usePermissions();
   const { data: dashboardAccessData } = useDashboardAccessQuery();
+  /** Avoid SSR/client mismatch when React Query restores cached permissions before hydration. */
+  const [queueLinkMounted, setQueueLinkMounted] = useState(false);
+  useEffect(() => {
+    setQueueLinkMounted(true);
+  }, []);
   const canOpenQueueFromTickets = useMemo(() => {
     if (isSuperAdmin) return true;
     const points = dashboardAccessData?.accessPoints ?? [];
@@ -399,6 +410,7 @@ function HeaderComponent() {
       return actions.some((action) => String(action).trim().toUpperCase() === "UPDATE");
     });
   }, [dashboardAccessData?.accessPoints, isSuperAdmin]);
+  const showQueueLinkFromTickets = queueLinkMounted && canOpenQueueFromTickets;
 
   const portalParam = searchParams.get("portal");
   const portalFromUrl = parsePortalParam(portalParam);
@@ -643,7 +655,7 @@ function HeaderComponent() {
   };
 
   return (
-    <header className="flex h-14 items-center justify-between border-b bg-white px-4 sm:px-6 z-50 relative gap-2 sm:gap-4">
+    <header className="flex h-14 shrink-0 items-center justify-between border-b bg-white px-4 sm:px-6 z-50 relative gap-2 sm:gap-4">
       {/* Mobile: Hamburger (left) + Logo + Page name. Desktop: no hamburger. */}
       <div className="flex items-center space-x-3 sm:space-x-4 min-w-0">
         {/* Hamburger - only on tablet/mobile (<1024px) */}
@@ -713,7 +725,45 @@ function HeaderComponent() {
             </Link>
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
+        ) : cleanPathname === RIDER_ASSIGNMENT_CONTROLS_PATH ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <Link
+              href="/dashboard/super-admin"
+              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back to Super Admin"
+              title="Back to Super Admin"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">
+              Rider Assignment Controls
+            </h2>
+          </div>
         ) : cleanPathname === PAYMENTS_PATH ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <Link
+              href="/dashboard/super-admin"
+              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back to Super Admin"
+              title="Back to Super Admin"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
+          </div>
+        ) : cleanPathname.startsWith(`${RULE_ENGINE_PATH}/`) ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <Link
+              href={RULE_ENGINE_PATH}
+              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back to rules"
+              title="Back to rules"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
+          </div>
+        ) : cleanPathname === RULE_ENGINE_PATH ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
             <Link
               href="/dashboard/super-admin"
@@ -734,7 +784,7 @@ function HeaderComponent() {
           // Hide Queue + helpdesk gear on the ticket detail inner page.
           !isTicketsAppDetailPath(cleanPathname) && (
             <div className="flex flex-shrink-0 items-center gap-2">
-              {canOpenQueueFromTickets && (
+              {showQueueLinkFromTickets && (
                 <Link
                   href={TICKETS_QUEUE_HOME_PATH}
                   prefetch={false}

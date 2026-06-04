@@ -14,6 +14,11 @@ export function setCachedOrderTimeline(ordersFoodId: number, entries: OrderTimel
   cache.set(ordersFoodId, entries);
 }
 
+export function invalidateOrderTimelineCache(ordersFoodId: number) {
+  cache.delete(ordersFoodId);
+  inflight.delete(ordersFoodId);
+}
+
 export function prefetchOrderTimeline(
   ordersFoodId: number,
   timelineUrl = `/api/food-orders/${ordersFoodId}/timeline`
@@ -40,10 +45,12 @@ export function prefetchOrderTimeline(
 
 export async function fetchOrderTimelineCached(
   ordersFoodId: number,
-  timelineUrl = `/api/food-orders/${ordersFoodId}/timeline`
+  timelineUrl = `/api/food-orders/${ordersFoodId}/timeline`,
+  opts?: { force?: boolean }
 ): Promise<OrderTimelineEntry[]> {
+  if (opts?.force) invalidateOrderTimelineCache(ordersFoodId);
   const cached = cache.get(ordersFoodId);
-  if (cached) return cached;
+  if (cached && !opts?.force) return cached;
   const pending = inflight.get(ordersFoodId);
   if (pending) return pending;
 

@@ -13,6 +13,8 @@ import { useOrderSpeech } from "@/hooks/useOrderSpeech";
 import { callRider } from "@/lib/orderCardActions";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { resolvePreparedLateMinutes } from "@/lib/order-prep-time";
+import { OrderPreparedLateTopBanner } from "@/components/order/OrderPrepDelayedBanner";
 import { merchantOrderCardLayoutStyles as layoutStyles } from "@/components/order/merchantOrderCardLayoutStyles";
 import {
   fetchFoodOrderRidersLog,
@@ -63,6 +65,16 @@ export function MerchantOutForDeliveryOrderCard({
 
   const placedAt = formatOrderDateTime(order.createdAt);
 
+  const preparedLateMins = useMemo(
+    () =>
+      resolvePreparedLateMinutes({
+        prepared_late_minutes: order.preparedLateMinutes,
+        prepared_at: order.preparedAt,
+        prep_ready_by_at: order.prepReadyByAt,
+      }),
+    [order.preparedLateMinutes, order.preparedAt, order.prepReadyByAt]
+  );
+
   const riderLine = useMemo(() => {
     const first = riderFirstName(rider?.rider_name);
     return `${first} is out for delivery`;
@@ -97,6 +109,11 @@ export function MerchantOutForDeliveryOrderCard({
         speakingActive={speaking}
         onSpeak={() => void speak(order)}
         onMenu={() => setMenuOpen(true)}
+        outerBanner={
+          preparedLateMins != null && preparedLateMins > 0 ? (
+            <OrderPreparedLateTopBanner lateMinutes={preparedLateMins} />
+          ) : undefined
+        }
         riderContent={
           <View style={layoutStyles.riderRow}>
             {rider?.selfie_url ? (

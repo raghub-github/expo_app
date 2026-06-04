@@ -120,6 +120,12 @@ export function formatKptMinutes(mins: number | null | undefined): string {
   return `${Math.round(mins)} mins`;
 }
 
+/** Cumulative minutes added via merchant "Need more time". */
+export function formatMerchantExtraPrepMinutes(mins: number | null | undefined): string {
+  if (mins == null || !Number.isFinite(mins) || mins <= 0) return "—";
+  return `+${Math.round(mins)} mins`;
+}
+
 /** Show merchant KPT only when it differs from the system default (merchant actually changed it). */
 export function shouldShowMerchantUpdatedKpt(
   systemKptMinutes: number | null | undefined,
@@ -130,6 +136,36 @@ export function shouldShowMerchantUpdatedKpt(
   const s = systemKptMinutes;
   if (s == null || !Number.isFinite(s)) return true;
   return Math.round(m) !== Math.round(s);
+}
+
+/**
+ * Merchant-committed prep at accept lives on orders_food; orders_core.merchant_updated_kpt_minutes
+ * is optional legacy. Prefer food row when merchant explicitly chose prep time.
+ */
+export function resolveMerchantUpdatedKptMinutes(input: {
+  systemKptMinutes: number | null | undefined;
+  coreMerchantUpdatedKptMinutes?: number | null | undefined;
+  foodPrepMinutes?: number | null | undefined;
+  prepTimeSource?: string | null | undefined;
+}): number | null {
+  const fromCore = input.coreMerchantUpdatedKptMinutes;
+  if (fromCore != null && Number.isFinite(fromCore) && fromCore > 0) {
+    return shouldShowMerchantUpdatedKpt(input.systemKptMinutes, fromCore)
+      ? fromCore
+      : null;
+  }
+
+  const foodPrep = input.foodPrepMinutes;
+  if (foodPrep == null || !Number.isFinite(foodPrep) || foodPrep <= 0) return null;
+
+  const source = input.prepTimeSource?.trim().toLowerCase() ?? null;
+  if (source === "merchant") {
+    return shouldShowMerchantUpdatedKpt(input.systemKptMinutes, foodPrep)
+      ? foodPrep
+      : null;
+  }
+
+  return shouldShowMerchantUpdatedKpt(input.systemKptMinutes, foodPrep) ? foodPrep : null;
 }
 
 export function parseInstructionList(raw: unknown): string[] {

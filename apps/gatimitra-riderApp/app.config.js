@@ -30,13 +30,15 @@ module.exports = {
       }
     },
     android: {
+      softwareKeyboardLayoutMode: "resize",
       package: "com.raghubhunia.gatimitrariderapp",
       adaptiveIcon: {
         foregroundImage: "./assets/images/onlylogo.png",
         backgroundColor: "#FFFFFF"
       },
       icon: "./assets/images/onlylogo.png",
-      edgeToEdgeEnabled: true,
+      // false = system nav bar stays visible; insets work reliably on 3-button nav devices
+      edgeToEdgeEnabled: false,
       predictiveBackGestureEnabled: false,
       permissions: [
         "ACCESS_COARSE_LOCATION",
@@ -63,8 +65,7 @@ module.exports = {
     },
     plugins: [
       "expo-router",
-      // Mapbox plugin - automatically reads RNMAPBOX__MAPS_DOWNLOAD_TOKEN from environment
-      // Runtime token is set via setAccessToken() in code using EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN
+      // Mapbox — runtime token via resolveMapboxPublicToken(); download token for native builds
       "@rnmapbox/maps",
       [
         "expo-media-library",
@@ -82,6 +83,12 @@ module.exports = {
           sounds: []
         }
       ],
+      [
+        "expo-camera",
+        {
+          cameraPermission: "GatiMitra needs camera access for live selfie verification during onboarding."
+        }
+      ],
       "@react-native-community/datetimepicker"
     ],
     experiments: {
@@ -91,7 +98,12 @@ module.exports = {
       router: {},
       eas: {
         projectId: "48aaf6a2-8617-458c-9e5a-cfa9418fbde3"
-      }
+      },
+      mapboxPublicToken:
+        process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN ||
+        process.env.MAPBOX_PUBLIC_TOKEN ||
+        process.env.NEXT_PUBLIC_MAPBOX_TOKEN ||
+        "",
     },
     owner: "raghubhunia"
   }

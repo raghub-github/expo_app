@@ -13,6 +13,7 @@ import { DocumentEditModal } from "@/components/riders/DocumentEditModal";
 import { Edit, CheckCircle, XCircle, Eye, Loader2, AlertCircle, X } from "lucide-react";
 import { LoadingButton } from "@/components/ui/LoadingButton";
 import { ONBOARDING_STAGE_LABELS } from "@/types/rider-dashboard";
+import { documentActionKey } from "@/lib/rider-document-side-verification";
 
 interface Rider {
   id: number;
@@ -94,6 +95,11 @@ const DOCUMENT_LABELS: Record<string, string> = {
   other: "Other Document",
 };
 
+function hasDocumentPreview(document: Document | null): boolean {
+  if (!document || document.verificationMethod !== "MANUAL_UPLOAD") return false;
+  return Boolean(document.r2Key?.trim() || document.fileUrl?.trim());
+}
+
 const DOCUMENT_SECTIONS = {
   identity: ["aadhaar_front", "aadhaar_back", "pan", "selfie"],
   vehicle: ["dl_front", "dl_back", "rc"],
@@ -118,12 +124,15 @@ export default function RiderOnboardingClient() {
 
   const [riderData, setRiderData] = useState<RiderData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [pageError, setPageError] = useState<{
+    type: "not_found" | "invalid_id" | "generic";
+    message: string;
+  } | null>(null);
   const [selectedDocument, setSelectedDocument] = useState<Document | null>(null);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [editingDoc, setEditingDoc] = useState<Document | null>(null);
-  const [actionLoading, setActionLoading] = useState<number | null>(null); // docId being acted upon
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [rejectModalOpen, setRejectModalOpen] = useState(false);
   const [rejectingDoc, setRejectingDoc] = useState<Document | null>(null);
   const [rejectReason, setRejectReason] = useState("");
@@ -178,7 +187,7 @@ export default function RiderOnboardingClient() {
   const fetchRiderData = useCallback(async () => {
     try {
       setLoading(true);
-      setError(null);
+      setPageError(null);
 
       const response = await fetch(`/api/riders/${riderId}`);
       const text = await response.text();
@@ -186,19 +195,48 @@ export default function RiderOnboardingClient() {
       try {
         result = JSON.parse(text);
       } catch {
-        throw new Error("Invalid response from server");
+        setPageError({
+          type: "generic",
+          message: "Could not read the server response. Please try again.",
+        });
+        setRiderData(null);
+        return;
       }
 
       if (!result.success) {
-        throw new Error(result.error || "Failed to fetch rider data");
+        const apiMessage = result.error || "Failed to fetch rider data";
+        if (response.status === 404 || /rider not found/i.test(apiMessage)) {
+          setPageError({
+            type: "not_found",
+            message: `Rider GMR${riderId} does not exist or may have been removed.`,
+          });
+        } else if (response.status === 400 || /invalid rider id/i.test(apiMessage)) {
+          setPageError({
+            type: "invalid_id",
+            message: "The rider ID in this URL is not valid.",
+          });
+        } else {
+          setPageError({ type: "generic", message: apiMessage });
+        }
+        setRiderData(null);
+        return;
       }
 
       setRiderData(result.data ?? null);
-      // Use ref to avoid dependency issues
-      syncDashboardStateFromRiderRef.current?.(result.data?.rider ?? null);
+      if (!result.data) {
+        setPageError({
+          type: "not_found",
+          message: `Rider GMR${riderId} does not exist or may have been removed.`,
+        });
+        return;
+      }
+      syncDashboardStateFromRiderRef.current?.(result.data.rider ?? null);
     } catch (err) {
-      console.error("Error fetching rider data:", err);
-      setError(err instanceof Error ? err.message : "Failed to fetch rider data");
+      setPageError({
+        type: "generic",
+        message: err instanceof Error ? err.message : "Failed to fetch rider data",
+      });
+      setRiderData(null);
     } finally {
       setLoading(false);
     }
@@ -217,12 +255,10 @@ export default function RiderOnboardingClient() {
       }
       if (result.success && result.data) {
         setRiderData(result.data);
-        // Use ref to avoid dependency issues
         syncDashboardStateFromRiderRef.current?.(result.data?.rider ?? null);
-        setError(null);
+        setPageError(null);
       }
-    } catch (err) {
-      console.error("Error refetching rider data:", err);
+    } catch {
       // Don?t set error state on background refetch ? user already saw success
     }
   }, [riderId]);
@@ -230,7 +266,10 @@ export default function RiderOnboardingClient() {
   // Fetch rider data - only fetch once when riderId changes
   useEffect(() => {
     if (isNaN(riderId)) {
-      setError("Invalid rider ID");
+      setPageError({
+        type: "invalid_id",
+        message: "The rider ID in this URL is not valid.",
+      });
       setLoading(false);
       return;
     }
@@ -304,7 +343,7 @@ export default function RiderOnboardingClient() {
       setActionLoading(editingDoc.id);
 
       const formData = new FormData();
-      // Always send current doc number when provided so DB persists it (avoids losing it on image-only update)
+      formData.append("displayDocType", editingDoc.docType);
       if (data.docNumber !== undefined && data.docNumber !== null) {
         formData.append("docNumber", String(data.docNumber).trim() || "");
       } else if (editingDoc.docNumber != null && String(editingDoc.docNumber).trim()) {
@@ -334,49 +373,57 @@ export default function RiderOnboardingClient() {
         throw new Error(result.error || "Failed to update document");
       }
 
-      // Apply updated document from API so new image and doc number show immediately (normalize camelCase/snake_case)
-      const payload = result.data;
-      const rawDoc =
-        payload != null && typeof payload === "object" && "document" in payload
-          ? (payload as { document?: unknown }).document ?? payload
-          : payload;      const raw = rawDoc && typeof rawDoc === "object" ? (rawDoc as Record<string, unknown>) : null;
-      const updatedDoc =
-        raw
-          ? {
-              ...raw,
-              fileUrl: (raw.fileUrl as string) ?? (raw.file_url as string),
-              r2Key: (raw.r2Key as string) ?? (raw.r2_key as string),
-              docNumber: (raw.docNumber as string | null) ?? (raw.doc_number as string | null) ?? null,
-            }
-          : null;
-
-      if (updatedDoc && riderData) {
-        const docId = editingDoc.id;
-        const refreshTs = Date.now();
-        setRiderData((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            documents: prev.documents.map((d) => {
-              if (d.id !== docId) return d;
-              const merged = { ...d, ...updatedDoc };
-              return {
-                ...merged,
-                fileUrl: (merged.fileUrl as string) ?? d.fileUrl,
-                r2Key: (merged.r2Key as string) ?? d.r2Key,
-                docNumber: (merged.docNumber as string | null) ?? d.docNumber ?? null,
-              };
-            }),
-          };
-        });
-        setImageRefreshKeys((prev) => ({ ...prev, [docId]: refreshTs }));
-      }
       setEditModalOpen(false);
       setEditingDoc(null);
-      refetchRiderDataInBackground();
+      await fetchRiderData();
     } catch (err) {
       console.error("Error updating document:", err);
       alert(err instanceof Error ? err.message : "Failed to update document");
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleRemoveEdit = async () => {
+    if (!editingDoc) return;
+
+    try {
+      setActionLoading(editingDoc.id);
+
+      const formData = new FormData();
+      formData.append("displayDocType", editingDoc.docType);
+      formData.append("removeImage", "true");
+      if (editingDoc.docNumber != null && String(editingDoc.docNumber).trim()) {
+        formData.append("docNumber", String(editingDoc.docNumber).trim());
+      }
+
+      const response = await fetch(
+        `/api/riders/${riderId}/documents/${editingDoc.id}`,
+        {
+          method: "PUT",
+          body: formData,
+        }
+      );
+
+      const text = await response.text();
+      let result: { success?: boolean; error?: string };
+      try {
+        result = text ? JSON.parse(text) : {};
+      } catch {
+        throw new Error(response.ok ? "Invalid response from server" : `Remove failed (${response.status})`);
+      }
+
+      if (!result.success) {
+        throw new Error(result.error || "Failed to remove document image");
+      }
+
+      setEditModalOpen(false);
+      setEditingDoc(null);
+      await fetchRiderData();
+    } catch (err) {
+      console.error("Error removing document image:", err);
+      alert(err instanceof Error ? err.message : "Failed to remove document image");
+      throw err;
     } finally {
       setActionLoading(null);
     }
@@ -387,11 +434,15 @@ export default function RiderOnboardingClient() {
     if (!confirm(`Are you sure you want to approve this ${DOCUMENT_LABELS[doc.docType] || doc.docType}?`)) return;
 
     try {
-      setActionLoading(doc.id);
+      setActionLoading(documentActionKey(doc));
 
       const response = await fetch(
         `/api/riders/${riderId}/documents/${doc.id}/approve`,
-        { method: "POST" }
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ displayDocType: doc.docType }),
+        }
       );
 
       const result = await response.json();
@@ -413,8 +464,13 @@ export default function RiderOnboardingClient() {
               ...(data.status != null && { status: data.status }),
             },
             documents: prev.documents.map((d) =>
-              d.id === doc.id && data.document
-                ? { ...d, verified: true, verifierUserId: data.document.verifierUserId ?? d.verifierUserId, rejectedReason: null }
+              d.id === doc.id && d.docType === doc.docType
+                ? {
+                    ...d,
+                    verified: true,
+                    verifierUserId: data.document.verifierUserId ?? d.verifierUserId,
+                    rejectedReason: null,
+                  }
                 : d
             ),
           };
@@ -454,7 +510,7 @@ export default function RiderOnboardingClient() {
     }
 
     try {
-      setActionLoading(rejectingDoc.id);
+      setActionLoading(documentActionKey(rejectingDoc));
 
       const response = await fetch(
         `/api/riders/${riderId}/documents/${rejectingDoc.id}/reject`,
@@ -463,7 +519,10 @@ export default function RiderOnboardingClient() {
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ reason: rejectReason.trim() }),
+          body: JSON.stringify({
+            reason: rejectReason.trim(),
+            displayDocType: rejectingDoc.docType,
+          }),
         }
       );
 
@@ -480,7 +539,7 @@ export default function RiderOnboardingClient() {
           return {
             ...prev,
             documents: prev.documents.map((d) =>
-              d.id === rejectingDoc.id
+              d.id === rejectingDoc.id && d.docType === rejectingDoc.docType
                 ? { ...d, verified: false, rejectedReason: rejectReason.trim() }
                 : d
             ),
@@ -520,15 +579,51 @@ export default function RiderOnboardingClient() {
     );
   }
 
-  if (error) {
+  if (pageError) {
+    const isNotFound = pageError.type === "not_found";
+    const isInvalidId = pageError.type === "invalid_id";
+
     return (
-      <div className="space-y-6 p-6">
-        <div className="rounded-lg border border-red-200 bg-red-50 p-6">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="h-5 w-5 text-red-600" />
-            <p className="text-red-600 font-semibold">Error</p>
+      <div className="flex min-h-[60vh] items-center justify-center p-6">
+        <div className="w-full max-w-lg rounded-xl border border-gray-200 bg-white p-8 shadow-sm text-center">
+          <div
+            className={`mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full ${
+              isNotFound || isInvalidId ? "bg-amber-100" : "bg-red-100"
+            }`}
+          >
+            <AlertCircle
+              className={`h-7 w-7 ${isNotFound || isInvalidId ? "text-amber-600" : "text-red-600"}`}
+            />
           </div>
-          <p className="text-red-500 text-sm mt-2">{error}</p>
+          <h1 className="text-xl font-semibold text-gray-900">
+            {isNotFound
+              ? "Rider not found"
+              : isInvalidId
+                ? "Invalid rider ID"
+                : "Could not load rider"}
+          </h1>
+          <p className="mt-2 text-sm text-gray-600 leading-relaxed">{pageError.message}</p>
+          {isNotFound && !isNaN(riderId) && (
+            <p className="mt-1 text-xs text-gray-500">Rider ID: GMR{riderId}</p>
+          )}
+          <div className="mt-6 flex flex-col sm:flex-row items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={() => router.push("/dashboard/riders")}
+              className="px-4 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              Back to riders list
+            </button>
+            {!isInvalidId && (
+              <button
+                type="button"
+                onClick={() => void fetchRiderData()}
+                className="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Try again
+              </button>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -536,10 +631,8 @@ export default function RiderOnboardingClient() {
 
   if (!riderData) {
     return (
-      <div className="space-y-6 p-6">
-        <div className="rounded-lg border border-gray-200 bg-white p-6">
-          <p className="text-gray-500">Rider not found</p>
-        </div>
+      <div className="flex min-h-[60vh] items-center justify-center p-6">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
       </div>
     );
   }
@@ -745,30 +838,56 @@ export default function RiderOnboardingClient() {
             const allDocs = riderData.documents || [];
             const identityDocs = allDocs.filter(d => DOCUMENT_SECTIONS.identity.includes(d.docType));
             const identityVerified = identityDocs.filter(d => d.verified).length;
+            const identityUploaded = DOCUMENT_SECTIONS.identity.filter(
+              (docType) => allDocs.some((d) => d.docType === docType)
+            ).length;
             const identityTotal = DOCUMENT_SECTIONS.identity.length;
             
             const vehicleDocs = allDocs.filter(d => DOCUMENT_SECTIONS.vehicle.includes(d.docType));
             const vehicleVerified = vehicleDocs.filter(d => d.verified).length;
+            const vehicleUploaded = DOCUMENT_SECTIONS.vehicle.filter(
+              (docType) => allDocs.some((d) => d.docType === docType)
+            ).length;
             const vehicleTotal = DOCUMENT_SECTIONS.vehicle.length;
             
             const additionalDocs = allDocs.filter(d => DOCUMENT_SECTIONS.additional.includes(d.docType));
             const additionalVerified = additionalDocs.filter(d => d.verified).length;
             
             const allRequiredVerified = identityVerified === identityTotal && vehicleVerified === vehicleTotal;
+            const paymentCompleted = riderData.onboardingPayments.some((p) => p.status === "completed");
+            const isActive = riderData.rider.status === "ACTIVE";
             
             return (
               <>
-                <ProgressBar label="Identity Documents" current={identityVerified} total={identityTotal} />
-                <ProgressBar label="Vehicle Documents" current={vehicleVerified} total={vehicleTotal} />
+                <ProgressBar label="Identity Documents" current={identityVerified} total={identityTotal} uploaded={identityUploaded} />
+                <ProgressBar label="Vehicle Documents" current={vehicleVerified} total={vehicleTotal} uploaded={vehicleUploaded} />
                 {additionalDocs.length > 0 && (
                   <ProgressBar label="Additional Documents" current={additionalVerified} total={additionalDocs.length} />
                 )}
                 
-                {allRequiredVerified && (
+                {allRequiredVerified && paymentCompleted && isActive && (
                   <div className="mt-4 p-4 bg-green-100 border-2 border-green-300 rounded-lg shadow-sm">
                     <p className="text-sm font-semibold text-green-900 flex items-center gap-2">
                       <CheckCircle className="h-5 w-5" />
-                      All required documents verified! Rider ready for activation.
+                      Rider is active and ready to accept orders.
+                    </p>
+                  </div>
+                )}
+
+                {allRequiredVerified && paymentCompleted && !isActive && (
+                  <div className="mt-4 p-4 bg-amber-100 border-2 border-amber-300 rounded-lg shadow-sm">
+                    <p className="text-sm font-semibold text-amber-900 flex items-center gap-2">
+                      <AlertCircle className="h-5 w-5" />
+                      All documents verified and payment received. Refresh the page to sync rider status to ACTIVE.
+                    </p>
+                  </div>
+                )}
+
+                {allRequiredVerified && !paymentCompleted && (
+                  <div className="mt-4 p-4 bg-blue-100 border-2 border-blue-300 rounded-lg shadow-sm">
+                    <p className="text-sm font-semibold text-blue-900 flex items-center gap-2">
+                      <AlertCircle className="h-5 w-5" />
+                      Documents verified. Waiting for onboarding payment before activation.
                     </p>
                   </div>
                 )}
@@ -790,11 +909,11 @@ export default function RiderOnboardingClient() {
                 docType={docType}
                 document={doc}
                 imageRefreshKey={doc ? imageRefreshKeys[doc.id] : undefined}
-                onView={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && doc.r2Key && handleViewDocument(doc)}
+                onView={() => doc && hasDocumentPreview(doc) && handleViewDocument(doc)}
                 onEdit={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !isBlocked && handleEditDocument(doc)}
                 onApprove={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleApproveDocument(doc)}
                 onReject={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleRejectDocument(doc)}
-                isLoading={actionLoading === doc?.id}
+                isLoading={doc ? actionLoading === documentActionKey(doc) : false}
                 isDisabled={isBlocked}
                 allVersions={getDocumentsByType(docType)}
               />
@@ -815,11 +934,11 @@ export default function RiderOnboardingClient() {
                 docType={docType}
                 document={doc}
                 imageRefreshKey={doc ? imageRefreshKeys[doc.id] : undefined}
-                onView={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && doc.r2Key && handleViewDocument(doc)}
+                onView={() => doc && hasDocumentPreview(doc) && handleViewDocument(doc)}
                 onEdit={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !isBlocked && handleEditDocument(doc)}
                 onApprove={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleApproveDocument(doc)}
                 onReject={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleRejectDocument(doc)}
-                isLoading={actionLoading === doc?.id}
+                isLoading={doc ? actionLoading === documentActionKey(doc) : false}
                 isDisabled={isBlocked}
                 allVersions={getDocumentsByType(docType)}
               />
@@ -840,11 +959,11 @@ export default function RiderOnboardingClient() {
                 docType={docType}
                 document={doc}
                 imageRefreshKey={doc ? imageRefreshKeys[doc.id] : undefined}
-                onView={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && doc.r2Key && handleViewDocument(doc)}
+                onView={() => doc && hasDocumentPreview(doc) && handleViewDocument(doc)}
                 onEdit={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !isBlocked && handleEditDocument(doc)}
                 onApprove={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleApproveDocument(doc)}
                 onReject={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleRejectDocument(doc)}
-                isLoading={actionLoading === doc?.id}
+                isLoading={doc ? actionLoading === documentActionKey(doc) : false}
                 isDisabled={isBlocked}
                 allVersions={getDocumentsByType(docType)}
               />
@@ -876,10 +995,12 @@ export default function RiderOnboardingClient() {
             setEditingDoc(null);
           }}
           onSave={handleSaveEdit}
+          onRemove={handleRemoveEdit}
           currentDocNumber={editingDoc.docNumber}
           currentImageUrl={editingDoc.fileUrl}
+          currentR2Key={editingDoc.r2Key}
           docType={editingDoc.docType}
-          isLoading={actionLoading === editingDoc.id}
+          isLoading={actionLoading === documentActionKey(editingDoc)}
         />
       )}
 
@@ -896,7 +1017,7 @@ export default function RiderOnboardingClient() {
           documentName={DOCUMENT_LABELS[rejectingDoc.docType] || rejectingDoc.docType}
           reason={rejectReason}
           onReasonChange={setRejectReason}
-          isLoading={actionLoading === rejectingDoc.id}
+          isLoading={actionLoading === documentActionKey(rejectingDoc)}
         />
       )}
     </div>
@@ -904,7 +1025,16 @@ export default function RiderOnboardingClient() {
 }
 
 // Doc types that have a document number (Aadhaar, PAN, DL, RC)
-const DOC_TYPES_WITH_NUMBER = new Set(["aadhaar", "pan", "dl", "rc"]);
+const DOC_TYPES_WITH_NUMBER = new Set([
+  "aadhaar",
+  "aadhaar_front",
+  "aadhaar_back",
+  "pan",
+  "dl",
+  "dl_front",
+  "dl_back",
+  "rc",
+]);
 
 // Document Card Component ? equal height, aligned, doc number always shown, image cache-bust
 interface DocumentCardProps {
@@ -993,7 +1123,7 @@ function DocumentCard({
           )}
 
           {/* Document Preview - Only show for MANUAL_UPLOAD; fixed height for alignment */}
-          {document.verificationMethod === "MANUAL_UPLOAD" && document.r2Key && (
+          {document.verificationMethod === "MANUAL_UPLOAD" && hasDocumentPreview(document) && (
             <div className="mb-3 relative flex-shrink-0">
               <button
                 type="button"
@@ -1171,7 +1301,17 @@ function RejectModal({
 }
 
 // Progress Bar Component for Verification Progress
-function ProgressBar({ label, current, total }: { label: string; current: number; total: number }) {
+function ProgressBar({
+  label,
+  current,
+  total,
+  uploaded,
+}: {
+  label: string;
+  current: number;
+  total: number;
+  uploaded?: number;
+}) {
   const percentage = total > 0 ? (current / total) * 100 : 0;
   const isComplete = current === total && total > 0;
   
@@ -1180,8 +1320,9 @@ function ProgressBar({ label, current, total }: { label: string; current: number
       <div className="flex justify-between items-center mb-1.5">
         <span className="text-sm font-medium text-gray-700">{label}</span>
         <span className={`text-sm font-bold ${isComplete ? 'text-green-600' : 'text-gray-900'}`}>
-          {current}/{total}
-          {isComplete && ' ?'}
+          {current}/{total} verified
+          {typeof uploaded === "number" ? ` · ${uploaded}/${total} uploaded` : ""}
+          {isComplete && ' ✓'}
         </span>
       </div>
       <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden shadow-inner">

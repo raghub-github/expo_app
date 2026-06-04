@@ -1,17 +1,13 @@
 /**
- * GatiMitra Ride Booking – modern ride-booking home.
- * Compact header, premium search bar, service cards with scale animation,
- * View All opens bottom sheet (no new page), promo carousel, popular places.
+ * GatiMitra Ride Booking – All Services grid.
  */
 
-import { useState } from "react";
 import {
   View,
   Text,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  Dimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -20,46 +16,27 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocationStore } from "@/store/locationStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { HEADER_PADDING_TOP, HEADER_VERTICAL_PADDING } from "@/constants/layout";
-import { RideCard, type RideType } from "./RideCard";
-import { PromoCarousel } from "./PromoCarousel";
-import { PopularDestinations } from "./PopularDestinations";
-import {
-  AllServicesBottomSheet,
-  type ServiceId,
-} from "./AllServicesBottomSheet";
+import { AllServicesGrid } from "./AllServicesGrid";
+import { ActiveRideBottomSheet } from "@/components/ride/ActiveRideBottomSheet";
+import { useActivePersonRideOrders } from "@/hooks/useActivePersonRideOrders";
 
-const { width } = Dimensions.get("window");
 const PAD = 18;
-const GAP = 12;
-const CARD_WIDTH = Math.floor((width - PAD * 2 - GAP) / 2);
 
 export function RideBookingScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { address, coords } = useLocationStore();
-  const [allServicesVisible, setAllServicesVisible] = useState(false);
+  const { address } = useLocationStore();
 
   const locationDisplay = address?.fullAddress ?? address?.primary ?? "Select location";
+  const { activeRides } = useActivePersonRideOrders(true);
+  const hasActiveRide = activeRides.length > 0;
 
   const goToPickup = () => router.push("/home/service/ride-pickup");
   const goToLocation = () => router.push("/location");
 
-  const handleRidePress = (type: RideType) => {
-    if (type === "all") {
-      setAllServicesVisible(true);
-      return;
-    }
-    goToPickup();
-  };
-
-  const handleSelectService = (_id: ServiceId) => {
-    goToPickup();
-  };
-
   return (
     <View style={styles.container}>
       <StatusBar style="dark" />
-      {/* Header – same as Food / E-commerce: title + chevron, location below; tap opens location */}
       <View style={[styles.header, { paddingTop: HEADER_PADDING_TOP, paddingBottom: HEADER_VERTICAL_PADDING }]}>
         <TouchableOpacity
           style={styles.backBtn}
@@ -90,10 +67,6 @@ export function RideBookingScreen() {
           </View>
         </TouchableOpacity>
         <View style={styles.headerRight}>
-          <TouchableOpacity style={styles.iconBtn} onPress={() => router.push("/wallet")}>
-            <Ionicons name="wallet-outline" size={22} color={GatiMitraColors.textPrimary} />
-            <Text style={styles.walletLabel}>Wallet</Text>
-          </TouchableOpacity>
           <TouchableOpacity
             style={styles.iconBtn}
             onPress={() => router.push("/notifications")}
@@ -107,42 +80,14 @@ export function RideBookingScreen() {
         style={styles.scroll}
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingBottom: insets.bottom + 80 },
+          { paddingBottom: insets.bottom + (hasActiveRide ? 120 : 80) },
         ]}
         showsVerticalScrollIndicator={false}
       >
-        {/* Search pickup – premium bar with soft shadow */}
-        <TouchableOpacity
-          style={styles.searchBar}
-          activeOpacity={0.85}
-          onPress={goToPickup}
-        >
-          <View style={styles.searchIconWrap}>
-            <Ionicons name="search" size={20} color={GatiMitraColors.emerald} />
-          </View>
-          <Text style={styles.searchPlaceholder}>Enter pickup location</Text>
-          <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
-        </TouchableOpacity>
-
-        {/* Ride with GatiMitra – 2x2 grid */}
-        <Text style={styles.sectionTitle}>Ride with GatiMitra</Text>
-        <View style={styles.rideGrid}>
-          <RideCard type="bike" onPress={() => handleRidePress("bike")} cardWidth={CARD_WIDTH} />
-          <RideCard type="auto" onPress={() => handleRidePress("auto")} cardWidth={CARD_WIDTH} />
-          <RideCard type="cab" onPress={() => handleRidePress("cab")} cardWidth={CARD_WIDTH} />
-          <RideCard type="all" onPress={() => handleRidePress("all")} cardWidth={CARD_WIDTH} />
-        </View>
-
-        <PromoCarousel onBookNow={goToPickup} />
-
-        <PopularDestinations coords={coords} onDestinationPress={() => {}} />
+        <AllServicesGrid onSelectService={goToPickup} />
       </ScrollView>
 
-      <AllServicesBottomSheet
-        visible={allServicesVisible}
-        onClose={() => setAllServicesVisible(false)}
-        onSelectService={handleSelectService}
-      />
+      <ActiveRideBottomSheet rides={activeRides} bottomInset={insets.bottom + 16} />
     </View>
   );
 }
@@ -184,53 +129,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  walletLabel: {
-    fontSize: 10,
-    fontWeight: "600",
-    color: GatiMitraColors.textSecondary,
-    marginTop: 2,
-  },
   scroll: { flex: 1 },
   scrollContent: {
     paddingHorizontal: PAD,
     paddingTop: 14,
-  },
-  searchBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: GatiMitraColors.cardBg,
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    marginBottom: 18,
-    borderWidth: 1,
-    borderColor: GatiMitraColors.border,
-    ...GatiMitraColors.searchShadow,
-  },
-  searchIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: GatiMitraColors.mintSoft,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 12,
-  },
-  searchPlaceholder: {
-    flex: 1,
-    fontSize: 15,
-    color: GatiMitraColors.textSecondary,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: GatiMitraColors.textPrimary,
-    marginBottom: 12,
-  },
-  rideGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: GAP,
-    marginBottom: 18,
   },
 });

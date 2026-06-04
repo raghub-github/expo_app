@@ -16,14 +16,18 @@ import {
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
-import MapView, { Circle, Region } from "react-native-maps";
-import { customerMapProps } from "@/lib/mapViewProps";
+import { MapboxWebPannableMap } from "@/components/maps/MapboxWebPannableMap";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQueryClient } from "@tanstack/react-query";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { useLocationStore } from "@/store/locationStore";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
 import { reverseGeocode } from "@/services/location.service";
+import {
+  isValidMapCoordinate,
+  parseMapCoordParam,
+  resolveMapCenter,
+} from "@/lib/map-coordinates";
 // Full address is collected on a separate screen after map confirm.
 
 const TEAL = "#14b8a6";
@@ -54,8 +58,10 @@ export default function LocationMapScreen() {
   const { setAddressAndCoords } = useLocationStore();
   const addRecentLocation = useRecentLocationStore((s) => s.addRecentLocation);
 
-  const lat = params.latitude != null ? parseFloat(params.latitude) : DEFAULT_LAT;
-  const lng = params.longitude != null ? parseFloat(params.longitude) : DEFAULT_LNG;
+  const fallbackCenter = { latitude: DEFAULT_LAT, longitude: DEFAULT_LNG };
+  const parsedLat = parseMapCoordParam(params.latitude, DEFAULT_LAT);
+  const parsedLng = parseMapCoordParam(params.longitude, DEFAULT_LNG);
+  const { latitude: lat, longitude: lng } = resolveMapCenter(parsedLat, parsedLng, fallbackCenter);
 
   const [centerCoord, setCenterCoord] = useState({ latitude: lat, longitude: lng });
   const [address, setAddress] = useState({
@@ -67,7 +73,7 @@ export default function LocationMapScreen() {
   const [geocoding, setGeocoding] = useState(false);
   const geocodeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const initialRegion: Region = {
+  const initialRegion = {
     latitude: lat,
     longitude: lng,
     latitudeDelta: 0.008,
@@ -102,8 +108,9 @@ export default function LocationMapScreen() {
   );
 
   const handleRegionChange = useCallback(
-    (region: Region) => {
+    (region: { latitude: number; longitude: number }) => {
       const { latitude, longitude } = region;
+      if (!isValidMapCoordinate(latitude, longitude)) return;
       setCenterCoord({ latitude, longitude });
       scheduleGeocode(latitude, longitude);
     },
@@ -111,8 +118,9 @@ export default function LocationMapScreen() {
   );
 
   const handleRegionChangeComplete = useCallback(
-    (region: Region) => {
+    (region: { latitude: number; longitude: number }) => {
       const { latitude, longitude } = region;
+      if (!isValidMapCoordinate(latitude, longitude)) return;
       setCenterCoord({ latitude, longitude });
       if (geocodeTimeoutRef.current) {
         clearTimeout(geocodeTimeoutRef.current);
@@ -176,21 +184,12 @@ export default function LocationMapScreen() {
 
       {/* Map – draggable; pin is fixed at center via overlay */}
       <View style={styles.mapWrap}>
-        <MapView
+        <MapboxWebPannableMap
           style={styles.map}
-          {...customerMapProps()}
           initialRegion={initialRegion}
+          circleRadiusMeters={PIN_RANGE_RADIUS_METERS}
           onRegionChange={handleRegionChange}
           onRegionChangeComplete={handleRegionChangeComplete}
-          scrollEnabled
-          zoomEnabled
-        />
-        <Circle
-          center={centerCoord}
-          radius={PIN_RANGE_RADIUS_METERS}
-          strokeWidth={1.5}
-          strokeColor="rgba(59,130,246,0.45)"
-          fillColor="rgba(59,130,246,0.18)"
         />
         {/* Fixed center pin */}
         <View style={styles.pinOverlay} pointerEvents="none">

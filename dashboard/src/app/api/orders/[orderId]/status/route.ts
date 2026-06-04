@@ -7,6 +7,7 @@ import {
   type UpdateableOrderStatus,
 } from "@/lib/db/operations/orders-core";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
+import { creditMerchantWalletAfterDashboardDelivery } from "@/lib/credit-merchant-wallet-after-delivery";
 
 export const runtime = "nodejs";
 
@@ -97,6 +98,14 @@ export async function PATCH(
         { success: false, error: "Order not found or not updated" },
         { status: 404 }
       );
+    }
+
+    if (status === "delivered") {
+      try {
+        await creditMerchantWalletAfterDashboardDelivery(orderId);
+      } catch (walletErr) {
+        console.warn("[PATCH /api/orders/[orderId]/status] wallet credit:", walletErr);
+      }
     }
 
     return NextResponse.json({

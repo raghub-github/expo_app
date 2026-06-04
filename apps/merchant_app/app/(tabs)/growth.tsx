@@ -36,9 +36,12 @@ import {
   type GrowthSummary,
   type GrowthBusinessInsights,
 } from "@/services/growthApi";
+import { fetchLivePreviewInsights, type LivePreviewInsights } from "@/services/livePreviewApi";
+import { MerchantMarketInsightsPanel } from "@/components/growth/MerchantMarketInsightsPanel";
 
 const FILTER_CHIPS = ["My Activity", "Business", "Quick", "Funnel", "Kitchen"] as const;
 const BUSINESS_CHIP = "Business";
+const FUNNEL_CHIP = "Funnel";
 
 const CHART_INNER_HEIGHT = 104;
 const SPARK_W = 118;
@@ -252,6 +255,7 @@ export default function GrowthScreen() {
   const [error, setError] = useState<string | null>(null);
   const [activityData, setActivityData] = useState<GrowthSummary | null>(null);
   const [businessData, setBusinessData] = useState<GrowthBusinessInsights | null>(null);
+  const [livePreviewData, setLivePreviewData] = useState<LivePreviewInsights | null>(null);
   const [bizUpdatedAt, setBizUpdatedAt] = useState<number | null>(null);
 
   const load = useCallback(
@@ -259,6 +263,7 @@ export default function GrowthScreen() {
       if (!storeId || !token) {
         setActivityData(null);
         setBusinessData(null);
+        setLivePreviewData(null);
         setError(null);
         setLoading(false);
         return;
@@ -270,15 +275,22 @@ export default function GrowthScreen() {
         if (activeChip === BUSINESS_CHIP) {
           const res = await fetchGrowthBusinessInsights(storeId, token, period);
           setBusinessData(res);
+          setLivePreviewData(null);
           setBizUpdatedAt(Date.now());
+        } else if (activeChip === FUNNEL_CHIP) {
+          const res = await fetchLivePreviewInsights(storeId, token, period);
+          setLivePreviewData(res);
+          setBusinessData(null);
         } else {
           const res = await fetchGrowthSummary(storeId, token, period);
           setActivityData(res);
+          setLivePreviewData(null);
         }
         setError(null);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not load");
         if (activeChip === BUSINESS_CHIP) setBusinessData(null);
+        else if (activeChip === FUNNEL_CHIP) setLivePreviewData(null);
         else setActivityData(null);
       } finally {
         setLoading(false);
@@ -299,6 +311,33 @@ export default function GrowthScreen() {
 
   const periodLabel = PERIOD_OPTIONS.find((o) => o.id === period)?.label ?? "Today";
   const isBusiness = activeChip === BUSINESS_CHIP;
+  const isFunnel = activeChip === FUNNEL_CHIP;
+
+  function liveMetricRow(label: string, display: string, pct: number | null) {
+    return (
+      <View key={label} style={[styles.bizMetricRow, styles.bizRowDivider]}>
+        <View style={styles.bizMetricLeft}>
+          <Text style={styles.bizMetricLabel}>{label}</Text>
+          <View style={styles.bizMetricValueRow}>
+            <Text style={styles.bizMetricValue}>{display}</Text>
+            {pct != null ? (
+              <Text
+                style={[
+                  styles.bizTrend,
+                  pct > 0 && styles.bizTrendUp,
+                  pct < 0 && styles.bizTrendDown,
+                  pct === 0 && styles.bizTrendNeutral,
+                ]}
+              >
+                {pct > 0 ? "+" : ""}
+                {pct}%
+              </Text>
+            ) : null}
+          </View>
+        </View>
+      </View>
+    );
+  }
 
   const bizSeries = useMemo(() => {
     if (!businessData?.buckets?.length) {
@@ -546,6 +585,46 @@ export default function GrowthScreen() {
               </>
             )}
           </View>
+
+          <MerchantMarketInsightsPanel storeId={storeId} />
+        </>
+      ) : isFunnel ? (
+        <>
+          <Text style={styles.bizPageTitle}>Live preview</Text>
+          <View style={[styles.card, styles.bizCard]}>
+            {loading && !livePreviewData ? (
+              <View style={styles.loadingBlock}>
+                <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
+              </View>
+            ) : livePreviewData ? (
+              <>
+                <Text style={styles.bizCardSub}>{livePreviewData.compare_header}</Text>
+                <Text style={[styles.bizCardTitle, { marginTop: 8 }]}>Sales overview</Text>
+                {liveMetricRow("Sales", livePreviewData.sales.sales.display, livePreviewData.sales.sales.pct_change)}
+                {liveMetricRow("Delivered orders", livePreviewData.sales.delivered_orders.display, livePreviewData.sales.delivered_orders.pct_change)}
+                {liveMetricRow("AOV", livePreviewData.sales.aov.display, livePreviewData.sales.aov.pct_change)}
+                <Text style={[styles.bizCardTitle, { marginTop: 12 }]}>Customer experience</Text>
+                {liveMetricRow("Ratings", livePreviewData.ratings.display, livePreviewData.ratings.pct_change)}
+                {liveMetricRow("Rejected orders", livePreviewData.bad_orders.rejected.display, livePreviewData.bad_orders.rejected.pct_change)}
+                {liveMetricRow("Delayed orders", livePreviewData.bad_orders.delayed.display, livePreviewData.bad_orders.delayed.pct_change)}
+                {liveMetricRow("Poor rated", livePreviewData.bad_orders.poor_rated.display, livePreviewData.bad_orders.poor_rated.pct_change)}
+                {liveMetricRow("Complaints", livePreviewData.complaints.display, livePreviewData.complaints.pct_change)}
+                {liveMetricRow("Lost sales", livePreviewData.lost_sales.display, livePreviewData.lost_sales.pct_change)}
+                {liveMetricRow("Online %", livePreviewData.online_pct.display, livePreviewData.online_pct.pct_change)}
+                <Text style={[styles.bizCardTitle, { marginTop: 12 }]}>Customer funnel</Text>
+                {liveMetricRow("Orders placed", livePreviewData.funnel.impressions.display, livePreviewData.funnel.impressions.pct_change)}
+                {liveMetricRow("Accepted rate", livePreviewData.funnel.impressions_to_menu.display, livePreviewData.funnel.impressions_to_menu.pct_change)}
+                {liveMetricRow("Prep rate", livePreviewData.funnel.menu_to_cart.display, livePreviewData.funnel.menu_to_cart.pct_change)}
+                {liveMetricRow("Delivery rate", livePreviewData.funnel.cart_to_order.display, livePreviewData.funnel.cart_to_order.pct_change)}
+                {liveMetricRow("New users", livePreviewData.user_segments.new_users.display, livePreviewData.user_segments.new_users.pct_change)}
+                {liveMetricRow("Repeat users", livePreviewData.user_segments.repeat_users.display, livePreviewData.user_segments.repeat_users.pct_change)}
+                {liveMetricRow("Lapsed users", livePreviewData.user_segments.lapsed_users.display, livePreviewData.user_segments.lapsed_users.pct_change)}
+              </>
+            ) : (
+              <Text style={styles.emptyText}>No data</Text>
+            )}
+          </View>
+          <MerchantMarketInsightsPanel storeId={storeId} />
         </>
       ) : (
         <View style={styles.card}>

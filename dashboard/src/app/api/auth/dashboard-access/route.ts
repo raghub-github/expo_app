@@ -8,7 +8,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getUserDashboardAccess, isSuperAdmin } from "@/lib/permissions/engine";
 import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
-import { getDb } from "@/lib/db/client";
+import { getDb, getSql } from "@/lib/db/client";
 import { dashboardAccessPoints } from "@/lib/db/schema";
 import { apiErrorResponse } from "@/lib/api-errors";
 import { isInvalidRefreshToken, isNetworkOrTransientError } from "@/lib/auth/session-errors";
@@ -69,8 +69,11 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Check if super admin - they have access to all dashboards
-    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? mapped.email);
+    // Check if super admin - they have access to all dashboards.
+    // Prefer primary_role from mapped user (fast, already loaded) before heavier permission lookup.
+    const userIsSuperAdmin =
+      mapped.primary_role === "SUPER_ADMIN" ||
+      (await isSuperAdmin(user.id, user.email ?? mapped.email));
 
     if (userIsSuperAdmin) {
       // Super admin has access to all dashboards
@@ -100,16 +103,45 @@ export async function GET(request: NextRequest) {
     // Fetch all active access points directly for the user.
     // Do not rely on dashboard_access rows only, because legacy/mixed dashboard types
     // can cause valid points (e.g. TICKET_AGENT_STATUS_TOGGLE) to be skipped.
-    const db = getDb();
-    const allAccessPoints = await db
-      .select()
-      .from(dashboardAccessPoints)
-      .where(
-        and(
-          eq(dashboardAccessPoints.systemUserId, mapped.id),
-          eq(dashboardAccessPoints.isActive, true)
-        )
-      );
+    let allAccessPoints: Array<{
+      dashboardType: string;
+      accessPointGroup: string;
+      accessPointName: string;
+      allowedActions: unknown;
+      isActive: boolean | null;
+    }> = [];
+
+    try {
+      const db = getDb();
+      allAccessPoints = await db
+        .select()
+        .from(dashboardAccessPoints)
+        .where(
+          and(
+            eq(dashboardAccessPoints.systemUserId, mapped.id),
+            eq(dashboardAccessPoints.isActive, true)
+          )
+        );
+    } catch (queryError) {
+      try {
+        const sql = getSql();
+        const rows = await sql`
+          SELECT dashboard_type, access_point_group, access_point_name, allowed_actions, is_active
+          FROM dashboard_access_points
+          WHERE system_user_id = ${mapped.id}
+            AND is_active = true
+        `;
+        allAccessPoints = rows.map((row: Record<string, unknown>) => ({
+          dashboardType: String(row.dashboard_type ?? ""),
+          accessPointGroup: String(row.access_point_group ?? ""),
+          accessPointName: String(row.access_point_name ?? ""),
+          allowedActions: row.allowed_actions,
+          isActive: row.is_active as boolean | null,
+        }));
+      } catch (fallbackError) {
+        console.error("[GET /api/auth/dashboard-access] access points query failed:", queryError, fallbackError);
+      }
+    }
     const hasStatusToggleInAccessPoints = allAccessPoints.some(
       (ap) =>
         String(ap.dashboardType).trim().toUpperCase() === "TICKET" &&

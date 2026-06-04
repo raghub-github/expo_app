@@ -22,6 +22,7 @@ import {
 import {
   merchantFundedDiscountFromBilling,
   merchantFundedDiscountLinesFromBilling,
+  parseBillingSnapshot,
 } from "@/lib/merchant-billing-discount";
 import { getActiveCommissionForStore } from "@/lib/db/operations/commission";
 import {
@@ -336,10 +337,7 @@ export async function GET(
       vegNonveg: string | null;
     }> = [];
 
-    const billingSnap =
-      core.billing_snapshot && typeof core.billing_snapshot === "object"
-        ? (core.billing_snapshot as Record<string, unknown>)
-        : null;
+    const billingSnap = parseBillingSnapshot(core.billing_snapshot);
 
     const foodTotal =
       food != null &&
@@ -483,7 +481,7 @@ export async function GET(
           id: idx + 1,
           menuItemId: it.menuItemId ?? null,
           name: it.name,
-          variant: it.variantName,
+          variant: it.variantName ?? null,
           qty,
           baseUnit,
           customerUnit: baseUnit,
@@ -499,7 +497,7 @@ export async function GET(
             lineIndex: idx,
             menuItemId: it.menuItemId ?? null,
             name: it.name,
-            variant: it.variantName,
+            variant: it.variantName ?? null,
           }),
           storedAddonPrice: 0,
         });

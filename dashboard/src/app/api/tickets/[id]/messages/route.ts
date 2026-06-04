@@ -449,7 +449,7 @@ export async function POST(
                 AND expo_push_token IS NOT NULL
                 AND TRIM(expo_push_token) <> ''
             `;
-            const tokens = (tokenRows as Array<{ expo_push_token: unknown }>)
+            const tokens = (tokenRows as unknown as Array<{ expo_push_token: unknown }>)
               .map((r) => (typeof r.expo_push_token === "string" ? r.expo_push_token.trim() : ""))
               .filter((t) => t.length > 0);
             if (tokens.length === 0) return;

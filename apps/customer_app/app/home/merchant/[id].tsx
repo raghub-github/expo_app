@@ -19,6 +19,8 @@ import {
   TextInput,
   Share,
   Alert,
+  InteractionManager,
+  type View as RNView,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useFocusEffect } from "expo-router";
@@ -154,6 +156,15 @@ function buildMenuSections(menu: MenuItem[]): { title: string; data: MenuItem[];
 
 type MenuSection = { title: string; data: MenuItem[]; isSmart?: boolean };
 
+/** Lowest priced in-stock menu item (falls back to next available if cheapest is OOS). */
+function lowestAvailableMenuPrice(menu: MenuItem[]): number | null {
+  const prices = menu
+    .filter((m) => m.inStock !== false)
+    .map((m) => m.price)
+    .filter((p) => Number.isFinite(p) && p > 0);
+  return prices.length ? Math.min(...prices) : null;
+}
+
 function findSectionIndexForScrollTarget(
   secList: MenuSection[],
   target: MenuSheetScrollTarget
@@ -169,12 +180,18 @@ function findSectionIndexForScrollTarget(
     }
     case "category": {
       const normName = target.categoryName?.trim().toLowerCase();
-      const idx = secList.findIndex((s) => {
-        if (target.categoryId != null) {
-          return s.data.some((item) => item.categoryId === target.categoryId);
-        }
-        return normName ? s.title.trim().toLowerCase() === normName : false;
-      });
+      let idx = secList.findIndex(
+        (s) => !s.isSmart && normName && s.title.trim().toLowerCase() === normName
+      );
+      if (idx < 0 && target.categoryId != null) {
+        idx = secList.findIndex(
+          (s) =>
+            !s.isSmart && s.data.some((item) => item.categoryId === target.categoryId)
+        );
+      }
+      if (idx < 0 && normName) {
+        idx = secList.findIndex((s) => s.title.trim().toLowerCase() === normName);
+      }
       return idx >= 0 ? { sectionIndex: idx, itemIndex: 0 } : null;
     }
     case "menu-item": {
@@ -227,6 +244,31 @@ function scrollSectionListToOffset(
   });
 }
 
+/** Measure anchor Y within the list header root (scroll offset for SectionList). */
+function measureHeaderAnchor(
+  anchorRef: React.RefObject<RNView | null>,
+  rootRef: React.RefObject<RNView | null>,
+  cb: (y: number) => void
+) {
+  const anchor = anchorRef.current;
+  const root = rootRef.current;
+  if (!anchor || !root) return;
+  anchor.measureLayout(
+    root,
+    (_x, y) => cb(y),
+    () => cb(0)
+  );
+}
+
+function scheduleMenuScroll(run: () => void) {
+  InteractionManager.runAfterInteractions(() => {
+    run();
+    setTimeout(run, 120);
+    setTimeout(run, 360);
+    setTimeout(run, 640);
+  });
+}
+
 export default function MerchantDetailScreen() {
   const { id, openCart, focusItemId } = useLocalSearchParams<{
     id: string;
@@ -237,6 +279,9 @@ export default function MerchantDetailScreen() {
   const insets = useSafeAreaInsets();
   const merchantId = id ?? "";
   const sectionListRef = useRef<SectionList>(null);
+  const headerRootRef = useRef<RNView>(null);
+  const pastOrdersAnchorRef = useRef<RNView>(null);
+  const startingAtAnchorRef = useRef<RNView>(null);
   const [filter, setFilter] = useState<StoreFilterId>("all");
   const [advancedFilters, setAdvancedFilters] = useState<StoreMenuFilterState>(DEFAULT_STORE_MENU_FILTERS);
   const [savedMenuItemIds, setSavedMenuItemIds] = useState<Record<string, boolean>>({});
@@ -832,35 +877,37 @@ export default function MerchantDetailScreen() {
     return buildMenuSections(menu);
   }, [merchant?.menu]);
 
-  const sectionStartingPrice = useMemo(() => {
-    for (const sec of catalogSections) {
-      const prices = sec.data.map((m) => m.price).filter((p) => p > 0);
-      if (prices.length) return Math.min(...prices);
-    }
-    const menuPrices = (merchant?.menu ?? []).map((m) => m.price).filter((p) => p > 0);
-    return menuPrices.length ? Math.min(...menuPrices) : null;
-  }, [catalogSections, merchant?.menu]);
+  const sectionStartingPrice = useMemo(
+    () => lowestAvailableMenuPrice(merchant?.menu ?? []),
+    [merchant?.menu]
+  );
 
   const scrollToMenuTarget = useCallback(
     (target: MenuSheetScrollTarget, highlightItemId?: string | null) => {
+      const stickyPad = MENU_SCROLL_STICKY_OFFSET;
+
       if (target.kind === "past-orders") {
-        scrollSectionListToOffset(
-          sectionListRef,
-          Math.max(HEADER_IMAGE_HEIGHT + 140, 0),
-          true
-        );
+        measureHeaderAnchor(pastOrdersAnchorRef, headerRootRef, (y) => {
+          scrollSectionListToOffset(
+            sectionListRef,
+            Math.max(0, y - stickyPad),
+            true
+          );
+        });
         return;
       }
       if (target.kind === "starting-at") {
-        scrollSectionListToOffset(
-          sectionListRef,
-          Math.max(MENU_LIST_HEADER_BEFORE_SECTIONS - MENU_SCROLL_STICKY_OFFSET - 24, 0),
-          true
-        );
+        measureHeaderAnchor(startingAtAnchorRef, headerRootRef, (y) => {
+          scrollSectionListToOffset(
+            sectionListRef,
+            Math.max(0, y - stickyPad),
+            true
+          );
+        });
         return;
       }
 
-      const secList = catalogSections;
+      const secList = sections;
       const loc = findSectionIndexForScrollTarget(secList, target);
       if (!loc) return;
 
@@ -875,14 +922,12 @@ export default function MerchantDetailScreen() {
           itemIndex: loc.itemIndex,
           viewPosition: 0,
           animated: true,
-          viewOffset: MENU_SCROLL_STICKY_OFFSET,
+          viewOffset: stickyPad,
         });
       };
-      runScroll();
-      setTimeout(runScroll, 260);
-      setTimeout(runScroll, 520);
+      scheduleMenuScroll(runScroll);
     },
-    [catalogSections]
+    [sections]
   );
 
   useEffect(() => {
@@ -890,12 +935,11 @@ export default function MerchantDetailScreen() {
     if (!pending) return;
     if (filter !== "all" || menuSearchQuery.trim()) return;
     if (hasActiveAdvancedFilters(advancedFilters)) return;
-    if (catalogSections.length === 0) return;
+    if (sections.length === 0) return;
 
     pendingMenuNavRef.current = null;
-    const t = setTimeout(() => scrollToMenuTarget(pending.scrollTarget), 280);
-    return () => clearTimeout(t);
-  }, [sections, filter, menuSearchQuery, advancedFilters, catalogSections, scrollToMenuTarget]);
+    scheduleMenuScroll(() => scrollToMenuTarget(pending.scrollTarget));
+  }, [sections, filter, menuSearchQuery, advancedFilters, scrollToMenuTarget]);
 
   useEffect(() => {
     focusItemHandledRef.current = null;
@@ -1146,7 +1190,9 @@ export default function MerchantDetailScreen() {
     if (sectionStartingPrice != null) {
       const menu = merchant?.menu ?? [];
       const atOrBelow = menu.filter(
-        (m) => Math.round(m.price) <= Math.round(sectionStartingPrice)
+        (m) =>
+          m.inStock !== false &&
+          Math.round(m.price) <= Math.round(sectionStartingPrice)
       ).length;
       rows.push({
         id: "starting-at",
@@ -1182,13 +1228,28 @@ export default function MerchantDetailScreen() {
     };
   }, [catalogSections]);
 
-  const handleMenuSheetSelect = useCallback((section: StoreMenuSheetSection) => {
-    setMenuSheetVisible(false);
-    pendingMenuNavRef.current = section;
-    setFilter("all");
-    setMenuSearchQuery("");
-    setAdvancedFilters(DEFAULT_STORE_MENU_FILTERS);
-  }, []);
+  const handleMenuSheetSelect = useCallback(
+    (section: StoreMenuSheetSection) => {
+      setMenuSheetVisible(false);
+
+      const needsFilterReset =
+        filter !== "all" ||
+        menuSearchQuery.trim().length > 0 ||
+        hasActiveAdvancedFilters(advancedFilters);
+
+      if (needsFilterReset) {
+        pendingMenuNavRef.current = section;
+        setFilter("all");
+        setMenuSearchQuery("");
+        setAdvancedFilters(DEFAULT_STORE_MENU_FILTERS);
+        return;
+      }
+
+      pendingMenuNavRef.current = null;
+      scheduleMenuScroll(() => scrollToMenuTarget(section.scrollTarget));
+    },
+    [filter, menuSearchQuery, advancedFilters, scrollToMenuTarget]
+  );
 
   const renderMenuSectionHeader = useCallback(
     ({ section: { title } }: { section: { title: string } }) => (
@@ -1285,7 +1346,7 @@ export default function MerchantDetailScreen() {
   const menuListHeader = useMemo(() => {
     if (!merchant) return null;
     return (
-      <>
+      <View ref={headerRootRef} collapsable={false}>
         <View style={styles.headerImageWrap}>
           <StoreBannerCarousel
             bannerUri={merchantBannerHeroUri}
@@ -1364,14 +1425,16 @@ export default function MerchantDetailScreen() {
           </Animated.View>
         </View>
 
-        <StorePastOrdersSection
-          items={pastOrderItems}
-          getQty={getQty}
-          onAdd={handleAddItem}
-          onIncrement={handleIncrement}
-          onDecrement={handleDecrement}
-          isStoreClosed={isStoreClosedForStatus}
-        />
+        <View ref={pastOrdersAnchorRef} collapsable={false}>
+          <StorePastOrdersSection
+            items={pastOrderItems}
+            getQty={getQty}
+            onAdd={handleAddItem}
+            onIncrement={handleIncrement}
+            onDecrement={handleDecrement}
+            isStoreClosed={isStoreClosedForStatus}
+          />
+        </View>
 
         <StoreComboSection
           combos={comboPairs}
@@ -1380,13 +1443,15 @@ export default function MerchantDetailScreen() {
         />
 
         {sections.length > 0 && sectionStartingPrice != null ? (
-          <StoreSectionHeader
-            title={`Items starting at ₹${Math.round(sectionStartingPrice)}`}
-            couponLink={visibleOffers.length > 0}
-            onCouponPress={openOffersSheet}
-          />
+          <View ref={startingAtAnchorRef} collapsable={false}>
+            <StoreSectionHeader
+              title={`Items starting at ₹${Math.round(sectionStartingPrice)}`}
+              couponLink={visibleOffers.length > 0}
+              onCouponPress={openOffersSheet}
+            />
+          </View>
         ) : null}
-      </>
+      </View>
     );
   }, [
     merchant,

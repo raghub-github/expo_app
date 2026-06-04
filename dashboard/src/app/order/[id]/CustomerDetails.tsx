@@ -112,8 +112,15 @@ export default function CustomerDetails({
           <div className="text-[12px] text-gati-text-secondary font-medium">
             Name:
           </div>
-          <div className="text-[12px] text-gati-text-primary font-normal break-words leading-snug">
-            {order.customerName || "—"}
+          <div className="text-[12px] text-gati-text-primary font-normal break-words leading-snug flex flex-wrap items-center gap-1.5">
+            <span>{order.customerName || "—"}</span>
+            {order.userType?.trim() ? (
+              <span
+                className={`inline-flex items-center rounded-full bg-slate-50 px-2 py-0.5 text-[10px] font-semibold tracking-wide whitespace-nowrap ring-1 ring-slate-200 ${userTypeTierClass(order.userType)}`}
+              >
+                {order.userType.trim()}
+              </span>
+            ) : null}
           </div>
         </div>
 
@@ -280,19 +287,6 @@ export default function CustomerDetails({
           </div>
         </div>
 
-        {/* User Type / Risk / Location */}
-        <div className="grid grid-cols-[120px_1fr] items-start min-h-[22px]">
-          <div className="text-[12px] text-gati-text-secondary font-medium">
-            User Type:
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-gati-text-primary">
-            <span
-              className={`inline-flex items-center rounded-full bg-slate-50 px-2 py-0.5 text-[10px] font-semibold tracking-wide whitespace-nowrap ring-1 ring-slate-200 ${userTypeTierClass(order.userType)}`}
-            >
-              {order.userType?.trim() || "—"}
-            </span>
-          </div>
-        </div>
       </div>
     </div>
   );

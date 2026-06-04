@@ -19,6 +19,7 @@ export type RiderLogEntry = {
   picked_up_at: string | null;
   delivered_at: string | null;
   cancelled_at: string | null;
+  unassigned_at?: string | null;
 };
 
 export type OrderRidersHistorySidesheetProps = {
@@ -36,6 +37,14 @@ function fmtTime(s: string | null) {
   return s
     ? new Date(s).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })
     : '—';
+}
+
+function resolveAssignedAt(r: RiderLogEntry): string | null {
+  return r.assigned_at ?? r.accepted_at ?? null;
+}
+
+function resolveCancelledAt(r: RiderLogEntry): string | null {
+  return r.cancelled_at ?? r.unassigned_at ?? r.rejected_at ?? null;
 }
 
 export function OrderRidersHistorySidesheet({
@@ -63,7 +72,7 @@ export function OrderRidersHistorySidesheet({
         onClick={onClose}
       />
       <aside
-        className="relative flex w-full max-w-md flex-col border-l border-gray-200 bg-white shadow-2xl"
+        className="relative flex w-full max-w-lg flex-col border-l border-gray-200 bg-white shadow-2xl"
         style={{
           marginTop: 'var(--order-sheet-top)',
           height: 'calc(100dvh - var(--order-sheet-top))',
@@ -132,19 +141,17 @@ export function OrderRidersHistorySidesheet({
                           {r.rider_mobile}
                         </a>
                       ) : null}
-                      <p className="mt-1 text-[10px] capitalize text-gray-500">
-                        {r.assignment_status?.replace(/_/g, ' ')}
-                      </p>
-                      <div className="mt-2 space-y-0.5 text-[10px] text-gray-600">
-                        <p>Assigned: {fmtTime(r.assigned_at)}</p>
-                        {r.accepted_at && <p>Accepted: {fmtTime(r.accepted_at)}</p>}
-                        {r.reached_merchant_at && (
-                          <p>Reached store: {fmtTime(r.reached_merchant_at)}</p>
-                        )}
-                        {r.picked_up_at && <p>Picked up: {fmtTime(r.picked_up_at)}</p>}
-                        {r.delivered_at && <p>Delivered: {fmtTime(r.delivered_at)}</p>}
-                        {r.rejected_at && <p>Rejected: {fmtTime(r.rejected_at)}</p>}
-                        {r.cancelled_at && <p>Cancelled: {fmtTime(r.cancelled_at)}</p>}
+                      <div className="mt-2.5 space-y-1 text-xs text-gray-600">
+                        <p>
+                          <span className="font-medium text-gray-700">Assigned at:</span>{' '}
+                          {fmtTime(resolveAssignedAt(r))}
+                        </p>
+                        {resolveCancelledAt(r) ? (
+                          <p>
+                            <span className="font-medium text-gray-700">Cancelled at:</span>{' '}
+                            {fmtTime(resolveCancelledAt(r))}
+                          </p>
+                        ) : null}
                       </div>
                     </div>
                   </div>

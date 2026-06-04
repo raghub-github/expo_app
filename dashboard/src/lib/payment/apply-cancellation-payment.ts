@@ -1,6 +1,5 @@
-import type { Sql } from "postgres";
+import { executeOrderCancellationFinancials } from "./financial-rule-executor";
 import { getSql } from "@/lib/db/client";
-import { resolvePaymentCancellationMilestone } from "./resolve-cancellation-milestone";
 
 export type ApplyCancellationPaymentInput = {
   orderCoreId: number;
@@ -9,44 +8,42 @@ export type ApplyCancellationPaymentInput = {
   previousStatus: string;
   cancelledByType: string;
   orderGross: number;
+  coreOrderId?: string | null;
+  serviceType?: string;
+  cancellationReasonId?: number | null;
   actorSystemUserId?: number | null;
+  wasDelivered?: boolean;
 };
 
-/** Runs payment_apply_cancellation RPC when order is cancelled (admin rules from 0239). */
 export async function applyPaymentCancellationPayment(
   input: ApplyCancellationPaymentInput,
-  sql: Sql = getSql()
-): Promise<{ applied: boolean; result?: Record<string, unknown>; error?: string }> {
-  const { orderMilestone, cancelledBy } = resolvePaymentCancellationMilestone({
-    previousStatus: input.previousStatus,
-    cancelledByType: input.cancelledByType,
-  });
-
-  const gross = Number(input.orderGross);
-  if (!Number.isFinite(gross) || gross < 0) {
-    return { applied: false, error: "invalid_order_gross" };
-  }
-
-  try {
-    const rows = await sql`
-      SELECT payment_apply_cancellation(
-        ${input.orderCoreId}::bigint,
-        ${input.ordersFoodId}::bigint,
-        ${orderMilestone}::payment_order_milestone,
-        ${cancelledBy}::payment_cancelled_by,
-        ${gross}::numeric,
-        ${input.actorSystemUserId ?? null}::bigint,
-        ${`cancel:${input.orderCoreId}:${orderMilestone}:${cancelledBy ?? "any"}`}::text
-      )::jsonb AS result
-    `;
-    const result = (rows[0] as { result?: Record<string, unknown> } | undefined)?.result;
-    return { applied: Boolean(result?.ok), result };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes("payment_apply_cancellation") || msg.includes("does not exist")) {
-      return { applied: false, error: "payment_engine_not_migrated" };
-    }
-    console.warn("[applyPaymentCancellationPayment]", msg);
-    return { applied: false, error: msg };
-  }
+  sql = getSql()
+) {
+  const result = await executeOrderCancellationFinancials(
+    {
+      orderCoreId: input.orderCoreId,
+      ordersFoodId: input.ordersFoodId,
+      coreOrderId: input.coreOrderId,
+      merchantStoreId: input.merchantStoreId,
+      previousStatus: input.previousStatus,
+      cancelledByType: input.cancelledByType,
+      orderGross: input.orderGross,
+      serviceType: input.serviceType,
+      cancellationReasonId: input.cancellationReasonId,
+      actorSystemUserId: input.actorSystemUserId,
+      wasDelivered: input.wasDelivered,
+    },
+    sql
+  );
+  return { applied: result.applied, result: result.raw, error: result.error };
 }
+
+export {
+  executeOrderCancellationFinancials,
+  executeRtoFinancials,
+  executePartialRefundFinancials,
+  lookupOrderContext,
+  isFinancialRuleEngineAvailable,
+} from "./financial-rule-executor";
+
+export { refundFieldsFromEngineResult } from "@gatimitra/financial-rules";

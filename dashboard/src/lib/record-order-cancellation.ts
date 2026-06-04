@@ -69,14 +69,10 @@ export async function recordOrderCancellation(
     .maybeSingle();
 
   const refund =
-    input.refundStatus != null && input.refundAmount != null
-      ? { refundStatus: input.refundStatus, refundAmount: input.refundAmount }
+    input.refundStatus != null
+      ? { refundStatus: input.refundStatus, refundAmount: input.refundAmount ?? null }
       : resolveOrderCancellationRefund({
-          previousStatus: input.previousStatus ?? String(foodLink?.order_status ?? ""),
-          acceptedAt: input.acceptedAt ?? (foodLink?.accepted_at as string | null) ?? null,
-          grandTotal: input.grandTotal ?? coreRow?.grand_total ?? 0,
-          cancelMode: input.cancelMode,
-          rejectedReason: input.displayReason,
+          engineResult: (input.metadata?.financial_rule_engine as Record<string, unknown>) ?? undefined,
         });
 
   const linked = Number(foodLink?.cancellation_reason_id);

@@ -190,6 +190,7 @@ export const orderStatusEnum = pgEnum("order_status", [
   "assigned",
   "accepted",
   "reached_store",
+  "reached_user",
   "picked_up",
   "in_transit",
   "delivered",
@@ -201,6 +202,7 @@ export const orderStatusTypeEnum = pgEnum("order_status_type", [
   "assigned",
   "accepted",
   "reached_store",
+  "reached_user",
   "picked_up",
   "in_transit",
   "delivered",
@@ -947,20 +949,30 @@ export const riderVehicles = pgTable(
       .references(() => riders.id, { onDelete: "cascade" }),
     vehicleType: vehicleTypeEnum("vehicle_type").notNull(),
     fuelType: fuelTypeEnum("fuel_type"),
+    vehicleCategory: text("vehicle_category"),
+    vehicleNumber: text("vehicle_number"),
     isCommercial: boolean("is_commercial").notNull().default(false),
     registrationNumber: text("registration_number").notNull(),
     registrationState: text("registration_state"),
     insuranceExpiry: date("insurance_expiry"),
     permitExpiry: date("permit_expiry"),
-    vehicleActiveStatus: vehicleActiveStatusEnum("vehicle_active_status").notNull().default("active"),
+    /** DB column is TEXT in production (see dashboard 0083); not the vehicle_active_status enum type. */
+    vehicleActiveStatus: text("vehicle_active_status").notNull().default("active"),
     ownershipType: text("ownership_type"), // ownership | rental | authorization_letter (from ownership_type enum or config)
     limitationFlags: jsonb("limitation_flags").default({}),
+    serviceTypes: jsonb("service_types").default([]),
     seatingCapacity: integer("seating_capacity"),
     acType: acTypeEnum("ac_type"),
     make: text("make"),
     model: text("model"),
     year: integer("year"),
     color: text("color"),
+    rcDocumentUrl: text("rc_document_url"),
+    insuranceDocumentUrl: text("insurance_document_url"),
+    verified: boolean("verified").default(false),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    verifiedBy: integer("verified_by"),
+    isActive: boolean("is_active").default(true),
     createdBy: integer("created_by"),
     updatedBy: integer("updated_by"),
     deletedBy: integer("deleted_by"),
@@ -977,6 +989,7 @@ export const riderVehicles = pgTable(
     registrationNumberIdx: index("rider_vehicles_registration_number_idx").on(table.registrationNumber),
     vehicleActiveStatusIdx: index("rider_vehicles_vehicle_active_status_idx").on(table.vehicleActiveStatus),
     deletedAtIdx: index("rider_vehicles_deleted_at_idx").on(table.deletedAt),
+    isActiveIdx: index("rider_vehicles_is_active_idx").on(table.isActive),
   })
 );
 
@@ -1039,6 +1052,113 @@ export const onboardingRulePolicies = pgTable(
     isActiveIdx: index("onboarding_rule_policies_is_active_idx").on(table.isActive),
     scopeIdx: index("onboarding_rule_policies_scope_idx").on(table.scope),
   })
+);
+
+/**
+ * Rider onboarding vehicle categories — 2 / 3 / 4 wheeler groups.
+ */
+export const riderOnboardingVehicleCategories = pgTable(
+  "rider_onboarding_vehicle_categories",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    code: text("code").notNull(),
+    label: text("label").notNull(),
+    hint: text("hint"),
+    icon: text("icon"),
+    wheelCount: integer("wheel_count").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    codeUq: uniqueIndex("rider_onboarding_vehicle_categories_code_uq").on(table.code),
+    sortIdx: index("rider_onboarding_vehicle_categories_sort_idx").on(table.sortOrder, table.id),
+  })
+);
+
+/**
+ * Rider onboarding vehicle types — super-admin catalog for operating vehicle selection UI.
+ */
+export const riderOnboardingVehicleTypes = pgTable(
+  "rider_onboarding_vehicle_types",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    code: text("code").notNull(),
+    categoryCode: text("category_code"),
+    label: text("label").notNull(),
+    hint: text("hint"),
+    icon: text("icon"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    onboardingFlow: text("onboarding_flow").notNull().default("dl_rc"),
+    documentRequirements: jsonb("document_requirements").notNull().default({}),
+    infoMessage: text("info_message"),
+    mapsToVehicleType: text("maps_to_vehicle_type"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    codeUq: uniqueIndex("rider_onboarding_vehicle_types_code_uq").on(table.code),
+    sortIdx: index("rider_onboarding_vehicle_types_sort_idx").on(table.sortOrder, table.id),
+    categoryIdx: index("rider_onboarding_vehicle_types_category_idx").on(
+      table.categoryCode,
+      table.sortOrder,
+      table.id
+    ),
+  })
+);
+
+export const riderOnboardingDocumentTypes = pgTable(
+  "rider_onboarding_document_types",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    code: text("code").notNull(),
+    label: text("label").notNull(),
+    hint: text("hint"),
+    icon: text("icon"),
+    captureGroup: text("capture_group").notNull().default("dl_rc"),
+    requiresTextField: boolean("requires_text_field").notNull().default(false),
+    textFieldLabel: text("text_field_label"),
+    textFieldPlaceholder: text("text_field_placeholder"),
+    minTextLength: integer("min_text_length").notNull().default(4),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    codeUq: uniqueIndex("rider_onboarding_document_types_code_uq").on(table.code),
+    sortIdx: index("rider_onboarding_document_types_sort_idx").on(
+      table.captureGroup,
+      table.sortOrder,
+      table.id
+    ),
+  })
+);
+
+/**
+ * Rider onboarding fee config — super-admin singleton for rider app payment screen.
+ */
+export const riderOnboardingCommissionConfig = pgTable(
+  "rider_onboarding_commission_config",
+  {
+    id: smallint("id").primaryKey().default(1),
+    standardOnboardingFee: numeric("standard_onboarding_fee", { precision: 12, scale: 2 }).notNull(),
+    discountedOnboardingFee: numeric("discounted_onboarding_fee", { precision: 12, scale: 2 }).notNull(),
+    discountPercent: numeric("discount_percent", { precision: 6, scale: 2 }).notNull(),
+    gstPercent: numeric("gst_percent", { precision: 6, scale: 2 }).notNull().default("18"),
+    discountPeriodLabel: text("discount_period_label").notNull().default("for limited time"),
+    headline: text("headline").notNull().default("Onboarding Fee"),
+    subtitle: text("subtitle").notNull(),
+    feeLabel: text("fee_label").notNull().default("One-time onboarding fee"),
+    infoMessage: text("info_message").notNull(),
+    alertNotice: text("alert_notice").notNull(),
+    footerNote: text("footer_note").notNull(),
+    payButtonText: text("pay_button_text"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  }
 );
 
 /**
@@ -1133,6 +1253,27 @@ export const dutyLogs = pgTable(
   })
 );
 
+/** Rider app logout events with self-reported reason */
+export const riderLogoutEvents = pgTable(
+  "rider_logout_events",
+  {
+    id: text("id").primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull(),
+    deviceId: text("device_id"),
+    reasonCode: text("reason_code").notNull(),
+    reasonText: text("reason_text"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    riderIdIdx: index("rider_logout_events_rider_id_idx").on(table.riderId),
+    reasonCodeIdx: index("rider_logout_events_reason_code_idx").on(table.reasonCode),
+    createdAtIdx: index("rider_logout_events_created_at_idx").on(table.createdAt),
+  })
+);
+
 /**
  * Rider location events - for fraud detection and location tracking
  * Used by location ping endpoint
@@ -1143,7 +1284,7 @@ export const riderLocationEvents = pgTable(
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(), // This is the JWT sub (user ID from auth)
     deviceId: text("device_id").notNull(),
-    tsMs: integer("ts_ms").notNull(),
+    tsMs: bigint("ts_ms", { mode: "number" }).notNull(),
     lat: doublePrecision("lat").notNull(),
     lng: doublePrecision("lng").notNull(),
     accuracyM: doublePrecision("accuracy_m"),
@@ -2247,6 +2388,21 @@ export const ordersParcel = pgTable(
   })
 );
 
+/** Customer ride book catalog — filtered by nearby on-duty rider supply. */
+export const customerRideServiceCatalog = pgTable("customer_ride_service_catalog", {
+  code: text("code").primaryKey(),
+  label: text("label").notNull(),
+  subtitle: text("subtitle"),
+  baseFare: numeric("base_fare", { precision: 10, scale: 2 }).notNull(),
+  etaMins: integer("eta_mins").notNull().default(3),
+  capacity: integer("capacity"),
+  tag: text("tag"),
+  imageKey: text("image_key").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  isActive: boolean("is_active").notNull().default(true),
+  vehicleTypes: text("vehicle_types").array().notNull().default([]),
+});
+
 export const ordersRide = pgTable(
   "orders_ride",
   {
@@ -2258,6 +2414,27 @@ export const ordersRide = pgTable(
     passengerName: text("passenger_name"),
     passengerPhone: text("passenger_phone"),
     passengerCount: integer("passenger_count").default(1),
+    bookedForSelf: boolean("booked_for_self").notNull().default(true),
+    pickupDistanceFromBookerKm: numeric("pickup_distance_from_booker_km", {
+      precision: 8,
+      scale: 2,
+    }),
+    farPickupPromptShown: boolean("far_pickup_prompt_shown").notNull().default(false),
+    farPickupAcknowledged: boolean("far_pickup_acknowledged").notNull().default(false),
+    intermediateStops: jsonb("intermediate_stops").notNull().default([]),
+    pickupAddress: text("pickup_address"),
+    pickupLat: numeric("pickup_lat", { precision: 9, scale: 6 }),
+    pickupLon: numeric("pickup_lon", { precision: 9, scale: 6 }),
+    dropAddress: text("drop_address"),
+    dropLat: numeric("drop_lat", { precision: 9, scale: 6 }),
+    dropLon: numeric("drop_lon", { precision: 9, scale: 6 }),
+    stop1Address: text("stop_1_address"),
+    stop1Lat: numeric("stop_1_lat", { precision: 9, scale: 6 }),
+    stop1Lon: numeric("stop_1_lon", { precision: 9, scale: 6 }),
+    stop2Address: text("stop_2_address"),
+    stop2Lat: numeric("stop_2_lat", { precision: 9, scale: 6 }),
+    stop2Lon: numeric("stop_2_lon", { precision: 9, scale: 6 }),
+    pickupOtp: text("pickup_otp"),
     rideType: text("ride_type"),
     vehicleTypeRequired: text("vehicle_type_required"),
     waitingCharges: numeric("waiting_charges", { precision: 10, scale: 2 }).default("0"),
@@ -2270,6 +2447,41 @@ export const ordersRide = pgTable(
     returnPickupLat: numeric("return_pickup_lat", { precision: 9, scale: 6 }),
     returnPickupLon: numeric("return_pickup_lon", { precision: 9, scale: 6 }),
     returnPickupTime: timestamp("return_pickup_time", { withTimezone: true }),
+    estimatedFare: numeric("estimated_fare", { precision: 10, scale: 2 }).notNull().default("0"),
+    finalFare: numeric("final_fare", { precision: 10, scale: 2 }),
+    amountCollected: numeric("amount_collected", { precision: 10, scale: 2 }).notNull().default("0"),
+    currency: text("currency").notNull().default("INR"),
+    paymentMethod: text("payment_method"),
+    assignedRiderId: integer("assigned_rider_id").references(() => riders.id, {
+      onDelete: "set null",
+    }),
+    riderAssignedAt: timestamp("rider_assigned_at", { withTimezone: true }),
+    riderReachedPickupAt: timestamp("rider_reached_pickup_at", { withTimezone: true }),
+    pickupOtpVerifiedAt: timestamp("pickup_otp_verified_at", { withTimezone: true }),
+    searchStartedAt: timestamp("search_started_at", { withTimezone: true }),
+    searchExpiresAt: timestamp("search_expires_at", { withTimezone: true }),
+    customerTipAmount: numeric("customer_tip_amount", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    prebookTipAmount: numeric("prebook_tip_amount", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    searchBoostTip1: numeric("search_boost_tip_1", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    searchBoostTip2: numeric("search_boost_tip_2", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    dispatchRetryCount: integer("dispatch_retry_count").notNull().default(0),
+    searchExtendedUntil: timestamp("search_extended_until", { withTimezone: true }),
+    tipBoostApplied: boolean("tip_boost_applied").notNull().default(false),
+    higherDispatchPriority: boolean("higher_dispatch_priority").notNull().default(false),
+    awaitingTipBoost: boolean("awaiting_tip_boost").notNull().default(false),
+    cancelledByType: text("cancelled_by_type"),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    cancellationReasonCode: text("cancellation_reason_code"),
+    cancellationReasonText: text("cancellation_reason_text"),
+    cancelMode: text("cancel_mode"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -2282,6 +2494,11 @@ export const ordersRide = pgTable(
     scheduledIdx: index("orders_ride_scheduled_idx").on(
       table.scheduledRide,
       table.scheduledPickupTime
+    ),
+    bookedForSelfIdx: index("orders_ride_booked_for_self_idx").on(table.bookedForSelf),
+    farPickupIdx: index("orders_ride_far_pickup_idx").on(
+      table.farPickupPromptShown,
+      table.farPickupAcknowledged
     ),
   })
 );
@@ -2360,8 +2577,12 @@ export const orderDeliveryImages = pgTable(
       .notNull()
       .references(() => ordersCore.id, { onDelete: "cascade" }),
     riderAssignmentId: bigint("rider_assignment_id", { mode: "number" }),
-    imageType: text("image_type").notNull(),
-    url: text("url").notNull(),
+    imageType: text("image_type").notNull().default("delivery_proof"),
+    imageUrl: text("image_url").notNull(),
+    r2Key: text("r2_key"),
+    uploadedBy: text("uploaded_by").default("rider"),
+    uploadedById: bigint("uploaded_by_id", { mode: "number" }),
+    imageMetadata: jsonb("image_metadata").default({}),
     takenAt: timestamp("taken_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -2704,6 +2925,9 @@ export const onboardingPayments = pgTable(
       .notNull()
       .references(() => riders.id, { onDelete: "cascade" }),
     amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
+    subtotalPaise: integer("subtotal_paise"),
+    gstPercentApplied: numeric("gst_percent_applied", { precision: 6, scale: 2 }),
+    gstAmountPaise: integer("gst_amount_paise"),
     provider: text("provider").notNull(), // "razorpay", "stripe", etc.
     refId: text("ref_id").notNull().unique(),
     paymentId: text("payment_id"),
@@ -3678,6 +3902,7 @@ export const ridersRelations = relations(riders, ({ one, many }) => ({
   vehicles: many(riderVehicles),
   addresses: many(riderAddresses),
   dutyLogs: many(dutyLogs),
+  logoutEvents: many(riderLogoutEvents),
   locationLogs: many(locationLogs),
   blacklistHistory: many(blacklistHistory),
   penalties: many(riderPenalties),

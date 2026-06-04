@@ -3,8 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 import { assertStoreAccess } from '@/lib/auth/assert-store-access';
 import { WAITING_FOR_ORDER_TITLE } from '@/lib/partner-notification-constants';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 
 function getDb() {
   return createClient(supabaseUrl, supabaseServiceKey, {
@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/** POST { store_id, action: "ensure_waiting" | "mark_read" | "mark_all_read", notification_id? } */
+/** POST { store_id, action: "ensure_waiting" | "mark_read" | "mark_all_read" | "clear_all", notification_id? } */
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
@@ -68,6 +68,18 @@ export async function POST(req: NextRequest) {
       if (error) {
         console.error('[store-notifications POST] mark_all_read', error);
         return NextResponse.json({ error: 'update_failed' }, { status: 500 });
+      }
+      return NextResponse.json({ ok: true });
+    }
+
+    if (action === 'clear_all') {
+      const { error } = await db
+        .from('merchant_store_notifications')
+        .delete()
+        .eq('store_id', gate.storeIdNum);
+      if (error) {
+        console.error('[store-notifications POST] clear_all', error);
+        return NextResponse.json({ error: 'delete_failed' }, { status: 500 });
       }
       return NextResponse.json({ ok: true });
     }

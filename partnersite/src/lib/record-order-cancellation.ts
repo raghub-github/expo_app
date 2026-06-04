@@ -102,6 +102,13 @@ export async function recordOrderCancellation(
     cancel_mode: input.cancelMode ?? null,
   };
 
+  const refund =
+    input.refundStatus != null
+      ? { refundStatus: input.refundStatus, refundAmount: input.refundAmount ?? null }
+      : resolveOrderCancellationRefund({
+          engineResult: (input.metadata?.financial_rule_engine as Record<string, unknown>) ?? undefined,
+        });
+
   const row: Record<string, unknown> = {
     order_id: input.orderCorePk,
     cancelled_by: input.cancelledBy,

@@ -1,6 +1,7 @@
 "use client";
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
+import dynamic from 'next/dynamic';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/lib/rider-dashboard/supabaseClient';
@@ -19,6 +20,15 @@ import { CheckCircle, Circle, Filter, ChevronDown, ChevronUp, ShieldCheck, Shiel
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { TablePagination } from '@/components/riders/TablePagination';
 import { AddAmountModal } from '@/components/riders/AddAmountModal';
+import { RiderLogoutSessionInline } from '@/components/riders/RiderLogoutSessionInline';
+
+const RiderLogoutHistorySideSheet = dynamic(
+  () =>
+    import('@/components/riders/RiderLogoutHistorySideSheet').then(
+      (m) => m.RiderLogoutHistorySideSheet,
+    ),
+  { ssr: false },
+);
 
 // Simple in-memory cache for rider search results across renders/sessions.
 const riderSearchCache = new Map<string, RiderListEntry[]>();
@@ -119,6 +129,9 @@ export default function RidersPage() {
   const [penaltiesServiceType, setPenaltiesServiceType] = useState<string>('all'); // 'all' | 'food' | 'parcel' | 'person_ride'
   const [penaltiesOrderIdSearch, setPenaltiesOrderIdSearch] = useState('');
   const [vehicleOpen, setVehicleOpen] = useState(false);
+  const [vehicleVerifyLoading, setVehicleVerifyLoading] = useState(false);
+  const [selfieImgError, setSelfieImgError] = useState(false);
+  const [logoutHistoryOpen, setLogoutHistoryOpen] = useState(false);
   const [ordersPage, setOrdersPage] = useState(1);
   const [ordersPageSize, setOrdersPageSize] = useState(10);
   const [ticketsPage, setTicketsPage] = useState(1);
@@ -350,6 +363,31 @@ export default function RidersPage() {
   useEffect(() => {
     if (summaryData) setRiderSummary(summaryData as RiderSummary);
   }, [summaryData, setRiderSummary]);
+
+  useEffect(() => {
+    setSelfieImgError(false);
+  }, [riderId, riderSummary?.rider?.selfieUrl]);
+
+  const handleVerifyVehicle = useCallback(async () => {
+    if (!riderId) return;
+    setVehicleVerifyLoading(true);
+    try {
+      const res = await fetch(`/api/riders/${riderId}/vehicle/verify`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to verify vehicle");
+      }
+      invalidateRiderSummary(queryClient, riderId);
+      await refetchRiderSummary();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Could not verify vehicle");
+    } finally {
+      setVehicleVerifyLoading(false);
+    }
+  }, [riderId, queryClient, refetchRiderSummary]);
 
   // Fetch pending wallet credit request order IDs for badge
   useEffect(() => {
@@ -842,12 +880,14 @@ export default function RidersPage() {
               <div className="flex items-center gap-3 min-w-0 flex-1">
                 <div className="relative shrink-0">
                   <div className="w-11 h-11 rounded-full overflow-hidden ring-2 ring-white shadow-sm bg-gray-100 flex items-center justify-center">
-                    {(riderSummary?.rider as { selfieUrl?: string | null })?.selfieUrl ? (
+                    {riderSummary?.rider?.selfieUrl && !selfieImgError ? (
                       <img
-                        src={(riderSummary?.rider as { selfieUrl?: string | null })?.selfieUrl ?? ""}
+                        src={riderSummary.rider.selfieUrl}
                         alt=""
                         className="w-full h-full object-cover"
-                      />                    ) : rider.name?.trim() ? (
+                        onError={() => setSelfieImgError(true)}
+                      />
+                    ) : rider.name?.trim() ? (
                       <span className="text-sm font-semibold text-gray-400">{rider.name.trim().split(/\s+/).map(n => n[0]).slice(0, 2).join("").toUpperCase()}</span>
                     ) : (
                       <User className="w-5 h-5 text-gray-400" />
@@ -951,8 +991,17 @@ export default function RidersPage() {
                       })()
                     }
                   />
+                  <InfoInline
+                    label="App session"
+                    value={
+                      <RiderLogoutSessionInline
+                        session={riderSummary?.logoutSession}
+                        onOpenHistory={() => setLogoutHistoryOpen(true)}
+                      />
+                    }
+                  />
                   {(riderSummary?.vehicle || riderSummary?.rider?.vehicleChoice) && (
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Vehicle</span>
                       <button
                         type="button"
@@ -964,6 +1013,22 @@ export default function RidersPage() {
                           : riderSummary?.rider?.vehicleChoice || "—"}
                         {vehicleOpen ? <ChevronUp className="h-3 w-3 text-gray-500" /> : <ChevronDown className="h-3 w-3 text-gray-500" />}
                       </button>
+                      {riderSummary?.vehicle && !riderSummary.vehicle.verified ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleVerifyVehicle()}
+                          disabled={vehicleVerifyLoading}
+                          className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+                        >
+                          <ShieldCheck className="h-3 w-3" />
+                          {vehicleVerifyLoading ? "Verifying…" : "Verify"}
+                        </button>
+                      ) : riderSummary?.vehicle?.verified ? (
+                        <span className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-emerald-700">
+                          <CheckCircle className="h-3 w-3" />
+                          Verified
+                        </span>
+                      ) : null}
                     </div>
                   )}
                 </div>
@@ -990,6 +1055,13 @@ export default function RidersPage() {
                         <span className="text-gray-300 shrink-0 mx-0.5" aria-hidden>•</span>
                         <span className="text-gray-500 shrink-0">RC:</span>
                         <span className="font-medium text-gray-900 font-mono shrink-0">{riderSummary.vehicle.registrationNumber || "—"}</span>
+                        <span className="text-gray-300 shrink-0 mx-0.5" aria-hidden>•</span>
+                        <span className="text-gray-500 shrink-0">Status:</span>
+                        <span
+                          className={`font-medium shrink-0 ${riderSummary.vehicle.verified ? "text-emerald-700" : "text-amber-700"}`}
+                        >
+                          {riderSummary.vehicle.verified ? "Verified" : "Pending verification"}
+                        </span>
                       </div>
                     ) : (
                       <p className="text-gray-600">No vehicle on file. Type: {riderSummary?.rider?.vehicleChoice}.</p>
@@ -1009,7 +1081,7 @@ export default function RidersPage() {
             const ticketsList = (() => {
               const list = summary.recentTickets ?? [];
               const q = ticketsSearch.trim().toLowerCase();
-              return q ? list.filter((t: { id: number; orderId?: number; subject: string; message?: string }) => (String(t.id) === q || (t.orderId != null && String(t.orderId) === q) || (t.subject?.toLowerCase().includes(q)) || (t.message?.toLowerCase().includes(q)))) : list;
+              return q ? list.filter((t: { id: number; ticketId?: string; orderId?: number; subject: string; message?: string }) => (String(t.id) === q || (t.ticketId?.toLowerCase().includes(q)) || (t.orderId != null && String(t.orderId) === q) || (t.subject?.toLowerCase().includes(q)) || (t.message?.toLowerCase().includes(q)))) : list;
             })();
             const totalTickets = ticketsList.length;
             const displayedTickets = ticketsList.slice((ticketsPage - 1) * ticketsPageSize, ticketsPage * ticketsPageSize);
@@ -1358,9 +1430,9 @@ export default function RidersPage() {
                           </tr>
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-100">
-                          {displayedTickets.map((ticket: { id: number; orderId?: number; subject: string; category: string; priority: string; status: string; message?: string; createdAt: string }) => (
+                          {displayedTickets.map((ticket: { id: number; ticketId?: string; orderId?: number; subject: string; category: string; priority: string; status: string; message?: string; createdAt: string }) => (
                             <tr key={ticket.id} className="hover:bg-gray-50/80 transition-colors">
-                              <td className="px-3 py-2 font-mono text-gray-900">{ticket.id}</td>
+                              <td className="px-3 py-2 font-mono text-gray-900">{ticket.ticketId?.trim() || "—"}</td>
                               <td className="px-3 py-2 text-gray-700">{ticket.orderId != null ? `#${ticket.orderId}` : "—"}</td>
                               <td className="px-3 py-2"><StatusBadge status={ticket.status} /></td>
                               <td className="px-3 py-2 font-medium text-gray-900 max-w-[140px] truncate" title={ticket.subject}>{ticket.subject}</td>
@@ -2314,6 +2386,15 @@ export default function RidersPage() {
                     }}
                   />
                 )}
+
+                {logoutHistoryOpen ? (
+                  <RiderLogoutHistorySideSheet
+                    riderId={rider.id}
+                    riderName={rider.name}
+                    open
+                    onClose={() => setLogoutHistoryOpen(false)}
+                  />
+                ) : null}
 
                 {/* Add Penalty modal */}
                 {addPenaltyModalOpen && riderId && (

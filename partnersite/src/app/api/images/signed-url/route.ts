@@ -67,7 +67,12 @@ export async function GET(req: NextRequest) {
       Key: objectKey,
     });
 
-    const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 60 * 60 * 24 * 7 }); // 7 days - auto-renew on each request when using redirect
+    // @aws-sdk private-property variance bug — cast through unknown.
+    const signedUrl = await getSignedUrl(
+      s3Client as unknown as Parameters<typeof getSignedUrl>[0],
+      command,
+      { expiresIn: 60 * 60 * 24 * 7 },
+    ); // 7 days - auto-renew on each request when using redirect
 
     const redirect = searchParams.get('redirect');
     if (redirect === '1' || redirect === 'true') {

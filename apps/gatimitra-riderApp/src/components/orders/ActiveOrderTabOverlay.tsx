@@ -1,0 +1,26 @@
+import React from "react";
+import { View, StyleSheet } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { ActiveOrderFloatingCardHost } from "@/src/components/orders/ActiveOrderFloatingCardHost";
+import { MAP_FLOATING_EDGE } from "@/src/components/home/map-controls-layout";
+import { getRiderTabBarTotalHeight } from "@/src/lib/rider-tab-bar-layout";
+
+/** Floating active-order pill on non-map tabs (Ledger, Profile, etc.). */
+export function ActiveOrderTabOverlay() {
+  const { bottom: safeBottom } = useSafeAreaInsets();
+  const bottom = getRiderTabBarTotalHeight(safeBottom) + MAP_FLOATING_EDGE;
+
+  return (
+    <View style={[styles.host, { bottom }]} pointerEvents="box-none">
+      <ActiveOrderFloatingCardHost />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  host: {
+    position: "absolute",
+    right: MAP_FLOATING_EDGE,
+    zIndex: 15,
+  },
+});

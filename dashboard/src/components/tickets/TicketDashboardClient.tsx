@@ -13,7 +13,7 @@ export function TicketDashboardClient({
   const isQueue = variant === "queue";
   return (
     <div
-      className={`flex w-full flex-1 min-h-0 flex-col -mt-3 sm:-mt-4 -mb-3 sm:-mb-4 ${
+      className={`flex w-full flex-1 min-h-0 flex-col ${
         isQueue ? "" : "bg-gradient-to-b from-slate-50/80 to-gray-50/90"
       }`}
     >

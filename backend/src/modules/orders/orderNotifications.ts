@@ -3,8 +3,11 @@
  *
  * Why an outbox? After a food order is placed we must notify:
  *   - the merchant (so the kitchen can accept and start preparing),
- *   - the rider pool (so dispatch can start),
  *   - the customer (confirmation + tracking entry point).
+ *
+ * Rider dispatch is NOT queued here — it runs through order-dispatch.service
+ * when an order becomes dispatchable (READY_FOR_PICKUP / ride search), using
+ * the centralized assignment engine to filter eligible riders per wave.
  *
  * Push / realtime / email are best-effort and can fail. If we fired them
  * inline with the placement transaction any transient failure would roll the
@@ -36,7 +39,7 @@ export type PlacementNotificationContext = {
 };
 
 /**
- * Insert one row per audience (merchant, customer, rider_dispatch) inside the
+ * Insert one row per audience (merchant, customer) inside the ongoing transaction.
  * ongoing transaction. Safe to call multiple times — if the caller wants dedup
  * they can read back by order_id.
  *
@@ -66,17 +69,6 @@ export async function enqueuePlacementNotifications(
       eventType: "ORDER_PLACED",
       recipientType: "merchant_store",
       recipientId: ctx.merchantStoreId != null ? String(ctx.merchantStoreId) : null,
-      payload: basePayload,
-      status: "pending" as const,
-      nextAttemptAt: sql`NOW()`,
-    },
-    {
-      orderId: ctx.orderId,
-      audience: "rider_dispatch",
-      channel: "internal",
-      eventType: "ORDER_READY_FOR_DISPATCH",
-      recipientType: "rider_pool",
-      recipientId: ctx.merchantStoreId != null ? `store:${ctx.merchantStoreId}` : null,
       payload: basePayload,
       status: "pending" as const,
       nextAttemptAt: sql`NOW()`,

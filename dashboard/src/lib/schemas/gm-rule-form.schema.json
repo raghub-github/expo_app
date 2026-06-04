@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GatiMitra Financial Rule",
+  "type": "object",
+  "required": ["rule_code", "rule_name", "scenario_type", "conditions"],
+  "properties": {
+    "rule_code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^[A-Z0-9_]+$",
+      "description": "Unique rule identifier (uppercase snake_case)"
+    },
+    "rule_name": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "description": { "type": "string", "maxLength": 2000 },
+    "scenario_type": {
+      "type": "string",
+      "enum": [
+        "CANCELLATION",
+        "POST_DELIVERY_CANCELLATION",
+        "PARTIAL_REFUND",
+        "RTO",
+        "COD_FAILURE",
+        "CHARGEBACK",
+        "COMPENSATION",
+        "DISPUTE_RESOLUTION"
+      ]
+    },
+    "priority": { "type": "integer", "minimum": 1, "maximum": 9999, "default": 100 },
+    "active_status": {
+      "type": "string",
+      "enum": ["ACTIVE", "INACTIVE", "ARCHIVED", "DRAFT"],
+      "default": "DRAFT"
+    },
+    "effective_from": { "type": "string", "format": "date-time" },
+    "effective_to": { "type": ["string", "null"], "format": "date-time" },
+    "change_reason": { "type": "string", "maxLength": 500 },
+    "conditions": {
+      "type": "object",
+      "properties": {
+        "service_type": {
+          "type": ["string", "null"],
+          "description": "Dynamic — from gm_catalog_service_types()"
+        },
+        "order_stage": {
+          "type": ["string", "null"],
+          "description": "Dynamic — from gm_catalog_order_stages()"
+        },
+        "cancellation_reason_id": {
+          "type": ["integer", "null"],
+          "description": "FK order_cancellation_reason_catalog.id"
+        },
+        "triggered_by": {
+          "type": ["string", "null"],
+          "description": "Dynamic — from payment_cancelled_by enum"
+        }
+      }
+    },
+    "fault": {
+      "type": "object",
+      "properties": {
+        "fault_bucket": {
+          "type": "string",
+          "enum": [
+            "CUSTOMER_FAULT",
+            "RIDER_FAULT",
+            "MERCHANT_FAULT",
+            "SYSTEM_FAULT",
+            "GATIMITRA_FAULT",
+            "SHARED_FAULT",
+            "NO_FAULT"
+          ]
+        },
+        "customer_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "merchant_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "rider_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "platform_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "gatimitra_pct": { "type": "number", "minimum": 0, "maximum": 100 }
+      },
+      "description": "Percentages must sum to 100 (except NO_FAULT all zeros)"
+    },
+    "liability": {
+      "type": "object",
+      "properties": {
+        "platform_bears_loss": { "type": "boolean" },
+        "liability_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "customer_liability_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "merchant_liability_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "rider_liability_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "gatimitra_liability_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "internal_notes": { "type": "string" }
+      }
+    },
+    "refund": {
+      "type": "object",
+      "properties": {
+        "refund_allowed": { "type": "boolean", "default": true },
+        "refund_recipient": {
+          "type": "string",
+          "enum": ["ORIGINAL_SOURCE", "WALLET", "BANK", "CREDITS", "SPLIT"]
+        },
+        "refund_priority": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["ORIGINAL_SOURCE", "WALLET", "BANK"]
+        },
+        "refund_pct": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "refund_flat_amount": { "type": ["number", "null"], "minimum": 0 },
+        "platform_fee_refund_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "delivery_fee_refund_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "convenience_fee_refund_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "tip_refund_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "tax_refund_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "coupon_restore": { "type": "boolean" },
+        "item_level_refund": { "type": "boolean" },
+        "order_level_refund": { "type": "boolean" },
+        "auto_refund": { "type": "boolean" },
+        "refund_approval_required": { "type": "boolean" },
+        "min_refund_amount": { "type": ["number", "null"] },
+        "max_refund_amount": { "type": ["number", "null"] }
+      }
+    },
+    "merchant": {
+      "type": "object",
+      "properties": {
+        "merchant_receives_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "merchant_penalty_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "merchant_compensation_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "settlement_hold": { "type": "boolean" },
+        "settlement_hold_hours": { "type": "integer", "minimum": 0 },
+        "settlement_notes": { "type": "string" }
+      }
+    },
+    "rider": {
+      "type": "object",
+      "properties": {
+        "rider_receives_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "rider_penalty_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "rider_compensation_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "min_rider_protection_amount": { "type": "number", "minimum": 0 },
+        "settlement_hold": { "type": "boolean" },
+        "settlement_hold_hours": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "customer_penalty": {
+      "type": "object",
+      "properties": {
+        "customer_penalty_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "customer_flat_penalty": { "type": "number", "minimum": 0 },
+        "warning_increment": { "type": "integer", "minimum": 0 },
+        "account_restriction": {
+          "type": "string",
+          "enum": ["NONE", "WARNING", "TEMPORARY_BLOCK", "PERMANENT_BLOCK", "RESTRICTED"]
+        },
+        "temporary_block_hours": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "max_refund_amount": { "type": ["number", "null"] },
+        "min_refund_amount": { "type": ["number", "null"] },
+        "max_penalty_amount": { "type": ["number", "null"] },
+        "max_compensation_amount": { "type": ["number", "null"] }
+      }
+    },
+    "auto_actions": {
+      "type": "object",
+      "properties": {
+        "auto_cancel": { "type": "boolean" },
+        "auto_refund": { "type": "boolean" },
+        "auto_settlement_recalc": { "type": "boolean" },
+        "auto_notification": { "type": "boolean" },
+        "auto_ticket_creation": { "type": "boolean" },
+        "auto_wallet_adjustment": { "type": "boolean" },
+        "auto_fraud_review": { "type": "boolean" }
+      }
+    },
+    "fraud": {
+      "type": "object",
+      "properties": {
+        "mark_fraud": { "type": "boolean" },
+        "manual_review_required": { "type": "boolean" },
+        "blacklist_customer": { "type": "boolean" },
+        "blacklist_merchant": { "type": "boolean" },
+        "blacklist_rider": { "type": "boolean" },
+        "freeze_wallet": { "type": "boolean" },
+        "freeze_settlement": { "type": "boolean" },
+        "create_investigation_ticket": { "type": "boolean" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "require_customer_evidence": { "type": "boolean" },
+        "require_rider_evidence": { "type": "boolean" },
+        "require_merchant_evidence": { "type": "boolean" },
+        "require_photo": { "type": "boolean" },
+        "require_video": { "type": "boolean" },
+        "require_admin_approval": { "type": "boolean" },
+        "require_support_approval": { "type": "boolean" }
+      }
+    },
+    "approvals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["threshold_amount", "required_role_codes"],
+        "properties": {
+          "threshold_amount": { "type": "number", "minimum": 0 },
+          "required_role_codes": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+          },
+          "approval_sequence": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "advanced": {
+      "type": "object",
+      "description": "Scenario-specific: RTO, COD, chargeback, split refund",
+      "properties": {
+        "rto_charge": { "type": "number" },
+        "rto_reason_code": { "type": "string" },
+        "cod_recovery_amount": { "type": "number" },
+        "cod_failure_reason": { "type": "string" },
+        "chargeback_workflow": { "type": "string" },
+        "split_refund_parts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "recipient": { "type": "string" },
+              "pct": { "type": "number" }
+            }
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

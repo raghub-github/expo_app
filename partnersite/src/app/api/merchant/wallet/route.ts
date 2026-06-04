@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { roundMoney } from '@/lib/wallet-types';
+import { backfillMissingDeliveredOrderCredits } from '@/lib/backfill-merchant-wallet-credits';
+import {
+  deriveWalletBucketsFromLedger,
+  mergeWalletBuckets,
+} from '@/lib/reconcile-merchant-wallet-balances';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 
 function getDb() {
   return createClient(supabaseUrl, supabaseServiceKey, {
@@ -37,6 +42,13 @@ export async function GET(req: NextRequest) {
     const merchantStoreId = await resolveStoreInternalId(db, storeId.trim());
     if (merchantStoreId === null) {
       return NextResponse.json({ error: 'Store not found' }, { status: 404 });
+    }
+
+    // Heal missing ORDER_EARNING rows for orders delivered outside merchant PATCH (e.g. dashboard agent).
+    try {
+      await backfillMissingDeliveredOrderCredits(db, merchantStoreId);
+    } catch (backfillErr) {
+      console.warn('[merchant/wallet] backfill credits:', backfillErr);
     }
 
     const { data: wallet, error: walletError } = await db
@@ -110,6 +122,23 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    const derivedBuckets = await deriveWalletBucketsFromLedger(db, walletId);
+    const merged = mergeWalletBuckets(
+      {
+        available_balance,
+        locked_balance,
+        pending_balance,
+        hold_balance,
+        reserve_balance,
+      },
+      derivedBuckets
+    );
+    available_balance = merged.available_balance;
+    locked_balance = merged.locked_balance;
+    pending_balance = merged.pending_balance;
+    hold_balance = merged.hold_balance;
+    reserve_balance = merged.reserve_balance;
+
     const now = new Date();
     const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const todayEnd = new Date(todayStart);
@@ -179,8 +208,11 @@ export async function GET(req: NextRequest) {
     } catch {
       locked_settlement_total = locked_balance;
     }
+    if (locked_settlement_total <= 0 && locked_balance > 0) {
+      locked_settlement_total = locked_balance;
+    }
 
-    const withdrawable_balance = roundMoney(available_balance);
+    const withdrawable_balance = roundMoney(available_balance + locked_balance);
     const total_balance = roundMoney(
       available_balance + locked_balance + hold_balance + pending_balance
     );

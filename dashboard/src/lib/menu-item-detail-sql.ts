@@ -3,10 +3,14 @@ function isMissingColumnError(e: unknown): boolean {
   return code === "42703";
 }
 
-/** Addon rows for one customization group; works before/after addon_size_* migration. */
-type SqlClient = {
-  (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown>;
-};
+/**
+ * postgres-js's Sql type has private members (e.g. Helper.then) that don't
+ * structurally match a generic callable. Import the real type so the helpers
+ * accept whatever the dashboard's getDb()/getSql() returns without casts at
+ * every call site.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-empty-object-type
+type SqlClient = import("postgres").Sql<{}>;
 
 export async function fetchAddonsForCustomization(
   sql: SqlClient,

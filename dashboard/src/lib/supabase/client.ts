@@ -14,8 +14,13 @@ if (!hasSupabaseEnv && typeof window !== "undefined") {
 
 // Keep module import/build safe when env is missing at build-time (Docker/CI).
 // Runtime calls fail until real env is configured.
-const safeSupabaseUrl = supabaseUrl ?? "https://placeholder.supabase.co";
-const safeSupabaseAnonKey = supabaseAnonKey ?? "placeholder-anon-key";
+//
+// We use `||` not `??`. Docker build-args resolve unset GitHub secrets to the
+// EMPTY STRING "" (not undefined), and `?? ""` keeps the empty string —
+// passing "" into `createClient()` throws "supabaseUrl is required" during
+// the /login prerender. `||` correctly falls back on any falsy value.
+const safeSupabaseUrl = supabaseUrl || "https://placeholder.supabase.co";
+const safeSupabaseAnonKey = supabaseAnonKey || "placeholder-anon-key";
 
 // Client-side Supabase client
 // Disable autoRefreshToken to prevent race conditions when multiple tabs/components refresh simultaneously

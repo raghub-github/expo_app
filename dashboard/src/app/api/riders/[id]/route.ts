@@ -5,8 +5,9 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getRiderWithDocuments } from "@/lib/db/operations/riders";
-import { getSignedUrlFromKey } from "@/lib/services/r2";
+import { getRiderWithDocuments, getRiderById, syncRiderOnboardingState } from "@/lib/db/operations/riders";
+import { expandRiderDocumentsForDashboard } from "@/lib/rider-document-display";
+import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getDb } from "@/lib/db/client";
 import { riderWallet, walletLedger, riderPenalties, withdrawalRequests, onboardingPayments } from "@/lib/db/schema";
@@ -74,7 +75,7 @@ export async function GET(
     }
 
     // Fetch rider with documents
-    const riderData = await getRiderWithDocuments(riderId);
+    let riderData = await getRiderWithDocuments(riderId);
     if (!riderData) {
       return NextResponse.json(
         { success: false, error: "Rider not found" },
@@ -82,32 +83,38 @@ export async function GET(
       );
     }
 
+    // Auto-activate when all required docs are verified and payment is completed
+    if (riderData.rider.status !== "ACTIVE" && riderData.rider.status !== "BLOCKED" && riderData.rider.status !== "BANNED") {
+      await syncRiderOnboardingState(riderId);
+      const refreshedRider = await getRiderById(riderId);
+      if (refreshedRider) {
+        riderData = { ...riderData, rider: refreshedRider };
+      }
+    }
+
     // Regenerate signed URLs for documents and their files (multi-file: front/back)
-    const documentsWithUrls = await Promise.all(
-      riderData.documents.map(async (doc: any) => {
-        let fileUrl = doc.fileUrl;
-        if (doc.verificationMethod === "MANUAL_UPLOAD" && doc.r2Key) {
-          try {
-            fileUrl = await getSignedUrlFromKey(doc.r2Key);
-          } catch (error) {
-            console.error(`[GET /api/riders/${riderId}] Failed to regenerate signed URL for doc ${doc.id}:`, error);
-          }
-        }
-        const files = (doc.files || []).map((f: { fileUrl: string; r2Key?: string | null; side?: string; id: number; sortOrder?: number }) => ({ ...f }));
-        const filesWithUrls = await Promise.all(
-          files.map(async (f: { fileUrl: string; r2Key?: string | null; side?: string; id: number }) => {
-            if (f.r2Key) {
-              try {
-                return { ...f, fileUrl: await getSignedUrlFromKey(f.r2Key) };
-              } catch {
-                return f;
-              }
-            }
-            return f;
-          })
-        );
-        return { ...doc, fileUrl, files: filesWithUrls };
-      })
+    function riderDocumentViewUrl(doc: { r2Key?: string | null; fileUrl?: string | null }): string {
+      const raw = doc.r2Key?.trim() || doc.fileUrl?.trim() || "";
+      return resolveAttachmentProxyUrl(raw);
+    }
+
+    const documentsWithUrls = riderData.documents.map((doc: any) => {
+      const files = (doc.files || []).map(
+        (f: { fileUrl: string; r2Key?: string | null; side?: string; id: number; sortOrder?: number }) => ({
+          ...f,
+          fileUrl: riderDocumentViewUrl(f),
+        })
+      );
+      return {
+        ...doc,
+        fileUrl: riderDocumentViewUrl(doc),
+        files,
+      };
+    });
+
+    const documentsForUi = expandRiderDocumentsForDashboard(
+      documentsWithUrls,
+      riderData.rider
     );
 
     const db = getDb();
@@ -222,7 +229,7 @@ export async function GET(
       success: true,
       data: {
         rider: riderData.rider,
-        documents: documentsWithUrls,
+        documents: documentsForUi,
         addresses: riderData.addresses ?? [],
         vehicle: riderData.vehicle
           ? {

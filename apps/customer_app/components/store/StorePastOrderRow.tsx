@@ -177,7 +177,7 @@ const styles = StyleSheet.create({
   },
   orderedAgo: {
     fontSize: 12,
-    color: StoreTheme.textSecondary,
+    color: "#E57373",
   },
   rating: {
     fontSize: 12,

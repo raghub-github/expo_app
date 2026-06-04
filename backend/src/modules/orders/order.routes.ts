@@ -7,14 +7,14 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { randomBytes } from "crypto";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { verifyRazorpaySignature, verifyRazorpayPaymentDetails } from "../../services/payment/razorpayService.js";
 import { getStoreByStoreId, getStoreByIdForOrder } from "../merchants/merchant.service.js";
 import { getStoreRatingsForStores } from "../merchants/merchant-store-ratings.js";
 import { auth } from "../../plugins/auth.js";
 import { createPendingOrder, finalizeOrder } from "./order.placement.service.js";
 import { getEnv } from "../../config/env.js";
-import { getRoute } from "../distance/distance.service.js";
+import { getRoute, haversineDistanceKm } from "../distance/distance.service.js";
 import { resolveOrderItemsVegNonVeg } from "../../lib/order-item-veg.js";
 import { loadOrderItemAddonLabelsByCoreItemIds } from "../../lib/load-order-item-addon-labels.js";
 import {
@@ -22,6 +22,7 @@ import {
   buildCustomerOrderDetailItemsFromJson,
 } from "../../lib/customer-order-detail-items.js";
 import { customerOrderRefWhere } from "../../lib/order-ref-resolve.js";
+import { getRiderAverageRating } from "../../lib/rider-average-rating.js";
 
 /** Em dash / empty → null for DB. Never insert placeholder characters. */
 const EM_DASH = "\u2014";
@@ -56,7 +57,11 @@ import {
   pendingOrders,
   orderEtaSnapshots,
   riders,
+  riderVehicles,
+  ordersRide,
   orderRiderTracking,
+  riderLiveLocations,
+  merchantStoreRatings,
 } from "../../db/schema.js";
 
 const orderDetailItemSchema = z.object({
@@ -90,12 +95,35 @@ const orderDetailResponseSchema = z.object({
   pickupLng: z.number().optional().nullable(),
   /** 4-digit delivery OTP — customer tracking only. */
   deliveryOtp: z.string().optional().nullable(),
+  /** 4-digit pickup OTP — person_ride; customer shares with rider. */
+  pickupOtp: z.string().optional().nullable(),
+  orderType: z.string().optional().nullable(),
+  rideType: z.string().optional().nullable(),
+  riderReachedPickupAt: z.string().optional().nullable(),
   statusHistory: z.array(z.object({ status: z.string(), at: z.string() })).optional(),
-  rider: z.object({ name: z.string(), phone: z.string().optional() }).optional().nullable(),
+  rider: z
+    .object({
+      name: z.string(),
+      phone: z.string().optional(),
+      photoUrl: z.string().optional().nullable(),
+      rating: z.number().optional().nullable(),
+      vehicleRegistration: z.string().optional().nullable(),
+      vehicleModel: z.string().optional().nullable(),
+    })
+    .optional()
+    .nullable(),
   items: z.array(orderDetailItemSchema).optional(),
   billingSnapshot: z.record(z.string(), z.unknown()).optional().nullable(),
   prepTimeMinutes: z.number().int().positive().optional().nullable(),
   prepReadyByAt: z.string().optional().nullable(),
+  merchantStoreId: z.number().optional().nullable(),
+  storeRatingSubmitted: z.boolean().optional(),
+  storeRating: z.number().int().min(1).max(5).optional().nullable(),
+  deliveryRating: z.number().int().min(1).max(5).optional().nullable(),
+  storeReviewText: z.string().optional().nullable(),
+  riderReviewText: z.string().optional().nullable(),
+  tipAmount: z.number().nonnegative().optional().nullable(),
+  distanceKm: z.number().optional().nullable(),
 });
 
 const orderSummarySchema = z.object({
@@ -106,13 +134,22 @@ const orderSummarySchema = z.object({
   merchantPublicName: z.string().optional().nullable(),
   merchantPublicStoreId: z.string().optional().nullable(),
   merchantAddress: z.string().optional().nullable(),
+  deliveryAddress: z.string().optional().nullable(),
   merchantBannerUrl: z.string().optional().nullable(),
   merchantStoreId: z.number().optional().nullable(),
+  orderType: z.string().optional().nullable(),
+  rideType: z.string().optional().nullable(),
+  pickupOtp: z.string().optional().nullable(),
+  pickupLat: z.number().optional().nullable(),
+  pickupLng: z.number().optional().nullable(),
   vegNonVeg: z.string().optional().nullable(),
   avgRating: z.number().optional().nullable(),
   totalReviews: z.number().int().optional().nullable(),
   totalAmount: z.number().optional().nullable(),
   createdAt: z.string(),
+  storeRatingSubmitted: z.boolean().optional(),
+  storeRating: z.number().int().min(1).max(5).optional().nullable(),
+  deliveryRating: z.number().int().min(1).max(5).optional().nullable(),
   items: z.array(z.object({
     name: z.string(),
     quantity: z.number(),
@@ -174,13 +211,49 @@ function toAppStatus(dbStatus: string | null): string {
     assigned: "ORDER_PLACED",
     accepted: "ORDER_PLACED",
     reached_store: "PREPARING",
-    picked_up: "PICKED_UP",
+    reached_user: "RIDER_AT_PICKUP",
+    picked_up: "ON_THE_WAY",
     in_transit: "ON_THE_WAY",
     delivered: "DELIVERED",
     cancelled: "CANCELLED",
     failed: "FAILED",
   };
   return map[s] ?? dbStatus ?? "ORDER_PLACED";
+}
+
+/** Uppercase OMS / rider statuses for the customer app. */
+function normalizeCustomerOrderStatus(
+  currentStatus: string | null | undefined,
+  dbStatus: string | null | undefined
+): string {
+  const cur = (currentStatus ?? "").trim();
+  if (cur === "PLACED") return "ORDER_PLACED";
+  if (cur) return cur.toUpperCase();
+  return toAppStatus(dbStatus ?? null).toUpperCase();
+}
+
+const MAX_RIDER_PICKUP_TRACKING_KM = 80;
+
+function isValidIndiaCoordinate(lat: number, lng: number): boolean {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  if (Math.abs(lat) < 0.0001 && Math.abs(lng) < 0.0001) return false;
+  return lat >= 6 && lat <= 38 && lng >= 68 && lng <= 98;
+}
+
+function isRiderPlausibleForPickup(
+  riderLat: number,
+  riderLng: number,
+  pickupLat: number | null,
+  pickupLng: number | null
+): boolean {
+  if (pickupLat == null || pickupLng == null) return true;
+  if (!isValidIndiaCoordinate(pickupLat, pickupLng)) return true;
+  if (!isValidIndiaCoordinate(riderLat, riderLng)) return false;
+  const km = haversineDistanceKm(
+    { lat: riderLat, lng: riderLng },
+    { lat: pickupLat, lng: pickupLng }
+  );
+  return Number.isFinite(km) && km <= MAX_RIDER_PICKUP_TRACKING_KM;
 }
 
 export async function orderRoutes(app: FastifyInstance) {
@@ -221,9 +294,14 @@ export async function orderRoutes(app: FastifyInstance) {
           orderId: ordersCore.orderId,
           formattedOrderId: ordersCore.formattedOrderId,
           merchantStoreId: ordersCore.merchantStoreId,
+          orderType: ordersCore.orderType,
+          pickupOtp: ordersCore.pickupOtp,
+          pickupLat: ordersCore.pickupLat,
+          pickupLon: ordersCore.pickupLon,
           status: ordersCore.status,
           currentStatus: ordersCore.currentStatus,
           pickupAddressRaw: ordersCore.pickupAddressRaw,
+          dropAddressRaw: ordersCore.dropAddressRaw,
           grandTotal: ordersCore.grandTotal,
           items: ordersCore.items,
           createdAt: ordersCore.createdAt,
@@ -241,8 +319,45 @@ export async function orderRoutes(app: FastifyInstance) {
         storeRatingCache.set(sid, ratingMap.get(sid) ?? null);
       }
 
+      const pageRows = allRows.slice(offset, offset + limit);
+      const pageOrderPks = pageRows.map((r) => r.id);
+      const customerOrderRatings =
+        pageOrderPks.length > 0
+          ? await db
+              .select({
+                orderId: merchantStoreRatings.orderId,
+                rating: merchantStoreRatings.rating,
+                serviceRating: merchantStoreRatings.serviceRating,
+              })
+              .from(merchantStoreRatings)
+              .where(
+                and(
+                  eq(merchantStoreRatings.customerId, customerPk),
+                  inArray(merchantStoreRatings.orderId, pageOrderPks)
+                )
+              )
+          : [];
+      const orderRatingByPk = new Map(
+        customerOrderRatings.map((r) => [Number(r.orderId), r] as const)
+      );
+
+      const rideOrderPks = pageRows
+        .filter((r) => r.orderType === "person_ride")
+        .map((r) => r.id);
+      const rideTypeByPk = new Map<number, string>();
+      if (rideOrderPks.length > 0) {
+        const rideRows = await db
+          .select({ orderId: ordersRide.orderId, rideType: ordersRide.rideType })
+          .from(ordersRide)
+          .where(inArray(ordersRide.orderId, rideOrderPks));
+        for (const rr of rideRows) {
+          const rt = rr.rideType?.trim();
+          if (rt) rideTypeByPk.set(Number(rr.orderId), rt);
+        }
+      }
+
       const summaries = await Promise.all(
-        allRows.slice(offset, offset + limit).map(async (row) => {
+        pageRows.map(async (row) => {
           const orderIdDisplay = row.orderId ?? String(row.id);
           const [foodRow] = await db
             .select({
@@ -375,23 +490,35 @@ export async function orderRoutes(app: FastifyInstance) {
             }));
           }
 
+          const customerRating = orderRatingByPk.get(row.id);
+
           return {
             orderId: orderIdDisplay,
             coreOrderId: row.id,
             formattedOrderId: row.formattedOrderId ?? orderIdDisplay,
-            status: row.currentStatus === "PLACED" ? "ORDER_PLACED" : (row.currentStatus ?? toAppStatus(row.status)),
+            status: normalizeCustomerOrderStatus(row.currentStatus, row.status),
             merchantName: foodRow?.restaurantName ?? null,
             merchantPublicName: merchantPublicName ?? foodRow?.restaurantName ?? null,
             merchantPublicStoreId,
             merchantAddress: row.pickupAddressRaw ?? null,
+            deliveryAddress:
+              row.orderType === "person_ride" ? row.dropAddressRaw ?? null : null,
             merchantBannerUrl,
             merchantStoreId: row.merchantStoreId != null ? Number(row.merchantStoreId) : null,
+            orderType: row.orderType ?? null,
+            rideType: row.orderType === "person_ride" ? rideTypeByPk.get(row.id) ?? null : null,
+            pickupOtp: row.pickupOtp ?? null,
+            pickupLat: row.pickupLat != null ? Number(row.pickupLat) : null,
+            pickupLng: row.pickupLon != null ? Number(row.pickupLon) : null,
             vegNonVeg: foodRow?.vegNonVeg ?? null,
             avgRating: row.merchantStoreId != null ? storeRatingCache.get(Number(row.merchantStoreId))?.avgRating ?? null : null,
             totalReviews: row.merchantStoreId != null ? storeRatingCache.get(Number(row.merchantStoreId))?.totalReviews ?? null : null,
             totalAmount,
             createdAt: (at instanceof Date ? at : new Date(at)).toISOString(),
             items: items.length > 0 ? items : undefined,
+            storeRatingSubmitted: customerRating != null,
+            storeRating: customerRating?.rating ?? null,
+            deliveryRating: customerRating?.serviceRating ?? null,
           };
         })
       );
@@ -462,7 +589,12 @@ export async function orderRoutes(app: FastifyInstance) {
         customerId: customerPk,
         merchantId: body.merchantId,
         merchantParentId: body.merchantParentId != null ? Number(body.merchantParentId) : null,
-        items: body.items,
+        // addonId is `string | number` in the wire schema (legacy clients send
+        // numeric PKs). PendingOrderInput requires string — coerce here.
+        items: body.items.map((it) => ({
+          ...it,
+          addons: (it.addons ?? []).map((a) => ({ ...a, addonId: String(a.addonId) })),
+        })),
         addressId: addressIdNum,
         paymentMethod: body.paymentMethod,
         tipAmount: body.tipAmount,
@@ -688,6 +820,8 @@ export async function orderRoutes(app: FastifyInstance) {
           paymentStatus: ordersCore.paymentStatus,
           deliveryAddress: ordersCore.deliveryAddress,
           deliveryOtp: ordersCore.deliveryOtp,
+          pickupOtp: ordersCore.pickupOtp,
+          orderType: ordersCore.orderType,
           items: ordersCore.items,
           createdAt: ordersCore.createdAt,
           placedAt: ordersCore.placedAt,
@@ -697,8 +831,10 @@ export async function orderRoutes(app: FastifyInstance) {
           pickupLon: ordersCore.pickupLon,
           dropLat: ordersCore.dropLat,
           dropLon: ordersCore.dropLon,
+          distanceKm: ordersCore.distanceKm,
           billingSnapshot: ordersCore.billingSnapshot,
           riderId: ordersCore.riderId,
+          tipAmount: ordersCore.tipAmount,
         })
         .from(ordersCore)
         .where(customerOrderRefWhere(customerPk, orderIdParam))
@@ -709,12 +845,9 @@ export async function orderRoutes(app: FastifyInstance) {
       }
 
       const orderIdDisplay = coreRow.orderId ?? String(coreRow.id);
-      const appStatusEarly =
-        coreRow.currentStatus === "PLACED"
-          ? "ORDER_PLACED"
-          : (coreRow.currentStatus ?? toAppStatus(coreRow.status));
+      const appStatusEarly = normalizeCustomerOrderStatus(coreRow.currentStatus, coreRow.status);
       const isLiveOrder = !["DELIVERED", "CANCELLED", "FAILED", "PAYMENT_FAILED"].includes(
-        String(appStatusEarly).toUpperCase()
+        appStatusEarly
       );
 
       async function loadDetailItems(): Promise<
@@ -818,11 +951,53 @@ export async function orderRoutes(app: FastifyInstance) {
       const riderPromise =
         coreRow.riderId != null
           ? db
-              .select({ name: riders.name, mobile: riders.mobile })
+              .select({
+                name: riders.name,
+                mobile: riders.mobile,
+                selfieUrl: riders.selfieUrl,
+              })
               .from(riders)
               .where(eq(riders.id, coreRow.riderId))
               .limit(1)
           : Promise.resolve([]);
+
+      const vehiclePromise =
+        coreRow.riderId != null
+          ? db
+              .select({
+                registrationNumber: riderVehicles.registrationNumber,
+                vehicleNumber: riderVehicles.vehicleNumber,
+                model: riderVehicles.model,
+                make: riderVehicles.make,
+              })
+              .from(riderVehicles)
+              .where(
+                and(
+                  eq(riderVehicles.riderId, coreRow.riderId),
+                  eq(riderVehicles.isActive, true),
+                  isNull(riderVehicles.deletedAt)
+                )
+              )
+              .orderBy(desc(riderVehicles.updatedAt))
+              .limit(1)
+          : Promise.resolve([]);
+
+      const rideMetaPromise =
+        coreRow.orderType === "person_ride"
+          ? db
+              .select({
+                rideType: ordersRide.rideType,
+                riderReachedPickupAt: ordersRide.riderReachedPickupAt,
+              })
+              .from(ordersRide)
+              .where(eq(ordersRide.orderId, coreRow.id))
+              .limit(1)
+          : Promise.resolve([]);
+
+      const riderRatingPromise =
+        coreRow.riderId != null
+          ? getRiderAverageRating(Number(coreRow.riderId))
+          : Promise.resolve(null);
 
       const prepPromise =
         isLiveOrder && orderIdDisplay
@@ -836,12 +1011,16 @@ export async function orderRoutes(app: FastifyInstance) {
             `
           : Promise.resolve([]);
 
-      const [foodRows, items, store, riderRows, prepRows] = await Promise.all([
+      const [foodRows, items, store, riderRows, prepRows, vehicleRows, rideMetaRows, riderAvgRating] =
+        await Promise.all([
         foodPromise,
         loadDetailItems(),
         storePromise,
         riderPromise,
         prepPromise,
+        vehiclePromise,
+        rideMetaPromise,
+        riderRatingPromise,
       ]);
 
       const foodRow = foodRows[0] ?? null;
@@ -849,12 +1028,30 @@ export async function orderRoutes(app: FastifyInstance) {
       const merchantPublicName = store?.storeDisplayName ?? store?.storeName ?? null;
       const merchantPublicStoreId = store?.storeId ?? null;
 
-      let rider: { name: string; phone?: string } | null = null;
+      let rider: {
+        name: string;
+        phone?: string;
+        photoUrl?: string | null;
+        rating?: number | null;
+        vehicleRegistration?: string | null;
+        vehicleModel?: string | null;
+      } | null = null;
       const riderRow = riderRows[0];
+      const vehicleRow = vehicleRows[0] ?? null;
+      const rideMetaRow = rideMetaRows[0] ?? null;
       if (riderRow) {
+        const reg =
+          vehicleRow?.registrationNumber?.trim() ||
+          vehicleRow?.vehicleNumber?.trim() ||
+          null;
+        const modelParts = [vehicleRow?.make, vehicleRow?.model].filter(Boolean).join(" ").trim();
         rider = {
-          name: riderRow.name?.trim() || "Delivery partner",
+          name: riderRow.name?.trim() || "Captain",
           phone: riderRow.mobile ?? undefined,
+          photoUrl: riderRow.selfieUrl?.trim() || null,
+          rating: riderAvgRating,
+          vehicleRegistration: reg,
+          vehicleModel: modelParts || rideMetaRow?.rideType?.trim() || null,
         };
       }
 
@@ -882,6 +1079,32 @@ export async function orderRoutes(app: FastifyInstance) {
               : null;
       }
 
+      const [existingStoreRating] = await db
+        .select({
+          rating: merchantStoreRatings.rating,
+          serviceRating: merchantStoreRatings.serviceRating,
+          reviewText: merchantStoreRatings.reviewText,
+          reviewTitle: merchantStoreRatings.reviewTitle,
+        })
+        .from(merchantStoreRatings)
+        .where(
+          and(
+            eq(merchantStoreRatings.orderId, coreRow.id),
+            eq(merchantStoreRatings.customerId, customerPk)
+          )
+        )
+        .limit(1);
+
+      const billingSnap = (coreRow.billingSnapshot as Record<string, unknown> | null) ?? null;
+      const snapTip = billingSnap?.tip_amount != null ? Number(billingSnap.tip_amount) : 0;
+      const coreTip = coreRow.tipAmount != null ? Number(coreRow.tipAmount) : 0;
+      const resolvedTipAmount =
+        Number.isFinite(snapTip) && snapTip > 0
+          ? snapTip
+          : Number.isFinite(coreTip) && coreTip > 0
+            ? coreTip
+            : 0;
+
       return {
         orderId: orderIdDisplay,
         coreOrderId: coreRow.id,
@@ -890,6 +1113,8 @@ export async function orderRoutes(app: FastifyInstance) {
         merchantName: foodRow?.restaurantName ?? merchantPublicName ?? null,
         merchantPublicName: merchantPublicName ?? foodRow?.restaurantName ?? null,
         merchantPublicStoreId,
+        merchantStoreId:
+          coreRow.merchantStoreId != null ? Number(coreRow.merchantStoreId) : null,
         merchantAddress: coreRow.pickupAddressRaw ?? null,
         merchantBannerUrl,
         totalAmount,
@@ -902,12 +1127,28 @@ export async function orderRoutes(app: FastifyInstance) {
         pickupLat: coreRow.pickupLat != null ? Number(coreRow.pickupLat) : null,
         pickupLng: coreRow.pickupLon != null ? Number(coreRow.pickupLon) : null,
         deliveryOtp: coreRow.deliveryOtp ?? null,
+        pickupOtp: coreRow.pickupOtp ?? null,
+        orderType: coreRow.orderType ?? null,
+        rideType: rideMetaRow?.rideType?.trim() || null,
+        riderReachedPickupAt:
+          rideMetaRow?.riderReachedPickupAt instanceof Date
+            ? rideMetaRow.riderReachedPickupAt.toISOString()
+            : rideMetaRow?.riderReachedPickupAt != null
+              ? String(rideMetaRow.riderReachedPickupAt)
+              : null,
         statusHistory: [{ status: appStatus, at: (createdAt instanceof Date ? createdAt : new Date(createdAt)).toISOString() }],
         rider,
         items: items.length > 0 ? items : undefined,
-        billingSnapshot: (coreRow.billingSnapshot as Record<string, unknown> | null) ?? null,
+        billingSnapshot: billingSnap,
         prepTimeMinutes,
         prepReadyByAt,
+        storeRatingSubmitted: existingStoreRating != null,
+        storeRating: existingStoreRating?.rating ?? null,
+        deliveryRating: existingStoreRating?.serviceRating ?? null,
+        storeReviewText: existingStoreRating?.reviewText?.trim() || null,
+        riderReviewText: existingStoreRating?.reviewTitle?.trim() || null,
+        tipAmount: resolvedTipAmount,
+        distanceKm: coreRow.distanceKm != null ? Number(coreRow.distanceKm) : null,
       };
     }
   );
@@ -1093,7 +1334,11 @@ export async function orderRoutes(app: FastifyInstance) {
         merchantStoreId = Number(store.id);
         storeForOrder = {
           parentId: store.parent_id != null ? Number(store.parent_id) : null,
+          storeId: store.store_id ?? null,
           fullAddress: store.full_address ?? null,
+          bannerUrl: store.banner_url ?? null,
+          storeName: store.store_name ?? null,
+          storeDisplayName: store.store_display_name ?? null,
           latitude: store.latitude != null ? Number(store.latitude) : null,
           longitude: store.longitude != null ? Number(store.longitude) : null,
           is_accepting_orders: store.is_accepting_orders === true,
@@ -1149,17 +1394,21 @@ export async function orderRoutes(app: FastifyInstance) {
       const merchantParentId = storeForOrder?.parentId ?? null;
 
       const deliveryAddressForDb = sanitizeOptional(deliveryAddress) ?? null;
-      const { sql } = await import("drizzle-orm");
+      const { sql: drizzleSql } = await import("drizzle-orm");
 
       let orderIdText: string;
       try {
         const txResult = await db.transaction(async (tx) => {
           const seqResult = await tx.execute(
-            sql`SELECT ('GM' || nextval('order_id_seq'))::text as order_id`
+            drizzleSql`SELECT ('GM' || nextval('order_id_seq'))::text as order_id`
           );
-          const rows = Array.isArray(seqResult) ? seqResult : (seqResult as { rows?: { order_id: string }[] }).rows ?? [];
-          const idText = rows[0]?.order_id ?? (rows as { order_id?: string }[])[0]?.order_id;
-          if (!idText) throw new Error("Failed to generate order_id");
+          // drizzle returns the rows in different shapes depending on driver;
+          // coerce through unknown so the typed access compiles cleanly.
+          const rowsRaw = (Array.isArray(seqResult) ? seqResult : (seqResult as { rows?: unknown[] }).rows ?? []) as unknown[];
+          const firstRow = rowsRaw[0] as { order_id?: unknown } | undefined;
+          const idTextMaybe = firstRow?.order_id != null ? String(firstRow.order_id) : undefined;
+          if (!idTextMaybe) throw new Error("Failed to generate order_id");
+          const idText: string = idTextMaybe;
 
           const coreInsert = tx.insert(ordersCore) as any;
           await coreInsert.values({
@@ -1200,7 +1449,8 @@ export async function orderRoutes(app: FastifyInstance) {
               itemName: i.itemName,
               categoryName: null,
               vegNonveg: null,
-              variantId: i.variantKey ?? (i.variantId != null ? String(i.variantId) : undefined),
+              // DB column is bigint — only the numeric variant PK belongs here.
+              variantId: i.variantId ?? null,
               variantName: i.variantName ?? undefined,
               quantity: i.quantity,
               basePrice: String(i.basePrice.toFixed(2)),
@@ -1444,12 +1694,22 @@ export async function orderRoutes(app: FastifyInstance) {
       if (customerPk === null) return reply.status(403).send({ error: "Customer not found" });
 
       const [orderRow] = await db
-        .select({ id: ordersCore.id, orderId: ordersCore.orderId })
+        .select({
+          id: ordersCore.id,
+          orderId: ordersCore.orderId,
+          riderId: ordersCore.riderId,
+          pickupLat: ordersCore.pickupLat,
+          pickupLon: ordersCore.pickupLon,
+        })
         .from(ordersCore)
         .where(customerOrderRefWhere(customerPk, orderIdParam))
         .limit(1);
       if (!orderRow) return reply.status(404).send({ error: "Order not found" });
       const orderIdForTracking = orderRow.orderId ?? String(orderRow.id);
+      const pickupLatNum =
+        orderRow.pickupLat != null ? Number(orderRow.pickupLat) : null;
+      const pickupLngNum =
+        orderRow.pickupLon != null ? Number(orderRow.pickupLon) : null;
 
       const [latest] = await db
         .select({
@@ -1463,17 +1723,218 @@ export async function orderRoutes(app: FastifyInstance) {
         .orderBy(desc(orderRiderTracking.createdAt))
         .limit(1);
 
-      if (!latest) {
-        return { orderId: orderIdParam, rider: null };
+      if (latest) {
+        const riderLat = Number(latest.latitude);
+        const riderLng = Number(latest.longitude);
+        if (isRiderPlausibleForPickup(riderLat, riderLng, pickupLatNum, pickupLngNum)) {
+          return {
+            orderId: orderIdParam,
+            rider: {
+              latitude: riderLat,
+              longitude: riderLng,
+              headingDegrees: latest.headingDegrees != null ? Number(latest.headingDegrees) : null,
+              updatedAt: (latest.createdAt ?? new Date()).toISOString(),
+            },
+          };
+        }
       }
-      return {
-        orderId: orderIdParam,
-        rider: {
-          latitude: Number(latest.latitude),
-          longitude: Number(latest.longitude),
-          headingDegrees: latest.headingDegrees != null ? Number(latest.headingDegrees) : null,
-          updatedAt: (latest.createdAt ?? new Date()).toISOString(),
+
+      if (orderRow.riderId != null) {
+        const [live] = await db
+          .select({
+            latitude: riderLiveLocations.latitude,
+            longitude: riderLiveLocations.longitude,
+            heading: riderLiveLocations.heading,
+            updatedAt: riderLiveLocations.updatedAt,
+          })
+          .from(riderLiveLocations)
+          .where(eq(riderLiveLocations.riderId, orderRow.riderId))
+          .limit(1);
+
+        if (live) {
+          const riderLat = Number(live.latitude);
+          const riderLng = Number(live.longitude);
+          if (isRiderPlausibleForPickup(riderLat, riderLng, pickupLatNum, pickupLngNum)) {
+            return {
+              orderId: orderIdParam,
+              rider: {
+                latitude: riderLat,
+                longitude: riderLng,
+                headingDegrees: live.heading != null ? Number(live.heading) : null,
+                updatedAt: (live.updatedAt ?? new Date()).toISOString(),
+              },
+            };
+          }
+        }
+      }
+
+      return { orderId: orderIdParam, rider: null };
+    }
+  );
+
+  const storeRatingBodySchema = z.object({
+    storeRating: z.number().int().min(1).max(5),
+    deliveryRating: z.number().int().min(1).max(5).optional().nullable(),
+    reviewText: z.string().max(2000).optional().nullable(),
+    riderReviewText: z.string().max(2000).optional().nullable(),
+    riderTipAmount: z.number().nonnegative().optional().nullable(),
+  });
+
+  app.post<{ Params: { id: string }; Body: z.infer<typeof storeRatingBodySchema> }>(
+    "/:id/store-rating",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: storeRatingBodySchema,
+        response: {
+          200: z.object({
+            submitted: z.literal(true),
+            storeRating: z.number(),
+            deliveryRating: z.number().nullable(),
+          }),
+          400: z.object({ error: z.string(), message: z.string().optional() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string() }),
         },
+      },
+    },
+    async (req, reply) => {
+      const sub = req.auth?.sub;
+      if (!sub || req.auth?.role !== "customer") {
+        return reply.status(403).send({ error: "Customer only" });
+      }
+      const orderIdParam = (req.params as { id: string }).id;
+      const body = storeRatingBodySchema.parse(req.body ?? {});
+      const db = getDb();
+
+      const [customerRow] = await db
+        .select({ id: customers.id })
+        .from(customers)
+        .where(eq(customers.customerId, sub))
+        .limit(1);
+      const customerPk = customerRow?.id ?? null;
+      if (customerPk == null) return reply.status(403).send({ error: "Customer not found" });
+
+      const [orderRow] = await db
+        .select({
+          id: ordersCore.id,
+          merchantStoreId: ordersCore.merchantStoreId,
+          currentStatus: ordersCore.currentStatus,
+          status: ordersCore.status,
+          riderId: ordersCore.riderId,
+          tipAmount: ordersCore.tipAmount,
+          billingSnapshot: ordersCore.billingSnapshot,
+        })
+        .from(ordersCore)
+        .where(customerOrderRefWhere(customerPk, orderIdParam))
+        .limit(1);
+      if (!orderRow) return reply.status(404).send({ error: "Order not found" });
+
+      const statusUpper = normalizeCustomerOrderStatus(orderRow.currentStatus, orderRow.status);
+      if (statusUpper !== "DELIVERED") {
+        return reply.status(400).send({
+          error: "order_not_delivered",
+          message: "You can rate the store after delivery is complete.",
+        });
+      }
+
+      const storeId = orderRow.merchantStoreId != null ? Number(orderRow.merchantStoreId) : null;
+      if (storeId == null || !Number.isFinite(storeId) || storeId <= 0) {
+        return reply.status(400).send({ error: "store_not_found" });
+      }
+
+      const [existing] = await db
+        .select({ id: merchantStoreRatings.id })
+        .from(merchantStoreRatings)
+        .where(
+          and(
+            eq(merchantStoreRatings.orderId, orderRow.id),
+            eq(merchantStoreRatings.customerId, customerPk)
+          )
+        )
+        .limit(1);
+      if (existing) {
+        return reply.status(409).send({ error: "already_rated" });
+      }
+
+      const deliveryRating =
+        body.deliveryRating != null && Number.isFinite(body.deliveryRating)
+          ? Math.round(body.deliveryRating)
+          : null;
+      const reviewText =
+        typeof body.reviewText === "string" && body.reviewText.trim()
+          ? body.reviewText.trim()
+          : null;
+
+      const riderTipRaw =
+        body.riderTipAmount != null && Number.isFinite(body.riderTipAmount)
+          ? Math.round(body.riderTipAmount)
+          : 0;
+      const existingTip =
+        orderRow.tipAmount != null && Number(orderRow.tipAmount) > 0
+          ? Number(orderRow.tipAmount)
+          : 0;
+      const snap = (orderRow.billingSnapshot as Record<string, unknown> | null) ?? null;
+      const snapTip =
+        snap?.tip_amount != null && Number(snap.tip_amount) > 0 ? Number(snap.tip_amount) : 0;
+      const hadCheckoutTip = existingTip > 0 || snapTip > 0;
+      const riderTipAmount = !hadCheckoutTip && riderTipRaw > 0 ? riderTipRaw : 0;
+
+      const riderReviewText =
+        typeof body.riderReviewText === "string" && body.riderReviewText.trim()
+          ? body.riderReviewText.trim()
+          : null;
+
+      await db.insert(merchantStoreRatings).values({
+        storeId,
+        orderId: orderRow.id,
+        customerId: customerPk,
+        rating: body.storeRating,
+        foodRating: body.storeRating,
+        serviceRating: deliveryRating,
+        packagingRating: null,
+        reviewText,
+        reviewTitle: riderReviewText,
+        isVerified: true,
+      });
+
+      if (riderTipAmount > 0 && orderRow.riderId != null) {
+        const nextSnap = {
+          ...(snap ?? {}),
+          tip_amount: riderTipAmount,
+          post_delivery_tip: true,
+        };
+        await db
+          .update(ordersCore)
+          .set({
+            tipAmount: String(riderTipAmount),
+            billingSnapshot: nextSnap,
+          })
+          .where(eq(ordersCore.id, orderRow.id));
+
+        const sql = getSql();
+        try {
+          await sql`
+            INSERT INTO customer_tips_given (customer_id, order_id, rider_id, tip_amount, tip_paid, paid_at)
+            VALUES (
+              ${customerPk}::bigint,
+              ${orderRow.id}::bigint,
+              ${orderRow.riderId}::integer,
+              ${String(riderTipAmount)}::numeric,
+              TRUE,
+              NOW()
+            )
+          `;
+        } catch {
+          /* legacy FK may reference orders(id); orders_core tip is still updated */
+        }
+      }
+
+      return {
+        submitted: true as const,
+        storeRating: body.storeRating,
+        deliveryRating,
       };
     }
   );

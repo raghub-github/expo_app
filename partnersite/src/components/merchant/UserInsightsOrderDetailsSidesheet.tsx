@@ -15,6 +15,7 @@ import {
 import type { OrdersFoodRow } from "@/hooks/useFoodOrders";
 import { normalizeOrderItems, type NormalizedOrderLineItem } from "@/lib/orderLineItems";
 import { OrderHistoryItemDetailsModal } from "@/components/OrderHistoryItemDetailsModal";
+import { resolveMerchantCtm } from "@/lib/merchant-order-ctm";
 
 function historyStatusLabel(status: string) {
   const s = status === "NEW" ? "CREATED" : status || "CREATED";
@@ -210,8 +211,7 @@ export function UserInsightsOrderDetailsSidesheet({
   const packaging = pricing?.packaging ?? 0;
   const taxes = pricing?.taxes ?? 0;
   const discount = pricing?.discount ?? 0;
-  const total =
-    pricing?.total ?? Number(order?.food_items_total_value ?? lineSum);
+  const total = order ? resolveMerchantCtm(order) : lineSum;
 
   if (!open || typeof document === "undefined") return null;
 

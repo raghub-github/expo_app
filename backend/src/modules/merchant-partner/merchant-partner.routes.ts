@@ -19,11 +19,13 @@ import {
 } from "./store-schedule-engine.js";
 import { resolveTicketTitleForUnifiedTicketsInsert } from "./unified-ticket-title-for-insert.js";
 import { buildGrowthBusinessInsights } from "./growth-business-insights.js";
+import { buildLivePreviewInsights } from "./live-preview-insights.js";
 import {
   countMerchantDeliveredOrdersIst,
   sumMerchantLedgerEarningsIst,
 } from "../../lib/merchant-growth-metrics.js";
 import { loadMerchantOfferInsights } from "./merchant-offer-insights.service.js";
+import { loadMerchantMarketInsights } from "../../lib/merchant-store-competitors.js";
 import { registerMerchantSubscriptionRoutes } from "./merchant-subscription.routes.js";
 
 type AuditContext = {
@@ -2829,7 +2831,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             return reply.code(400).send({ error: "invalid_date_range" });
           }
 
-          const insights = await loadMerchantOfferInsights(sql, storeId, startMs, endMs);
+          const insights = await loadMerchantOfferInsights(sql as unknown as Parameters<typeof loadMerchantOfferInsights>[0], storeId, startMs, endMs);
           return reply.send({ success: true, insights });
         }
       );
@@ -4693,6 +4695,63 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const raw = String(req.query?.period ?? "today").toLowerCase();
           const period = ["today", "yesterday", "week", "month", "alltime"].includes(raw) ? raw : "today";
           const body = await buildGrowthBusinessInsights(sql, storeId, period);
+          return reply.send(body);
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/growth/live-preview — full Live preview dashboard metrics (IST). */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { period?: string } }>(
+        "/stores/:storeId/growth/live-preview",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const raw = String(req.query?.period ?? "today").toLowerCase();
+          const period = ["today", "yesterday", "week", "month", "alltime"].includes(raw) ? raw : "today";
+          const body = await buildLivePreviewInsights(sql, storeId, period);
+          return reply.send(body);
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/market/insights — locality + competitor affinity (orders_core). */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { scope?: string; limit?: string } }>(
+        "/stores/:storeId/market/insights",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const limitRaw = parseInt(req.query?.limit ?? "10", 10);
+          const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, limitRaw), 20) : 10;
+          const body = await loadMerchantMarketInsights(sql, storeId, req.query?.scope, limit);
+          if (!body) return reply.code(404).send({ error: "store_not_found" });
           return reply.send(body);
         }
       );

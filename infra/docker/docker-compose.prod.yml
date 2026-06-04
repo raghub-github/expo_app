@@ -28,6 +28,15 @@ services:
       - "80:80"
       - "443:443"
     volumes:
+      # IMPORTANT — file-to-file mounts only. Never mount the whole
+      # ../nginx directory into /etc/nginx or /etc/nginx/conf.d:
+      #   - ../nginx:/etc/nginx           ← would clobber mime.types etc.
+      #   - ../nginx:/etc/nginx/conf.d    ← would load nginx.conf inside an
+      #                                     http{} context, so `worker_processes`
+      #                                     would error: "directive not allowed here"
+      # nginx.conf below is the MAIN config (has worker_processes / events / http
+      # blocks). It replaces the image's default main config. proxy_common.conf
+      # is a snippet `include`'d from each server block, not loaded directly.
       - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ../nginx/proxy_common.conf:/etc/nginx/proxy_common.conf:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
@@ -104,6 +113,20 @@ services:
     restart: unless-stopped
     env_file:
       - ../../services/eta-worker/.env
+    environment:
+      NODE_ENV: production
+      BACKEND_INTERNAL_URL: http://backend:3000
+    depends_on:
+      - backend
+    networks: [app]
+
+  financial-rule-worker:
+    build:
+      context: ../..
+      dockerfile: services/financial-rule-worker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../services/financial-rule-worker/.env
     environment:
       NODE_ENV: production
       BACKEND_INTERNAL_URL: http://backend:3000

@@ -19,12 +19,20 @@ import {
 import { recordAcceptanceTimeline } from "../../lib/order-acceptance-timeline.js";
 import { recordCancellationTimeline } from "../../lib/order-cancellation-timeline.js";
 import { applyPaymentCancellationPayment } from "../../lib/apply-cancellation-payment.js";
+import {
+  executeOrderCancellationFinancials,
+  executeRtoFinancials,
+  lookupOrderContext,
+} from "../../lib/financial-rule-executor.js";
+import { refundFieldsFromEngineResult } from "../../lib/order-cancellation-refund.js";
 import { recordOrderCancellation } from "../../lib/record-order-cancellation.js";
-import { resolveOrderCancellationRefund } from "../../lib/order-cancellation-refund.js";
 import { creditMerchantOrderEarningOnDelivered } from "../../lib/credit-merchant-order-on-delivered.js";
 import { recordReadyTimeline } from "../../lib/order-food-status-timeline.js";
+import { maybeStartOrderDispatch } from "../../lib/order-dispatch.service.js";
+import { fetchFoodRiderAcceptFlow } from "../../lib/food-rider-accept-flow.js";
 import { loadMerchantOrderLineItemsByTextIds } from "../../lib/load-merchant-order-line-items.js";
 import { resolveMerchantCancellationFields } from "../../lib/merchant-cancellation-fields.js";
+import { recordRiderAssignmentDeliveredIfActive } from "../../lib/order-rider-assignment-history.js";
 
 export type MerchantFoodOrderItem = {
   qty: number;
@@ -105,6 +113,7 @@ export type MerchantFoodOrderDto = {
   prep_ready_by_at: string | null;
   prep_delay_minutes: number | null;
   prep_delay_use_count: number | null;
+  prepared_late_minutes: number | null;
 };
 
 function num(v: unknown): number {
@@ -125,6 +134,16 @@ function toIsoOrNull(v: unknown): string | null {
   } catch {
     return null;
   }
+}
+
+function computePreparedLateMinutes(
+  preparedAtIso: string,
+  prepReadyByAtIso: string | null | undefined
+): number {
+  if (!prepReadyByAtIso) return 0;
+  const lateMs = new Date(preparedAtIso).getTime() - new Date(prepReadyByAtIso).getTime();
+  if (lateMs <= 0) return 0;
+  return Math.max(1, Math.ceil(lateMs / 60_000));
 }
 
 type TimelineMilestoneSnapshot = {
@@ -381,6 +400,7 @@ type FoodRow = {
   prep_ready_by_at: string | null;
   prep_delay_minutes: number | null;
   prep_delay_use_count: number | null;
+  prepared_late_minutes: number | null;
 };
 
 export type MerchantFoodOrderRiderLogEntry = {
@@ -584,7 +604,8 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.preparation_time_minutes,
         of.prep_ready_by_at,
         of.prep_delay_minutes,
-        of.prep_delay_use_count
+        of.prep_delay_use_count,
+        of.prepared_late_minutes
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
         AND (of.order_id IN ${sql(corePks)} OR of.core_order_id IN ${sql(textIds)})
@@ -624,7 +645,8 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.preparation_time_minutes,
         of.prep_ready_by_at,
         of.prep_delay_minutes,
-        of.prep_delay_use_count
+        of.prep_delay_use_count,
+        of.prepared_late_minutes
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
         AND of.order_id IN ${sql(corePks)}
@@ -664,7 +686,8 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.preparation_time_minutes,
         of.prep_ready_by_at,
         of.prep_delay_minutes,
-        of.prep_delay_use_count
+        of.prep_delay_use_count,
+        of.prepared_late_minutes
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
         AND of.core_order_id IN ${sql(textIds)}
@@ -837,6 +860,8 @@ async function buildOrderDto(
       food?.prep_delay_minutes != null ? Number(food.prep_delay_minutes) : null,
     prep_delay_use_count:
       food?.prep_delay_use_count != null ? Number(food.prep_delay_use_count) : null,
+    prepared_late_minutes:
+      food?.prepared_late_minutes != null ? Number(food.prepared_late_minutes) : null,
   };
 }
 
@@ -968,6 +993,20 @@ export async function patchMerchantFoodOrderPrepDelay(
     /* non-fatal */
   }
 
+  if (existing.order_id != null && Number.isFinite(Number(existing.order_id))) {
+    try {
+      const { applyPrepDelayCustomerEffects } = await import(
+        "../../lib/customer-prep-delay-effects.js"
+      );
+      await applyPrepDelayCustomerEffects(sql, {
+        ordersCoreId: Number(existing.order_id),
+        additionalMinutes,
+      });
+    } catch {
+      /* non-fatal — prep delay DB update already committed */
+    }
+  }
+
   const orders = await loadMerchantFoodOrders(sql, storeId, { ordersFoodId });
   const updated = orders[0];
   if (!updated) throw new Error("order_not_found");
@@ -1003,11 +1042,13 @@ export async function loadMerchantFoodOrderRidersLog(
     }>
   >`
     SELECT rider_id, rider_name, rider_mobile, assignment_status,
+      assignment_sequence, is_active,
       assigned_at, accepted_at, rejected_at, reached_merchant_at,
-      picked_up_at, delivered_at, cancelled_at
+      picked_up_at, delivered_at, cancelled_at, unassigned_at
     FROM order_rider_assignments
-    WHERE order_id = ${Number(coreOrderId)}
-    ORDER BY assigned_at DESC NULLS LAST
+    WHERE order_core_id = ${Number(coreOrderId)}
+       OR order_id = ${Number(coreOrderId)}
+    ORDER BY assignment_sequence DESC NULLS LAST, assigned_at DESC NULLS LAST
   `;
   if (!assignments.length) return [];
 
@@ -1518,6 +1559,36 @@ export async function patchMerchantFoodOrderStatus(
     } catch {
       /* non-fatal */
     }
+    try {
+      const preview = await loadMerchantFoodOrders(sql, storeId, { ordersFoodId, limit: 1 });
+      const ctmOrder = preview[0];
+      const ctm =
+        num(ctmOrder?.pricing?.total) > 0
+          ? num(ctmOrder?.pricing?.total)
+          : num(existing.food_items_total_value);
+      if (ctm > 0) {
+        await sql`
+          UPDATE orders_food
+          SET food_items_total_value = ${ctm}, updated_at = ${now}::timestamptz
+          WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
+        `;
+        await sql`
+          UPDATE orders_core
+          SET total_ctm = ${ctm}, updated_at = ${now}::timestamptz
+          WHERE id = ${corePk}
+        `;
+      }
+    } catch {
+      /* non-fatal */
+    }
+    try {
+      const flow = await fetchFoodRiderAcceptFlow();
+      if (flow === "after_merchant_accept") {
+        void maybeStartOrderDispatch(corePk);
+      }
+    } catch {
+      /* non-fatal */
+    }
   } else if (status === "PREPARING") {
     await sql`
       UPDATE orders_food
@@ -1525,13 +1596,28 @@ export async function patchMerchantFoodOrderStatus(
       WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
     `;
   } else if (status === "READY_FOR_PICKUP") {
+    const prepRows = await sql<{ prep_ready_by_at: string | null }[]>`
+      SELECT prep_ready_by_at FROM orders_food WHERE id = ${ordersFoodId} LIMIT 1
+    `;
+    const prepReadyByAt = prepRows[0]?.prep_ready_by_at ?? null;
+    const lateMins = computePreparedLateMinutes(now, prepReadyByAt);
     await sql`
       UPDATE orders_food
       SET order_status = ${status}, updated_at = ${now}::timestamptz,
           preparing_at = COALESCE(preparing_at, ${now}::timestamptz),
-          prepared_at = ${now}::timestamptz
+          prepared_at = ${now}::timestamptz,
+          prepared_late_minutes = ${lateMins}
       WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
     `;
+    try {
+      await sql`
+        UPDATE orders_core
+        SET prepared_late_minutes = ${lateMins}, updated_at = ${now}::timestamptz
+        WHERE id = ${corePk}
+      `;
+    } catch {
+      /* non-fatal */
+    }
     try {
       await recordReadyTimeline(sql, {
         orderCorePk: corePk,
@@ -1542,6 +1628,36 @@ export async function patchMerchantFoodOrderStatus(
     } catch {
       /* non-fatal */
     }
+    try {
+      const riderRows = await sql<
+        { rider_id: number | null; current_status: string | null }[]
+      >`
+        SELECT rider_id, current_status
+        FROM orders_core
+        WHERE id = ${corePk}
+        LIMIT 1
+      `;
+      const assignedRiderId = Number(riderRows[0]?.rider_id ?? 0);
+      const coreCurrent = String(riderRows[0]?.current_status ?? "").trim().toUpperCase();
+      if (assignedRiderId > 0 && coreCurrent === "RIDER_ASSIGNED") {
+        await sql`
+          UPDATE orders_core
+          SET current_status = 'OUT_FOR_DELIVERY', updated_at = ${now}::timestamptz
+          WHERE id = ${corePk} AND rider_id = ${assignedRiderId}
+        `;
+        await sql`
+          UPDATE orders_food
+          SET
+            order_status = 'OUT_FOR_DELIVERY',
+            dispatched_at = ${now}::timestamptz,
+            updated_at = ${now}::timestamptz
+          WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
+        `;
+      }
+    } catch {
+      /* non-fatal — rider may still dispatch via pool after ready */
+    }
+    void maybeStartOrderDispatch(corePk);
   } else if (status === "OUT_FOR_DELIVERY") {
     await sql`
       UPDATE orders_food
@@ -1554,6 +1670,19 @@ export async function patchMerchantFoodOrderStatus(
       SET order_status = ${status}, updated_at = ${now}::timestamptz, delivered_at = ${now}::timestamptz
       WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
     `;
+    try {
+      const orderText = String(existing.core_order_id ?? "").trim();
+      if (orderText) {
+        await recordRiderAssignmentDeliveredIfActive({
+          orderCorePk: corePk,
+          orderIdText: orderText,
+          occurredAt: new Date(now),
+          statusMessage: "Order delivered",
+        });
+      }
+    } catch {
+      /* non-fatal */
+    }
   } else if (status === "CANCELLED") {
     const cancelLabel = actionLabels.cancelled_by_label ?? null;
     if (rejectedReason) {
@@ -1587,13 +1716,21 @@ export async function patchMerchantFoodOrderStatus(
       SELECT grand_total, accepted_at FROM orders_core WHERE id = ${corePk} LIMIT 1
     `;
     const coreRow = coreMoney[0] as { grand_total?: unknown; accepted_at?: string | null } | undefined;
-    const refund = resolveOrderCancellationRefund({
+    const cancelledByType =
+      actionSource === "admin" ? "admin" : actionSource === "system" ? "system" : "store";
+    const orderCtx = await lookupOrderContext(corePk, sql);
+    const engineResult = await executeOrderCancellationFinancials({
+      orderCoreId: corePk,
+      ordersFoodId,
+      coreOrderId: orderCtx.coreOrderId,
+      merchantStoreId: storeId,
       previousStatus: currentStatus,
-      acceptedAt: coreRow?.accepted_at ?? null,
-      grandTotal: coreRow?.grand_total ?? 0,
-      cancelMode: actionMode,
-      rejectedReason: displayReason,
+      cancelledByType,
+      orderGross: num(coreRow?.grand_total ?? existing.food_items_total_value ?? orderCtx.grandTotal),
+      serviceType: orderCtx.serviceType,
+      cancellationReasonId: null,
     });
+    const refund = refundFieldsFromEngineResult(engineResult.raw);
     try {
       await recordOrderCancellation(sql, {
         orderCorePk: corePk,
@@ -1609,21 +1746,26 @@ export async function patchMerchantFoodOrderStatus(
         grandTotal: coreRow?.grand_total ?? 0,
         refundStatus: refund.refundStatus,
         refundAmount: refund.refundAmount,
+        metadata: engineResult.raw ? { financial_rule_engine: engineResult.raw } : undefined,
       });
     } catch {
       /* non-fatal */
     }
-    try {
-      await applyPaymentCancellationPayment({
-        orderCoreId: corePk,
-        ordersFoodId,
-        merchantStoreId: storeId,
-        previousStatus: currentStatus,
-        cancelledByType,
-        orderGross: num(coreRow?.grand_total ?? existing.food_items_total_value),
-      });
-    } catch {
-      /* non-fatal */
+    if (!engineResult.applied) {
+      try {
+        await applyPaymentCancellationPayment({
+          orderCoreId: corePk,
+          ordersFoodId,
+          merchantStoreId: storeId,
+          previousStatus: currentStatus,
+          cancelledByType,
+          orderGross: num(coreRow?.grand_total ?? existing.food_items_total_value),
+          coreOrderId: orderCtx.coreOrderId,
+          serviceType: orderCtx.serviceType,
+        });
+      } catch {
+        /* non-fatal */
+      }
     }
   } else if (status === "RTO") {
     try {
@@ -1636,6 +1778,21 @@ export async function patchMerchantFoodOrderStatus(
       SET order_status = ${status}, updated_at = ${now}::timestamptz, is_rto = true, rto_at = ${now}::timestamptz
       WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
     `;
+    try {
+      const orderCtx = await lookupOrderContext(corePk, sql);
+      await executeRtoFinancials({
+        orderCoreId: corePk,
+        ordersFoodId,
+        coreOrderId: orderCtx.coreOrderId,
+        merchantStoreId: storeId,
+        previousStatus: currentStatus,
+        triggeredByType: actionSource === "admin" ? "admin" : "merchant",
+        orderGross: num(orderCtx.grandTotal),
+        cancellationReasonId: null,
+      }, sql);
+    } catch {
+      /* non-fatal */
+    }
   } else {
     await sql`
       UPDATE orders_food
@@ -1677,12 +1834,21 @@ export async function patchMerchantFoodOrderStatus(
   const order = loaded[0];
   if (!order) throw new Error("order_not_found_after_update");
 
-  const merchantGross =
-    num(order.pricing?.total) > 0
-      ? num(order.pricing?.total)
-      : num(order.grand_total) > 0
-        ? num(order.grand_total)
+  let merchantGross = 0;
+  try {
+    const ctmRows = await sql<{ total_ctm: unknown }[]>`
+      SELECT total_ctm FROM orders_core WHERE id = ${corePk} LIMIT 1
+    `;
+    merchantGross = num(ctmRows[0]?.total_ctm);
+  } catch {
+    /* total_ctm column optional on older DBs */
+  }
+  if (merchantGross <= 0) {
+    merchantGross =
+      num(order.pricing?.total) > 0
+        ? num(order.pricing?.total)
         : num(existing.food_items_total_value);
+  }
 
   await creditMerchantOrderEarningOnDelivered({
     merchantStoreId: storeId,
@@ -1746,5 +1912,5 @@ export async function loadMerchantFoodOrderTimeline(
     WHERE order_id = ${coreId}
     ORDER BY occurred_at ASC, id ASC
   `;
-  return rows as MerchantOrderTimelineEntry[];
+  return rows as unknown as MerchantOrderTimelineEntry[];
 }

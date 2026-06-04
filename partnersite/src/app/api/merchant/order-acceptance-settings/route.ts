@@ -4,8 +4,8 @@ import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant';
 import { getAreaManagerRecordIdForAuthUser, getMerchantStoreById } from '@/lib/merchant/get-merchant-store';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 
 /** Stored under merchant_store_settings.settings_metadata */
 const PLATFORM_FOOD_ALERT_SOUND_SLOT_META_KEY = 'platform_food_alert_sound_slot';

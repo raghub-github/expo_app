@@ -60,7 +60,7 @@ function buildPrintHtml(
 ): string {
   const items = order.items ?? [];
   const address = formatOrderDropAddress(order.drop_address_normalized, order.drop_address_raw);
-  const utensils = getUtensilsCustomerLabel(order.requires_utensils);
+  const utensils = getUtensilsCustomerLabel(order);
   const instructions = order.delivery_instructions?.trim();
   const otp = order.pickup_otp?.trim();
 

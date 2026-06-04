@@ -73,6 +73,7 @@ export type ApiFoodOrder = {
   preparation_time_minutes?: number | null;
   prep_delay_minutes?: number | null;
   prep_delay_use_count?: number | null;
+  prepared_late_minutes?: number | null;
   handed_over_to_rider_at?: string | null;
   rider_picked_up_at?: string | null;
   delivered_at: string | null;

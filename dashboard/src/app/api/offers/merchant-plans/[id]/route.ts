@@ -35,6 +35,10 @@ function toPlanRow(row: Record<string, unknown>) {
     displayOrder: row.display_order != null ? Number(row.display_order) : null,
     isActive: Boolean(row.is_active),
     isPopular: Boolean(row.is_popular),
+    sheetBadgeLabel: (row.sheet_badge_label as string) ?? null,
+    sheetHeadline: (row.sheet_headline as string) ?? null,
+    sheetCtaLabel: (row.sheet_cta_label as string) ?? null,
+    benefitsJson: row.benefits_json ?? [],
     createdAt: (row.created_at as string) ?? null,
   };
 }
@@ -107,6 +111,22 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       { key: "displayOrder", db: "display_order", fn: (v) => v != null ? Number(v) : v },
       { key: "isActive", db: "is_active", fn: (v) => v != null ? Boolean(v) : v },
       { key: "isPopular", db: "is_popular", fn: (v) => v != null ? Boolean(v) : v },
+      { key: "sheetBadgeLabel", db: "sheet_badge_label" },
+      { key: "sheetHeadline", db: "sheet_headline" },
+      { key: "sheetCtaLabel", db: "sheet_cta_label" },
+      {
+        key: "benefitsJson",
+        db: "benefits_json",
+        fn: (v) => {
+          if (v == null) return null;
+          const arr = Array.isArray(v)
+            ? v
+            : typeof v === "string"
+              ? v.split("\n").map((s) => s.trim()).filter(Boolean)
+              : [];
+          return JSON.stringify(arr);
+        },
+      },
     ];
 
     for (const { key, db, fn } of fields) {

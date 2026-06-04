@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { STANDARD_REMARKS } from "@/lib/remarks/standardRemarks";
 import { useAuthOptional } from "@/providers/AuthProvider";
 import { Bell, ClipboardCheck, MessageCircle, Pencil, UserCircle2, X } from "lucide-react";
@@ -10,6 +10,7 @@ import { computeOrderItemQuantityCount } from "@/lib/merchantOrderFoodActions";
 import {
   formatFirstEtaAt,
   formatKptMinutes,
+  formatMerchantExtraPrepMinutes,
   formatOrderDeliveryTypeLabel,
   formatOrderInitiatedByLabel,
   formatScheduledOrderLabel,
@@ -60,12 +61,15 @@ interface OrderRightSidebarProps {
     itemCount?: number | null;
     systemKptMinutes?: number | null;
     merchantUpdatedKptMinutes?: number | null;
+    merchantExtraPrepMinutes?: number | null;
     isScheduledOrder?: boolean;
     scheduledDeliverySummary?: string | null;
     deliveryType?: string | null;
     contactlessDelivery?: boolean | null;
     localityIsSafe?: boolean | null;
     deliveryInitiator?: string | null;
+    pickupOtp?: string | null;
+    rtoOtp?: string | null;
     cancellationInfo?: OrderCancellationInfo | null;
   };
   /** Line-item count (prefetched items or API enrichment). */
@@ -131,6 +135,9 @@ interface AssignedRiderOption {
 interface Recon {
   id: string;
   rider: string;
+  providerName?: string | null;
+  riderName?: string | null;
+  riderMobile?: string | null;
   reason: string;
   reasonCategory: string | null;
   comment: string | null;
@@ -141,6 +148,141 @@ interface Recon {
 }
 
 const RECON_REASON_SEP = " !!!!!! ";
+
+/** Show GatiMitra instead of internal for provider name */
+function normalizeProviderName(name: string | null | undefined): string | null {
+  if (!name || !String(name).trim()) return null;
+  const t = String(name).trim().toLowerCase();
+  if (t === "internal") return "GatiMitra";
+  return String(name).trim();
+}
+
+/** e.g. SHIPROCKET_DIRECT( rahul prajapati [ 9540799989 ] ) */
+function buildReconRiderLabel(params: {
+  providerName?: string | null;
+  riderName?: string | null;
+  riderMobile?: string | null;
+}): string {
+  const provider =
+    normalizeProviderName(params.providerName) ?? params.providerName?.trim() ?? "";
+  const name = params.riderName?.trim() ?? "";
+  const mobile = params.riderMobile?.trim() ?? "";
+  if (!provider && !name && !mobile) return "Unknown rider";
+  if (!provider) {
+    if (name && mobile) return `${name} [ ${mobile} ]`;
+    return name || mobile || "Unknown rider";
+  }
+  if (!name && !mobile) return provider;
+  if (name && mobile) return `${provider}( ${name} [ ${mobile} ] )`;
+  if (name) return `${provider}( ${name} )`;
+  return `${provider}( [ ${mobile} ] )`;
+}
+
+function riderOptionDedupeKey(r: AssignedRiderOption): string {
+  if (r.riderId != null) return `rider_${r.riderId}`;
+  const mobile = (r.riderMobile ?? "").replace(/\D/g, "");
+  const name = (r.riderName ?? "").trim().toLowerCase();
+  if (mobile.length >= 8) return `mobile_${mobile}`;
+  if (name) return `name_${name}`;
+  return `id_${r.id}`;
+}
+
+function pickBetterRiderOption(
+  existing: AssignedRiderOption,
+  incoming: AssignedRiderOption
+): AssignedRiderOption {
+  const riderId = existing.riderId ?? incoming.riderId;
+  const riderName =
+    existing.riderName?.trim() || incoming.riderName?.trim() || null;
+  const riderMobile =
+    existing.riderMobile?.trim() || incoming.riderMobile?.trim() || null;
+  const providerName =
+    existing.providerName?.trim() || incoming.providerName?.trim() || null;
+  const preferId = !existing.id.startsWith("assign_")
+    ? existing.id
+    : !incoming.id.startsWith("assign_")
+      ? incoming.id
+      : existing.id;
+  return {
+    id: preferId,
+    riderId: riderId ?? null,
+    riderName,
+    riderMobile,
+    providerName,
+  };
+}
+
+function mergeAssignedRiderOptions(lists: AssignedRiderOption[][]): AssignedRiderOption[] {
+  const byKey = new Map<string, AssignedRiderOption>();
+  for (const list of lists) {
+    for (const r of list) {
+      const key = riderOptionDedupeKey(r);
+      const prev = byKey.get(key);
+      byKey.set(key, prev ? pickBetterRiderOption(prev, r) : r);
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+function assignedRidersFromOrder(order: OrderRightSidebarProps["order"]): AssignedRiderOption[] {
+  if (order.riderId == null && !order.riderName?.trim() && !order.riderMobile?.trim()) {
+    return [];
+  }
+  return [
+    {
+      id: order.riderId != null ? String(order.riderId) : "current",
+      riderId: order.riderId ?? null,
+      riderName: order.riderName ?? null,
+      riderMobile: order.riderMobile ?? null,
+      providerName: normalizeProviderName(order.orderSource) ?? order.orderSource ?? null,
+    },
+  ];
+}
+
+function assignedRidersFromAssignments(
+  items: Array<{
+    id: number;
+    riderId: number | null;
+    riderName: string | null;
+    riderMobile: string | null;
+    deliveryProvider: string | null;
+  }>
+): AssignedRiderOption[] {
+  return items.map((a) => ({
+    id: `assign_${a.id}`,
+    riderId: a.riderId,
+    riderName: a.riderName,
+    riderMobile: a.riderMobile,
+    providerName: normalizeProviderName(a.deliveryProvider) ?? a.deliveryProvider,
+  }));
+}
+
+function assignedRidersFromReconRecords(
+  items: Array<{
+    id: number;
+    riderId?: number | null;
+    providerName: string | null;
+    riderName: string | null;
+    riderMobile: string | null;
+  }>
+): AssignedRiderOption[] {
+  const out: AssignedRiderOption[] = [];
+  const seen = new Set<string>();
+  for (const r of items) {
+    const option: AssignedRiderOption = {
+      id: r.riderId != null ? String(r.riderId) : `recon_${r.id}`,
+      riderId: r.riderId ?? null,
+      riderName: r.riderName ?? null,
+      riderMobile: r.riderMobile ?? null,
+      providerName: normalizeProviderName(r.providerName) ?? r.providerName ?? null,
+    };
+    const key = riderOptionDedupeKey(option);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(option);
+  }
+  return out;
+}
 
 type RejectionInfoEntry = {
   id: string;
@@ -302,6 +444,89 @@ function AgentRoleBadge({ role }: { role: string | null | undefined }) {
   );
 }
 
+function ReconRiderBlock({
+  providerName,
+  riderName,
+  riderMobile,
+  fallbackLabel,
+  layout = "stacked",
+}: {
+  providerName?: string | null;
+  riderName?: string | null;
+  riderMobile?: string | null;
+  fallbackLabel?: string;
+  layout?: "stacked" | "inline";
+}) {
+  const provider = normalizeProviderName(providerName) ?? providerName?.trim() ?? "";
+  const name = riderName?.trim() ?? "";
+  const mobile = riderMobile?.trim() ?? "";
+
+  if (!provider && !name && !mobile) {
+    const label = fallbackLabel?.trim();
+    if (!label || label === "Unknown rider") {
+      return <span className="text-[12px] text-slate-500">—</span>;
+    }
+    return <span className="text-[12px] font-medium text-slate-800">{label}</span>;
+  }
+
+  if (layout === "inline") {
+    return (
+      <span className="block min-w-0 text-[12px] leading-snug text-slate-800">
+        {buildReconRiderLabel({ providerName, riderName, riderMobile })}
+      </span>
+    );
+  }
+
+  return (
+    <div className="min-w-0 space-y-0.5">
+      {provider ? (
+        <p className="text-[11px] font-semibold text-emerald-800">{provider}</p>
+      ) : null}
+      {name || mobile ? (
+        <p className="text-[12px] text-slate-800">
+          {name}
+          {name && mobile ? (
+            <span className="text-slate-400"> · </span>
+          ) : null}
+          {mobile ? <span className="font-mono text-[11px] text-slate-600">{mobile}</span> : null}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function formatReconDisplayTime(isoOrDate: string | Date): string {
+  const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+function ReconInlineField({
+  label,
+  children,
+  className = "",
+}: {
+  label: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={`flex min-w-0 items-start gap-1.5 ${className}`}>
+      <span className="shrink-0 pt-px text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+        {label}:
+      </span>
+      <div className="min-w-0 text-[12px] leading-snug text-slate-800">{children}</div>
+    </div>
+  );
+}
+
 interface CxNotification {
   id: string;
   message: string;
@@ -389,6 +614,13 @@ export default function OrderRightSidebar({
     order.systemKptMinutes,
     order.merchantUpdatedKptMinutes
   );
+  const merchantExtraPrepMinutes =
+    order.merchantExtraPrepMinutes != null &&
+    Number.isFinite(order.merchantExtraPrepMinutes) &&
+    order.merchantExtraPrepMinutes > 0
+      ? Math.round(order.merchantExtraPrepMinutes)
+      : null;
+  const showMerchantExtraPrep = merchantExtraPrepMinutes != null;
   const orderStatusForOtp = (order.currentStatus || order.status || "").toString();
   const pickupOtpDisplay = order.pickupOtp?.trim() || "—";
   const rtoOtpDisplay =
@@ -449,10 +681,7 @@ export default function OrderRightSidebar({
     }
 
     for (const r of orderRefunds) {
-      const createdIso =
-        r.createdAt instanceof Date
-          ? r.createdAt.toISOString()
-          : String(r.createdAt ?? "");
+      const createdIso = String(r.createdAt ?? "");
       refundEntries.push({
         id: `refund-${r.id}`,
         kind: "refund",
@@ -479,36 +708,6 @@ export default function OrderRightSidebar({
     const t = setTimeout(() => setReconError(null), 2000);
     return () => clearTimeout(t);
   }, [reconError]);
-
-  /** Show GatiMitra instead of internal for provider name */
-  const normalizeProviderName = (name: string | null | undefined): string | null => {
-    if (!name || !String(name).trim()) return null;
-    const t = String(name).trim().toLowerCase();
-    if (t === "internal") return "GatiMitra";
-    return name.trim();
-  };
-
-  const buildReconRiderLabel = (params: {
-    providerName?: string | null;
-    riderName?: string | null;
-    riderMobile?: string | null;
-  }): string => {
-    const provider = normalizeProviderName(params.providerName) ?? params.providerName?.trim();
-    const name = params.riderName?.trim();
-    const mobile = params.riderMobile?.trim();
-    if (provider || name || mobile) {
-      const parts: string[] = [];
-      if (provider) parts.push(provider);
-      const riderBits: string[] = [];
-      if (name) riderBits.push(name);
-      if (mobile) riderBits.push(mobile);
-      if (riderBits.length > 0) {
-        parts.push(`(${riderBits.join(" / ")})`);
-      }
-      return parts.join(" ");
-    }
-    return "Unknown rider";
-  };
 
   const loadRemarks = async () => {
     try {
@@ -685,20 +884,7 @@ export default function OrderRightSidebar({
   useEffect(() => {
     void loadRemarks();
     void loadNotifications();
-    // Seed dropdown with current order rider immediately so "Select rider" has at least one option
-    setAssignedRiders(
-      order.riderId != null || order.riderName || order.riderMobile
-        ? [
-            {
-              id: "current",
-              riderId: order.riderId ?? null,
-              riderName: order.riderName ?? null,
-              riderMobile: order.riderMobile ?? null,
-              providerName: normalizeProviderName(order.orderSource) ?? order.orderSource ?? null,
-            },
-          ]
-        : []
-    );
+    setAssignedRiders(assignedRidersFromOrder(order));
 
     const loadAssignments = async () => {
       try {
@@ -716,31 +902,15 @@ export default function OrderRightSidebar({
             assignedAt: string | Date | null;
           }> | null) ?? [];
 
-        const ridersList: AssignedRiderOption[] = [];
-        const seen = new Set<string>();
-
-        for (const a of items) {
-          const key =
-            a.riderId != null
-              ? `rider_${a.riderId}`
-              : `n_${a.riderName ?? ""}_m_${a.riderMobile ?? ""}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          ridersList.push({
-            id: a.riderId != null ? String(a.riderId) : `assign_${a.id}`,
-            riderId: a.riderId,
-            riderName: a.riderName,
-            riderMobile: a.riderMobile,
-            providerName: normalizeProviderName(a.deliveryProvider) ?? a.deliveryProvider,
-          });
-        }
-
-        // Fallback: if API returns nothing but order has current rider, keep seeded current
-        if (ridersList.length > 0) {
-          setAssignedRiders(ridersList);
-        }
+        setAssignedRiders((prev) =>
+          mergeAssignedRiderOptions([
+            assignedRidersFromAssignments(items),
+            assignedRidersFromOrder(order),
+            prev,
+          ])
+        );
       } catch {
-        // ignore, we still have seeded current rider
+        // keep order-seeded riders
       }
     };
 
@@ -780,6 +950,9 @@ export default function OrderRightSidebar({
           );
           return {
             id: String(r.id),
+            providerName: r.providerName,
+            riderName: r.riderName,
+            riderMobile: r.riderMobile,
             rider: buildReconRiderLabel({
               providerName: normalizeProviderName(r.providerName) ?? r.providerName,
               riderName: r.riderName,
@@ -788,14 +961,7 @@ export default function OrderRightSidebar({
             reason: r.reconReason,
             reasonCategory,
             comment,
-            time: created.toLocaleString("en-IN", {
-              day: "2-digit",
-              month: "2-digit",
-              year: "2-digit",
-              hour: "2-digit",
-              minute: "2-digit",
-              hour12: true,
-            }),
+            time: formatReconDisplayTime(created),
             actorEmail: r.actorEmail ?? null,
             actorRole: r.actorRole ?? null,
           };
@@ -803,41 +969,13 @@ export default function OrderRightSidebar({
 
         setRecons(mapped);
 
-        // Build assigned riders: current order rider + distinct riders from recons
-        const ridersList: AssignedRiderOption[] = [];
-        const seen = new Set<string>();
-
-        const currentKey =
-          order.riderId != null
-            ? `rider_${order.riderId}`
-            : `n_${order.riderName ?? ""}_m_${order.riderMobile ?? ""}`;
-        if (!seen.has(currentKey)) {
-          seen.add(currentKey);
-          ridersList.push({
-            id: "current",
-            riderId: order.riderId ?? null,
-            riderName: order.riderName ?? null,
-            riderMobile: order.riderMobile ?? null,
-            providerName: normalizeProviderName(order.orderSource) ?? order.orderSource ?? null,
-          });
-        }
-        for (const r of items) {
-          const key =
-            r.riderId != null
-              ? `rider_${r.riderId}`
-              : `n_${r.riderName ?? ""}_m_${r.riderMobile ?? ""}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-          ridersList.push({
-            id: r.riderId != null ? String(r.riderId) : `recon_${r.id}`,
-            riderId: r.riderId ?? null,
-            riderName: r.riderName ?? null,
-            riderMobile: r.riderMobile ?? null,
-            providerName: normalizeProviderName(r.providerName) ?? r.providerName ?? null,
-          });
-          }
-        }
-        setAssignedRiders(ridersList);
+        setAssignedRiders((prev) =>
+          mergeAssignedRiderOptions([
+            prev,
+            assignedRidersFromOrder(order),
+            assignedRidersFromReconRecords(items),
+          ])
+        );
       } catch (error) {
         // eslint-disable-next-line no-console
         console.error("Error loading recons", error);
@@ -1115,6 +1253,9 @@ export default function OrderRightSidebar({
       );
       const mapped: Recon = {
         id: String(saved.id),
+        providerName: saved.providerName,
+        riderName: saved.riderName,
+        riderMobile: saved.riderMobile,
         rider: buildReconRiderLabel({
           providerName: normalizeProviderName(saved.providerName) ?? saved.providerName,
           riderName: saved.riderName,
@@ -1123,14 +1264,7 @@ export default function OrderRightSidebar({
         reason: saved.reconReason,
         reasonCategory,
         comment,
-        time: created.toLocaleString("en-IN", {
-          day: "2-digit",
-          month: "2-digit",
-          year: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: true,
-        }),
+        time: formatReconDisplayTime(created),
         actorEmail: saved.actorEmail ?? userEmail,
         actorRole: saved.actorRole ?? null,
       };
@@ -1436,7 +1570,13 @@ export default function OrderRightSidebar({
           </div>
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">System KPT:</dt>
-            <dd className="font-medium text-slate-700">
+            <dd
+              className={`font-medium ${
+                showMerchantKpt
+                  ? "text-slate-400 line-through decoration-slate-400"
+                  : "text-slate-700"
+              }`}
+            >
               {formatKptMinutes(order.systemKptMinutes)}
             </dd>
           </div>
@@ -1445,6 +1585,18 @@ export default function OrderRightSidebar({
               <dt className="shrink-0">Merchant updated KPT:</dt>
               <dd className="font-medium text-slate-700">
                 {formatKptMinutes(order.merchantUpdatedKptMinutes)}
+              </dd>
+            </div>
+          ) : null}
+          {showMerchantExtraPrep ? (
+            <div className="flex items-center justify-between gap-2">
+              <dt className="shrink-0" title="Merchant used Need more time while preparing">
+              Kitchen Delay Buffer (MX):
+              </dt>
+              <dd>
+                <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 ring-1 ring-amber-200">
+                  {formatMerchantExtraPrepMinutes(merchantExtraPrepMinutes)}
+                </span>
               </dd>
             </div>
           ) : null}
@@ -1672,19 +1824,24 @@ export default function OrderRightSidebar({
             }}
             className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-[12px] text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
           >
-            <option value="">Select rider</option>
-            {assignedRiders.map((r) => {
-              const label = buildReconRiderLabel({
-                providerName: r.providerName,
-                riderName: r.riderName,
-                riderMobile: r.riderMobile,
+            <option value="">Select Rider Option</option>
+            {(() => {
+              const seenLabels = new Set<string>();
+              return assignedRiders.map((r) => {
+                const label = buildReconRiderLabel({
+                  providerName: r.providerName,
+                  riderName: r.riderName,
+                  riderMobile: r.riderMobile,
+                });
+                if (label === "Unknown rider" || seenLabels.has(label)) return null;
+                seenLabels.add(label);
+                return (
+                  <option key={riderOptionDedupeKey(r)} value={r.id}>
+                    {label}
+                  </option>
+                );
               });
-              return (
-                <option key={r.id} value={r.id}>
-                  {label || (r.id === "current" ? "Current rider" : `Rider ${r.id}`)}
-                </option>
-              );
-            })}
+            })()}
           </select>
           <select
             value={reconReason}
@@ -2196,98 +2353,125 @@ export default function OrderRightSidebar({
 
       {/* All recons modal */}
       {showReconsModal && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-2">
-          <div className="w-full max-w-3xl rounded-xl bg-[#f1faf5] shadow-xl border border-emerald-100">
-            {/* Modal header */}
-            <div className="flex items-center justify-between px-5 py-3 border-b border-emerald-100">
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-3 py-4">
+          <div className="flex max-h-[min(90vh,640px)] w-full max-w-5xl flex-col rounded-xl bg-[#f1faf5] shadow-xl border border-emerald-100">
+            <div className="flex shrink-0 items-center justify-between px-5 py-3 border-b border-emerald-100">
               <div className="flex items-center gap-2">
                 <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
                   <ClipboardCheck className="h-3.5 w-3.5" />
                 </span>
                 <h2 className="text-[14px] font-semibold text-slate-800">
                   All Recons
+                  {!isLoadingRecons && recons.length > 0 ? (
+                    <span className="ml-1.5 font-normal text-slate-500">({recons.length})</span>
+                  ) : null}
                 </h2>
               </div>
               <button
                 type="button"
                 className="inline-flex h-7 w-7 items-center justify-center rounded-full text-slate-500 hover:text-slate-700 hover:bg-emerald-50 cursor-pointer"
                 onClick={() => setShowReconsModal(false)}
+                aria-label="Close"
               >
                 <X className="h-3 w-3" />
               </button>
             </div>
 
-            {/* Modal body */}
-            <div className="max-h-[440px] overflow-y-auto px-5 py-4 bg-white rounded-b-xl text-[12px] text-slate-800">
+            <div className="min-h-0 flex-1 overflow-y-auto bg-white rounded-b-xl px-4 py-3 sm:px-5 sm:py-4">
               {isLoadingRecons ? (
-                <div className="py-6 text-center text-xs text-slate-500">
-                  Loading recons...
-                </div>
+                <div className="py-8 text-center text-xs text-slate-500">Loading recons...</div>
               ) : recons.length === 0 ? (
-                <div className="py-6 text-center text-xs text-slate-500">
-                  No recons available.
-                </div>
+                <div className="py-8 text-center text-xs text-slate-500">No recons available.</div>
               ) : (
-                <div className="overflow-x-auto -mx-1 px-1">
-                  <table className="w-full min-w-[720px] border-collapse text-[11px] text-left">
-                    <thead>
-                      <tr className="border-b border-slate-200 bg-slate-50/80">
-                        <th className="py-2 pr-4 font-semibold text-slate-600 whitespace-nowrap">
-                          Rider
-                        </th>
-                        <th className="py-2 pr-4 font-semibold text-slate-600 whitespace-nowrap">
-                          Rejection option
-                        </th>
-                        <th className="py-2 pr-4 font-semibold text-slate-600 min-w-[140px]">
-                          Reason / comment
-                        </th>
-                        <th className="py-2 pr-4 font-semibold text-slate-600 whitespace-nowrap">
-                          Submitted by
-                        </th>
-                        <th className="py-2 font-semibold text-slate-600 whitespace-nowrap">
-                          Date &amp; time
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {recons.map((r) => {
-                        const reasonText =
-                          r.comment?.trim() ||
-                          (!r.reasonCategory ? r.reason : null) ||
-                          "—";
-                        return (
-                          <tr
-                            key={r.id}
-                            className="border-b border-slate-100 align-top hover:bg-slate-50/50"
+                <div className="space-y-2">
+                  <div className="hidden lg:grid lg:grid-cols-[minmax(11rem,1.15fr)_minmax(7rem,0.75fr)_minmax(9rem,1fr)_minmax(10rem,1.1fr)_minmax(8.5rem,0.85fr)] gap-3 px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                    <span>Rider</span>
+                    <span>Date &amp; time</span>
+                    <span>Rejection option</span>
+                    <span>Reason / comment</span>
+                    <span>Submitted by</span>
+                  </div>
+                  {recons.map((r) => {
+                    const rejectionOption = r.reasonCategory?.trim() || null;
+                    const commentText =
+                      r.comment?.trim() ||
+                      (!rejectionOption ? r.reason?.trim() : null) ||
+                      null;
+
+                    return (
+                      <article
+                        key={r.id}
+                        className="rounded-lg border border-slate-200 bg-slate-50/40 px-3 py-2.5 shadow-sm"
+                      >
+                        <div className="flex flex-col gap-3 lg:grid lg:grid-cols-[minmax(11rem,1.15fr)_minmax(7rem,0.75fr)_minmax(9rem,1fr)_minmax(10rem,1.1fr)_minmax(8.5rem,0.85fr)] lg:items-start lg:gap-3">
+                          <ReconInlineField
+                            label="Rider"
+                            className="lg:flex-col lg:gap-1 lg:[&>span]:hidden"
                           >
-                            <td className="py-2.5 pr-4 font-medium text-slate-800 whitespace-nowrap">
-                              {r.rider || "—"}
-                            </td>
-                            <td className="py-2.5 pr-4 text-slate-800 whitespace-nowrap">
-                              {r.reasonCategory?.trim() || "—"}
-                            </td>
-                            <td className="py-2.5 pr-4 text-slate-700 whitespace-pre-line leading-relaxed max-w-[220px]">
-                              {reasonText}
-                            </td>
-                            <td className="py-2.5 pr-4 whitespace-nowrap">
-                              <div className="inline-flex items-center gap-2 max-w-[240px]">
-                                <span
-                                  className="truncate text-slate-800"
-                                  title={r.actorEmail ?? undefined}
-                                >
-                                  {r.actorEmail || "—"}
-                                </span>
-                                <AgentRoleBadge role={r.actorRole} />
-                              </div>
-                            </td>
-                            <td className="py-2.5 text-slate-700 whitespace-nowrap">
+                            <div className="flex min-w-0 items-start gap-2">
+                              <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 lg:hidden">
+                                <UserCircle2 className="h-3.5 w-3.5" />
+                              </span>
+                              <ReconRiderBlock
+                                providerName={r.providerName}
+                                riderName={r.riderName}
+                                riderMobile={r.riderMobile}
+                                fallbackLabel={r.rider}
+                                layout="inline"
+                              />
+                            </div>
+                          </ReconInlineField>
+
+                          <ReconInlineField
+                            label="Date & time"
+                            className="lg:[&>span]:hidden"
+                          >
+                            <span className="whitespace-nowrap font-medium text-slate-700">
                               {r.time}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                            </span>
+                          </ReconInlineField>
+
+                          <ReconInlineField
+                            label="Rejection option"
+                            className="lg:[&>span]:hidden"
+                          >
+                            {rejectionOption ?? (
+                              <span className="text-slate-400">Not selected</span>
+                            )}
+                          </ReconInlineField>
+
+                          <ReconInlineField
+                            label="Reason / comment"
+                            className="lg:[&>span]:hidden"
+                          >
+                            {commentText ? (
+                              <span className="text-slate-700 whitespace-pre-line">
+                                {commentText}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </ReconInlineField>
+
+                          <ReconInlineField
+                            label="Submitted by"
+                            className="lg:[&>span]:hidden"
+                          >
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {r.actorEmail ? (
+                                <span className="break-all" title={r.actorEmail}>
+                                  {r.actorEmail}
+                                </span>
+                              ) : (
+                                <span className="text-slate-400">—</span>
+                              )}
+                              <AgentRoleBadge role={r.actorRole} />
+                            </div>
+                          </ReconInlineField>
+                        </div>
+                      </article>
+                    );
+                  })}
                 </div>
               )}
             </div>

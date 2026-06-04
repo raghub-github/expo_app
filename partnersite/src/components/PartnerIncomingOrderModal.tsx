@@ -40,6 +40,7 @@ import {
   clampPrepMinutes,
   resolveStoreDefaultPrepMinutes,
 } from '@/lib/order-prep-time';
+import { resolveMerchantCtm } from '@/lib/merchant-order-ctm';
 
 const PREP_STEP_MINUTES = 5;
 /** Max line items in accept popup; rest via +N more → sidesheet. */
@@ -86,8 +87,7 @@ const DEFAULT_SETTINGS: AcceptanceSettings = {
 };
 
 function orderTotalRs(order: OrdersFoodRow): number {
-  const n = Number(order.food_items_total_value ?? 0);
-  return Number.isFinite(n) ? n : 0;
+  return resolveMerchantCtm(order);
 }
 
 function isBulkOrderFlag(order: OrdersFoodRow | null): boolean {
@@ -647,7 +647,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     }
     const p = modalOrder.pricing;
     if (p) return p;
-    const total = Number(modalOrder.food_items_total_value ?? incomingOrderLineSum);
+    const total = resolveMerchantCtm(modalOrder);
     return {
       subtotal: incomingOrderLineSum,
       packaging: 0,

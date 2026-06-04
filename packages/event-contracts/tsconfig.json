@@ -2,8 +2,11 @@
   "extends": "@gatimitra/shared-config/tsconfig.node.json",
   "compilerOptions": {
     "baseUrl": ".",
+    "outDir": "./dist",
     "rootDir": "./src",
-    "noEmit": true
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist"]

@@ -1,21 +1,22 @@
 /**
- * Mapbox integration for GatiMitra Rider App
- * 
- * React Native Metro bundler automatically resolves platform-specific files:
- * - On native (iOS/Android): imports from mapbox.native.ts
- * - On web: imports from mapbox.web.ts
- * 
- * This file provides a fallback for TypeScript imports.
- * The actual resolution happens at build time by Metro.
+ * Mapbox integration entry.
+ * Metro resolves mapbox.native.ts / mapbox.web.ts at bundle time; this file
+ * provides an explicit typed API surface for TypeScript and tooling.
  */
+import {
+  initializeMapbox as initializeMapboxNative,
+  isMapboxAvailable as isMapboxAvailableNative,
+  getMapboxModule as getMapboxModuleNative,
+} from "./mapbox.native";
 
-import { Platform } from "react-native";
+export function initializeMapbox(): boolean {
+  return initializeMapboxNative();
+}
 
-// Conditional exports based on platform
-if (Platform.OS === "web") {
-  // @ts-ignore - Metro will resolve this correctly
-  module.exports = require("./mapbox.web");
-} else {
-  // @ts-ignore - Metro will resolve this correctly  
-  module.exports = require("./mapbox.native");
+export function isMapboxAvailable(): boolean {
+  return isMapboxAvailableNative();
+}
+
+export function getMapboxModule(): ReturnType<typeof getMapboxModuleNative> {
+  return getMapboxModuleNative();
 }

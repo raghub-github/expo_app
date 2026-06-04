@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import type { QueryClient } from "@tanstack/react-query";
 import { fetchBootstrapAndSeedCache } from "@/hooks/queries/useBootstrapQuery";
 import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
+import { consumeForceBootstrapRefresh } from "@/lib/dashboard-auth-client-state";
 import { queryKeys } from "@/lib/queryKeys";
 import { syncServerSessionCookies } from "@/lib/auth/sync-server-session";
 import { hydrateBrowserSupabaseFromCookies } from "@/lib/auth/hydrate-browser-supabase";
@@ -57,17 +58,21 @@ export function useBootstrapGate(queryClient: QueryClient): boolean {
     let cancelled = false;
 
     const run = async () => {
-      const stored = loadBootstrapFromStorage<{
-        session: { user: Record<string, unknown> };
-        permissions: unknown;
-        dashboardAccess: unknown;
-        systemUser?: { id: number; systemUserId: string; fullName: string; email: string } | null;
-      }>(BOOTSTRAP_MAX_AGE_MS);
+      const forceRefresh = consumeForceBootstrapRefresh();
+
+      const stored = forceRefresh
+        ? null
+        : loadBootstrapFromStorage<{
+            session: { user: Record<string, unknown> };
+            permissions: unknown;
+            dashboardAccess: unknown;
+            systemUser?: { id: number; systemUserId: string; fullName: string; email: string } | null;
+          }>(BOOTSTRAP_MAX_AGE_MS);
 
       const bootstrapAgeMs = stored ? Date.now() - stored.storedAt : Number.POSITIVE_INFINITY;
-      const bootstrapFresh = bootstrapAgeMs < BOOTSTRAP_REVALIDATE_MIN_AGE_MS;
+      const bootstrapFresh = !forceRefresh && bootstrapAgeMs < BOOTSTRAP_REVALIDATE_MIN_AGE_MS;
 
-      const cached = queryClient.getQueryData(["auth", "session"]);
+      const cached = forceRefresh ? null : queryClient.getQueryData(["auth", "session"]);
       if (cached != null) {
         if (!cancelled) {
           window.__gatiBootstrapDone = true;

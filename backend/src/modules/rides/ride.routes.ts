@@ -1,0 +1,384 @@
+import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+import { auth } from "../../plugins/auth.js";
+import {
+  cancelRideOrder,
+  DEFAULT_RIDE_SEARCH_TIMEOUT_SEC,
+  getRideOrderForCustomer,
+  placeRideOrder,
+  resolveCustomerPkFromSub,
+} from "./ride.placement.service.js";
+import {
+  extendRideSearch,
+  markRideSearchWindowEnded,
+} from "./ride.tip-boost.service.js";
+import { getNearbyRideSupply } from "./ride.availability.service.js";
+
+const rideStopSchema = z.object({
+  sequence: z.number().int().min(1).max(2),
+  address: z.string().min(1),
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+});
+
+const placeRideBodySchema = z.object({
+  pickupAddress: z.string().min(1),
+  pickupLat: z.number(),
+  pickupLng: z.number(),
+  dropAddress: z.string().min(1),
+  dropLat: z.number(),
+  dropLng: z.number(),
+  intermediateStops: z.array(rideStopSchema).max(2).optional(),
+  rideType: z.string().min(1),
+  vehicleTypeRequired: z.string().optional(),
+  estimatedFare: z.number().nonnegative(),
+  tripKm: z.number().nonnegative().optional(),
+  paymentMethod: z
+    .enum(["cash", "cod", "upi", "card", "wallet", "online"])
+    .optional()
+    .default("cash"),
+  bookedForSelf: z.boolean().optional().default(true),
+  passengerName: z.string().optional().nullable(),
+  passengerPhone: z.string().optional().nullable(),
+  pickupDistanceFromBookerKm: z.number().optional().nullable(),
+  farPickupPromptShown: z.boolean().optional(),
+  farPickupAcknowledged: z.boolean().optional(),
+  searchTimeoutSec: z.number().int().min(60).max(600).optional(),
+  customerTipAmount: z.number().int().min(0).optional().default(0),
+});
+
+const cancelRideBodySchema = z.object({
+  reasonCode: z.string().optional(),
+  reasonText: z.string().optional().nullable(),
+  cancelMode: z.enum(["manual", "auto", "timeout"]).optional().default("manual"),
+});
+
+const extendSearchBodySchema = z.object({
+  tipAmount: z.number().int().min(0).optional(),
+});
+
+const extendSearchResponseSchema = z.object({
+  orderId: z.string(),
+  searchExpiresAt: z.string(),
+  searchExtendedUntil: z.string(),
+  dispatchRetryCount: z.number(),
+  customerTipAmount: z.number(),
+  prebookTipAmount: z.number(),
+  searchBoostTip1: z.number(),
+  searchBoostTip2: z.number(),
+  tipBoostApplied: z.boolean(),
+  higherDispatchPriority: z.boolean(),
+  extensionSec: z.number(),
+});
+
+const availabilityQuerySchema = z.object({
+  pickupLat: z.coerce.number(),
+  pickupLng: z.coerce.number(),
+  radiusKm: z.coerce.number().min(0.5).max(10).optional(),
+  rideType: z.string().min(1).optional(),
+});
+
+const availabilityOptionSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  subtitle: z.string().nullable(),
+  baseFare: z.number(),
+  etaMins: z.number(),
+  capacity: z.number().nullable(),
+  tag: z.enum(["FASTEST", "SAVE"]).nullable(),
+  imageKey: z.string(),
+  nearbyRiderCount: z.number(),
+  nearestRiderKm: z.number().nullable(),
+  nearestRiderEtaMins: z.number().nullable(),
+});
+
+const availabilityRiderSchema = z.object({
+  riderId: z.number(),
+  lat: z.number(),
+  lng: z.number(),
+  heading: z.number().nullable(),
+  distanceKm: z.number(),
+  vehicleType: z.string(),
+});
+
+export async function rideRoutes(app: FastifyInstance) {
+  app.get(
+    "/availability",
+    {
+      schema: {
+        querystring: availabilityQuerySchema,
+        response: {
+          200: z.object({
+            radiusKm: z.number(),
+            nearbyRiderCount: z.number(),
+            onDutyRiderCount: z.number(),
+            options: z.array(availabilityOptionSchema),
+            riders: z.array(availabilityRiderSchema),
+          }),
+          400: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const q = req.query as z.infer<typeof availabilityQuerySchema>;
+      if (!Number.isFinite(q.pickupLat) || !Number.isFinite(q.pickupLng)) {
+        return reply.status(400).send({ error: "Invalid pickup coordinates" });
+      }
+      return getNearbyRideSupply({
+        pickupLat: q.pickupLat,
+        pickupLng: q.pickupLng,
+        radiusKm: q.radiusKm,
+        rideType: q.rideType,
+      });
+    }
+  );
+
+  await app.register(async function authedRideRoutes(sub) {
+    await sub.register(auth, { required: true });
+
+    sub.post(
+      "/",
+      {
+        schema: {
+          body: placeRideBodySchema,
+          response: {
+            200: z.object({
+              orderId: z.string(),
+              formattedOrderId: z.string().nullable(),
+              coreOrderId: z.number(),
+              status: z.string(),
+              totalAmount: z.number(),
+              searchTimeoutSec: z.number(),
+              searchExpiresAt: z.string(),
+              createdAt: z.string(),
+              pickupOtp: z.string(),
+            }),
+            400: z.object({ error: z.string(), message: z.string().optional() }),
+            403: z.object({ error: z.string(), message: z.string().optional() }),
+          },
+        },
+      },
+      async (req, reply) => {
+        const sub = req.auth?.sub;
+        const role = req.auth?.role;
+        if (!sub || role !== "customer") {
+          return reply.status(403).send({ error: "Customer only" });
+        }
+
+        const customerPk = await resolveCustomerPkFromSub(sub);
+        if (customerPk == null) {
+          return reply.status(403).send({ error: "Customer not found" });
+        }
+
+        const body = req.body as z.infer<typeof placeRideBodySchema>;
+
+        try {
+          const result = await placeRideOrder({
+            customerPk,
+            pickupAddress: body.pickupAddress,
+            pickupLat: body.pickupLat,
+            pickupLng: body.pickupLng,
+            dropAddress: body.dropAddress,
+            dropLat: body.dropLat,
+            dropLng: body.dropLng,
+            intermediateStops: body.intermediateStops,
+            rideType: body.rideType,
+            vehicleTypeRequired: body.vehicleTypeRequired,
+            estimatedFare: body.estimatedFare,
+            tripKm: body.tripKm,
+            paymentMethod: body.paymentMethod,
+            bookedForSelf: body.bookedForSelf,
+            passengerName: body.passengerName,
+            passengerPhone: body.passengerPhone,
+            pickupDistanceFromBookerKm: body.pickupDistanceFromBookerKm,
+            farPickupPromptShown: body.farPickupPromptShown,
+            farPickupAcknowledged: body.farPickupAcknowledged,
+            searchTimeoutSec: body.searchTimeoutSec ?? DEFAULT_RIDE_SEARCH_TIMEOUT_SEC,
+            customerTipAmount: body.customerTipAmount ?? 0,
+          });
+          return result;
+        } catch (e) {
+          const err = e as Error & { statusCode?: number };
+          const status = err.statusCode ?? 500;
+          return reply.status(status as 400).send({
+            error: err.message || "Failed to place ride order",
+          });
+        }
+      }
+    );
+
+    sub.get(
+      "/:id",
+      {
+        schema: {
+          params: z.object({ id: z.string().min(1) }),
+          response: {
+            200: z.object({
+              orderId: z.string(),
+              coreOrderId: z.number(),
+              status: z.string(),
+              appStatus: z.string(),
+              riderId: z.number().nullable(),
+              riderAssigned: z.boolean(),
+              totalAmount: z.number(),
+              searchExpiresAt: z.string().nullable(),
+              cancelled: z.boolean(),
+              pickupOtp: z.string().nullable(),
+              rideStarted: z.boolean(),
+              awaitingTipBoost: z.boolean(),
+              dispatchRetryCount: z.number(),
+              customerTipAmount: z.number(),
+              prebookTipAmount: z.number(),
+              searchBoostTip1: z.number(),
+              searchBoostTip2: z.number(),
+              estimatedFare: z.number(),
+            }),
+            404: z.object({ error: z.string() }),
+            403: z.object({ error: z.string() }),
+          },
+        },
+      },
+      async (req, reply) => {
+        const sub = req.auth?.sub;
+        const role = req.auth?.role;
+        if (!sub || role !== "customer") {
+          return reply.status(403).send({ error: "Customer only" });
+        }
+        const customerPk = await resolveCustomerPkFromSub(sub);
+        if (customerPk == null) {
+          return reply.status(403).send({ error: "Customer not found" });
+        }
+
+        const { id } = req.params as { id: string };
+        const row = await getRideOrderForCustomer(customerPk, id);
+        if (!row) return reply.status(404).send({ error: "Ride order not found" });
+        return row;
+      }
+    );
+
+    sub.post(
+      "/:id/cancel",
+      {
+        schema: {
+          params: z.object({ id: z.string().min(1) }),
+          body: cancelRideBodySchema,
+          response: {
+            200: z.object({
+              orderId: z.string(),
+              status: z.string(),
+            }),
+            404: z.object({ error: z.string() }),
+            409: z.object({ error: z.string() }),
+            403: z.object({ error: z.string() }),
+          },
+        },
+      },
+      async (req, reply) => {
+        const sub = req.auth?.sub;
+        const role = req.auth?.role;
+        if (!sub || role !== "customer") {
+          return reply.status(403).send({ error: "Customer only" });
+        }
+        const customerPk = await resolveCustomerPkFromSub(sub);
+        if (customerPk == null) {
+          return reply.status(403).send({ error: "Customer not found" });
+        }
+
+        const { id } = req.params as { id: string };
+        const body = req.body as z.infer<typeof cancelRideBodySchema>;
+
+        try {
+          const result = await cancelRideOrder({
+            customerPk,
+            orderRef: id,
+            reasonCode: body.reasonCode,
+            reasonText: body.reasonText,
+            cancelMode: body.cancelMode,
+            cancelledByType: body.cancelMode === "timeout" ? "system" : "customer",
+          });
+          return result;
+        } catch (e) {
+          const err = e as Error & { statusCode?: number };
+          const status = err.statusCode ?? 500;
+          return reply.status(status as 409).send({ error: err.message || "Failed to cancel ride" });
+        }
+      }
+    );
+
+    sub.post(
+      "/:id/search-window-ended",
+      {
+        schema: {
+          params: z.object({ id: z.string().min(1) }),
+          response: {
+            200: z.object({
+              orderId: z.string(),
+              awaitingTipBoost: z.boolean(),
+            }),
+            404: z.object({ error: z.string() }),
+            403: z.object({ error: z.string() }),
+          },
+        },
+      },
+      async (req, reply) => {
+        const sub = req.auth?.sub;
+        const role = req.auth?.role;
+        if (!sub || role !== "customer") {
+          return reply.status(403).send({ error: "Customer only" });
+        }
+        const customerPk = await resolveCustomerPkFromSub(sub);
+        if (customerPk == null) {
+          return reply.status(403).send({ error: "Customer not found" });
+        }
+        const { id } = req.params as { id: string };
+        try {
+          return await markRideSearchWindowEnded(customerPk, id);
+        } catch (e) {
+          const err = e as Error & { statusCode?: number };
+          const status = err.statusCode ?? 500;
+          return reply.status(status as 404).send({ error: err.message || "Failed" });
+        }
+      }
+    );
+
+    sub.post(
+      "/:id/extend-search",
+      {
+        schema: {
+          params: z.object({ id: z.string().min(1) }),
+          body: extendSearchBodySchema,
+          response: {
+            200: extendSearchResponseSchema,
+            404: z.object({ error: z.string() }),
+            409: z.object({ error: z.string() }),
+            403: z.object({ error: z.string() }),
+          },
+        },
+      },
+      async (req, reply) => {
+        const sub = req.auth?.sub;
+        const role = req.auth?.role;
+        if (!sub || role !== "customer") {
+          return reply.status(403).send({ error: "Customer only" });
+        }
+        const customerPk = await resolveCustomerPkFromSub(sub);
+        if (customerPk == null) {
+          return reply.status(403).send({ error: "Customer not found" });
+        }
+        const { id } = req.params as { id: string };
+        const body = req.body as z.infer<typeof extendSearchBodySchema>;
+        try {
+          return await extendRideSearch({
+            customerPk,
+            orderRef: id,
+            tipAmount: body.tipAmount,
+          });
+        } catch (e) {
+          const err = e as Error & { statusCode?: number };
+          const status = err.statusCode ?? 500;
+          return reply.status(status as 409).send({ error: err.message || "Failed to extend search" });
+        }
+      }
+    );
+  });
+}

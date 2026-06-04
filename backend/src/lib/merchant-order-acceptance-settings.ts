@@ -187,3 +187,54 @@ export async function patchMerchantOrderAcceptanceSoundSlot(
 
   return { ok: true, alert_sound_slot_choice: c };
 }
+
+/** Platform alert settings for a store category (e.g. RIDER for rider dispatch). */
+export async function loadPlatformOrderAcceptanceSettingsForCategory(
+  sql: Sql,
+  storeType: string
+): Promise<MerchantOrderAcceptanceSettings> {
+  const normalized = String(storeType || "GENERAL").trim().toUpperCase();
+
+  const loadPlatform = async (stype: string) => {
+    const rows = await sql`
+      SELECT
+        store_type::text AS store_type,
+        acceptance_window_minutes,
+        alert_sound_enabled,
+        alert_sound_url,
+        alert_sound_url_2,
+        alert_sound_url_3,
+        alert_sound_repeat_count
+      FROM platform_food_acceptance_settings_by_store_type
+      WHERE store_type = ${stype}
+      LIMIT 1
+    `;
+    return (rows[0] as Record<string, unknown> | undefined) ?? undefined;
+  };
+
+  let row = await loadPlatform(normalized);
+  if (!row) row = await loadPlatform("GENERAL");
+  if (!row) return { ...DEFAULTS, store_type: normalized };
+
+  const slots = slotsFromRow(row);
+  let choice = 0;
+  const first = slots.findIndex((u) => u != null);
+  if (first >= 0) choice = first;
+
+  const repeatRaw = Number(row.alert_sound_repeat_count ?? 1);
+  const repeat = Number.isFinite(repeatRaw) ? Math.max(1, Math.min(25, Math.floor(repeatRaw))) : 1;
+  const windowRaw = Number(row.acceptance_window_minutes ?? 5);
+  const windowMins = Number.isFinite(windowRaw)
+    ? Math.max(1, Math.min(180, Math.floor(windowRaw)))
+    : 5;
+
+  return {
+    store_type: normalized,
+    acceptance_window_minutes: windowMins,
+    alert_sound_enabled: row.alert_sound_enabled !== false,
+    alert_sound_url: resolveEffectiveUrl(slots, choice),
+    alert_sound_repeat_count: repeat,
+    alert_sound_urls_by_slot: slots,
+    alert_sound_slot_choice: choice,
+  };
+}

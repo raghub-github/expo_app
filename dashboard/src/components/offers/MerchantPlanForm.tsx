@@ -40,6 +40,10 @@ export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan, planTyp
   const [displayOrder, setDisplayOrder] = useState("");
   const [isActive, setIsActive] = useState(true);
   const [isPopular, setIsPopular] = useState(false);
+  const [sheetBadgeLabel, setSheetBadgeLabel] = useState("");
+  const [sheetHeadline, setSheetHeadline] = useState("");
+  const [sheetCtaLabel, setSheetCtaLabel] = useState("");
+  const [benefitsText, setBenefitsText] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const isEditing = !!editPlan;
@@ -69,6 +73,13 @@ export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan, planTyp
       setDisplayOrder(editPlan.displayOrder != null ? String(editPlan.displayOrder) : "");
       setIsActive(editPlan.isActive);
       setIsPopular(editPlan.isPopular);
+      setSheetBadgeLabel(editPlan.sheetBadgeLabel ?? "");
+      setSheetHeadline(editPlan.sheetHeadline ?? "");
+      setSheetCtaLabel(editPlan.sheetCtaLabel ?? "");
+      const benefits = Array.isArray(editPlan.benefitsJson)
+        ? editPlan.benefitsJson.map((b) => (typeof b === "string" ? b : String(b))).join("\n")
+        : "";
+      setBenefitsText(benefits);
     } else {
       setSelectedPlanType(planType);
       setPlanName("");
@@ -91,6 +102,10 @@ export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan, planTyp
       setDisplayOrder("");
       setIsActive(true);
       setIsPopular(false);
+      setSheetBadgeLabel("");
+      setSheetHeadline("");
+      setSheetCtaLabel("");
+      setBenefitsText("");
     }
   }, [isOpen, editPlan, planType]);
 
@@ -139,6 +154,13 @@ export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan, planTyp
       displayOrder: displayOrder ? parseInt(displayOrder, 10) : null,
       isActive,
       isPopular,
+      sheetBadgeLabel: sheetBadgeLabel.trim() || null,
+      sheetHeadline: sheetHeadline.trim() || null,
+      sheetCtaLabel: sheetCtaLabel.trim() || null,
+      benefitsJson: benefitsText
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean),
     };
 
     try {
@@ -258,6 +280,57 @@ export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan, planTyp
               </div>
             </div>
           </div>
+
+          {selectedPlanType === "RIDER" && (
+            <div>
+              <h3 className="text-sm font-semibold text-gray-800 mb-3">Rider App Bottom Sheet</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className={labelCls}>Badge Label</label>
+                  <input
+                    type="text"
+                    value={sheetBadgeLabel}
+                    onChange={(e) => setSheetBadgeLabel(e.target.value)}
+                    className={inputCls}
+                    placeholder="★ ELITE MEMBERSHIP ★"
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Headline</label>
+                  <input
+                    type="text"
+                    value={sheetHeadline}
+                    onChange={(e) => setSheetHeadline(e.target.value)}
+                    className={inputCls}
+                    placeholder="Boost your earnings"
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Subscribe Button Text</label>
+                  <input
+                    type="text"
+                    value={sheetCtaLabel}
+                    onChange={(e) => setSheetCtaLabel(e.target.value)}
+                    className={inputCls}
+                    placeholder="Subscribe now"
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Benefits (one per line)</label>
+                  <textarea
+                    value={benefitsText}
+                    onChange={(e) => setBenefitsText(e.target.value)}
+                    className={inputCls}
+                    rows={5}
+                    placeholder={"₹1,000+ daily earnings\nPremium incentives\nPriority orders"}
+                  />
+                </div>
+                <p className="text-xs text-gray-500">
+                  For riders, &quot;Max Menu Items&quot; can mean low-fee order count (e.g. 10 orders at ₹10 fee).
+                </p>
+              </div>
+            </div>
+          )}
 
           <div>
             <h3 className="text-sm font-semibold text-gray-800 mb-3">Menu Limits</h3>

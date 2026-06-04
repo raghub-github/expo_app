@@ -42,6 +42,10 @@ export interface MerchantPlan {
   displayOrder: number | null;
   isActive: boolean;
   isPopular: boolean;
+  sheetBadgeLabel?: string | null;
+  sheetHeadline?: string | null;
+  sheetCtaLabel?: string | null;
+  benefitsJson?: string[] | unknown;
   createdAt: string | null;
 }
 

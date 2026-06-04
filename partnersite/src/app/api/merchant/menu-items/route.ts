@@ -9,8 +9,8 @@ import { buildMenuItemOosModePatch, buildMenuItemStockTogglePatch } from '@/lib/
 import { client as pgClient } from '@/lib/drizzle'
 import { expireTimedMenuOutOfStockForStore } from '@/lib/menu-oos-expiry'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co"
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key"
 const supabase = createClient(supabaseUrl, supabaseServiceKey, {
   auth: { autoRefreshToken: false, persistSession: false },
 })

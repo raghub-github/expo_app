@@ -35,8 +35,8 @@ import {
   type OrderStage,
 } from "@/hooks/useOrders";
 
-const POLL_FAST_MS = 4_000;
-const POLL_NORMAL_MS = 8_000;
+const POLL_FAST_MS = 3_000;
+const POLL_NORMAL_MS = 5_000;
 
 type OrdersContextValue = {
   orders: OrderRecord[];

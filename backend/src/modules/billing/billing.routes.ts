@@ -45,6 +45,15 @@ const checkoutOffersQuerySchema = z.object({
   qualifyingCartTotal: z.coerce.number().nonnegative().optional(),
 });
 
+const checkoutOfferMerchantRowSchema = z.object({
+  id: z.number(),
+  title: z.string(),
+  summary: z.string(),
+  autoApply: z.boolean().optional(),
+  requiresCouponCode: z.string().nullable().optional(),
+  minOrderAmount: z.number().nullable().optional(),
+});
+
 const calculateBodySchema = z.object({
   merchantId: z.string().min(1),
   items: z.array(itemSchema).min(1),
@@ -419,13 +428,15 @@ export async function billingRoutes(app: FastifyInstance) {
                 description: z.string(),
               })
             ),
-            merchantOffers: z.array(
-              z.object({
-                id: z.number(),
-                title: z.string(),
-                summary: z.string(),
-              })
-            ),
+            merchantOffers: z.array(checkoutOfferMerchantRowSchema),
+            merchantOffersIneligible: z
+              .array(
+                checkoutOfferMerchantRowSchema.extend({
+                  reason: z.string(),
+                  lockReason: z.string(),
+                })
+              )
+              .optional(),
             platformOffers: z.array(
               z.object({
                 id: z.number(),

@@ -13,18 +13,28 @@ import {
   actorTypeFromSource,
   recordOrderCancellation,
 } from '@/lib/record-order-cancellation';
-import { resolveOrderCancellationRefund } from '@/lib/order-cancellation-refund';
+import { refundFieldsFromEngineResult } from '@gatimitra/financial-rules';
+import {
+  executeOrderCancellationFinancials,
+  executeRtoFinancials,
+  lookupOrderContext,
+} from '@/lib/financial-rule-executor';
 import { creditMerchantOrderEarningOnDelivered } from '@/lib/credit-merchant-order-on-delivered';
 import { appendDispatchedTimeline, appendReadyTimeline } from '@/lib/orderFoodStatusTimeline';
 import { loadPartnerOrderItemsForFoodRow } from '@/lib/partnerFoodOrderItems';
 import {
+  persistMerchantCtmAtAccept,
+  resolveMerchantWalletCreditAmount,
+} from '@/lib/merchant-order-ctm';
+import {
   PLATFORM_DEFAULT_PREP_MINUTES,
   resolveAcceptPrepCommitment,
   resolveStoreDefaultPrepMinutes,
+  computePreparedLateMinutes,
 } from '@/lib/order-prep-time';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 
 function getSupabase() {
   return createClient(supabaseUrl, supabaseServiceKey, {
@@ -206,6 +216,10 @@ export async function PATCH(
     else if (newStatus === 'READY_FOR_PICKUP') {
       updates.prepared_at = now;
       if (!existing.preparing_at) updates.preparing_at = now;
+      updates.prepared_late_minutes = computePreparedLateMinutes(
+        now,
+        (existing.prep_ready_by_at as string | null) ?? null
+      );
     }
     else if (newStatus === 'OUT_FOR_DELIVERY') {
       // Store can mark as dispatched from portal without OTP validation (OTP is for rider handover only).
@@ -252,6 +266,9 @@ export async function PATCH(
       if (newStatus === 'ACCEPTED' && acceptPrepReadyByAt && acceptPrepMinutes != null) {
         corePatch.prep_ready_by_at = acceptPrepReadyByAt;
         corePatch.prep_time_minutes = acceptPrepMinutes;
+      }
+      if (newStatus === 'READY_FOR_PICKUP' && updates.prepared_late_minutes != null) {
+        corePatch.prepared_late_minutes = updates.prepared_late_minutes;
       }
       await db
         .from('orders_core')
@@ -303,6 +320,16 @@ export async function PATCH(
       } catch (etaErr) {
         console.warn('[food-orders PATCH] ETA recalc setup failed:', etaErr);
       }
+
+      try {
+        await persistMerchantCtmAtAccept(db, {
+          ordersCoreId: existing.order_id as number,
+          ordersFoodId: orderIdNum,
+          storeId: storeInternalId,
+        });
+      } catch (ctmErr) {
+        console.warn('[food-orders PATCH] merchant CTM freeze failed:', ctmErr);
+      }
     }
 
     if (newStatus === 'CANCELLED') {
@@ -320,22 +347,28 @@ export async function PATCH(
       const displayReason = (rejectedReason ?? '').trim() || 'Order cancelled';
       const { data: coreMoney } = await db
         .from('orders_core')
-        .select('grand_total')
+        .select('grand_total, order_id')
         .eq('id', existing.order_id as number)
         .maybeSingle();
-      const refund = resolveOrderCancellationRefund({
+      const cancelledByType = actorTypeFromSource(actionSource);
+      const orderCtx = await lookupOrderContext(existing.order_id as number);
+      const engineResult = await executeOrderCancellationFinancials({
+        orderCoreId: existing.order_id as number,
+        ordersFoodId: orderIdNum,
+        coreOrderId: (coreMoney?.order_id as string | null) ?? orderCtx.coreOrderId,
+        merchantStoreId: existing.merchant_store_id as number,
         previousStatus: currentStatus,
-        acceptedAt: (existing.accepted_at as string | null) ?? null,
-        grandTotal: coreMoney?.grand_total ?? 0,
-        cancelMode: actionMode,
-        rejectedReason: displayReason,
+        cancelledByType,
+        orderGross: Number(coreMoney?.grand_total ?? existing.food_items_total_value ?? orderCtx.grandTotal),
+        serviceType: orderCtx.serviceType,
       });
+      const refund = refundFieldsFromEngineResult(engineResult.raw);
       try {
         await recordOrderCancellation(db, {
           orderCorePk: existing.order_id as number,
           cancelledBy: 'merchant',
           displayReason,
-          cancelledByType: actorTypeFromSource(actionSource),
+          cancelledByType,
           cancelledByLabel:
             actionLabels.cancelled_by_label ?? 'Cancelled',
           actionSource,
@@ -345,24 +378,26 @@ export async function PATCH(
           grandTotal: coreMoney?.grand_total ?? 0,
           refundStatus: refund.refundStatus,
           refundAmount: refund.refundAmount,
+          metadata: engineResult.raw ? { financial_rule_engine: engineResult.raw } : undefined,
         });
       } catch (cancelRowErr) {
         console.warn('[food-orders PATCH] order_cancellation_reasons failed:', cancelRowErr);
       }
+    }
+
+    if (newStatus === 'RTO') {
       try {
-        const { applyPaymentCancellationPayment } = await import(
-          '@/lib/payment/apply-cancellation-payment'
-        );
-        await applyPaymentCancellationPayment({
+        const orderCtx = await lookupOrderContext(existing.order_id as number);
+        await executeRtoFinancials({
           orderCoreId: existing.order_id as number,
           ordersFoodId: orderIdNum,
-          merchantStoreId: existing.merchant_store_id as number,
+          coreOrderId: orderCtx.coreOrderId,
           previousStatus: currentStatus,
-          cancelledByType: actorTypeFromSource(actionSource),
-          orderGross: Number(existing.food_items_total_value ?? 0),
+          triggeredByType: actorTypeFromSource(actionSource),
+          orderGross: orderCtx.grandTotal,
         });
-      } catch (payErr) {
-        console.warn('[food-orders PATCH] payment_apply_cancellation:', payErr);
+      } catch (rtoErr) {
+        console.warn('[food-orders PATCH] RTO financial rule:', rtoErr);
       }
     }
 
@@ -414,11 +449,17 @@ export async function PATCH(
       console.warn('[food-orders PATCH] action log failed (run migration 0146?):', logErr);
     }
 
+    const walletAmount = await resolveMerchantWalletCreditAmount(db, {
+      ordersCoreId: existing.order_id as number,
+      ordersFoodId: orderIdNum,
+      storeId: storeInternalId,
+    });
+
     await creditMerchantOrderEarningOnDelivered(db, {
       merchantStoreId: existing.merchant_store_id as number,
       ordersFoodId: orderIdNum,
       ordersCoreId: existing.order_id as number,
-      amount: Number(existing.food_items_total_value ?? 0),
+      amount: walletAmount,
       newStatus,
       previousStatus: currentStatus,
     });

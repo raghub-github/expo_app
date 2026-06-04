@@ -4,8 +4,8 @@ import { supabase } from '@/lib/supabase';
 import { normalizePhone } from '@/lib/utils';
 import { fetchVerificationRejectionsByStoreIds } from '@/lib/onboarding/partner-verification-rejections';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 
 function getSupabaseAdmin() {
   return createClient(supabaseUrl, supabaseServiceKey, {

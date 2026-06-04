@@ -1,15 +1,11 @@
 /**
- * All Services / View All Rides – bottom sheet popup (no new page).
- * Slide up, ~half screen, rounded top, draggable, dimmed backdrop.
- * Lists Bike, Auto, Cab, Parcel with icon, name, description, ETA; tap to select and go to pickup.
+ * All Services – bottom sheet wrapper around the shared service grid.
  */
 
 import { useEffect } from "react";
 import {
   View,
-  Text,
   Modal,
-  TouchableOpacity,
   ScrollView,
   StyleSheet,
   Dimensions,
@@ -21,27 +17,14 @@ import Animated, {
   withSpring,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
-import { GatiMitraColors } from "@/constants/gatimitra";
+import { AllServicesGrid, type ServiceId } from "./AllServicesGrid";
+
+export type { ServiceId } from "./AllServicesGrid";
+export { ALL_SERVICES } from "./AllServicesGrid";
 
 const { height: WINDOW_HEIGHT } = Dimensions.get("window");
-const HALF_HEIGHT = WINDOW_HEIGHT * 0.52;
+const SHEET_HEIGHT = WINDOW_HEIGHT * 0.88;
 const SPRING_CONFIG = { damping: 24, stiffness: 280 };
-
-export type ServiceId = "bike" | "auto" | "cab" | "parcel";
-
-export const ALL_SERVICES: Array<{
-  id: ServiceId;
-  icon: keyof typeof Ionicons.glyphMap;
-  name: string;
-  description: string;
-  eta: string;
-}> = [
-  { id: "bike", icon: "bicycle", name: "Bike Ride", description: "Beat the traffic", eta: "~5 min" },
-  { id: "auto", icon: "bus", name: "Auto", description: "Quick city rides", eta: "~7 min" },
-  { id: "cab", icon: "car-sport", name: "Cab", description: "Comfortable travel", eta: "~10 min" },
-  { id: "parcel", icon: "cube-outline", name: "Parcel / Delivery", description: "Send packages", eta: "—" },
-];
 
 type AllServicesBottomSheetProps = {
   visible: boolean;
@@ -73,7 +56,7 @@ export function AllServicesBottomSheet({
   }));
 
   const backdropStyle = useAnimatedStyle(() => ({
-    opacity: backdropOpacity.value * 0.5,
+    opacity: backdropOpacity.value * 0.45,
   }));
 
   const handleSelect = (id: ServiceId) => {
@@ -98,39 +81,21 @@ export function AllServicesBottomSheet({
             styles.sheet,
             sheetStyle,
             {
-              height: HALF_HEIGHT + insets.bottom,
-              paddingBottom: insets.bottom,
+              height: SHEET_HEIGHT + insets.bottom,
+              paddingBottom: insets.bottom + 12,
             },
           ]}
         >
           <Pressable style={styles.handleWrap} onPress={onClose}>
             <View style={styles.handle} />
           </Pressable>
-          <Text style={styles.title}>All ride options</Text>
-          <Text style={styles.subtitle}>Choose your ride</Text>
+
           <ScrollView
-            style={styles.list}
+            style={styles.scroll}
+            contentContainerStyle={styles.scrollContent}
             showsVerticalScrollIndicator={false}
-            contentContainerStyle={styles.listContent}
           >
-            {ALL_SERVICES.map((s) => (
-              <TouchableOpacity
-                key={s.id}
-                style={styles.row}
-                activeOpacity={0.7}
-                onPress={() => handleSelect(s.id)}
-              >
-                <View style={styles.iconContainer}>
-                  <Ionicons name={s.icon} size={26} color={GatiMitraColors.emerald} />
-                </View>
-                <View style={styles.rowText}>
-                  <Text style={styles.rowName}>{s.name}</Text>
-                  <Text style={styles.rowDesc}>{s.description}</Text>
-                </View>
-                <Text style={styles.eta}>{s.eta}</Text>
-                <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
-              </TouchableOpacity>
-            ))}
+            <AllServicesGrid onSelectService={handleSelect} />
           </ScrollView>
         </Animated.View>
       </View>
@@ -152,71 +117,26 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: GatiMitraColors.background,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    ...GatiMitraColors.elevationShadow,
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
   },
   handleWrap: {
     alignItems: "center",
-    paddingVertical: 12,
+    paddingTop: 10,
+    paddingBottom: 6,
   },
   handle: {
-    width: 40,
+    width: 36,
     height: 4,
     borderRadius: 2,
-    backgroundColor: GatiMitraColors.border,
+    backgroundColor: "#D1D5DB",
   },
-  title: {
-    fontSize: 20,
-    fontWeight: "800",
-    color: GatiMitraColors.textPrimary,
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
     paddingHorizontal: 20,
-    marginBottom: 2,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: GatiMitraColors.textSecondary,
-    paddingHorizontal: 20,
-    marginBottom: 16,
-  },
-  list: { flex: 1 },
-  listContent: { paddingHorizontal: 16, paddingBottom: 24 },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: GatiMitraColors.cardBg,
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: GatiMitraColors.border,
-    ...GatiMitraColors.searchShadow,
-  },
-  iconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
-    backgroundColor: GatiMitraColors.mintSoft,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 14,
-  },
-  rowText: { flex: 1 },
-  rowName: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: GatiMitraColors.textPrimary,
-  },
-  rowDesc: {
-    fontSize: 13,
-    color: GatiMitraColors.textSecondary,
-    marginTop: 2,
-  },
-  eta: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: GatiMitraColors.emerald,
-    marginRight: 8,
+    paddingBottom: 24,
   },
 });

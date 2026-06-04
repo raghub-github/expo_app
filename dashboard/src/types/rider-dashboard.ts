@@ -1,3 +1,5 @@
+import type { RiderLogoutSessionSnapshot } from "@/lib/rider-logout-types";
+
 /**
  * Shared types for Rider Dashboard (and reusable for Customer/Merchant dashboards later).
  */
@@ -131,6 +133,8 @@ export interface RiderSummary {
       performedByName: string | null;
     } | null;
   } | null;
+  /** App session: logged in vs logged out (latest self-reported logout reason when offline) */
+  logoutSession?: RiderLogoutSessionSnapshot;
   /** Onboarding (registration) fees paid by the rider – shown on home when not verified, and in wallet/full details */
   onboardingFees?: {
     totalPaid: string;

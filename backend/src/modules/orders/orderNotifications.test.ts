@@ -3,7 +3,7 @@
  *
  * We don't hit Postgres here — the helper is thin enough that we can assert on
  * the Drizzle insert call shape with a stub tx. The goal is to lock in:
- *   - exactly 3 rows are queued (merchant, rider_dispatch, customer),
+ *   - exactly 2 rows are queued (merchant, customer),
  *   - the right recipient/channel/event wiring per audience,
  *   - the payload is shared and carries the essentials for downstream workers,
  *   - nothing throws when optional ids (merchantStoreId / customerId) are null.
@@ -29,7 +29,7 @@ function makeStubTx(): { tx: PostgresJsDatabase<Record<string, unknown>>; calls:
 }
 
 describe("enqueuePlacementNotifications", () => {
-  it("queues one row each for merchant, rider_dispatch, customer with correct wiring", async () => {
+  it("queues one row each for merchant and customer with correct wiring", async () => {
     const { tx, calls } = makeStubTx();
 
     await enqueuePlacementNotifications(tx, {
@@ -47,20 +47,15 @@ describe("enqueuePlacementNotifications", () => {
     assert.equal(calls[0].table, orderNotifications);
 
     const rows = calls[0].values;
-    assert.equal(rows.length, 3);
+    assert.equal(rows.length, 2);
 
     const byAudience = Object.fromEntries(rows.map((r) => [r.audience as string, r]));
-    assert.ok(byAudience.merchant && byAudience.rider_dispatch && byAudience.customer);
+    assert.ok(byAudience.merchant && byAudience.customer);
 
     assert.equal(byAudience.merchant.channel, "realtime");
     assert.equal(byAudience.merchant.eventType, "ORDER_PLACED");
     assert.equal(byAudience.merchant.recipientType, "merchant_store");
     assert.equal(byAudience.merchant.recipientId, "99");
-
-    assert.equal(byAudience.rider_dispatch.channel, "internal");
-    assert.equal(byAudience.rider_dispatch.eventType, "ORDER_READY_FOR_DISPATCH");
-    assert.equal(byAudience.rider_dispatch.recipientType, "rider_pool");
-    assert.equal(byAudience.rider_dispatch.recipientId, "store:99");
 
     assert.equal(byAudience.customer.channel, "realtime");
     assert.equal(byAudience.customer.eventType, "ORDER_PLACED");
@@ -93,11 +88,9 @@ describe("enqueuePlacementNotifications", () => {
     });
 
     const rows = calls[0].values;
-    assert.equal(rows.length, 3);
+    assert.equal(rows.length, 2);
     const byAudience = Object.fromEntries(rows.map((r) => [r.audience as string, r]));
-    // undefined (not an empty string) so the DB column stays NULL
     assert.equal(byAudience.merchant.recipientId, undefined);
-    assert.equal(byAudience.rider_dispatch.recipientId, undefined);
     assert.equal(byAudience.customer.recipientId, undefined);
   });
 });

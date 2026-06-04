@@ -29,9 +29,15 @@ export type OrdersFoodRow = {
   drop_address_raw?: string | null;
   drop_address_normalized?: string | null;
   delivery_instructions?: string | null;
+  /** Kitchen / merchant notes from checkout (orders_food.merchant_instructions_list). */
+  merchant_instructions_list?: string[] | null;
   food_items_count?: number | null;
   display_item_count?: number | null;
   food_items_total_value?: number | string | null;
+  /** Frozen merchant CTM from accept (orders_core.total_ctm). */
+  total_ctm?: number | string | null;
+  /** Customer paid grand total — internal only, not merchant display. */
+  customer_paid_total?: number | string | null;
   preparation_time_minutes?: number | null;
   prep_ready_by_at?: string | null;
   prep_time_source?: 'merchant' | 'store_default' | string | null;
@@ -61,6 +67,8 @@ export type OrdersFoodRow = {
     hasCustomizations?: boolean;
   }> | null;
   pricing?: OrderPricingBreakdown;
+  /** orders_core.grand_total — partial fallback when pricing snapshot is unavailable. */
+  grand_total?: number | string | null;
   veg_non_veg?: string | null;
   requires_utensils?: boolean | null;
   is_fragile?: boolean | null;
@@ -68,6 +76,8 @@ export type OrdersFoodRow = {
   rejected_reason?: string | null;
   accepted_by_label?: string | null;
   cancelled_by_label?: string | null;
+  /** Merchant answer: was rider in uniform? (from order_rider_assignments) */
+  merchant_rider_in_uniform?: boolean | null;
   rider_id?: number | null;
   rider_name?: string | null;
   rider_phone?: string | null;

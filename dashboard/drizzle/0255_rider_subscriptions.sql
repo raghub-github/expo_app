@@ -1,0 +1,2 @@
+-- DEPRECATED: Do NOT run. Use 0256_gmitra_max_subscription_system.sql then 0257_rider_subscription_gst_fix.sql
+-- This file incorrectly linked rider_subscriptions to merchant_plans.

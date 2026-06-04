@@ -9,8 +9,10 @@ export function parseOrderRefParam(orderIdParam: string): {
   isNumericId: boolean;
   orderIdNum: number;
 } {
-  const orderIdNum = parseInt(orderIdParam, 10);
-  return { isNumericId: !Number.isNaN(orderIdNum), orderIdNum };
+  const trimmed = orderIdParam.trim();
+  const isNumericId = /^\d+$/.test(trimmed);
+  const orderIdNum = isNumericId ? parseInt(trimmed, 10) : NaN;
+  return { isNumericId, orderIdNum };
 }
 
 /** Drizzle WHERE: customer's order matching id | order_id | formatted_order_id. */

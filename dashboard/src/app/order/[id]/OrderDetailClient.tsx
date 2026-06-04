@@ -13,6 +13,8 @@ import MerchantDetails from "./MerchantDetails";
 import PaymentDetails from "./PaymentDetails";
 import type { OrderPaymentDetail } from "@/lib/orders/order-payment-detail";
 import RiderDetails from "./RiderDetails";
+import type { RiderTimelineData } from "./RiderTimeline";
+import type { OrderRiderTrackingPayload } from "@/lib/db/operations/order-rider-tracking";
 import RiderRouteMap from "./RiderRouteMap";
 import { useAuthOptional } from "@/providers/AuthProvider";
 import { useIsActiveRoute } from "@/hooks/useIsActiveRoute";
@@ -20,6 +22,11 @@ import { usePageVisible } from "@/hooks/usePageVisible";
 import { ChevronDown, History, RefreshCw, X } from "lucide-react";
 import Link from "next/link";
 import type { OrderCancellationInfo } from "@/lib/merchant-cancellation-display";
+import type { OrderCustomerFeedback } from "@/lib/orders/order-customer-feedback";
+import {
+  OrderCustomerFeedbackSideSheet,
+  type FeedbackSheetTarget,
+} from "./OrderCustomerFeedbackSideSheet";
 import {
   isManualStatusOptionDisabled,
   canApplyManualStatusUpdate,
@@ -27,6 +34,11 @@ import {
   MANUAL_STATUS_LABELS,
   type ManualStatusValue,
 } from "@/lib/orders/order-dispatch-status";
+import {
+  parseGeocodedLatLon,
+  resolveMapCoordinatePair,
+} from "@/lib/orders/parse-order-map-coords";
+import { isHardPageReload } from "@/lib/navigation/is-hard-page-reload";
 
 /** Status options for "Update order status" modal (value = DB enum) */
 const STATUS_OPTIONS = [
@@ -41,6 +53,44 @@ export interface OrderStatusHistoryEntry {
   updatedByEmail: string;
   updatedByRole: string;
   createdAt: string;
+}
+
+type TimelineEntryFromApi = Omit<OrderTimelineEntry, "occurredAt" | "expectedByAt"> & {
+  occurredAt?: unknown;
+  expectedByAt?: unknown;
+};
+
+function normalizeTimelineAt(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  return String(value ?? "");
+}
+
+function normalizeTimelineAtNullable(value: unknown): string | null {
+  if (value == null) return null;
+  return normalizeTimelineAt(value);
+}
+
+function mapTimelineEntries(raw: TimelineEntryFromApi[]): OrderTimelineEntry[] {
+  return raw.map((e) => ({
+    ...e,
+    occurredAt: normalizeTimelineAt(e.occurredAt),
+    expectedByAt: normalizeTimelineAtNullable(e.expectedByAt),
+  }));
+}
+
+function parseStatusHistoryEntry(raw: unknown): OrderStatusHistoryEntry | null {
+  if (raw == null || typeof raw !== "object") return null;
+  const h = raw as Record<string, unknown>;
+  if (typeof h.toStatus !== "string" || typeof h.updatedByEmail !== "string") return null;
+  return {
+    toStatus: h.toStatus,
+    updatedByEmail: h.updatedByEmail,
+    updatedByRole:
+      typeof h.updatedByRole === "string" && h.updatedByRole.trim()
+        ? h.updatedByRole.trim()
+        : "AGENT",
+    createdAt: typeof h.createdAt === "string" ? h.createdAt : String(h.createdAt ?? ""),
+  };
 }
 
 function AgentRoleBadge({ role }: { role: string }) {
@@ -84,6 +134,9 @@ interface OrderDetail {
   dropAddressRaw: string | null;
   dropAddressNormalized?: string | null;
   dropAddressGeocoded?: string | null;
+  pickupAddressRaw?: string | null;
+  pickupAddressNormalized?: string | null;
+  pickupAddressGeocoded?: string | null;
   pickupLat?: number | null;
   pickupLon?: number | null;
   dropLat?: number | null;
@@ -96,6 +149,8 @@ interface OrderDetail {
   merchantParentId: number | null;
   /** Email of last user who manually updated order status. */
   manualStatusUpdatedByEmail?: string | null;
+  /** orders_food.order_status — drives Dispatch Ready enablement with rider-at-store. */
+  foodOrderStatus?: string | null;
   /** Delivery instructions from orders_food (food orders only). */
   deliveryInstructions?: string | null;
   /** ETA in seconds from creation (for timeline). */
@@ -114,6 +169,8 @@ interface OrderDetail {
   itemCount?: number | null;
   systemKptMinutes?: number | null;
   merchantUpdatedKptMinutes?: number | null;
+  /** Cumulative minutes from merchant "Need more time". */
+  merchantExtraPrepMinutes?: number | null;
   isScheduledOrder?: boolean;
   scheduledDeliverySummary?: string | null;
   deliveryType?: string | null;
@@ -130,6 +187,7 @@ interface OrderDetail {
   pickupOtp?: string | null;
   rtoOtp?: string | null;
   deliveryOtp?: string | null;
+  customerFeedback?: OrderCustomerFeedback | null;
 }
 
 /** Merchant summary from order API for MX card (show immediately on load) */
@@ -218,6 +276,25 @@ function toMerchantProfile(summary: MerchantSummaryFromApi) {
   };
 }
 
+function normalizeOrderPublicId(value: string): string {
+  return String(value || "")
+    .trim()
+    .replace(/[-\s]/g, "")
+    .toUpperCase();
+}
+
+function orderMatchesPublicId(order: OrderDetail, publicId: string): boolean {
+  const target = normalizeOrderPublicId(publicId);
+  if (!target) return false;
+  const candidates = [
+    order.formattedOrderId,
+    order.orderId,
+    order.id != null ? `GMF${String(order.id).padStart(6, "0")}` : null,
+    order.id != null ? String(order.id) : null,
+  ];
+  return candidates.some((c) => c != null && normalizeOrderPublicId(String(c)) === target);
+}
+
 function InfinitySpinner() {
   return (
     <div className="flex flex-col items-center justify-center gap-3">
@@ -272,6 +349,9 @@ export default function OrderDetailClient({
   onLoadingChange,
   onNotFoundChange,
 }: OrderDetailClientProps) {
+  const isHardReloadRef = useRef(false);
+  const [hasHydrated, setHasHydrated] = useState(false);
+  const [isHardReload, setIsHardReload] = useState(false);
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [merchantSummary, setMerchantSummary] = useState<MerchantSummaryFromApi | null>(null);
   const [initialRemarksCount, setInitialRemarksCount] = useState<number>(0);
@@ -294,9 +374,18 @@ export default function OrderDetailClient({
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [statusUpdateError, setStatusUpdateError] = useState<string | null>(null);
   const [timelineEntries, setTimelineEntries] = useState<OrderTimelineEntry[] | null>(null);
+  const [riderTimelineInitial, setRiderTimelineInitial] = useState<
+    RiderTimelineData | null | undefined
+  >(undefined);
+  const [riderTrackingInitial, setRiderTrackingInitial] = useState<
+    OrderRiderTrackingPayload | null | undefined
+  >(undefined);
   const [paymentDetail, setPaymentDetail] = useState<OrderPaymentDetail | null>(null);
   const [copiedOrderId, setCopiedOrderId] = useState(false);
   const copyOrderIdResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [feedbackSheetTarget, setFeedbackSheetTarget] = useState<FeedbackSheetTarget | null>(
+    null
+  );
 
   const ensureOrderItemsPrefetch = useCallback(() => {
     const orderId = order?.id;
@@ -325,8 +414,15 @@ export default function OrderDetailClient({
   const pageVisible = usePageVisible();
 
   useEffect(() => {
-    onLoadingChange?.(loading);
-  }, [loading, onLoadingChange]);
+    const hard = isHardPageReload();
+    isHardReloadRef.current = hard;
+    setIsHardReload(hard);
+    setHasHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    onLoadingChange?.(hasHydrated && isHardReload && loading && !order);
+  }, [hasHydrated, isHardReload, loading, order, onLoadingChange]);
 
   useEffect(() => {
     onNotFoundChange?.(!loading && Boolean(error || !order));
@@ -369,6 +465,7 @@ export default function OrderDetailClient({
       setOrder(null);
       setPaymentDetail(null);
       setTimelineEntries(null);
+      setRiderTimelineInitial(undefined);
       setOrderItemsPayload(null);
       setError("Invalid order ID.");
       setLoading(false);
@@ -377,8 +474,20 @@ export default function OrderDetailClient({
 
     setOrderItemsPayload(null);
 
-    if (refetchTrigger === 0) setLoading(true);
-    else setIsRefreshing(true);
+    setOrder((prev) => {
+      if (!prev) return null;
+      return orderMatchesPublicId(prev, normalizedPublicId) ? prev : null;
+    });
+
+    if (refetchTrigger > 0) {
+      setIsRefreshing(true);
+    } else if (isHardReloadRef.current) {
+      setLoading(true);
+      setIsRefreshing(false);
+    } else {
+      setLoading(true);
+      setIsRefreshing(true);
+    }
     setError(null);
 
     const params = new URLSearchParams({
@@ -391,21 +500,6 @@ export default function OrderDetailClient({
       params.set("skipCache", "1");
     }
 
-    const mapTimelineEntries = (raw: OrderTimelineEntry[]) =>
-      raw.map((e) => ({
-        ...e,
-        occurredAt:
-          e.occurredAt instanceof Date
-            ? e.occurredAt.toISOString()
-            : String(e.occurredAt ?? ""),
-        expectedByAt:
-          e.expectedByAt instanceof Date
-            ? e.expectedByAt.toISOString()
-            : e.expectedByAt != null
-              ? String(e.expectedByAt)
-              : null,
-      }));
-
     const loadTimelineInBackground = (coreOrderId: number) => {
       void fetch(`/api/orders/${coreOrderId}/timeline`)
         .then((r) => r.json().catch(() => null))
@@ -415,6 +509,17 @@ export default function OrderDetailClient({
             setTimelineEntries(
               mapTimelineEntries(timelineBody.data as OrderTimelineEntry[])
             );
+          }
+        });
+    };
+
+    const loadRiderTimelineInBackground = (coreOrderId: number, riderId: number) => {
+      void fetch(`/api/orders/${coreOrderId}/rider-timeline?rider_id=${riderId}`)
+        .then((r) => r.json().catch(() => null))
+        .then((body: RiderTimelineData | null) => {
+          if (cancelled) return;
+          if (body && typeof body === "object") {
+            setRiderTimelineInitial(body);
           }
         });
     };
@@ -430,6 +535,14 @@ export default function OrderDetailClient({
             success?: boolean;
             data?: unknown[];
             error?: string;
+            timeline?: OrderTimelineEntry[];
+            riderTimeline?: RiderTimelineData | null;
+            riderTracking?: OrderRiderTrackingPayload | null;
+            merchantSummary?: unknown;
+            remarksCount?: number;
+            reconsCount?: number;
+            statusHistory?: unknown[];
+            paymentDetail?: OrderPaymentDetail;
           };
         } catch {
           throw new Error("Invalid order response");
@@ -448,12 +561,28 @@ export default function OrderDetailClient({
                   .then((itemsBody) => parseOrderItemsApiResponse(itemsBody))
               : Promise.resolve(null);
 
-          const embedded = (body as { timeline?: unknown }).timeline;
-          const timeline =
-            Array.isArray(embedded) ? (embedded as OrderTimelineEntry[]) : [];
+          const embedded = body.timeline;
+          const timeline = Array.isArray(embedded) ? embedded : [];
+          const hasEmbeddedTimeline = body.timeline !== undefined;
+          const embeddedRiderTimeline = body.riderTimeline;
+          const hasEmbeddedRiderTimeline = body.riderTimeline !== undefined;
+          const embeddedRiderTracking = body.riderTracking;
+          const hasEmbeddedRiderTracking = body.riderTracking !== undefined;
           if (cancelled) return;
+
+          const toNumberOrNull = (v: unknown): number | null => {
+            if (v === null || v === undefined) return null;
+            const n = Number(v);
+            return Number.isFinite(n) ? n : null;
+          };
+
           if (body.merchantSummary != null && typeof body.merchantSummary === "object") {
-            setMerchantSummary(body.merchantSummary as MerchantSummaryFromApi);
+            const raw = body.merchantSummary as MerchantSummaryFromApi;
+            setMerchantSummary({
+              ...raw,
+              latitude: toNumberOrNull(raw.latitude),
+              longitude: toNumberOrNull(raw.longitude),
+            });
           } else {
             setMerchantSummary(null);
           }
@@ -465,29 +594,13 @@ export default function OrderDetailClient({
           );
           if (Array.isArray(body.statusHistory)) {
             setStatusHistory(
-              body.statusHistory.map(
-                (h: {
-                  toStatus: string;
-                  updatedByEmail: string;
-                  updatedByRole?: string;
-                  createdAt: string;
-                }) => ({
-                  toStatus: h.toStatus,
-                  updatedByEmail: h.updatedByEmail,
-                  updatedByRole: h.updatedByRole?.trim() || "AGENT",
-                  createdAt: h.createdAt,
-                })
-              )
+              body.statusHistory
+                .map(parseStatusHistoryEntry)
+                .filter((h): h is OrderStatusHistoryEntry => h != null)
             );
           } else {
             setStatusHistory([]);
           }
-
-          const toNumberOrNull = (v: unknown): number | null => {
-            if (v === null || v === undefined) return null;
-            const n = Number(v);
-            return Number.isFinite(n) ? n : null;
-          };
 
           const paymentFromApi =
             (body as { paymentDetail?: OrderPaymentDetail }).paymentDetail ??
@@ -495,7 +608,27 @@ export default function OrderDetailClient({
           setPaymentDetail(paymentFromApi ?? null);
 
           setTimelineEntries(timeline.length > 0 ? mapTimelineEntries(timeline) : []);
-          if (coreOrderId != null && timeline.length === 0) {
+          if (hasEmbeddedRiderTimeline) {
+            setRiderTimelineInitial(
+              embeddedRiderTimeline && typeof embeddedRiderTimeline === "object"
+                ? embeddedRiderTimeline
+                : null
+            );
+          } else if (coreOrderId != null && row.riderId != null && Number.isFinite(Number(row.riderId))) {
+            loadRiderTimelineInBackground(coreOrderId, Number(row.riderId));
+          } else {
+            setRiderTimelineInitial(null);
+          }
+          if (hasEmbeddedRiderTracking) {
+            setRiderTrackingInitial(
+              embeddedRiderTracking && typeof embeddedRiderTracking === "object"
+                ? embeddedRiderTracking
+                : null
+            );
+          } else {
+            setRiderTrackingInitial(null);
+          }
+          if (coreOrderId != null && !hasEmbeddedTimeline) {
             loadTimelineInBackground(coreOrderId);
           }
           setOrder({
@@ -531,10 +664,13 @@ export default function OrderDetailClient({
             dropAddressRaw: row.dropAddressRaw,
             dropAddressNormalized: row.dropAddressNormalized ?? null,
             dropAddressGeocoded: row.dropAddressGeocoded ?? null,
-            pickupLat: row.pickupLat ?? null,
-            pickupLon: row.pickupLon ?? null,
-            dropLat: row.dropLat ?? null,
-            dropLon: row.dropLon ?? null,
+            pickupAddressRaw: row.pickupAddressRaw ?? null,
+            pickupAddressNormalized: row.pickupAddressNormalized ?? null,
+            pickupAddressGeocoded: row.pickupAddressGeocoded ?? null,
+            pickupLat: toNumberOrNull(row.pickupLat),
+            pickupLon: toNumberOrNull(row.pickupLon),
+            dropLat: toNumberOrNull(row.dropLat),
+            dropLon: toNumberOrNull(row.dropLon),
             pickupAddressDeviationMeters: row.pickupAddressDeviationMeters ?? null,
             dropAddressDeviationMeters: row.dropAddressDeviationMeters ?? null,
             distanceMismatchFlagged: row.distanceMismatchFlagged ?? false,
@@ -544,6 +680,8 @@ export default function OrderDetailClient({
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
             manualStatusUpdatedByEmail: row.manualStatusUpdatedByEmail ?? null,
+            foodOrderStatus:
+              typeof row.foodOrderStatus === "string" ? row.foodOrderStatus : null,
             deliveryInstructions: row.deliveryInstructions ?? null,
             etaSeconds: row.etaSeconds ?? null,
             estimatedDeliveryTime: row.estimatedDeliveryTime != null ? String(row.estimatedDeliveryTime) : null,
@@ -559,6 +697,10 @@ export default function OrderDetailClient({
             merchantUpdatedKptMinutes:
               row.merchantUpdatedKptMinutes != null
                 ? Number(row.merchantUpdatedKptMinutes)
+                : null,
+            merchantExtraPrepMinutes:
+              row.merchantExtraPrepMinutes != null
+                ? Number(row.merchantExtraPrepMinutes)
                 : null,
             isScheduledOrder: Boolean(row.isScheduledOrder),
             scheduledDeliverySummary:
@@ -609,6 +751,10 @@ export default function OrderDetailClient({
             deliveryOtp:
               row.deliveryOtp != null && String(row.deliveryOtp).trim()
                 ? String(row.deliveryOtp).trim()
+                : null,
+            customerFeedback:
+              row.customerFeedback && typeof row.customerFeedback === "object"
+                ? (row.customerFeedback as OrderCustomerFeedback)
                 : null,
           });
 
@@ -680,9 +826,10 @@ export default function OrderDetailClient({
         ? resolveDispatchManualStage({
             status: order.status,
             currentStatus: order.currentStatus,
+            foodOrderStatus: order.foodOrderStatus,
           })
         : "open",
-    [order?.status, order?.currentStatus]
+    [order?.status, order?.currentStatus, order?.foodOrderStatus]
   );
 
   const openStatusModal = useCallback(() => {
@@ -780,10 +927,22 @@ export default function OrderDetailClient({
     };
   }, [order?.id, displayId]);
 
-  if (loading) {
+  const riderSelfieUrl = riderTrackingInitial?.rider?.selfie_url ?? null;
+
+  useEffect(() => {
+    const url = riderSelfieUrl?.trim();
+    if (!url) return;
+    const img = new Image();
+    img.decoding = "async";
+    img.src = url;
+  }, [riderSelfieUrl]);
+
+  const awaitingOrder = !order && (loading || isRefreshing);
+
+  if (awaitingOrder) {
     return (
       <div
-        className="flex h-[calc(100vh-56px)] w-full items-center justify-center bg-slate-50"
+        className="fixed inset-x-0 bottom-0 top-11 z-10 flex items-center justify-center bg-[#F8FAFC] sm:top-12"
         aria-busy="true"
         aria-label="Loading order details"
       >
@@ -901,15 +1060,16 @@ export default function OrderDetailClient({
     (order.pickupAddressDeviationMeters ?? 0) > 800 ||
     (order.dropAddressDeviationMeters ?? 0) > 800;
 
-  const hasRiderRouteMap =
-    order.pickupLat != null &&
-    order.pickupLon != null &&
-    order.dropLat != null &&
-    order.dropLon != null &&
-    Number.isFinite(order.pickupLat) &&
-    Number.isFinite(order.pickupLon) &&
-    Number.isFinite(order.dropLat) &&
-    Number.isFinite(order.dropLon);
+  const hasAssignedRider =
+    order.riderId != null && Number.isFinite(Number(order.riderId)) && Number(order.riderId) > 0;
+
+  const mapDrop = resolveMapCoordinatePair(
+    order.dropLat,
+    order.dropLon,
+    parseGeocodedLatLon(order.dropAddressGeocoded)
+  );
+  const mapDropLat = mapDrop?.lat ?? null;
+  const mapDropLon = mapDrop?.lon ?? null;
 
   const handleCopy = (text: string) => {
     if (!text) return;
@@ -1170,6 +1330,7 @@ export default function OrderDetailClient({
             currentStatus={statusLabel || undefined}
             orderCreatedAt={order.createdAt ? new Date(order.createdAt) : undefined}
             etaAt={(() => {
+              if (order.firstEtaAt) return new Date(order.firstEtaAt);
               if (order.estimatedDeliveryTime)
                 return new Date(order.estimatedDeliveryTime);
               if (order.etaSeconds != null && order.createdAt)
@@ -1183,7 +1344,6 @@ export default function OrderDetailClient({
               }
               return undefined;
             })()}
-            etaBreachedTimelineId={order.etaBreachedTimelineId ?? undefined}
           />
         </div>
 
@@ -1226,6 +1386,8 @@ export default function OrderDetailClient({
                 orderPaidAtLabel: createdLabel,
               }}
               initialProfile={merchantSummary ? toMerchantProfile(merchantSummary) : undefined}
+              customerFeedback={order.customerFeedback ?? null}
+              onOpenFeedback={() => setFeedbackSheetTarget("merchant")}
               onCopy={handleCopy}
             />
 
@@ -1239,10 +1401,19 @@ export default function OrderDetailClient({
             />
           </div>
 
-          {/* Rider details + map */}
-          <div className="mt-3 grid gap-3 md:grid-cols-2">
+          {/* Rider details + map — map only while a rider is assigned */}
+          <div
+            className={`mt-3 grid gap-3 md:items-stretch ${
+              hasAssignedRider ? "md:grid-cols-2" : "grid-cols-1"
+            }`}
+          >
             <RiderDetails
+              className={hasAssignedRider ? "h-full flex flex-col" : ""}
+              initialRiderTimeline={riderTimelineInitial}
+              riderSelfieUrl={riderSelfieUrl}
               order={{
+                orderId: order.id,
+                riderId: order.riderId ?? null,
                 riderName: order.riderName,
                 riderMobile: order.riderMobile,
                 riderProvider: order.orderSource,
@@ -1254,17 +1425,36 @@ export default function OrderDetailClient({
                 createdAt: order.createdAt,
                 distanceKm: order.distanceKm ?? null,
               }}
+              customerFeedback={order.customerFeedback ?? null}
+              tipAmount={order.tipAmount}
+              onOpenFeedback={() => setFeedbackSheetTarget("rider")}
               onCopy={handleCopy}
               onPhoneClick={handleCustomerPhoneClick}
             />
-            {hasRiderRouteMap && (
+            {hasAssignedRider ? (
               <RiderRouteMap
+                key={`rider-map-${order.riderId}`}
+                className="h-full flex flex-col"
+                orderId={order.id}
+                riderId={order.riderId ?? null}
+                riderName={order.riderName}
+                storeName={merchantSummary?.storeName ?? null}
+                customerName={order.customerName}
+                dropAddressFallback={
+                  order.dropAddressNormalized ?? order.dropAddressRaw ?? null
+                }
+                merchantStoreLat={merchantSummary?.latitude ?? null}
+                merchantStoreLon={merchantSummary?.longitude ?? null}
+                pickupAddressGeocoded={order.pickupAddressGeocoded ?? null}
+                orderStatus={order.currentStatus ?? order.status}
+                pickedUpAt={riderTimelineInitial?.picked_up_at ?? null}
                 pickupLat={order.pickupLat ?? null}
                 pickupLon={order.pickupLon ?? null}
-                dropLat={order.dropLat ?? null}
-                dropLon={order.dropLon ?? null}
+                dropLat={mapDropLat}
+                dropLon={mapDropLon}
+                initialTracking={riderTrackingInitial ?? null}
               />
-            )}
+            ) : null}
           </div>
         </div>
       </div>
@@ -1437,6 +1627,17 @@ export default function OrderDetailClient({
           </div>
         </div>
       )}
+
+      {feedbackSheetTarget != null && order?.customerFeedback ? (
+        <OrderCustomerFeedbackSideSheet
+          target={feedbackSheetTarget}
+          feedback={order.customerFeedback}
+          tipAmount={order.tipAmount}
+          merchantName={merchantSummary?.storeName}
+          riderName={order.riderName}
+          onClose={() => setFeedbackSheetTarget(null)}
+        />
+      ) : null}
     </>
   );
 }

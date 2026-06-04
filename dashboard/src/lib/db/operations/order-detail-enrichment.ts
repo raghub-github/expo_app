@@ -16,11 +16,13 @@ import {
   parseInstructionList,
   resolveFirstEtaAtIso,
   resolveLocalityDisplay,
-  shouldShowMerchantUpdatedKpt,
+  resolveMerchantUpdatedKptMinutes,
 } from "@/lib/orders/order-detail-display";
 import type { OrderCancellationInfo } from "@/lib/merchant-cancellation-display";
 import { resolveMerchantCancellationFields } from "@/lib/orders/merchant-cancellation-fields";
 import { getOrderOtpsForDashboard } from "./order-otps";
+import { getOrderCustomerFeedback } from "./order-customer-feedback";
+import type { OrderCustomerFeedback } from "@/lib/orders/order-customer-feedback";
 
 export type OrderDetailEnrichment = {
   orderTimeIso: string | null;
@@ -28,6 +30,8 @@ export type OrderDetailEnrichment = {
   itemCount: number;
   systemKptMinutes: number | null;
   merchantUpdatedKptMinutes: number | null;
+  /** Cumulative prep minutes added via merchant "Need more time". */
+  merchantExtraPrepMinutes: number | null;
   isScheduledOrder: boolean;
   scheduledDeliverySummary: string | null;
   deliveryType: string | null;
@@ -46,6 +50,7 @@ export type OrderDetailEnrichment = {
   merchantInstructionsList: string[];
   firstEtaAtIso: string | null;
   cancellationInfo: OrderCancellationInfo | null;
+  customerFeedback: OrderCustomerFeedback | null;
 };
 
 function asNum(v: unknown): number | null {
@@ -74,7 +79,8 @@ async function fetchCoreExtras(
         delivery_instructions_list,
         merchant_instructions_list,
         default_system_kpt_minutes,
-        merchant_updated_kpt_minutes
+        merchant_updated_kpt_minutes,
+        prep_delay_minutes
       FROM orders_core
       WHERE id = ${orderId}
       LIMIT 1
@@ -107,6 +113,47 @@ async function fetchCoreExtras(
     }
   }
   return {};
+}
+
+async function fetchFoodPrepMeta(orderId: number): Promise<{
+  preparationTimeMinutes: number | null;
+  prepTimeSource: string | null;
+  prepDelayMinutes: number | null;
+}> {
+  const db = getDb();
+  try {
+    const rows = await db.execute(sql`
+      SELECT preparation_time_minutes, prep_time_source, prep_delay_minutes
+      FROM orders_food
+      WHERE order_id = ${orderId}
+      LIMIT 1
+    `);
+    const row = (rows as unknown as Record<string, unknown>[])[0];
+    return {
+      preparationTimeMinutes: asNum(row?.preparation_time_minutes),
+      prepTimeSource:
+        row?.prep_time_source != null ? String(row.prep_time_source) : null,
+      prepDelayMinutes: asNum(row?.prep_delay_minutes),
+    };
+  } catch {
+    try {
+      const rows = await db.execute(sql`
+        SELECT preparation_time_minutes, prep_time_source
+        FROM orders_food
+        WHERE order_id = ${orderId}
+        LIMIT 1
+      `);
+      const row = (rows as unknown as Record<string, unknown>[])[0];
+      return {
+        preparationTimeMinutes: asNum(row?.preparation_time_minutes),
+        prepTimeSource:
+          row?.prep_time_source != null ? String(row.prep_time_source) : null,
+        prepDelayMinutes: null,
+      };
+    } catch {
+      return { preparationTimeMinutes: null, prepTimeSource: null, prepDelayMinutes: null };
+    }
+  }
 }
 
 async function fetchFoodInstructionLists(orderId: number): Promise<{
@@ -506,6 +553,10 @@ export async function getOrderDetailEnrichment(
           ? billing.deliveryType
           : null;
 
+    const foodPrepMeta = await fetchFoodPrepMeta(orderId);
+    const foodPrepMinutes =
+      asNum(base.preparationTimeMinutes) ?? foodPrepMeta.preparationTimeMinutes;
+
     const systemKpt =
       asNum(extras.default_system_kpt_minutes) ??
       storeAvg ??
@@ -513,10 +564,12 @@ export async function getOrderDetailEnrichment(
       asNum(billing?.system_kpt_minutes) ??
       null;
 
-    const merchantKptRaw = asNum(extras.merchant_updated_kpt_minutes);
-    const merchantKpt = shouldShowMerchantUpdatedKpt(systemKpt, merchantKptRaw)
-      ? merchantKptRaw
-      : null;
+    const merchantKpt = resolveMerchantUpdatedKptMinutes({
+      systemKptMinutes: systemKpt,
+      coreMerchantUpdatedKptMinutes: asNum(extras.merchant_updated_kpt_minutes),
+      foodPrepMinutes,
+      prepTimeSource: foodPrepMeta.prepTimeSource,
+    });
 
     const foodLists = await fetchFoodInstructionLists(orderId);
 
@@ -534,7 +587,7 @@ export async function getOrderDetailEnrichment(
       merchantInstructionsList = buildMerchantInstructionsFromCheckout(checkout);
     }
 
-    const [etaFields, timelineExpectedAt, cancellationInfo, orderOtps] =
+    const [etaFields, timelineExpectedAt, cancellationInfo, orderOtps, customerFeedback] =
       await Promise.all([
         fetchEtaFields(orderId),
         fetchFirstTimelineExpectedAt(orderId),
@@ -544,6 +597,7 @@ export async function getOrderDetailEnrichment(
           rtoOtp: null,
           deliveryOtp: null,
         })),
+        getOrderCustomerFeedback(orderId),
       ]);
     const firstEtaAtIso = resolveFirstEtaAtIso({
       firstEtaAt: etaFields.first_eta_at as Date | string | null | undefined,
@@ -588,17 +642,21 @@ export async function getOrderDetailEnrichment(
       locality = { label: "RED", isSafe: false };
     }
 
-    let systemKptResolved = systemKpt;
+    let systemKptResolved = systemKpt ?? storeAvg;
     if (systemKptResolved == null) {
-      const prepFromFood = await db.execute(sql`
-        SELECT preparation_time_minutes
-        FROM orders_food
-        WHERE order_id = ${orderId}
-        LIMIT 1
-      `);
-      const prepRow = (prepFromFood as unknown as Record<string, unknown>[])[0];
-      systemKptResolved = asNum(prepRow?.preparation_time_minutes);
+      const src = foodPrepMeta.prepTimeSource?.trim().toLowerCase() ?? null;
+      // orders_food.preparation_time_minutes is merchant commit at accept — not system default.
+      if (src !== "merchant" && foodPrepMinutes != null) {
+        systemKptResolved = foodPrepMinutes;
+      }
     }
+
+    const merchantExtraPrepRaw =
+      foodPrepMeta.prepDelayMinutes ?? asNum(extras.prep_delay_minutes);
+    const merchantExtraPrepMinutes =
+      merchantExtraPrepRaw != null && merchantExtraPrepRaw > 0
+        ? merchantExtraPrepRaw
+        : null;
 
     return {
       orderTimeIso: orderTime?.toISOString() ?? null,
@@ -607,6 +665,7 @@ export async function getOrderDetailEnrichment(
       itemCount,
       systemKptMinutes: systemKptResolved,
       merchantUpdatedKptMinutes: merchantKpt,
+      merchantExtraPrepMinutes,
       isScheduledOrder: isScheduled,
       scheduledDeliverySummary: scheduledSummary,
       deliveryType: deliveryTypeRaw,
@@ -629,6 +688,7 @@ export async function getOrderDetailEnrichment(
       pickupOtp: orderOtps.pickupOtp,
       rtoOtp: orderOtps.rtoOtp,
       deliveryOtp: orderOtps.deliveryOtp,
+      customerFeedback,
     };
   } catch (err) {
     console.error("[getOrderDetailEnrichment] failed for order", orderId, err);

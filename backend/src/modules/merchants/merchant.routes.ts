@@ -67,6 +67,7 @@ function mapCustomerMenuItem(
     hasCustomizations: m.has_customizations === true,
     hasAddons: m.has_addons === true,
     hasVariants: m.has_variants === true,
+    inStock: m.in_stock !== false,
   };
 }
 

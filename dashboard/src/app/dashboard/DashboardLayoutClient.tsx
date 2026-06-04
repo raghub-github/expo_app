@@ -348,6 +348,9 @@ function DashboardLayoutContent({
   const isTicketsHubGreyPage =
     cleanPathname === "/dashboard/tickets/agent-activity" ||
     cleanPathname === "/dashboard/tickets/dashboard_snapshot";
+  /** Tickets list / queue / detail: fill space below header without main scroll (inner panes scroll). */
+  const isTicketsFullBleedLayout =
+    cleanPathname.startsWith("/dashboard/tickets") && !isTicketsHubGreyPage;
   const isFilterSidebarOpen = Boolean(isTicketDetailPage && filterSidebar?.isFilterSidebarOpen);
 
   const [ticketRightSidebarPanel, setTicketRightSidebarPanel] = useState<TicketRightSidebarPanel>("properties");
@@ -604,8 +607,12 @@ function DashboardLayoutContent({
                 <Header />
                 <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden w-full">
                   <main
-                    className={`flex-1 overflow-y-auto transition-all duration-300 w-full flex flex-col min-h-0 relative text-gray-900 ${
-                      isTicketsHubGreyPage ? "bg-[#f4f5f7] p-4 sm:p-6" : "bg-white p-3 sm:p-4"
+                    className={`flex-1 transition-all duration-300 w-full flex flex-col min-h-0 relative text-gray-900 ${
+                      isTicketsFullBleedLayout
+                        ? "overflow-hidden bg-white px-2 pb-3 pt-2 sm:px-3 sm:pb-4 sm:pt-2.5"
+                        : isTicketsHubGreyPage
+                          ? "overflow-y-auto bg-[#f4f5f7] p-4 sm:p-6"
+                          : "overflow-y-auto bg-white p-3 sm:p-4"
                     }`}
                   >
                     <div className="w-full max-w-full min-w-0 flex-1 flex flex-col min-h-0 relative">

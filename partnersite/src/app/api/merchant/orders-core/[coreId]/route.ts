@@ -6,13 +6,17 @@ import {
   recordOrderCancellation,
 } from '@/lib/record-order-cancellation';
 import {
+  executeOrderCancellationFinancials,
+  lookupOrderContext,
+} from '@/lib/financial-rule-executor';
+import {
   buildCancelledByLabel,
   normalizeActionMode,
   normalizeActionSource,
 } from '@/lib/merchantOrderFoodActions';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 
 function getSupabase() {
   return createClient(supabaseUrl, supabaseServiceKey, {
@@ -120,6 +124,22 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
         actionMode,
         displayReason
       );
+      let engineResult: Awaited<ReturnType<typeof executeOrderCancellationFinancials>> | null = null;
+      try {
+        const orderCtx = await lookupOrderContext(coreId);
+        engineResult = await executeOrderCancellationFinancials({
+          orderCoreId: coreId,
+          ordersFoodId: orderCtx.ordersFoodId ?? coreId,
+          coreOrderId: orderCtx.coreOrderId,
+          merchantStoreId: storeInternalId,
+          previousStatus: String(coreRow.status ?? 'CREATED'),
+          cancelledByType: 'merchant',
+          orderGross: orderCtx.grandTotal,
+          serviceType: orderCtx.serviceType,
+        });
+      } catch (engineErr) {
+        console.warn('[orders-core PATCH] financial rule engine failed:', engineErr);
+      }
       try {
         await recordOrderCancellation(db, {
           orderCorePk: coreId,
@@ -129,7 +149,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
           cancelledByLabel,
           actionSource,
           cancelMode: actionMode,
-          refundStatus: 'no_refund',
+          metadata: {
+            financial_rule_engine: engineResult?.raw ?? null,
+            engine_applied: engineResult?.applied ?? false,
+          },
         });
       } catch (cancelErr) {
         console.warn('[orders-core PATCH] order_cancellation_reasons failed:', cancelErr);

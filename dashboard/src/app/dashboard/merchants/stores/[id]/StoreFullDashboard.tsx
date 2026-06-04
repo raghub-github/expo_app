@@ -34,6 +34,9 @@ import { MerchantStoreStatusCard } from "@/components/merchant/MerchantStoreStat
 import { MerchantStoreOperationsModals } from "@/components/merchant/MerchantStoreOperationsModals";
 import { useMerchantStoreOperations } from "@/hooks/useMerchantStoreOperations";
 import { useStoreStatusCardModel, type StoreOperationsSnapshot } from "@/hooks/useStoreStatusCardModel";
+import { MerchantMarketInsightsCard } from "@/components/merchant/MerchantMarketInsightsCard";
+import { LivePreviewInsightsPanel } from "@/components/merchant/LivePreviewInsightsPanel";
+import { BusinessReportsPanel } from "@/components/merchant/BusinessReportsPanel";
 
 function MiniSparkline({ values, className = "" }: { values: readonly number[]; className?: string }) {
   const gid = React.useId().replace(/:/g, "");
@@ -602,256 +605,19 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
               )}
 
               {insightsTab === "live" && (
-                <>
-                  <div className="mt-6 sm:mt-8 mb-10">
-                    <div className="flex flex-wrap items-center gap-2 gap-y-1 pb-3 border-b border-slate-200/80">
-                      <BarChart3 className="text-emerald-600 shrink-0" size={18} strokeWidth={2} aria-hidden />
-                      <h2 className="text-sm font-bold text-slate-900 tracking-tight">Sales overview</h2>
-                      <span className="text-slate-400" title="Info">
-                        <Info size={15} strokeWidth={2} aria-hidden />
-                      </span>
-                      <Link
-                        href={`/dashboard/merchants/stores/${storeId}/payments`}
-                        className="ml-auto inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700"
-                      >
-                        View details
-                        <ArrowRight size={14} aria-hidden />
-                      </Link>
-                    </div>
-                    <div className="divide-y divide-slate-200/70">
-                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-3.5">
-                        <div className="sm:col-span-3 text-sm text-slate-700 font-medium">Sales</div>
-                        <div className="sm:col-span-5 flex justify-start sm:justify-center">
-                          <MiniSparkline values={[42, 55, 48, 62, 58, 45, 38, 33, 28, 25]} />
-                        </div>
-                        <div className="sm:col-span-4 flex flex-wrap items-center justify-start sm:justify-end gap-2">
-                          <span className="text-sm font-semibold tabular-nums text-slate-900">
-                            {walletLoading ? "…" : `₹${Number(walletTodayEarning).toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`}
-                          </span>
-                          <DeltaBadge pct={-12} />
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-3.5">
-                        <div className="sm:col-span-3 text-sm text-slate-700 font-medium">Delivered orders</div>
-                        <div className="sm:col-span-5 flex justify-start sm:justify-center">
-                          <MiniSparkline values={[18, 22, 20, 24, 21, 19, 16, 14, 12, 11]} />
-                        </div>
-                        <div className="sm:col-span-4 flex flex-wrap items-center justify-start sm:justify-end gap-2">
-                          <span className="text-sm font-semibold tabular-nums text-slate-900">{deliveredToday}</span>
-                          <DeltaBadge pct={-8} />
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-3.5">
-                        <div className="sm:col-span-3 text-sm text-slate-700 font-medium">AOV</div>
-                        <div className="sm:col-span-5 flex justify-start sm:justify-center">
-                          <MiniSparkline values={[280, 295, 288, 310, 305, 298, 292, 285, 278, 272]} />
-                        </div>
-                        <div className="sm:col-span-4 flex flex-wrap items-center justify-start sm:justify-end gap-2">
-                          <span className="text-sm font-semibold tabular-nums text-slate-900">₹{aovDisplay}</span>
-                          <DeltaBadge pct={-5} />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mb-10">
-                    <div className="flex flex-wrap items-center gap-2 gap-y-1 pb-3 border-b border-slate-200/80">
-                      <Star className="text-amber-500 shrink-0" size={18} strokeWidth={2} aria-hidden />
-                      <h2 className="text-sm font-bold text-slate-900 tracking-tight">Customer experience</h2>
-                      <span className="text-slate-400">
-                        <Info size={15} strokeWidth={2} aria-hidden />
-                      </span>
-                    </div>
-                    <div className="divide-y divide-slate-200/70">
-                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-3.5">
-                        <div className="sm:col-span-3 text-sm text-slate-700 font-medium">Ratings</div>
-                        <div className="sm:col-span-5 flex justify-start sm:justify-center">
-                          <MiniSparkline values={[4.1, 4.0, 4.05, 3.95, 3.9, 3.88, 3.85, 3.82, 3.8, 3.78]} />
-                        </div>
-                        <div className="sm:col-span-4 flex justify-start sm:justify-end">
-                          <Link href={`/dashboard/merchants/stores/${storeId}/user-insights`} className="text-xs font-semibold text-blue-600 hover:text-blue-700">
-                            View business reports
-                          </Link>
-                        </div>
-                      </div>
-                      <div className="py-2">
-                        <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2 pl-0.5">Bad orders</p>
-                        <div className="divide-y divide-slate-200/60">
-                          {[
-                            { label: "Rejected orders", v: [0.2, 0.1, 0.15, 0.1, 0.08, 0.05, 0.04, 0.03, 0.02, 0] },
-                            { label: "Delayed orders", v: [1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2] },
-                            { label: "Poor rated orders", v: [0.5, 0.45, 0.4, 0.35, 0.3, 0.25, 0.2, 0.15, 0.1, 0.08] },
-                          ].map((row) => (
-                            <div
-                              key={row.label}
-                              className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-2.5 pl-2 sm:pl-3 border-l-2 border-slate-200/80"
-                            >
-                              <div className="sm:col-span-3 text-xs sm:text-sm text-slate-600">{row.label}</div>
-                              <div className="sm:col-span-5 flex justify-start sm:justify-center">
-                                <MiniSparkline values={row.v} />
-                              </div>
-                              <div className="sm:col-span-4 flex flex-wrap items-center justify-start sm:justify-end gap-2">
-                                <span className="text-xs text-slate-500 tabular-nums">0.0%</span>
-                                <span className="text-[11px] font-medium tabular-nums text-slate-600 bg-slate-100/80 px-2 py-0.5 rounded-full">0%</span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-3.5">
-                        <div className="sm:col-span-3 text-sm text-slate-700 font-medium">Total complaints</div>
-                        <div className="sm:col-span-5 flex justify-start sm:justify-center">
-                          <MiniSparkline values={[2, 1, 2, 1, 1, 0, 1, 0, 0, 0]} />
-                        </div>
-                        <div className="sm:col-span-4 flex justify-start sm:justify-end">
-                          <Link href={`/dashboard/merchants/stores/${storeId}/user-insights`} className="text-xs font-semibold text-blue-600 hover:text-blue-700">
-                            View business reports
-                          </Link>
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-3.5">
-                        <div className="sm:col-span-3 text-sm text-slate-700 font-medium">Lost sales</div>
-                        <div className="sm:col-span-5 flex justify-start sm:justify-center">
-                          <MiniSparkline values={[0, 0, 0, 0, 0, 0, 0, 0, 0, 0]} />
-                        </div>
-                        <div className="sm:col-span-4 flex flex-wrap items-center justify-start sm:justify-end gap-2">
-                          <span className="text-sm font-semibold tabular-nums text-slate-900">₹0</span>
-                          <span className="text-[11px] font-medium tabular-nums text-slate-600 bg-slate-100/80 px-2 py-0.5 rounded-full">0%</span>
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-3.5">
-                        <div className="sm:col-span-3 text-sm text-slate-700 font-medium">Online %</div>
-                        <div className="sm:col-span-5 flex justify-start sm:justify-center">
-                          <MiniSparkline values={[98, 97, 99, 98, 96, 95, 97, 98, 99, 97]} />
-                        </div>
-                        <div className="sm:col-span-4 flex justify-start sm:justify-end">
-                          <Link href={`/dashboard/merchants/stores/${storeId}/user-insights`} className="text-xs font-semibold text-blue-600 hover:text-blue-700">
-                            View business reports
-                          </Link>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="pb-4">
-                    <div className="flex flex-wrap items-center gap-2 gap-y-1 pb-3 border-b border-slate-200/80">
-                      <Funnel className="text-violet-600 shrink-0" size={18} strokeWidth={2} aria-hidden />
-                      <h2 className="text-sm font-bold text-slate-900 tracking-tight">Customer funnel</h2>
-                      <span className="text-slate-400">
-                        <Info size={15} strokeWidth={2} aria-hidden />
-                      </span>
-                    </div>
-                    <div className="divide-y divide-slate-200/70">
-                      {[
-                        { label: "Impressions", icon: ChevronDown, spark: [120, 132, 128, 140, 135, 118, 105, 92, 78, 65], val: "48", pct: -18 },
-                        { label: "Impressions to menu", icon: ChevronDown, spark: [45, 48, 44, 50, 46, 40, 35, 30, 26, 22], val: "8.3%", pct: -12 },
-                        { label: "Menu to cart", icon: ChevronDown, spark: [22, 24, 21, 23, 22, 19, 17, 15, 13, 11], val: "25.0%", pct: -9 },
-                        { label: "Cart to order", icon: Check, spark: [8, 9, 8, 9, 8, 7, 6, 5, 4, 3], val: "0.0%", pct: -22 },
-                      ].map((row, idx) => {
-                        const StageIcon = row.icon;
-                        return (
-                          <div key={row.label} className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-3.5">
-                            <div className="sm:col-span-3 flex items-center gap-2 text-sm text-slate-700 font-medium">
-                              <span className="flex w-6 shrink-0 flex-col items-center text-slate-400" aria-hidden>
-                                <span className="h-2 w-px bg-slate-300" style={{ opacity: idx === 0 ? 0 : 1 }} />
-                                <StageIcon size={14} className="text-blue-600 my-0.5" strokeWidth={2.5} />
-                                <span className="h-2 w-px bg-slate-300" style={{ opacity: idx === 3 ? 0 : 1 }} />
-                              </span>
-                              {row.label}
-                            </div>
-                            <div className="sm:col-span-5 flex justify-start sm:justify-center">
-                              <MiniSparkline values={row.spark} />
-                            </div>
-                            <div className="sm:col-span-4 flex flex-wrap items-center justify-start sm:justify-end gap-2">
-                              <span className="text-sm font-semibold tabular-nums text-slate-900">{row.val}</span>
-                              <DeltaBadge pct={row.pct} />
-                            </div>
-                          </div>
-                        );
-                      })}
-                      {(["New users", "Repeat users", "Lapsed users"] as const).map((label) => (
-                        <div key={label} className="grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-3 items-center py-3.5">
-                          <div className="sm:col-span-3 text-sm text-slate-700 font-medium">{label}</div>
-                          <div className="sm:col-span-5 flex justify-start sm:justify-center">
-                            <MiniSparkline values={[40, 42, 41, 44, 43, 40, 38, 36, 35, 34]} />
-                          </div>
-                          <div className="sm:col-span-4 flex justify-start sm:justify-end">
-                            <Link href={`/dashboard/merchants/stores/${storeId}/user-insights`} className="text-xs font-semibold text-blue-600 hover:text-blue-700">
-                              View business reports
-                            </Link>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                </>
-              )}
-
-              {insightsTab === "reports" && reportsSubview === "table" && (
-                <div className="mt-2 pb-8">
-                  <div className="overflow-x-auto rounded-lg border border-slate-200/80 bg-white/70">
-                    <table className="min-w-full text-xs text-slate-800">
-                      <thead>
-                        <tr className="border-b border-slate-200 bg-slate-100/80 text-left text-[10px] uppercase tracking-wide text-slate-500">
-                          <th className="px-3 py-2.5 font-semibold">Metric</th>
-                          <th className="px-3 py-2.5 font-semibold">Trend</th>
-                          <th className="px-3 py-2.5 font-semibold tabular-nums">This week</th>
-                          <th className="px-3 py-2.5 font-semibold tabular-nums">Last week</th>
-                          <th className="px-3 py-2.5 font-semibold">vs prior</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {[
-                          { m: "Gross sales", tw: revenueToday || 0, lw: Math.max(0, revenueToday * 0.92), spark: [42, 55, 48, 62, 58, 45, 38, 33, 28, 25] as const },
-                          { m: "Orders", tw: deliveredToday, lw: Math.max(0, Math.floor(deliveredToday * 0.95)), spark: [18, 22, 20, 24, 21, 19, 16, 14, 12, 11] as const },
-                          { m: "AOV", tw: aovDisplay, lw: aovDisplay, spark: [280, 295, 288, 310, 305, 298, 292, 285, 278, 272] as const },
-                        ].map((row) => {
-                          const pct = row.lw ? Math.round(((row.tw - row.lw) / (row.lw || 1)) * 100) : 0;
-                          return (
-                            <tr key={row.m}>
-                              <td className="px-3 py-2.5 font-medium text-slate-900">{row.m}</td>
-                              <td className="px-3 py-2.5">
-                                <MiniSparkline values={[...row.spark]} />
-                              </td>
-                              <td className="px-3 py-2.5 tabular-nums font-semibold">
-                                {row.m === "Gross sales" ? `₹${row.tw.toLocaleString("en-IN")}` : row.tw}
-                              </td>
-                              <td className="px-3 py-2.5 tabular-nums text-slate-600">
-                                {row.m === "Gross sales" ? `₹${Math.round(row.lw).toLocaleString("en-IN")}` : row.lw}
-                              </td>
-                              <td className="px-3 py-2.5">
-                                <DeltaBadge pct={pct} />
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  <p className="text-[11px] text-slate-500 mt-3 leading-relaxed">Figures use today&apos;s snapshot where available; full analytics on the dedicated reports page.</p>
+                <div className="mt-6 sm:mt-8">
+                  <LivePreviewInsightsPanel
+                    storeInternalId={storeId}
+                    periodPreset="today"
+                    userInsightsHref={`/dashboard/merchants/stores/${storeId}/user-insights`}
+                    paymentsHref={`/dashboard/merchants/stores/${storeId}/payments`}
+                    marketStoreId={storeId}
+                  />
                 </div>
               )}
 
-              {insightsTab === "reports" && reportsSubview === "chart" && (
-                <div className="mt-2 pb-8 grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {[
-                    { title: "Gross sales", bars: [42, 55, 48, 62, 58, 45, 38] as const },
-                    { title: "Orders", bars: [18, 22, 20, 24, 21, 19, 16] as const },
-                    { title: "AOV", bars: [72, 78, 75, 82, 80, 76, 70] as const },
-                    { title: "Repeat rate", bars: [55, 58, 56, 60, 59, 57, 54] as const },
-                  ].map((block) => (
-                    <div key={block.title} className="rounded-lg border border-slate-200/80 bg-white/70 p-4">
-                      <p className="text-xs font-semibold text-slate-900 mb-3">{block.title}</p>
-                      <div className="flex items-end gap-1.5 h-28">
-                        {block.bars.map((h, i) => (
-                          <div key={i} className="flex-1 min-w-[6px] rounded-t-md bg-blue-600/85" style={{ height: `${Math.max(12, h)}%` }} />
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                  <p className="sm:col-span-2 text-[11px] text-slate-500 leading-relaxed">Chart preview layout; connect reporting endpoints for live series.</p>
-                </div>
+              {insightsTab === "reports" && (
+                <BusinessReportsPanel storeInternalId={storeId} periodPreset="this_week" subview={reportsSubview} />
               )}
             </div>
           </div>

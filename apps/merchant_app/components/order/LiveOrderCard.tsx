@@ -339,7 +339,6 @@ function LiveOrderCardDefault({
       <OrderCardMerchantInstructions
         merchantInstructionsList={order.merchantInstructionsList}
         requiresUtensils={order.requiresUtensils}
-        deliveryInstructions={order.deliveryInstructions}
         style={{ marginBottom: 8 }}
       />
 

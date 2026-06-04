@@ -1,7 +1,7 @@
 /** Shared types + helpers for GET /api/orders/[orderId]/items (order detail + refund modal). */
 
 import type { OrderItemCustomisationDetail } from "@/lib/order-item-customisation";
-import { customerDiscountLinesFromBilling } from "@/lib/merchant-billing-discount";
+import { customerDiscountLinesFromBilling, discountTotalFromBilling } from "@/lib/merchant-billing-discount";
 
 export type OrderItemLineAmounts = {
   amountPerQuantity: number;
@@ -127,7 +127,7 @@ export function buildOrderPricingSummary(
   const gst = round2(asNum(snap.tax_total));
   const tipAmount = round2(asNum(snap.tip_amount));
   const donationAmount = round2(asNum(snap.donation_amount));
-  const discount = round2(asNum(snap.discount_total));
+  const discount = discountTotalFromBilling(snap);
 
   pushCharge("packaging", "Packaging", packaging);
   if (packagingTax > 0 && gst <= 0) {
@@ -240,6 +240,44 @@ function parsePricingBlock(pr: Record<string, unknown>): OrderItemsPricing {
     ...parsePricingSummary(pr),
     customer,
   };
+}
+
+import type { OrderDiscountOfferSource } from "@/lib/merchant-billing-discount";
+
+/** Customer-facing discount from items API pricing (CTC bill, incl. platform offers). */
+export function customerDiscountFromOrderPricing(
+  pricing: OrderItemsPricing | null | undefined,
+): { amount: number | null; offerSource: OrderDiscountOfferSource | null } {
+  if (!pricing) return { amount: null, offerSource: null };
+
+  const customer = pricing.customer ?? pricing;
+  const discountLines = customer.lines?.filter((l) => l.kind === "discount") ?? [];
+
+  if (discountLines.length > 0) {
+    const amount = discountLines.reduce((s, l) => s + Math.abs(l.amount), 0);
+    if (amount <= 0) return { amount: null, offerSource: null };
+
+    const tags = new Set(
+      discountLines
+        .map((l) => l.discountTag)
+        .filter(Boolean) as Array<"platform" | "store" | "mixed">,
+    );
+    let offerSource: OrderDiscountOfferSource | null = null;
+    if (tags.size === 1) {
+      const only = [...tags][0];
+      offerSource =
+        only === "platform" ? "Platform" : only === "store" ? "Store" : "Mixed";
+    } else if (tags.size > 1) {
+      offerSource = "Mixed";
+    }
+    return { amount, offerSource };
+  }
+
+  if (customer.discount != null && customer.discount > 0) {
+    return { amount: customer.discount, offerSource: null };
+  }
+
+  return { amount: null, offerSource: null };
 }
 
 export function parseOrderItemsApiResponse(data: unknown): OrderItemsPayload | null {

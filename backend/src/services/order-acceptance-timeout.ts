@@ -1,5 +1,6 @@
 import { getSql } from "../db/client.js";
-import { applyPaymentCancellationPayment } from "../lib/apply-cancellation-payment.js";
+import { executeOrderCancellationFinancials, lookupOrderContext } from "../lib/financial-rule-executor.js";
+import { refundFieldsFromEngineResult } from "@gatimitra/financial-rules";
 import { recordCancellationTimeline } from "../lib/order-cancellation-timeline.js";
 import { recordOrderCancellation } from "../lib/record-order-cancellation.js";
 
@@ -99,6 +100,21 @@ export async function runOrderAcceptanceTimeoutTick(log: {
           cancelMode: "auto",
           statusMessage: AUTO_CANCEL_REASON,
         });
+        const orderCtx = await lookupOrderContext(coreId, sql);
+        const engineResult = await executeOrderCancellationFinancials(
+          {
+            orderCoreId: coreId,
+            ordersFoodId: foodId,
+            coreOrderId: orderCtx.coreOrderId,
+            merchantStoreId: storeId,
+            previousStatus: "CREATED",
+            cancelledByType: "system",
+            orderGross: Number(row.grand_total ?? orderCtx.grandTotal),
+            serviceType: orderCtx.serviceType,
+          },
+          sql
+        );
+        const refund = refundFieldsFromEngineResult(engineResult.raw);
         await recordOrderCancellation(sql, {
           orderCorePk: coreId,
           cancelledBy: "SYSTEM",
@@ -109,17 +125,10 @@ export async function runOrderAcceptanceTimeoutTick(log: {
           cancelMode: "auto",
           previousStatus: "CREATED",
           grandTotal: row.grand_total,
+          refundStatus: refund.refundStatus,
+          refundAmount: refund.refundAmount,
+          metadata: engineResult.raw ? { financial_rule_engine: engineResult.raw } : undefined,
         });
-        if (Number.isFinite(foodId) && Number.isFinite(storeId)) {
-          await applyPaymentCancellationPayment({
-            orderCoreId: coreId,
-            ordersFoodId: foodId,
-            merchantStoreId: storeId,
-            previousStatus: "CREATED",
-            cancelledByType: "system",
-            orderGross: Number(row.grand_total ?? 0),
-          });
-        }
       } catch (tlErr) {
         log.error({ err: tlErr, coreId }, "order_acceptance_timeout_timeline_failed");
       }

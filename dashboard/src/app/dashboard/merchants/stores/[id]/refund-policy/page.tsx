@@ -1,23 +1,18 @@
-import Link from "next/link";
+import { redirect } from "next/navigation";
 
 export default async function StoreRefundPolicyPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { id } = await params;
-  return (
-    <div className="max-w-3xl mx-auto px-4 py-8">
-      <h1 className="text-2xl font-bold text-gray-900">Refund policy</h1>
-      <p className="mt-2 text-gray-600">
-        Refund policy content for this store can be configured here.
-      </p>
-      <Link
-        href={`/dashboard/merchants/stores/${id}/payments`}
-        className="mt-4 inline-block text-sm font-medium text-indigo-600 hover:text-indigo-700"
-      >
-        ← Back to Payments
-      </Link>
-    </div>
-  );
+  const sp = await searchParams;
+  const q = new URLSearchParams({ refundPolicy: "1" });
+  const portal = sp.portal;
+  if (typeof portal === "string" && portal) {
+    q.set("portal", portal);
+  }
+  redirect(`/dashboard/merchants/stores/${id}/payments?${q.toString()}`);
 }

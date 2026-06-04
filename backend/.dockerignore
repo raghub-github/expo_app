@@ -1,0 +1,15 @@
+# Backend-specific docker context exclusions on top of the repo-root file.
+# Applied when context: backend (rather than monorepo root).
+node_modules
+dist
+.tsbuildinfo
+*.tsbuildinfo
+coverage
+.turbo
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Thumbs.db
+scripts/debug-*.mjs

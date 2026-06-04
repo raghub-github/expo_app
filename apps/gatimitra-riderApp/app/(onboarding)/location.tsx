@@ -36,10 +36,9 @@ export default function LocationScreen() {
     }
 
     // Location is already saved to store via useEffect
-    // Navigate based on session status
+    // Continue onboarding — home is only available after approval
     if (session) {
-      // If user is logged in, go to orders
-      router.replace("/(tabs)/orders");
+      router.replace("/(onboarding)/method-selection");
     } else {
       // If no session, go to welcome screen to start onboarding
       router.replace("/(onboarding)/welcome");

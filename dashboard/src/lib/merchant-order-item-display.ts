@@ -181,7 +181,10 @@ export function merchantBillPartsFromItems(
   const { itemsLineTotal, baseSubtotal, customizationsTotal } = orderItemsTotals(items);
   const packaging = pricing.packaging ?? 0;
   const discount = pricing.discount ?? 0;
-  const total = round2(Math.max(0, itemsLineTotal + packaging - discount));
+  const computed = round2(Math.max(0, itemsLineTotal + packaging - discount));
+  const frozen = Number(pricing.total);
+  const total =
+    Number.isFinite(frozen) && frozen > 0 ? round2(frozen) : computed;
   return {
     itemsSubtotal: itemsLineTotal,
     itemBaseTotal: round2(baseSubtotal),
@@ -191,4 +194,34 @@ export function merchantBillPartsFromItems(
     discount,
     total,
   };
+}
+
+/** Single merchant-visible order total (CTM) — prefer frozen pricing.total from accept. */
+export function resolveMerchantCtm(order: {
+  pricing?: { total?: number | null; packaging?: number; discount?: number } | null;
+  total_ctm?: number | string | null;
+  food_items_total_value?: number | string | null;
+  items?: NormalizedOrderLineItem[] | null;
+}): number {
+  const fromPricing = Number(order.pricing?.total);
+  if (Number.isFinite(fromPricing) && fromPricing > 0) return round2(fromPricing);
+
+  const fromFrozen = Number(order.total_ctm);
+  if (Number.isFinite(fromFrozen) && fromFrozen > 0) return round2(fromFrozen);
+
+  const items = order.items ?? [];
+  if (items.length > 0) {
+    const bill = merchantBillPartsFromItems(items, {
+      subtotal: 0,
+      packaging: order.pricing?.packaging ?? 0,
+      discount: order.pricing?.discount ?? 0,
+      total: 0,
+    });
+    if (bill.total > 0) return bill.total;
+  }
+
+  const fromField = Number(order.food_items_total_value);
+  if (Number.isFinite(fromField) && fromField > 0) return round2(fromField);
+
+  return 0;
 }

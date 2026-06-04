@@ -36,6 +36,15 @@ async function sendExpoPush(tokens: string[], payload: PushPayload): Promise<voi
   }
 }
 
+/** Merchant CTM — always 2 decimal places (matches wallet ledger). */
+function formatExactMerchantInr(amount: number): string {
+  const n = Math.round(amount * 100) / 100;
+  return n.toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 export async function notifyMerchantStoreNewOrder(
   sql: Sql,
   args: {
@@ -66,7 +75,7 @@ export async function notifyMerchantStoreNewOrder(
       orderIdText,
     });
     if (merchantTotal != null && merchantTotal > 0) {
-      total = Math.round(merchantTotal);
+      total = Math.round(merchantTotal * 100) / 100;
     }
   } catch {
     /* omit amount rather than show customer grand_total */
@@ -75,7 +84,7 @@ export async function notifyMerchantStoreNewOrder(
   const title = "New order!";
   const body =
     total != null && total > 0
-      ? `${displayId} · ₹${total.toLocaleString("en-IN")} — tap to accept`
+      ? `${displayId} · ₹${formatExactMerchantInr(total)} — tap to accept`
       : `${displayId} — tap to accept`;
 
   await sql`

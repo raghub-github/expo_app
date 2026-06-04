@@ -36,7 +36,7 @@ export function MarkAsReadyCountdownButton({
           prefix: labelPrefix,
           expiredLabel: labelPrefix,
         })
-      : { label: labelPrefix, disabled: false, secondsLeft: 0 };
+      : { label: labelPrefix };
 
   const fillRatio = nowMs != null ? prepReadyTimeRemainingRatio(order, nowMs) : 1;
   const fillPct = `${Math.round(fillRatio * 100)}%`;

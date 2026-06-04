@@ -11,10 +11,10 @@ export default function EarningsScreen() {
 
   if (isLoading) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: '#F9FAFB' }} className="flex-1 bg-gray-50">
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }} className="flex-1 items-center justify-center">
+      <SafeAreaView style={{ flex: 1, backgroundColor: '#F9FAFB' }} edges={["bottom"]}>
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator color={colors.primary[500]} size="large" />
-          <Text style={{ marginTop: 16, color: '#4B5563' }} className="mt-4 text-gray-600">{t("earnings.loading", "Loading earnings...")}</Text>
+          <Text style={{ marginTop: 16, color: '#4B5563' }}>{t("earnings.loading", "Loading earnings...")}</Text>
         </View>
       </SafeAreaView>
     );
@@ -22,12 +22,12 @@ export default function EarningsScreen() {
 
   if (error) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: '#F9FAFB' }} className="flex-1 bg-gray-50">
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 }} className="flex-1 items-center justify-center px-6">
-          <Text style={{ fontSize: 20, fontWeight: '600', color: '#111827', marginBottom: 8 }} className="text-xl font-semibold text-gray-900 mb-2">
+      <SafeAreaView style={{ flex: 1, backgroundColor: '#F9FAFB' }} edges={["bottom"]}>
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 }}>
+          <Text style={{ fontSize: 20, fontWeight: '600', color: '#111827', marginBottom: 8 }}>
             {t("earnings.error", "Failed to load earnings")}
           </Text>
-          <Text style={{ color: '#4B5563', textAlign: 'center' }} className="text-gray-600 text-center">
+          <Text style={{ color: '#4B5563', textAlign: 'center' }}>
             {t("earnings.errorMessage", "Please try again later")}
           </Text>
         </View>
@@ -38,15 +38,9 @@ export default function EarningsScreen() {
   const formatCurrency = (amount: number) => `₹${amount.toLocaleString("en-IN")}`;
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#F9FAFB' }} className="flex-1 bg-gray-50">
+    <SafeAreaView style={{ flex: 1, backgroundColor: '#F9FAFB' }} edges={["bottom"]}>
       <ScrollView showsVerticalScrollIndicator={false}>
-        <View style={{ paddingHorizontal: 24, paddingTop: 24, paddingBottom: 32 }} className="px-6 pt-6 pb-8">
-          {/* Header */}
-          <View style={{ marginBottom: 24 }} className="mb-6">
-            <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#111827', marginBottom: 8 }} className="text-3xl font-bold text-gray-900 mb-2">{t("earnings.title")}</Text>
-            <Text style={{ fontSize: 16, color: '#4B5563' }} className="text-base text-gray-600">{t("earnings.subtitle")}</Text>
-          </View>
-
+        <View style={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: 32 }}>
           {/* Balance Card */}
           <View style={{ backgroundColor: colors.primary[500], borderRadius: 16, padding: 24, marginBottom: 24, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 8 }} className="bg-gradient-to-br from-primary-500 to-primary-600 rounded-2xl p-6 mb-6 shadow-lg">
             <Text style={{ fontSize: 14, color: '#FFE0D1', marginBottom: 8 }} className="text-sm text-primary-100 mb-2">{t("earnings.totalBalance")}</Text>

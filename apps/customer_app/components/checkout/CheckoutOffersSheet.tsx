@@ -360,7 +360,7 @@ export function CheckoutOffersSheet({
                       </Text>
                       {data!.merchantOffers.map((o) => {
                         const isApplied = appliedMerchantOfferId === o.id;
-                        const manual = o.autoApply === false;
+                        const manual = o.autoApply === false || Boolean(o.requiresCouponCode);
                         return (
                           <OfferRow
                             key={`mo-${o.id}`}

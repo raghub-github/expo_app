@@ -33,14 +33,17 @@ export function computePrepReadyByAtIso(acceptedAtIso: string, prepMinutes: numb
   return new Date(base + clampPrepMinutes(prepMinutes) * 60_000).toISOString();
 }
 
-/** Deadline for "Order ready" countdown — prefers committed prep_ready_by_at. */
+/** Deadline for "Order ready" countdown — prefers committed prep_ready_by_at (includes need-more-time). */
 export function prepReadyDeadlineMs(order: OrdersFoodRow): number {
   if (order.prep_ready_by_at) {
-    return new Date(order.prep_ready_by_at).getTime();
+    const t = new Date(order.prep_ready_by_at).getTime();
+    if (Number.isFinite(t)) return t;
   }
   const base = order.accepted_at || order.preparing_at || order.created_at;
-  const mins = clampPrepMinutes(order.preparation_time_minutes, PLATFORM_DEFAULT_PREP_MINUTES);
-  return new Date(base).getTime() + mins * 60_000;
+  const baseMs = new Date(base).getTime();
+  const prepMins = clampPrepMinutes(order.preparation_time_minutes, PLATFORM_DEFAULT_PREP_MINUTES);
+  const delayMins = Math.max(0, Number(order.prep_delay_minutes) || 0);
+  return baseMs + (prepMins + delayMins) * 60_000;
 }
 
 export function formatCountdownMmSs(secondsLeft: number): string {
@@ -108,8 +111,50 @@ export function isPrepDeadlinePassed(order: OrdersFoodRow, nowMs: number): boole
 }
 
 /** True when prep countdown has finished (Mark as ready without timer). */
-export function isPrepCountdownExpired(order: OrdersFoodRow, nowMs: number): boolean {
-  return prepReadyCountdownLabel(order, nowMs).secondsLeft <= 0;
+export function isPrepCountdownExpired(
+  order: OrdersFoodRow,
+  nowMs: number,
+  opts?: { prefix?: string; expiredLabel?: string }
+): boolean {
+  return prepReadyCountdownLabel(order, nowMs, opts).secondsLeft <= 0;
+}
+
+/** Whole minutes past prep deadline (KPT + need-more-time); updates with nowMs each tick. */
+export function prepOverdueMinutes(order: OrdersFoodRow, nowMs: number): number {
+  const deadline = prepReadyDeadlineMs(order);
+  if (!Number.isFinite(deadline) || nowMs <= deadline) return 0;
+  return Math.max(1, Math.floor((nowMs - deadline) / 60_000));
+}
+
+export function formatPrepDelayedBannerLabel(overdueMinutes: number): string {
+  const mins = Math.max(1, overdueMinutes);
+  return `${mins} min delayed`;
+}
+
+export const PREP_DELAY_MAX_USES_NORMAL = 1;
+export const PREP_DELAY_MAX_USES_BULK = 2;
+
+export function maxPrepDelayUses(isBulkOrder: boolean): number {
+  return isBulkOrder ? PREP_DELAY_MAX_USES_BULK : PREP_DELAY_MAX_USES_NORMAL;
+}
+
+export function resolvePrepDelayUseCount(
+  prepDelayUseCount: number | null | undefined,
+  prepDelayMinutes: number | null | undefined
+): number {
+  if (prepDelayUseCount != null && Number.isFinite(Number(prepDelayUseCount))) {
+    return Math.max(0, Math.round(Number(prepDelayUseCount)));
+  }
+  return (Number(prepDelayMinutes) || 0) > 0 ? 1 : 0;
+}
+
+export function canUseNeedMoreTime(
+  prepDelayUseCount: number | null | undefined,
+  isBulkOrder: boolean,
+  prepDelayMinutes?: number | null
+): boolean {
+  const used = resolvePrepDelayUseCount(prepDelayUseCount, prepDelayMinutes);
+  return used < maxPrepDelayUses(isBulkOrder);
 }
 
 /** Minutes food was marked ready after prep_ready_by_at (0 if on time). */
@@ -121,6 +166,27 @@ export function computePreparedLateMinutes(
   const lateMs = new Date(preparedAtIso).getTime() - new Date(prepReadyByAtIso).getTime();
   if (lateMs <= 0) return 0;
   return Math.ceil(lateMs / 60_000);
+}
+
+export function formatPreparedLateLabel(lateMinutes: number | null | undefined): string | null {
+  const mins = Number(lateMinutes);
+  if (!Number.isFinite(mins) || mins <= 0) return null;
+  return `Ready after ${mins} min delay`;
+}
+
+export type PreparedLateOrder = {
+  prepared_late_minutes?: number | null;
+  prepared_at?: string | null;
+  prep_ready_by_at?: string | null;
+};
+
+/** Stored value, or compute from prepared_at vs prep_ready_by_at for older rows. */
+export function resolvePreparedLateMinutes(order: PreparedLateOrder): number | null {
+  const stored = Number(order.prepared_late_minutes);
+  if (Number.isFinite(stored) && stored > 0) return stored;
+  if (!order.prepared_at) return null;
+  const computed = computePreparedLateMinutes(order.prepared_at, order.prep_ready_by_at);
+  return computed > 0 ? computed : null;
 }
 
 export function extendPrepReadyByAtIso(

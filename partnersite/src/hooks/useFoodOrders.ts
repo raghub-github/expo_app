@@ -81,6 +81,8 @@ export interface OrdersFoodRow {
   customer_store_order_ordinal?: number | null;
   customer_platform_order_ordinal?: number | null;
   is_bulk_order?: boolean;
+  /** Merchant answer: was rider in uniform? */
+  merchant_rider_in_uniform?: boolean | null;
   // Rider details
   rider_id?: number | null;
   rider_name?: string | null;
@@ -125,6 +127,8 @@ export interface OrdersFoodRow {
   cancellation_details?: any; // JSONB
   pickup_otp?: string | null;
   rto_otp?: string | null;
+  /** True when this order has been returned to merchant (RTO). */
+  is_rto?: boolean | null;
   created_at: string;
   updated_at: string;
   /** True when this pipeline row is backed only by orders_core (e.g. parcel / before kitchen row exists). */
@@ -141,6 +145,7 @@ export interface FoodOrderStats {
   ordersToday: number;
   /** Orders placed today that are still in the active pipeline (not delivered / cancelled / RTO). */
   ordersTodayActive?: number;
+  deliveredTodayCount?: number;
   /** Pending live-board orders (today + older) using unified pipeline status. */
   activeOrders: number;
   pendingCount?: number;

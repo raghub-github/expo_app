@@ -72,23 +72,13 @@ export const usePermissionStore = create<PermissionStoreState>((set, get) => ({
     // Prevent multiple simultaneous hydrations
     if (get().hydrated) {
       console.log('[PermissionStore] Already hydrated');
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/5d17a330-9f7e-4e34-b5cc-0cddb360341d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'permissionStore.ts:48',message:'PermissionStore already hydrated',data:{timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-      // #endregion
       return;
     }
-    
+
     console.log('[PermissionStore] Starting hydration');
-    // #region agent log
-    fetch('http://127.0.0.1:7243/ingest/5d17a330-9f7e-4e34-b5cc-0cddb360341d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'permissionStore.ts:53',message:'PermissionStore starting hydration',data:{timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
     try {
-      // Set hydrated immediately to prevent blocking, then update with data
       set({ hydrated: true });
       console.log('[PermissionStore] Set hydrated to true');
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/5d17a330-9f7e-4e34-b5cc-0cddb360341d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'permissionStore.ts:57',message:'PermissionStore set hydrated to true',data:{timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-      // #endregion
       
       const [permissionsJson, hasRequestedJson, grantedStepsJson] = await Promise.all([
         getItem(PERMISSION_STORE_KEY),
@@ -147,10 +137,6 @@ export const usePermissionStore = create<PermissionStoreState>((set, get) => ({
         });
     } catch (error) {
       console.error("[PermissionStore] Error hydrating permission store:", error);
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/5d17a330-9f7e-4e34-b5cc-0cddb360341d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'permissionStore.ts:105',message:'PermissionStore hydration error',data:{error:String(error),errorStack:error?.stack,timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-      // #endregion
-      // Already set hydrated to true above, so app won't hang
     }
   },
 }));

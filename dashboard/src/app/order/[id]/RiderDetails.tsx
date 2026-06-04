@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import RiderTimeline from "./RiderTimeline";
+import { useEffect, useState, type ReactNode } from "react";
+import RiderTimeline, { type RiderTimelineData } from "./RiderTimeline";
 import { useCancellationReasonCatalog } from "@/hooks/useCancellationReasonCatalog";
 import {
   catalogReasonOptionValue,
@@ -9,15 +9,20 @@ import {
   normalizeCatalogReasonId,
   reasonsForAttribute,
 } from "@/lib/orders/orderRejectionOptions";
+import type { OrderCustomerFeedback } from "@/lib/orders/order-customer-feedback";
+import { formatTipInr, hasRiderFeedback } from "@/lib/orders/order-customer-feedback";
+import { Check, Copy, Star } from "lucide-react";
+import { RiderPhotoModal } from "@/components/orders/RiderPhotoModal";
 
 interface RiderDetailsOrder {
+  orderId?: number | null;
+  riderId?: number | null;
   riderName?: string | null;
   riderMobile?: string | null;
   riderProvider?: string | null;
   trackingOrderId?: string | null;
   trackingUrl?: string | null;
   deliveryOtp?: string | null;
-  riderId?: number | null;
   status?: string | null;
   currentStatus?: string | null;
   createdAt?: string | null;
@@ -26,10 +31,15 @@ interface RiderDetailsOrder {
 
 interface RiderDetailsProps {
   order: RiderDetailsOrder;
+  initialRiderTimeline?: RiderTimelineData | null | undefined;
+  riderSelfieUrl?: string | null;
+  customerFeedback?: OrderCustomerFeedback | null;
+  tipAmount?: number | null;
+  onOpenFeedback?: () => void;
   onCopy: (text: string) => void;
   onPhoneClick?: (title: string, phone: string) => void;
+  className?: string;
 }
-
 interface RiderLog {
   createdAt: string;
   provider: string;
@@ -355,8 +365,92 @@ function RiderLogModal({ isOpen, onClose, onCopy }: RiderLogModalProps) {
 
 type CancelActionOption = "" | "CANCEL" | "CANCEL_ASSIGN";
 
-export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetailsProps) {
+function DetailField({
+  label,
+  children,
+  className = "",
+}: {
+  label: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={`flex flex-col gap-0.5 min-w-0 ${className}`}>
+      <span className="text-[10px] font-medium uppercase tracking-wide text-gati-text-secondary">
+        {label}
+      </span>
+      <div className="text-[11px] text-gati-text-primary leading-snug">{children}</div>
+    </div>
+  );
+}
+
+type RiderCopiedField = "mobile" | "trackingId" | "riderId";
+
+function CopyIconButton({
+  value,
+  fieldKey,
+  copiedField,
+  onCopied,
+  onCopy,
+  ariaLabel,
+}: {
+  value: string;
+  fieldKey: RiderCopiedField;
+  copiedField: RiderCopiedField | null;
+  onCopied: (field: RiderCopiedField) => void;
+  onCopy: (text: string) => void;
+  ariaLabel: string;
+}) {
+  const text = value.trim();
+  if (!text) return null;
+
+  return (
+    <button
+      type="button"
+      className="inline-flex items-center justify-center text-[11px] cursor-pointer opacity-80 hover:opacity-100 transition-opacity ml-1 shrink-0"
+      onClick={() => {
+        onCopy(text);
+        onCopied(fieldKey);
+      }}
+      aria-label={ariaLabel}
+    >
+      {copiedField === fieldKey ? (
+        <Check className="h-3 w-3 text-emerald-600" />
+      ) : (
+        <Copy className="h-3 w-3 text-gati-primary" />
+      )}
+      <span className="sr-only">Copy</span>
+    </button>
+  );
+}
+
+export default function RiderDetails({
+  order,
+  initialRiderTimeline,
+  riderSelfieUrl,
+  customerFeedback,
+  tipAmount,
+  onOpenFeedback,
+  onCopy,
+  onPhoneClick,
+  className = "",
+}: RiderDetailsProps) {
   const [showLogModal, setShowLogModal] = useState(false);
+  const [selfieImgError, setSelfieImgError] = useState(false);
+  const [riderPhotoOpen, setRiderPhotoOpen] = useState(false);
+  const [copiedField, setCopiedField] = useState<RiderCopiedField | null>(null);
+
+  const markCopied = (field: RiderCopiedField) => {
+    setCopiedField(field);
+    window.setTimeout(() => {
+      setCopiedField((prev) => (prev === field ? null : prev));
+    }, 1500);
+  };
+
+  useEffect(() => {
+    setSelfieImgError(false);
+  }, [riderSelfieUrl]);
+
   const [loadCatalog, setLoadCatalog] = useState(false);
   const {
     attributes: catalogAttributes,
@@ -405,47 +499,75 @@ export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetai
   const trackingOrderId = order.trackingOrderId || "—";
   const trackingUrl = order.trackingUrl || "";
   const deliveryOtp = order.deliveryOtp?.trim() || "—";
+  const tipLabel = formatTipInr(tipAmount ?? null);
+  const showRiderRating = hasRiderFeedback(customerFeedback);
+  const showSelfie = Boolean(riderSelfieUrl?.trim()) && !selfieImgError;
 
-  const statusString = (order.currentStatus || order.status || "").toString().toLowerCase();
-  const statusRank: Record<string, number> = {
-    assigned: 0,
-    accepted: 0,
-    reached_store: 1,
-    picked_up: 2,
-    in_transit: 2,
-    delivered: 3,
-    cancelled: 3,
-    failed: 3,
-  };
-  const currentStageIndex =
-    statusRank[statusString] !== undefined ? statusRank[statusString] : 0;
-
-  const createdDate = order.createdAt ? new Date(order.createdAt) : null;
-
-  const formatTimeShort = (date: Date | null) => {
-    if (!date || isNaN(date.getTime())) return "—";
-    let hours = date.getHours();
-    const minutes = String(date.getMinutes()).padStart(2, "0");
-    const ampm = hours >= 12 ? "PM" : "AM";
-    hours = hours % 12 || 12;
-    return `${hours}:${minutes} ${ampm}`;
-  };
+  const distanceLabel =
+    order.distanceKm != null && Number.isFinite(Number(order.distanceKm))
+      ? `${Number(order.distanceKm) % 1 === 0 ? order.distanceKm : Number(order.distanceKm).toFixed(2)} km`
+      : null;
 
   return (
     <>
-      <div className="bg-white rounded-lg px-3 py-2 shadow-sm border border-[#e5e5e5] transition-all hover:shadow-md hover:border-gati-primary/20">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center pb-1.5 mb-2 border-b border-[#e5e5e5] gap-2">
-          <div className="flex items-center gap-2 text-[12px] font-semibold text-gati-text-primary">
-            <div className="h-7 w-7 rounded-full overflow-hidden bg-sky-100 flex items-center justify-center">
-              <span className="text-sky-700 text-xs font-semibold">
-                {riderName !== "—" ? riderName.charAt(0).toUpperCase() : "R"}
-              </span>
+      <div
+        className={`bg-white rounded-lg px-3 py-2.5 shadow-sm border border-[#e5e5e5] transition-all hover:shadow-md hover:border-gati-primary/20 flex flex-col h-full min-h-[300px] ${className}`}
+      >
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[#e5e5e5] pb-2 mb-2">
+          <div className="flex min-w-0 items-center gap-2">
+            {showSelfie ? (
+              <button
+                type="button"
+                onClick={() => setRiderPhotoOpen(true)}
+                className="h-9 w-9 shrink-0 overflow-hidden rounded-full bg-sky-100 ring-2 ring-white shadow-sm cursor-zoom-in transition hover:ring-sky-300 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                aria-label={
+                  riderName !== "—" ? `View photo of ${riderName}` : "View rider photo"
+                }
+              >
+                <img
+                  src={riderSelfieUrl!}
+                  alt={riderName !== "—" ? riderName : "Rider"}
+                  className="h-full w-full object-cover"
+                  loading="eager"
+                  fetchPriority="high"
+                  decoding="async"
+                  onError={() => setSelfieImgError(true)}
+                />
+              </button>
+            ) : (
+              <div className="h-9 w-9 shrink-0 overflow-hidden rounded-full bg-sky-100 flex items-center justify-center ring-2 ring-white shadow-sm">
+                <span className="text-sky-700 text-sm font-semibold">
+                  {riderName !== "—" ? riderName.charAt(0).toUpperCase() : "R"}
+                </span>
+              </div>
+            )}
+            <div className="min-w-0">
+              <p className="text-[12px] font-semibold text-gati-text-primary leading-tight">
+                Rider details
+              </p>
+              <p className="text-[11px] text-gati-text-secondary flex flex-wrap items-center gap-x-1 leading-snug min-w-0">
+                <span className="truncate">
+                  {riderName !== "—" ? riderName : "No rider assigned"}
+                </span>
+                {order.riderId != null && Number.isFinite(Number(order.riderId)) ? (
+                  <span className="inline-flex items-center shrink-0 text-slate-400">
+                    <span>· #{order.riderId}</span>
+                    <CopyIconButton
+                      value={String(order.riderId)}
+                      fieldKey="riderId"
+                      copiedField={copiedField}
+                      onCopied={markCopied}
+                      onCopy={onCopy}
+                      ariaLabel="Copy rider id"
+                    />
+                  </span>
+                ) : null}
+              </p>
             </div>
-            <span>Rider details</span>
           </div>
           <button
             type="button"
-            className="inline-flex items-center gap-1 text-[10px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-0.5 rounded-full transition-colors cursor-pointer"
+            className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded-full transition-colors cursor-pointer"
             onClick={() => setShowLogModal(true)}
           >
             <i className="bi bi-eye" />
@@ -453,99 +575,128 @@ export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetai
           </button>
         </div>
 
-        <div className="flex flex-col md:flex-row gap-3">
-          <div className="flex-1 min-w-[200px] space-y-1 text-[11px]">
-            <div className="flex justify-between gap-3">
-              <span className="text-gati-text-secondary">Rider provider:</span>
-              <span className="text-gati-text-primary font-medium">
-                {riderProvider}
-              </span>
-            </div>
-            <div className="flex justify-between gap-3">
-              <span className="text-gati-text-secondary">Rider name:</span>
-              <span className="text-gati-text-primary font-medium">
-                {riderName}
-              </span>
-            </div>
-            <div className="flex justify-between gap-3">
-              <span className="text-gati-text-secondary">Mobile number:</span>
-              <div className="flex items-center gap-1.5 text-gati-primary font-medium">
-                {riderMobile}
-                {order.riderMobile && (
+        <div className="flex flex-1 flex-col gap-2.5 min-h-0">
+          <div className="flex-1 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_12.5rem] gap-2.5 min-h-0">
+            <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 content-start rounded-md border border-slate-100 bg-slate-50/40 p-2.5">
+              <DetailField label="Rider provider">
+                <span className="font-semibold">{riderProvider}</span>
+              </DetailField>
+              <DetailField label="Rider name">
+                <span className="font-semibold truncate block">{riderName}</span>
+              </DetailField>
+              <DetailField label="Mobile number">
+                <div className="flex items-center gap-1.5 text-[12px] leading-snug">
+                  {order.riderMobile ? (
+                    <button
+                      type="button"
+                      onClick={() => onPhoneClick?.("Rider Phone", order.riderMobile || "")}
+                      className="text-gati-primary no-underline font-medium inline-flex items-center gap-0.5 truncate"
+                    >
+                      <i className="bi bi-telephone text-[11px]" />
+                      <span className="truncate">{riderMobile}</span>
+                    </button>
+                  ) : (
+                    <span className="font-semibold">{riderMobile}</span>
+                  )}
+                  <CopyIconButton
+                    value={order.riderMobile || ""}
+                    fieldKey="mobile"
+                    copiedField={copiedField}
+                    onCopied={markCopied}
+                    onCopy={onCopy}
+                    ariaLabel="Copy rider mobile"
+                  />
+                </div>
+              </DetailField>
+              <DetailField label="Tracking order ID">
+                <div className="flex items-center gap-1.5 font-semibold leading-snug">
+                  <span className="truncate">{trackingOrderId}</span>
+                  <CopyIconButton
+                    value={order.trackingOrderId || ""}
+                    fieldKey="trackingId"
+                    copiedField={copiedField}
+                    onCopied={markCopied}
+                    onCopy={onCopy}
+                    ariaLabel="Copy tracking order id"
+                  />
+                </div>
+              </DetailField>
+              <DetailField label="Tracking URL">
+                {trackingUrl ? (
+                  <a
+                    href={trackingUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-0.5 font-semibold text-emerald-600"
+                  >
+                    <i className="bi bi-box-arrow-up-right" />
+                    Open link
+                  </a>
+                ) : (
+                  <span className="text-slate-500">—</span>
+                )}
+              </DetailField>
+              <DetailField label="Delivery OTP">
+                <span className="inline-flex w-fit px-2 py-0.5 border border-dashed border-emerald-400 bg-emerald-50 rounded font-mono text-emerald-700 font-bold tracking-[0.12em]">
+                  {deliveryOtp}
+                </span>
+              </DetailField>
+              {distanceLabel ? (
+                <DetailField label="Order distance">
+                  <span className="font-semibold">{distanceLabel}</span>
+                </DetailField>
+              ) : null}
+              {showRiderRating && customerFeedback?.deliveryRating != null ? (
+                <DetailField label="Cx rating">
                   <button
                     type="button"
-                    className="inline-flex items-center justify-center text-[10px] cursor-pointer opacity-80 hover:opacity-100"
-                    onClick={() => {
-                      onCopy(order.riderMobile || "");
-                      onPhoneClick?.("Rider Phone", order.riderMobile || "");
-                    }}
-                    aria-label="Copy rider mobile"
+                    onClick={onOpenFeedback}
+                    className="inline-flex items-center gap-1.5 cursor-pointer group font-semibold"
                   >
-                    <i className="bi bi-clipboard" />
+                    <span>{customerFeedback.deliveryRating}</span>
+                    <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400 shrink-0" aria-hidden />
+                    <span className="text-[10px] text-emerald-700 group-hover:underline">
+                      Feedback
+                    </span>
                   </button>
+                </DetailField>
+              ) : null}
+              {tipLabel ? (
+                <DetailField label="Tip received">
+                  <span className="font-bold text-emerald-700">{tipLabel}</span>
+                </DetailField>
+              ) : null}
+            </div>
+
+            <div className="flex min-h-[140px] w-full max-w-[12.5rem] md:min-h-0 md:justify-self-end flex-col overflow-visible rounded-md border border-slate-200 bg-white px-2 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+              <p className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                Delivery progress
+              </p>
+              <div className="flex flex-1 flex-col justify-start min-h-0 overflow-y-auto overflow-x-visible pr-0.5">
+                {order.orderId && order.riderId ? (
+                  <RiderTimeline
+                    className="h-full w-full border-0 shadow-none bg-transparent p-0"
+                    orderId={order.orderId}
+                    riderId={order.riderId}
+                    initialData={initialRiderTimeline}
+                  />
+                ) : (
+                  <div className="flex flex-1 items-center justify-center rounded-md border border-dashed border-slate-200 bg-slate-50 text-[11px] text-slate-500">
+                    Rider not assigned yet
+                  </div>
                 )}
-              </div>
-            </div>
-            <div className="flex justify-between gap-3">
-              <span className="text-gati-text-secondary">Tracking Order Id:</span>
-              <div className="flex items-center gap-1.5 text-gati-text-primary font-medium">
-                <span>{trackingOrderId}</span>
-                {order.trackingOrderId && (
-                  <button
-                    type="button"
-                    className="inline-flex items-center justify-center text-[10px] cursor-pointer opacity-80 hover:opacity-100"
-                    onClick={() => onCopy(order.trackingOrderId || "")}
-                    aria-label="Copy tracking order id"
-                  >
-                    <i className="bi bi-clipboard" />
-                  </button>
-                )}
-              </div>
-            </div>
-            <div className="flex justify-between gap-3">
-              <span className="text-gati-text-secondary">Tracking URL:</span>
-              {trackingUrl ? (
-                <a
-                  href={trackingUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-0.5 text-emerald-600 text-[11px] font-semibold"
-                >
-                  <i className="bi bi-box-arrow-up-right" />
-                  View
-                </a>
-              ) : (
-                <span className="text-gati-text-primary text-[11px]">—</span>
-              )}
-            </div>
-            <div className="flex justify-between items-center gap-3">
-              <span className="text-gati-text-secondary">Delivery OTP:</span>
-              <div className="px-2.5 py-0.5 border border-dashed border-emerald-400 bg-emerald-50 rounded text-emerald-700 font-mono text-[11px] font-semibold tracking-[0.15em]">
-                {deliveryOtp}
               </div>
             </div>
           </div>
 
-          <div className="flex-1 min-w-[200px]">
-            <RiderTimeline
-              createdAt={order.createdAt}
-              pickedUpAt={null}
-              deliveredAt={null}
-              status={order.currentStatus || order.status || null}
-              distanceKm={order.distanceKm ?? null}
-            />
-          </div>
-        </div>
-
-        <div className="bg-slate-50 border border-slate-200 rounded-md p-2.5 mt-3 relative z-0">
-          <div className="text-[11px] font-semibold mb-1.5 flex items-center gap-1.5">
-            <i className="bi bi-slash-circle" />
-            Rider cancellation
-          </div>
-          <div className="flex flex-col md:flex-row gap-2 text-[10px] relative">
-            <div className="relative flex-1 focus-within:z-20">
+          <div className="shrink-0 rounded-md border border-slate-200 bg-slate-50 p-2.5">
+            <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold text-slate-800">
+              <i className="bi bi-slash-circle" />
+              Rider cancellation
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_auto] gap-2 text-[10px]">
               <select
-                className="relative z-10 flex-1 h-8 w-full border border-slate-300 rounded px-2 bg-white cursor-pointer"
+                className="h-8 w-full border border-slate-300 rounded px-2 bg-white cursor-pointer"
                 value={riderAttribute}
                 onFocus={() => setLoadCatalog(true)}
                 onChange={(e) => handleAttributeChange(e.target.value)}
@@ -557,11 +708,11 @@ export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetai
                   </option>
                 ))}
               </select>
-            </div>
-            <div className="relative flex-1 focus-within:z-20">
               <select
-                className={`relative z-10 flex-1 h-8 w-full border border-slate-300 rounded px-2 bg-white ${
-                  isSecondDropdownEnabled && !catalogLoading ? "cursor-pointer" : "cursor-not-allowed opacity-60"
+                className={`h-8 w-full border border-slate-300 rounded px-2 bg-white ${
+                  isSecondDropdownEnabled && !catalogLoading
+                    ? "cursor-pointer"
+                    : "cursor-not-allowed opacity-60"
                 }`}
                 value={catalogReasonId != null ? String(catalogReasonId) : ""}
                 onChange={(e) => handleRejectionOptionChange(e.target.value)}
@@ -577,52 +728,47 @@ export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetai
                   </option>
                 ))}
               </select>
-            </div>
-            <div className="relative flex-1 focus-within:z-20">
               <select
-                className={`relative z-10 flex-1 h-8 w-full border border-slate-300 rounded px-2 bg-white ${
+                className={`h-8 w-full border border-slate-300 rounded px-2 bg-white ${
                   isThirdDropdownEnabled ? "cursor-pointer" : "cursor-not-allowed opacity-60"
                 }`}
                 value={cancelAction}
-                onChange={(e) =>
-                  setCancelAction(e.target.value as CancelActionOption)
-                }
+                onChange={(e) => setCancelAction(e.target.value as CancelActionOption)}
                 disabled={!isThirdDropdownEnabled}
               >
                 <option value="">Select Option</option>
                 <option value="CANCEL">CANCEL</option>
                 <option value="CANCEL_ASSIGN">CANCEL &amp; ASSIGN</option>
               </select>
+              <button
+                type="button"
+                disabled={!isButtonEnabled}
+                className={`h-8 w-full sm:w-auto shrink-0 px-4 rounded text-[11px] font-semibold inline-flex items-center justify-center gap-1 ${
+                  isButtonEnabled
+                    ? cancelAction === "CANCEL_ASSIGN"
+                      ? "bg-slate-700 hover:bg-slate-800 text-white cursor-pointer"
+                      : "bg-red-600 hover:bg-red-700 text-white cursor-pointer"
+                    : "bg-slate-300 text-slate-500 cursor-not-allowed"
+                }`}
+                onClick={() => {
+                  if (!isButtonEnabled) return;
+                  // eslint-disable-next-line no-alert
+                  alert("Rider cancellation flow will be implemented soon.");
+                }}
+              >
+                {cancelAction === "CANCEL_ASSIGN" ? (
+                  <>
+                    <i className="bi bi-arrow-repeat" />
+                    Cancel &amp; Assign
+                  </>
+                ) : (
+                  <>
+                    <i className="bi bi-x-circle" />
+                    Cancel
+                  </>
+                )}
+              </button>
             </div>
-            <button
-              type="button"
-              disabled={!isButtonEnabled}
-              className={`h-8 px-3 rounded text-[11px] font-semibold inline-flex items-center gap-1 mt-1 md:mt-0 ${
-                isButtonEnabled
-                  ? cancelAction === "CANCEL_ASSIGN"
-                    ? "bg-slate-700 hover:bg-slate-800 text-white cursor-pointer"
-                    : "bg-red-600 hover:bg-red-700 text-white cursor-pointer"
-                  : "bg-slate-300 text-slate-500 cursor-not-allowed"
-              }`}
-              onClick={() => {
-                if (!isButtonEnabled) return;
-                // Placeholder action; cancel flow can be wired later.
-                // eslint-disable-next-line no-alert
-                alert("Rider cancellation flow will be implemented soon.");
-              }}
-            >
-              {cancelAction === "CANCEL_ASSIGN" ? (
-                <>
-                  <i className="bi bi-arrow-repeat" />
-                  Cancel &amp; Assign
-                </>
-              ) : (
-                <>
-                  <i className="bi bi-x-circle" />
-                  Cancel
-                </>
-              )}
-            </button>
           </div>
         </div>
       </div>
@@ -631,6 +777,12 @@ export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetai
         isOpen={showLogModal}
         onClose={() => setShowLogModal(false)}
         onCopy={onCopy}
+      />
+      <RiderPhotoModal
+        open={riderPhotoOpen}
+        imageUrl={riderSelfieUrl ?? null}
+        riderName={riderName !== "—" ? riderName : null}
+        onClose={() => setRiderPhotoOpen(false)}
       />
     </>
   );

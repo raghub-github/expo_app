@@ -38,6 +38,7 @@ import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
 import { fetchWalletSummary } from "@/services/walletApi";
 import { getActiveOrdersCount } from "@/services/storeSettingsApi";
 import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedActiveOrdersNotice";
+import { MerchantMarketInsightsPanel } from "@/components/growth/MerchantMarketInsightsPanel";
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
 
 const { width } = Dimensions.get("window");
@@ -398,6 +399,8 @@ export default function DashboardScreen() {
           />
         </View>
       </View>
+
+      <MerchantMarketInsightsPanel storeId={storeId} />
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>All Orders</Text>

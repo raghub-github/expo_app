@@ -102,7 +102,7 @@ export async function POST(
 
     // Parse request body
     const body = await request.json();
-    const { reason } = body;
+    const { reason, displayDocType: rawDisplayDocType } = body;
 
     if (!reason || typeof reason !== "string" || reason.trim().length === 0) {
       return NextResponse.json(
@@ -110,6 +110,11 @@ export async function POST(
         { status: 400 }
       );
     }
+
+    const displayDocType =
+      typeof rawDisplayDocType === "string" && rawDisplayDocType.trim()
+        ? rawDisplayDocType.trim()
+        : undefined;
 
     // Get agent information
     const agent = await getSystemUserByEmail(user.email ?? "");
@@ -121,7 +126,9 @@ export async function POST(
     }
 
     // Reject document
-    const rejectedDoc = await rejectRiderDocument(documentId, agent.id, reason.trim());
+    const rejectedDoc = await rejectRiderDocument(documentId, agent.id, reason.trim(), {
+      displayDocType,
+    });
 
     if (!rejectedDoc) {
       return NextResponse.json(
@@ -172,6 +179,7 @@ export async function POST(
       success: true,
       data: {
         document: rejectedDoc,
+        displayDocType: displayDocType ?? null,
         kycStatus: isCriticalDoc ? "REJECTED" : rider.kycStatus,
       },
     });

@@ -8,10 +8,10 @@ import { MerchantOrderCardLayout } from "@/components/order/MerchantOrderCardLay
 import { MerchantOrderActionsSheet } from "@/components/order/MerchantOrderActionsSheet";
 import { OrderCustomerBottomSheet } from "@/components/order/OrderCustomerBottomSheet";
 import { OrderTimelineSheet } from "@/components/order/OrderTimelineSheet";
-import {
-  formatOrderDateTime,
-} from "@/components/order/orderFormatters";
+import { formatOrderDateTime } from "@/components/order/orderFormatters";
 import { resolvePreparedAtForHandover } from "@/lib/orderHandoverTimeline";
+import { resolvePreparedLateMinutes } from "@/lib/order-prep-time";
+import { OrderPreparedLateTopBanner } from "@/components/order/OrderPrepDelayedBanner";
 import { merchantOrderCardLayoutStyles as layoutStyles } from "@/components/order/merchantOrderCardLayoutStyles";
 
 type Props = {
@@ -36,6 +36,16 @@ export function MerchantReadyOrderCard({
 
   const placedAt = formatOrderDateTime(order.createdAt);
 
+  const preparedLateMins = useMemo(
+    () =>
+      resolvePreparedLateMinutes({
+        prepared_late_minutes: order.preparedLateMinutes,
+        prepared_at: order.preparedAt,
+        prep_ready_by_at: order.prepReadyByAt,
+      }),
+    [order.preparedLateMinutes, order.preparedAt, order.prepReadyByAt]
+  );
+
   const preparedAtForTimeline = useMemo(
     () =>
       resolvePreparedAtForHandover(order.preparedAt, {
@@ -59,6 +69,11 @@ export function MerchantReadyOrderCard({
         speakingActive={speaking}
         onSpeak={() => void speak(order)}
         onMenu={() => setMenuOpen(true)}
+        outerBanner={
+          preparedLateMins != null && preparedLateMins > 0 ? (
+            <OrderPreparedLateTopBanner lateMinutes={preparedLateMins} />
+          ) : undefined
+        }
         midContent={
           <View style={styles.timelineWrap}>
             <ReadyHandoverTimeline

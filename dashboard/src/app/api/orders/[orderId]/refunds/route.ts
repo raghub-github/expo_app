@@ -11,6 +11,12 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { createOrderRefund, listOrderRefunds, type RefundTypeDb } from "@/lib/db/operations/order-refunds";
 import { recordOrderCancellation } from "@/lib/db/operations/orders-core";
+import {
+  executeOrderCancellationFinancials,
+  executePartialRefundFinancials,
+  lookupOrderContext,
+} from "@/lib/financial-rule-executor";
+import { refundFieldsFromEngineResult, resolvePaymentCancellationMilestone } from "@gatimitra/financial-rules";
 import { dashboardCancellationFromCatalog } from "@/lib/orders/merchant-cancellation-fields";
 import { resolveCancellationCatalogForOrder } from "@/lib/db/operations/order-cancellation-reason-catalog";
 
@@ -200,14 +206,39 @@ export async function POST(
       const cancelledById = systemUser?.id ?? null;
       const reasonCode = catalogRow.reasonCode.slice(0, 200);
       const reasonText = (refundDescription ?? catalogRow.label).trim().slice(0, 2000) || null;
+
+      const orderCtx = await lookupOrderContext(orderId);
+      const { orderMilestone } = resolvePaymentCancellationMilestone({
+        previousStatus: orderCtx.orderStatus,
+        cancelledByType: "admin",
+      });
+      const engineResult = await executeOrderCancellationFinancials({
+        orderCoreId: orderId,
+        ordersFoodId: orderCtx.ordersFoodId ?? orderId,
+        coreOrderId: orderCtx.coreOrderId,
+        merchantStoreId: orderCtx.merchantStoreId,
+        previousStatus: orderCtx.orderStatus,
+        cancelledByType: cancelledBy,
+        orderGross: orderCtx.grandTotal,
+        serviceType: orderCtx.serviceType,
+        cancellationReasonId: catalogRow.id,
+        actorSystemUserId: cancelledById,
+      });
+
       await recordOrderCancellation({
         orderId,
         cancelledBy,
         cancelledById,
         reasonCode,
         reasonText,
-        refundStatus: "no_refund",
-        metadata: cancellationMetadata,
+        refundStatus: engineResult.applied
+          ? refundFieldsFromEngineResult(engineResult.raw).refundStatus
+          : "no_refund",
+        metadata: {
+          ...cancellationMetadata,
+          financial_rule_engine: engineResult.raw ?? null,
+          engine_applied: engineResult.applied,
+        },
         catalogReasonId: catalogRow.id,
         cancelledByType: "admin",
         cancelledByLabel: merchantCancel.cancelledByLabel,
@@ -220,8 +251,13 @@ export async function POST(
       });
       return NextResponse.json({
         success: true,
-        data: { action: "cancel_without_refund", refundId: null },
-        message: "Order cancel without refund recorded (no refund row created).",
+        data: {
+          action: "cancel_without_refund",
+          refundId: null,
+          engine: engineResult.raw ?? null,
+          engine_applied: engineResult.applied,
+        },
+        message: "Order cancelled via Financial Rule Engine (no refund row).",
       });
     }
 
@@ -245,6 +281,29 @@ export async function POST(
     const refundInitiatedById = systemUser?.id ?? null;
     const refundInitiatedBy = systemUser?.primaryRole ?? "agent";
 
+    const orderCtx = await lookupOrderContext(orderId);
+    const { orderMilestone } = resolvePaymentCancellationMilestone({
+      previousStatus: orderCtx.orderStatus,
+      cancelledByType: "admin",
+      wasDelivered: refundType === "refund_with_cancellation",
+    });
+    const engineResult = await executePartialRefundFinancials({
+      orderCoreId: orderId,
+      ordersFoodId: orderCtx.ordersFoodId,
+      coreOrderId: orderCtx.coreOrderId,
+      orderStage: orderMilestone,
+      triggeredBy: refundInitiatedBy,
+      orderGross: orderCtx.grandTotal,
+      refundAmount,
+      cancellationReasonId: catalogRow.id,
+      actorSystemUserId: refundInitiatedById,
+      postDelivery: refundType === "refund_with_cancellation",
+      metadata: {
+        refundItems: refundMetadata.refundItems,
+        refundTypeUI: refundType,
+      },
+    });
+
     const record = await createOrderRefund({
       orderId,
       orderPaymentId: null,
@@ -263,6 +322,8 @@ export async function POST(
         ...refundMetadata,
         ...cancellationMetadata,
         refundTypeUI: refundType,
+        financial_rule_engine: engineResult.raw ?? null,
+        engine_applied: engineResult.applied,
       },
     });
 

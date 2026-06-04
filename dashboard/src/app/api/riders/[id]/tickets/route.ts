@@ -1,13 +1,14 @@
 /**
- * GET /api/riders/[id]/tickets – rider tickets with filters (order-related, category/service, status, date)
+ * GET /api/riders/[id]/tickets – rider tickets from public.unified_tickets
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
-import { riders, tickets } from "@/lib/db/schema";
-import { eq, and, or, desc, gte, lte, isNotNull, isNull, ilike, sql } from "drizzle-orm";
+import { riders } from "@/lib/db/schema";
+import { eq } from "drizzle-orm";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { fetchRiderUnifiedTickets } from "@/lib/riders/rider-unified-tickets";
 
 export const runtime = "nodejs";
 
@@ -43,76 +44,38 @@ export async function GET(
     const { searchParams } = new URL(request.url);
     const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "30", 10) || 30));
     const offset = Math.max(0, parseInt(searchParams.get("offset") || "0", 10) || 0);
-    const from = searchParams.get("from");
-    const to = searchParams.get("to");
-    const orderRelated = searchParams.get("orderRelated"); // yes | no | all
-    const category = searchParams.get("category"); // payment | order | technical | food | parcel | person_ride | all
-    const status = searchParams.get("status"); // open | in_progress | resolved | closed | all
-    const q = (searchParams.get("q") || "").trim();
 
-    const conditions: any[] = [eq(tickets.riderId, riderId)];
-    if (orderRelated === "yes") conditions.push(isNotNull(tickets.orderId));
-    if (orderRelated === "no") conditions.push(isNull(tickets.orderId));
-    if (category && category !== "all") conditions.push(eq(tickets.category, category));
-    if (status && status !== "all") conditions.push(eq(tickets.status, status as any));
-    if (from) conditions.push(gte(tickets.createdAt, new Date(from)));
-    if (to) conditions.push(lte(tickets.createdAt, new Date(to)));
-    if (q) {
-      const num = parseInt(q, 10);
-      if (!Number.isNaN(num) && String(num) === q) {
-        conditions.push(or(eq(tickets.id, num), eq(tickets.orderId, num)) as any);
-      } else {
-        const term = `%${q.replace(/%/g, "\\%")}%`;
-        conditions.push(or(ilike(tickets.subject, term), ilike(tickets.message, term)) as any);
-      }
-    }
+    const { tickets, total } = await fetchRiderUnifiedTickets(riderId, {
+      limit,
+      offset,
+      from: searchParams.get("from") || undefined,
+      to: searchParams.get("to") || undefined,
+      orderRelated: searchParams.get("orderRelated") || undefined,
+      category: searchParams.get("category") || undefined,
+      status: searchParams.get("status") || undefined,
+      q: searchParams.get("q") || undefined,
+    });
 
-    const whereClause = conditions.length > 1 ? and(...conditions) : conditions[0];
-    const [{ count: total }] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(tickets)
-      .where(whereClause);
-    // Explicit select without resolved_by so this works even if migration 0080 has not been run
-    const rows = await db
-      .select({
-        id: tickets.id,
-        riderId: tickets.riderId,
-        orderId: tickets.orderId,
-        category: tickets.category,
-        priority: tickets.priority,
-        subject: tickets.subject,
-        message: tickets.message,
-        status: tickets.status,
-        resolution: tickets.resolution,
-        createdAt: tickets.createdAt,
-        updatedAt: tickets.updatedAt,
-        resolvedAt: tickets.resolvedAt,
-      })
-      .from(tickets)
-      .where(whereClause)
-      .orderBy(desc(tickets.createdAt))
-      .limit(Number.isNaN(limit) ? 30 : limit)
-      .offset(offset);
-
-    const list = rows.map((r) => ({
-      id: r.id,
-      riderId: r.riderId,
-      orderId: r.orderId,
-      category: r.category,
-      priority: r.priority,
-      subject: r.subject,
-      message: r.message,
-      status: r.status,
-      resolution: r.resolution,
-      createdAt: r.createdAt,
-      updatedAt: r.updatedAt,
-      resolvedAt: r.resolvedAt,
+    const list = tickets.map((t) => ({
+      id: t.id,
+      ticketId: t.ticketId,
+      riderId,
+      orderId: t.orderId ?? null,
+      category: t.category,
+      priority: t.priority,
+      subject: t.subject,
+      message: t.message,
+      status: t.status,
+      resolution: null as string | null,
+      createdAt: t.createdAt,
+      updatedAt: t.createdAt,
+      resolvedAt: t.resolvedAt ?? null,
       resolvedBy: null as number | null,
       resolvedByEmail: null as string | null,
       resolvedByName: null as string | null,
     }));
 
-    return NextResponse.json({ success: true, data: { tickets: list, total: Number(total) ?? 0 } });
+    return NextResponse.json({ success: true, data: { tickets: list, total } });
   } catch (error) {
     console.error("[GET /api/riders/[id]/tickets] Error:", error);
     return NextResponse.json(

@@ -6,14 +6,12 @@ import { resolveMerchantInstructionsForDisplay } from "@/lib/merchant-order-inst
 type Props = {
   merchantInstructionsList?: unknown;
   requiresUtensils?: boolean | null;
-  deliveryInstructions?: string | null;
   style?: object;
 };
 
 export function OrderCardMerchantInstructions({
   merchantInstructionsList,
   requiresUtensils,
-  deliveryInstructions,
   style,
 }: Props) {
   const lines = useMemo(
@@ -21,9 +19,8 @@ export function OrderCardMerchantInstructions({
       resolveMerchantInstructionsForDisplay({
         merchant_instructions_list: merchantInstructionsList,
         requires_utensils: requiresUtensils,
-        delivery_instructions: deliveryInstructions,
       }),
-    [merchantInstructionsList, requiresUtensils, deliveryInstructions]
+    [merchantInstructionsList, requiresUtensils]
   );
 
   if (lines.length === 0) return null;

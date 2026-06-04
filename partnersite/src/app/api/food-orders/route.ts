@@ -16,9 +16,14 @@ import {
 import { merchantBillPartsFromItems } from '@/lib/merchant-order-item-display';
 import { parseMerchantInstructionsList } from '@/lib/merchant-order-instructions';
 import { enrichOrdersWithCancellationDisplay } from '@/lib/fetch-order-cancellation-display';
+import {
+  buildRiderSelfieUrlMap,
+  resolveRiderSelfieFromStored,
+} from '@/lib/rider-selfie-url';
+import { loadMerchantRiderUniformByOrderCoreIds } from '@/lib/merchant-rider-uniform-feedback';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 
 function getSupabase() {
   return createClient(supabaseUrl, supabaseServiceKey, {
@@ -309,6 +314,8 @@ export async function GET(req: NextRequest) {
       ...new Set(coreRows.map((c) => c.rider_id).filter((x) => x != null).map((x) => Number(x))),
     ];
     const riderById = new Map<number, Record<string, unknown>>();
+    const riderSelfieById =
+      riderIds.length > 0 ? await buildRiderSelfieUrlMap(db, riderIds) : new Map<number, string | null>();
     if (riderIds.length > 0) {
       const { data: riders } = await db
         .from('riders')
@@ -323,6 +330,9 @@ export async function GET(req: NextRequest) {
       .map((c) => String((c as CoreRow).order_id ?? '').trim())
       .filter(Boolean);
     const snapshotsByOrderText = await loadSnapshotsByOrderTexts(db, orderTexts, store.id);
+
+    const coreIds = coreRows.map((c) => Number(c.id)).filter((id) => Number.isFinite(id));
+    const uniformByCoreId = await loadMerchantRiderUniformByOrderCoreIds(db, coreIds);
 
     const ordersWithDetails = await Promise.all(
       coreRows.map(async (core) => {
@@ -399,8 +409,15 @@ export async function GET(req: NextRequest) {
           };
         });
 
-        const riderId = core.rider_id != null ? Number(core.rider_id) : null;
+        const riderId =
+          core.rider_id != null
+            ? Number(core.rider_id)
+            : food?.rider_id != null
+              ? Number(food.rider_id)
+              : null;
         const riderDetails = riderId != null ? riderById.get(riderId) ?? null : null;
+        const riderNameFromFood = (food?.rider_name as string | null) ?? null;
+        const riderPhoneFromFood = (food?.rider_phone as string | null) ?? null;
 
         const custId = core.customer_id != null ? Number(core.customer_id) : null;
         const cust = custId != null ? customerById.get(custId) : null;
@@ -430,7 +447,6 @@ export async function GET(req: NextRequest) {
         const bill = merchantBillPartsFromItems(items, {
           subtotal: merchantSubtotal,
           packaging: customerPricing.packaging,
-          taxes: 0,
           discount: merchantDiscount,
           total: 0,
         });
@@ -462,7 +478,9 @@ export async function GET(req: NextRequest) {
           restaurant_phone: (food?.restaurant_phone as string | null) ?? null,
           preparation_time_minutes:
             food?.preparation_time_minutes != null ? Number(food.preparation_time_minutes) : null,
-          prep_ready_by_at: (food?.prep_ready_by_at as string | null) ?? null,
+          prep_ready_by_at: (food?.prep_ready_by_at as string | null) ??
+            ((core as Record<string, unknown>).prep_ready_by_at as string | null) ??
+            null,
           prep_time_source: (food?.prep_time_source as string | null) ?? null,
           prep_delay_minutes:
             food?.prep_delay_minutes != null ? Number(food.prep_delay_minutes) : 0,
@@ -474,6 +492,10 @@ export async function GET(req: NextRequest) {
           display_item_count: displayItemCount,
           food_items_total_value: bill.total,
           customer_paid_total: pricingTotal ?? customerPricing.total,
+          total_ctm:
+            core.total_ctm != null && core.total_ctm !== ''
+              ? Number(core.total_ctm)
+              : bill.total,
           requires_utensils: food?.requires_utensils ?? null,
           is_fragile: food?.is_fragile ?? false,
           is_high_value: food?.is_high_value ?? false,
@@ -504,15 +526,18 @@ export async function GET(req: NextRequest) {
             custId != null && core.created_at
               ? platformOrdinalByKey.get(`p:${custId}:${String(core.created_at)}`) ?? null
               : null,
+          merchant_rider_in_uniform: uniformByCoreId.get(coreId) ?? null,
           rider_id: riderId,
-          rider_name: (riderDetails?.name as string | null) ?? (food?.rider_name as string | null) ?? null,
-          rider_phone: (riderDetails?.mobile as string | null) ?? (food?.rider_phone as string | null) ?? null,
+          rider_name: (riderDetails?.name as string | null) ?? riderNameFromFood ?? null,
+          rider_phone: (riderDetails?.mobile as string | null) ?? riderPhoneFromFood ?? null,
           rider_details: riderDetails
             ? {
                 id: Number(riderDetails.id),
                 name: riderDetails.name as string,
                 mobile: riderDetails.mobile as string,
-                selfie_url: riderDetails.selfie_url as string | null,
+                selfie_url:
+                  (riderId != null ? riderSelfieById.get(riderId) : null) ??
+                  resolveRiderSelfieFromStored(riderDetails.selfie_url as string | null),
                 status: riderDetails.status as string | undefined,
                 city: riderDetails.city as string | null,
                 lat: riderDetails.lat != null ? Number(riderDetails.lat) : null,

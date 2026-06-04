@@ -644,11 +644,17 @@ export function getCurrentPageName(pathname: string): string {
     "/dashboard/area-managers/availability": "Rider Availability",
     "/dashboard/area-managers/activity-logs": "Activity Logs",
     "/dashboard/super-admin/ticket-settings": "Ticket Management",
+    "/dashboard/super-admin/rule-engine": "Financial Rule Engine",
+    "/dashboard/super-admin/rule-engine/new": "Create rule",
   };
   
   // Check exact matches first
   if (pageNameMap[cleanPath]) {
     return pageNameMap[cleanPath];
+  }
+
+  if (/^\/dashboard\/super-admin\/rule-engine\/\d+\/edit$/.test(cleanPath)) {
+    return "Edit rule";
   }
   
   if (/^\/dashboard\/users\/roles\/\d+\/edit$/.test(cleanPath)) {

@@ -36,11 +36,22 @@ export function createForegroundLocationTracker(opts?: {
 }): LocationTracker {
   const timeIntervalMs = opts?.timeIntervalMs ?? 2000;
   const distanceIntervalM = opts?.distanceIntervalM ?? 5;
-  const minAccuracyM = opts?.minAccuracyM ?? 80;
+  const minAccuracyM = opts?.minAccuracyM ?? 150;
 
   let state: LocationTrackerState = { status: "idle" };
   const listeners = new Set<(s: LocationTrackerState) => void>();
   let sub: Location.LocationSubscription | null = null;
+
+  const currentFix = (): RiderLocationFix | undefined =>
+    state.status === "tracking" ? state.lastFix : undefined;
+
+  const shouldAcceptFix = (fix: RiderLocationFix): boolean => {
+    const prev = currentFix();
+    if (!prev) return true;
+    if (fix.accuracyM == null) return true;
+    if (fix.accuracyM <= minAccuracyM) return true;
+    return false;
+  };
 
   const emit = (s: LocationTrackerState) => {
     state = s;
@@ -65,18 +76,20 @@ export function createForegroundLocationTracker(opts?: {
 
     // Get initial location immediately for faster map loading
     try {
-      const initialLoc = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced, // Use balanced for faster initial fix
-        maximumAge: 5000, // Accept cached location up to 5 seconds old
-      });
-      const initialFix = normalizeFix(initialLoc);
-      // Only use initial fix if it has reasonable accuracy
-      if (!initialFix.accuracyM || initialFix.accuracyM <= minAccuracyM * 2) {
-        emit({ status: "tracking", lastFix: initialFix });
+      let initialLoc: Location.LocationObject | null = null;
+      try {
+        initialLoc = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+          maximumAge: 60_000,
+        });
+      } catch {
+        initialLoc = await Location.getLastKnownPositionAsync({ maxAge: 300_000 });
+      }
+      if (initialLoc) {
+        emit({ status: "tracking", lastFix: normalizeFix(initialLoc) });
       }
     } catch (error) {
       console.warn("[LocationTracker] Failed to get initial location:", error);
-      // Continue with watchPositionAsync anyway
     }
 
     // Start continuous tracking with high accuracy
@@ -89,9 +102,8 @@ export function createForegroundLocationTracker(opts?: {
       },
       (loc) => {
         const fix = normalizeFix(loc);
-        // Drop very low quality points to reduce jitter + fraud false positives.
-        if (fix.accuracyM != null && fix.accuracyM > minAccuracyM) {
-          emit({ status: "tracking", lastFix: state.status === "tracking" ? state.lastFix : undefined });
+        if (!shouldAcceptFix(fix)) {
+          emit({ status: "tracking", lastFix: currentFix() });
           return;
         }
         emit({ status: "tracking", lastFix: fix });

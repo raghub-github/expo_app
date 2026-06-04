@@ -1,10 +1,14 @@
 /**
- * Location service - reverse geocode and forward search using Mapbox Geocoding API.
+ * Location service — Mapbox Search Box API (forward + reverse) + local fallback.
  * All search results are restricted to India (country=IN).
- * Forward search delegates to the intelligent location search engine (locationSearch.service).
  */
 
 import { getConfig } from "@/config/env";
+import {
+  mapboxSearchReverse,
+  ensureMapboxSearchReady,
+  type MapboxSearchSessionContext,
+} from "@/services/mapboxSearch.service";
 import {
   searchLocations,
   toLegacyPlaceResult,
@@ -12,6 +16,14 @@ import {
   type EnrichedPlaceResult,
   type LocationSearchOptions,
 } from "@/services/locationSearch.service";
+
+export {
+  resolveMapboxEnrichedPlace,
+  resetMapboxSearchSession,
+  ensureMapboxSearchReady,
+  MAPBOX_SEARCH_DEBOUNCE_MS,
+} from "@/services/mapboxSearch.service";
+export type { MapboxSearchSessionContext };
 
 const COUNTRY_INDIA = "IN";
 const roadDistanceCache = new Map<string, { distanceMeters: number; durationSeconds: number | null }>();
@@ -41,14 +53,83 @@ export type ReverseGeocodeResult = {
   pincode?: string | null;
 };
 
+function isPincodeOnly(value?: string | null): boolean {
+  return !!value && /^\d{6}$/.test(value.trim());
+}
+
+/** Prefer locality / street name over bare pincode for map & list headings. */
+export function resolvePlaceDisplayName(input: {
+  primary?: string | null;
+  secondary?: string | null;
+  fullAddress?: string | null;
+  city?: string | null;
+  state?: string | null;
+}): string {
+  const fullParts = (input.fullAddress ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const secondaryParts = (input.secondary ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const normalizedState = (input.state ?? "").trim().toLowerCase();
+  const normalizedCity = (input.city ?? "").trim().toLowerCase();
+
+  const isMeaningfulPart = (part: string) => {
+    const lower = part.toLowerCase();
+    return (
+      !!part &&
+      !isPincodeOnly(part) &&
+      lower !== "india" &&
+      lower !== normalizedState &&
+      lower !== normalizedCity
+    );
+  };
+
+  const candidates = [
+    input.primary,
+    ...secondaryParts,
+    ...fullParts,
+    input.city,
+  ].filter((p): p is string => !!p && isMeaningfulPart(p));
+
+  if (candidates.length > 0) return candidates[0];
+
+  return input.fullAddress?.trim() || input.primary?.trim() || "Selected location";
+}
+
 /**
- * Reverse geocode lng,lat to address using Mapbox Geocoding API.
- * Returns primary (e.g. locality/place name) and secondary (e.g. area, city).
+ * Reverse geocode lng,lat using Mapbox Search Box API (fallback: Geocoding v5).
  */
 export async function reverseGeocode(
   longitude: number,
   latitude: number
 ): Promise<ReverseGeocodeResult> {
+  ensureMapboxSearchReady();
+  try {
+    const box = await mapboxSearchReverse(longitude, latitude);
+    if (box) {
+      const primary = resolvePlaceDisplayName({
+        primary: box.primary,
+        secondary: box.secondary,
+        fullAddress: box.fullAddress,
+        city: box.city,
+        state: box.state,
+      });
+      return {
+        primary,
+        secondary: box.secondary.slice(0, 80),
+        fullAddress: box.fullAddress,
+        city: box.city ?? null,
+        state: box.state ?? null,
+        pincode: box.pincode ?? null,
+      };
+    }
+  } catch {
+    // fall through to legacy geocoding
+  }
+
   const { mapboxAccessToken } = getConfig();
   if (!mapboxAccessToken) {
     return {
@@ -61,7 +142,7 @@ export async function reverseGeocode(
     };
   }
 
-  const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${longitude},${latitude}.json?access_token=${encodeURIComponent(mapboxAccessToken)}&limit=1&types=address,place,locality,neighborhood,postcode&language=en,hi&worldview=in`;
+  const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${longitude},${latitude}.json?access_token=${encodeURIComponent(mapboxAccessToken)}&limit=1&types=address,place,locality,neighborhood,poi&language=en&worldview=in`;
   const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`Mapbox geocode failed: ${res.status}`);
@@ -95,15 +176,24 @@ export async function reverseGeocode(
   const region = context.find((c) => c.id.startsWith("region"))?.text;
   const postcode = context.find((c) => c.id.startsWith("postcode"))?.text;
   const fallbackPincode = placeName.match(/\b\d{6}\b/)?.[0] ?? null;
-  const primary = feature.text ?? locality ?? neighborhood ?? place ?? "Current location";
-  const secondary = [locality, place, neighborhood].filter(Boolean).join(", ") || placeName.split(",").slice(1, 3).join(", ").trim() || "—";
+  const rawPrimary = feature.text ?? neighborhood ?? locality ?? place ?? "Current location";
+  const secondary = [neighborhood, locality, place].filter(Boolean).join(", ") || placeName.split(",").slice(1, 3).join(", ").trim() || "—";
+  const city = place ?? locality ?? null;
+  const state = region ?? null;
+  const primary = resolvePlaceDisplayName({
+    primary: rawPrimary,
+    secondary,
+    fullAddress: placeName,
+    city,
+    state,
+  });
 
   return {
     primary,
     secondary: secondary.slice(0, 80),
     fullAddress: placeName,
-    city: place ?? locality ?? null,
-    state: region ?? null,
+    city,
+    state,
     pincode: postcode ?? fallbackPincode,
   };
 }
@@ -117,13 +207,8 @@ export type PlaceSearchResult = ReverseGeocodeResult & {
 export type { EnrichedPlaceResult } from "@/services/locationSearch.service";
 export { isPincodeSearchMode } from "@/services/locationSearch.service";
 
-/** Options for search calls: optional abort signal, proximity, and local fallback. */
-export type SearchOptions = {
-  signal?: AbortSignal;
-  proximity?: { longitude: number; latitude: number };
-  recentLocationKeys?: Set<string>;
-  getLocalSuggestions?: (q: string) => Promise<import("@/services/locationSearch.service").LocalSuggestionInput[]>;
-  getCityAreas?: (cityName: string) => Promise<import("@/services/locationSearch.service").LocalSuggestionInput[]>;
+export type SearchOptions = LocationSearchOptions & {
+  sessionContext?: MapboxSearchSessionContext;
 };
 
 /**
@@ -138,6 +223,7 @@ export async function searchPlaces(
     signal: options?.signal,
     proximity: options?.proximity,
     recentLocationKeys: options?.recentLocationKeys,
+    sessionContext: options?.sessionContext,
     getLocalSuggestions: options?.getLocalSuggestions,
     getCityAreas: options?.getCityAreas,
   });
@@ -154,8 +240,10 @@ export async function searchPlacesWithProximity(
   latitude: number,
   options?: { signal?: AbortSignal; recentLocationKeys?: Set<string> }
 ): Promise<PlaceSearchResult[]> {
-  const searchTerm = query.trim().length >= 2 ? query.trim() : "place";
-  const enriched = await searchLocations(searchTerm, {
+  const trimmed = query.trim();
+  const minChars = isPincodeSearchMode(trimmed) ? 6 : 2;
+  if (trimmed.length < minChars) return [];
+  const enriched = await searchLocations(trimmed, {
     signal: options?.signal,
     proximity: { longitude, latitude },
     recentLocationKeys: options?.recentLocationKeys,
@@ -256,13 +344,17 @@ export async function searchDropSuggestionsInCity(
   query: string,
   pickupLongitude: number,
   pickupLatitude: number,
-  options?: { signal?: AbortSignal; recentLocationKeys?: Set<string> }
+  options?: SearchOptions
 ): Promise<PlaceSearchResult[]> {
-  const searchTerm = query.trim().length >= 2 ? query.trim() : "landmark";
-  const enriched = await searchLocations(searchTerm, {
+  const trimmed = query.trim();
+  const minChars = isPincodeSearchMode(trimmed) ? 6 : 2;
+  if (trimmed.length < minChars) return [];
+  const enriched = await searchLocations(trimmed, {
     signal: options?.signal,
     proximity: { longitude: pickupLongitude, latitude: pickupLatitude },
     recentLocationKeys: options?.recentLocationKeys,
+    getLocalSuggestions: options?.getLocalSuggestions,
+    getCityAreas: options?.getCityAreas,
   });
   return enriched.map(toLegacyPlaceResult);
 }

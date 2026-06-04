@@ -12,14 +12,17 @@ export type DispatchManualStage =
   | "delivered"
   | "cancelled";
 
+/** Kitchen / merchant marked ready — not rider GPS at store. */
 const DISPATCH_READY_CUR = new Set([
   "READY_FOR_PICKUP",
   "READY",
   "DISPATCH_READY",
   "DISPATCHREADY",
   "DISPATCH_READY_FOR_PICKUP",
-  "REACHED_STORE",
 ]);
+
+/** Rider reached merchant; food may still be ACCEPTED / PREPARING. */
+const RIDER_AT_MERCHANT_CUR = new Set(["RIDER_AT_PICKUP", "REACHED_STORE"]);
 
 const DISPATCHED_CUR = new Set([
   "OUT_FOR_DELIVERY",
@@ -39,8 +42,32 @@ function normalizeKey(value: string | null | undefined): string {
 
 function isDispatchReadyCurrent(cur: string): boolean {
   if (!cur) return false;
+  if (RIDER_AT_MERCHANT_CUR.has(cur)) return false;
   if (cur.includes("DISPATCH") && cur.includes("READY")) return true;
   return DISPATCH_READY_CUR.has(cur);
+}
+
+function isMerchantOrAgentDispatchReady(params: {
+  core: string;
+  cur: string;
+  food: string;
+}): boolean {
+  if (isDispatchReadyFood(params.food)) return true;
+  if (params.core === "picked_up" || params.core === "dispatch_ready") return true;
+  if (isDispatchReadyCurrent(params.cur)) return true;
+  return false;
+}
+
+/** Rider at store but merchant has not marked order ready (common when Mx app missing). */
+function isRiderAtMerchantWithoutFoodReady(params: {
+  core: string;
+  cur: string;
+  food: string;
+}): boolean {
+  const riderAtStore =
+    params.core === "reached_store" || RIDER_AT_MERCHANT_CUR.has(params.cur);
+  if (!riderAtStore) return false;
+  return !isMerchantOrAgentDispatchReady(params);
 }
 
 function isDispatchedCurrent(cur: string): boolean {
@@ -91,13 +118,11 @@ export function resolveDispatchManualStage(params: {
     return "dispatched";
   }
 
-  if (
-    core === "picked_up" ||
-    isDispatchReadyCurrent(cur) ||
-    isDispatchReadyFood(food) ||
-    core === "dispatch_ready" ||
-    core === "reached_store"
-  ) {
+  if (isRiderAtMerchantWithoutFoodReady({ core, cur, food })) {
+    return "open";
+  }
+
+  if (isMerchantOrAgentDispatchReady({ core, cur, food })) {
     return "ready";
   }
 

@@ -22,6 +22,7 @@ import {
 import type { CustomerTrustTier } from "@/lib/customers/trust-tier";
 import { TRUST_TIER_LABEL } from "@/lib/customers/trust-tier";
 import { sqlCustomerPrimaryMobileOrderSearch } from "./customers";
+import { resolveEtaBreachTimelineEntryId } from "@/lib/orders/eta-breach";
 import {
   sqlFoodOrderActiveListScope,
   sqlFoodOrderDashboardStageFilter,
@@ -145,6 +146,7 @@ export interface OrdersCoreRow {
   merchantParentId: number | null;
   pickupAddressRaw?: string | null;
   pickupAddressNormalized?: string | null;
+  pickupAddressGeocoded?: string | null;
   dropAddressRaw: string | null;
   dropAddressNormalized: string | null;
   dropAddressGeocoded: string | null;
@@ -416,6 +418,7 @@ export async function listOrdersCore(
         merchantParentId: ordersCore.merchantParentId,
         pickupAddressRaw: ordersCore.pickupAddressRaw,
         pickupAddressNormalized: ordersCore.pickupAddressNormalized,
+        pickupAddressGeocoded: ordersCore.pickupAddressGeocoded,
         dropAddressRaw: ordersCore.dropAddressRaw,
         dropAddressNormalized: ordersCore.dropAddressNormalized,
         dropAddressGeocoded: ordersCore.dropAddressGeocoded,
@@ -529,6 +532,7 @@ export async function listOrdersCore(
         merchantParentId: ordersCore.merchantParentId,
         pickupAddressRaw: ordersCore.pickupAddressRaw,
         pickupAddressNormalized: ordersCore.pickupAddressNormalized,
+        pickupAddressGeocoded: ordersCore.pickupAddressGeocoded,
         dropAddressRaw: ordersCore.dropAddressRaw,
         dropAddressNormalized: ordersCore.dropAddressNormalized,
         dropAddressGeocoded: ordersCore.dropAddressGeocoded,
@@ -640,6 +644,7 @@ export async function listOrdersCore(
       merchantParentId: ordersCore.merchantParentId,
       pickupAddressRaw: ordersCore.pickupAddressRaw,
       pickupAddressNormalized: ordersCore.pickupAddressNormalized,
+      pickupAddressGeocoded: ordersCore.pickupAddressGeocoded,
       dropAddressRaw: ordersCore.dropAddressRaw,
       dropAddressNormalized: ordersCore.dropAddressNormalized,
       dropAddressGeocoded: ordersCore.dropAddressGeocoded,
@@ -930,10 +935,9 @@ export async function ensureOrderEtaWhenAccepted(
 }
 
 /**
- * If order is in progress and ETA is breached (now > expected delivery), record it once:
- * set eta_breached_at and eta_breached_timeline_id to the timeline entry that was current
- * when ETA was crossed (latest entry with occurred_at <= ETA time). Mins elapsed is
- * computed at display time. Returns the updated values if an update was performed; null otherwise.
+ * If order is in progress and First ETA is breached (now > first_eta_at), record it once:
+ * set eta_breached_at and eta_breached_timeline_id to the first timeline stage strictly
+ * after First ETA (stages completed before First ETA are not marked breached).
  */
 export async function recordEtaBreachIfNeeded(
   orderId: number
@@ -943,6 +947,7 @@ export async function recordEtaBreachIfNeeded(
   const [row] = await db
     .select({
       etaBreachedAt: ordersCore.etaBreachedAt,
+      firstEtaAt: ordersCore.firstEtaAt,
       estimatedDeliveryTime: ordersCore.estimatedDeliveryTime,
       createdAt: ordersCore.createdAt,
       etaSeconds: ordersCore.etaSeconds,
@@ -957,30 +962,20 @@ export async function recordEtaBreachIfNeeded(
   if (statusLower === "delivered" || statusLower === "cancelled" || statusLower === "rejected")
     return null;
   const etaAt =
-    row.estimatedDeliveryTime != null
-      ? new Date(row.estimatedDeliveryTime)
-      : row.createdAt != null && row.etaSeconds != null && Number.isFinite(row.etaSeconds)
-        ? new Date(new Date(row.createdAt).getTime() + Number(row.etaSeconds) * 1000)
-        : null;
+    row.firstEtaAt != null
+      ? new Date(row.firstEtaAt)
+      : row.estimatedDeliveryTime != null
+        ? new Date(row.estimatedDeliveryTime)
+        : row.createdAt != null && row.etaSeconds != null && Number.isFinite(row.etaSeconds)
+          ? new Date(new Date(row.createdAt).getTime() + Number(row.etaSeconds) * 1000)
+          : null;
   if (!etaAt || isNaN(etaAt.getTime()) || now.getTime() <= etaAt.getTime()) return null;
-  // Stage that was current when ETA was crossed: latest timeline entry with occurred_at <= ETA time
-  const [entryAtEta] = await db
-    .select({ id: orderTimelines.id })
+  const timelineRows = await db
+    .select({ id: orderTimelines.id, occurredAt: orderTimelines.occurredAt })
     .from(orderTimelines)
-    .where(and(eq(orderTimelines.orderId, orderId), lte(orderTimelines.occurredAt, etaAt)))
-    .orderBy(desc(orderTimelines.occurredAt))
-    .limit(1);
-  // If no entry occurred at or before ETA (edge case), use the earliest entry
-  let timelineId: number | null = entryAtEta?.id ?? null;
-  if (timelineId == null) {
-    const [firstEntry] = await db
-      .select({ id: orderTimelines.id })
-      .from(orderTimelines)
-      .where(eq(orderTimelines.orderId, orderId))
-      .orderBy(asc(orderTimelines.occurredAt))
-      .limit(1);
-    timelineId = firstEntry?.id ?? null;
-  }
+    .where(eq(orderTimelines.orderId, orderId))
+    .orderBy(asc(orderTimelines.occurredAt));
+  const timelineId = resolveEtaBreachTimelineEntryId(timelineRows, etaAt);
   await db
     .update(ordersCore)
     .set({
@@ -1141,6 +1136,17 @@ export async function updateOrderStatus(
     });
 
     await syncOrdersFoodForDashboardStatus(orderId, status, now);
+
+    if (status === "delivered") {
+      const { creditMerchantWalletForDeliveredCoreOrder } = await import(
+        "@/lib/credit-merchant-wallet-after-delivery"
+      );
+      try {
+        await creditMerchantWalletForDeliveredCoreOrder(orderId, previousLabel);
+      } catch (walletErr) {
+        console.warn("[updateOrderStatus] wallet credit failed:", walletErr);
+      }
+    }
   } catch (err) {
     console.error("[updateOrderStatus] failed:", err);
     return { updated: false, reason: "NOT_FOUND" };

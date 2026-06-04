@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 
 function getSupabase() {
   return createClient(supabaseUrl, supabaseServiceKey, {
@@ -10,9 +10,17 @@ function getSupabase() {
   });
 }
 
+export type RiderTimelineEvent = {
+  event_type: string;
+  occurred_at: string;
+  merchant_distance_km: number | null;
+  customer_distance_km: number | null;
+  status_message: string | null;
+};
+
 /**
  * GET /api/food-orders/[id]/rider-timeline?rider_id=123
- * Fetches rider assignment timeline for an order
+ * Rider milestone timeline for one assignment (Assigned → Reached → Picked up → Delivered).
  */
 export async function GET(
   req: NextRequest,
@@ -21,89 +29,91 @@ export async function GET(
   try {
     const { id } = await params;
     const { searchParams } = new URL(req.url);
-    const riderId = searchParams.get('rider_id');
+    const riderId = parseInt(searchParams.get('rider_id') ?? '', 10);
 
-    if (!riderId) {
+    if (!Number.isFinite(riderId)) {
       return NextResponse.json({ error: 'rider_id is required' }, { status: 400 });
     }
 
-    const db = getSupabase();
-    const orderIdNum = parseInt(id, 10);
-    if (isNaN(orderIdNum)) {
+    const foodOrderId = parseInt(id, 10);
+    if (Number.isNaN(foodOrderId)) {
       return NextResponse.json({ error: 'Invalid order id' }, { status: 400 });
     }
 
-    // Get order_id from orders_food (which references orders_core.id)
+    const db = getSupabase();
+
     const { data: foodOrder } = await db
       .from('orders_food')
       .select('order_id')
-      .eq('id', orderIdNum)
-      .single();
+      .eq('id', foodOrderId)
+      .maybeSingle();
 
-    if (!foodOrder) {
+    if (!foodOrder?.order_id) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 });
     }
 
-    // Fetch rider assignment from order_rider_assignments
-    // Note: order_rider_assignments.order_id references orders.id, but we're using orders_core
-    // Try to find assignment by orders_core.id first, then fallback to orders.id
-    let assignment = null;
+    const coreId = Number(foodOrder.order_id);
 
-    // First try: Look for assignment using orders_core.id (if order_rider_assignments references orders_core)
-    const { data: assignment1, error: error1 } = await db
+    const { data: assignment } = await db
       .from('order_rider_assignments')
-      .select('assigned_at, accepted_at, reached_merchant_at, picked_up_at, delivered_at')
-      .eq('order_id', foodOrder.order_id)
-      .eq('rider_id', parseInt(riderId, 10))
-      .order('assigned_at', { ascending: false })
+      .select(
+        'id, assigned_at, accepted_at, reached_merchant_at, picked_up_at, delivered_at, rejected_at, cancelled_at, unassigned_at'
+      )
+      .eq('order_core_id', coreId)
+      .eq('rider_id', riderId)
+      .order('is_active', { ascending: false })
+      .order('assignment_sequence', { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (assignment1) {
-      assignment = assignment1;
-    } else {
-      // Fallback: Check if there's a mapping or use orders_core timestamps directly
-      // For now, return structure with nulls - the frontend will handle it
-      assignment = null;
+    let resolvedAssignment = assignment;
+
+    if (!resolvedAssignment?.id) {
+      const { data: legacy } = await db
+        .from('order_rider_assignments')
+        .select(
+          'id, assigned_at, accepted_at, reached_merchant_at, picked_up_at, delivered_at, rejected_at, cancelled_at, unassigned_at'
+        )
+        .eq('order_id', coreId)
+        .eq('rider_id', riderId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      resolvedAssignment = legacy;
     }
 
-    if (error1 && error1.code !== 'PGRST116') { // PGRST116 = no rows returned
-      console.error('[rider-timeline] Error:', error1);
-      return NextResponse.json({ error: error1.message }, { status: 500 });
-    }
-
-    // If no assignment found in order_rider_assignments, try to get timestamps from orders_core
-    if (!assignment) {
-      const { data: coreOrder } = await db
-        .from('orders_core')
-        .select('actual_pickup_time, actual_delivery_time, rider_id, created_at')
-        .eq('id', foodOrder.order_id)
-        .single();
-
-      // If rider matches, return structure with assigned_at set to order creation time
-      if (coreOrder && coreOrder.rider_id === parseInt(riderId, 10)) {
-        // Map orders_core timestamps to rider timeline format
-        // Set assigned_at to order creation time to show rider was assigned
-        return NextResponse.json({
-          assigned_at: coreOrder.created_at || null, // Use order creation time as assigned time
-          accepted_at: null, // Not available in orders_core
-          reached_merchant_at: null, // Not available in orders_core
-          picked_up_at: coreOrder.actual_pickup_time || null,
-          delivered_at: coreOrder.actual_delivery_time || null,
-        });
-      }
-
-      // Return empty structure if rider doesn't match
+    if (!resolvedAssignment?.id) {
       return NextResponse.json({
         assigned_at: null,
         accepted_at: null,
         reached_merchant_at: null,
         picked_up_at: null,
         delivered_at: null,
+        events: [] as RiderTimelineEvent[],
       });
     }
 
-    return NextResponse.json(assignment);
+    const { data: events } = await db
+      .from('order_rider_assignment_timeline_events')
+      .select(
+        'event_type, occurred_at, merchant_distance_km, customer_distance_km, status_message'
+      )
+      .eq('rider_assignment_id', resolvedAssignment.id)
+      .order('occurred_at', { ascending: true });
+
+    const timelineEvents = (events ?? []) as RiderTimelineEvent[];
+
+    const pick = (type: string) =>
+      timelineEvents.find((e) => e.event_type === type)?.occurred_at ?? null;
+
+    return NextResponse.json({
+      assigned_at: resolvedAssignment.assigned_at ?? pick('assigned'),
+      accepted_at: resolvedAssignment.accepted_at ?? pick('accepted'),
+      reached_merchant_at: resolvedAssignment.reached_merchant_at ?? pick('reached_merchant'),
+      picked_up_at: resolvedAssignment.picked_up_at ?? pick('picked_up'),
+      delivered_at: resolvedAssignment.delivered_at ?? pick('delivered'),
+      events: timelineEvents,
+    });
   } catch (err) {
     console.error('[rider-timeline] Error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

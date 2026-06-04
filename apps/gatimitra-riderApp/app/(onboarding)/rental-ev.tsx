@@ -1,279 +1,637 @@
-import React, { useState, useEffect } from "react";
-import { View, Text, TextInput, ScrollView, KeyboardAvoidingView, Platform, Image, Alert } from "react-native";
+import React, { useState, useEffect, useMemo } from "react";
+import {
+  View,
+  Text,
+  TextInput,
+  ScrollView,
+  KeyboardAvoidingView,
+  Platform,
+  Alert,
+  Pressable,
+  StyleSheet,
+  BackHandler,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
+import { LinearGradient } from "expo-linear-gradient";
+import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import * as ImagePicker from "expo-image-picker";
 import { useTranslation } from "react-i18next";
+import * as ImagePicker from "expo-image-picker";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useSaveOnboardingStep } from "@/src/hooks/useOnboarding";
+import { useSaveDocument } from "@/src/hooks/useDocuments";
+import { useOnboardingVehicleTypes } from "@/src/hooks/useOnboardingVehicleTypes";
+import { useOnboardingDocumentTypes } from "@/src/hooks/useOnboardingDocumentTypes";
 import { useSessionStore } from "@/src/stores/sessionStore";
-import { uploadToR2, deleteFromR2 } from "@/src/services/storage/cloudflareR2";
-import { Button } from "@/src/components/ui/Button";
+import { uploadToR2, deleteFromR2, buildRiderDocumentKey } from "@/src/services/storage/cloudflareR2";
+import { DocumentPhotoSlot } from "@/src/components/onboarding/DocumentPhotoSlot";
+import {
+  ChecklistItem,
+  ContinueButton,
+  ErrorBanner,
+  FieldLabel,
+  onboardingFormStyles as form,
+} from "@/src/components/onboarding/OnboardingFormUi";
+import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
+import {
+  docUploadToStorePatch,
+  findDocumentType,
+  getDocUploadState,
+  resolveDocIcon,
+  resolveVehicleRequiredDocs,
+} from "@/src/lib/onboarding-document-types";
+import {
+  findVehicleType,
+  FALLBACK_ONBOARDING_VEHICLE_TYPES,
+} from "@/src/lib/onboarding-vehicle-types";
 import { colors } from "@/src/theme";
+
+const ACCENT = "#39d353";
+const ACCENT_DARK = "#22a745";
+const BG = "#f4fbf6";
+
+const COPY = {
+  stepLabel: "Step 3 · Vehicle proof",
+  title: "Upload vehicle proof",
+  subtitle: "Add the document required for your selected vehicle",
+  docTypeLabel: "Document type",
+  photoLabel: "Document photo",
+  boxSub: "Tap here to capture or upload",
+  speedLabel: "Maximum speed (km/h)",
+  speedPlaceholder: "e.g. 60",
+  speedHint: "Declare the top speed of your rental or EV vehicle",
+  pickerTitle: "Add document photo",
+  pickerMessage: "Choose how you want to add this document",
+  capture: "Capture",
+  upload: "Upload from gallery",
+  cancel: "Cancel",
+  continue: "Continue",
+  uploading: "Uploading…",
+  changePhoto: "Change photo",
+  docTypeRequired: "Please select a document type",
+  photoRequired: "Please add a photo of your document",
+  speedRequired: "Please enter a valid maximum speed",
+  riderNotFound: "Rider ID not found. Please try again.",
+  notAuthenticated: "Not authenticated. Please login again.",
+  uploadError: "Failed to upload. Please try again.",
+  captureFailed: "Failed to capture photo. Please try again.",
+  uploadFailed: "Failed to pick photo. Please try again.",
+  cameraPermissionTitle: "Permission Required",
+  cameraPermissionMessage: "Camera permission is required to capture document photos",
+  galleryPermissionTitle: "Gallery access needed",
+  galleryPermissionMessage: "Allow photo access to upload from gallery",
+} as const;
+
+function DocTypeRow({
+  selected,
+  title,
+  hint,
+  icon,
+  onPress,
+}: {
+  selected: boolean;
+  title: string;
+  hint: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.docTypeOuter,
+        selected && styles.docTypeOuterSelected,
+        pressed && styles.docTypePressed,
+      ]}
+    >
+      <View style={styles.docTypeRow}>
+        <View style={styles.docTypeLeftCol}>
+          <View style={[styles.docTypeIconWrap, selected && styles.docTypeIconWrapSelected]}>
+            <Ionicons name={icon} size={22} color={selected ? ACCENT_DARK : colors.gray[500]} />
+          </View>
+        </View>
+        <View style={styles.docTypeCenterCol}>
+          <Text style={[styles.docTypeTitle, selected && styles.docTypeTitleSelected]} numberOfLines={1}>
+            {title}
+          </Text>
+          <Text style={styles.docTypeHint} numberOfLines={2}>
+            {hint}
+          </Text>
+        </View>
+        <View style={styles.docTypeRightCol}>
+          <View style={[styles.docTypeRadio, selected && styles.docTypeRadioSelected]}>
+            {selected ? <View style={styles.docTypeRadioDot} /> : null}
+          </View>
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
+function documentFileEntry(upload: { proxyUrl: string; key: string }) {
+  return [
+    {
+      side: "single" as const,
+      fileUrl: upload.proxyUrl,
+      r2Key: upload.key,
+      mimeType: "image/jpeg",
+    },
+  ];
+}
 
 export default function RentalEvScreen() {
   const { t } = useTranslation();
-  const session = useSessionStore((s) => s.session);
-  const { data, setData, setStep, hydrate } = useOnboardingStore();
-  const saveStep = useSaveOnboardingStep();
+  const tx = (key: keyof typeof COPY) =>
+    t(`onboarding.rentalEv.${key}`, { defaultValue: COPY[key] });
 
-  const [documentType, setDocumentType] = useState<"rental" | "ev" | null>(
-    data.rentalProofUri ? "rental" : data.evProofUri ? "ev" : null
+  const session = useSessionStore((s) => s.session);
+  const { data, setData, hydrate } = useOnboardingStore();
+  const saveStep = useSaveOnboardingStep();
+  const saveDocument = useSaveDocument();
+  const { data: vehicleTypes = FALLBACK_ONBOARDING_VEHICLE_TYPES } = useOnboardingVehicleTypes();
+  const { data: documentCatalog = [] } = useOnboardingDocumentTypes("rental_ev");
+
+  const selectedVehicleType = useMemo(
+    () => findVehicleType(vehicleTypes, data.vehicleChoice),
+    [vehicleTypes, data.vehicleChoice]
   );
-  const [documentUri, setDocumentUri] = useState<string | null>(
-    data.rentalProofUri || data.evProofUri || null
+
+  const requiredDocs = useMemo(
+    () => resolveVehicleRequiredDocs(selectedVehicleType, documentCatalog, "rental_ev"),
+    [selectedVehicleType, documentCatalog]
   );
+
+  const requiresMaxSpeed = Boolean(selectedVehicleType?.documentRequirements?.requires_max_speed);
+
+  const [selectedDocCode, setSelectedDocCode] = useState<string | null>(() => {
+    for (const doc of requiredDocs) {
+      const state = getDocUploadState(data, doc.code);
+      if (state.localUri || state.signedUrl) return doc.code;
+    }
+    return requiredDocs.length === 1 ? requiredDocs[0]?.code ?? null : null;
+  });
+  const [documentUri, setDocumentUri] = useState<string | null>(null);
   const [maxSpeedDeclaration, setMaxSpeedDeclaration] = useState<string>(
     data.maxSpeedDeclaration?.toString() || ""
   );
   const [uploading, setUploading] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const selectedDocDef = useMemo(
+    () => findDocumentType(documentCatalog, selectedDocCode),
+    [documentCatalog, selectedDocCode]
+  );
+
+  useEffect(() => {
+    if (requiredDocs.length === 1 && !selectedDocCode) {
+      setSelectedDocCode(requiredDocs[0]!.code);
+    }
+  }, [requiredDocs, selectedDocCode]);
 
   useEffect(() => {
     hydrate();
   }, [hydrate]);
 
+  useEffect(() => {
+    if (data.vehicleOnboardingFlow === "payment") {
+      router.replace("/(onboarding)/payment");
+      return;
+    }
+    if (data.vehicleOnboardingFlow !== "rental_ev") {
+      router.replace("/(onboarding)/payment");
+      return;
+    }
+    if (requiredDocs.length === 0) {
+      router.replace("/(onboarding)/payment");
+    }
+  }, [data.vehicleOnboardingFlow, requiredDocs.length]);
+
+  useEffect(() => {
+    if (!selectedDocCode) return;
+    const state = getDocUploadState(data, selectedDocCode);
+    setDocumentUri(state.localUri ?? state.signedUrl);
+  }, [selectedDocCode, data]);
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      goBackOrReplace("/(onboarding)/dl-rc");
+      return true;
+    });
+    return () => sub.remove();
+  }, []);
+
+  const speedValid =
+    !requiresMaxSpeed ||
+    (maxSpeedDeclaration.trim().length > 0 && !Number.isNaN(Number(maxSpeedDeclaration)));
+  const photoValid = Boolean(documentUri);
+  const canContinue =
+    Boolean(selectedDocCode) && photoValid && speedValid && !uploading && !submitting;
+
+  const handleBack = () => {
+    goBackOrReplace("/(onboarding)/dl-rc");
+  };
+
   const requestCameraPermission = async () => {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== "granted") {
-      Alert.alert("Permission Required", "Camera permission is required to capture document");
+      Alert.alert(tx("cameraPermissionTitle"), tx("cameraPermissionMessage"));
       return false;
     }
     return true;
   };
 
-  const handlePickDocument = async (type: "rental" | "ev") => {
-    const hasPermission = await requestCameraPermission();
-    if (!hasPermission) return;
+  const requestGalleryPermission = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert(tx("galleryPermissionTitle"), tx("galleryPermissionMessage"));
+      return false;
+    }
+    return true;
+  };
 
-    setDocumentType(type);
-    setError(null);
+  const pickPhoto = async (source: "camera" | "library"): Promise<string | null> => {
+    if (source === "camera") {
+      const ok = await requestCameraPermission();
+      if (!ok) return null;
+    } else {
+      const ok = await requestGalleryPermission();
+      if (!ok) return null;
+    }
 
     try {
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 0.8,
-      });
+      const result =
+        source === "camera"
+          ? await ImagePicker.launchCameraAsync({
+              mediaTypes: ["images"],
+              allowsEditing: true,
+              aspect: [4, 3],
+              quality: 0.9,
+            })
+          : await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ["images"],
+              allowsEditing: true,
+              aspect: [4, 3],
+              quality: 0.9,
+            });
 
       if (!result.canceled && result.assets[0]) {
-        setDocumentUri(result.assets[0].uri);
+        return result.assets[0].uri;
       }
-    } catch (e) {
-      setError("Failed to capture image. Please try again.");
+    } catch {
+      setError(source === "camera" ? tx("captureFailed") : tx("uploadFailed"));
     }
+    return null;
+  };
+
+  const showPhotoOptions = () => {
+    Alert.alert(tx("pickerTitle"), tx("pickerMessage"), [
+      {
+        text: tx("capture"),
+        onPress: () => {
+          void pickPhoto("camera").then((uri) => {
+            if (!uri) return;
+            setError(null);
+            setDocumentUri(uri);
+          });
+        },
+      },
+      {
+        text: tx("upload"),
+        onPress: () => {
+          void pickPhoto("library").then((uri) => {
+            if (!uri) return;
+            setError(null);
+            setDocumentUri(uri);
+          });
+        },
+      },
+      { text: tx("cancel"), style: "cancel" },
+    ]);
+  };
+
+  const selectDocumentType = (code: string) => {
+    if (selectedDocCode !== code) {
+      setSelectedDocCode(code);
+      setDocumentUri(null);
+    }
+    setError(null);
   };
 
   const handleContinue = async () => {
-    if (!documentType) {
-      setError("Please select document type (Rental Agreement or EV Proof)");
+    if (!selectedDocCode || !selectedDocDef) {
+      setError(tx("docTypeRequired"));
       return;
     }
-
     if (!documentUri) {
-      setError("Please capture the document image");
+      setError(tx("photoRequired"));
       return;
     }
-
-    if (!maxSpeedDeclaration || isNaN(Number(maxSpeedDeclaration))) {
-      setError("Please enter a valid maximum speed");
+    if (!speedValid) {
+      setError(tx("speedRequired"));
+      return;
+    }
+    if (!data.riderId) {
+      setError(tx("riderNotFound"));
+      return;
+    }
+    if (!session?.accessToken) {
+      setError(tx("notAuthenticated"));
       return;
     }
 
     setError(null);
-    setLoading(true);
+    setSubmitting(true);
     setUploading(true);
-
     const uploadedKeys: string[] = [];
 
     try {
-      if (!session?.accessToken) {
-        throw new Error("Not authenticated");
-      }
-
-      // Upload to R2
+      const riderId = parseInt(data.riderId, 10);
       const uploadResult = await uploadToR2(
         documentUri,
         "documents",
         session.accessToken,
-        `${documentType}-${Date.now()}.jpg`
+        buildRiderDocumentKey(riderId, selectedDocCode, "single")
       );
       uploadedKeys.push(uploadResult.key);
 
-      // Save to local store
-      const updateData: any = {
-        maxSpeedDeclaration: Number(maxSpeedDeclaration),
+      await saveDocument.mutateAsync({
+        riderId,
+        docType: selectedDocCode,
+        fileUrl: uploadResult.proxyUrl,
+        r2Key: uploadResult.key,
+        files: documentFileEntry(uploadResult),
+      });
+
+      const legacyPatch = docUploadToStorePatch(data, selectedDocCode, {
+        localUri: documentUri,
+        signedUrl: uploadResult.proxyUrl,
+      });
+
+      await setData({
+        ...legacyPatch,
+        maxSpeedDeclaration: requiresMaxSpeed ? Number(maxSpeedDeclaration) : undefined,
         currentStep: "rental_ev",
+        hasOwnVehicle: false,
+        vehicleChoice: data.vehicleChoice ?? "rental_ev",
+        vehicleOnboardingFlow: "rental_ev",
+      });
+
+      await saveStep.mutateAsync({
+        riderId: data.riderId,
+        step: "dl_rc",
+        data: { hasOwnVehicle: false },
+      });
+
+      const stepData: Record<string, unknown> = {
+        uploadedDocCode: selectedDocCode,
+        uploadedDocSignedUrl: uploadResult.proxyUrl,
       };
-
-      if (documentType === "rental") {
-        updateData.rentalProofUri = documentUri;
-        updateData.rentalProofSignedUrl = uploadResult.signedUrl;
-      } else {
-        updateData.evProofUri = documentUri;
-        updateData.evProofSignedUrl = uploadResult.signedUrl;
+      if (requiresMaxSpeed) {
+        stepData.maxSpeedDeclaration = Number(maxSpeedDeclaration);
+      }
+      if (selectedDocCode === "rental_proof") {
+        stepData.rentalProofSignedUrl = uploadResult.proxyUrl;
+      }
+      if (selectedDocCode === "ev_proof") {
+        stepData.evProofSignedUrl = uploadResult.proxyUrl;
       }
 
-      await setData(updateData);
+      await saveStep.mutateAsync({
+        riderId: data.riderId,
+        step: "rental_ev",
+        data: stepData,
+      });
 
-      // Save to backend if riderId exists
-      if (data.riderId) {
-        await saveStep.mutateAsync({
-          riderId: data.riderId,
-          step: "rental_ev",
-          data: {
-            rentalProofSignedUrl: documentType === "rental" ? uploadResult.signedUrl : undefined,
-            evProofSignedUrl: documentType === "ev" ? uploadResult.signedUrl : undefined,
-            maxSpeedDeclaration: Number(maxSpeedDeclaration),
-          },
-        });
-      }
-
-      // Move to PAN/Selfie step
-      await setStep("pan_selfie");
-      router.push("/(onboarding)/pan-selfie");
+      router.push("/(onboarding)/payment");
     } catch (e) {
-      // Rollback: Delete uploaded files from R2 if save failed
       for (const key of uploadedKeys) {
         try {
           await deleteFromR2(key, session.accessToken);
         } catch (rollbackError) {
           console.error(`[Rollback] Failed to delete R2 file ${key}:`, rollbackError);
-          // Don't throw - we want the original error to be shown
         }
       }
-      setError(e instanceof Error ? e.message : "Failed to upload document. Please try again.");
+      setError(e instanceof Error ? e.message : tx("uploadError"));
     } finally {
-      setLoading(false);
+      setSubmitting(false);
       setUploading(false);
     }
   };
 
+  if (data.vehicleOnboardingFlow !== "rental_ev") {
+    return null;
+  }
+
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: "#FFFFFF" }}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={{ flex: 1 }}
-      >
-        <ScrollView
-          contentContainerStyle={{ flexGrow: 1 }}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
+    <View style={form.root}>
+      <StatusBar style="dark" backgroundColor={BG} translucent={false} />
+
+      <SafeAreaView style={form.safeArea} edges={["top", "bottom"]}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          style={form.flex}
         >
-          <View style={{ flex: 1, paddingHorizontal: 24, paddingTop: 48, paddingBottom: 32 }}>
-            {/* Header */}
-            <View style={{ marginBottom: 32 }}>
-              <Text style={{ fontSize: 30, fontWeight: "bold", color: "#111827", marginBottom: 8 }}>
-                Rental/EV Proof
-              </Text>
-              <Text style={{ fontSize: 16, color: "#4B5563" }}>
-                Upload your rental agreement or EV proof document
-              </Text>
-            </View>
+          <ScrollView
+            contentContainerStyle={form.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <LinearGradient
+              colors={["#dff5e4", BG]}
+              start={{ x: 0.5, y: 0 }}
+              end={{ x: 0.5, y: 1 }}
+              style={form.header}
+            >
+              <Pressable onPress={handleBack} style={form.backBtn} accessibilityRole="button">
+                <Ionicons name="arrow-back" size={20} color={colors.gray[700]} />
+              </Pressable>
 
-            {/* Form */}
-            <View style={{ flex: 1, justifyContent: "center" }}>
-              <View style={{ marginBottom: 24 }}>
-                <Text style={{ fontSize: 14, fontWeight: "500", color: "#374151", marginBottom: 12 }}>
-                  Document Type
-                </Text>
-                <View style={{ flexDirection: "row", gap: 12, marginBottom: 24 }}>
-                  <Button
-                    variant={documentType === "rental" ? "primary" : "outline"}
-                    onPress={() => setDocumentType("rental")}
-                    style={{ flex: 1 }}
-                  >
-                    Rental Agreement
-                  </Button>
-                  <Button
-                    variant={documentType === "ev" ? "primary" : "outline"}
-                    onPress={() => setDocumentType("ev")}
-                    style={{ flex: 1 }}
-                  >
-                    EV Proof
-                  </Button>
-                </View>
-
-                {documentType && (
-                  <>
-                    <View style={{ marginBottom: 16 }}>
-                      <Text style={{ fontSize: 14, fontWeight: "500", color: "#374151", marginBottom: 8 }}>
-                        Capture {documentType === "rental" ? "Rental Agreement" : "EV Proof"}
-                      </Text>
-                      <Button
-                        variant="outline"
-                        onPress={() => handlePickDocument(documentType)}
-                        disabled={uploading}
-                      >
-                        {documentUri ? "Retake Photo" : "Capture Document"}
-                      </Button>
-                      {documentUri && (
-                        <View style={{ marginTop: 12 }}>
-                          <Image
-                            source={{ uri: documentUri }}
-                            style={{ width: "100%", height: 200, borderRadius: 12 }}
-                            resizeMode="contain"
-                          />
-                        </View>
-                      )}
-                    </View>
-
-                    <View style={{ marginBottom: 16 }}>
-                      <Text style={{ fontSize: 14, fontWeight: "500", color: "#374151", marginBottom: 8 }}>
-                        Maximum Speed Declaration (km/h)
-                      </Text>
-                      <TextInput
-                        value={maxSpeedDeclaration}
-                        onChangeText={setMaxSpeedDeclaration}
-                        placeholder="e.g., 60"
-                        placeholderTextColor={colors.gray[400]}
-                        keyboardType="number-pad"
-                        style={{
-                          backgroundColor: "#F9FAFB",
-                          borderWidth: 1,
-                          borderColor: "#E5E7EB",
-                          borderRadius: 12,
-                          paddingHorizontal: 16,
-                          paddingVertical: 16,
-                          fontSize: 16,
-                          color: "#111827",
-                        }}
-                      />
-                    </View>
-                  </>
-                )}
+              <View style={form.stepPill}>
+                <Ionicons name="document-text-outline" size={14} color={ACCENT_DARK} />
+                <Text style={form.stepPillText}>{tx("stepLabel")}</Text>
               </View>
 
-              {error && (
-                <View
-                  style={{
-                    marginBottom: 16,
-                    padding: 12,
-                    backgroundColor: "#FEF2F2",
-                    borderWidth: 1,
-                    borderColor: "#FECACA",
-                    borderRadius: 8,
-                  }}
-                >
-                  <Text style={{ fontSize: 14, color: colors.error[600] }}>{error}</Text>
-                </View>
-              )}
+              <Text style={form.title}>{tx("title")}</Text>
+              <Text style={form.subtitle}>
+                {selectedVehicleType?.infoMessage ?? tx("subtitle")}
+              </Text>
+            </LinearGradient>
 
-              <Button
-                onPress={handleContinue}
-                loading={loading || uploading || saveStep.isPending}
-                disabled={loading || uploading || saveStep.isPending}
-                size="lg"
-              >
-                {uploading ? "Uploading..." : "Continue"}
-              </Button>
+            <View style={form.formCard}>
+              <View style={styles.checklist}>
+                <ChecklistItem done={Boolean(selectedDocCode)} label="Document type selected" />
+                <ChecklistItem done={photoValid} label="Document photo added" />
+                {requiresMaxSpeed ? (
+                  <ChecklistItem done={speedValid} label="Max speed declared" />
+                ) : null}
+              </View>
+
+              <View style={form.divider} />
+
+              {requiredDocs.length > 1 ? (
+                <View style={form.fieldGroup}>
+                  <FieldLabel label={tx("docTypeLabel")} required />
+                  <View style={styles.docTypeList}>
+                    {requiredDocs.map((doc) => (
+                      <DocTypeRow
+                        key={doc.code}
+                        selected={selectedDocCode === doc.code}
+                        title={doc.label}
+                        hint={doc.hint ?? ""}
+                        icon={resolveDocIcon(doc.icon) as keyof typeof Ionicons.glyphMap}
+                        onPress={() => selectDocumentType(doc.code)}
+                      />
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+
+              {selectedDocDef ? (
+                <>
+                  <View style={form.fieldGroup}>
+                    <FieldLabel label={tx("photoLabel")} required />
+                    <Text style={form.sectionHint}>{selectedDocDef.hint ?? ""}</Text>
+                    <DocumentPhotoSlot
+                      uri={documentUri}
+                      onPress={showPhotoOptions}
+                      onRemove={() => setDocumentUri(null)}
+                      disabled={uploading}
+                      boxTitle={`Add ${selectedDocDef.label}`}
+                      boxSub={tx("boxSub")}
+                      icon={resolveDocIcon(selectedDocDef.icon) as keyof typeof Ionicons.glyphMap}
+                    />
+                    {documentUri ? (
+                      <Pressable onPress={showPhotoOptions} style={form.changePhotoLink}>
+                        <Ionicons name="refresh-outline" size={14} color={ACCENT_DARK} />
+                        <Text style={form.changePhotoText}>{tx("changePhoto")}</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+
+                  {requiresMaxSpeed ? (
+                    <View style={form.fieldGroup}>
+                      <FieldLabel label={tx("speedLabel")} required />
+                      <Text style={form.sectionHint}>{tx("speedHint")}</Text>
+                      <View style={form.inputWrap}>
+                        <Ionicons
+                          name="speedometer-outline"
+                          size={20}
+                          color={colors.gray[400]}
+                          style={form.inputIcon}
+                        />
+                        <TextInput
+                          value={maxSpeedDeclaration}
+                          onChangeText={setMaxSpeedDeclaration}
+                          placeholder={tx("speedPlaceholder")}
+                          placeholderTextColor={colors.gray[400]}
+                          keyboardType="number-pad"
+                          style={form.textInput}
+                        />
+                        {speedValid ? (
+                          <Ionicons name="checkmark-circle" size={20} color={ACCENT_DARK} />
+                        ) : null}
+                      </View>
+                    </View>
+                  ) : null}
+                </>
+              ) : null}
+
+              {error ? <ErrorBanner message={error} /> : null}
+
+              <ContinueButton
+                label={uploading ? tx("uploading") : tx("continue")}
+                onPress={() => void handleContinue()}
+                disabled={!canContinue}
+                loading={submitting || uploading || saveStep.isPending}
+              />
             </View>
-          </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </View>
   );
 }
 
+const styles = StyleSheet.create({
+  checklist: { gap: 10 },
+  docTypeList: { gap: 10 },
+  docTypeOuter: {
+    width: "100%",
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: colors.gray[200],
+    backgroundColor: colors.gray[50],
+    overflow: "hidden",
+  },
+  docTypeOuterSelected: { borderColor: ACCENT, backgroundColor: "#f0fdf4" },
+  docTypePressed: { opacity: 0.92 },
+  docTypeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    width: "100%",
+    minHeight: 68,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  docTypeLeftCol: { width: 44, flexShrink: 0, alignItems: "center", justifyContent: "center" },
+  docTypeCenterCol: {
+    flex: 1,
+    flexShrink: 1,
+    minWidth: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 10,
+  },
+  docTypeRightCol: { width: 22, flexShrink: 0, alignItems: "center", justifyContent: "center" },
+  docTypeIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: colors.gray[200],
+  },
+  docTypeIconWrapSelected: {
+    borderColor: "rgba(57, 211, 83, 0.35)",
+    backgroundColor: "#e8fced",
+  },
+  docTypeTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: colors.gray[800],
+    textAlign: "center",
+    width: "100%",
+    ...Platform.select({ android: { includeFontPadding: false } }),
+  },
+  docTypeTitleSelected: { color: ACCENT_DARK },
+  docTypeHint: {
+    fontSize: 12,
+    color: colors.gray[500],
+    lineHeight: 16,
+    textAlign: "center",
+    width: "100%",
+    marginTop: 2,
+    ...Platform.select({ android: { includeFontPadding: false } }),
+  },
+  docTypeRadio: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: colors.gray[300],
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  docTypeRadioSelected: { borderColor: ACCENT },
+  docTypeRadioDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: ACCENT,
+  },
+});

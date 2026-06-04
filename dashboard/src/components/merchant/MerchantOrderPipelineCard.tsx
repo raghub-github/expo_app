@@ -24,8 +24,11 @@ import {
   deliveryEtaMinutesLabel,
   isPrepCountdownExpired,
   prepReadyCountdownLabel,
+  resolvePreparedLateMinutes,
 } from '@/lib/order-prep-time';
+import { OrderPreparedLateTopBanner } from '@/components/merchant/MerchantPreparingOrderActions';
 import { canMerchantMarkDelivered } from '@/lib/merchantActiveOrders';
+import { RiderDeliveryPartnerCard } from '@/components/orders/RiderDeliveryPartnerCard';
 
 function vegDot(veg?: string | null) {
   const v = String(veg || '').toLowerCase();
@@ -101,12 +104,12 @@ export function MerchantOrderPipelineCard({
   const isRto = status === 'RTO';
 
   const pricing = order.pricing;
-  const total = pricing?.total ?? Number(order.food_items_total_value || 0);
+  const total = pricing?.total ?? resolveMerchantCtm(order);
   const itemCount = computeOrderItemQuantityCount(order);
   const riderName =
     order.rider_details?.name || order.rider_name || 'Delivery partner';
   const riderPhone = order.rider_details?.mobile || order.rider_phone;
-  const lateMins = Number(order.prepared_late_minutes) || 0;
+  const lateMins = resolvePreparedLateMinutes(order) ?? 0;
   const deliveryLabel = deliveryEtaMinutesLabel(order.eta_seconds);
   const prepCountdown = prepReadyCountdownLabel(order, nowMs);
   const prepExpired =
@@ -158,6 +161,10 @@ export function MerchantOrderPipelineCard({
       <div className="bg-violet-100 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-violet-800">
         GatiMitra · Delivery
       </div>
+
+      {(isReady || isPickedUp) && lateMins > 0 ? (
+        <OrderPreparedLateTopBanner lateMinutes={lateMins} />
+      ) : null}
 
       <div className="grid grid-cols-1 gap-0 lg:grid-cols-[minmax(220px,1fr)_minmax(260px,1.2fr)_minmax(220px,1fr)] lg:divide-x lg:divide-dashed lg:divide-gray-200">
         {/* Left — order & customer */}
@@ -246,7 +253,7 @@ export function MerchantOrderPipelineCard({
         {/* Middle — items & actions */}
         <div className="border-t border-dashed border-gray-200 p-4 lg:border-t-0" onClick={(e) => e.stopPropagation()}>
           <MerchantOrderItemsList
-            items={order.items ?? []}
+            items={(order.items ?? []) as unknown as Parameters<typeof MerchantOrderItemsList>[0]["items"]}
             requiresUtensils={order.requires_utensils}
             utensilsLabel={getUtensilsCustomerLabel(order)}
             compact
@@ -366,106 +373,21 @@ export function MerchantOrderPipelineCard({
 
         {/* Right — rider / delivery */}
         <div className="border-t border-dashed border-gray-200 p-4 lg:border-t-0" onClick={(e) => e.stopPropagation()}>
-          {isPickedUp && lateMins > 0 && (
-            <div className="mb-3 rounded-lg border border-pink-200 bg-pink-50 px-3 py-2.5 text-sm">
-              <p className="font-semibold text-gray-900">
-                Order was prepared late by {lateMins} minute{lateMins === 1 ? '' : 's'}
-              </p>
-              <p className="mt-0.5 text-xs text-gray-600">might get delayed to the customer</p>
-            </div>
-          )}
-
-          {(isReady || isPickedUp) && (riderName || riderPhone) && (
-            <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
-              <div className="flex items-start gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gray-200">
-                  {order.rider_details?.selfie_url ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={order.rider_details.selfie_url}
-                      alt=""
-                      className="h-10 w-10 rounded-full object-cover"
-                    />
-                  ) : (
-                    <Bike size={20} className="text-gray-500" />
-                  )}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-gray-900">
-                    {isPickedUp
-                      ? `${riderName} has picked up your order`
-                      : `${riderName} has arrived`}
-                  </p>
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-                    {riderPhone && (
-                      <a
-                        href={`tel:${riderPhone}`}
-                        onClick={() => onCallRider?.()}
-                        className="font-medium text-blue-600 hover:underline"
-                      >
-                        Call
-                      </a>
-                    )}
-                    {isReady && order.pickup_otp && (
-                      <span className="font-mono font-semibold text-gray-800">
-                        OTP: {order.pickup_otp}
-                      </span>
-                    )}
-                    {onTrackRider && (
-                      <button
-                        type="button"
-                        onClick={onTrackRider}
-                        className="inline-flex items-center gap-0.5 font-medium text-blue-600 hover:underline"
-                      >
-                        <MapPin size={12} /> Track location
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {isPickedUp && deliveryLabel && (
-            <div className="mb-3">
-              <p className="mb-1 text-xs font-medium text-gray-600">{deliveryLabel}</p>
-              <div className="h-2 overflow-hidden rounded-full bg-gray-200">
-                <div className="h-full w-2/3 rounded-full bg-green-500 transition-all" />
-              </div>
-            </div>
-          )}
-
-          {isPickedUp && onUniformFeedback && (
-            <div className="mb-3">
-              <p className="mb-2 text-sm text-gray-800">
-                Was {riderName} in uniform?
-              </p>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => onUniformFeedback(false)}
-                  className={`flex-1 rounded-lg border-2 py-2 text-sm font-semibold ${
-                    uniformFeedback === false
-                      ? 'border-red-500 bg-red-50 text-red-700'
-                      : 'border-red-300 bg-white text-red-600 hover:bg-red-50'
-                  }`}
-                >
-                  No
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onUniformFeedback(true)}
-                  className={`flex-1 rounded-lg border-2 py-2 text-sm font-semibold ${
-                    uniformFeedback === true
-                      ? 'border-green-600 bg-green-50 text-green-700'
-                      : 'border-green-400 bg-white text-green-600 hover:bg-green-50'
-                  }`}
-                >
-                  Yes
-                </button>
-              </div>
-            </div>
-          )}
+          {(isReady || isPickedUp) && (riderName || riderPhone) ? (
+            <RiderDeliveryPartnerCard
+              className="mb-3"
+              riderName={riderName}
+              riderPhone={riderPhone}
+              riderSelfieUrl={order.rider_details?.selfie_url}
+              variant={isPickedUp ? 'picked_up' : 'arrived'}
+              pickupOtp={isReady ? order.pickup_otp : undefined}
+              deliveryLabel={isPickedUp ? deliveryLabel ?? undefined : undefined}
+              onCallRider={onCallRider}
+              onTrackRider={onTrackRider}
+              onUniformFeedback={isPickedUp ? onUniformFeedback : undefined}
+              uniformFeedback={uniformFeedback}
+            />
+          ) : null}
 
           {(isReady || isPickedUp) && !riderName && !riderPhone && (
             <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-4 text-center text-sm text-gray-600">

@@ -7,6 +7,12 @@
 import { sql } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 import { merchantOrderTotalFromBilling } from "@/lib/merchant-visible-pricing";
+import {
+  orderDiscountGrantedSummaryFromBilling,
+  parseBillingSnapshot,
+  discountTotalFromBilling,
+  type OrderDiscountOfferSource,
+} from "@/lib/merchant-billing-discount";
 
 export type OrderPaymentRecord = {
   paymentId: string;
@@ -46,6 +52,9 @@ export type OrderPaymentDetail = {
   /** Merchant-visible bill total (items at merchant prices + packaging − restaurant discount). */
   totalCtm: number | null;
   totalCashbackEarned: number | null;
+  /** Total discount granted to customer on this order. */
+  totalDiscountGranted: number | null;
+  discountOfferSource: OrderDiscountOfferSource | null;
   deliveryFee: number | null;
   source: string | null;
   paymentMode: string | null;
@@ -67,8 +76,139 @@ function round2(n: number): number {
 }
 
 function readRecord(raw: unknown): Record<string, unknown> | null {
-  if (!raw || typeof raw !== "object") return null;
-  return raw as Record<string, unknown>;
+  return parseBillingSnapshot(raw);
+}
+
+async function fetchDiscountFromOrderTables(input: {
+  orderCoreId: number;
+  orderIdText: string | null;
+  formattedOrderId: string | null;
+}): Promise<{ amount: number | null; offerSource: OrderDiscountOfferSource | null }> {
+  const db = getDb();
+  const textIds = [
+    input.orderIdText?.trim(),
+    input.formattedOrderId?.trim(),
+  ].filter((v): v is string => Boolean(v));
+
+  for (const orderText of textIds) {
+    try {
+      const rows = await db.execute(sql`
+        SELECT discount_total
+        FROM order_bill_summary_versions
+        WHERE order_id = ${orderText}
+        ORDER BY version_no DESC
+        LIMIT 1
+      `);
+      const total = asNum((rows as unknown as Record<string, unknown>[])[0]?.discount_total);
+      if (total != null && total > 0) {
+        return { amount: round2(total), offerSource: null };
+      }
+    } catch {
+      /* table may not exist */
+    }
+  }
+
+  for (const orderText of textIds) {
+    try {
+      const rows = await db.execute(sql`
+        SELECT amount, funding_type
+        FROM order_discount_lines
+        WHERE order_id = ${orderText}
+        ORDER BY line_no ASC
+      `);
+      const lines = rows as unknown as Array<{
+        amount?: unknown;
+        funding_type?: unknown;
+      }>;
+      if (lines.length === 0) continue;
+
+      let sum = 0;
+      const funding = new Set<string>();
+      for (const line of lines) {
+        sum += Math.abs(asNum(line.amount) ?? 0);
+        if (line.funding_type != null) {
+          funding.add(String(line.funding_type).toUpperCase());
+        }
+      }
+      if (sum <= 0) continue;
+
+      let offerSource: OrderDiscountOfferSource | null = null;
+      if (funding.size === 1) {
+        const only = [...funding][0];
+        if (only.includes("MERCHANT") || only.includes("STORE")) {
+          offerSource = "Store";
+        } else if (only.includes("PLATFORM")) {
+          offerSource = "Platform";
+        }
+      } else if (funding.size > 1) {
+        offerSource = "Mixed";
+      }
+      return { amount: round2(sum), offerSource };
+    } catch {
+      /* table may not exist */
+    }
+  }
+
+  const lookupIds = new Set<number>([input.orderCoreId]);
+  for (const orderText of textIds) {
+    const digits = orderText.replace(/\D/g, "");
+    if (digits) {
+      const n = Number(digits);
+      if (Number.isFinite(n) && n > 0) lookupIds.add(n);
+    }
+  }
+
+  for (const lookupId of lookupIds) {
+    try {
+      const rows = await db.execute(sql`
+        SELECT discount_amount, offer_source, platform_share, merchant_share
+        FROM offer_order_applications
+        WHERE order_id = ${lookupId}
+      `);
+      const apps = rows as unknown as Array<{
+        discount_amount?: unknown;
+        offer_source?: unknown;
+        platform_share?: unknown;
+        merchant_share?: unknown;
+      }>;
+      if (apps.length === 0) continue;
+
+      let sum = 0;
+      let platformShare = 0;
+      let merchantShare = 0;
+      for (const app of apps) {
+        const amt = Math.abs(asNum(app.discount_amount) ?? 0);
+        sum += amt;
+        platformShare += Math.abs(asNum(app.platform_share) ?? 0);
+        merchantShare += Math.abs(asNum(app.merchant_share) ?? 0);
+      }
+      if (sum <= 0) continue;
+
+      let offerSource: OrderDiscountOfferSource | null = null;
+      const sources = new Set(
+        apps.map((a) => String(a.offer_source ?? "").toUpperCase()).filter(Boolean),
+      );
+      if (sources.size === 1) {
+        const only = [...sources][0];
+        offerSource =
+          only === "MERCHANT" ? "Store" : only === "PLATFORM" || only === "COUPON" ? "Platform" : null;
+      } else if (sources.size > 1) {
+        offerSource = "Mixed";
+      } else if (merchantShare > 0.01 && platformShare > 0.01) {
+        offerSource = "Mixed";
+      } else if (merchantShare > 0.01) {
+        offerSource = "Store";
+      } else if (platformShare > 0.01) {
+        offerSource = "Platform";
+      }
+
+      return { amount: round2(sum), offerSource };
+    } catch {
+      /* table may not exist */
+    }
+  }
+
+  return { amount: null, offerSource: null };
 }
 
 function merchantItemSubtotalFromBilling(
@@ -520,7 +660,7 @@ export async function fetchOrderPaymentDetail(input: {
     core = {};
   }
 
-  const billing = readRecord(core.billing_snapshot);
+  let billing = readRecord(core.billing_snapshot ?? core.billingSnapshot);
 
   let settlementDelivery: number | null = null;
   try {
@@ -542,35 +682,13 @@ export async function fetchOrderPaymentDetail(input: {
   let razorpayPaymentId: string | null = null;
   let pgName: string | null = null;
 
-  try {
-    const tl = await db.execute(sql`
-      SELECT metadata
-      FROM order_timelines
-      WHERE order_id = ${orderCoreId}
-        AND metadata IS NOT NULL
-      ORDER BY occurred_at DESC
-      LIMIT 5
-    `);
-    for (const row of tl as unknown as { metadata?: unknown }[]) {
-      const meta = readRecord(row.metadata);
-      if (!meta) continue;
-      razorpayOrderId =
-        razorpayOrderId ??
-        (typeof meta.razorpay_order_id === "string" ? meta.razorpay_order_id : null);
-      razorpayPaymentId =
-        razorpayPaymentId ??
-        (typeof meta.razorpay_payment_id === "string" ? meta.razorpay_payment_id : null);
-      if (razorpayOrderId && razorpayPaymentId) break;
-    }
-  } catch {
-    /* ignore */
-  }
+  const orderText =
+    input.orderIdText?.trim() || input.formattedOrderId?.trim() || null;
 
-  const orderText = input.orderIdText?.trim();
   if (orderText) {
     try {
       const pending = await db.execute(sql`
-        SELECT razorpay_order_id, razorpay_payment_id, payment_method
+        SELECT razorpay_order_id, razorpay_payment_id, payment_method, billing_snapshot
         FROM pending_orders
         WHERE finalized_order_id = ${orderText}
         ORDER BY updated_at DESC
@@ -578,12 +696,14 @@ export async function fetchOrderPaymentDetail(input: {
       `);
       const p = (pending as unknown as Record<string, unknown>[])[0];
       if (p) {
+        if (!billing || discountTotalFromBilling(billing) <= 0) {
+          const pendingBilling = readRecord(p.billing_snapshot ?? p.billingSnapshot);
+          if (pendingBilling) billing = pendingBilling;
+        }
         razorpayOrderId =
-          razorpayOrderId ??
-          (p.razorpay_order_id != null ? String(p.razorpay_order_id) : null);
+          p.razorpay_order_id != null ? String(p.razorpay_order_id) : null;
         razorpayPaymentId =
-          razorpayPaymentId ??
-          (p.razorpay_payment_id != null ? String(p.razorpay_payment_id) : null);
+          p.razorpay_payment_id != null ? String(p.razorpay_payment_id) : null;
         if (!pgName && p.payment_method != null) {
           pgName = String(p.payment_method);
         }
@@ -625,6 +745,30 @@ export async function fetchOrderPaymentDetail(input: {
     } catch {
       /* ignore */
     }
+  }
+
+  try {
+    const tl = await db.execute(sql`
+      SELECT metadata
+      FROM order_timelines
+      WHERE order_id = ${orderCoreId}
+        AND metadata IS NOT NULL
+      ORDER BY occurred_at DESC
+      LIMIT 5
+    `);
+    for (const row of tl as unknown as { metadata?: unknown }[]) {
+      const meta = readRecord(row.metadata);
+      if (!meta) continue;
+      razorpayOrderId =
+        razorpayOrderId ??
+        (typeof meta.razorpay_order_id === "string" ? meta.razorpay_order_id : null);
+      razorpayPaymentId =
+        razorpayPaymentId ??
+        (typeof meta.razorpay_payment_id === "string" ? meta.razorpay_payment_id : null);
+      if (razorpayOrderId && razorpayPaymentId) break;
+    }
+  } catch {
+    /* ignore */
   }
 
   const totalAmount =
@@ -685,6 +829,14 @@ export async function fetchOrderPaymentDetail(input: {
 
   const coupon = extractCouponMeta(billing);
   const cashbackEarned = cashbackFromBilling(billing);
+  let discountSummary = orderDiscountGrantedSummaryFromBilling(billing);
+  if (discountSummary.amount == null) {
+    discountSummary = await fetchDiscountFromOrderTables({
+      orderCoreId,
+      orderIdText: input.orderIdText,
+      formattedOrderId: input.formattedOrderId,
+    });
+  }
 
   const records = buildPaymentLineRecords({
     paymentIdLabel,
@@ -715,6 +867,8 @@ export async function fetchOrderPaymentDetail(input: {
     totalAmount: totalAmount != null ? round2(totalAmount) : null,
     totalCtm,
     totalCashbackEarned: cashbackEarned,
+    totalDiscountGranted: discountSummary.amount,
+    discountOfferSource: discountSummary.offerSource,
     deliveryFee,
     source:
       (core.order_source != null ? String(core.order_source) : null) ??

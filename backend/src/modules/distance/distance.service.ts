@@ -130,37 +130,87 @@ function normalizeResult(data: {
   };
 }
 
+function pickBestRoute(
+  routes: Array<{ distance?: number; duration?: number; geometry?: string }>,
+  profile: RoutingProfile
+): { distance: number; duration: number; geometry?: string } | null {
+  const valid = routes.filter(
+    (route) =>
+      typeof route.distance === "number" &&
+      typeof route.duration === "number" &&
+      route.geometry?.trim()
+  );
+  if (!valid.length) return null;
+  const bikeScale = profile === "bike" ? 0.74 : 1;
+  valid.sort((a, b) => {
+    if (profile === "bike") {
+      const dist = (a.distance ?? 0) - (b.distance ?? 0);
+      if (dist !== 0) return dist;
+      return (a.duration ?? 0) * bikeScale - (b.duration ?? 0) * bikeScale;
+    }
+    const durationDelta = (a.duration ?? 0) - (b.duration ?? 0);
+    if (durationDelta !== 0) return durationDelta;
+    return (a.distance ?? 0) - (b.distance ?? 0);
+  });
+  const best = valid[0];
+  if (!best || typeof best.distance !== "number" || typeof best.duration !== "number") return null;
+  const durationSeconds =
+    profile === "bike"
+      ? Math.max(60, Math.round(best.duration * bikeScale))
+      : best.duration;
+  return { distance: best.distance, duration: durationSeconds, geometry: best.geometry };
+}
+
+function mapboxProfilesForRide(profile: RoutingProfile): string[] {
+  return profile === "bike" ? ["driving"] : ["driving-traffic", "driving"];
+}
+
 async function fetchMapboxRoute(
   points: LatLng[],
   profile: RoutingProfile,
   mapboxToken: string
 ): Promise<RouteResult | null> {
-  const mapboxProfile = profile === "bike" ? "cycling" : "driving";
   const coords = points.map((p) => `${p.lng},${p.lat}`).join(";");
-  const url = new URL(`https://api.mapbox.com/directions/v5/mapbox/${mapboxProfile}/${coords}`);
-  url.searchParams.set("access_token", mapboxToken);
-  url.searchParams.set("alternatives", "false");
-  url.searchParams.set("overview", "full");
-  url.searchParams.set("geometries", "polyline");
-  url.searchParams.set("steps", "false");
-  try {
-    const res = await fetch(url.toString(), { signal: AbortSignal.timeout(7000) });
-    if (!res.ok) return null;
-    const data = (await res.json()) as {
-      routes?: Array<{ distance?: number; duration?: number; geometry?: string }>;
-    };
-    const route = data.routes?.[0];
-    if (!route || typeof route.distance !== "number" || typeof route.duration !== "number") return null;
-    return normalizeResult({
-      distanceMeters: route.distance,
-      durationSeconds: route.duration,
-      geometry: route.geometry,
-      source: "mapbox",
-      approximate: false,
-    });
-  } catch {
-    return null;
+  let best: { distance: number; duration: number; geometry?: string } | null = null;
+
+  for (const mapboxProfile of mapboxProfilesForRide(profile)) {
+    const url = new URL(`https://api.mapbox.com/directions/v5/mapbox/${mapboxProfile}/${coords}`);
+    url.searchParams.set("access_token", mapboxToken);
+    url.searchParams.set("alternatives", "true");
+    url.searchParams.set("overview", "full");
+    url.searchParams.set("geometries", "polyline");
+    url.searchParams.set("steps", "false");
+    try {
+      const res = await fetch(url.toString(), { signal: AbortSignal.timeout(7000) });
+      if (!res.ok) continue;
+      const data = (await res.json()) as {
+        routes?: Array<{ distance?: number; duration?: number; geometry?: string }>;
+      };
+      const route = pickBestRoute(data.routes ?? [], profile);
+      if (!route) continue;
+      if (
+        !best ||
+        (profile === "bike"
+          ? route.distance < best.distance ||
+            (route.distance === best.distance && route.duration < best.duration)
+          : route.duration < best.duration ||
+            (route.duration === best.duration && route.distance < best.distance))
+      ) {
+        best = route;
+      }
+    } catch {
+      // try fallback profile
+    }
   }
+
+  if (!best) return null;
+  return normalizeResult({
+    distanceMeters: best.distance,
+    durationSeconds: best.duration,
+    geometry: best.geometry,
+    source: "mapbox",
+    approximate: false,
+  });
 }
 
 async function fetchOSRMRoute(
@@ -168,10 +218,10 @@ async function fetchOSRMRoute(
   profile: RoutingProfile,
   osrmBaseUrl: string
 ): Promise<RouteResult | null> {
-  const osrmProfile = profile === "bike" ? "bike" : "driving";
+  void profile;
   const coords = points.map((p) => `${p.lng},${p.lat}`).join(";");
   const base = osrmBaseUrl.replace(/\/$/, "");
-  const url = `${base}/route/v1/${osrmProfile}/${coords}?overview=full&geometries=polyline`;
+  const url = `${base}/route/v1/driving/${coords}?overview=full&geometries=polyline&alternatives=true`;
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(7000) });
     if (!res.ok) return null;
@@ -180,8 +230,8 @@ async function fetchOSRMRoute(
       routes?: Array<{ distance?: number; duration?: number; geometry?: string }>;
     };
     if (data.code !== "Ok") return null;
-    const route = data.routes?.[0];
-    if (!route || typeof route.distance !== "number" || typeof route.duration !== "number") return null;
+    const route = pickBestRoute(data.routes ?? [], profile);
+    if (!route) return null;
     return normalizeResult({
       distanceMeters: route.distance,
       durationSeconds: route.duration,

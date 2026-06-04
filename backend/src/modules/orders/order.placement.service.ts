@@ -41,6 +41,7 @@ import { vegNonvegForPlacementItem } from "../../lib/order-item-veg.js";
 import { insertPlacedOrderCoreWithTimelines } from "../../lib/order-placement-persist.js";
 import { getSql } from "../../db/client.js";
 import { notifyMerchantStoreNewOrder } from "../../lib/merchant-new-order-notify.js";
+import { maybeStartOrderDispatch } from "../../lib/order-dispatch.service.js";
 
 const EM_DASH = "\u2014";
 
@@ -540,7 +541,11 @@ export async function createPendingOrder(
     merchantStoreId = Number(store.id);
     storeForOrder = {
       parentId: store.parent_id != null ? Number(store.parent_id) : null,
+      storeId: store.store_id ?? null,
       fullAddress: store.full_address ?? null,
+      bannerUrl: store.banner_url ?? null,
+      storeName: store.store_name ?? null,
+      storeDisplayName: store.store_display_name ?? null,
       latitude: store.latitude != null ? Number(store.latitude) : null,
       longitude: store.longitude != null ? Number(store.longitude) : null,
       is_accepting_orders: store.is_accepting_orders === true,
@@ -779,6 +784,7 @@ export async function finalizeOrder(
   const PAYMENT_STATUS_COMPLETED = "completed" as const;
 
   let orderIdText: string | undefined;
+  let orderCorePk: number | undefined;
   try {
     const result = await db.transaction(async (tx) => {
       const seqResult = await tx.execute(
@@ -795,7 +801,7 @@ export async function finalizeOrder(
         throw new Error(`Failed to generate order_id: got ${JSON.stringify(seqResult)}`);
       }
 
-      await insertPlacedOrderCoreWithTimelines(tx, {
+      const { orderCorePk } = await insertPlacedOrderCoreWithTimelines(tx, {
         pending: {
           pendingId: pending.pendingId,
           customerId: pending.customerId,
@@ -837,7 +843,10 @@ export async function finalizeOrder(
           itemName: i.itemName,
           categoryName: null,
           vegNonveg: vegNonvegForPlacementItem(i.itemSnapshot),
-          variantId: i.variantKey ?? (i.variantId != null ? String(i.variantId) : undefined),
+          // DB column is bigint — only the numeric variant PK belongs here.
+          // The text key (variantKey like "half/full") is captured in
+          // itemSnapshot, and the human-readable label is in variantName.
+          variantId: i.variantId ?? null,
           variantName: sanitizeOptional(i.variantName ?? "") ?? undefined,
           quantity: i.quantity,
           basePrice: sanitizeNumeric(i.basePrice),
@@ -933,7 +942,7 @@ export async function finalizeOrder(
         })
         .where(eq(pendingOrders.pendingId, pendingId));
 
-      return { orderIdText };
+      return { orderIdText, orderCorePk };
     });
 
     // NOTE: order_notifications outbox is intentionally NOT written here.
@@ -948,6 +957,7 @@ export async function finalizeOrder(
     // matches the schema in code. See order GM-* placement audit in
     // `payment_events` + `orders_core` itself for current observability.
     orderIdText = result.orderIdText;
+    orderCorePk = result.orderCorePk;
 
     // Freeze the ETA snapshot now that the order row exists. Runs OUTSIDE the
     // transaction on purpose — the ETA write is a separate UPDATE and we
@@ -1002,6 +1012,10 @@ export async function finalizeOrder(
   }).catch((e) => {
     console.error("[merchant-new-order-notify] finalizeOrder failed:", e);
   });
+
+  if (orderCorePk != null && Number.isFinite(orderCorePk)) {
+    void maybeStartOrderDispatch(orderCorePk);
+  }
 
   return {
     ok: true,
@@ -1249,7 +1263,7 @@ export async function finalizePendingOrderFromWebhook(
         throw new Error(`order_id generation failed: ${JSON.stringify(seqResult)}`);
       }
 
-      await insertPlacedOrderCoreWithTimelines(tx, {
+      const { orderCorePk } = await insertPlacedOrderCoreWithTimelines(tx, {
         pending: {
           pendingId: pending.pending_id,
           customerId: Number(pending.customer_id),
@@ -1293,7 +1307,10 @@ export async function finalizePendingOrderFromWebhook(
           itemName: i.itemName,
           categoryName: null as string | null,
           vegNonveg: vegNonvegForPlacementItem(i.itemSnapshot),
-          variantId: i.variantKey ?? (i.variantId != null ? String(i.variantId) : undefined),
+          // DB column is bigint — only the numeric variant PK belongs here.
+          // The text key (variantKey like "half/full") is captured in
+          // itemSnapshot, and the human-readable label is in variantName.
+          variantId: i.variantId ?? null,
           variantName: sanitizeOptional(i.variantName ?? "") ?? undefined,
           quantity: i.quantity,
           basePrice: sanitizeNumeric(i.basePrice),
@@ -1374,6 +1391,7 @@ export async function finalizePendingOrderFromWebhook(
         ok: true as const,
         alreadyFinalized: false,
         orderId: orderIdText,
+        orderCorePk,
         prevState: pending.payment_state,
         pendingIdValue: pending.pending_id,
       };
@@ -1412,7 +1430,7 @@ export async function finalizePendingOrderFromWebhook(
         try {
           const [oc] = await db.execute(
             sql`
-              SELECT merchant_store_id, grand_total::text AS grand_total, pickup_lat::text AS pickup_lat,
+              SELECT id, merchant_store_id, grand_total::text AS grand_total, pickup_lat::text AS pickup_lat,
                      pickup_lon::text AS pickup_lon, drop_lat::text AS drop_lat,
                      drop_lon::text AS drop_lon, distance_km::text AS distance_km
               FROM orders_core
@@ -1421,6 +1439,10 @@ export async function finalizePendingOrderFromWebhook(
             `
           ) as unknown as Array<Record<string, unknown>>;
           if (!oc) return;
+          const coreOrderPk = Number(oc.id);
+          if (Number.isFinite(coreOrderPk) && coreOrderPk > 0) {
+            void maybeStartOrderDispatch(coreOrderPk);
+          }
           await notifyMerchantStoreNewOrder(getSql(), {
             merchantStoreId: Number(oc.merchant_store_id),
             orderIdText: result.orderId,

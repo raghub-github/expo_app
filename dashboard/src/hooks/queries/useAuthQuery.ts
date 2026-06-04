@@ -4,6 +4,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { authCacheConfig, sessionStatusCacheConfig } from "@/lib/cache-strategies";
 import { safeParseJson } from "@/lib/utils";
+import { clearDashboardAuthCaches } from "@/lib/dashboard-auth-client-state";
+import { supabase } from "@/lib/supabase/client";
 
 interface SessionData {
   session: {
@@ -219,12 +221,20 @@ export function useLogout() {
 
   return useMutation({
     mutationFn: logout,
-    onSuccess: () => {
+    onSuccess: async () => {
+      clearDashboardAuthCaches();
+
+      try {
+        await supabase.auth.signOut();
+      } catch {
+        // non-fatal — server cookies already cleared
+      }
+
       // Invalidate all auth-related queries
       queryClient.invalidateQueries({ queryKey: ["auth"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.permissions() });
       queryClient.invalidateQueries({ queryKey: queryKeys.dashboardAccess() });
-      
+
       // Clear all cached data
       queryClient.clear();
       

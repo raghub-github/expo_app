@@ -2,9 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, CreditCard, Headphones, Loader2, Sparkles } from "lucide-react";
+import { AlertTriangle, CreditCard, Headphones, Loader2, Sparkles, Store, Bike } from "lucide-react";
 import { usePermissions } from "@/hooks/usePermissions";
 import type { StoreOnboardingCommissionConfigDTO } from "@/lib/db/operations/store-onboarding-commission-config";
+import type { RiderOnboardingCommissionConfigDTO } from "@/lib/db/operations/rider-onboarding-commission-config";
+
+type Audience = "store" | "rider";
 
 type FormState = {
   planName: string;
@@ -73,9 +76,79 @@ function dtoToForm(c: StoreOnboardingCommissionConfigDTO): FormState {
   };
 }
 
+type RiderFormState = {
+  standardOnboardingFee: string;
+  discountedOnboardingFee: string;
+  discountPercent: string;
+  gstPercent: string;
+  discountPeriodLabel: string;
+  headline: string;
+  subtitle: string;
+  feeLabel: string;
+  infoMessage: string;
+  alertNotice: string;
+  footerNote: string;
+  payButtonText: string;
+};
+
+function riderDtoToForm(c: RiderOnboardingCommissionConfigDTO): RiderFormState {
+  return {
+    standardOnboardingFee: c.standardOnboardingFee,
+    discountedOnboardingFee: c.discountedOnboardingFee,
+    discountPercent: c.discountPercent,
+    gstPercent: c.gstPercent ?? "18",
+    discountPeriodLabel: c.discountPeriodLabel,
+    headline: c.headline,
+    subtitle: c.subtitle,
+    feeLabel: c.feeLabel,
+    infoMessage: c.infoMessage,
+    alertNotice: c.alertNotice,
+    footerNote: c.footerNote,
+    payButtonText: c.payButtonText ?? "",
+  };
+}
+
+function AudienceToggle({
+  audience,
+  onChange,
+}: {
+  audience: Audience;
+  onChange: (next: Audience) => void;
+}) {
+  return (
+    <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+      <button
+        type="button"
+        onClick={() => onChange("store")}
+        className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+          audience === "store"
+            ? "bg-white text-violet-700 shadow-sm"
+            : "text-gray-600 hover:text-gray-900"
+        }`}
+      >
+        <Store className="h-3.5 w-3.5" />
+        Store
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("rider")}
+        className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+          audience === "rider"
+            ? "bg-white text-violet-700 shadow-sm"
+            : "text-gray-600 hover:text-gray-900"
+        }`}
+      >
+        <Bike className="h-3.5 w-3.5" />
+        Rider
+      </button>
+    </div>
+  );
+}
+
 export default function StoreOnboardingFeePage() {
   const router = useRouter();
   const { isSuperAdmin, loading: permLoading } = usePermissions();
+  const [audience, setAudience] = useState<Audience>("store");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -83,32 +156,51 @@ export default function StoreOnboardingFeePage() {
   const [form, setForm] = useState<FormState | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [riderForm, setRiderForm] = useState<RiderFormState | null>(null);
+  const [riderSavedSnapshot, setRiderSavedSnapshot] = useState<string | null>(null);
+  const [riderUpdatedAt, setRiderUpdatedAt] = useState<string | null>(null);
+
+  const loadStore = useCallback(async () => {
+    const res = await fetch("/api/admin/store-onboarding-commission", { credentials: "include" });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "Failed to load store config");
+    }
+    const config = data.config as StoreOnboardingCommissionConfigDTO;
+    const next = dtoToForm(config);
+    setForm(next);
+    setSavedSnapshot(serializeFormState(next));
+    setUpdatedAt(config.updatedAt);
+  }, []);
+
+  const loadRider = useCallback(async () => {
+    const res = await fetch("/api/admin/rider-onboarding-commission", { credentials: "include" });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "Failed to load rider config");
+    }
+    const config = data.config as RiderOnboardingCommissionConfigDTO;
+    const next = riderDtoToForm(config);
+    setRiderForm(next);
+    setRiderSavedSnapshot(JSON.stringify(next));
+    setRiderUpdatedAt(config.updatedAt);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/admin/store-onboarding-commission", { credentials: "include" });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || "Failed to load");
-        setForm(null);
-        setSavedSnapshot(null);
-        return;
-      }
-      const config = data.config as StoreOnboardingCommissionConfigDTO;
-      const next = dtoToForm(config);
-      setForm(next);
-      setSavedSnapshot(serializeFormState(next));
-      setUpdatedAt(config.updatedAt);
-    } catch {
-      setError("Failed to load");
+      await Promise.all([loadStore(), loadRider()]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load");
       setForm(null);
       setSavedSnapshot(null);
+      setRiderForm(null);
+      setRiderSavedSnapshot(null);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadStore, loadRider]);
 
   useEffect(() => {
     if (!permLoading && !isSuperAdmin) {
@@ -150,56 +242,111 @@ export default function StoreOnboardingFeePage() {
     return `Onboarding fee: ₹${cur} out of ₹${std} — ${pct}% off ${dlab} (standard ₹${std}) Base service fee ${svc}%${gstBit}`;
   }, [form]);
 
+  const patchRiderFeesAndMaybeDiscount = useCallback(
+    (patch: Partial<Pick<RiderFormState, "standardOnboardingFee" | "discountedOnboardingFee">>) => {
+      setRiderForm((f) => {
+        if (!f) return f;
+        const next = { ...f, ...patch };
+        const pct = computedDiscountPercent(next.standardOnboardingFee, next.discountedOnboardingFee);
+        if (pct !== null) next.discountPercent = pct;
+        return next;
+      });
+    },
+    []
+  );
+
+  const riderPreviewSummary = useMemo(() => {
+    if (!riderForm) return "";
+    const cur = riderForm.discountedOnboardingFee;
+    const std = riderForm.standardOnboardingFee;
+    const gst = Math.max(0, Math.min(100, parseFloat(riderForm.gstPercent) || 0));
+    const subP = Math.max(0, Math.round((parseFloat(cur) || 0) * 100));
+    const gstP = Math.round((subP * gst) / 100);
+    const total = (subP + gstP) / 100;
+    const totalStr = Number.isInteger(total) ? String(total) : total.toFixed(2);
+    const gstBit =
+      gst > 0 ? ` · GST ${gst}% on ₹${cur} → checkout total ₹${totalStr}` : " · GST 0%";
+    return `Rider onboarding fee: ₹${cur} out of ₹${std} — ${riderForm.discountPercent}% off ${riderForm.discountPeriodLabel}${gstBit}`;
+  }, [riderForm]);
+
   const isDirty = useMemo(() => {
-    if (!form || savedSnapshot === null) return false;
-    return serializeFormState(form) !== savedSnapshot;
-  }, [form, savedSnapshot]);
+    if (audience === "store") {
+      if (!form || savedSnapshot === null) return false;
+      return serializeFormState(form) !== savedSnapshot;
+    }
+    if (!riderForm || riderSavedSnapshot === null) return false;
+    return JSON.stringify(riderForm) !== riderSavedSnapshot;
+  }, [audience, form, savedSnapshot, riderForm, riderSavedSnapshot]);
 
   useEffect(() => {
     if (isDirty) setInfo(null);
   }, [isDirty]);
 
   const save = async () => {
-    if (!form || !isDirty) return;
+    if (!isDirty) return;
     setSaving(true);
     setError(null);
     setInfo(null);
     try {
-      const features = form.featuresText
-        .split(/\s*,\s*/)
-        .map((s) => s.trim())
-        .filter(Boolean);
-      const res = await fetch("/api/admin/store-onboarding-commission", {
-        method: "PUT",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          planName: form.planName,
-          showRecommendedBadge: form.showRecommendedBadge,
-          standardOnboardingFee: form.standardOnboardingFee,
-          discountedOnboardingFee: form.discountedOnboardingFee,
-          discountPercent: form.discountPercent,
-          baseServiceFeePercent: form.baseServiceFeePercent,
-          gstPercent: form.gstPercent,
-          discountPeriodLabel: form.discountPeriodLabel,
-          baseServiceFeePeriodLabel: form.baseServiceFeePeriodLabel,
-          features,
-          alertNotice: form.alertNotice,
-          footerNote: form.footerNote,
-          supportContact: form.supportContact,
-          payButtonText: form.payButtonText.trim() === "" ? null : form.payButtonText.trim(),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || "Save failed");
-        return;
+      if (audience === "store") {
+        if (!form) return;
+        const features = form.featuresText
+          .split(/\s*,\s*/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const res = await fetch("/api/admin/store-onboarding-commission", {
+          method: "PUT",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            planName: form.planName,
+            showRecommendedBadge: form.showRecommendedBadge,
+            standardOnboardingFee: form.standardOnboardingFee,
+            discountedOnboardingFee: form.discountedOnboardingFee,
+            discountPercent: form.discountPercent,
+            baseServiceFeePercent: form.baseServiceFeePercent,
+            gstPercent: form.gstPercent,
+            discountPeriodLabel: form.discountPeriodLabel,
+            baseServiceFeePeriodLabel: form.baseServiceFeePeriodLabel,
+            features,
+            alertNotice: form.alertNotice,
+            footerNote: form.footerNote,
+            supportContact: form.supportContact,
+            payButtonText: form.payButtonText.trim() === "" ? null : form.payButtonText.trim(),
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setError(data.error || "Save failed");
+          return;
+        }
+        const config = data.config as StoreOnboardingCommissionConfigDTO;
+        const next = dtoToForm(config);
+        setForm(next);
+        setSavedSnapshot(serializeFormState(next));
+        setUpdatedAt(config.updatedAt);
+      } else {
+        if (!riderForm) return;
+        const res = await fetch("/api/admin/rider-onboarding-commission", {
+          method: "PUT",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...riderForm,
+            payButtonText: riderForm.payButtonText.trim() === "" ? null : riderForm.payButtonText.trim(),
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setError(data.error || "Save failed");
+          return;
+        }
+        const config = data.config as RiderOnboardingCommissionConfigDTO;
+        const next = riderDtoToForm(config);
+        setRiderForm(next);
+        setRiderSavedSnapshot(JSON.stringify(next));
+        setRiderUpdatedAt(config.updatedAt);
       }
-      const config = data.config as StoreOnboardingCommissionConfigDTO;
-      const next = dtoToForm(config);
-      setForm(next);
-      setSavedSnapshot(serializeFormState(next));
-      setUpdatedAt(config.updatedAt);
       setInfo("Saved.");
     } catch {
       setError("Save failed");
@@ -222,6 +369,13 @@ export default function StoreOnboardingFeePage() {
 
   return (
     <div className="w-full min-w-0 max-w-6xl pb-20 text-gray-900">
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-gray-600">
+          Configure onboarding fee, GST, and copy for {audience === "store" ? "merchant stores" : "delivery riders"}.
+        </p>
+        <AudienceToggle audience={audience} onChange={setAudience} />
+      </div>
+
       {error ? (
         <div className="mt-2 flex items-start gap-2 text-xs text-red-700">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -234,8 +388,140 @@ export default function StoreOnboardingFeePage() {
         <div className="flex justify-center py-10 text-gray-400">
           <Loader2 className="h-8 w-8 animate-spin" />
         </div>
-      ) : !form ? (
-        <p className="mt-3 text-sm text-gray-600">No configuration found. Apply migrations 0189 and 0191, then reload.</p>
+      ) : !form || !riderForm ? (
+        <p className="mt-3 text-sm text-gray-600">
+          No configuration found. Apply migrations 0189/0191 (store) and 0254 (rider), then reload.
+        </p>
+      ) : audience === "rider" ? (
+        <form
+          className="mt-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void save();
+          }}
+        >
+          <div className={formGrid}>
+            <Field label="Standard fee (₹)">
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={riderForm.standardOnboardingFee}
+                onChange={(e) => patchRiderFeesAndMaybeDiscount({ standardOnboardingFee: e.target.value })}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Discounted fee (₹)">
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={riderForm.discountedOnboardingFee}
+                onChange={(e) => patchRiderFeesAndMaybeDiscount({ discountedOnboardingFee: e.target.value })}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Discount (%)">
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step="0.01"
+                value={riderForm.discountPercent}
+                onChange={(e) => setRiderForm((f) => (f ? { ...f, discountPercent: e.target.value } : f))}
+                className={`${inputClass} bg-violet-50/40`}
+              />
+            </Field>
+            <Field label="GST on onboarding fee (%)">
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step="0.01"
+                value={riderForm.gstPercent}
+                onChange={(e) => setRiderForm((f) => (f ? { ...f, gstPercent: e.target.value } : f))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Discount period label">
+              <input
+                value={riderForm.discountPeriodLabel}
+                onChange={(e) => setRiderForm((f) => (f ? { ...f, discountPeriodLabel: e.target.value } : f))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Screen headline">
+              <input
+                value={riderForm.headline}
+                onChange={(e) => setRiderForm((f) => (f ? { ...f, headline: e.target.value } : f))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Screen subtitle" className="col-span-full xl:col-span-3">
+              <input
+                value={riderForm.subtitle}
+                onChange={(e) => setRiderForm((f) => (f ? { ...f, subtitle: e.target.value } : f))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Fee label">
+              <input
+                value={riderForm.feeLabel}
+                onChange={(e) => setRiderForm((f) => (f ? { ...f, feeLabel: e.target.value } : f))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Pay button label">
+              <div className="relative w-full max-w-full min-w-0">
+                <CreditCard className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+                <input
+                  value={riderForm.payButtonText}
+                  onChange={(e) => setRiderForm((f) => (f ? { ...f, payButtonText: e.target.value } : f))}
+                  placeholder="Leave blank for auto (Pay ₹total)"
+                  className={`${inputClass} box-border w-full min-w-0 pl-8 pr-3`}
+                />
+              </div>
+            </Field>
+            <Field label="Info banner" className="col-span-full xl:col-span-5">
+              <textarea
+                value={riderForm.infoMessage}
+                onChange={(e) => setRiderForm((f) => (f ? { ...f, infoMessage: e.target.value } : f))}
+                rows={2}
+                className={textareaClass}
+              />
+            </Field>
+            <Field label="Alert notice" className="col-span-full xl:col-span-5">
+              <textarea
+                value={riderForm.alertNotice}
+                onChange={(e) => setRiderForm((f) => (f ? { ...f, alertNotice: e.target.value } : f))}
+                rows={2}
+                className={textareaClass}
+              />
+            </Field>
+            <Field label="Footer note" className="col-span-full xl:col-span-5">
+              <textarea
+                value={riderForm.footerNote}
+                onChange={(e) => setRiderForm((f) => (f ? { ...f, footerNote: e.target.value } : f))}
+                rows={2}
+                className={textareaClass}
+              />
+            </Field>
+          </div>
+          <p className="mt-3 border-t border-gray-100 pt-3 text-xs text-gray-500">{riderPreviewSummary}</p>
+          <div className="sticky bottom-0 z-10 mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-gray-200 bg-white py-3">
+            <p className="text-[10px] text-gray-500">
+              {riderUpdatedAt ? `Last updated ${new Date(riderUpdatedAt).toLocaleString()}` : "\u00a0"}
+            </p>
+            <button
+              type="submit"
+              disabled={saving || !isDirty}
+              className="inline-flex items-center justify-center gap-1.5 rounded-md bg-violet-600 px-4 py-1.5 text-xs font-semibold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Save changes
+            </button>
+          </div>
+        </form>
       ) : (
         <form
           className="mt-4"

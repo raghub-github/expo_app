@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { extendPrepReadyByAtIso, PREP_DELAY_OPTIONS } from '@/lib/order-prep-time';
+import { notifyCustomerPrepDelay } from '@/lib/notify-customer-prep-delay';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 
 function getSupabase() {
   return createClient(supabaseUrl, supabaseServiceKey, {
@@ -139,6 +140,11 @@ export async function POST(
     } catch {
       /* non-fatal */
     }
+
+    void notifyCustomerPrepDelay({
+      ordersCoreId: existing.order_id as number,
+      additionalMinutes: additional as 5 | 10 | 15,
+    });
 
     return NextResponse.json({
       prep_ready_by_at: newPrepReadyByAt,

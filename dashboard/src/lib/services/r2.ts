@@ -164,7 +164,7 @@ export async function uploadDocument(
 
     // Generate signed URL with 7-day expiration (R2 maximum)
     const signedUrl = await getSignedUrl(
-      client,
+      client as unknown as Parameters<typeof getSignedUrl>[0],
       new GetObjectCommand({
         Bucket: bucket,
         Key: key,
@@ -195,7 +195,7 @@ export async function getSignedUrlFromKey(
 
   try {
     const signedUrl = await getSignedUrl(
-      client,
+      client as unknown as Parameters<typeof getSignedUrl>[0],
       new GetObjectCommand({
         Bucket: bucket,
         Key: r2Key,

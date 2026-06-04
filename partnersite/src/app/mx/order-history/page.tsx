@@ -31,10 +31,13 @@ import { prefetchOrderTimeline } from '@/lib/orderTimelineCache';
 import { OrderCustomerSidesheet } from '@/components/orders/OrderCustomerSidesheet';
 import { OrderTimelineModal } from '@/components/orders/OrderTimelineModal';
 import { OrderRiderTrackingModal } from '@/components/orders/OrderRiderTrackingModal';
+import { orderHasAssignedRider } from '@/lib/order-has-assigned-rider';
+import { RiderPhotoModal } from '@/components/orders/RiderPhotoModal';
 import { OrderRidersHistorySidesheet } from '@/components/orders/OrderRidersHistorySidesheet';
 import { resolveOrderOtps } from '@/lib/orderOtps';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
 import { splitRejectionMessage } from '@/lib/orderRejectionDisplay';
+import { resolveMerchantCtm } from '@/lib/merchant-order-ctm';
 
 /** Order history shows completed terminal orders only (not live pipeline). */
 const HISTORY_TERMINAL_STATUSES = new Set(['DELIVERED', 'RTO', 'CANCELLED']);
@@ -164,7 +167,7 @@ function buildOrderPricing(order: OrdersFoodRow): OrderPricingBreakdown {
   );
   const p = order.pricing;
   if (p) return p;
-  const total = Number(order.food_items_total_value ?? lineSum);
+  const total = resolveMerchantCtm(order);
   return {
     subtotal: lineSum,
     packaging: 0,
@@ -218,6 +221,7 @@ function OrderHistoryInner() {
   const [timelineModalOpen, setTimelineModalOpen] = useState(false);
   const [printBillOpen, setPrintBillOpen] = useState(false);
   const [riderTrackingOpen, setRiderTrackingOpen] = useState(false);
+  const [riderImageModalUrl, setRiderImageModalUrl] = useState<string | null>(null);
   const [ridersLogModalOrderId, setRidersLogModalOrderId] = useState<number | null>(null);
   const [ridersLogModalOrderLabel, setRidersLogModalOrderLabel] = useState<string | null>(null);
   const [ridersLogList, setRidersLogList] = useState<
@@ -805,7 +809,7 @@ function OrderHistoryInner() {
                     {o.customer_name && <p className="text-xs text-gray-600 mt-0.5">By {o.customer_name}</p>}
                     <p className="text-xs text-gray-500 mt-1 line-clamp-2">{formatItemsSummary(o)}</p>
                     <p className="text-sm font-bold text-gray-900 text-right mt-2">
-                      ₹{Number(o.food_items_total_value || 0).toFixed(2)}
+                      ₹{resolveMerchantCtm(o).toFixed(2)}
                     </p>
                     {rejection ? (
                       <p className="text-[11px] text-red-700 mt-2 leading-snug line-clamp-2">
@@ -862,6 +866,7 @@ function OrderHistoryInner() {
                   );
                 }}
                 onTrackRider={() => setRiderTrackingOpen(true)}
+                onOpenRiderPhoto={(url) => setRiderImageModalUrl(url)}
                 otpCode={resolveOrderOtps(selected).pickup ?? undefined}
                 otpType="PICKUP"
               />
@@ -927,9 +932,19 @@ function OrderHistoryInner() {
         layout="horizontal"
       />
       <OrderRiderTrackingModal
-        open={riderTrackingOpen && !!selected}
+        open={riderTrackingOpen}
+        preload={orderHasAssignedRider(selected)}
         onClose={() => setRiderTrackingOpen(false)}
         order={selected}
+        merchantStoreLat={store?.latitude ?? null}
+        merchantStoreLon={store?.longitude ?? null}
+        merchantStoreName={store?.store_name ?? null}
+      />
+      <RiderPhotoModal
+        open={!!riderImageModalUrl}
+        imageUrl={riderImageModalUrl}
+        riderName={selected?.rider_details?.name ?? selected?.rider_name ?? null}
+        onClose={() => setRiderImageModalUrl(null)}
       />
       <OrderRidersHistorySidesheet
         open={ridersLogModalOrderId != null}

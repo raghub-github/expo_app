@@ -7,9 +7,13 @@ const merchantApiProxyTarget =
   (process.env.NODE_ENV === "development" ? "http://127.0.0.1:4000" : "");
 
 const nextConfig: NextConfig = {
+  serverExternalPackages: ["postgres", "drizzle-orm"],
   output: "standalone",
-  // Keep tracing inside dashboard so this repo is fully standalone
-  outputFileTracingRoot: path.join(process.cwd()),
+  // Trace from the MONOREPO ROOT, not dashboard/. In an npm-workspaces repo
+  // `next` (and most other deps) gets hoisted to `../node_modules`; tracing
+  // only from `dashboard/` left the standalone bundle without a copy of next
+  // itself, producing `Cannot find module 'next'` in the runtime container.
+  outputFileTracingRoot: path.join(__dirname, ".."),
   transpilePackages: ["@gatimitra/contracts"],
   // Disable dev indicator ("• Rendering..." / "Compiling...") at bottom-left to avoid delay and visual noise
   devIndicators: false,
@@ -31,7 +35,7 @@ const nextConfig: NextConfig = {
   },
   // Mapbox is loaded from CDN, no webpack config needed
 
-  webpack: (config, { dev }) => {
+  webpack: (config, { dev, isServer }) => {
     if (dev) {
       // Disk pack cache + OneDrive / Windows file locking causes ENOENT on manifests and
       // "rename ... 0.pack.gz_" webpack cache errors. Fully disabling cache (`false`) can
@@ -39,6 +43,13 @@ const nextConfig: NextConfig = {
       // (reading 'call')" and recoverable SSR failures. In-memory cache avoids disk locks
       // without that race.
       config.cache = { type: "memory" };
+    }
+    // Prevent postgres (Node-only) from entering the client bundle if imported accidentally.
+    if (!isServer) {
+      config.resolve.alias = {
+        ...config.resolve.alias,
+        postgres: false,
+      };
     }
     return config;
   },

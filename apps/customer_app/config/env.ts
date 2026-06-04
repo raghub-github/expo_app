@@ -40,6 +40,17 @@ function isLocalhostApiUrl(url: string): boolean {
   return /^https?:\/\/(localhost|127\.0\.0\.1)(\b|:)/.test(url.replace(/\/+$/, ""));
 }
 
+function isPlausibleIpv4(host: string): boolean {
+  const parts = host.split(".");
+  if (parts.length !== 4) return false;
+  return parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) >= 0 && Number(p) <= 255);
+}
+
+function normalizeDevHost(raw: string): string | null {
+  const host = raw.replace(/^https?:\/\//, "").split("/")[0].replace(/:\d+$/, "").trim();
+  return host && isPlausibleIpv4(host) ? host : null;
+}
+
 /** Metro / Expo dev server LAN IP (e.g. 192.168.x.x from hostUri) — avoids localhost on a physical phone. */
 function inferLanHostFromExpoBundler(): string | null {
   const hostUri =
@@ -95,25 +106,29 @@ export function getConfig(): {
   supabaseAnonKey: string | null;
 } {
   const port = apiDevPort();
-  // Physical device: set EXPO_PUBLIC_DEV_HOST to your PC's LAN IP (e.g. 192.168.1.5) — same Wi‑Fi as the phone/emulator host
-  const devHost = asNonEmptyString(process.env.EXPO_PUBLIC_DEV_HOST);
+  const fromEnv = asNonEmptyString(process.env.EXPO_PUBLIC_API_BASE_URL);
+  const fromExtra =
+    asNonEmptyString(
+      (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.API_BASE_URL
+    ) ??
+    asNonEmptyString(
+      (Constants.manifest2?.extra as Record<string, unknown> | undefined)?.API_BASE_URL
+    );
+  const devHostRaw = asNonEmptyString(process.env.EXPO_PUBLIC_DEV_HOST);
+  const devHost = devHostRaw ? normalizeDevHost(devHostRaw) : null;
+
+  // Production safety net: a release build with no baked-in URL must NOT
+  // call localhost (unreachable from a phone). Fall back to the public domain.
+  const releaseFallback = __DEV__ ? `http://localhost:${port}` : "https://api.gatimitra.com";
+
   let rawUrl: string;
-  if (devHost) {
-    const host = devHost.replace(/^https?:\/\//, "").split("/")[0].replace(/:\d+$/, "");
-    rawUrl = `http://${host}:${port}`;
+  // Explicit LAN URL in .env.local wins over DEV_HOST (avoids stale/wrong DEV_HOST in .env).
+  if (fromEnv && !isLocalhostApiUrl(fromEnv)) {
+    rawUrl = fromEnv;
+  } else if (devHost) {
+    rawUrl = `http://${devHost}:${port}`;
   } else {
-    const fromEnv = process.env.EXPO_PUBLIC_API_BASE_URL;
-    const fromExtra =
-      (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.API_BASE_URL ??
-      (Constants.manifest2?.extra as Record<string, unknown> | undefined)?.API_BASE_URL;
-    // Production safety net: a release build with no baked-in URL must NOT
-    // call localhost (unreachable from a phone). Fall back to the public
-    // domain so the app at least talks to prod backend.
-    const releaseFallback = __DEV__ ? `http://localhost:${port}` : "https://api.gatimitra.com";
-    rawUrl =
-      asNonEmptyString(fromEnv) ??
-      asNonEmptyString(fromExtra) ??
-      releaseFallback;
+    rawUrl = fromEnv ?? fromExtra ?? releaseFallback;
   }
 
   // Runtime override (from AsyncStorage, set via the in-app "Configure API URL"

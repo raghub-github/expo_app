@@ -27,12 +27,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Contacts from "expo-contacts";
 import * as Location from "expo-location";
-import MapView, { Region } from "react-native-maps";
-import { customerMapProps } from "@/lib/mapViewProps";
+import { MapboxWebPannableMap } from "@/components/maps/MapboxWebPannableMap";
+import type { CustomerMapRef } from "@/lib/customer-map-handle";
 import { addressService, type Address } from "@/services/address.service";
 import {
   reverseGeocode,
   searchPlacesEnriched,
+  MAPBOX_SEARCH_DEBOUNCE_MS,
   isPincodeSearchMode,
   getRoadDistance,
   type EnrichedPlaceResult,
@@ -40,6 +41,7 @@ import {
 } from "@/services/location.service";
 import { profileService } from "@/services/profile.service";
 import { useLocationStore } from "@/store/locationStore";
+import { parseMapCoordParam, resolveMapCenter } from "@/lib/map-coordinates";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
 
 const NEARBY_RADIUS_METERS = 500;
@@ -133,10 +135,17 @@ export default function LocationAddressScreen() {
 
   const isEditMode = editAddressId != null;
 
-  const lat = params.latitude != null ? parseFloat(params.latitude) : NaN;
-  const lon = params.longitude != null ? parseFloat(params.longitude) : NaN;
-  const initialLat = !Number.isNaN(lat) ? lat : (storeCoords?.latitude ?? DEFAULT_LAT);
-  const initialLon = !Number.isNaN(lon) ? lon : (storeCoords?.longitude ?? DEFAULT_LNG);
+  const fallbackCenter = {
+    latitude: storeCoords?.latitude ?? DEFAULT_LAT,
+    longitude: storeCoords?.longitude ?? DEFAULT_LNG,
+  };
+  const parsedLat = parseMapCoordParam(params.latitude, fallbackCenter.latitude);
+  const parsedLng = parseMapCoordParam(params.longitude, fallbackCenter.longitude);
+  const { latitude: initialLat, longitude: initialLon } = resolveMapCenter(
+    parsedLat,
+    parsedLng,
+    fallbackCenter
+  );
   const fromOnboarding = params.fromOnboarding === "1";
   const returnToCheckout = params.afterSaveReturn === "checkout";
 
@@ -151,7 +160,7 @@ export default function LocationAddressScreen() {
     }
     router.replace("/(tabs)/");
   };
-  const mapRef = useRef<MapView | null>(null);
+  const mapRef = useRef<CustomerMapRef | null>(null);
   const editSeedAppliedRef = useRef(false);
   const editBaselineRef = useRef<{ lat: number; lon: number } | null>(null);
   const [mapCenter, setMapCenter] = useState({ latitude: initialLat, longitude: initialLon });
@@ -338,14 +347,13 @@ export default function LocationAddressScreen() {
     setGeocodeLoading(false);
     setError("");
     requestAnimationFrame(() => {
-      mapRef.current?.animateToRegion(
+      mapRef.current?.animateToRegion?.(
         {
           latitude: addr.latitude,
           longitude: addr.longitude,
           latitudeDelta: 0.008,
           longitudeDelta: 0.008,
-        },
-        1
+        }
       );
     });
   }, [isEditMode, editTarget]);
@@ -415,6 +423,7 @@ export default function LocationAddressScreen() {
       searchPlacesEnriched(query, {
         signal: controller.signal,
         proximity: { latitude: selectedLat, longitude: selectedLon },
+        sessionContext: "add-address",
         recentLocationKeys: getRecentLocationKeys(),
       })
         .then((results) => {
@@ -427,7 +436,7 @@ export default function LocationAddressScreen() {
         .finally(() => {
           if (!controller.signal.aborted) setLocationSearchLoading(false);
         });
-    }, 300);
+    }, MAPBOX_SEARCH_DEBOUNCE_MS);
 
     return () => {
       if (locationSearchDebounceRef.current) clearTimeout(locationSearchDebounceRef.current);
@@ -739,15 +748,12 @@ export default function LocationAddressScreen() {
       });
       setMapCenter({ latitude: nextLat, longitude: nextLon });
       if (isEditMode) setEditGeoLocked(false);
-      mapRef.current?.animateToRegion(
-        {
-          latitude: nextLat,
-          longitude: nextLon,
-          latitudeDelta: 0.008,
-          longitudeDelta: 0.008,
-        },
-        280
-      );
+      mapRef.current?.animateToRegion?.({
+        latitude: nextLat,
+        longitude: nextLon,
+        latitudeDelta: 0.008,
+        longitudeDelta: 0.008,
+      });
       const result = await reverseGeocode(nextLon, nextLat);
       applyReverseResult(result);
     } catch {
@@ -806,15 +812,12 @@ export default function LocationAddressScreen() {
     setIsCurrentLocationSheetLoading(false);
     setMapCenter({ latitude, longitude });
     if (isEditMode) setEditGeoLocked(false);
-    mapRef.current?.animateToRegion(
-      {
-        latitude,
-        longitude,
-        latitudeDelta: 0.008,
-        longitudeDelta: 0.008,
-      },
-      280
-    );
+    mapRef.current?.animateToRegion?.({
+      latitude,
+      longitude,
+      latitudeDelta: 0.008,
+      longitudeDelta: 0.008,
+    });
     addRecentLocation({ latitude, longitude, primary, fullAddress });
     setLocationSearchVisible(false);
     setLocationSearchQuery("");
@@ -862,20 +865,17 @@ export default function LocationAddressScreen() {
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.mapCard}>
-          <MapView
+          <MapboxWebPannableMap
             key={isEditMode && editAddressId != null ? `edit-addr-${editAddressId}` : "new-address-map"}
-            ref={(ref) => {
-              mapRef.current = ref;
-            }}
+            ref={mapRef}
             style={styles.inlineMap}
-            {...customerMapProps()}
             initialRegion={{
               latitude: mapCenter.latitude,
               longitude: mapCenter.longitude,
               latitudeDelta: 0.008,
               longitudeDelta: 0.008,
             }}
-            onRegionChangeComplete={(region: Region) => {
+            onRegionChangeComplete={(region) => {
               const latitude = region.latitude;
               const longitude = region.longitude;
               setMapCenter({ latitude, longitude });
@@ -886,8 +886,6 @@ export default function LocationAddressScreen() {
                 }
               }
             }}
-            scrollEnabled
-            zoomEnabled
           />
           <View style={styles.mapTooltipWrap} pointerEvents="none">
             <View style={styles.mapTooltip}>

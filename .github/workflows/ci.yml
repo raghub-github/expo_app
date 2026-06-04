@@ -37,6 +37,22 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund --ignore-scripts
 
+      - name: Audit workspace dependency declarations
+        # Catches any import of a bare package that isn't declared in the
+        # importing workspace's package.json. Prevents the class of bug where
+        # `npm install` at root hoists a transitive dep and an app silently
+        # uses it locally — then the isolated Docker build fails because the
+        # hoisted dep isn't installed there.
+        run: node scripts/audit-undeclared-deps.mjs
+
+      - name: Audit Docker workspace build steps
+        # Catches when an app imports `@gatimitra/*` but its Dockerfile's
+        # `npm run build --workspace=...` line doesn't include that package.
+        # Without this, contracts/queue/redis/etc. would compile fine locally
+        # (turbo orchestrates the chain) but the isolated Docker image would
+        # ship without its `dist/` and webpack would fail to resolve it.
+        run: node scripts/audit-docker-workspace-builds.mjs
+
       - name: Cache turbo
         uses: actions/cache@v4
         with:

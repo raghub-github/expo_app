@@ -300,12 +300,33 @@ export function toStoredDocumentUrl(value: string | null | undefined): string | 
   const trimmed = value.trim();
   if (!trimmed) return null;
   // Same-origin or absolute app URL: normalize to relative proxy (stable in DB).
-  if (trimmed.includes("/api/attachments/proxy") && trimmed.includes("key=")) {
+  if (
+    (trimmed.includes("/api/attachments/proxy") || trimmed.includes("/v1/attachments/proxy")) &&
+    trimmed.includes("key=")
+  ) {
     const k = extractR2KeyFromUrl(trimmed);
     if (k) return `/api/attachments/proxy?key=${encodeURIComponent(normalizeR2ObjectKey(k))}`;
   }
+  if (trimmed.startsWith("/v1/attachments/proxy")) {
+    return trimmed.replace("/v1/attachments/proxy", "/api/attachments/proxy");
+  }
   if (trimmed.startsWith("/api/attachments/proxy")) return trimmed;
   if (trimmed.includes("://")) {
+    try {
+      const u = new URL(trimmed);
+      if (
+        u.pathname.startsWith("/api/attachments/proxy") ||
+        u.pathname.startsWith("/v1/attachments/proxy")
+      ) {
+        const key = u.searchParams.get("key");
+        if (key?.trim()) {
+          return `/api/attachments/proxy?key=${encodeURIComponent(normalizeR2ObjectKey(key.trim()))}`;
+        }
+        return `/api/attachments/proxy${u.search}`;
+      }
+    } catch {
+      /* fall through */
+    }
     const key = objectKeyForProxyFromHttpUrl(trimmed);
     if (key) {
       return `/api/attachments/proxy?key=${encodeURIComponent(key)}`;
@@ -469,7 +490,12 @@ export async function getR2SignedUrl(key: string, expiresInSeconds = 3600): Prom
     Bucket: bucketName,
     Key: objectKey,
   });
-  return getSignedUrl(s3, command, { expiresIn: expiresInSeconds });
+  // @aws-sdk private-property variance bug — cast through unknown.
+  return getSignedUrl(
+    s3 as unknown as Parameters<typeof getSignedUrl>[0],
+    command,
+    { expiresIn: expiresInSeconds },
+  );
 }
 
 const DEFAULT_MENU_SIGNED_URL_TTL_SEC = 86400 * 7;

@@ -2,13 +2,207 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ulid } from "ulid";
 import { getDb } from "../../db/client.js";
-import { riders, riderDocuments } from "../../db/schema.js";
-import { eq, and } from "drizzle-orm";
+import { riders, riderDocuments, riderOnboardingVehicleTypes, riderOnboardingDocumentTypes, riderOnboardingVehicleCategories } from "../../db/schema.js";
+import { eq, and, asc } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
 import { deleteFromR2, extractKeyFromSignedUrl } from "../../services/r2/r2Service.js";
 
 export async function onboardingRoutes(app: FastifyInstance) {
   await app.register(auth, { required: true });
+
+  app.get(
+    "/vehicle-types",
+    {
+      schema: {
+        querystring: z.object({
+          includeInactive: z.enum(["true", "false"]).optional(),
+        }),
+        response: {
+          200: z.object({
+            rows: z.array(
+              z.object({
+                id: z.number(),
+                code: z.string(),
+                categoryCode: z.string().nullable(),
+                label: z.string(),
+                hint: z.string().nullable(),
+                icon: z.string().nullable(),
+                sortOrder: z.number(),
+                isActive: z.boolean(),
+                onboardingFlow: z.enum(["dl_rc", "rental_ev", "payment"]),
+                documentRequirements: z.record(z.string(), z.unknown()),
+                infoMessage: z.string().nullable(),
+                mapsToVehicleType: z.string().nullable(),
+              })
+            ),
+          }),
+        },
+      },
+    },
+    async (req) => {
+      const includeInactive =
+        (req.query as { includeInactive?: string }).includeInactive !== "false";
+      const db = getDb();
+      const rows = await db
+        .select()
+        .from(riderOnboardingVehicleTypes)
+        .where(includeInactive ? undefined : eq(riderOnboardingVehicleTypes.isActive, true))
+        .orderBy(
+          asc(riderOnboardingVehicleTypes.sortOrder),
+          asc(riderOnboardingVehicleTypes.id)
+        );
+
+      return {
+        rows: rows.map((row) => ({
+          id: row.id,
+          code: row.code,
+          categoryCode: row.categoryCode,
+          label: row.label,
+          hint: row.hint,
+          icon: row.icon,
+          sortOrder: row.sortOrder,
+          isActive: row.isActive,
+          onboardingFlow: row.onboardingFlow as "dl_rc" | "rental_ev" | "payment",
+          documentRequirements:
+            row.documentRequirements && typeof row.documentRequirements === "object"
+              ? (row.documentRequirements as Record<string, unknown>)
+              : {},
+          infoMessage: row.infoMessage,
+          mapsToVehicleType: row.mapsToVehicleType,
+        })),
+      };
+    }
+  );
+
+  app.get(
+    "/vehicle-categories",
+    {
+      schema: {
+        querystring: z.object({
+          includeInactive: z.enum(["true", "false"]).optional(),
+        }),
+        response: {
+          200: z.object({
+            rows: z.array(
+              z.object({
+                id: z.number(),
+                code: z.string(),
+                label: z.string(),
+                hint: z.string().nullable(),
+                icon: z.string().nullable(),
+                wheelCount: z.number(),
+                sortOrder: z.number(),
+                isActive: z.boolean(),
+              })
+            ),
+          }),
+        },
+      },
+    },
+    async (req) => {
+      const includeInactive =
+        (req.query as { includeInactive?: string }).includeInactive !== "false";
+      const db = getDb();
+      const rows = await db
+        .select()
+        .from(riderOnboardingVehicleCategories)
+        .where(
+          includeInactive ? undefined : eq(riderOnboardingVehicleCategories.isActive, true)
+        )
+        .orderBy(
+          asc(riderOnboardingVehicleCategories.sortOrder),
+          asc(riderOnboardingVehicleCategories.id)
+        );
+
+      return {
+        rows: rows.map((row) => ({
+          id: row.id,
+          code: row.code,
+          label: row.label,
+          hint: row.hint,
+          icon: row.icon,
+          wheelCount: row.wheelCount,
+          sortOrder: row.sortOrder,
+          isActive: row.isActive,
+        })),
+      };
+    }
+  );
+
+  app.get(
+    "/document-types",
+    {
+      schema: {
+        querystring: z.object({
+          includeInactive: z.enum(["true", "false"]).optional(),
+          captureGroup: z.enum(["dl_rc", "rental_ev"]).optional(),
+        }),
+        response: {
+          200: z.object({
+            rows: z.array(
+              z.object({
+                id: z.number(),
+                code: z.string(),
+                label: z.string(),
+                hint: z.string().nullable(),
+                icon: z.string().nullable(),
+                captureGroup: z.enum(["dl_rc", "rental_ev"]),
+                requiresTextField: z.boolean(),
+                textFieldLabel: z.string().nullable(),
+                textFieldPlaceholder: z.string().nullable(),
+                minTextLength: z.number(),
+                sortOrder: z.number(),
+                isActive: z.boolean(),
+              })
+            ),
+          }),
+        },
+      },
+    },
+    async (req) => {
+      const query = req.query as {
+        includeInactive?: string;
+        captureGroup?: "dl_rc" | "rental_ev";
+      };
+      const includeInactive = query.includeInactive !== "false";
+      const db = getDb();
+
+      const conditions = [];
+      if (!includeInactive) {
+        conditions.push(eq(riderOnboardingDocumentTypes.isActive, true));
+      }
+      if (query.captureGroup) {
+        conditions.push(eq(riderOnboardingDocumentTypes.captureGroup, query.captureGroup));
+      }
+
+      const rows = await db
+        .select()
+        .from(riderOnboardingDocumentTypes)
+        .where(conditions.length ? and(...conditions) : undefined)
+        .orderBy(
+          asc(riderOnboardingDocumentTypes.captureGroup),
+          asc(riderOnboardingDocumentTypes.sortOrder),
+          asc(riderOnboardingDocumentTypes.id)
+        );
+
+      return {
+        rows: rows.map((row) => ({
+          id: row.id,
+          code: row.code,
+          label: row.label,
+          hint: row.hint,
+          icon: row.icon,
+          captureGroup: row.captureGroup as "dl_rc" | "rental_ev",
+          requiresTextField: row.requiresTextField,
+          textFieldLabel: row.textFieldLabel,
+          textFieldPlaceholder: row.textFieldPlaceholder,
+          minTextLength: row.minTextLength,
+          sortOrder: row.sortOrder,
+          isActive: row.isActive,
+        })),
+      };
+    }
+  );
 
   // Save onboarding step progress
   app.post(
@@ -62,14 +256,16 @@ export async function onboardingRoutes(app: FastifyInstance) {
         throw new Error("Rider not found");
       }
 
-      // Update onboarding status
-      await db
-        .update(riders)
-        .set({
-          onboardingStage: "KYC",
-          updatedAt: new Date(),
-        })
-        .where(eq(riders.id, riderIdInt));
+      // Advance onboarding only for document steps (not post-approval home location)
+      if (step !== "location") {
+        await db
+          .update(riders)
+          .set({
+            onboardingStage: "KYC",
+            updatedAt: new Date(),
+          })
+          .where(eq(riders.id, riderIdInt));
+      }
 
       // Upsert rider documents based on step
       // Store document-specific data in metadata JSONB field
@@ -77,6 +273,26 @@ export async function onboardingRoutes(app: FastifyInstance) {
         const aadhaarMasked = stepData.aadhaarNumber
           ? `${stepData.aadhaarNumber.toString().slice(0, 4).replace(/\d/g, "X")}-${stepData.aadhaarNumber.toString().slice(4, 8).replace(/\d/g, "X")}-${stepData.aadhaarNumber.toString().slice(-4)}`
           : undefined;
+
+        const riderUpdate: {
+          name?: string;
+          aadhaarNumber?: string;
+          updatedAt: Date;
+        } = { updatedAt: new Date() };
+
+        if (typeof stepData.fullName === "string" && stepData.fullName.trim()) {
+          riderUpdate.name = stepData.fullName.trim();
+        }
+        if (stepData.aadhaarNumber) {
+          const digits = stepData.aadhaarNumber.toString().replace(/\D/g, "");
+          if (digits.length === 12) {
+            riderUpdate.aadhaarNumber = digits;
+          }
+        }
+
+        if (riderUpdate.name || riderUpdate.aadhaarNumber) {
+          await db.update(riders).set(riderUpdate).where(eq(riders.id, riderIdInt));
+        }
 
         // Check if document exists
         const existing = await db
@@ -113,6 +329,51 @@ export async function onboardingRoutes(app: FastifyInstance) {
           });
         }
       } else if (step === "dl_rc") {
+        const selectionMeta = {
+          vehicleChoice:
+            typeof stepData.vehicleChoice === "string" ? stepData.vehicleChoice : undefined,
+          vehicleCategoryCode:
+            typeof stepData.vehicleCategoryCode === "string"
+              ? stepData.vehicleCategoryCode
+              : undefined,
+          onboardingFlow:
+            stepData.onboardingFlow === "dl_rc" ||
+            stepData.onboardingFlow === "rental_ev" ||
+            stepData.onboardingFlow === "payment"
+              ? stepData.onboardingFlow
+              : undefined,
+        };
+
+        if (
+          selectionMeta.vehicleChoice ||
+          selectionMeta.onboardingFlow
+        ) {
+          const existingSelection = await db
+            .select()
+            .from(riderDocuments)
+            .where(
+              and(
+                eq(riderDocuments.riderId, riderIdInt),
+                eq(riderDocuments.docType, "onboarding_vehicle_selection")
+              )
+            )
+            .limit(1);
+
+          if (existingSelection.length > 0) {
+            await db
+              .update(riderDocuments)
+              .set({ metadata: selectionMeta })
+              .where(eq(riderDocuments.id, existingSelection[0]!.id));
+          } else {
+            await db.insert(riderDocuments).values({
+              riderId: riderIdInt,
+              docType: "onboarding_vehicle_selection",
+              fileUrl: "n/a",
+              metadata: selectionMeta,
+            });
+          }
+        }
+
         // Upsert DL document
         if (stepData.dlNumber) {
           const existingDl = await db
@@ -177,9 +438,18 @@ export async function onboardingRoutes(app: FastifyInstance) {
           }
         }
       } else if (step === "rental_ev") {
-        const docType = stepData.rentalProofSignedUrl ? "rental_proof" : "ev_proof";
-        const signedUrl = (stepData.rentalProofSignedUrl || stepData.evProofSignedUrl) as string;
+        const docCode =
+          (typeof stepData.uploadedDocCode === "string" && stepData.uploadedDocCode.trim()) ||
+          (stepData.rentalProofSignedUrl ? "rental_proof" : stepData.evProofSignedUrl ? "ev_proof" : null);
+        const signedUrl =
+          (typeof stepData.uploadedDocSignedUrl === "string" && stepData.uploadedDocSignedUrl.trim()) ||
+          (stepData.rentalProofSignedUrl as string | undefined) ||
+          (stepData.evProofSignedUrl as string | undefined);
         const oldKey = signedUrl ? extractKeyFromSignedUrl(signedUrl) : null;
+
+        if (!docCode || !signedUrl) {
+          throw new Error("Rental/EV document upload is required");
+        }
 
         let oldSignedUrl: string | null = null;
         const existing = await db
@@ -187,16 +457,17 @@ export async function onboardingRoutes(app: FastifyInstance) {
           .from(riderDocuments)
           .where(and(
             eq(riderDocuments.riderId, riderIdInt),
-            eq(riderDocuments.docType, docType)
+            eq(riderDocuments.docType, docCode)
           ))
           .limit(1);
 
         if (existing.length > 0) {
-          oldSignedUrl = (existing[0]!.metadata as any)?.rentalProofSignedUrl || 
-                        (existing[0]!.metadata as any)?.evProofSignedUrl || null;
+          oldSignedUrl = existing[0]!.fileUrl || null;
         }
 
         const metadata = {
+          uploadedDocCode: docCode,
+          uploadedDocSignedUrl: signedUrl,
           rentalProofSignedUrl: stepData.rentalProofSignedUrl as string | undefined,
           evProofSignedUrl: stepData.evProofSignedUrl as string | undefined,
           maxSpeedDeclaration: stepData.maxSpeedDeclaration as number | undefined,
@@ -214,7 +485,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
           } else {
             await db.insert(riderDocuments).values({
               riderId: riderIdInt,
-              docType: docType,
+              docType: docCode,
               fileUrl: signedUrl,
               metadata: metadata,
             });
@@ -243,6 +514,23 @@ export async function onboardingRoutes(app: FastifyInstance) {
         const panPartial = stepData.panNumber
           ? `${stepData.panNumber.toString().slice(0, 5).replace(/./g, "X")}${stepData.panNumber.toString().slice(-5)}`
           : undefined;
+
+        const riderPanUpdate: {
+          panNumber?: string;
+          selfieUrl?: string;
+          updatedAt: Date;
+        } = { updatedAt: new Date() };
+
+        if (typeof stepData.panNumber === "string" && stepData.panNumber.trim()) {
+          riderPanUpdate.panNumber = stepData.panNumber.trim().toUpperCase();
+        }
+        if (typeof stepData.selfieSignedUrl === "string" && stepData.selfieSignedUrl.trim()) {
+          riderPanUpdate.selfieUrl = stepData.selfieSignedUrl.trim();
+        }
+
+        if (riderPanUpdate.panNumber || riderPanUpdate.selfieUrl) {
+          await db.update(riders).set(riderPanUpdate).where(eq(riders.id, riderIdInt));
+        }
 
         // Upsert PAN (no R2 involved)
         if (panPartial) {
@@ -491,6 +779,57 @@ export async function onboardingRoutes(app: FastifyInstance) {
     },
   );
 
+  // Get rider onboarding fee config (amount, GST, copy)
+  app.get(
+    "/fee-config",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            standardOnboardingFee: z.string(),
+            discountedOnboardingFee: z.string(),
+            discountPercent: z.string(),
+            gstPercent: z.string(),
+            discountPeriodLabel: z.string(),
+            headline: z.string(),
+            subtitle: z.string(),
+            feeLabel: z.string(),
+            infoMessage: z.string(),
+            alertNotice: z.string(),
+            footerNote: z.string(),
+            payButtonText: z.string().nullable(),
+            subtotalPaise: z.number(),
+            gstAmountPaise: z.number(),
+            totalPaise: z.number(),
+          }),
+        },
+      },
+    },
+    async () => {
+      const { getRiderOnboardingCommissionConfig, computeRiderOnboardingCheckoutPaise } =
+        await import("../../lib/rider-onboarding-commission-config.js");
+      const config = await getRiderOnboardingCommissionConfig();
+      const checkout = computeRiderOnboardingCheckoutPaise(config);
+      return {
+        standardOnboardingFee: config.standardOnboardingFee,
+        discountedOnboardingFee: config.discountedOnboardingFee,
+        discountPercent: config.discountPercent,
+        gstPercent: config.gstPercent,
+        discountPeriodLabel: config.discountPeriodLabel,
+        headline: config.headline,
+        subtitle: config.subtitle,
+        feeLabel: config.feeLabel,
+        infoMessage: config.infoMessage,
+        alertNotice: config.alertNotice,
+        footerNote: config.footerNote,
+        payButtonText: config.payButtonText,
+        subtotalPaise: checkout.subtotalPaise,
+        gstAmountPaise: checkout.gstAmountPaise,
+        totalPaise: checkout.totalPaise,
+      };
+    }
+  );
+
   // Get rider status
   app.get(
     "/:riderId/status",
@@ -510,7 +849,6 @@ export async function onboardingRoutes(app: FastifyInstance) {
     },
     async (req) => {
       const { riderId } = req.params as { riderId: string };
-      const db = getDb();
 
       // Convert riderId string to integer
       const riderIdInt = parseInt(riderId);
@@ -518,34 +856,18 @@ export async function onboardingRoutes(app: FastifyInstance) {
         throw new Error("Invalid rider ID");
       }
 
-      const riderRows = await db.select().from(riders).where(eq(riders.id, riderIdInt)).limit(1);
-      if (riderRows.length === 0) {
+      const { resolveRiderOnboardingStatusForApp } = await import(
+        "../../lib/rider-onboarding-status.js"
+      );
+      const resolved = await resolveRiderOnboardingStatusForApp(riderIdInt);
+      if (!resolved) {
         throw new Error("Rider not found");
       }
 
-      const rider = riderRows[0]!;
-      
-      // Map onboardingStage enum to response format
-      const onboardingStatusMap: Record<string, string> = {
-        "MOBILE_VERIFIED": "not_started",
-        "KYC": "in_progress",
-        "PAYMENT": "in_progress",
-        "APPROVAL": "pending_approval",
-        "ACTIVE": "approved",
-      };
-
-      // Map kycStatus enum to response format
-      const approvalStatusMap: Record<string, string> = {
-        "PENDING": "DRAFT",
-        "REVIEW": "DRAFT",
-        "APPROVED": "APPROVED",
-        "REJECTED": "REJECTED",
-      };
-
       return {
-        riderId: rider.id.toString(),
-        onboardingStatus: onboardingStatusMap[rider.onboardingStage] || "not_started",
-        approvalStatus: approvalStatusMap[rider.kycStatus] || "DRAFT",
+        riderId: resolved.rider.id.toString(),
+        onboardingStatus: resolved.onboardingStatus,
+        approvalStatus: resolved.approvalStatus,
       };
     },
   );

@@ -32,6 +32,18 @@ export function cancellationReasonsAreDuplicate(
   return na === nb || na.includes(nb) || nb.includes(na);
 }
 
+/** Labels written when an agent cancels from dashboard / order page. */
+export function dashboardAdminCancellationLabels(rejectedReason: string | null | undefined): {
+  cancelledByLabel: string;
+  rejectedReason: string | null;
+} {
+  const reason = (rejectedReason ?? "").trim() || null;
+  return {
+    cancelledByLabel: GATIMITRA_TEAM_REJECTION_LABEL,
+    rejectedReason: reason,
+  };
+}
+
 export function merchantCancellationDisplay(args: {
   rejected_reason?: string | null;
   cancelled_by_label?: string | null;

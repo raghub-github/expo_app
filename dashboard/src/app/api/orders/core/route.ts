@@ -10,13 +10,24 @@ import {
   listOrdersCore,
   getOrderManualStatusHistory,
   getFoodDeliveryInstructions,
+  getFoodOrderStatus,
+  getOrderTimelineEntriesWithFallback,
   recordEtaBreachIfNeeded,
   ensureOrderEtaWhenAccepted,
   type OrderSearchType,
   type OrderStatusFilter,
+  type OrderTimelineEntry,
   type OrdersCoreRow,
 } from "@/lib/db/operations/orders-core";
 import { getOrderDetailEnrichment } from "@/lib/db/operations/order-detail-enrichment";
+import {
+  getRiderAssignmentTimeline,
+  type RiderAssignmentTimelineData,
+} from "@/lib/db/operations/order-rider-assignments";
+import {
+  getOrderRiderTracking,
+  type OrderRiderTrackingPayload,
+} from "@/lib/db/operations/order-rider-tracking";
 import { fetchOrderPaymentDetail } from "@/lib/orders/order-payment-detail";
 
 /** Row returned to the client: list shape + `storeId`, optional enrichments for single-order fetch */
@@ -72,6 +83,260 @@ import { getOrderRemarksCount } from "@/lib/db/operations/order-remarks";
 import { getOrderReconsCount } from "@/lib/db/operations/order-recons";
 import { getRedisClient } from "@/lib/redis";
 import { getCached, setCached } from "@/lib/server-cache";
+
+function serializeTimelineEntries(entries: OrderTimelineEntry[]) {
+  return entries.map((e) => ({
+    ...e,
+    occurredAt:
+      e.occurredAt instanceof Date
+        ? e.occurredAt.toISOString()
+        : e.occurredAt != null
+          ? String(e.occurredAt)
+          : "",
+    expectedByAt:
+      e.expectedByAt instanceof Date
+        ? e.expectedByAt.toISOString()
+        : e.expectedByAt != null
+          ? String(e.expectedByAt)
+          : null,
+  }));
+}
+
+type SingleOrderEnrichment = {
+  data: OrderCoreApiListItem[];
+  merchantSummary: Awaited<ReturnType<typeof getMerchantStoreSummaryByStoreId>> | null;
+  remarksCount?: number;
+  reconsCount?: number;
+  statusHistory?: Awaited<ReturnType<typeof getOrderManualStatusHistory>>;
+  paymentDetail: Awaited<ReturnType<typeof fetchOrderPaymentDetail>> | null;
+  timeline: ReturnType<typeof serializeTimelineEntries>;
+  riderTimeline: RiderAssignmentTimelineData | null;
+  riderTracking: OrderRiderTrackingPayload | null;
+};
+
+/** Detail-page enrichments (timeline, payment, merchant summary) for a single-order fetch. */
+async function enrichSingleOrderDetail(
+  data: OrderCoreApiListItem[]
+): Promise<SingleOrderEnrichment | null> {
+  if (data.length !== 1) return null;
+
+  const first = data[0] as {
+    id?: number;
+    merchantStoreId?: number | null;
+    orderType?: string;
+  };
+  const orderId = first?.id;
+  const storeId = first?.merchantStoreId;
+
+  let merchantSummary: Awaited<ReturnType<typeof getMerchantStoreSummaryByStoreId>> = null;
+  let remarksCount: number | undefined;
+  let reconsCount: number | undefined;
+  let statusHistory: Awaited<ReturnType<typeof getOrderManualStatusHistory>> | undefined;
+  let paymentDetail: Awaited<ReturnType<typeof fetchOrderPaymentDetail>> | null = null;
+  let timeline: ReturnType<typeof serializeTimelineEntries> = [];
+  let riderTimeline: RiderAssignmentTimelineData | null = null;
+  let riderTracking: OrderRiderTrackingPayload | null = null;
+
+  if (orderId != null && Number.isFinite(orderId)) {
+    const firstRow = first as {
+      orderId?: string | null;
+      formattedOrderId?: string | null;
+      merchantStoreId?: number | null;
+      orderType?: string;
+      orderSource?: string | null;
+      paymentStatus?: string | null;
+      paymentMethod?: string | null;
+      grandTotal?: string | number | null;
+      itemTotal?: string | number | null;
+      addonTotal?: string | number | null;
+      tipAmount?: string | number | null;
+      riderId?: number | null;
+    };
+
+    void ensureOrderEtaWhenAccepted(orderId).catch((err) => {
+      console.error("[GET /api/orders/core] ensureOrderEtaWhenAccepted failed", err);
+    });
+    void recordEtaBreachIfNeeded(orderId).catch((err) => {
+      console.error("[GET /api/orders/core] recordEtaBreachIfNeeded failed", err);
+    });
+
+    const storeIdNum = storeId != null && Number.isFinite(storeId) ? storeId : null;
+    const riderIdForTimeline =
+      firstRow.riderId != null && Number.isFinite(Number(firstRow.riderId))
+        ? Number(firstRow.riderId)
+        : null;
+
+    const [
+      summary,
+      remarks,
+      recons,
+      history,
+      deliveryInstructions,
+      detailExtra,
+      paymentDetailResult,
+      timelineEntries,
+      riderTimelineResult,
+      riderTrackingResult,
+      foodOrderStatusResult,
+    ] = await Promise.all([
+      storeIdNum != null ? getMerchantStoreSummaryByStoreId(storeIdNum) : Promise.resolve(null),
+      getOrderRemarksCount(orderId),
+      getOrderReconsCount(orderId),
+      getOrderManualStatusHistory(orderId),
+      first?.orderType === "food"
+        ? getFoodDeliveryInstructions(orderId)
+        : Promise.resolve(null),
+      getOrderDetailEnrichment(orderId).catch((err) => {
+        console.error("[GET /api/orders/core] order detail enrichment failed", err);
+        return null;
+      }),
+      fetchOrderPaymentDetail({
+        orderCoreId: orderId,
+        orderIdText: firstRow.orderId != null ? String(firstRow.orderId) : null,
+        formattedOrderId:
+          firstRow.formattedOrderId != null ? String(firstRow.formattedOrderId) : null,
+        displayId:
+          firstRow.formattedOrderId?.trim() ||
+          (firstRow.orderId ? String(firstRow.orderId) : `ORDER-${orderId}`),
+        merchantStoreId: firstRow.merchantStoreId ?? null,
+        orderType: firstRow.orderType ?? "food",
+        orderSource: firstRow.orderSource ?? null,
+        paymentStatus: firstRow.paymentStatus ?? null,
+        paymentMethod: firstRow.paymentMethod ?? null,
+        grandTotal: firstRow.grandTotal != null ? Number(firstRow.grandTotal) : null,
+        itemTotal: firstRow.itemTotal != null ? Number(firstRow.itemTotal) : null,
+        addonTotal: firstRow.addonTotal != null ? Number(firstRow.addonTotal) : null,
+        tipAmount: firstRow.tipAmount != null ? Number(firstRow.tipAmount) : null,
+      }).catch((err) => {
+        console.error("[GET /api/orders/core] payment detail failed", err);
+        return null;
+      }),
+      getOrderTimelineEntriesWithFallback(orderId).catch((err) => {
+        console.error("[GET /api/orders/core] timeline fetch failed", err);
+        return [] as OrderTimelineEntry[];
+      }),
+      riderIdForTimeline != null
+        ? getRiderAssignmentTimeline(orderId, riderIdForTimeline).catch((err) => {
+            console.error("[GET /api/orders/core] rider timeline fetch failed", err);
+            return null;
+          })
+        : Promise.resolve(null),
+      getOrderRiderTracking(orderId).catch((err) => {
+        console.error("[GET /api/orders/core] rider tracking fetch failed", err);
+        return null;
+      }),
+      first?.orderType === "food"
+        ? getFoodOrderStatus(orderId).catch((err) => {
+            console.error("[GET /api/orders/core] food order status failed", err);
+            return null;
+          })
+        : Promise.resolve(null),
+    ]);
+
+    merchantSummary = summary;
+    remarksCount = remarks;
+    reconsCount = recons;
+    statusHistory = history;
+    paymentDetail = paymentDetailResult;
+    timeline = serializeTimelineEntries(timelineEntries);
+    riderTimeline = riderTimelineResult;
+    riderTracking = riderTrackingResult;
+
+    let enrichedData = data;
+    if (deliveryInstructions !== undefined) {
+      enrichedData = [
+        {
+          ...(enrichedData[0] as Record<string, unknown>),
+          deliveryInstructions: deliveryInstructions ?? null,
+        },
+      ] as unknown as typeof enrichedData;
+    }
+    if (foodOrderStatusResult != null || first?.orderType === "food") {
+      enrichedData = [
+        {
+          ...(enrichedData[0] as Record<string, unknown>),
+          foodOrderStatus: foodOrderStatusResult,
+        },
+      ] as unknown as typeof enrichedData;
+    }
+    if (detailExtra != null) {
+      enrichedData = [
+        {
+          ...(enrichedData[0] as Record<string, unknown>),
+          orderTimeIso: detailExtra.orderTimeIso,
+          orderTimeSource: detailExtra.orderTimeSource,
+          itemCount: detailExtra.itemCount,
+          systemKptMinutes: detailExtra.systemKptMinutes,
+          merchantUpdatedKptMinutes: detailExtra.merchantUpdatedKptMinutes,
+          merchantExtraPrepMinutes: detailExtra.merchantExtraPrepMinutes,
+          isScheduledOrder: detailExtra.isScheduledOrder,
+          scheduledDeliverySummary: detailExtra.scheduledDeliverySummary,
+          deliveryType: detailExtra.deliveryType,
+          contactlessDelivery: detailExtra.contactlessDelivery,
+          localityType: detailExtra.localityType,
+          localityIsSafe: detailExtra.localityIsSafe,
+          deliveredBy: detailExtra.deliveredBy,
+          deliveryInitiator: detailExtra.deliveryInitiator,
+          customerTrustTierLabel: detailExtra.customerTrustTierLabel,
+          customerUserType: detailExtra.customerUserType,
+          riderId: detailExtra.riderId ?? firstRow.riderId ?? null,
+          riderInstructionsList: detailExtra.riderInstructionsList,
+          merchantInstructionsList: detailExtra.merchantInstructionsList,
+          firstEtaAt:
+            detailExtra.firstEtaAtIso ??
+            (enrichedData[0] as { firstEtaAt?: string | Date | null }).firstEtaAt ??
+            (enrichedData[0] as { estimatedDeliveryTime?: string | Date | null })
+              .estimatedDeliveryTime ??
+            null,
+          cancellationInfo: detailExtra.cancellationInfo,
+          pickupOtp: detailExtra.pickupOtp,
+          rtoOtp: detailExtra.rtoOtp,
+          deliveryOtp: detailExtra.deliveryOtp,
+          customerFeedback: detailExtra.customerFeedback,
+        },
+      ] as unknown as typeof enrichedData;
+    }
+    if (paymentDetail != null) {
+      enrichedData = [
+        {
+          ...(enrichedData[0] as Record<string, unknown>),
+          paymentDetail,
+        },
+      ] as unknown as typeof enrichedData;
+    }
+    data = enrichedData;
+  } else if (storeId != null && Number.isFinite(storeId)) {
+    merchantSummary = await getMerchantStoreSummaryByStoreId(storeId);
+  }
+
+  return {
+    data,
+    merchantSummary,
+    remarksCount,
+    reconsCount,
+    statusHistory,
+    paymentDetail,
+    timeline,
+    riderTimeline,
+    riderTracking,
+  };
+}
+
+function buildSingleOrderResponseExtras(
+  enrichment: SingleOrderEnrichment | null
+): Record<string, unknown> {
+  if (enrichment == null) return {};
+  return {
+    ...(enrichment.merchantSummary != null && { merchantSummary: enrichment.merchantSummary }),
+    ...(enrichment.remarksCount !== undefined && { remarksCount: enrichment.remarksCount }),
+    ...(enrichment.reconsCount !== undefined && { reconsCount: enrichment.reconsCount }),
+    ...(enrichment.statusHistory !== undefined && { statusHistory: enrichment.statusHistory }),
+    ...(enrichment.paymentDetail != null && { paymentDetail: enrichment.paymentDetail }),
+    timeline: enrichment.timeline,
+    riderTimeline: enrichment.riderTimeline,
+    riderTracking: enrichment.riderTracking,
+  };
+}
 
 export const runtime = "nodejs";
 
@@ -232,7 +497,11 @@ export async function GET(request: NextRequest) {
     if (cacheKey && !skipCache) {
       const cached = getCached<Awaited<ReturnType<typeof listOrdersCore>>>(cacheKey);
       if (cached) {
-        const data = await enrichOrdersListWithStoreMeta(cached.orders);
+        let data = await enrichOrdersListWithStoreMeta(cached.orders);
+        const enrichment = await enrichSingleOrderDetail(data);
+        if (enrichment != null) {
+          data = enrichment.data;
+        }
 
         return NextResponse.json({
           success: true,
@@ -242,6 +511,7 @@ export async function GET(request: NextRequest) {
             limit: cached.limit,
             total: cached.total,
           },
+          ...buildSingleOrderResponseExtras(enrichment),
         });
       }
     }
@@ -255,15 +525,21 @@ export async function GET(request: NextRequest) {
           setCached(cacheKey, parsed, MEMORY_TTL_MS);
 
           const data = await enrichOrdersListWithStoreMeta(parsed.orders);
+          let enrichedData = data;
+          const enrichment = await enrichSingleOrderDetail(enrichedData);
+          if (enrichment != null) {
+            enrichedData = enrichment.data;
+          }
 
           return NextResponse.json({
             success: true,
-            data,
+            data: enrichedData,
             pagination: {
               page: parsed.page,
               limit: parsed.limit,
               total: parsed.total,
             },
+            ...buildSingleOrderResponseExtras(enrichment),
           });
         }
       } catch {
@@ -275,129 +551,9 @@ export async function GET(request: NextRequest) {
 
     let data: OrderCoreApiListItem[] = await enrichOrdersListWithStoreMeta(result.orders);
 
-    let merchantSummary: Awaited<ReturnType<typeof getMerchantStoreSummaryByStoreId>> = null;
-    let remarksCount: number | undefined;
-    let reconsCount: number | undefined;
-    let statusHistory: Awaited<ReturnType<typeof getOrderManualStatusHistory>> | undefined;
-    let paymentDetail: Awaited<ReturnType<typeof fetchOrderPaymentDetail>> | null = null;
-    if (result.orders.length === 1) {
-      const first = data[0] as {
-        id?: number;
-        merchantStoreId?: number | null;
-        orderType?: string;
-      };
-      const orderId = first?.id;
-      const storeId = first?.merchantStoreId;
-      if (storeId != null && Number.isFinite(storeId)) {
-        merchantSummary = await getMerchantStoreSummaryByStoreId(storeId);
-      }
-      if (orderId != null && Number.isFinite(orderId)) {
-        const firstRow = first as {
-          orderId?: string | null;
-          formattedOrderId?: string | null;
-          merchantStoreId?: number | null;
-          orderType?: string;
-          orderSource?: string | null;
-          paymentStatus?: string | null;
-          paymentMethod?: string | null;
-          grandTotal?: string | number | null;
-          itemTotal?: string | number | null;
-          addonTotal?: string | number | null;
-          tipAmount?: string | number | null;
-        };
-
-        // ETA writes are side effects — do not block the order-detail response.
-        void ensureOrderEtaWhenAccepted(orderId).catch((err) => {
-          console.error("[GET /api/orders/core] ensureOrderEtaWhenAccepted failed", err);
-        });
-        void recordEtaBreachIfNeeded(orderId).catch((err) => {
-          console.error("[GET /api/orders/core] recordEtaBreachIfNeeded failed", err);
-        });
-
-        const [remarks, recons, history, deliveryInstructions, detailExtra, paymentDetail] =
-          await Promise.all([
-            getOrderRemarksCount(orderId),
-            getOrderReconsCount(orderId),
-            getOrderManualStatusHistory(orderId),
-            first?.orderType === "food"
-              ? getFoodDeliveryInstructions(orderId)
-              : Promise.resolve(null),
-            getOrderDetailEnrichment(orderId).catch((err) => {
-              console.error("[GET /api/orders/core] order detail enrichment failed", err);
-              return null;
-            }),
-            fetchOrderPaymentDetail({
-              orderCoreId: orderId,
-              orderIdText: firstRow.orderId != null ? String(firstRow.orderId) : null,
-              formattedOrderId:
-                firstRow.formattedOrderId != null ? String(firstRow.formattedOrderId) : null,
-              displayId:
-                firstRow.formattedOrderId?.trim() ||
-                (firstRow.orderId ? String(firstRow.orderId) : `ORDER-${orderId}`),
-              merchantStoreId: firstRow.merchantStoreId ?? null,
-              orderType: firstRow.orderType ?? "food",
-              orderSource: firstRow.orderSource ?? null,
-              paymentStatus: firstRow.paymentStatus ?? null,
-              paymentMethod: firstRow.paymentMethod ?? null,
-              grandTotal:
-                firstRow.grandTotal != null ? Number(firstRow.grandTotal) : null,
-              itemTotal: firstRow.itemTotal != null ? Number(firstRow.itemTotal) : null,
-              addonTotal: firstRow.addonTotal != null ? Number(firstRow.addonTotal) : null,
-              tipAmount: firstRow.tipAmount != null ? Number(firstRow.tipAmount) : null,
-            }).catch((err) => {
-              console.error("[GET /api/orders/core] payment detail failed", err);
-              return null;
-            }),
-          ]);
-        remarksCount = remarks;
-        reconsCount = recons;
-        statusHistory = history;
-        if (deliveryInstructions !== undefined) {
-          data = [{ ...(data[0] as Record<string, unknown>), deliveryInstructions: deliveryInstructions ?? null }] as unknown as typeof data;
-        }
-        if (detailExtra != null) {
-          data = [
-            {
-              ...(data[0] as Record<string, unknown>),
-              orderTimeIso: detailExtra.orderTimeIso,
-              orderTimeSource: detailExtra.orderTimeSource,
-              itemCount: detailExtra.itemCount,
-              systemKptMinutes: detailExtra.systemKptMinutes,
-              merchantUpdatedKptMinutes: detailExtra.merchantUpdatedKptMinutes,
-              isScheduledOrder: detailExtra.isScheduledOrder,
-              scheduledDeliverySummary: detailExtra.scheduledDeliverySummary,
-              deliveryType: detailExtra.deliveryType,
-              contactlessDelivery: detailExtra.contactlessDelivery,
-              localityType: detailExtra.localityType,
-              localityIsSafe: detailExtra.localityIsSafe,
-              deliveredBy: detailExtra.deliveredBy,
-              deliveryInitiator: detailExtra.deliveryInitiator,
-              customerTrustTierLabel: detailExtra.customerTrustTierLabel,
-              customerUserType: detailExtra.customerUserType,
-              riderInstructionsList: detailExtra.riderInstructionsList,
-              merchantInstructionsList: detailExtra.merchantInstructionsList,
-              firstEtaAt:
-                detailExtra.firstEtaAtIso ??
-                (data[0] as { firstEtaAt?: string | Date | null }).firstEtaAt ??
-                (data[0] as { estimatedDeliveryTime?: string | Date | null })
-                  .estimatedDeliveryTime ??
-                null,
-              cancellationInfo: detailExtra.cancellationInfo,
-              pickupOtp: detailExtra.pickupOtp,
-              rtoOtp: detailExtra.rtoOtp,
-              deliveryOtp: detailExtra.deliveryOtp,
-            },
-          ] as unknown as typeof data;
-        }
-        if (paymentDetail != null) {
-          data = [
-            {
-              ...(data[0] as Record<string, unknown>),
-              paymentDetail,
-            },
-          ] as unknown as typeof data;
-        }
-      }
+    const enrichment = await enrichSingleOrderDetail(data);
+    if (enrichment != null) {
+      data = enrichment.data;
     }
 
     if (cacheKey) {
@@ -420,11 +576,7 @@ export async function GET(request: NextRequest) {
         limit: result.limit,
         total: result.total,
       },
-      ...(merchantSummary != null && { merchantSummary }),
-      ...(remarksCount !== undefined && { remarksCount }),
-      ...(reconsCount !== undefined && { reconsCount }),
-      ...(statusHistory !== undefined && { statusHistory }),
-      ...(paymentDetail != null && { paymentDetail }),
+      ...buildSingleOrderResponseExtras(enrichment),
     });
   } catch (error) {
     console.error("[GET /api/orders/core] Error:", error);

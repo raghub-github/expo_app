@@ -67,6 +67,7 @@ export type OrderRecord = {
   prepReadyByAt?: string | null;
   prepDelayMinutes?: number | null;
   prepDelayUseCount?: number | null;
+  preparedLateMinutes?: number | null;
   customerPhone?: string | null;
   customerEmail?: string | null;
   dropAddress?: string | null;
@@ -210,6 +211,8 @@ export function mapApiOrder(o: ApiFoodOrder): OrderRecord {
     prepReadyByAt: o.prep_ready_by_at?.trim() || null,
     prepDelayMinutes: o.prep_delay_minutes != null ? Number(o.prep_delay_minutes) : null,
     prepDelayUseCount: o.prep_delay_use_count != null ? Number(o.prep_delay_use_count) : null,
+    preparedLateMinutes:
+      o.prepared_late_minutes != null ? Number(o.prepared_late_minutes) : null,
     customerPhone: o.customer_phone?.trim() || null,
     customerEmail: o.customer_email?.trim() || null,
     dropAddress: o.drop_address?.trim() || null,

@@ -20,6 +20,7 @@ interface RiderInfo {
 
 interface TicketRow {
   id: number;
+  ticketId: string;
   riderId: number;
   orderId: number | null;
   category: string;
@@ -38,6 +39,12 @@ function resolvedByLabel(t: TicketRow): string {
   if (t.resolvedByEmail) return t.resolvedByEmail;
   if (t.resolvedByName) return t.resolvedByName;
   return "—";
+}
+
+/** Public ticket number from `unified_tickets.ticket_id` (not primary key `id`). */
+function displayTicketId(t: TicketRow): string {
+  const formatted = t.ticketId?.trim();
+  return formatted || "—";
 }
 
 export function RiderTicketsClient() {
@@ -317,7 +324,7 @@ export function RiderTicketsClient() {
                         return (
                           <React.Fragment key={t.id}>
                             <tr className={`hover:bg-gray-50/80 transition-colors ${isExpanded ? "bg-gray-50" : ""}`}>
-                              <td className="px-3 py-2 font-mono font-medium text-gray-900">{t.id}</td>
+                              <td className="px-3 py-2 font-mono font-medium text-gray-900">{displayTicketId(t)}</td>
                               <td className="px-3 py-2 text-gray-700">{t.orderId != null ? `#${t.orderId}` : "—"}</td>
                               <td className="px-3 py-2"><span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${t.status === "resolved" || t.status === "closed" ? "bg-green-100 text-green-800" : t.status === "in_progress" ? "bg-blue-100 text-blue-800" : "bg-amber-100 text-amber-800"}`}>{t.status.replace("_", " ")}</span></td>
                               <td className="px-3 py-2 font-medium text-gray-900 max-w-[160px] truncate" title={t.subject}>{t.subject}</td>
@@ -346,6 +353,7 @@ export function RiderTicketsClient() {
                                     <p className="font-semibold text-gray-800">Rider&apos;s first message</p>
                                     <p className="text-gray-700 whitespace-pre-wrap break-words">{t.message || "—"}</p>
                                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-2 pt-2 border-t border-gray-100 text-gray-600">
+                                      <div><span className="font-medium text-gray-500">Ticket ID:</span> {displayTicketId(t)}</div>
                                       {t.orderId != null && <div><span className="font-medium text-gray-500">Order ID:</span> #{t.orderId}</div>}
                                       <div><span className="font-medium text-gray-500">Resolved by:</span> {resolvedByLabel(t)}</div>
                                       {t.resolution && <div className="sm:col-span-2"><span className="font-medium text-gray-500">Resolution:</span> {t.resolution}</div>}

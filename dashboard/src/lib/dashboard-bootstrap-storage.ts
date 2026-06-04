@@ -42,3 +42,12 @@ export function loadBootstrapFromStorage<T>(maxAgeMs: number): StoredBootstrapPa
   }
 }
 
+export function clearBootstrapFromStorage(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+

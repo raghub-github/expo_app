@@ -673,6 +673,21 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     }
   }, [resolvedStoreId, fetchPartnerNotifications]);
 
+  const clearAllPartnerNotifications = useCallback(async () => {
+    if (!resolvedStoreId) return;
+    try {
+      const res = await fetch('/api/merchant/store-notifications', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ store_id: resolvedStoreId, action: 'clear_all' }),
+      });
+      if (res.ok) await fetchPartnerNotifications();
+    } catch {
+      /* ignore */
+    }
+  }, [resolvedStoreId, fetchPartnerNotifications]);
+
   useEffect(() => {
     const sync = () => setResolvedStoreId(readPartnerSelectedStoreId(restaurantId));
     sync();
@@ -2777,14 +2792,25 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                     <h2 id="partner-sheet-title" className="truncate text-sm font-semibold leading-tight text-gray-900 sm:text-base">
                       {sheetTitle[sheet]}
                     </h2>
-                    {sheet === 'notifications' && partnerUnreadCount > 0 ? (
-                      <button
-                        type="button"
-                        onClick={() => void markAllPartnerNotificationsRead()}
-                        className="shrink-0 text-xs font-semibold text-sky-600 hover:text-sky-800"
-                      >
-                        Mark all read
-                      </button>
+                    {sheet === 'notifications' && partnerNotifications.length > 0 ? (
+                      <>
+                        {partnerUnreadCount > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => void markAllPartnerNotificationsRead()}
+                            className="shrink-0 text-xs font-semibold text-sky-600 hover:text-sky-800"
+                          >
+                            Mark all read
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => void clearAllPartnerNotifications()}
+                          className="shrink-0 text-xs font-semibold text-red-600 hover:text-red-800"
+                        >
+                          Clear all
+                        </button>
+                      </>
                     ) : null}
                   </div>
                   {sheet === 'status' && activeOutletSummary ? (

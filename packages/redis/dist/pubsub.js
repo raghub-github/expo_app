@@ -1,0 +1,34 @@
+/**
+ * Thin pub/sub wrapper. The ws-gateway service (Stage 3) is the primary
+ * consumer; the backend publishes here when an order's state changes so
+ * connected clients can receive realtime pushes without polling.
+ *
+ * Channels follow the pattern `{domain}:{id}` — e.g. `order:GM10000042`,
+ * `rider:42`, `store:45`. Subscribers can also use Redis pattern subscribe
+ * (`psubscribe`) if they need wildcards.
+ */
+import { getRedis, getRedisSubscriber } from "./client.js";
+export async function publish(channel, payload) {
+    const redis = getRedis();
+    await redis.publish(channel, JSON.stringify(payload));
+}
+export async function subscribe(channel, handler) {
+    const sub = getRedisSubscriber();
+    const listener = (ch, message) => {
+        if (ch !== channel)
+            return;
+        try {
+            handler(JSON.parse(message));
+        }
+        catch {
+            handler(message);
+        }
+    };
+    sub.on("message", listener);
+    await sub.subscribe(channel);
+    return async () => {
+        await sub.unsubscribe(channel).catch(() => undefined);
+        sub.off("message", listener);
+    };
+}
+//# sourceMappingURL=pubsub.js.map

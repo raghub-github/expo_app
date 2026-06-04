@@ -1,7 +1,6 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
 import {
   Loader2,
   RefreshCw,
@@ -9,27 +8,20 @@ import {
   X,
   Wallet,
   Settings2,
-  ListX,
-  Plus,
-  Info,
   Store,
   Bike,
   Users,
+  ArrowRight,
 } from "lucide-react";
+import Link from "next/link";
 import { readApiJson } from "@/lib/payment/read-api-json";
-import {
-  PAYMENT_MILESTONE_OPTIONS,
-  PAYMENT_CANCELLED_BY_OPTIONS,
-  CUSTOMER_REFUND_OPTIONS,
-  describeCancellationRule,
-} from "@/lib/payment/cancellation-rule-labels";
 
-type Tab = "settlement" | "cancellation" | "payouts";
+type Tab = "settlement" | "payouts";
 type PaymentParty = "merchant" | "rider" | "customer";
 
 export function PaymentManagementClient() {
   const [party, setParty] = useState<PaymentParty>("merchant");
-  const [tab, setTab] = useState<Tab>("cancellation");
+  const [tab, setTab] = useState<Tab>("payouts");
   const [loading, setLoading] = useState(true);
   const [migrationRequired, setMigrationRequired] = useState(false);
   const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
@@ -37,11 +29,8 @@ export function PaymentManagementClient() {
   const [holdRules, setHoldRules] = useState<Record<string, unknown>[]>([]);
   const [payoutRules, setPayoutRules] = useState<Record<string, unknown>[]>([]);
   const [commissionRules, setCommissionRules] = useState<Record<string, unknown>[]>([]);
-  const [cancellationRules, setCancellationRules] = useState<Record<string, unknown>[]>([]);
   const [payouts, setPayouts] = useState<Record<string, unknown>[]>([]);
   const [savingId, setSavingId] = useState<string | null>(null);
-  const [editId, setEditId] = useState<number | null>(null);
-  const [showNew, setShowNew] = useState(false);
 
   const loadConfig = useCallback(async () => {
     setLoading(true);
@@ -71,19 +60,6 @@ export function PaymentManagementClient() {
     }
   }, []);
 
-  const loadCancellationRules = useCallback(async () => {
-    try {
-      const res = await fetch("/api/super-admin/payment-cancellation-rules", { cache: "no-store" });
-      const data = await readApiJson(res);
-      if (res.ok && data.success) {
-        setCancellationRules((data.rows as Record<string, unknown>[]) ?? []);
-        setMigrationRequired(Boolean(data.migrationRequired));
-      }
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
   const loadPayouts = useCallback(async () => {
     try {
       const res = await fetch("/api/super-admin/payment-payouts", { cache: "no-store" });
@@ -96,16 +72,8 @@ export function PaymentManagementClient() {
 
   useEffect(() => {
     void loadConfig();
-    void loadCancellationRules();
     void loadPayouts();
-  }, [loadConfig, loadCancellationRules, loadPayouts]);
-
-  useEffect(() => {
-    if (party !== "merchant") {
-      setShowNew(false);
-      setEditId(null);
-    }
-  }, [party]);
+  }, [loadConfig, loadPayouts]);
 
   const patchRule = async (table: string, id: number, payload: Record<string, unknown>) => {
     setSavingId(`${table}-${id}`);
@@ -125,35 +93,6 @@ export function PaymentManagementClient() {
       setPayoutRules((data.payoutRules as Record<string, unknown>[]) ?? []);
       setCommissionRules((data.commissionRules as Record<string, unknown>[]) ?? []);
       setMsg({ type: "ok", text: "Saved" });
-    } catch (e) {
-      setMsg({ type: "err", text: e instanceof Error ? e.message : "Save failed" });
-    } finally {
-      setSavingId(null);
-    }
-  };
-
-  const saveCancellationRule = async (id: number | null, payload: Record<string, unknown>) => {
-    setSavingId(id ? `cancel-${id}` : "cancel-new");
-    try {
-      const res = await fetch(
-        id
-          ? `/api/super-admin/payment-cancellation-rules/${id}`
-          : "/api/super-admin/payment-cancellation-rules",
-        {
-          method: id ? "PATCH" : "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        }
-      );
-      const data = await readApiJson(res);
-      if (!res.ok || !data.success) {
-        setMsg({ type: "err", text: String(data.error ?? "Save failed") });
-        return;
-      }
-      setMsg({ type: "ok", text: "Cancellation rule saved" });
-      setEditId(null);
-      setShowNew(false);
-      await loadCancellationRules();
     } catch (e) {
       setMsg({ type: "err", text: e instanceof Error ? e.message : "Save failed" });
     } finally {
@@ -185,7 +124,6 @@ export function PaymentManagementClient() {
 
   const refreshAll = () => {
     void loadConfig();
-    void loadCancellationRules();
     void loadPayouts();
   };
 
@@ -204,9 +142,13 @@ export function PaymentManagementClient() {
       </div>
 
       <p className="text-xs text-gray-500 max-w-3xl leading-snug">
-        <strong className="text-gray-700">Delivered</strong> → merchant earning & hold ·{" "}
-        <strong className="text-gray-700">Cancellation</strong> → pre/post pickup, fault, refunds ·{" "}
-        <strong className="text-gray-700">Payouts</strong> → withdraw approvals.
+        <strong className="text-gray-700">Withdrawals & payouts</strong> â†’ approve merchant bank transfers Â·{" "}
+        <strong className="text-gray-700">Settlement</strong> â†’ delivered-order merchant share, hold window & debit limits.
+        Cancellation / refund rules live in{" "}
+        <Link href="/dashboard/super-admin/rule-engine" className="text-indigo-600 hover:underline">
+          Financial Rule Engine
+        </Link>
+        .
       </p>
 
       {migrationRequired && (
@@ -238,55 +180,28 @@ export function PaymentManagementClient() {
           <div className="flex flex-wrap items-end justify-between gap-2 border-b border-gray-200">
             <div className="flex min-w-0 flex-1 flex-wrap gap-2">
               <TabBtn
-                active={tab === "cancellation"}
-                onClick={() => setTab("cancellation")}
-                icon={<ListX className="h-4 w-4" />}
+                active={tab === "payouts"}
+                onClick={() => setTab("payouts")}
+                icon={<Wallet className="h-4 w-4" />}
               >
-                Cancellation rules ({cancellationRules.length})
+                Withdrawals & payouts ({payouts.length})
               </TabBtn>
               <TabBtn
                 active={tab === "settlement"}
                 onClick={() => setTab("settlement")}
                 icon={<Settings2 className="h-4 w-4" />}
               >
-                Delivered & settlement
-              </TabBtn>
-              <TabBtn
-                active={tab === "payouts"}
-                onClick={() => setTab("payouts")}
-                icon={<Wallet className="h-4 w-4" />}
-              >
-                Payouts ({payouts.length})
+                Settlement & debit limits
               </TabBtn>
             </div>
-            {tab === "cancellation" && (
-              <button
-                type="button"
-                disabled={migrationRequired}
-                onClick={() => {
-                  setShowNew(true);
-                  setEditId(null);
-                }}
-                className="mb-0.5 inline-flex shrink-0 items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-              >
-                <Plus className="h-4 w-4" />
-                Add rule
-              </button>
-            )}
+            <Link
+              href="/dashboard/super-admin/rule-engine"
+              className="mb-0.5 inline-flex shrink-0 items-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-medium text-indigo-800 hover:bg-indigo-100"
+            >
+              Cancellation / refund rules
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
           </div>
-
-          {tab === "cancellation" && (
-            <CancellationRulesPanel
-              rules={cancellationRules}
-              migrationRequired={migrationRequired}
-              editId={editId}
-              setEditId={setEditId}
-              showNew={showNew}
-              setShowNew={setShowNew}
-              savingId={savingId}
-              onSave={saveCancellationRule}
-            />
-          )}
 
           {tab === "settlement" &&
             (loading ? (
@@ -296,7 +211,7 @@ export function PaymentManagementClient() {
             ) : (
               <div className="grid gap-6 lg:grid-cols-2">
                 <RuleCard
-                  title="Delivered — merchant share %"
+                  title="Delivered - merchant share %"
                   rows={settlementRules}
                   fields={[
                     { key: "merchant_share_value", label: "Merchant share % of order", type: "number" },
@@ -318,7 +233,7 @@ export function PaymentManagementClient() {
                   title="Withdraw / payout"
                   rows={payoutRules}
                   fields={[
-                    { key: "min_payout_amount", label: "Min payout ₹", type: "number" },
+                    { key: "min_payout_amount", label: "Min payout â‚¹", type: "number" },
                     { key: "requires_admin_approval", label: "Needs super-admin approval", type: "boolean" },
                   ]}
                   table="payment_payout_rules"
@@ -367,290 +282,6 @@ function TabBtn({
       {icon}
       {children}
     </button>
-  );
-}
-
-function CancellationRulesPanel({
-  rules,
-  migrationRequired,
-  editId,
-  setEditId,
-  showNew,
-  setShowNew,
-  savingId,
-  onSave,
-}: {
-  rules: Record<string, unknown>[];
-  migrationRequired: boolean;
-  editId: number | null;
-  setEditId: (id: number | null) => void;
-  showNew: boolean;
-  setShowNew: (v: boolean) => void;
-  savingId: string | null;
-  onSave: (id: number | null, payload: Record<string, unknown>) => Promise<void>;
-}) {
-  const [showGuide, setShowGuide] = useState(false);
-  const editing = rules.find((r) => Number(r.id) === editId);
-  const formOpen = showNew || editId !== null;
-  const closeForm = () => {
-    setShowNew(false);
-    setEditId(null);
-  };
-
-  return (
-    <div className="space-y-3 pt-3">
-      <PaymentSideSheet
-        open={formOpen}
-        title={editing ? "Edit cancellation rule" : "New cancellation rule"}
-        onClose={closeForm}
-      >
-        <CancellationRuleForm
-          key={editing ? String(editing.id) : "new"}
-          initial={editing}
-          saving={savingId === "cancel-new" || (editId != null && savingId === `cancel-${editId}`)}
-          onCancel={closeForm}
-          onSave={(payload) => void onSave(editId, payload)}
-        />
-      </PaymentSideSheet>
-
-      <PaymentSideSheet
-        open={showGuide}
-        title="Payment rules by order stage"
-        onClose={() => setShowGuide(false)}
-      >
-        <CancellationMilestoneGuide />
-      </PaymentSideSheet>
-
-      <div className="rounded-lg border border-gray-200 bg-white overflow-x-auto">
-        <table className="min-w-full text-sm">
-          <thead className="bg-gray-50 text-left text-xs uppercase text-gray-500">
-            <tr>
-              <th className="px-3 py-2">
-                <span className="inline-flex items-center gap-1.5">
-                  Scenario
-                  <button
-                    type="button"
-                    onClick={() => setShowGuide(true)}
-                    className="inline-flex h-5 w-5 items-center justify-center rounded-full text-indigo-600 hover:bg-indigo-50 normal-case"
-                    aria-label="How payment rules map to order stages"
-                    title="How payment rules map to order stages"
-                  >
-                    <Info className="h-3.5 w-3.5" />
-                  </button>
-                </span>
-              </th>
-              <th className="px-3 py-2">Merchant paid?</th>
-              <th className="px-3 py-2">Customer refund</th>
-              <th className="px-3 py-2">Platform commission</th>
-              <th className="px-3 py-2">Active</th>
-              <th className="px-3 py-2" />
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {rules.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
-                  {migrationRequired ? "Run migrations first" : "No rules — add or run seed 0240"}
-                </td>
-              </tr>
-            ) : (
-              rules.map((r) => (
-                <tr key={String(r.id)} className={editId === Number(r.id) ? "bg-indigo-50" : ""}>
-                  <td className="px-3 py-2">
-                    <div className="font-medium text-gray-900">{String(r.rule_name)}</div>
-                    <div className="text-xs text-gray-500">{describeCancellationRule(r)}</div>
-                    <div className="text-[10px] font-mono text-gray-400">{String(r.rule_code)}</div>
-                  </td>
-                  <td className="px-3 py-2">
-                    {r.merchant_gets_payment ? `Yes (${r.merchant_payment_value ?? 0}%)` : "No"}
-                  </td>
-                  <td className="px-3 py-2">
-                    {String(r.customer_refund_mode)} {Number(r.customer_refund_value) > 0 ? `· ${r.customer_refund_value}%` : ""}
-                  </td>
-                  <td className="px-3 py-2">{r.platform_keeps_commission ? "Keep" : "Waive"}</td>
-                  <td className="px-3 py-2">{r.is_active ? "Yes" : "No"}</td>
-                  <td className="px-3 py-2">
-                    <button
-                      type="button"
-                      className="text-indigo-600 text-xs font-medium hover:underline"
-                      onClick={() => { setEditId(Number(r.id)); setShowNew(false); }}
-                    >
-                      Edit
-                    </button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-const FORM_LABEL = "mb-1.5 block text-sm font-medium text-gray-900";
-const FORM_INPUT =
-  "w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/25";
-const FORM_CHECK_ROW =
-  "flex items-center gap-2.5 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm font-medium text-gray-900";
-
-function CancellationRuleForm({
-  initial,
-  saving,
-  onCancel,
-  onSave,
-}: {
-  initial?: Record<string, unknown>;
-  saving: boolean;
-  onCancel: () => void;
-  onSave: (payload: Record<string, unknown>) => void;
-}) {
-  const [draft, setDraft] = useState({
-    rule_code: String(initial?.rule_code ?? `RULE_${Date.now()}`),
-    rule_name: String(initial?.rule_name ?? ""),
-    order_milestone: String(initial?.order_milestone ?? "PRE_PICKUP_CANCELLED"),
-    cancelled_by: initial?.cancelled_by ? String(initial.cancelled_by) : "",
-    merchant_gets_payment: Boolean(initial?.merchant_gets_payment),
-    merchant_payment_value: Number(initial?.merchant_payment_value ?? 0),
-    customer_refund_mode: String(initial?.customer_refund_mode ?? "FULL"),
-    customer_refund_value: Number(initial?.customer_refund_value ?? 100),
-    platform_keeps_commission: Boolean(initial?.platform_keeps_commission ?? true),
-    priority: Number(initial?.priority ?? 100),
-    is_active: Boolean(initial?.is_active ?? true),
-  });
-
-  return (
-    <div className="flex min-h-full flex-col text-gray-900">
-      <div className="flex-1 space-y-4 pb-4">
-        <div>
-          <span className={FORM_LABEL}>Rule name</span>
-          <input
-            className={FORM_INPUT}
-            value={draft.rule_name}
-            onChange={(e) => setDraft((d) => ({ ...d, rule_name: e.target.value }))}
-          />
-        </div>
-        {!initial && (
-          <div>
-            <span className={FORM_LABEL}>Rule code (unique)</span>
-            <input
-              className={`${FORM_INPUT} font-mono text-xs`}
-              value={draft.rule_code}
-              onChange={(e) => setDraft((d) => ({ ...d, rule_code: e.target.value }))}
-            />
-          </div>
-        )}
-        <div>
-          <span className={FORM_LABEL}>When (order stage)</span>
-          <select
-            className={FORM_INPUT}
-            value={draft.order_milestone}
-            onChange={(e) => setDraft((d) => ({ ...d, order_milestone: e.target.value }))}
-          >
-            {PAYMENT_MILESTONE_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label} — {o.hint}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <span className={FORM_LABEL}>Cancelled by (fault / party)</span>
-          <select
-            className={FORM_INPUT}
-            value={draft.cancelled_by}
-            onChange={(e) => setDraft((d) => ({ ...d, cancelled_by: e.target.value }))}
-          >
-            {PAYMENT_CANCELLED_BY_OPTIONS.map((o) => (
-              <option key={o.value || "any"} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <label className={FORM_CHECK_ROW}>
-          <input
-            type="checkbox"
-            className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-            checked={draft.merchant_gets_payment}
-            onChange={(e) => setDraft((d) => ({ ...d, merchant_gets_payment: e.target.checked }))}
-          />
-          Merchant gets payment
-        </label>
-        <div>
-          <span className={FORM_LABEL}>Merchant payment %</span>
-          <input
-            type="number"
-            min={0}
-            max={100}
-            className={FORM_INPUT}
-            value={draft.merchant_payment_value}
-            onChange={(e) => setDraft((d) => ({ ...d, merchant_payment_value: Number(e.target.value) }))}
-          />
-        </div>
-        <div>
-          <span className={FORM_LABEL}>Customer refund</span>
-          <select
-            className={FORM_INPUT}
-            value={draft.customer_refund_mode}
-            onChange={(e) => setDraft((d) => ({ ...d, customer_refund_mode: e.target.value }))}
-          >
-            {CUSTOMER_REFUND_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <span className={FORM_LABEL}>Refund %</span>
-          <input
-            type="number"
-            min={0}
-            max={100}
-            className={FORM_INPUT}
-            value={draft.customer_refund_value}
-            onChange={(e) => setDraft((d) => ({ ...d, customer_refund_value: Number(e.target.value) }))}
-          />
-        </div>
-        <label className={FORM_CHECK_ROW}>
-          <input
-            type="checkbox"
-            className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-            checked={draft.platform_keeps_commission}
-            onChange={(e) => setDraft((d) => ({ ...d, platform_keeps_commission: e.target.checked }))}
-          />
-          Platform keeps commission
-        </label>
-        <div>
-          <span className={FORM_LABEL}>Priority (lower = first)</span>
-          <input
-            type="number"
-            min={0}
-            className={FORM_INPUT}
-            value={draft.priority}
-            onChange={(e) => setDraft((d) => ({ ...d, priority: Number(e.target.value) }))}
-          />
-        </div>
-      </div>
-      <div className="sticky bottom-0 -mx-4 flex gap-2 border-t border-gray-200 bg-white px-4 py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.06)] sm:-mx-5 sm:px-5">
-        <button
-          type="button"
-          disabled={saving}
-          onClick={() => onSave(draft)}
-          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
-        >
-          {saving ? "Saving…" : "Save"}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
   );
 }
 
@@ -705,100 +336,9 @@ function PaymentPartyComingSoon({ party }: { party: PaymentParty }) {
     <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-6 py-16 text-center">
       <p className="text-lg font-semibold text-gray-900">{label} payment settings</p>
       <p className="mt-2 text-sm text-gray-500 max-w-md mx-auto">
-        Coming soon. Use <strong>Merchant</strong> to configure cancellation, settlement, and payout
-        rules available today.
+        Coming soon. Use <strong>Merchant</strong> for withdrawal approvals and settlement settings.
       </p>
     </div>
-  );
-}
-
-function CancellationMilestoneGuide() {
-  return (
-    <div className="text-sm text-indigo-900 space-y-4">
-      <p className="text-gray-600">
-        Set which payment applies at each order stage. Match <strong>When (order stage)</strong> and{" "}
-        <strong>Cancelled by</strong> in each rule.
-      </p>
-      <ul className="list-disc pl-5 space-y-2 text-indigo-800">
-        <li>
-          <strong>Pre-pickup</strong> — ORDER_CREATED, ACCEPTED, MERCHANT_PREPARING, PRE_PICKUP_CANCELLED
-        </li>
-        <li>
-          <strong>Post-pickup</strong> — RIDER_ASSIGNED, OUT_FOR_DELIVERY, POST_PICKUP_CANCELLED
-        </li>
-        <li>
-          <strong>Delivered</strong> — tab &quot;Delivered &amp; settlement&quot; (not cancellation)
-        </li>
-        <li>
-          <strong>After delivered cancel/refund</strong> — CANCELLED_AFTER_DELIVERED
-        </li>
-        <li>
-          <strong>Fault</strong> — set <em>Cancelled by</em> = Customer / Merchant / Rider / Admin / System
-        </li>
-      </ul>
-    </div>
-  );
-}
-
-function PaymentSideSheet({
-  open,
-  title,
-  onClose,
-  children,
-}: {
-  open: boolean;
-  title: string;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  useEffect(() => {
-    if (!open) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => {
-      document.body.style.overflow = prev;
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open, onClose]);
-
-  if (!open || typeof document === "undefined") return null;
-
-  return createPortal(
-    <div className="fixed inset-0 z-[10000] flex justify-end" role="presentation">
-      <button
-        type="button"
-        className="absolute inset-0 bg-slate-900/50 backdrop-blur-[1px]"
-        aria-label="Close panel"
-        onClick={onClose}
-      />
-      <aside
-        className="relative flex h-dvh w-full max-w-xl flex-col border-l border-gray-200 bg-white text-gray-900 shadow-2xl"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="payment-side-sheet-title"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-4 py-3">
-          <h2 id="payment-side-sheet-title" className="text-base font-semibold text-gray-900 pr-3">
-            {title}
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
-            aria-label="Close"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 sm:px-5 sm:py-4">{children}</div>
-      </aside>
-    </div>,
-    document.body
   );
 }
 
@@ -831,8 +371,8 @@ function PayoutsTable({
             payouts.map((p) => (
               <tr key={String(p.id)}>
                 <td className="px-4 py-3">{String(p.store_name ?? p.store_code)}</td>
-                <td className="px-4 py-3">₹{Number(p.amount ?? 0).toLocaleString("en-IN")}</td>
-                <td className="px-4 py-3">₹{Number(p.net_payout_amount ?? 0).toLocaleString("en-IN")}</td>
+                <td className="px-4 py-3">â‚¹{Number(p.amount ?? 0).toLocaleString("en-IN")}</td>
+                <td className="px-4 py-3">â‚¹{Number(p.net_payout_amount ?? 0).toLocaleString("en-IN")}</td>
                 <td className="px-4 py-3 flex gap-2">
                   <button
                     type="button"
@@ -922,7 +462,7 @@ function RuleCard({
         onClick={() => void onSave(table, id, draft)}
         className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
       >
-        {savingId === `${table}-${id}` ? "Saving…" : "Save"}
+        {savingId === `${table}-${id}` ? "Savingâ€¦" : "Save"}
       </button>
     </div>
   );

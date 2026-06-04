@@ -361,6 +361,8 @@ export default function ItemsRefundModal({
   const [showMerchantDebit, setShowMerchantDebit] = useState(false);
   const [showSubmit, setShowSubmit] = useState(false);
   const [showWarning, setShowWarning] = useState(false);
+  const [enginePreview, setEnginePreview] = useState<Record<string, unknown> | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [isRefundCompleted, setIsRefundCompleted] = useState(false);
   const [refundActionMessage, setRefundActionMessage] = useState('');
   const [selectAll, setSelectAll] = useState(false);
@@ -801,7 +803,7 @@ export default function ItemsRefundModal({
     }, 0);
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!refundAttribute || !catalogReasonId || !refundRejection || !refundType || !fault || !merchantDebit) {
       onToast?.('Please complete all refund options');
       return;
@@ -824,6 +826,38 @@ export default function ItemsRefundModal({
       refund_without_cancellation: 'Partial refund processed',
     };
     setRefundActionMessage(actionMessages[refundType] ?? '');
+    setEnginePreview(null);
+
+    const orderId = orderIdProp ?? null;
+    if (orderId != null) {
+      setPreviewLoading(true);
+      try {
+        const totalAmount = calculateTotalRefundAmount();
+        const res = await fetch(`/api/orders/${orderId}/refunds/preview`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            refundType,
+            refundAmount: totalAmount,
+            catalogReasonId,
+            attribute: refundAttribute,
+            rejection: refundRejection,
+            refundMetadata: refundType === 'refund_without_cancellation'
+              ? { refundItems: refundItems.filter(i => i.refundType !== 'NONE').map(i => ({ id: i.id, refundPercentage: i.refundPercentage })) }
+              : undefined,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.success) {
+          setEnginePreview((data.preview as Record<string, unknown>) ?? null);
+        }
+      } catch {
+        /* preview is best-effort */
+      } finally {
+        setPreviewLoading(false);
+      }
+    }
+
     setShowWarning(true);
   };
 
@@ -999,9 +1033,31 @@ export default function ItemsRefundModal({
               </h3>
             </div>
             <div className="p-6">
-              <p className="text-slate-700 mb-6">
+              <p className="text-slate-700 mb-4">
                 You are about to create a refund. Once submitted, this action cannot be undone. You will be responsible for this refund.
               </p>
+              {previewLoading && (
+                <p className="mb-4 flex items-center gap-2 text-sm text-slate-500">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Calculating rule engine outcome…
+                </p>
+              )}
+              {enginePreview && !previewLoading && (
+                <div className="mb-4 rounded-md border border-indigo-100 bg-indigo-50/60 p-3 text-xs text-slate-700">
+                  <p className="font-semibold text-indigo-900">Financial Rule Engine preview</p>
+                  <p className="mt-1">
+                    Rule: {String(enginePreview.rule_code ?? '—')} · Status:{' '}
+                    {String(enginePreview.execution_status ?? '—')}
+                  </p>
+                  {enginePreview.amounts && typeof enginePreview.amounts === 'object' ? (
+                    <p className="mt-1">
+                      Refund: ₹{Number((enginePreview.amounts as Record<string, unknown>).refund ?? 0).toFixed(2)}
+                    </p>
+                  ) : null}
+                  {String(enginePreview.execution_status) === 'APPROVAL_REQUIRED' && (
+                    <p className="mt-1 text-amber-800">This refund will require super-admin approval before settlement.</p>
+                  )}
+                </div>
+              )}
               <div className="flex justify-end gap-3">
                 <button type="button" onClick={cancelRefund} className="px-6 py-2.5 bg-gray-200 hover:bg-gray-300 text-gray-800 border-none rounded-sm font-medium cursor-pointer transition-all text-sm">
                   Cancel

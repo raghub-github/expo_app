@@ -5,14 +5,28 @@
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant'
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared'
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { client as pgClient } from '@/lib/drizzle'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
-const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-  auth: { autoRefreshToken: false, persistSession: false },
-})
+// Lazy singleton — building this at module load fails during `next build`'s
+// "Collecting page data" pass because process.env.NEXT_PUBLIC_SUPABASE_URL is
+// not yet populated for routes that import this module. Defer until first
+// request handler call.
+let _supabase: SupabaseClient | null = null
+function getSupabase(): SupabaseClient {
+  if (_supabase) return _supabase
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ''
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? ''
+  if (!supabaseUrl || !supabaseServiceKey) {
+    throw new Error(
+      'assertStoreAccess: NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set',
+    )
+  }
+  _supabase = createClient(supabaseUrl, supabaseServiceKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  })
+  return _supabase
+}
 
 export type AssertStoreResult =
   | { ok: true; storeIdNum: number }
@@ -85,11 +99,15 @@ export async function assertStoreAccess(storeIdParam: string | null): Promise<As
     return { ok: true, storeIdNum: owned.id }
   }
 
-  const { data: storeExists } = await supabase
+  const { data: storeExists, error: storeError } = await getSupabase()
     .from('merchant_stores')
     .select('id')
     .eq('store_id', String(storeIdParam).trim())
     .maybeSingle()
+
+  if (storeError) {
+    return { ok: false, error: 'Store lookup failed', status: 500 }
+  }
 
   if (!storeExists?.id) {
     return { ok: false, error: 'Store not found', status: 404 }

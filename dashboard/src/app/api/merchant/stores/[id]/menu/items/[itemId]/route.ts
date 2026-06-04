@@ -139,7 +139,7 @@ export async function GET(
       `,
     ]);
 
-    const customizations = customizationsRows as { id: number }[];
+    const customizations = customizationsRows as unknown as { id: number }[];
     const optionRows = await Promise.all(
       customizations.map((c) => fetchAddonsForCustomization(sql, Number(c.id)))
     );

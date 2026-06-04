@@ -22,7 +22,7 @@
  * for UI; always enforce in API routes with this engine or actions.ts.
  */
 
-import { getDb } from "../db/client";
+import { getDb, getSql } from "../db/client";
 import { eq, and, inArray, or, isNull, sql } from "drizzle-orm";
 import {
   getSystemUserByEmail,
@@ -475,9 +475,38 @@ export async function requireSuperAdmin(
  * Get all dashboard access for a system user
  */
 export async function getUserDashboardAccess(systemUserId: number): Promise<DashboardAccess[]> {
-  const db = getDb();
-  
+  const mapRows = (
+    rows: Array<{
+      id: number;
+      system_user_id?: number;
+      systemUserId?: number;
+      dashboard_type?: string;
+      dashboardType?: string;
+      access_level?: string;
+      accessLevel?: string;
+      is_active?: boolean | null;
+      isActive?: boolean | null;
+      granted_by?: number;
+      grantedBy?: number;
+      granted_by_name?: string | null;
+      grantedByName?: string | null;
+      granted_at?: Date;
+      grantedAt?: Date;
+    }>
+  ): DashboardAccess[] =>
+    rows.map((row) => ({
+      id: Number(row.id),
+      systemUserId: Number(row.system_user_id ?? row.systemUserId),
+      dashboardType: String(row.dashboard_type ?? row.dashboardType ?? ""),
+      accessLevel: String(row.access_level ?? row.accessLevel ?? "VIEW_ONLY"),
+      isActive: (row.is_active ?? row.isActive) === true,
+      grantedBy: Number(row.granted_by ?? row.grantedBy ?? 0),
+      grantedByName: (row.granted_by_name ?? row.grantedByName) || undefined,
+      grantedAt: (row.granted_at ?? row.grantedAt) as Date,
+    }));
+
   try {
+    const db = getDb();
     const result = await db
       .select()
       .from(dashboardAccess)
@@ -487,19 +516,24 @@ export async function getUserDashboardAccess(systemUserId: number): Promise<Dash
           eq(dashboardAccess.isActive, true)
         )
       );
-    
-    return result.map((row) => ({
-      id: row.id,
-      systemUserId: row.systemUserId,
-      dashboardType: row.dashboardType,
-      accessLevel: row.accessLevel,
-      isActive: row.isActive === true,      grantedBy: row.grantedBy,
-      grantedByName: row.grantedByName || undefined,
-      grantedAt: row.grantedAt,
-    }));
+
+    return mapRows(result);
   } catch (error) {
-    console.error("Error fetching dashboard access:", error);
-    return [];
+    // Drizzle/postgres-js can throw transient "reading 'length'" during dev hot reload or pool churn.
+    try {
+      const sql = getSql();
+      const rows = await sql`
+        SELECT id, system_user_id, dashboard_type, access_level, is_active,
+               granted_by, granted_by_name, granted_at
+        FROM dashboard_access
+        WHERE system_user_id = ${systemUserId}
+          AND is_active = true
+      `;
+      return mapRows(rows as Parameters<typeof mapRows>[0]);
+    } catch (fallbackError) {
+      console.error("Error fetching dashboard access:", error, fallbackError);
+      return [];
+    }
   }
 }
 

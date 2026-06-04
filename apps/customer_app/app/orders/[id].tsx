@@ -13,17 +13,20 @@ import {
   Image,
   Alert,
   InteractionManager,
+  Linking,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
-import MapView, { Marker, Polyline, Region } from "react-native-maps";
-import * as Clipboard from "expo-clipboard";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { customerMapProps } from "@/lib/mapViewProps";
+import * as Clipboard from "expo-clipboard";
+import { MapboxWebDeliveryMap } from "@/components/maps/MapboxWebDeliveryMap";
+import type { DeliveryMapPayload } from "@/components/maps/mapbox-web-delivery-html";
 import { orderService } from "@/services/order.service";
-import { etaService, minutesUntil } from "@/services/eta.service";
+import { etaService } from "@/services/eta.service";
+import { resolveLiveEtaMinutes } from "@/lib/order-eta-display";
+import { PrepDelayMarqueeBanner } from "@/components/orders/PrepDelayMarqueeBanner";
 import { getRouteCoordinates } from "@/services/directions.service";
 import { useOrderStore } from "@/store/orderStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -34,6 +37,17 @@ import { getOrderDetailInitialData } from "@/lib/orderDetailCache";
 import { resolveOrderItemDiet } from "@/lib/reorderFromOrder";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { OrderItemCustomizationModal } from "@/components/orders/OrderItemCustomizationModal";
+import { OrderDeliveryRatingSheet } from "@/components/orders/OrderDeliveryRatingSheet";
+import {
+  getCustomerOrderStatusBannerText,
+  getPersonRideStatusBannerText,
+  isPersonRideOrder,
+  isPersonRideSearchingStatus,
+  isTerminalOrderStatus,
+  normalizeCustomerOrderStatus,
+} from "@/lib/customer-order-status-display";
+import { RideAcceptedTrackingScreen } from "@/components/ride/RideAcceptedTrackingScreen";
+import { RideOrderDetailsScreen } from "@/components/ride/RideOrderDetailsScreen";
 import {
   orderItemHasCustomizations,
   type OrderDetailLineItem,
@@ -49,35 +63,6 @@ const MUTED = "#828282";
 
 const DEFAULT_LAT = 20.5937;
 const DEFAULT_LNG = 78.9629;
-const DELTA = 0.012;
-
-function getMapRegion(
-  rider: { latitude: number; longitude: number } | null,
-  deliveryLat: number | null,
-  deliveryLng: number | null,
-  pickupLat: number | null,
-  pickupLng: number | null
-): Region {
-  const points: { lat: number; lng: number }[] = [];
-  if (rider) points.push({ lat: rider.latitude, lng: rider.longitude });
-  if (deliveryLat != null && deliveryLng != null) points.push({ lat: deliveryLat, lng: deliveryLng });
-  if (pickupLat != null && pickupLng != null) points.push({ lat: pickupLat, lng: pickupLng });
-  if (points.length === 0) {
-    return { latitude: DEFAULT_LAT, longitude: DEFAULT_LNG, latitudeDelta: DELTA, longitudeDelta: DELTA };
-  }
-  const lats = points.map((p) => p.lat);
-  const lngs = points.map((p) => p.lng);
-  const minLat = Math.min(...lats);
-  const maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs);
-  const maxLng = Math.max(...lngs);
-  return {
-    latitude: (minLat + maxLat) / 2,
-    longitude: (minLng + maxLng) / 2,
-    latitudeDelta: Math.max((maxLat - minLat) * 1.4, DELTA),
-    longitudeDelta: Math.max((maxLng - minLng) * 1.4, DELTA),
-  };
-}
 
 function getCompactAddressLine(address: string | null | undefined) {
   const raw = (address ?? "").trim();
@@ -117,28 +102,18 @@ function formatMoney(value: number) {
   return `₹${value.toFixed(2)}`;
 }
 
-function getStatusBannerText(status: string, paymentStatus?: string | null) {
-  const s = status.toUpperCase();
-  if (s === "CANCELLED") return "Order was cancelled";
-  if (s === "PAYMENT_FAILED" || s === "FAILED" || paymentStatus?.toLowerCase() === "failed") {
-    return "Payment failed";
-  }
-  if (s === "DELIVERED") return "Order was delivered";
-  if (s === "ON_THE_WAY" || s === "OUT_FOR_DELIVERY") return "Order is on the way";
-  if (s === "PICKED_UP") return "Order picked up";
-  if (s === "PREPARING") return "Restaurant is preparing your order";
-  return "Order in progress";
-}
-
 export default function OrderDetailsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, rate } = useLocalSearchParams<{ id: string; rate?: string }>();
   const orderId = id ?? "";
-  const mapRef = useRef<MapView>(null);
   const [mapReady, setMapReady] = useState(false);
   const [customizationItem, setCustomizationItem] = useState<OrderDetailLineItem | null>(null);
+  const [ratingSheetVisible, setRatingSheetVisible] = useState(false);
+  const [ratingDismissed, setRatingDismissed] = useState(false);
+  const [ratingSubmitting, setRatingSubmitting] = useState(false);
+  const prevDeliveredRef = useRef(false);
 
   const { data: order, isLoading } = useQuery({
     queryKey: ["order", orderId],
@@ -146,14 +121,33 @@ export default function OrderDetailsScreen() {
     enabled: !!orderId,
     initialData: () => getOrderDetailInitialData(queryClient, orderId),
     staleTime: 30_000,
+    refetchInterval: (query) => {
+      const status = (query.state.data?.status ?? "").toUpperCase();
+      if (
+        !status ||
+        status === "DELIVERED" ||
+        status === "CANCELLED" ||
+        status === "PAYMENT_FAILED" ||
+        status === "FAILED"
+      ) {
+        return false;
+      }
+      return 5_000;
+    },
   });
 
-  const isInProgress =
-    !!order &&
-    order.status !== "DELIVERED" &&
-    order.status !== "CANCELLED" &&
-    order.status !== "PAYMENT_FAILED" &&
-    order.status !== "FAILED";
+  const orderStatus = normalizeCustomerOrderStatus(order?.status);
+  const isInProgress = !!order && !isTerminalOrderStatus(orderStatus);
+
+  useEffect(() => {
+    if (!order || !isPersonRideOrder(order)) return;
+    if (isPersonRideSearchingStatus(order, order.status) && !order.rider) {
+      router.replace({
+        pathname: "/home/service/ride-searching",
+        params: { orderId: order.orderId },
+      });
+    }
+  }, [order, router]);
 
   useEffect(() => {
     if (!isInProgress) {
@@ -168,15 +162,22 @@ export default function OrderDetailsScreen() {
     queryKey: ["orderEta", orderId],
     queryFn: () => etaService.getForOrder(orderId),
     enabled: !!orderId && !!isInProgress,
-    refetchInterval: isInProgress ? 60_000 : false,
-    staleTime: 30_000,
+    refetchInterval: isInProgress ? 15_000 : false,
+    staleTime: 10_000,
   });
+
+  const prepDelayBanner = useOrderStore((s) => s.prepDelayBanner);
+  const showOrderPrepDelayMarquee =
+    !!prepDelayBanner &&
+    prepDelayBanner.orderId === orderId &&
+    prepDelayBanner.expiresAt > Date.now();
 
   const { data: tracking } = useQuery({
     queryKey: ["orderTracking", orderId],
     queryFn: () => orderService.getOrderTracking(orderId),
     enabled: !!orderId && !!isInProgress,
-    refetchInterval: isInProgress ? 2500 : false,
+    refetchInterval: isInProgress ? 2000 : false,
+    staleTime: 1500,
   });
 
   const deliveryLat = order?.deliveryLat != null ? order.deliveryLat : DEFAULT_LAT + 0.008;
@@ -198,32 +199,110 @@ export default function OrderDetailsScreen() {
 
   useEffect(() => {
     if (!order) return;
-    const status = (order.status ?? "").toUpperCase();
+    const status = normalizeCustomerOrderStatus(order.status);
     if (status === "DELIVERED" || status === "CANCELLED") {
       removeActiveOrder(order.orderId);
     } else {
-      updateOrderStatus(order.orderId, status as import("@/store/orderStore").OrderStatus, 20);
+      const etaMins = resolveLiveEtaMinutes(etaData) ?? 20;
+      updateOrderStatus(order.orderId, status as import("@/store/orderStore").OrderStatus, etaMins);
     }
-  }, [order?.status, order?.orderId, updateOrderStatus, removeActiveOrder]);
+  }, [order?.status, order?.orderId, etaData, updateOrderStatus, removeActiveOrder]);
 
-  const mapRegion = useMemo(
-    () =>
-      getMapRegion(tracking?.rider ?? null, deliveryLat, deliveryLng, pickupLat, pickupLng),
-    [tracking?.rider, deliveryLat, deliveryLng, pickupLat, pickupLng]
+  useEffect(() => {
+    if (rate === "1" || rate === "true") {
+      setRatingDismissed(false);
+    }
+  }, [rate]);
+
+  useEffect(() => {
+    if (!order) return;
+    const delivered = normalizeCustomerOrderStatus(order.status) === "DELIVERED";
+    const alreadyRated = order.storeRatingSubmitted === true;
+    const wantsRate = rate === "1" || rate === "true";
+    if (delivered && !alreadyRated && (!ratingDismissed || wantsRate)) {
+      setRatingSheetVisible(true);
+    }
+    if (!delivered) {
+      prevDeliveredRef.current = false;
+    } else if (delivered && !prevDeliveredRef.current) {
+      prevDeliveredRef.current = true;
+    }
+  }, [order?.status, order?.storeRatingSubmitted, ratingDismissed, rate, order]);
+
+  const handleSubmitStoreRating = async (payload: {
+    storeRating: number;
+    deliveryRating: number;
+    reviewText?: string;
+    riderReviewText?: string;
+    riderTipAmount?: number;
+  }) => {
+    if (!orderId) return;
+    setRatingSubmitting(true);
+    try {
+      await orderService.submitStoreRating(orderId, payload);
+      await queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+      await queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      setRatingSheetVisible(false);
+      Alert.alert("Thank you!", "Your rating helps us improve.");
+    } catch (e) {
+      const msg =
+        (e as { response?: { data?: { message?: string; error?: string } } })?.response?.data
+          ?.message ??
+        (e as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+        "Could not submit rating. Please try again.";
+      Alert.alert("Rating failed", msg);
+    } finally {
+      setRatingSubmitting(false);
+    }
+  };
+
+  const deliveryMapPayload = useMemo<DeliveryMapPayload>(
+    () => ({
+      pickupLat,
+      pickupLng,
+      dropLat: deliveryLat,
+      dropLng: deliveryLng,
+      riderLat: tracking?.rider?.latitude ?? null,
+      riderLng: tracking?.rider?.longitude ?? null,
+      route: routeCoordinates,
+    }),
+    [
+      pickupLat,
+      pickupLng,
+      deliveryLat,
+      deliveryLng,
+      tracking?.rider?.latitude,
+      tracking?.rider?.longitude,
+      routeCoordinates,
+    ]
   );
 
-  const liveEtaMins = (() => {
-    if (!etaData) return null;
-    if (etaData.live?.promisedDeliveryAt) {
-      const m = minutesUntil(etaData.live.promisedDeliveryAt);
-      if (m != null && m > 0) return m;
+  const deliveryMapFitCoords = useMemo(() => {
+    const points: { latitude: number; longitude: number }[] = [];
+    if (routeCoordinates.length >= 2) {
+      points.push(...routeCoordinates);
+    } else {
+      points.push({ latitude: pickupLat, longitude: pickupLng });
+      points.push({ latitude: deliveryLat, longitude: deliveryLng });
     }
-    if (etaData.promise?.promisedDeliveryAt) {
-      const m = minutesUntil(etaData.promise.promisedDeliveryAt);
-      if (m != null && m > 0) return m;
+    if (tracking?.rider) {
+      points.push({
+        latitude: tracking.rider.latitude,
+        longitude: tracking.rider.longitude,
+      });
     }
-    return etaData.live?.maxMinutes ?? etaData.promise?.maxMinutes ?? null;
-  })();
+    return points;
+  }, [routeCoordinates, pickupLat, pickupLng, deliveryLat, deliveryLng, tracking?.rider]);
+
+  const deliveryMapCenter = useMemo(
+    () => ({
+      latitude: (pickupLat + deliveryLat) / 2,
+      longitude: (pickupLng + deliveryLng) / 2,
+    }),
+    [pickupLat, pickupLng, deliveryLat, deliveryLng]
+  );
+
+  const liveEtaMins = resolveLiveEtaMinutes(etaData);
 
   const handleOpenHelp = () => {
     router.push({
@@ -272,19 +351,69 @@ export default function OrderDetailsScreen() {
   }
 
   const displayOrderId = order.formattedOrderId ?? order.orderId;
-  const restaurantName = order.merchantPublicName ?? order.merchantName ?? "Restaurant";
-  const merchantArea = getCompactAddressLine(order.merchantAddress);
+  const isRideOrder = isPersonRideOrder(order);
+  const isRideSearching =
+    isRideOrder && isPersonRideSearchingStatus(order, order.status) && !order.rider;
+
+  if (isRideSearching) {
+    return (
+      <View style={[styles.center, styles.screen]}>
+        <ActivityIndicator size="large" color={GREEN} />
+        <Text style={styles.mutedText}>Opening ride search…</Text>
+      </View>
+    );
+  }
+
+  if (isRideOrder && isInProgress) {
+    return (
+      <>
+        <AndroidBackHandler />
+        <RideAcceptedTrackingScreen
+          order={order}
+          tracking={tracking}
+          etaMinutes={liveEtaMins}
+          onBack={() => router.back()}
+          onOpenSupport={handleOpenHelp}
+        />
+      </>
+    );
+  }
+
+  if (isRideOrder && isTerminalOrderStatus(orderStatus)) {
+    return (
+      <>
+        <AndroidBackHandler />
+        <RideOrderDetailsScreen
+          order={order}
+          onBack={() => router.back()}
+          onOpenSupport={handleOpenHelp}
+        />
+      </>
+    );
+  }
+
+  const restaurantName = isRideOrder
+    ? "Your ride"
+    : order.merchantPublicName ?? order.merchantName ?? "Restaurant";
+  const merchantArea = isRideOrder
+    ? getCompactAddressLine(order.merchantAddress)
+    : getCompactAddressLine(order.merchantAddress);
+  const dropAddress = order.deliveryAddress?.trim() || null;
   const bannerUri = toAbsoluteImageUrl(order.merchantBannerUrl);
   const items = order.items ?? [];
   const bill = parseOrderBillFromSnapshot(order.billingSnapshot, order.totalAmount ?? null);
-  const isCancelled = order.status === "CANCELLED";
-  const isDelivered = order.status === "DELIVERED";
+  const isCancelled = orderStatus === "CANCELLED";
+  const isDelivered = orderStatus === "DELIVERED";
   const isFailed =
-    order.status === "PAYMENT_FAILED" ||
-    order.status === "FAILED" ||
+    orderStatus === "PAYMENT_FAILED" ||
+    orderStatus === "FAILED" ||
     order.paymentStatus?.toLowerCase() === "failed";
   const paymentMethodLabel = (order.paymentMethod ?? "UPI").replace(/_/g, " ").toUpperCase();
-  const statusBanner = getStatusBannerText(order.status, order.paymentStatus);
+  const statusBanner = isRideOrder
+    ? getPersonRideStatusBannerText(orderStatus, order.paymentStatus)
+    : getCustomerOrderStatusBannerText(orderStatus, order.paymentStatus);
+  const pageTitle = isRideOrder ? "Ride Details" : "Order Details";
+  const billTitle = isRideOrder ? "Fare Summary" : "Bill Summary";
 
   return (
     <>
@@ -295,7 +424,7 @@ export default function OrderDetailsScreen() {
           <TouchableOpacity onPress={() => router.back()} style={styles.headerSide} hitSlop={12}>
             <Ionicons name="arrow-back" size={22} color={TEXT} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Order Details</Text>
+          <Text style={styles.headerTitle}>{pageTitle}</Text>
           <TouchableOpacity onPress={handleOpenHelp} style={styles.headerSideRight} hitSlop={12}>
             <Ionicons name="headset-outline" size={18} color={GREEN} />
             <Text style={styles.supportText}>Support</Text>
@@ -307,6 +436,10 @@ export default function OrderDetailsScreen() {
           contentContainerStyle={{ paddingBottom: insets.bottom + 88, paddingHorizontal: 16, paddingTop: 4 }}
           showsVerticalScrollIndicator={false}
         >
+          {showOrderPrepDelayMarquee ? (
+            <PrepDelayMarqueeBanner message={prepDelayBanner!.message} />
+          ) : null}
+
           <View style={styles.card}>
             <View style={styles.statusRow}>
               <View style={[styles.statusIcon, (isCancelled || isFailed) && styles.statusIconDanger]}>
@@ -320,10 +453,58 @@ export default function OrderDetailsScreen() {
             </View>
           </View>
 
+          {isDelivered && order.storeRatingSubmitted && order.storeRating != null && !isRideOrder ? (
+            <View style={styles.card}>
+              <Text style={styles.feedbackCardTitle}>Your feedback</Text>
+              <View style={styles.feedbackRatingRow}>
+                <Text style={styles.feedbackRatingLabel}>Restaurant</Text>
+                <View style={styles.feedbackStars}>
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <Ionicons
+                      key={n}
+                      name={n <= order.storeRating! ? "star" : "star-outline"}
+                      size={18}
+                      color={n <= order.storeRating! ? "#F59E0B" : "#D1D5DB"}
+                    />
+                  ))}
+                </View>
+              </View>
+              {order.deliveryRating != null ? (
+                <View style={styles.feedbackRatingRow}>
+                  <Text style={styles.feedbackRatingLabel}>Delivery</Text>
+                  <View style={styles.feedbackStars}>
+                    {[1, 2, 3, 4, 5].map((n) => (
+                      <Ionicons
+                        key={n}
+                        name={n <= order.deliveryRating! ? "star" : "star-outline"}
+                        size={18}
+                        color={n <= order.deliveryRating! ? "#F59E0B" : "#D1D5DB"}
+                      />
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+              {order.storeReviewText ? (
+                <Text style={styles.feedbackReviewText}>
+                  <Text style={styles.feedbackReviewLabel}>Restaurant: </Text>
+                  {order.storeReviewText}
+                </Text>
+              ) : null}
+              {order.riderReviewText ? (
+                <Text style={styles.feedbackReviewText}>
+                  <Text style={styles.feedbackReviewLabel}>Delivery: </Text>
+                  {order.riderReviewText}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+
           <View style={styles.card}>
             <View style={styles.restaurantRow}>
               <View style={styles.restaurantLogo}>
-                {bannerUri ? (
+                {isRideOrder ? (
+                  <Ionicons name="bicycle" size={22} color={GREEN} />
+                ) : bannerUri ? (
                   <Image source={{ uri: bannerUri }} style={styles.restaurantLogoImg} resizeMode="cover" />
                 ) : (
                   <Text style={styles.restaurantInitial}>{restaurantName.slice(0, 1).toUpperCase()}</Text>
@@ -334,21 +515,42 @@ export default function OrderDetailsScreen() {
                   {restaurantName}
                 </Text>
                 {!!merchantArea && (
-                  <Text style={styles.restaurantArea} numberOfLines={1}>
-                    {merchantArea}
+                  <Text style={styles.restaurantArea} numberOfLines={isRideOrder ? 2 : 1}>
+                    {isRideOrder ? `Pickup · ${merchantArea}` : merchantArea}
                   </Text>
                 )}
+                {isRideOrder && dropAddress ? (
+                  <Text style={styles.restaurantArea} numberOfLines={2}>
+                    Drop · {dropAddress}
+                  </Text>
+                ) : null}
               </View>
-              <TouchableOpacity
-                style={styles.callBtn}
-                onPress={() => {
-                  const storeId = order.merchantPublicStoreId;
-                  if (storeId) router.push(`/home/merchant/${storeId}`);
-                }}
-                activeOpacity={0.85}
-              >
-                <Ionicons name="call-outline" size={18} color={GREEN} />
-              </TouchableOpacity>
+              {!isRideOrder ? (
+                <TouchableOpacity
+                  style={styles.callBtn}
+                  onPress={() => {
+                    const storeId = order.merchantPublicStoreId;
+                    if (storeId) router.push(`/home/merchant/${storeId}`);
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="call-outline" size={18} color={GREEN} />
+                </TouchableOpacity>
+              ) : order.rider?.phone ? (
+                <TouchableOpacity
+                  style={styles.callBtn}
+                  onPress={() => {
+                    const phone = order.rider?.phone?.replace(/\D/g, "");
+                    if (!phone) return;
+                    const normalized =
+                      phone.length === 10 ? `+91${phone}` : phone.startsWith("+") ? phone : `+${phone}`;
+                    Linking.openURL(`tel:${normalized}`).catch(() => {});
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="call-outline" size={18} color={GREEN} />
+                </TouchableOpacity>
+              ) : null}
             </View>
 
             <View style={styles.orderIdRow}>
@@ -358,7 +560,8 @@ export default function OrderDetailsScreen() {
               </TouchableOpacity>
             </View>
 
-            {items.map((item, index) => {
+            {!isRideOrder
+              ? items.map((item, index) => {
               const diet = toDietType(item.vegNonVeg);
               const lineTotal = item.lineTotal ?? item.price * item.quantity;
               const lineItem: OrderDetailLineItem = {
@@ -422,50 +625,40 @@ export default function OrderDetailsScreen() {
                   ) : null}
                 </View>
               );
-            })}
+            })
+              : null}
           </View>
 
-          {isInProgress ? (
+          {isInProgress && !isRideOrder ? (
             <View style={styles.card}>
               <View style={styles.mapWrap}>
                 {mapReady ? (
-                  <MapView ref={mapRef} style={styles.map} {...customerMapProps} region={mapRegion}>
-                    {routeCoordinates.length > 0 ? (
-                      <Polyline coordinates={routeCoordinates} strokeWidth={4} strokeColor={GREEN} />
-                    ) : null}
-                    <Marker coordinate={{ latitude: pickupLat, longitude: pickupLng }} anchor={{ x: 0.5, y: 0.5 }}>
-                      <View style={styles.pickupMarker}>
-                        <Ionicons name="restaurant" size={14} color="#fff" />
-                      </View>
-                    </Marker>
-                    <Marker coordinate={{ latitude: deliveryLat, longitude: deliveryLng }} anchor={{ x: 0.5, y: 0.5 }}>
-                      <View style={styles.dropMarker}>
-                        <Ionicons name="home" size={14} color="#fff" />
-                      </View>
-                    </Marker>
-                    {tracking?.rider ? (
-                      <Marker
-                        coordinate={{ latitude: tracking.rider.latitude, longitude: tracking.rider.longitude }}
-                        anchor={{ x: 0.5, y: 0.5 }}
-                      >
-                        <View style={styles.riderMarker}>
-                          <Ionicons name="bicycle" size={16} color="#fff" />
-                        </View>
-                      </Marker>
-                    ) : null}
-                  </MapView>
+                  <MapboxWebDeliveryMap
+                    style={styles.map}
+                    center={deliveryMapCenter}
+                    payload={deliveryMapPayload}
+                    fitCoords={deliveryMapFitCoords}
+                  />
                 ) : (
                   <View style={styles.mapPlaceholder}>
                     <ActivityIndicator size="small" color={GREEN} />
                   </View>
                 )}
-                {liveEtaMins != null ? (
+                {liveEtaMins != null && liveEtaMins > 0 ? (
                   <View style={styles.etaPill}>
                     <Ionicons name="time-outline" size={16} color={GREEN} />
                     <Text style={styles.etaText}>Arriving in ~{liveEtaMins} mins</Text>
                   </View>
                 ) : null}
               </View>
+              {order.pickupOtp ? (
+                <View style={styles.otpRow}>
+                  <Ionicons name="key-outline" size={16} color={GREEN} />
+                  <Text style={styles.otpText}>
+                    Pickup OTP: <Text style={styles.otpValue}>{order.pickupOtp}</Text>
+                  </Text>
+                </View>
+              ) : null}
               {order.deliveryOtp ? (
                 <View style={styles.otpRow}>
                   <Ionicons name="shield-checkmark-outline" size={16} color={GREEN} />
@@ -483,17 +676,19 @@ export default function OrderDetailsScreen() {
                 <View style={styles.billIconWrap}>
                   <Ionicons name="receipt-outline" size={16} color={MUTED} />
                 </View>
-                <Text style={styles.billTitle}>Bill Summary</Text>
+                <Text style={styles.billTitle}>{billTitle}</Text>
               </View>
               <TouchableOpacity onPress={handleInvoice} hitSlop={8}>
                 <Ionicons name="download-outline" size={20} color={MUTED} />
               </TouchableOpacity>
             </View>
 
-            <View style={styles.billRow}>
-              <Text style={styles.billLabel}>Item total</Text>
-              <Text style={styles.billValue}>{formatMoney(bill.itemTotal || items.reduce((s, i) => s + (i.lineTotal ?? i.price * i.quantity), 0))}</Text>
-            </View>
+            {!isRideOrder ? (
+              <View style={styles.billRow}>
+                <Text style={styles.billLabel}>Item total</Text>
+                <Text style={styles.billValue}>{formatMoney(bill.itemTotal || items.reduce((s, i) => s + (i.lineTotal ?? i.price * i.quantity), 0))}</Text>
+              </View>
+            ) : null}
             {bill.gstAndPackaging > 0.005 && (
               <View style={styles.billRow}>
                 <Text style={styles.billLabel}>GST & restaurant packaging</Text>
@@ -611,6 +806,20 @@ export default function OrderDetailsScreen() {
           item={customizationItem}
           onClose={() => setCustomizationItem(null)}
         />
+
+        <OrderDeliveryRatingSheet
+          visible={ratingSheetVisible && isDelivered && !order.storeRatingSubmitted}
+          storeName={restaurantName}
+          storeBannerUri={bannerUri}
+          riderName={order.rider?.name}
+          checkoutTipAmount={order.tipAmount ?? 0}
+          submitting={ratingSubmitting}
+          onClose={() => {
+            setRatingSheetVisible(false);
+            setRatingDismissed(true);
+          }}
+          onSubmit={handleSubmitStoreRating}
+        />
       </View>
     </>
   );
@@ -673,36 +882,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#EEF2F0",
   },
-  pickupMarker: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: GREEN,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2,
-    borderColor: "#fff",
-  },
-  dropMarker: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: "#374151",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2,
-    borderColor: "#fff",
-  },
-  riderMarker: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: GREEN,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2,
-    borderColor: "#fff",
-  },
   etaPill: {
     position: "absolute",
     top: 10,
@@ -740,6 +919,37 @@ const styles = StyleSheet.create({
   },
   statusIconDanger: { backgroundColor: "#FEF2F2" },
   statusText: { flex: 1, fontSize: 16, fontWeight: "700", color: TEXT },
+  feedbackCardTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: TEXT,
+    marginBottom: 10,
+  },
+  feedbackRatingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  feedbackRatingLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: MUTED,
+  },
+  feedbackStars: {
+    flexDirection: "row",
+    gap: 4,
+  },
+  feedbackReviewText: {
+    marginTop: 8,
+    fontSize: 13,
+    lineHeight: 19,
+    color: TEXT,
+  },
+  feedbackReviewLabel: {
+    fontWeight: "600",
+    color: MUTED,
+  },
   restaurantRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   restaurantLogo: {
     width: 48,

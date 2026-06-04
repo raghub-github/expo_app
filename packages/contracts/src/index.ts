@@ -89,10 +89,21 @@ export type Session = z.infer<typeof SessionSchema>;
 
 export const RiderProfileSchema = z.object({
   riderId: z.string(),
-  name: z.string().min(1),
-  city: z.string().min(1),
-  preferredLanguage: z.string().min(2),
+  riderDisplayId: z.string(),
+  userId: z.string(),
+  name: z.string().nullable(),
+  mobile: z.string(),
+  city: z.string().nullable(),
+  state: z.string().nullable(),
+  pincode: z.string().nullable(),
+  address: z.string().nullable(),
+  preferredLanguage: z.string(),
+  referralCode: z.string().nullable(),
+  referredByDisplayId: z.string().nullable(),
+  selfieUrl: z.string().nullable(),
   approvalStatus: RiderApprovalStatusSchema,
+  accountStatus: z.string(),
+  onboardingStatus: z.string(),
 });
 export type RiderProfile = z.infer<typeof RiderProfileSchema>;
 
@@ -196,6 +207,9 @@ export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;
 // Merchant Wallet Engine
 // =========================
 
-export * from "./wallet";
+// Explicit `.js` so the compiled ESM output passes Node's strict resolver
+// (Node ESM requires file extensions; tsc with moduleResolution: Bundler
+// tolerates the `.js` even though the source is `.ts`).
+export * from "./wallet.js";
 
 

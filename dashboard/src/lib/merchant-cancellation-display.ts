@@ -36,6 +36,12 @@ export function merchantCancellationDisplay(args: {
 /** Shown on merchant app / partner site timeline and order cards for dashboard cancellations. */
 export const GATIMITRA_TEAM_REJECTION_LABEL = "Rejected by GatiMitra Team";
 
+const CATALOG_REASON_RE = /^(CUSTOMER|MERCHANT|RIDER|OTHER)\s-\s/i;
+
+export function isCatalogCancellationReason(reason: string | null | undefined): boolean {
+  return CATALOG_REASON_RE.test((reason ?? "").trim());
+}
+
 const CANCELLED_BY_TYPE_LABEL: Record<string, string> = {
   store: "Merchant",
   customer: "Customer",

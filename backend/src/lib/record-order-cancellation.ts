@@ -107,14 +107,10 @@ export async function recordOrderCancellation(
   `;
   const row = existing[0];
   const refund =
-    input.refundStatus != null && input.refundAmount != null
-      ? { refundStatus: input.refundStatus, refundAmount: input.refundAmount }
+    input.refundStatus != null
+      ? { refundStatus: input.refundStatus, refundAmount: input.refundAmount ?? null }
       : resolveOrderCancellationRefund({
-          previousStatus: input.previousStatus ?? String(row?.previous_status ?? ""),
-          acceptedAt: input.acceptedAt ?? row?.accepted_at ?? null,
-          grandTotal: input.grandTotal ?? row?.grand_total ?? 0,
-          cancelMode: input.cancelMode,
-          rejectedReason: input.displayReason,
+          engineResult: (input.metadata?.financial_rule_engine as Record<string, unknown>) ?? undefined,
         });
 
   const linkedId = Number(row?.cancellation_reason_id);

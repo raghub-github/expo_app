@@ -23,7 +23,10 @@
       "Bash(grep -v '^packages$')",
       "Bash(npm install *)",
       "Bash(cd /c/Users/HP/expo_app && grep -A8 \"^  dashboard:\\\\|^  partnersite:\" infra/docker/docker-compose.prod.yml | head -30)",
-      "Read(//c/c/Users/HP/expo_app/infra/docker/**)"
+      "Read(//c/c/Users/HP/expo_app/infra/docker/**)",
+      "Bash(npm run *)",
+      "Bash(git add *)",
+      "Bash(git commit --no-verify -m ' *)"
     ]
   }
 }

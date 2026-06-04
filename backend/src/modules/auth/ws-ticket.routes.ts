@@ -27,6 +27,16 @@ const body = z.object({
 const TICKET_TTL_SEC = 60;
 
 export async function wsTicketRoutes(app: FastifyInstance) {
+  /** REST backend does not host websockets — avoids opaque 404 in dev logs. */
+  app.get("/ws", async (_req, reply) => {
+    return reply.status(426).send({
+      error: "websocket_upgrade_required",
+      message:
+        "WebSocket connections use ws-gateway (default port 4100). Set EXPO_PUBLIC_WS_BASE_URL on the rider app.",
+      wsPath: "/v1/ws",
+    });
+  });
+
   app.register(async (scoped) => {
     await scoped.register(auth, { required: true });
 

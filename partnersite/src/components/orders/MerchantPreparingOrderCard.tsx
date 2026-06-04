@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
-import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
+import { resolveMerchantCtm } from '@/lib/merchant-order-ctm';
 import {
   isPrepCountdownExpired,
   prepReadyCountdownLabel,
@@ -194,7 +194,7 @@ export function MerchantPreparingOrderCard({
   const items = Array.isArray(order.items) ? order.items : [];
   const itemCount = computeOrderItemQuantityCount(order);
   const total =
-    order.pricing?.total ?? Number(order.food_items_total_value ?? order.grand_total ?? 0);
+    resolveMerchantCtm(order);
   const badge = vegBadgeLabel(order.veg_non_veg);
   const utensilsLabel = getUtensilsCustomerLabel(order);
   const showCutlery =

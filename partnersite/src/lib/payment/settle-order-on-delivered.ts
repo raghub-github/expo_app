@@ -63,9 +63,9 @@ export async function settleMerchantOrderOnDelivered(
     const walletId = Number((walletRows[0] as { wallet_id?: number })?.wallet_id);
     const ledgerRows = await sql`
       SELECT merchant_wallet_credit(
-        ${walletId}, ${gross}, ${'ORDER_EARNING'}, ${'LOCKED'}, ${'ORDER'},
+        ${walletId}, ${gross}, ${'ORDER_EARNING'}, ${'AVAILABLE'}, ${'ORDER'},
         ${input.ordersFoodId}, ${`order_earning_${input.ordersFoodId}`},
-        ${`Order #${input.ordersCoreId} delivered`},
+        ${`Order delivered`},
         ${JSON.stringify({ orders_core_id: input.ordersCoreId })}::jsonb
       ) AS ledger_id
     `;

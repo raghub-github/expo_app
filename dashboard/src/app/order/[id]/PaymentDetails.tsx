@@ -3,6 +3,8 @@
 import { useMemo, useRef, useEffect, useState } from 'react';
 import type { OrderPaymentDetail, OrderPaymentRecord } from '@/lib/orders/order-payment-detail';
 import type { OrderItemsPricing } from '@/lib/orderItemsPayload';
+import { customerDiscountFromOrderPricing } from '@/lib/orderItemsPayload';
+import type { OrderDiscountOfferSource } from '@/lib/merchant-billing-discount';
 
 interface OrderForPaymentCard {
   id: number;
@@ -56,6 +58,16 @@ const formatNum = (value?: number | null) => {
   if (value == null || !Number.isFinite(Number(value))) return '—';
   return Number(value).toFixed(2);
 };
+
+function discountOfferPillClass(source: OrderDiscountOfferSource): string {
+  if (source === 'Platform') {
+    return 'bg-violet-50 text-violet-700 border-violet-100';
+  }
+  if (source === 'Store') {
+    return 'bg-amber-50 text-amber-800 border-amber-100';
+  }
+  return 'bg-slate-100 text-slate-700 border-slate-200';
+}
 
 const TH =
   'text-left py-2 px-3 text-[10px] font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200 whitespace-nowrap';
@@ -365,10 +377,15 @@ export default function PaymentDetails({
       const deliveryFee =
         paymentDetail.deliveryFee ??
         (deliveryFromItems != null && deliveryFromItems > 0 ? deliveryFromItems : null);
+      const itemsDiscount = customerDiscountFromOrderPricing(orderItemsPricing);
       return {
         totalAmount: totalCtc,
         totalCtm,
         totalCashbackEarned: paymentDetail.totalCashbackEarned,
+        totalDiscountGranted:
+          paymentDetail.totalDiscountGranted ?? itemsDiscount.amount,
+        discountOfferSource:
+          paymentDetail.discountOfferSource ?? itemsDiscount.offerSource,
         deliveryFee,
         source: paymentDetail.source,
         paymentMode: paymentDetail.paymentMode,
@@ -393,10 +410,14 @@ export default function PaymentDetails({
       (customerFromItems != null && customerFromItems > 0 ? customerFromItems : null) ??
       null;
 
+    const fallbackDiscount = customerDiscountFromOrderPricing(orderItemsPricing);
+
     return {
       totalAmount: totalCtc,
       totalCtm: pickMerchantAmount(null, totalCtc),
       totalCashbackEarned: null,
+      totalDiscountGranted: fallbackDiscount.amount,
+      discountOfferSource: fallbackDiscount.offerSource,
       deliveryFee:
         deliveryFromItems != null && deliveryFromItems > 0 ? deliveryFromItems : null,
       source: order.orderSource ? order.orderSource.toString() : '—',
@@ -471,13 +492,20 @@ export default function PaymentDetails({
               {formatCurrency(resolved.totalCtm)}
             </span>
           </p>
-          <p className="text-[12px]">
+          <p className="text-[12px] flex flex-wrap items-center gap-x-1.5 gap-y-1">
             <span className="text-gati-text-secondary font-medium">
-              Total Cashback Earned:
+              Total Discount Granted on Ord:
             </span>{' '}
             <span className="text-gati-text-primary font-medium">
-              {formatCurrency(resolved.totalCashbackEarned)}
+              {formatCurrency(resolved.totalDiscountGranted)}
             </span>
+            {resolved.discountOfferSource ? (
+              <span
+                className={`inline-flex items-center rounded-full border px-1.5 py-px text-[9px] font-semibold leading-none ${discountOfferPillClass(resolved.discountOfferSource)}`}
+              >
+                {resolved.discountOfferSource}
+              </span>
+            ) : null}
           </p>
           <p className="text-[12px]">
             <span className="text-gati-text-secondary font-medium">Delivery Fee:</span>{' '}

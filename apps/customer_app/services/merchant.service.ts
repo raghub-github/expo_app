@@ -3,7 +3,10 @@
  */
 
 import api from "./api";
-import { getCachedMenuItemFullConfig, setCachedMenuItemFullConfig } from "@/lib/menu-item-config-query";
+import {
+  getCachedMenuItemFullConfig,
+  setCachedMenuItemFullConfig,
+} from "@/lib/menu-item-config-cache";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 const MERCHANTS_PREFIX = "/v1/merchants";
@@ -68,6 +71,8 @@ export type MenuItem = {
   hasCustomizations?: boolean;
   hasAddons?: boolean;
   hasVariants?: boolean;
+  /** False when item is out of stock; omitted means available. */
+  inStock?: boolean;
 };
 
 export type MenuItemFullConfig = {
@@ -202,6 +207,15 @@ function pickFirstString(...candidates: unknown[]): string | null {
   return null;
 }
 
+function pickOpenAtValue(...candidates: unknown[]): string | number | null {
+  for (const c of candidates) {
+    if (c == null) continue;
+    if (typeof c === "string" && c.trim().length > 0) return c.trim();
+    if (typeof c === "number" && Number.isFinite(c)) return c;
+  }
+  return null;
+}
+
 function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknown>): MerchantSummary {
   const bannerRaw = pickFirstString(item.banner_url, item.bannerUrl);
   const logoRaw = pickFirstString(
@@ -224,16 +238,16 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
     banner_url: bannerAbs ?? bannerRaw,
     displayImage: toAbsoluteImageUrl(chosen),
     galleryImages: galleryImages.length > 0 ? galleryImages : undefined,
-    nextOpenAt:
-      item.nextOpenAt ??
-      (item as Record<string, unknown>).nextOpenAt ??
-      (item as Record<string, unknown>).next_open_at ??
-      null,
-    nextCloseAt:
-      item.nextCloseAt ??
-      (item as Record<string, unknown>).nextCloseAt ??
-      (item as Record<string, unknown>).next_close_at ??
-      null,
+    nextOpenAt: pickOpenAtValue(
+      item.nextOpenAt,
+      (item as Record<string, unknown>).nextOpenAt,
+      (item as Record<string, unknown>).next_open_at
+    ),
+    nextCloseAt: pickOpenAtValue(
+      item.nextCloseAt,
+      (item as Record<string, unknown>).nextCloseAt,
+      (item as Record<string, unknown>).next_close_at
+    ),
     completedOrderCount: (() => {
       const raw =
         item.completedOrderCount ??
@@ -307,9 +321,8 @@ function normalizeMerchantDetail(data: MerchantDetail): MerchantDetail {
     liveStatus:
       data.liveStatus ??
       (r.liveStatus === "OPEN" || r.liveStatus === "CLOSED" ? r.liveStatus : undefined),
-    nextOpenAt: data.nextOpenAt ?? (r.nextOpenAt as string | null) ?? (r.next_open_at as string | null) ?? null,
-    nextCloseAt:
-      data.nextCloseAt ?? (r.nextCloseAt as string | null) ?? (r.next_close_at as string | null) ?? null,
+    nextOpenAt: pickOpenAtValue(data.nextOpenAt, r.nextOpenAt, r.next_open_at),
+    nextCloseAt: pickOpenAtValue(data.nextCloseAt, r.nextCloseAt, r.next_close_at),
   };
 }
 

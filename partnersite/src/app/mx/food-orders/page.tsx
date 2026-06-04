@@ -38,6 +38,7 @@ import {
   MoreVertical,
 } from 'lucide-react';
 import { type OrdersFoodRow, type FoodOrderStats } from '@/hooks/useFoodOrders';
+import { usePastRidersEligibility } from '@/hooks/usePastRidersEligibility';
 import { PageSkeletonOrders } from '@/components/PageSkeleton';
 import { fetchStoreById } from '@/lib/database';
 import { MerchantStore } from '@/lib/merchantStore';
@@ -55,7 +56,10 @@ import {
 import { OrderPanel } from '@/components/orders/OrderPanel';
 import { MerchantOrderItemsList } from '@/components/orders/MerchantOrderItemsList';
 import { MerchantOrderBillSummary } from '@/components/orders/MerchantOrderBillSummary';
-import { resolveMerchantInstructionsForDisplay } from '@/lib/merchant-order-instructions';
+import { resolveMerchantInstructionsForDisplay, formatMerchantInstructionsForCard } from '@/lib/merchant-order-instructions';
+import { resolveMerchantCtm } from '@/lib/merchant-order-ctm';
+import { formatInr } from '@/lib/format-inr';
+import { resolvePreparedLateMinutes } from '@/lib/order-prep-time';
 import type { NormalizedOrderLineItem } from '@/lib/orderLineItems';
 import { OrderRidersHistorySidesheet } from '@/components/orders/OrderRidersHistorySidesheet';
 import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
@@ -64,6 +68,8 @@ import { prefetchOrderTimeline } from '@/lib/orderTimelineCache';
 import { OrderCustomerSidesheet } from '@/components/orders/OrderCustomerSidesheet';
 import { OrderTimelineModal } from '@/components/orders/OrderTimelineModal';
 import { OrderRiderTrackingModal } from '@/components/orders/OrderRiderTrackingModal';
+import { orderHasAssignedRider } from '@/lib/order-has-assigned-rider';
+import { RiderPhotoModal } from '@/components/orders/RiderPhotoModal';
 import { RejectOrderSidesheet } from '@/components/orders/RejectOrderSidesheet';
 import { RejectFollowUpHost, useRejectFollowUp } from '@/components/orders/RejectFollowUpHost';
 import { rejectReasonNeedsFollowUp } from '@/lib/merchantCancellationReasons';
@@ -76,16 +82,15 @@ import {
   readPartnerDeviceOrderAlerts,
   writePartnerDeviceOrderAlerts,
 } from '@/lib/partner-device-order-alerts';
-import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
-import { MerchantPreparingOrderCard } from '@/components/orders/MerchantPreparingOrderCard';
 import { MerchantPrepDelayModal } from '@/components/orders/MerchantPrepDelayModal';
+import {
+  MerchantPreparingOrderActions,
+  OrderPrepDelayedBanner,
+  OrderPreparedLateTopBanner,
+  computePrepExpired,
+} from '@/components/orders/MerchantPreparingOrderActions';
 import { StoreClosedActiveOrdersNotice } from '@/components/orders/StoreClosedActiveOrdersNotice';
 import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';
-import {
-  isPrepCountdownExpired,
-  prepReadyCountdownLabel,
-  canUseNeedMoreTime,
-} from '@/lib/order-prep-time';
 import { isActiveMerchantFoodOrderStatus, canMerchantMarkDelivered } from '@/lib/merchantActiveOrders';
 import { countLiveSidebarPipelineOrders } from '@/lib/foodOrdersLivePipeline';
 
@@ -1181,7 +1186,7 @@ function OrdersPageContent() {
     );
     const p = selectedOrder.pricing;
     if (p) return p;
-    const total = Number(selectedOrder.food_items_total_value ?? lineSum);
+    const total = resolveMerchantCtm(selectedOrder);
     return {
       subtotal: lineSum,
       packaging: 0,
@@ -1346,10 +1351,6 @@ function OrdersPageContent() {
         <span className="font-semibold text-gray-900">{stats.avgPreparationTimeMinutes}m</span>
       </div>
       <div className="flex justify-between items-center">
-        <span className="text-gray-500">Revenue</span>
-        <span className="font-semibold text-gray-900">₹{stats.totalRevenueToday.toFixed(0)}</span>
-      </div>
-      <div className="flex justify-between items-center">
         <span className="text-gray-500">Completion</span>
         <span className="font-semibold text-gray-900">{stats.completionRatePercent}%</span>
       </div>
@@ -1445,8 +1446,10 @@ function OrdersPageContent() {
                   <div className="flex items-center gap-2 shrink-0">
                     <StatBadge
                       label="Today"
-                      value={String(stats.ordersTodayActive ?? stats.ordersToday)}
-                      title="Orders placed today that are still active (not delivered or cancelled)"
+                      value={String(
+                        Math.max(stats.ordersToday ?? 0, stats.deliveredTodayCount ?? 0)
+                      )}
+                      title="Orders placed or delivered today (IST)"
                     />
                     <StatBadge
                       label="Active"
@@ -1459,7 +1462,6 @@ function OrdersPageContent() {
                 {stats && (
                   <div className="hidden md:flex items-center gap-2 sm:gap-3 shrink-0">
                     <StatBadge label="Avg Prep" value={`${stats.avgPreparationTimeMinutes}m`} />
-                    <StatBadge label="Revenue" value={`₹${stats.totalRevenueToday.toFixed(0)}`} />
                     <StatBadge label="Completion" value={`${stats.completionRatePercent}%`} />
                   </div>
                 )}
@@ -1639,6 +1641,7 @@ function OrdersPageContent() {
                             );
                           }}
                           onTrackRider={() => setRiderTrackingOpen(true)}
+                          onOpenRiderPhoto={(url) => setRiderImageModalUrl(url)}
                           nowMs={nowTick}
                           otpCache={otpCache[selectedOrder.id]}
                           pickupVerified={!!otpVerified[selectedOrder.id]?.pickup}
@@ -1685,6 +1688,7 @@ function OrdersPageContent() {
                           onReject={() => setRejectModal(order)}
                           onPreparing={() => updateStatus(order, 'PREPARING')}
                           onReady={() => updateStatus(order, 'READY_FOR_PICKUP')}
+                          onNeedMoreTime={() => setPrepDelayOrder(order)}
                           onDispatch={() => {
                             fetchOtp(order.id);
                             setDispatchModal(order);
@@ -1764,13 +1768,7 @@ function OrdersPageContent() {
                 displayOrders.length === 0 ? (
                   <FoodOrdersEmptyState variant={foodOrdersEmptyVariant} />
                 ) : (
-                  <div
-                    className={
-                      filter === 'PREPARING'
-                        ? 'mx-auto grid w-full max-w-md grid-cols-1 gap-3'
-                        : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-3'
-                    }
-                  >
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-3">
                     {displayOrders.map((order) => (
                       <OrderCard
                         key={order.id}
@@ -1781,6 +1779,7 @@ function OrdersPageContent() {
                         onReject={() => setRejectModal(order)}
                         onPreparing={() => updateStatus(order, 'PREPARING')}
                         onReady={() => updateStatus(order, 'READY_FOR_PICKUP')}
+                        onNeedMoreTime={() => setPrepDelayOrder(order)}
                         onDispatch={() => {
                           fetchOtp(order.id);
                           setDispatchModal(order);
@@ -1913,9 +1912,23 @@ function OrdersPageContent() {
         }}
       />
       <OrderRiderTrackingModal
-        open={riderTrackingOpen && !!selectedOrder}
+        open={riderTrackingOpen}
+        preload={orderHasAssignedRider(selectedOrder)}
         onClose={() => setRiderTrackingOpen(false)}
         order={selectedOrder}
+        merchantStoreLat={store?.latitude ?? null}
+        merchantStoreLon={store?.longitude ?? null}
+        merchantStoreName={store?.store_name ?? null}
+      />
+      <RiderPhotoModal
+        open={!!riderImageModalUrl}
+        imageUrl={riderImageModalUrl}
+        riderName={
+          selectedOrder?.rider_details?.name ??
+          selectedOrder?.rider_name ??
+          null
+        }
+        onClose={() => setRiderImageModalUrl(null)}
       />
 
       <RejectOrderSidesheet
@@ -2076,29 +2089,6 @@ function OrdersPageContent() {
         }}
         onRiderPhotoClick={(url) => setRiderImageModalUrl(url)}
       />
-
-      {/* Rider image lightbox */}
-      {riderImageModalUrl && typeof document !== 'undefined' && createPortal(
-        <div
-          className="fixed inset-0 bg-black/80 flex items-center justify-center z-[110] p-4"
-          onClick={() => setRiderImageModalUrl(null)}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => e.key === 'Escape' && setRiderImageModalUrl(null)}
-          aria-label="Close image"
-        >
-          <button type="button" onClick={() => setRiderImageModalUrl(null)} className="absolute top-3 right-3 p-2 rounded-full bg-white/20 hover:bg-white/30 text-white" aria-label="Close">
-            <X size={24} />
-          </button>
-          <img
-            src={riderImageModalUrl}
-            alt="Rider"
-            className="max-w-full max-h-[90vh] object-contain rounded-lg"
-            onClick={(e) => e.stopPropagation()}
-          />
-        </div>,
-        document.body
-      )}
 
       {/* Reject modal */}
     </MXLayoutWhite>
@@ -2308,15 +2298,46 @@ function lastCompletedStepIndex(order: OrdersFoodRow): number {
 }
 
 const RIDER_STEPS = [
-  { key: 'assigned', label: 'Assigned', at: (data: any) => data.assigned_at },
-  { key: 'accepted', label: 'Accepted', at: (data: any) => data.accepted_at },
-  { key: 'reached', label: 'Reached Store', at: (data: any) => data.reached_merchant_at },
-  { key: 'picked', label: 'Picked Up', at: (data: any) => data.picked_up_at },
-  { key: 'delivered', label: 'Delivered', at: (data: any) => data.delivered_at },
+  { key: 'assigned', label: 'Assigned', at: (data: RiderTimelineData) => data.assigned_at },
+  { key: 'reached_merchant', label: 'Reached Merchant', at: (data: RiderTimelineData) => data.reached_merchant_at },
+  { key: 'picked_up', label: 'Picked Up', at: (data: RiderTimelineData) => data.picked_up_at },
+  { key: 'delivered', label: 'Delivered', at: (data: RiderTimelineData) => data.delivered_at },
 ] as const;
 
+type RiderTimelineData = {
+  assigned_at?: string | null;
+  accepted_at?: string | null;
+  reached_merchant_at?: string | null;
+  picked_up_at?: string | null;
+  delivered_at?: string | null;
+  events?: Array<{
+    event_type: string;
+    occurred_at: string;
+    merchant_distance_km?: number | null;
+    customer_distance_km?: number | null;
+  }>;
+};
+
+function formatDistKm(v: number | null | undefined): string | null {
+  if (v == null || !Number.isFinite(Number(v))) return null;
+  const n = Number(v);
+  if (n <= 0) return null;
+  return `${n % 1 === 0 ? n : n.toFixed(2)}km`;
+}
+
+function eventDistances(
+  data: RiderTimelineData | null,
+  eventType: string
+): { mx: string | null; cx: string | null } {
+  const hit = data?.events?.find((e) => e.event_type === eventType);
+  return {
+    mx: formatDistKm(hit?.merchant_distance_km),
+    cx: formatDistKm(hit?.customer_distance_km),
+  };
+}
+
 function RiderTimeline({ riderId, orderId }: { riderId: number | null | undefined; orderId: number }) {
-  const [riderAssignment, setRiderAssignment] = useState<any>(null);
+  const [riderAssignment, setRiderAssignment] = useState<RiderTimelineData | null>(null);
   const [loading, setLoading] = useState(true);
   
   useEffect(() => {
@@ -2370,23 +2391,24 @@ function RiderTimeline({ riderId, orderId }: { riderId: number | null | undefine
       {RIDER_STEPS.map((step, i) => {
         const ts = riderAssignment ? step.at(riderAssignment) : null;
         const done = currentStepIdx >= i;
-        const isActive = i === currentStepIdx && !ts; // Active but not yet completed
+        const isActive = i === currentStepIdx && !ts;
         const prevDone = i > 0 && (currentStepIdx >= i - 1);
+        const dist = eventDistances(riderAssignment, step.key);
         
         return (
           <React.Fragment key={step.key}>
             {i > 0 && (
               <div className={`shrink-0 w-4 h-0.5 mt-3 ${prevDone ? 'bg-blue-400' : 'bg-gray-200'}`} />
             )}
-            <div className="flex flex-col items-center shrink-0 min-w-[44px]">
+            <div className="flex flex-col items-center shrink-0 min-w-[52px]">
               <div className={`w-6 h-6 rounded-full flex items-center justify-center ${
                 done && ts 
-                  ? 'bg-blue-500 text-white' // Completed step (has timestamp)
+                  ? 'bg-blue-500 text-white'
                   : isActive 
-                    ? 'bg-blue-500 text-white' // Active step (rider assigned but no timestamp yet)
+                    ? 'bg-blue-500 text-white'
                     : done && !ts && i === 0
-                      ? 'bg-blue-500 text-white' // Assigned step (rider exists but no timestamp)
-                      : 'bg-gray-200 text-gray-500' // Future step
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-gray-200 text-gray-500'
               }`}>
                 {(done && ts) || (isActive) || (done && !ts && i === 0) ? (
                   <Check size={12} strokeWidth={3} />
@@ -2400,6 +2422,12 @@ function RiderTimeline({ riderId, orderId }: { riderId: number | null | undefine
                 {step.label}
               </span>
               {ts ? <span className="text-[8px] text-gray-400 text-center">{formatTs(ts)}</span> : null}
+              {(dist.mx || dist.cx) ? (
+                <div className="mt-1 rounded border border-gray-200 bg-white px-1 py-0.5 text-[7px] leading-tight text-gray-600 text-center">
+                  {dist.mx ? <div>Mx-{dist.mx}</div> : null}
+                  {dist.cx ? <div>Cx-{dist.cx}</div> : null}
+                </div>
+              ) : null}
             </div>
           </React.Fragment>
         );
@@ -2651,6 +2679,7 @@ function OrderDetailMobile({
   onPrintBill?: () => void;
 }) {
   const status = order.order_status || 'CREATED';
+  const showPastRidersLog = usePastRidersEligibility(order.id, !!onOpenRidersLog);
   const statusColor =
     status === 'CREATED' || status === 'NEW'
       ? 'bg-red-100 text-red-800'
@@ -2659,7 +2688,7 @@ function OrderDetailMobile({
         : status === 'CANCELLED'
           ? 'bg-gray-100 text-gray-700'
           : 'bg-blue-100 text-blue-800';
-  const totalValue = Number(order.food_items_total_value || 0).toFixed(2);
+  const totalValue = resolveMerchantCtm(order).toFixed(2);
   const hasFlags =
     order.requires_utensils ||
     order.is_fragile ||
@@ -2754,7 +2783,7 @@ function OrderDetailMobile({
         {/* Rider - Full Details with Timeline */}
         {(order.rider_id || order.rider_name || order.rider_details) ? (
           <div className="rounded-lg bg-gradient-to-br from-purple-50/50 to-purple-100/30 p-3 border border-purple-100/60 shadow-sm relative">
-            {onOpenRidersLog && (
+            {showPastRidersLog && onOpenRidersLog && (
               <button
                 type="button"
                 onClick={onOpenRidersLog}
@@ -2856,22 +2885,26 @@ function OrderDetailMobile({
                 packaging: 0,
                 taxes: 0,
                 discount: 0,
-                total: Number(order.food_items_total_value || 0),
+                total: resolveMerchantCtm(order),
               }
             }
             onTotalClick={onOpenBill}
           />
         </div>
 
-        {/* Delivery Instructions */}
-        {order.delivery_instructions && (
+        {/* Merchant instructions (kitchen notes — not rider delivery instructions) */}
+        {(() => {
+          const lines = resolveMerchantInstructionsForDisplay(order);
+          if (lines.length === 0) return null;
+          return (
           <div className="rounded-lg bg-amber-50/60 p-2.5 border border-amber-100">
             <div className="flex items-start gap-2">
               <MapPin size={12} className="shrink-0 mt-0.5 text-amber-600" />
-              <p className="text-xs text-gray-700 leading-relaxed break-words">{order.delivery_instructions}</p>
+              <p className="text-xs text-gray-700 leading-relaxed break-words">{lines.join(' · ')}</p>
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* Flags - compact */}
         {(order.requires_utensils || (order.veg_non_veg && order.veg_non_veg !== 'na') || order.is_fragile || order.is_high_value) && (
@@ -2976,42 +3009,46 @@ function OrderCard({
   hideDetails?: boolean;
 }) {
   const status = order.order_status || 'CREATED';
-  const isPreparingPipeline =
-    status === 'PREPARING' || status === 'ACCEPTED';
-
-  if (isPreparingPipeline && nowMs != null) {
-    return (
-      <MerchantPreparingOrderCard
-        order={order}
-        storeName={order.restaurant_name}
-        selected={selected}
-        onClick={onClick}
-        onReady={onReady}
-        onNeedMoreTime={onNeedMoreTime}
-        loading={loading}
-        nowMs={nowMs}
-      />
-    );
-  }
-
   const isNew = status === 'CREATED' || status === 'NEW';
-  const value = Number(order.food_items_total_value || 0);
+  const isPrepPipeline = status === 'PREPARING' || status === 'ACCEPTED';
+  const prepExpired =
+    isPrepPipeline && nowMs != null && computePrepExpired(order, nowMs);
+  const value = resolveMerchantCtm(order);
   const label = statusLabel ?? STATUS_LABEL[status] ?? status;
+  const merchantInstructionsText = formatMerchantInstructionsForCard(order);
+  const preparedLateMins =
+    status === 'READY_FOR_PICKUP' || status === 'OUT_FOR_DELIVERY'
+      ? resolvePreparedLateMinutes(order)
+      : null;
+  const showPreparedLateBanner = preparedLateMins != null && preparedLateMins > 0;
+  const showTopDelayBanner =
+    (prepExpired && nowMs != null) || showPreparedLateBanner;
 
   return (
-    <div
-      onClick={onClick}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
-      className={`rounded-lg border-2 p-3 sm:p-3.5 cursor-pointer transition-all overflow-hidden min-w-0 touch-manipulation active:scale-[0.99] ${
-        selected
-          ? 'border-orange-500 bg-orange-50 shadow-md'
-          : isNew
-            ? 'border-red-300 bg-red-50/50 ring-2 ring-red-200/50'
-            : 'border-gray-200 bg-white hover:border-gray-300 hover:shadow'
-      }`}
-    >
+    <div className="min-w-0 touch-manipulation">
+      <div className="overflow-hidden rounded-lg">
+        {showTopDelayBanner ? (
+          prepExpired && nowMs != null ? (
+            <OrderPrepDelayedBanner order={order} nowMs={nowMs} />
+          ) : showPreparedLateBanner ? (
+            <OrderPreparedLateTopBanner lateMinutes={preparedLateMins!} />
+          ) : null
+        ) : null}
+        <div
+          onClick={onClick}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
+          className={`rounded-lg border-2 p-3 sm:p-3.5 cursor-pointer transition-all overflow-hidden min-w-0 active:scale-[0.99] ${
+            showTopDelayBanner ? 'rounded-t-none border-t-0' : ''
+          } ${
+            selected
+              ? 'border-orange-500 bg-orange-50 shadow-md'
+              : isNew
+                ? 'border-red-300 bg-red-50/50 ring-2 ring-red-200/50'
+                : 'border-gray-200 bg-white hover:border-gray-300 hover:shadow'
+          }`}
+        >
       <div className="flex items-start justify-between gap-2 mb-2 min-w-0">
         <div className="min-w-0 flex-1">
           <FormattedOrderId 
@@ -3042,7 +3079,7 @@ function OrderCard({
         <span>•</span>
         <span>{computeOrderItemQuantityCount(order)} items</span>
         <span>•</span>
-        <span className="font-semibold text-gray-900">₹{value.toFixed(0)}</span>
+        <span className="font-semibold text-gray-900">{formatInr(value)}</span>
         {order.preparation_time_minutes != null && (
           <>
             <span>•</span>
@@ -3074,11 +3111,12 @@ function OrderCard({
           </span>
         )}
       </div>
-      {order.delivery_instructions && (
-        <p className="text-xs text-amber-700 mb-2 flex items-center gap-1 truncate" title={order.delivery_instructions}>
-          <AlertTriangle size={12} /> {order.delivery_instructions}
+      {merchantInstructionsText ? (
+        <p className="text-xs text-amber-700 mb-2 flex items-center gap-1 truncate" title={merchantInstructionsText}>
+          <AlertTriangle size={12} /> {merchantInstructionsText}
         </p>
-      )}
+      ) : null}
+
       {(status === 'READY_FOR_PICKUP' || status === 'OUT_FOR_DELIVERY') && (otpCode || onFetchOtp) && (
         <div className="mb-2 px-2 py-1 bg-slate-100 rounded text-xs flex items-center justify-between">
           <span className="text-slate-600">OTP ({otpType || 'PICKUP'}):</span>
@@ -3126,6 +3164,8 @@ function OrderCard({
           </button>
         ) : null}
       </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -3138,6 +3178,7 @@ function OrderListRow({
   onReject,
   onPreparing,
   onReady,
+  onNeedMoreTime,
   onDispatch,
   onRto,
   onComplete,
@@ -3158,6 +3199,7 @@ function OrderListRow({
   onReject?: () => void;
   onPreparing: () => void;
   onReady: () => void;
+  onNeedMoreTime?: () => void;
   onDispatch: () => void;
   onRto: () => void;
   onComplete: () => void;
@@ -3172,7 +3214,7 @@ function OrderListRow({
   nowMs?: number;
 }) {
   const status = order.order_status || 'CREATED';
-  const value = Number(order.food_items_total_value || 0);
+  const value = resolveMerchantCtm(order);
   const label = statusLabel ?? STATUS_LABEL[status] ?? status;
   const isNew = status === 'CREATED' || status === 'NEW';
 
@@ -3229,7 +3271,7 @@ function OrderListRow({
             {computeOrderItemQuantityCount(order)} {computeOrderItemQuantityCount(order) === 1 ? 'item' : 'items'}
           </span>
           <span className="text-xs font-bold text-gray-900">
-            ₹{value.toFixed(0)}
+            {formatInr(value)}
           </span>
           {order.preparation_time_minutes != null && (
             <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded">
@@ -3404,53 +3446,30 @@ function ActionBtns({
   };
 
   if (status === 'PREPARING' || status === 'ACCEPTED') {
-    const prepCountdown =
-      nowMs != null
-        ? prepReadyCountdownLabel(order, nowMs)
-        : { label: 'Mark as ready', secondsLeft: 0 };
-    const prepExpired =
-      nowMs != null &&
-      (isPrepCountdownExpired(order, nowMs) || !prepCountdown.label.includes('('));
-    const showNeedMore =
-      prepExpired &&
-      onNeedMoreTime &&
-      !compact &&
-      canUseNeedMoreTime(
-        order.prep_delay_use_count,
-        Boolean(order.is_bulk_order),
-        order.prep_delay_minutes
-      );
-    const prepBtnPair =
-      'w-full min-h-[44px] rounded-xl px-3 py-2.5 text-sm font-semibold';
-    return (
-      <div className={`w-full ${showNeedMore ? 'grid grid-cols-2 gap-2' : 'flex gap-2 items-stretch'}`}>
-        {showNeedMore ? (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onNeedMoreTime();
-            }}
-            disabled={dis}
-            className={`${btnBase} ${prepBtnPair} border border-blue-600 bg-white text-blue-700 hover:bg-blue-50`}
-          >
-            Need more time
-          </button>
-        ) : null}
-        <MarkAsReadyCountdownButton
-          order={order}
-          nowMs={nowMs}
-          disabled={dis}
-          compact={compact}
-          fullWidth={topRightLayout || showNeedMore || !compact}
-          className={`${prepBtnPair} ${showNeedMore ? 'min-w-0' : topRightLayout ? 'flex-1 min-w-0' : 'min-w-0'}`}
+    if (nowMs == null) {
+      return (
+        <button
+          type="button"
           onClick={(e) => {
             e.stopPropagation();
             onReady();
           }}
-        />
-        {!showNeedMore ? <RtoMenu /> : null}
-      </div>
+          disabled={dis}
+          className={`${btnBase} w-full min-h-[44px] rounded-xl px-3 py-2.5 text-sm font-semibold bg-slate-800 text-white hover:bg-slate-900`}
+        >
+          Order Ready
+        </button>
+      );
+    }
+    return (
+      <MerchantPreparingOrderActions
+        order={order}
+        nowMs={nowMs}
+        onReady={onReady}
+        onNeedMoreTime={onNeedMoreTime}
+        loading={dis}
+        compact={compact}
+      />
     );
   }
   if (status === 'READY_FOR_PICKUP') {

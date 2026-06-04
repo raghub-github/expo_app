@@ -134,7 +134,6 @@ export function OrderDetailCustomerCard({
         <OrderCardMerchantInstructions
           merchantInstructionsList={order.merchant_instructions_list}
           requiresUtensils={order.requires_utensils}
-          deliveryInstructions={order.delivery_instructions}
         />
 
         {isClosed ? (

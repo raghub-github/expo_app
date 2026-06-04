@@ -13,6 +13,47 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+function nestedNum(obj: unknown, key: string): number {
+  if (!obj || typeof obj !== "object") return 0;
+  return num((obj as Record<string, unknown>)[key]);
+}
+
+/** Parse billing_snapshot from DB (object or JSON string). */
+export function parseBillingSnapshot(
+  raw: unknown,
+): Record<string, unknown> | null {
+  if (!raw) return null;
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed && typeof parsed === "object") {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+  if (typeof raw === "object") return raw as Record<string, unknown>;
+  return null;
+}
+
+/** Total discount from snapshot (snake_case, camelCase, or nested totals). */
+export function discountTotalFromBilling(
+  billing: Record<string, unknown> | null | undefined,
+): number {
+  if (!billing || typeof billing !== "object") return 0;
+  const totals = billing.totals;
+  const gstTotals = billing.gst_totals ?? billing.gstTotals;
+  return round2(
+    num(billing.discount_total) ||
+      num(billing.discountTotal) ||
+      nestedNum(totals, "total_discount") ||
+      nestedNum(gstTotals, "total_discount") ||
+      0,
+  );
+}
+
 function metaOf(row: Record<string, unknown>): Record<string, unknown> | null {
   const m = row.meta;
   return m && typeof m === "object" ? (m as Record<string, unknown>) : null;
@@ -82,7 +123,7 @@ export type DiscountFundingTag = "platform" | "store" | "mixed";
 export function discountFundingTagFromLine(
   row: Record<string, unknown>,
 ): DiscountFundingTag {
-  const amount = num(row.amount);
+  const amount = Math.abs(num(row.amount));
   if (amount <= 0) return "platform";
   const merchantAmt = merchantFundedAmountFromDiscountLine(row);
   if (merchantAmt >= amount - 0.01) return "store";
@@ -99,7 +140,7 @@ export function customerDiscountLinesFromBilling(
   for (const d of discounts) {
     if (!d || typeof d !== "object") continue;
     const row = d as Record<string, unknown>;
-    const amt = num(row.amount);
+    const amt = Math.abs(num(row.amount));
     if (amt <= 0) continue;
     const label =
       String(row.label ?? row.step ?? "Discount").trim() || "Discount";
@@ -125,4 +166,41 @@ export function merchantFundedDiscountLinesFromBilling(
     out.push({ label, amount: amt });
   }
   return out;
+}
+
+export type OrderDiscountOfferSource = "Platform" | "Store" | "Mixed";
+
+/** Customer-facing discount on the order (excludes cashback lines). */
+export function orderDiscountGrantedSummaryFromBilling(
+  billing: Record<string, unknown> | null | undefined,
+): { amount: number | null; offerSource: OrderDiscountOfferSource | null } {
+  if (!billing || typeof billing !== "object") {
+    return { amount: null, offerSource: null };
+  }
+
+  const lines = customerDiscountLinesFromBilling(billing).filter(
+    (l) => !l.label.toLowerCase().includes("cashback"),
+  );
+
+  if (lines.length === 0) {
+    const total = discountTotalFromBilling(billing);
+    return total > 0
+      ? { amount: total, offerSource: null }
+      : { amount: null, offerSource: null };
+  }
+
+  const amount = round2(lines.reduce((s, l) => s + l.amount, 0));
+  if (amount <= 0) return { amount: null, offerSource: null };
+
+  const tags = new Set(lines.map((l) => l.tag));
+  let offerSource: OrderDiscountOfferSource | null = null;
+  if (tags.size === 1) {
+    const only = [...tags][0];
+    offerSource =
+      only === "platform" ? "Platform" : only === "store" ? "Store" : "Mixed";
+  } else {
+    offerSource = "Mixed";
+  }
+
+  return { amount, offerSource };
 }

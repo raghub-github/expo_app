@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getRiderSelfieViewUrl } from '@/lib/rider-selfie-url';
 import { supabaseAdmin } from '@/lib/supabase/server';
 import { ensureMerchantStoreDashboardAccess } from '@/lib/merchant-food-orders/store-access';
 import { resolveMerchantFoodOrder } from '@/lib/merchant-food-orders/resolve-order-food-row';
@@ -64,8 +65,8 @@ export async function GET(
       if (rider) {
         riderName = riderName ?? (rider.name as string | null);
         riderMobile = riderMobile ?? (rider.mobile as string | null);
-        selfieUrl = (rider.selfie_url as string | null) ?? null;
       }
+      selfieUrl = await getRiderSelfieViewUrl(riderId);
     }
 
     const { data: assignment } = await db

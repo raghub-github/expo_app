@@ -142,6 +142,8 @@ function minRankForStepKey(key: string): number {
       return 0;
     case 'accepted':
       return 10;
+    case 'rider_assigned':
+      return 10;
     case 'rider_arrived':
       return 10;
     case 'preparing':
@@ -227,6 +229,14 @@ function mapTimelineStatusToKey(status: string): string | null {
   if (!u) return null;
   if (u.includes('placed') || u.includes('created') || u === 'new' || u === 'order_placed') return 'placed';
   if (u.includes('accept')) return 'accepted';
+  if (
+    u === 'rider_assigned' ||
+    u.includes('delivery_partner_assigned') ||
+    (u.includes('delivery') && u.includes('partner') && u.includes('assign')) ||
+    (u.includes('rider') && u.includes('assign') && !u.includes('unassign'))
+  ) {
+    return 'rider_assigned';
+  }
   if (u.includes('prepar')) return 'preparing';
   if (u.includes('ready_for_pickup') || u === 'dispatch_ready' || (u.includes('ready') && !u.includes('prepar'))) {
     return 'ready';
@@ -275,6 +285,7 @@ type StepDef = {
     order: OrdersFoodRow;
     actions: MerchantOrderActionForTimeline[];
     riderReachedAt: string | null;
+    riderAssignedAt: string | null;
     atByKey: Record<string, string | null>;
   }) => string | null;
   resolveDetail?: (order: OrdersFoodRow) => string | null;
@@ -295,6 +306,16 @@ const FLOW_STEP_DEFS: StepDef[] = [
     actorAction: 'accepted',
     resolveAt: ({ order, actions, atByKey }) =>
       pickLatestTimestamp(order.accepted_at, actionAt(actions, ['ACCEPTED']), atByKey.accepted),
+  },
+  {
+    key: 'rider_assigned',
+    label: 'Delivery partner assigned',
+    showView: false,
+    actorAction: null,
+    resolveAt: ({ order, atByKey, riderAssignedAt }) => {
+      if (!order.rider_id) return null;
+      return pickLatestTimestamp(riderAssignedAt, atByKey.rider_assigned);
+    },
   },
   {
     key: 'preparing',
@@ -410,6 +431,7 @@ export function buildMerchantVisibleTimeline(
   order: OrdersFoodRow,
   opts?: {
     riderReachedAt?: string | null;
+    riderAssignedAt?: string | null;
     actions?: MerchantOrderActionForTimeline[];
     timelineEntries?: TimelineEntryLike[];
   }
@@ -424,6 +446,7 @@ export function buildMerchantVisibleTimeline(
     order,
     actions,
     riderReachedAt: opts?.riderReachedAt ?? null,
+    riderAssignedAt: opts?.riderAssignedAt ?? null,
     atByKey,
   };
 
