@@ -22,6 +22,15 @@ COPY packages/logger ./packages/logger
 COPY packages/event-contracts ./packages/event-contracts
 COPY services/outbox-relay ./services/outbox-relay
 
+# @gatimitra/{redis,logger,event-contracts} are consumed via their package.json
+# main: dist/index.js. Without these builds the next CMD (`npx tsx src/index.ts`)
+# crashes with ERR_MODULE_NOT_FOUND when Node resolves the cross-workspace
+# imports. None of the three have @gatimitra/* deps on each other — flat order.
+RUN npm run build \
+      --workspace=@gatimitra/redis \
+      --workspace=@gatimitra/logger \
+      --workspace=@gatimitra/event-contracts
+
 RUN addgroup -S app && adduser -S app -G app \
   && chown -R app:app /repo
 USER app

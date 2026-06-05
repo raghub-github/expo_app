@@ -22,6 +22,15 @@ COPY packages/queue ./packages/queue
 COPY packages/logger ./packages/logger
 COPY services/eta-worker ./services/eta-worker
 
+# @gatimitra/{redis,queue,logger} are consumed via package.json main: dist/index.js.
+# Without these builds the next CMD (`npx tsx src/index.ts`) crashes with
+# ERR_MODULE_NOT_FOUND when Node resolves the cross-workspace imports.
+# Topological order — leaves first; queue depends on redis.
+RUN npm run build \
+      --workspace=@gatimitra/redis \
+      --workspace=@gatimitra/logger \
+      --workspace=@gatimitra/queue
+
 RUN addgroup -S app && adduser -S app -G app \
   && chown -R app:app /repo
 USER app

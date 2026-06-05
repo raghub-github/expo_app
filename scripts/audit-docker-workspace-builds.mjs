@@ -17,7 +17,18 @@
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-const APPS = ["backend", "dashboard", "partnersite"];
+// Every workspace that produces a Docker image. Each must have a Dockerfile
+// whose build step compiles every @gatimitra/* it imports.
+const APPS = [
+  "backend",
+  "dashboard",
+  "partnersite",
+  "services/eta-worker",
+  "services/notification-worker",
+  "services/outbox-relay",
+  "services/payment-worker",
+  "services/ws-gateway",
+];
 const SKIP_DIRS = new Set([
   "node_modules", ".next", "dist", "build", ".turbo", "out", ".git",
 ]);

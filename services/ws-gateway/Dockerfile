@@ -18,6 +18,13 @@ COPY packages/shared-config ./packages/shared-config
 COPY packages/redis ./packages/redis
 COPY services/ws-gateway ./services/ws-gateway
 
+# @gatimitra/redis is consumed via package.json main: "./dist/index.js".
+# Without this build step, `npx tsx src/index.ts` below resolves the import
+# at runtime and crashes with ERR_MODULE_NOT_FOUND. tsx only transpiles the
+# *worker's own* .ts source; cross-workspace imports are resolved by Node
+# via the package's main field.
+RUN npm run build --workspace=@gatimitra/redis
+
 RUN addgroup -S app && adduser -S app -G app \
   && chown -R app:app /repo
 USER app
