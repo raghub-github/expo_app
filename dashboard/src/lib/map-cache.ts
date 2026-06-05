@@ -43,13 +43,13 @@ class MapCacheManager {
       if (!document.querySelector('link[href*="mapbox-gl.css"]')) {
         const cssLink = document.createElement('link');
         cssLink.rel = 'stylesheet';
-        cssLink.href = 'https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.css';
+        cssLink.href = 'https://api.mapbox.com/mapbox-gl-js/v3.4.0/mapbox-gl.css';
         document.head.appendChild(cssLink);
       }
 
       // Load JavaScript
       const script = document.createElement('script');
-      script.src = 'https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.js';
+      script.src = 'https://api.mapbox.com/mapbox-gl-js/v3.4.0/mapbox-gl.js';
       script.async = true;
       
       script.onload = () => {

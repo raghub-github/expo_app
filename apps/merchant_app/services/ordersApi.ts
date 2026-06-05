@@ -70,6 +70,10 @@ export type ApiFoodOrder = {
   dispatched_at: string | null;
   preparation_time_minutes?: number | null;
   prep_ready_by_at?: string | null;
+  preparation_time_minutes?: number | null;
+  prep_delay_minutes?: number | null;
+  prep_delay_use_count?: number | null;
+  prepared_late_minutes?: number | null;
   handed_over_to_rider_at?: string | null;
   rider_picked_up_at?: string | null;
   delivered_at: string | null;
@@ -230,5 +234,29 @@ export async function patchFoodOrderStatus(
   }
   const data = (await res.json()) as { order?: ApiFoodOrder };
   if (!data.order) throw new Error("Order update failed");
+  return data.order;
+}
+
+export async function postFoodOrderPrepDelay(
+  storeId: number,
+  ordersFoodId: number,
+  token: string,
+  additionalMinutes: number
+): Promise<ApiFoodOrder> {
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}/prep-delay`,
+    token,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ additional_minutes: additionalMinutes }),
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || "Failed to extend preparation time");
+  }
+  const data = (await res.json()) as { order?: ApiFoodOrder };
+  if (!data.order) throw new Error("Prep delay update failed");
   return data.order;
 }

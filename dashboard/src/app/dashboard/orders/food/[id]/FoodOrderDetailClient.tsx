@@ -74,7 +74,7 @@ export default function FoodOrderDetailClient({ orderId }: { orderId: number }) 
 
   if (loading) {
     return (
-      <div className="flex min-h-[50vh] items-center justify-center">
+      <div className="fixed inset-0 z-10 flex items-center justify-center bg-[#F8FAFC]">
         <div className="text-center">
           <div className="inline-block h-10 w-10 animate-spin rounded-full border-2 border-emerald-400 border-t-transparent" />
           <p className="mt-3 text-sm text-gray-500">Loading order details…</p>

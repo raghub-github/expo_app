@@ -9,6 +9,7 @@ import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
+import { expireTimedMenuOutOfStockForStore } from "@/lib/menu-oos-expiry";
 import {
   fetchCustomizationsForMenuItems,
   fetchVariantsForMenuItems,
@@ -51,6 +52,7 @@ export async function GET(
     }
 
     const sql = getSql();
+    await expireTimedMenuOutOfStockForStore(sql, storeId);
     const categories = await sql`
       SELECT id, store_id, category_name, category_description, category_image_url,
              parent_category_id, cuisine_id, display_order, is_active,

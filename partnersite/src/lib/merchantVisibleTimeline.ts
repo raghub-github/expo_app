@@ -1,5 +1,9 @@
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import {
+  GATIMITRA_TEAM_REJECTION_LABEL,
+  isCatalogCancellationReason,
+} from '@/lib/merchant-cancellation-display';
+import {
   normalizeActionMode,
   normalizeActionSource,
   type MerchantOrderActionSource,
@@ -138,6 +142,8 @@ function minRankForStepKey(key: string): number {
       return 0;
     case 'accepted':
       return 10;
+    case 'rider_assigned':
+      return 10;
     case 'rider_arrived':
       return 10;
     case 'preparing':
@@ -223,6 +229,14 @@ function mapTimelineStatusToKey(status: string): string | null {
   if (!u) return null;
   if (u.includes('placed') || u.includes('created') || u === 'new' || u === 'order_placed') return 'placed';
   if (u.includes('accept')) return 'accepted';
+  if (
+    u === 'rider_assigned' ||
+    u.includes('delivery_partner_assigned') ||
+    (u.includes('delivery') && u.includes('partner') && u.includes('assign')) ||
+    (u.includes('rider') && u.includes('assign') && !u.includes('unassign'))
+  ) {
+    return 'rider_assigned';
+  }
   if (u.includes('prepar')) return 'preparing';
   if (u.includes('ready_for_pickup') || u === 'dispatch_ready' || (u.includes('ready') && !u.includes('prepar'))) {
     return 'ready';
@@ -271,6 +285,7 @@ type StepDef = {
     order: OrdersFoodRow;
     actions: MerchantOrderActionForTimeline[];
     riderReachedAt: string | null;
+    riderAssignedAt: string | null;
     atByKey: Record<string, string | null>;
   }) => string | null;
   resolveDetail?: (order: OrdersFoodRow) => string | null;
@@ -291,6 +306,16 @@ const FLOW_STEP_DEFS: StepDef[] = [
     actorAction: 'accepted',
     resolveAt: ({ order, actions, atByKey }) =>
       pickLatestTimestamp(order.accepted_at, actionAt(actions, ['ACCEPTED']), atByKey.accepted),
+  },
+  {
+    key: 'rider_assigned',
+    label: 'Delivery partner assigned',
+    showView: false,
+    actorAction: null,
+    resolveAt: ({ order, atByKey, riderAssignedAt }) => {
+      if (!order.rider_id) return null;
+      return pickLatestTimestamp(riderAssignedAt, atByKey.rider_assigned);
+    },
   },
   {
     key: 'preparing',
@@ -361,6 +386,17 @@ const FLOW_STEP_INDEX: Record<string, number> = Object.fromEntries(
   FLOW_STEP_DEFS.map((d, i) => [d.key, i])
 );
 
+/** Timeline row label for cancelled orders (merchant / partner UIs). */
+export function displayLabelForCancelledStep(order: OrdersFoodRow): string {
+  const lbl = (order.cancelled_by_label ?? '').trim();
+  if (lbl) return lbl;
+  const r = (order.rejected_reason ?? '').trim();
+  if (/^auto cancelled/i.test(r)) return 'Auto Cancelled';
+  if (/customer/i.test(r) && !isCatalogCancellationReason(r)) return 'Cancelled by customer';
+  if (isCatalogCancellationReason(r) || r) return GATIMITRA_TEAM_REJECTION_LABEL;
+  return GATIMITRA_TEAM_REJECTION_LABEL;
+}
+
 const CANCELLED_DEF: StepDef = {
   key: 'cancelled',
   label: 'Cancelled',
@@ -369,8 +405,12 @@ const CANCELLED_DEF: StepDef = {
   tone: 'cancel',
   resolveAt: ({ order, actions, atByKey }) =>
     pickTimestamp(order.cancelled_at, actionAt(actions, ['CANCELLED']), atByKey.cancelled),
-  resolveDetail: (order) =>
-    (order.rejected_reason || order.cancelled_by_label || null)?.trim() || null,
+  resolveDetail: (order) => {
+    const reason = (order.rejected_reason ?? '').trim();
+    const label = (order.cancelled_by_label ?? '').trim();
+    if (reason && label && reason !== label) return reason;
+    return reason || label || null;
+  },
 };
 
 const RTO_DEF: StepDef = {
@@ -391,6 +431,7 @@ export function buildMerchantVisibleTimeline(
   order: OrdersFoodRow,
   opts?: {
     riderReachedAt?: string | null;
+    riderAssignedAt?: string | null;
     actions?: MerchantOrderActionForTimeline[];
     timelineEntries?: TimelineEntryLike[];
   }
@@ -405,6 +446,7 @@ export function buildMerchantVisibleTimeline(
     order,
     actions,
     riderReachedAt: opts?.riderReachedAt ?? null,
+    riderAssignedAt: opts?.riderAssignedAt ?? null,
     atByKey,
   };
 
@@ -453,7 +495,10 @@ export function buildMerchantVisibleTimeline(
 
   return steps
     .filter((s) => s.at)
-    .sort((a, b) => (FLOW_STEP_INDEX[a.key] ?? 99) - (FLOW_STEP_INDEX[b.key] ?? 99));
+    .sort((a, b) => (FLOW_STEP_INDEX[a.key] ?? 99) - (FLOW_STEP_INDEX[b.key] ?? 99))
+    .map((s) =>
+      s.key === 'cancelled' ? { ...s, label: displayLabelForCancelledStep(order) } : s
+    );
 }
 
 export function formatTimelineDate(s: string | null | undefined): string {

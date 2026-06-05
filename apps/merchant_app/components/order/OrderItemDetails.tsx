@@ -45,17 +45,13 @@ export function OrderItemDetails({ order }: Props) {
 
   return (
     <View style={styles.section}>
-      {order.requires_utensils ? (
-        <View style={styles.utensilsBanner}>
-          <Ionicons name="restaurant" size={20} color="#059669" />
-          <View style={styles.utensilsTextWrap}>
-            <Text style={styles.utensilsTitle}>Cutlery & utensils will be sent</Text>
-            <Text style={styles.utensilsSub}>We care for your convenience and hygiene.</Text>
-          </View>
-        </View>
-      ) : null}
-
-      <Text style={styles.sectionHeading}>ORDER ITEMS ({items.length})</Text>
+      <View style={styles.sectionHead}>
+        <Ionicons name="bag-handle-outline" size={18} color="#444444" />
+        <Text style={styles.sectionHeading}>Order items</Text>
+        <Text style={styles.sectionMeta}>
+          {items.length} {items.length === 1 ? "item" : "items"}
+        </Text>
+      </View>
 
       <View style={styles.itemsCard}>
         {items.length === 0 ? (
@@ -165,37 +161,22 @@ const styles = StyleSheet.create({
   section: {
     marginTop: 14,
   },
-  utensilsBanner: {
+  sectionHead: {
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
-    backgroundColor: "#ECFDF5",
-    borderRadius: CARD_RADIUS,
-    borderWidth: 1,
-    borderColor: "#A7F3D0",
-    padding: CARD_PADDING,
-    marginBottom: 14,
-  },
-  utensilsTextWrap: {
-    flex: 1,
-  },
-  utensilsTitle: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#047857",
-    marginBottom: 2,
-  },
-  utensilsSub: {
-    fontSize: 12,
-    color: GatiMitraMerchant.textSecondary,
-    lineHeight: 16,
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 10,
   },
   sectionHeading: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  sectionMeta: {
     fontSize: 12,
-    fontWeight: "800",
+    fontWeight: "600",
     color: GatiMitraMerchant.textSecondary,
-    letterSpacing: 0.6,
-    marginBottom: 10,
   },
   itemsCard: {
     backgroundColor: GatiMitraMerchant.cardBg,

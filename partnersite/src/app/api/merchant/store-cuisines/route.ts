@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
     if (storeError || !store?.id) {
       return NextResponse.json({ error: 'Store not found' }, { status: 404 });
     }
-    if (store.parent_id !== validation.merchantParentId) {
+    if (Number(store.parent_id) !== Number(validation.merchantParentId)) {
       return NextResponse.json({ error: 'Store does not belong to this merchant' }, { status: 403 });
     }
 
@@ -119,7 +119,7 @@ export async function POST(req: NextRequest) {
     if (storeError || !store?.id) {
       return NextResponse.json({ error: 'Store not found' }, { status: 404 });
     }
-    if (store.parent_id !== validation.merchantParentId) {
+    if (Number(store.parent_id) !== Number(validation.merchantParentId)) {
       return NextResponse.json({ error: 'Store does not belong to this merchant' }, { status: 403 });
     }
 

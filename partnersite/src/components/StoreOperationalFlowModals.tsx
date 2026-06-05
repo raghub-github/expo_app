@@ -31,12 +31,15 @@ export function StoreOperationalFlowModals({
   onDismissClose,
   onDismissOpen,
   onSuccess,
+  initialClosureType = null,
 }: {
   closeTarget: StoreOperationalTarget | null;
   openTarget: StoreOperationalTarget | null;
   onDismissClose: () => void;
   onDismissOpen: () => void;
   onSuccess: () => void | Promise<void>;
+  /** Pre-select closure type when opening (e.g. after reject with "Not operational today"). */
+  initialClosureType?: 'temporary' | 'today' | 'manual_hold' | null;
 }) {
   const [openingTime, setOpeningTime] = useState('09:00');
   const [toggleClosureType, setToggleClosureType] = useState<'temporary' | 'today' | 'manual_hold' | null>(null);
@@ -88,10 +91,10 @@ export function StoreOperationalFlowModals({
     setClosureTime(
       `${in10.getHours().toString().padStart(2, '0')}:${in10.getMinutes().toString().padStart(2, '0')}`
     );
-    setToggleClosureType(null);
+    setToggleClosureType(initialClosureType ?? null);
     setCloseReason('');
     setCloseReasonOther('');
-  }, [closeTarget]);
+  }, [closeTarget, initialClosureType]);
 
   const handleClosePopupConfirm = () => {
     if (!toggleClosureType) {

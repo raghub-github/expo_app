@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { extendPrepReadyByAtIso, PREP_DELAY_OPTIONS } from '@/lib/order-prep-time';
+import { notifyCustomerPrepDelay } from '@/lib/notify-customer-prep-delay';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -50,7 +51,7 @@ export async function POST(
 
     const { data: existing, error: fetchErr } = await db
       .from('orders_food')
-      .select('id, order_id, order_status, prep_ready_by_at, prep_delay_minutes, merchant_store_id')
+      .select('id, order_id, order_status, prep_ready_by_at, prep_delay_minutes, prep_delay_use_count, merchant_store_id')
       .eq('id', orderIdNum)
       .single();
 
@@ -66,9 +67,26 @@ export async function POST(
       return NextResponse.json({ error: 'Prep delay only allowed while order is preparing' }, { status: 400 });
     }
 
+    let isBulkOrder = false;
+    if (existing.order_id != null) {
+      const { data: coreRow } = await db
+        .from('orders_core')
+        .select('is_bulk_order')
+        .eq('id', existing.order_id as number)
+        .maybeSingle();
+      isBulkOrder = Boolean(coreRow?.is_bulk_order);
+    }
+
+    const prevUseCount = Number(existing.prep_delay_use_count) || 0;
+    const maxUses = isBulkOrder ? 2 : 1;
+    if (prevUseCount >= maxUses) {
+      return NextResponse.json({ error: 'prep_delay_limit_reached' }, { status: 400 });
+    }
+
     const now = new Date().toISOString();
     const prevDelay = Number(existing.prep_delay_minutes) || 0;
     const newDelayTotal = prevDelay + additional;
+    const newUseCount = prevUseCount + 1;
     const newPrepReadyByAt = extendPrepReadyByAtIso(
       existing.prep_ready_by_at as string | null,
       additional,
@@ -80,6 +98,7 @@ export async function POST(
       .update({
         prep_ready_by_at: newPrepReadyByAt,
         prep_delay_minutes: newDelayTotal,
+        prep_delay_use_count: newUseCount,
         updated_at: now,
       })
       .eq('id', orderIdNum);
@@ -94,6 +113,7 @@ export async function POST(
         .update({
           prep_ready_by_at: newPrepReadyByAt,
           prep_delay_minutes: newDelayTotal,
+          prep_delay_use_count: newUseCount,
           updated_at: now,
         })
         .eq('id', existing.order_id as number);
@@ -121,9 +141,15 @@ export async function POST(
       /* non-fatal */
     }
 
+    void notifyCustomerPrepDelay({
+      ordersCoreId: existing.order_id as number,
+      additionalMinutes: additional as 5 | 10 | 15,
+    });
+
     return NextResponse.json({
       prep_ready_by_at: newPrepReadyByAt,
       prep_delay_minutes: newDelayTotal,
+      prep_delay_use_count: newUseCount,
     });
   } catch (err) {
     console.error('[food-orders prep-delay] Error:', err);

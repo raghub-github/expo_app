@@ -13,6 +13,17 @@ import { ensureMerchantStoreDashboardAccess } from "@/lib/merchant-food-orders/s
 import { loadMerchantStoreFoodOrders } from "@/lib/merchant-food-orders/load-store-food-orders";
 import { appendAcceptanceTimeline } from "@/lib/orderAcceptanceTimeline";
 import { appendCancellationTimeline } from "@/lib/orderCancellationTimeline";
+import {
+  actorTypeFromSource,
+  recordOrderCancellation,
+} from "@/lib/record-order-cancellation";
+import { refundFieldsFromEngineResult } from "@gatimitra/financial-rules";
+import {
+  executeOrderCancellationFinancials,
+  executeRtoFinancials,
+  lookupOrderContext,
+} from "@/lib/financial-rule-executor";
+import { creditMerchantOrderEarningOnDelivered } from "@/lib/credit-merchant-order-on-delivered";
 import { appendReadyTimeline } from "@/lib/orderFoodStatusTimeline";
 import { resolveMerchantFoodOrder } from "@/lib/merchant-food-orders/resolve-order-food-row";
 import {
@@ -21,6 +32,10 @@ import {
   resolveStoreDefaultPrepMinutes,
   computePreparedLateMinutes,
 } from "@/lib/order-prep-time";
+import {
+  persistMerchantCtmAtAccept,
+  resolveMerchantWalletCreditAmount,
+} from "@/lib/merchant-order-ctm";
 
 export const runtime = "nodejs";
 
@@ -212,6 +227,15 @@ export async function PATCH(
       updates.cancelled_at = now;
       if (rejectedReason) updates.rejected_reason = rejectedReason;
       if (actionLabels.cancelled_by_label) updates.cancelled_by_label = actionLabels.cancelled_by_label;
+      updates.cancelled_by_type = actorTypeFromSource(actionSource);
+      updates.cancellation_details = {
+        version: 1,
+        source: actorTypeFromSource(actionSource),
+        cancelled_by_label: actionLabels.cancelled_by_label,
+        rejected_reason: rejectedReason,
+        action_source: actionSource,
+        cancel_mode: actionMode,
+      };
     } else if (newStatus === "RTO") {
       updates.is_rto = true;
       updates.rto_at = now;
@@ -266,6 +290,15 @@ export async function PATCH(
       } catch (tlErr) {
         console.warn("[orders PATCH] acceptance timeline failed:", tlErr);
       }
+      try {
+        await persistMerchantCtmAtAccept(db, {
+          ordersCoreId: existing.order_id as number,
+          ordersFoodId: foodRowId,
+          storeId: storeInternalId,
+        });
+      } catch (ctmErr) {
+        console.warn("[orders PATCH] merchant CTM freeze failed:", ctmErr);
+      }
     }
 
     if (newStatus === "CANCELLED") {
@@ -279,6 +312,61 @@ export async function PATCH(
         });
       } catch (tlErr) {
         console.warn("[orders PATCH] cancellation timeline failed:", tlErr);
+      }
+      const displayReason = (rejectedReason ?? "").trim() || "Order cancelled";
+      const { data: coreMoney } = await db
+        .from("orders_core")
+        .select("grand_total, order_id")
+        .eq("id", existing.order_id as number)
+        .maybeSingle();
+      const cancelledByType = actorTypeFromSource(actionSource);
+      const orderCtx = await lookupOrderContext(existing.order_id as number);
+      const engineResult = await executeOrderCancellationFinancials({
+        orderCoreId: existing.order_id as number,
+        ordersFoodId: foodRowId,
+        coreOrderId: (coreMoney?.order_id as string | null) ?? orderCtx.coreOrderId,
+        merchantStoreId: storeInternalId,
+        previousStatus: currentStatus,
+        cancelledByType,
+        orderGross: Number(coreMoney?.grand_total ?? existing.food_items_total_value ?? orderCtx.grandTotal),
+        serviceType: orderCtx.serviceType,
+      });
+      const refund = refundFieldsFromEngineResult(engineResult.raw);
+      try {
+        await recordOrderCancellation(db, {
+          orderCorePk: existing.order_id as number,
+          cancelledBy: "merchant",
+          displayReason,
+          cancelledByType,
+          cancelledByLabel: actionLabels.cancelled_by_label ?? "Cancelled",
+          actionSource,
+          cancelMode: actionMode,
+          previousStatus: currentStatus,
+          acceptedAt: (existing.accepted_at as string | null) ?? null,
+          grandTotal: coreMoney?.grand_total ?? 0,
+          refundStatus: refund.refundStatus,
+          refundAmount: refund.refundAmount,
+          metadata: engineResult.raw ? { financial_rule_engine: engineResult.raw } : undefined,
+        });
+      } catch (cancelRowErr) {
+        console.warn("[orders PATCH] order_cancellation_reasons failed:", cancelRowErr);
+      }
+    }
+
+    if (newStatus === "RTO") {
+      try {
+        const orderCtx = await lookupOrderContext(existing.order_id as number);
+        await executeRtoFinancials({
+          orderCoreId: existing.order_id as number,
+          ordersFoodId: foodRowId,
+          coreOrderId: orderCtx.coreOrderId,
+          merchantStoreId: storeInternalId,
+          previousStatus: currentStatus,
+          triggeredByType: actorTypeFromSource(actionSource),
+          orderGross: orderCtx.grandTotal,
+        });
+      } catch (rtoErr) {
+        console.warn("[orders PATCH] RTO financial rule:", rtoErr);
       }
     }
 
@@ -321,32 +409,20 @@ export async function PATCH(
       console.warn("[orders PATCH] action log failed:", logErr);
     }
 
-    const didJustDeliver = newStatus === "DELIVERED" && currentStatus !== "DELIVERED";
-    if (didJustDeliver) {
-      const amount = Number(existing.food_items_total_value ?? 0);
-      if (amount > 0) {
-        try {
-          const { data: walletId, error: rpcWalletErr } = await db.rpc("get_or_create_merchant_wallet", {
-            p_merchant_store_id: existing.merchant_store_id,
-          });
-          if (!rpcWalletErr && walletId != null) {
-            await db.rpc("merchant_wallet_credit", {
-              p_wallet_id: walletId,
-              p_amount: amount,
-              p_category: "ORDER_EARNING",
-              p_balance_type: "AVAILABLE",
-              p_reference_type: "ORDER",
-              p_reference_id: foodRowId,
-              p_idempotency_key: `order_earning_${foodRowId}`,
-              p_description: `Order #${existing.order_id} delivered`,
-              p_metadata: {},
-            });
-          }
-        } catch (e) {
-          console.error("[orders PATCH] wallet credit failed:", e);
-        }
-      }
-    }
+    const walletAmount = await resolveMerchantWalletCreditAmount(db, {
+      ordersCoreId: existing.order_id as number,
+      ordersFoodId: foodRowId,
+      storeId: storeInternalId,
+    });
+
+    await creditMerchantOrderEarningOnDelivered(db, {
+      merchantStoreId: existing.merchant_store_id as number,
+      ordersFoodId: foodRowId,
+      ordersCoreId: existing.order_id as number,
+      amount: walletAmount,
+      newStatus,
+      previousStatus: currentStatus,
+    });
 
     const merged = await loadMerchantStoreFoodOrders(storeInternalId, {
       ordersFoodId: foodRowId,

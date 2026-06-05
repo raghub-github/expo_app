@@ -31,11 +31,14 @@ import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useOrders, type OrderRecord } from "@/hooks/useOrders";
 import { LiveOrderCard } from "@/components/order/LiveOrderCard";
 import { RejectOrderSheet } from "@/components/order/RejectOrderSheet";
+import { MerchantPrepDelaySheet } from "@/components/order/MerchantPrepDelaySheet";
+import { RejectFollowUpHost, useRejectFollowUp } from "@/components/order/RejectFollowUpHost";
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
-import { fetchGrowthSummary } from "@/services/growthApi";
+import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
 import { fetchWalletSummary } from "@/services/walletApi";
 import { getActiveOrdersCount } from "@/services/storeSettingsApi";
 import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedActiveOrdersNotice";
+import { MerchantMarketInsightsPanel } from "@/components/growth/MerchantMarketInsightsPanel";
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
 
 const { width } = Dimensions.get("window");
@@ -128,7 +131,7 @@ export default function DashboardScreen() {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
-  const { orders, refetch: refetchOrders, transitionOrder } = useOrders(12000);
+  const { orders, refetch: refetchOrders, transitionOrder, extendPrepDelay, acceptanceWindowMinutes } = useOrders(12000);
   const {
     isOnline,
     manualCloseUntil,
@@ -143,6 +146,9 @@ export default function DashboardScreen() {
   const [nowMs, setNowMs] = useState(Date.now());
   const [rejectTarget, setRejectTarget] = useState<OrderRecord | null>(null);
   const [rejectLoading, setRejectLoading] = useState(false);
+  const [prepDelayOrder, setPrepDelayOrder] = useState<OrderRecord | null>(null);
+  const [prepDelayLoading, setPrepDelayLoading] = useState(false);
+  const { followUp, beginFollowUp, dismissFollowUp, setFollowUp } = useRejectFollowUp();
 
   const [orderTab, setOrderTab] = useState<OrderFilterTab>("New");
   const orderTabBootstrapped = useRef(false);
@@ -154,17 +160,17 @@ export default function DashboardScreen() {
   const loadDashboardStats = useCallback(async () => {
     if (!token || !storeId) return;
     try {
-      const [growth, wallet, active] = await Promise.all([
-        fetchGrowthSummary(storeId, token, "today"),
+      const [wallet, active] = await Promise.all([
         fetchWalletSummary(storeId, token),
         getActiveOrdersCount(storeId, token),
       ]);
-      setTodayEarning(Number(growth.total_sales) || 0);
-      setDeliveredToday(Number(growth.total_orders) || 0);
+      setTodayEarning(Number(wallet.today_earning) || 0);
+      setDeliveredToday(Number(wallet.delivered_today ?? 0) || 0);
       setWalletBalance(Number(wallet.available_balance ?? 0) || 0);
       setPendingCount(Number(active) || 0);
     } catch {
-      /* keep previous values */
+      setTodayEarning(0);
+      setDeliveredToday(0);
     }
   }, [token, storeId]);
 
@@ -215,6 +221,19 @@ export default function DashboardScreen() {
     [orders]
   );
 
+  const orderTabCounts = useMemo(
+    () => ({
+      new: orders.filter((o) => o.status === "created").length,
+      active: orders.filter(
+        (o) =>
+          o.status === "preparing" ||
+          o.status === "ready" ||
+          o.status === "picked_up"
+      ).length,
+    }),
+    [orders]
+  );
+
   const recentOrders = useMemo(() => {
     let list = orders;
     if (orderTab === "New") {
@@ -246,6 +265,14 @@ export default function DashboardScreen() {
   const confirmReject = useCallback(
     async (reason: MerchantCancellationReason) => {
       if (!rejectTarget) return;
+      const orderSnap = rejectTarget;
+      if (rejectReasonNeedsFollowUp(reason)) {
+        setRejectTarget(null);
+        beginFollowUp(reason, orderSnap.lineItems, () =>
+          transitionOrder(orderSnap.id, "rejected", { rejectedReason: reason })
+        );
+        return;
+      }
       setRejectLoading(true);
       try {
         await transitionOrder(rejectTarget.id, "rejected", { rejectedReason: reason });
@@ -256,7 +283,7 @@ export default function DashboardScreen() {
         setRejectLoading(false);
       }
     },
-    [rejectTarget, transitionOrder]
+    [rejectTarget, transitionOrder, beginFollowUp]
   );
 
   const handleAdvance = useCallback(
@@ -373,6 +400,8 @@ export default function DashboardScreen() {
         </View>
       </View>
 
+      <MerchantMarketInsightsPanel storeId={storeId} />
+
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>All Orders</Text>
         <View style={styles.tabRow}>
@@ -380,13 +409,27 @@ export default function DashboardScreen() {
             onPress={() => setOrderTab("New")}
             style={[styles.tab, orderTab === "New" && styles.tabActive]}
           >
-            <Text style={[styles.tabText, orderTab === "New" && styles.tabTextActive]}>New</Text>
+            <View style={styles.tabInner}>
+              <Text style={[styles.tabText, orderTab === "New" && styles.tabTextActive]}>New</Text>
+              <View style={[styles.tabCountBadge, orderTab === "New" && styles.tabCountBadgeActive]}>
+                <Text style={[styles.tabCountText, orderTab === "New" && styles.tabCountTextActive]}>
+                  {orderTabCounts.new > 99 ? "99+" : orderTabCounts.new}
+                </Text>
+              </View>
+            </View>
           </Pressable>
           <Pressable
             onPress={() => setOrderTab("Active")}
             style={[styles.tab, orderTab === "Active" && styles.tabActive]}
           >
-            <Text style={[styles.tabText, orderTab === "Active" && styles.tabTextActive]}>Active</Text>
+            <View style={styles.tabInner}>
+              <Text style={[styles.tabText, orderTab === "Active" && styles.tabTextActive]}>Active</Text>
+              <View style={[styles.tabCountBadge, orderTab === "Active" && styles.tabCountBadgeActive]}>
+                <Text style={[styles.tabCountText, orderTab === "Active" && styles.tabCountTextActive]}>
+                  {orderTabCounts.active > 99 ? "99+" : orderTabCounts.active}
+                </Text>
+              </View>
+            </View>
           </Pressable>
         </View>
         <View style={styles.orderList}>
@@ -400,10 +443,12 @@ export default function DashboardScreen() {
                 key={order.id}
                 order={order}
                 nowMs={nowMs}
+                acceptanceWindowMinutes={acceptanceWindowMinutes}
                 storeName={selectedStore?.store_name}
                 onAccept={() => handleAccept(order)}
                 onReject={() => handleReject(order)}
                 onAdvance={() => handleAdvance(order)}
+                onNeedMoreTime={() => setPrepDelayOrder(order)}
                 onViewDetail={() => router.push(`/order/${order.id}`)}
               />
             ))
@@ -422,6 +467,26 @@ export default function DashboardScreen() {
         loading={rejectLoading}
         onClose={() => !rejectLoading && setRejectTarget(null)}
         onConfirm={confirmReject}
+      />
+      <RejectFollowUpHost
+        followUp={followUp}
+        onDismiss={dismissFollowUp}
+        setFollowUp={setFollowUp}
+      />
+      <MerchantPrepDelaySheet
+        visible={prepDelayOrder != null}
+        loading={prepDelayLoading}
+        onClose={() => !prepDelayLoading && setPrepDelayOrder(null)}
+        onSelectMinutes={async (mins) => {
+          if (!prepDelayOrder) return;
+          setPrepDelayLoading(true);
+          try {
+            await extendPrepDelay(prepDelayOrder.id, mins);
+            setPrepDelayOrder(null);
+          } finally {
+            setPrepDelayLoading(false);
+          }
+        }}
       />
     </View>
   );
@@ -514,7 +579,13 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 10,
     alignItems: "center",
+    justifyContent: "center",
     borderRadius: 8,
+  },
+  tabInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   tabActive: {
     backgroundColor: GatiMitraMerchant.navy,
@@ -527,6 +598,26 @@ const styles = StyleSheet.create({
   },
   tabTextActive: {
     color: "#fff",
+  },
+  tabCountBadge: {
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 6,
+    borderRadius: 11,
+    backgroundColor: "#64748B",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tabCountBadgeActive: {
+    backgroundColor: "rgba(255,255,255,0.22)",
+  },
+  tabCountText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#FFFFFF",
+  },
+  tabCountTextActive: {
+    color: "#FFFFFF",
   },
   orderList: { gap: 12 },
   emptyOrders: {

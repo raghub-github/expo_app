@@ -1,3 +1,21 @@
+/** Shown on timeline and order cards for dashboard/agent cancellations. */
+export const GATIMITRA_TEAM_REJECTION_LABEL = "Rejected by GatiMitra Team";
+
+const CATALOG_REASON_RE = /^(CUSTOMER|MERCHANT|RIDER|OTHER)\s-\s/i;
+
+export function isGatiMitraTeamCancellationLabel(label: string | null | undefined): boolean {
+  const t = (label ?? "").trim().toLowerCase();
+  return (
+    t === GATIMITRA_TEAM_REJECTION_LABEL.toLowerCase() ||
+    t === "cancelled by gatimitra team" ||
+    t === "rejected by gatimitra team"
+  );
+}
+
+export function isCatalogCancellationReason(reason: string | null | undefined): boolean {
+  return CATALOG_REASON_RE.test((reason ?? "").trim());
+}
+
 /** Avoid showing the same cancellation text twice (label + rejected_reason). */
 
 function normalizeCancellationText(s: string | null | undefined): string {

@@ -1,29 +1,36 @@
 import React from 'react';
-import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { Redirect, Tabs } from 'expo-router';
+import { Redirect, Tabs, useSegments } from 'expo-router';
 import { View, ActivityIndicator } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
 
 import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '@/src/stores/sessionStore';
+import { useOnboardingGate } from '@/src/hooks/useOnboardingGate';
 import { GlobalTopBar } from '@/src/components/GlobalTopBar';
+import { RiderHomeLocationPrompt } from '@/src/components/home/RiderHomeLocationPrompt';
+import { RiderSubscriptionPrompt } from '@/src/components/subscription/RiderSubscriptionPrompt';
+import { RiderVehiclePrompt } from '@/src/components/vehicle/RiderVehiclePrompt';
+import { RiderVehicleVerificationHost } from '@/src/components/vehicle/RiderVehicleVerificationHost';
+import { RiderLogoutSheetHost } from '@/src/components/profile/RiderLogoutSheetHost';
+import { ActiveOrderTabOverlay } from '@/src/components/orders/ActiveOrderTabOverlay';
+import { RiderTabBar } from '@/src/components/navigation/RiderTabBar';
 import { colors } from '@/src/theme';
 
-function TabBarIcon(props: {
-  name: React.ComponentProps<typeof FontAwesome>['name'];
-  color: string;
-}) {
-  return <FontAwesome size={24} style={{ marginBottom: -3 }} {...props} />;
-}
+const TAB_BRAND = colors.primary[500];
 
 export default function TabLayout() {
   const { t } = useTranslation();
+  const segments = useSegments();
   const hydrated = useSessionStore((s) => s.hydrated);
   const session = useSessionStore((s) => s.session);
+  const { ready: onboardingGateReady, href: onboardingHref, canAccessTabs } = useOnboardingGate();
 
-  if (!hydrated) {
+  const onOrdersHome = segments[0] === '(tabs)' && segments[1] === 'orders';
+
+  if (!hydrated || (session && !onboardingGateReady)) {
     return (
       <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: colors.background.light }}>
-        <ActivityIndicator size="large" color={colors.primary[500]} />
+        <ActivityIndicator size="large" color={TAB_BRAND} />
       </View>
     );
   }
@@ -32,65 +39,35 @@ export default function TabLayout() {
     return <Redirect href="/(auth)/login" />;
   }
 
+  if (!canAccessTabs && onboardingHref) {
+    return <Redirect href={onboardingHref} />;
+  }
+
   return (
     <View style={{ flex: 1 }}>
-      <GlobalTopBar />
+      <StatusBar style="dark" backgroundColor="#ffffff" />
+      <RiderHomeLocationPrompt />
+      {!onOrdersHome ? <GlobalTopBar /> : null}
       <Tabs
+        tabBar={(props) => <RiderTabBar {...props} />}
         screenOptions={{
-          tabBarActiveTintColor: colors.primary[500],
-          tabBarInactiveTintColor: colors.gray[500],
-          tabBarStyle: {
-            backgroundColor: '#fff',
-            borderTopColor: colors.gray[200],
-            borderTopWidth: 1,
-            height: 60,
-            paddingBottom: 8,
-            paddingTop: 8,
-          },
           headerShown: false,
         }}>
-        <Tabs.Screen
-          name="orders"
-          options={{
-            title: t('tabs.orders', 'Orders'),
-            tabBarIcon: ({ color }) => <TabBarIcon name="list" color={color} />,
-          }}
-        />
-        <Tabs.Screen
-          name="earnings"
-          options={{
-            title: t('tabs.earnings', 'Earnings'),
-            tabBarIcon: ({ color }) => <TabBarIcon name="money" color={color} />,
-          }}
-        />
-        <Tabs.Screen
-          name="ledger"
-          options={{
-            title: t('tabs.ledger', 'Ledger'),
-            tabBarIcon: ({ color }) => <TabBarIcon name="book" color={color} />,
-          }}
-        />
-        <Tabs.Screen
-          name="offers"
-          options={{
-            title: t('tabs.offers', 'Offers'),
-            tabBarIcon: ({ color }) => <TabBarIcon name="bullseye" color={color} />,
-          }}
-        />
+        <Tabs.Screen name="orders" options={{ title: t('tabs.orders', 'Orders') }} />
+        <Tabs.Screen name="ledger" options={{ title: t('tabs.ledger', 'Ledger') }} />
+        <Tabs.Screen name="offers" options={{ title: t('tabs.offers', 'Offers') }} />
+        <Tabs.Screen name="earnings" options={{ title: t('tabs.earnings', 'Earnings') }} />
         <Tabs.Screen
           name="profile"
-          options={{
-            title: t('tabs.profile', 'Profile'),
-            tabBarIcon: ({ color }) => <TabBarIcon name="user" color={color} />,
-          }}
+          options={{ title: t('tabs.profile', 'Profile'), lazy: false }}
         />
-        <Tabs.Screen
-          name="index"
-          options={{
-            href: null, // Hide from tab bar
-          }}
-        />
+        <Tabs.Screen name="index" options={{ href: null }} />
       </Tabs>
+      <RiderSubscriptionPrompt />
+      <RiderVehiclePrompt />
+      <RiderVehicleVerificationHost />
+      <RiderLogoutSheetHost />
+      {!onOrdersHome ? <ActiveOrderTabOverlay /> : null}
     </View>
   );
 }

@@ -130,6 +130,7 @@ export function AuthProvider({
       refetch,
     }),
     [
+      authReady,
       user,
       sessionStatus,
       permissions,

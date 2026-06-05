@@ -15,4 +15,7 @@ config.resolver.nodeModulesPaths = [
 ];
 config.resolver.disableHierarchicalLookup = true;
 
+const { withExpoPlatformFallback } = require("./metro.expo-platform-fallback");
+withExpoPlatformFallback(config);
+
 module.exports = config;

@@ -258,3 +258,116 @@ export function merchantOrderTotalFromBilling(
   const merchantDisc = merchantFundedDiscountFromBilling(snap);
   return round2(Math.max(0, merchantItemSubtotal + packaging - merchantDisc));
 }
+
+function normalizeItemsForMerchantTotal(raw: unknown): MerchantOrderItemLike[] {
+  if (!Array.isArray(raw)) return [];
+  const out: MerchantOrderItemLike[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as Record<string, unknown>;
+    const qty = Number(r.quantity ?? r.qty ?? 1) || 1;
+    const name = String(r.item_name ?? r.name ?? "Item");
+    const price = num(r.total_price ?? r.price ?? r.base_price ?? 0);
+    out.push({
+      qty,
+      name,
+      price,
+      veg_nonveg:
+        r.veg_nonveg != null && String(r.veg_nonveg).trim()
+          ? String(r.veg_nonveg).trim()
+          : undefined,
+      customizations: Array.isArray(r.customizations)
+        ? (r.customizations as unknown[]).map((c) => String(c).trim()).filter(Boolean)
+        : undefined,
+      base_amount: r.base_amount != null ? num(r.base_amount) : undefined,
+      customizations_total:
+        r.customizations_total != null ? num(r.customizations_total) : undefined,
+      captured_base_amount:
+        r.captured_base_amount != null ? num(r.captured_base_amount) : undefined,
+      captured_addon_amount:
+        r.captured_addon_amount != null ? num(r.captured_addon_amount) : undefined,
+      customization_lines: Array.isArray(r.customization_lines)
+        ? (r.customization_lines as Array<Record<string, unknown>>).map((l) => ({
+            name: String(l.name ?? ""),
+            amount: num(l.amount),
+            kind: String(l.kind ?? "addon") as "variant" | "addon" | "note",
+          }))
+        : undefined,
+      has_customizations: Boolean(r.has_customizations),
+    });
+  }
+  return out;
+}
+
+/**
+ * Same merchant order value as merchant app incoming modal (pricing.total / merchantOrderBillTotal).
+ * Used for push + in-app notifications — not customer grand_total.
+ */
+export async function resolveMerchantVisibleOrderTotal(
+  sql: Sql,
+  args: { merchantStoreId: number; orderIdText: string }
+): Promise<number | null> {
+  const orderIdText = String(args.orderIdText ?? "").trim();
+  const storeId = Number(args.merchantStoreId);
+  if (!orderIdText || !Number.isFinite(storeId) || storeId <= 0) return null;
+
+  const coreRows = await sql<
+    Array<{ billing_snapshot: unknown; items: unknown }>
+  >`
+    SELECT billing_snapshot, items
+    FROM orders_core
+    WHERE order_id = ${orderIdText}
+      AND merchant_store_id = ${storeId}
+    LIMIT 1
+  `;
+  const core = coreRows[0];
+  if (!core) return null;
+
+  const billingSnap =
+    core.billing_snapshot && typeof core.billing_snapshot === "object"
+      ? (core.billing_snapshot as Record<string, unknown>)
+      : null;
+
+  const { loadMerchantOrderLineItemsByTextIds } = await import(
+    "./load-merchant-order-line-items.js"
+  );
+  const itemsByText = await loadMerchantOrderLineItemsByTextIds(sql, [orderIdText]);
+  let items: MerchantOrderItemLike[] = itemsByText.get(orderIdText) ?? [];
+  if (!items.length) {
+    items = normalizeItemsForMerchantTotal(core.items);
+  }
+  if (!items.length) return null;
+
+  let commissionPercent: number | undefined;
+  try {
+    const c = await resolveStoreCommission(storeId);
+    commissionPercent = c.percent;
+  } catch {
+    commissionPercent = undefined;
+  }
+
+  const snaps = await loadSnapshotsByOrderTexts(sql, [orderIdText], storeId);
+  const snapshotLines = snaps.get(orderIdText) ?? [];
+
+  const { items: merchantItems, merchantSubtotal } = await applyMerchantBaseToOrderItems(
+    items,
+    snapshotLines,
+    { storeId, commissionPercent }
+  );
+
+  const itemsSubtotal = round2(
+    items.reduce((s, it, i) => {
+      const mapped = merchantItems[i];
+      const lineTotal = num(mapped?.price ?? it.price);
+      return s + lineTotal;
+    }, 0)
+  );
+
+  const packaging = num(billingSnap?.packaging_fee ?? 0);
+  const total = merchantOrderTotalFromBilling(
+    itemsSubtotal > 0.005 ? itemsSubtotal : merchantSubtotal,
+    billingSnap,
+    packaging
+  );
+  return total > 0.005 ? total : null;
+}

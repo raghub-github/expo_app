@@ -22,7 +22,7 @@ export function getDb() {
   // "Network Error" / billing never resolving while the handlers waited on
   // a connection. Supabase's transaction pooler accepts plenty more.
   const connectTimeoutSec = env.DATABASE_CONNECT_TIMEOUT_SEC ?? 30;
-  const poolMax = env.NODE_ENV === "production" ? 30 : 15;
+  const poolMax = env.NODE_ENV === "production" ? 30 : 20;
 
   const sql = postgres(env.DATABASE_URL, {
     max: poolMax,

@@ -15,6 +15,7 @@ import { queueTicketAssignedNotification, queueTicketReopenedNotification } from
 import { validateAssigneeForTicket } from "@/lib/tickets/assignee-eligibility";
 import { pickRoundRobinAssigneeForGroup } from "@/lib/tickets/round-robin-auto-assign";
 import { coerceSqlTextArray } from "@/lib/tickets/coerce-sql-text-array";
+import { parseTicketAttachmentItem } from "@/lib/tickets/parse-ticket-attachment";
 
 export const runtime = "nodejs";
 
@@ -461,41 +462,9 @@ export async function GET(
       messages = (msgResult || []).map((m: Record<string, unknown>) => {
         const rawAtt = m.attachments ?? [];
         const attList = Array.isArray(rawAtt) ? rawAtt : [];
-        const attachments = attList.map((item: unknown) => {
-          if (item != null && typeof item === "string") {
-            if (item.startsWith("{")) {
-              try {
-                const parsed = JSON.parse(item) as {
-                  storageKey?: string;
-                  name?: string;
-                  mimeType?: string;
-                  url?: string;
-                };
-                return parsed.storageKey
-                  ? {
-                      storageKey: parsed.storageKey,
-                      name: parsed.name ?? "file",
-                      mimeType: parsed.mimeType ?? "application/octet-stream",
-                      ...(parsed.url ? { url: parsed.url } : {}),
-                    }
-                  : { url: item, name: "Attachment" };
-              } catch {
-                return { url: item, name: "Attachment" };
-              }
-            }
-            return { url: item, name: "Attachment" };
-          }
-          if (item != null && typeof item === "object" && "storageKey" in (item as object)) {
-            const o = item as { storageKey: string; name?: string; mimeType?: string; url?: string };
-            return {
-              storageKey: o.storageKey,
-              name: o.name ?? "file",
-              mimeType: o.mimeType ?? "application/octet-stream",
-              ...(typeof o.url === "string" && o.url ? { url: o.url } : {}),
-            };
-          }
-          return null;
-        }).filter(Boolean);
+        const attachments = attList
+          .map((item: unknown) => parseTicketAttachmentItem(item))
+          .filter(Boolean);
         return {
           id: m.id,
           ticket_id: m.ticket_id,

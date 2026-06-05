@@ -7,6 +7,14 @@ import { getDb } from "../client";
 import { riders, riderDocuments, riderVehicles, riderAddresses, riderDocumentFiles, riderPaymentMethods, onboardingPayments } from "../schema";
 import { eq, and, desc, inArray, isNull } from "drizzle-orm";
 import { getSystemUserById } from "./users";
+import {
+  areAllRequiredSidesApproved,
+  buildSideVerificationPatch,
+  isCompositeBaseType,
+  isSideVerified,
+  parseDisplayDocType,
+  readSideVerification,
+} from "@/lib/rider-document-side-verification";
 
 /**
  * Get rider by ID
@@ -215,16 +223,77 @@ export async function updateRiderKycAndStage(
 }
 
 /**
- * Approve rider document. Returns approved doc + final rider state for instant UI update.
+ * Approve rider document (whole doc or one front/back side). Returns approved doc + final rider state.
  */
 export async function approveRiderDocument(
   docId: number,
-  agentId: number
-): Promise<{ approved: Record<string, unknown>; riderState: { kycStatus: string; onboardingStage: string; status: string } } | null> {
+  agentId: number,
+  options?: { displayDocType?: string }
+): Promise<{
+  approved: Record<string, unknown>;
+  riderState: { kycStatus: string; onboardingStage: string; status: string };
+  displayDocType?: string;
+  sideVerified?: boolean;
+} | null> {
   const db = getDb();
 
-  // Update document with verification details
-  const [approved] = await db
+  const [current] = await db
+    .select()
+    .from(riderDocuments)
+    .where(eq(riderDocuments.id, docId))
+    .limit(1);
+
+  if (!current) return null;
+
+  const parsed = parseDisplayDocType(options?.displayDocType);
+  const isSideApproval =
+    parsed &&
+    parsed.side &&
+    isCompositeBaseType(current.docType) &&
+    parsed.baseType === current.docType;
+
+  let approved: typeof current;
+
+  if (isSideApproval && parsed!.side) {
+    const side = parsed!.side;
+    const files = await getRiderDocumentFilesByDocumentIds([docId]);
+    const nextMetadata = buildSideVerificationPatch(current.metadata, side, {
+      verified: true,
+      verificationStatus: "approved",
+      verifiedAt: new Date().toISOString(),
+      verifierUserId: agentId,
+      rejectedReason: null,
+    });
+    const allSidesApproved = areAllRequiredSidesApproved(nextMetadata, files);
+
+    const [updated] = await db
+      .update(riderDocuments)
+      .set({
+        metadata: nextMetadata,
+        verified: allSidesApproved,
+        verificationStatus: allSidesApproved ? "approved" : "pending",
+        verifiedAt: allSidesApproved ? new Date() : null,
+        verifierUserId: allSidesApproved ? agentId : current.verifierUserId,
+        rejectedReason: allSidesApproved ? null : current.rejectedReason,
+        updatedAt: new Date(),
+      })
+      .where(eq(riderDocuments.id, docId))
+      .returning();
+
+    if (!updated) return null;
+    approved = updated;
+
+    const riderState = await recomputeRiderStateAfterDocChange(approved.riderId);
+    return {
+      approved,
+      riderState,
+      displayDocType: options?.displayDocType,
+      sideVerified: true,
+    };
+  }
+
+  // Whole-document approval (single-side docs or legacy flow)
+  const [wholeApproved] = await db
     .update(riderDocuments)
     .set({
       verified: true,
@@ -237,18 +306,40 @@ export async function approveRiderDocument(
     .where(eq(riderDocuments.id, docId))
     .returning();
 
-  if (!approved) return null;
+  if (!wholeApproved) return null;
+  approved = wholeApproved;
 
-  const riderId = approved.riderId as number;
+  const riderState = await recomputeRiderStateAfterDocChange(approved.riderId);
+  return { approved, riderState };
+}
+
+async function recomputeRiderStateAfterDocChange(riderId: number): Promise<{
+  kycStatus: string;
+  onboardingStage: string;
+  status: string;
+}> {
+  const db = getDb();
   const rider = await getRiderById(riderId);
-  const fallbackState = { kycStatus: (rider as any)?.kycStatus ?? "PENDING", onboardingStage: (rider as any)?.onboardingStage ?? "MOBILE_VERIFIED", status: (rider as any)?.status ?? "INACTIVE" };
-  if (!rider) return { approved, riderState: fallbackState };
+  const fallbackState = {
+    kycStatus: (rider as any)?.kycStatus ?? "PENDING",
+    onboardingStage: (rider as any)?.onboardingStage ?? "MOBILE_VERIFIED",
+    status: (rider as any)?.status ?? "INACTIVE",
+  };
+  if (!rider) return fallbackState;
 
-  // Get all documents and vehicle info for complete verification check
   const allDocs = await db
     .select()
     .from(riderDocuments)
     .where(eq(riderDocuments.riderId, riderId));
+
+  const docIds = allDocs.map((d) => d.id);
+  const allFiles = await getRiderDocumentFilesByDocumentIds(docIds);
+  const filesByDocId = new Map<number, typeof allFiles>();
+  for (const f of allFiles) {
+    const list = filesByDocId.get(f.documentId) || [];
+    list.push(f);
+    filesByDocId.set(f.documentId, list);
+  }
 
   const vehicles = await db
     .select()
@@ -258,145 +349,237 @@ export async function approveRiderDocument(
 
   const vehicle = vehicles[0];
 
-  // Check verification states
-  const identityVerified = checkIdentityDocsVerifiedFromList(allDocs);
-  const vehicleDocsVerified = checkVehicleDocsVerifiedFromList(allDocs, vehicle?.vehicleType);
-  const bankProofVerified = allDocs.some((d: any) => d.docType === 'bank_proof' && d.verified);
-  const allRequiredDocsVerified = identityVerified && vehicleDocsVerified && bankProofVerified;
+  const identityVerified = checkIdentityDocsVerifiedFromList(allDocs, filesByDocId);
+  const vehicleDocsVerified = checkVehicleDocsVerifiedFromList(allDocs, vehicle?.vehicleType, filesByDocId);
+  // bank_proof is optional (additional doc); identity + vehicle docs are required for activation
+  const allRequiredDocsVerified = identityVerified && vehicleDocsVerified;
 
   let kycStatus = (rider as any).kycStatus;
   let onboardingStage = (rider as any).onboardingStage;
   let status = (rider as any).status;
 
-  // Onboarding flow: MOBILE_VERIFIED → KYC → APPROVAL (docs) → PAYMENT (fees) → ACTIVE
-  // Enum: MOBILE_VERIFIED | KYC | PAYMENT | APPROVAL | ACTIVE
-  //
-  // Stage 1: Identity docs verified (Aadhaar, PAN, selfie) → KYC approved, move to APPROVAL
-  //         (APPROVAL = docs approval phase: still verifying DL, RC, bank etc.)
   if (identityVerified && kycStatus === "PENDING") {
     kycStatus = "APPROVED";
     onboardingStage = "APPROVAL";
-    await db.update(riders).set({
-      kycStatus: kycStatus as any,
-      onboardingStage: onboardingStage as any,
-      updatedAt: new Date(),
-    }).where(eq(riders.id, riderId));
+    await db
+      .update(riders)
+      .set({
+        kycStatus: kycStatus as any,
+        onboardingStage: onboardingStage as any,
+        updatedAt: new Date(),
+      })
+      .where(eq(riders.id, riderId));
   }
 
-  // Stage 2: All required documents verified (identity + vehicle + bank)
-  //         → If rider already paid fees → ACTIVE (auto-approve)
-  //         → Else → PAYMENT (waiting for onboarding fees)
   if (allRequiredDocsVerified) {
     const paymentCompleted = await checkOnboardingPaymentCompleted(riderId);
 
     if (paymentCompleted) {
-      // All docs verified + payment done → ACTIVE
       status = "ACTIVE";
       onboardingStage = "ACTIVE";
-      await db.update(riders).set({
-        kycStatus: "APPROVED" as any,
-        onboardingStage: "ACTIVE" as any,
-        status: "ACTIVE" as any,
-        updatedAt: new Date(),
-      }).where(eq(riders.id, riderId));
+      await db
+        .update(riders)
+        .set({
+          kycStatus: "APPROVED" as any,
+          onboardingStage: "ACTIVE" as any,
+          status: "ACTIVE" as any,
+          updatedAt: new Date(),
+        })
+        .where(eq(riders.id, riderId));
 
-      return { approved, riderState: { kycStatus: "APPROVED", onboardingStage: "ACTIVE", status: "ACTIVE" } };
+      return { kycStatus: "APPROVED", onboardingStage: "ACTIVE", status: "ACTIVE" };
     }
 
-    // All docs verified but payment not done → PAYMENT stage (waiting for fees)
     onboardingStage = "PAYMENT";
     kycStatus = "APPROVED";
-    await db.update(riders).set({
-      kycStatus: "APPROVED" as any,
-      onboardingStage: "PAYMENT" as any,
-      updatedAt: new Date(),
-    }).where(eq(riders.id, riderId));
+    await db
+      .update(riders)
+      .set({
+        kycStatus: "APPROVED" as any,
+        onboardingStage: "PAYMENT" as any,
+        updatedAt: new Date(),
+      })
+      .where(eq(riders.id, riderId));
   }
 
-  return { approved, riderState: { kycStatus, onboardingStage, status } };
+  return { kycStatus, onboardingStage, status };
+}
+
+/** Re-evaluate rider KYC/onboarding stage/status after docs or payment change. */
+export async function syncRiderOnboardingState(riderId: number): Promise<{
+  kycStatus: string;
+  onboardingStage: string;
+  status: string;
+}> {
+  return recomputeRiderStateAfterDocChange(riderId);
 }
 
 // Helper function to check identity docs from list
-function checkIdentityDocsVerifiedFromList(docs: any[]): boolean {
-  // Aadhaar: front OR back is enough (but preferably both)
-  const hasAadhaarFront = docs.some(d => d.docType === 'aadhaar_front' && d.verified);
-  const hasAadhaarBack = docs.some(d => d.docType === 'aadhaar_back' && d.verified);
-  const hasAadhaarSingle = docs.some(d => d.docType === 'aadhaar' && d.verified);
-  const hasAadhaar = hasAadhaarFront || hasAadhaarBack || hasAadhaarSingle;
-  
-  const hasSelfie = docs.some(d => d.docType === 'selfie' && d.verified);
-  const hasPan = docs.some(d => d.docType === 'pan' && d.verified);
-  
+function isCompositeDocSideComplete(
+  doc: { docType: string; verified?: boolean; metadata?: unknown },
+  side: "front" | "back",
+  filesByDocId: Map<number, { side?: string | null }[]>
+): boolean {
+  if (!isCompositeBaseType(doc.docType)) return false;
+  const files = filesByDocId.get((doc as any).id) ?? [];
+  const hasSide = files.some((f) => (f.side || "").toLowerCase() === side);
+  if (hasSide) {
+    if (isSideVerified(doc.metadata, side)) return true;
+    const sv = readSideVerification(doc.metadata);
+    if (Object.keys(sv).length === 0 && doc.verified) return true;
+    return false;
+  }
+  return Boolean(doc.verified);
+}
+
+function checkIdentityDocsVerifiedFromList(
+  docs: any[],
+  filesByDocId: Map<number, { side?: string | null }[]> = new Map()
+): boolean {
+  const aadhaarRow = docs.find((d) => d.docType === "aadhaar");
+  let hasAadhaar = false;
+  if (aadhaarRow) {
+    hasAadhaar =
+      isCompositeDocSideComplete(aadhaarRow, "front", filesByDocId) &&
+      isCompositeDocSideComplete(aadhaarRow, "back", filesByDocId);
+  } else {
+    const hasAadhaarFront = docs.some((d) => d.docType === "aadhaar_front" && d.verified);
+    const hasAadhaarBack = docs.some((d) => d.docType === "aadhaar_back" && d.verified);
+    const hasAadhaarSingle = docs.some((d) => d.docType === "aadhaar" && d.verified);
+    hasAadhaar = (hasAadhaarFront && hasAadhaarBack) || hasAadhaarSingle;
+  }
+
+  const hasSelfie = docs.some((d) => d.docType === "selfie" && d.verified);
+  const hasPan = docs.some((d) => d.docType === "pan" && d.verified);
+
   return hasAadhaar && hasSelfie && hasPan;
 }
 
 // Helper function to check vehicle docs from list
-function checkVehicleDocsVerifiedFromList(docs: any[], vehicleType?: string): boolean {
-  // DL: front OR back is enough (but preferably both)
-  const hasDLFront = docs.some(d => d.docType === 'dl_front' && d.verified);
-  const hasDLBack = docs.some(d => d.docType === 'dl_back' && d.verified);
-  const hasDLSingle = docs.some(d => d.docType === 'dl' && d.verified);
-  const hasDL = hasDLFront || hasDLBack || hasDLSingle;
-  
-  const hasRC = docs.some(d => d.docType === 'rc' && d.verified);
-  const hasRentalProof = docs.some(d => d.docType === 'rental_proof' && d.verified);
-  const hasEVProof = docs.some(d => d.docType === 'ev_proof' && d.verified);
-  
-  // DL is always required
+function checkVehicleDocsVerifiedFromList(
+  docs: any[],
+  vehicleType?: string,
+  filesByDocId: Map<number, { side?: string | null }[]> = new Map()
+): boolean {
+  const dlRow = docs.find((d) => d.docType === "dl");
+  let hasDL = false;
+  if (dlRow) {
+    hasDL =
+      isCompositeDocSideComplete(dlRow, "front", filesByDocId) &&
+      isCompositeDocSideComplete(dlRow, "back", filesByDocId);
+  } else {
+    const hasDLFront = docs.some((d) => d.docType === "dl_front" && d.verified);
+    const hasDLBack = docs.some((d) => d.docType === "dl_back" && d.verified);
+    const hasDLSingle = docs.some((d) => d.docType === "dl" && d.verified);
+    hasDL = (hasDLFront && hasDLBack) || hasDLSingle;
+  }
+
+  const hasRC = docs.some((d) => d.docType === "rc" && d.verified);
+  const hasRentalProof = docs.some((d) => d.docType === "rental_proof" && d.verified);
+  const hasEVProof = docs.some((d) => d.docType === "ev_proof" && d.verified);
+
   if (!hasDL) return false;
-  
-  // RC or Rental Proof required (at least one)
   if (!hasRC && !hasRentalProof) return false;
-  
-  // For EV vehicles, EV proof is also required (or rental proof covers it)
-  const isEV = vehicleType?.toLowerCase().includes('ev') || 
-               vehicleType?.toLowerCase().includes('electric');
-  
+
+  const isEV =
+    vehicleType?.toLowerCase().includes("ev") ||
+    vehicleType?.toLowerCase().includes("electric");
+
   if (isEV && !hasEVProof && !hasRentalProof) {
     return false;
   }
-  
+
   return true;
 }
 
 /**
- * Reject rider document
+ * Reject rider document (whole doc or one front/back side)
  */
 export async function rejectRiderDocument(
   docId: number,
   agentId: number,
-  reason: string
+  reason: string,
+  options?: { displayDocType?: string }
 ) {
   const db = getDb();
-  
-  const [rejected] = await db
-    .update(riderDocuments)
-    .set({
+
+  const [current] = await db
+    .select()
+    .from(riderDocuments)
+    .where(eq(riderDocuments.id, docId))
+    .limit(1);
+
+  if (!current) return null;
+
+  const parsed = parseDisplayDocType(options?.displayDocType);
+  const isSideRejection =
+    parsed &&
+    parsed.side &&
+    isCompositeBaseType(current.docType) &&
+    parsed.baseType === current.docType;
+
+  let rejected: typeof current;
+
+  if (isSideRejection && parsed!.side) {
+    const side = parsed!.side;
+    const nextMetadata = buildSideVerificationPatch(current.metadata, side, {
       verified: false,
       verificationStatus: "rejected",
+      verifiedAt: null,
       verifierUserId: agentId,
       rejectedReason: reason,
-      verifiedAt: null,
-      updatedAt: new Date(),
-    })
-    .where(eq(riderDocuments.id, docId))
-    .returning();
-  
-  // Update rider KYC status to PENDING or REJECTED if identity docs are rejected
-  if (rejected) {
-    const riderId = (rejected as any).riderId;
-    const docType = (rejected as any).docType;
-    
-    // If critical identity documents are rejected, update KYC status
-    const criticalDocs = ['aadhaar', 'aadhaar_front', 'pan', 'selfie'];
-    if (criticalDocs.includes(docType)) {
-      await db.update(riders).set({
-        kycStatus: "REJECTED" as any,
+    });
+
+    const [updated] = await db
+      .update(riderDocuments)
+      .set({
+        metadata: nextMetadata,
+        verified: false,
+        verificationStatus: "pending",
+        verifiedAt: null,
+        verifierUserId: agentId,
+        rejectedReason: reason,
         updatedAt: new Date(),
-      }).where(eq(riders.id, riderId));
+      })
+      .where(eq(riderDocuments.id, docId))
+      .returning();
+
+    rejected = updated!;
+  } else {
+    const [wholeRejected] = await db
+      .update(riderDocuments)
+      .set({
+        verified: false,
+        verificationStatus: "rejected",
+        verifierUserId: agentId,
+        rejectedReason: reason,
+        verifiedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(riderDocuments.id, docId))
+      .returning();
+
+    rejected = wholeRejected!;
+  }
+
+  if (rejected) {
+    const riderId = rejected.riderId;
+    const docType = rejected.docType;
+    const criticalDocs = ["aadhaar", "aadhaar_front", "pan", "selfie"];
+    const displayCritical =
+      options?.displayDocType &&
+      ["aadhaar_front", "aadhaar_back", "pan", "selfie"].includes(options.displayDocType);
+    if (criticalDocs.includes(docType) || displayCritical) {
+      await db
+        .update(riders)
+        .set({
+          kycStatus: "REJECTED" as any,
+          updatedAt: new Date(),
+        })
+        .where(eq(riders.id, riderId));
     }
   }
-  
+
   return rejected || null;
 }
 

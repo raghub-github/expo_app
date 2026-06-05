@@ -34,6 +34,5 @@ export function resolveMerchantInstructionsForDisplay(order: {
   const list = parseMerchantInstructionsList(order.merchant_instructions_list);
   if (list.length > 0) return list;
   if (order.requires_utensils === false) return ["Don't send cutlery"];
-  if (order.requires_utensils === true) return ["Send cutlery"];
   return [];
 }

@@ -36,6 +36,15 @@ export type OrderSummary = {
     variantName?: string | null;
     customization?: string | null;
   }[];
+  storeRatingSubmitted?: boolean;
+  storeRating?: number | null;
+  deliveryRating?: number | null;
+  orderType?: string | null;
+  rideType?: string | null;
+  deliveryAddress?: string | null;
+  pickupOtp?: string | null;
+  pickupLat?: number | null;
+  pickupLng?: number | null;
 };
 
 export type OrderDetail = OrderSummary & {
@@ -47,17 +56,42 @@ export type OrderDetail = OrderSummary & {
   prepTimeMinutes?: number | null;
   /** ISO timestamp when food should be ready (merchant accept). */
   prepReadyByAt?: string | null;
-  rider?: { name: string; phone?: string };
+  rider?: {
+    name: string;
+    phone?: string;
+    photoUrl?: string | null;
+    rating?: number | null;
+    vehicleRegistration?: string | null;
+    vehicleModel?: string | null;
+  };
   deliveryAddress?: string;
   paymentMethod?: string | null;
   paymentStatus?: string | null;
   /** 4-digit code shown on customer tracking for delivery handoff. */
   deliveryOtp?: string | null;
+  /** 4-digit pickup OTP for person_ride — share with rider at pickup. */
+  pickupOtp?: string | null;
+  orderType?: string | null;
+  rideType?: string | null;
+  /** ISO timestamp when assigned rider marked reached pickup. */
+  riderReachedPickupAt?: string | null;
   /** Optional: for map – when available from backend */
   deliveryLat?: number | null;
   deliveryLng?: number | null;
   pickupLat?: number | null;
   pickupLng?: number | null;
+  merchantStoreId?: number | null;
+  storeRatingSubmitted?: boolean;
+  storeRating?: number | null;
+  deliveryRating?: number | null;
+  storeReviewText?: string | null;
+  riderReviewText?: string | null;
+  /** Rider tip paid at checkout (₹). */
+  tipAmount?: number | null;
+  /** Trip distance in km when available. */
+  distanceKm?: number | null;
+  /** Estimated or actual ride duration in minutes. */
+  rideDurationMinutes?: number | null;
 };
 
 /** Live rider position for tracking map (from GET /orders/:id/tracking) */
@@ -248,7 +282,25 @@ export const orderService = {
   },
 
   async getMyOrders(params?: { limit?: number; offset?: number }): Promise<OrderSummary[]> {
-    const { data } = await api.get<OrderSummary[]>(ORDERS_PREFIX, { params });
+    const { data } = await api.get<OrderSummary[] | { orders?: OrderSummary[] }>(ORDERS_PREFIX, {
+      params,
+    });
+    if (Array.isArray(data)) return data;
+    if (data && typeof data === "object" && Array.isArray(data.orders)) return data.orders;
+    return [];
+  },
+
+  async submitStoreRating(
+    orderId: string,
+    payload: {
+      storeRating: number;
+      deliveryRating?: number | null;
+      reviewText?: string | null;
+      riderReviewText?: string | null;
+      riderTipAmount?: number | null;
+    }
+  ): Promise<{ submitted: true; storeRating: number; deliveryRating: number | null }> {
+    const { data } = await api.post(`${ORDERS_PREFIX}/${orderId}/store-rating`, payload);
     return data;
   },
 };

@@ -65,6 +65,7 @@ type ResolvedCustomerOrder = {
   id: number;
   order_id: string | null;
   formatted_order_id: string | null;
+  order_type: string | null;
   status: string;
   current_status: string | null;
   grand_total: number | null;
@@ -79,6 +80,7 @@ function mapResolvedOrder(r: Record<string, unknown>): ResolvedCustomerOrder {
     id: Number(r.id),
     order_id: r.order_id != null ? String(r.order_id) : null,
     formatted_order_id: r.formatted_order_id != null ? String(r.formatted_order_id) : null,
+    order_type: r.order_type != null ? String(r.order_type) : null,
     status: r.status != null ? String(r.status) : "assigned",
     current_status: r.current_status != null ? String(r.current_status) : null,
     grand_total: r.grand_total != null ? Number(r.grand_total) : null,
@@ -87,6 +89,22 @@ function mapResolvedOrder(r: Record<string, unknown>): ResolvedCustomerOrder {
     merchant_store_id: r.merchant_store_id != null ? Number(r.merchant_store_id) : null,
     merchant_store_name: r.merchant_store_name != null ? String(r.merchant_store_name) : null,
   };
+}
+
+/** Lowercase status codes for applicable_order_statuses matching. */
+function normalizeHelpOrderStatus(raw: unknown): string {
+  return String(raw ?? "").trim().toLowerCase();
+}
+
+/** Map query param to ticket_titles.service_type enum value. */
+function normalizeHelpServiceType(raw: unknown): string | null {
+  const k = String(raw ?? "").trim().toLowerCase();
+  if (!k) return null;
+  if (k === "ride" || k === "person_ride" || k === "rides") return "person_ride";
+  if (k === "food") return "food";
+  if (k === "parcel") return "parcel";
+  if (k === "other" || k === "general") return "other";
+  return null;
 }
 
 /** Match orders_core.id | order_id (GM…) | formatted_order_id (GMF…) for this customer. */
@@ -98,7 +116,8 @@ async function resolveCustomerOrderRef(
   const trimmed = ref.replace(/^#/, "").trim();
   if (!trimmed) return null;
   const rows = await sql`
-    SELECT oc.id, oc.order_id, oc.formatted_order_id, oc.status::text AS status, oc.current_status,
+    SELECT oc.id, oc.order_id, oc.formatted_order_id, oc.order_type::text AS order_type,
+           oc.status::text AS status, oc.current_status,
            oc.grand_total, oc.placed_at, oc.actual_delivery_time AS delivered_at,
            oc.merchant_store_id,
            ms.store_name AS merchant_store_name
@@ -154,17 +173,22 @@ export async function customerSupportRoutes(app: FastifyInstance) {
   /**
    * GET /help-sections — Title catalog filtered to customer-facing intake.
    *
-   * Optional query: `?order_status=<code>` filters titles to ones whose
-   * `applicable_order_statuses` array includes that status (or is NULL =
-   * always-relevant). Pass `NO_ORDER` to get titles relevant when the
-   * customer chose "not about an order". Omit the param to get the full
-   * catalog (used for the section picker before an order is chosen).
+   * Optional query:
+   *   `?order_status=<code>` — titles whose `applicable_order_statuses`
+   *      includes that status (lowercase) or is NULL (always show).
+   *   `?service_type=food|person_ride|parcel` — limit catalog to that service
+   *      (food orders also include `other` titles; rides only person_ride).
+   * Pass `NO_ORDER` for the not-about-an-order flow. Omit order_status for
+   * the full catalog (section picker before an order is chosen).
    */
-  app.get<{ Querystring: { order_status?: string } }>("/help-sections", async (req, reply) => {
+  app.get<{ Querystring: { order_status?: string; service_type?: string } }>(
+    "/help-sections",
+    async (req, reply) => {
     if (req.auth?.role !== "customer" || !req.auth?.sub) {
       return reply.code(401).send({ error: "customer_required" });
     }
-    const filter = (req.query.order_status || "").toString().trim();
+    const filter = normalizeHelpOrderStatus(req.query.order_status);
+    const serviceType = normalizeHelpServiceType(req.query.service_type);
     const sql = getSql();
     try {
       const rows = filter
@@ -184,6 +208,21 @@ export async function customerSupportRoutes(app: FastifyInstance) {
               AND tt.ticket_section::text = 'customer'
               AND tt.customer_section_id IS NOT NULL
               AND TRIM(tt.customer_section_id::text) <> ''
+              AND (
+                ${serviceType}::text IS NULL
+                OR (
+                  ${serviceType} = 'person_ride'
+                  AND tt.service_type::text = 'person_ride'
+                )
+                OR (
+                  ${serviceType} = 'food'
+                  AND tt.service_type::text IN ('food', 'other')
+                )
+                OR (
+                  ${serviceType} NOT IN ('person_ride', 'food')
+                  AND tt.service_type::text = ${serviceType}
+                )
+              )
               AND (
                 tt.applicable_order_statuses IS NULL
                 OR ${filter} = ANY(tt.applicable_order_statuses)
@@ -206,6 +245,21 @@ export async function customerSupportRoutes(app: FastifyInstance) {
               AND tt.ticket_section::text = 'customer'
               AND tt.customer_section_id IS NOT NULL
               AND TRIM(tt.customer_section_id::text) <> ''
+              AND (
+                ${serviceType}::text IS NULL
+                OR (
+                  ${serviceType} = 'person_ride'
+                  AND tt.service_type::text = 'person_ride'
+                )
+                OR (
+                  ${serviceType} = 'food'
+                  AND tt.service_type::text IN ('food', 'other')
+                )
+                OR (
+                  ${serviceType} NOT IN ('person_ride', 'food')
+                  AND tt.service_type::text = ${serviceType}
+                )
+              )
             ORDER BY tt.customer_section_id ASC, tt.display_order ASC NULLS LAST, tt.id ASC
           `;
       const sections = (rows as Array<Record<string, unknown>>).map((r) => ({

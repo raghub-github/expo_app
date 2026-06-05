@@ -6,6 +6,8 @@ import {
   UPDATEABLE_ORDER_STATUSES,
   type UpdateableOrderStatus,
 } from "@/lib/db/operations/orders-core";
+import { getSystemUserByEmail } from "@/lib/db/operations/users";
+import { creditMerchantWalletAfterDashboardDelivery } from "@/lib/credit-merchant-wallet-after-delivery";
 
 export const runtime = "nodejs";
 
@@ -73,16 +75,37 @@ export async function PATCH(
     }
 
     const userEmail = (user.email ?? "").trim() || "unknown";
-    const { updated } = await updateOrderStatus(
+    const systemUser = await getSystemUserByEmail(userEmail);
+    const updatedByRole = systemUser?.primaryRole ?? "AGENT";
+    const result = await updateOrderStatus(
       orderId,
       status as UpdateableOrderStatus,
-      userEmail
+      userEmail,
+      updatedByRole
     );
-    if (!updated) {
+    if (!result.updated) {
+      if (result.reason === "INVALID_TRANSITION") {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              "This status cannot be applied again. The order has already reached this stage or a later one.",
+          },
+          { status: 409 }
+        );
+      }
       return NextResponse.json(
         { success: false, error: "Order not found or not updated" },
         { status: 404 }
       );
+    }
+
+    if (status === "delivered") {
+      try {
+        await creditMerchantWalletAfterDashboardDelivery(orderId);
+      } catch (walletErr) {
+        console.warn("[PATCH /api/orders/[orderId]/status] wallet credit:", walletErr);
+      }
     }
 
     return NextResponse.json({

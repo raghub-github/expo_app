@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   Modal,
   View,
@@ -10,15 +10,15 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 import type { OrderRecord } from "@/hooks/useOrders";
-import { formatOrderIdDisplay } from "@/components/order/orderFormatters";
+import { MerchantOrderIdRow } from "@/components/order/MerchantOrderCardToolbar";
 import {
   callCustomer,
   printOrderBill,
   printOrderKot,
 } from "@/lib/orderCardActions";
+import { LiveOrderSupportSheet } from "@/components/order/LiveOrderSupportSheet";
 
 export type MerchantOrderMenuAction =
   | "support"
@@ -59,44 +59,48 @@ export function MerchantOrderActionsSheet({
   onOpenCustomer,
 }: Props) {
   const insets = useSafeAreaInsets();
-  const router = useRouter();
+  const [liveSupportOpen, setLiveSupportOpen] = useState(false);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible) setLiveSupportOpen(false);
   }, [visible]);
 
   if (!order) return null;
 
-  const orderLabel = formatOrderIdDisplay(order.formattedOrderId, order.ordersCoreId);
-
   const handleAction = async (id: MerchantOrderMenuAction) => {
-    onClose();
     switch (id) {
       case "support":
-        router.push("/(tabs)/profile/help" as any);
-        break;
+        setLiveSupportOpen(true);
+        return;
       case "timeline":
+        onClose();
         onOpenTimeline();
         break;
       case "call":
+        onClose();
         await callCustomer(order.customerPhone);
         break;
       case "customer":
+        onClose();
         onOpenCustomer();
         break;
       case "print_kot":
+        onClose();
         await printOrderKot(order, storeName);
         break;
       case "print_order":
+        onClose();
         await printOrderBill(order, storeName);
         break;
       default:
+        onClose();
         break;
     }
   };
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <>
+    <Modal visible={visible && !liveSupportOpen} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
         <Pressable
           style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}
@@ -106,7 +110,12 @@ export function MerchantOrderActionsSheet({
             <Ionicons name="close" size={22} color={GatiMitraMerchant.textPrimary} />
           </Pressable>
 
-          <Text style={styles.title}>Order #{orderLabel.replace(/^#?/i, "")}</Text>
+          <View style={styles.orderIdWrap}>
+            <MerchantOrderIdRow
+              formattedOrderId={order.formattedOrderId}
+              fallbackOrderId={order.ordersCoreId}
+            />
+          </View>
 
           <ScrollView style={styles.list} bounces={false}>
             {MENU.map((item) => (
@@ -124,6 +133,19 @@ export function MerchantOrderActionsSheet({
         </Pressable>
       </Pressable>
     </Modal>
+
+    {order ? (
+      <LiveOrderSupportSheet
+        visible={liveSupportOpen}
+        order={order}
+        onClose={() => setLiveSupportOpen(false)}
+        onFinished={() => {
+          setLiveSupportOpen(false);
+          onClose();
+        }}
+      />
+    ) : null}
+    </>
   );
 }
 
@@ -164,11 +186,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
   },
-  title: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: GatiMitraMerchant.textPrimary,
+  orderIdWrap: {
     marginBottom: 8,
+    paddingHorizontal: 4,
   },
   list: { flexGrow: 0 },
   row: {

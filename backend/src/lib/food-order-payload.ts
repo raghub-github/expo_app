@@ -183,3 +183,64 @@ export function etaSecondsFromBillingSnapshot(
   if (Number.isFinite(m) && m > 0) return Math.round(m * 60);
   return null;
 }
+
+/** Contactless / leave-at-door from checkout metadata. */
+export function contactlessFromCheckout(
+  checkoutMetadata: Record<string, unknown> | null | undefined
+): boolean | null {
+  if (!checkoutMetadata || typeof checkoutMetadata !== "object") return null;
+  if (
+    checkoutMetadata.leaveAtDoor === true ||
+    checkoutMetadata.contactless === true ||
+    checkoutMetadata.contactLessDelivery === true
+  ) {
+    return true;
+  }
+  if (checkoutMetadata.leaveAtDoor === false) return false;
+  return null;
+}
+
+/**
+ * Ensure billing_snapshot has fields the dashboard order-detail sidebar reads
+ * (locality, KPT, delivery type) even when billing rules are off or partial.
+ */
+export function enrichBillingSnapshotForPersistence(
+  billingSnapshot: Record<string, unknown> | null | undefined,
+  opts: {
+    deliveryType: string;
+    distanceKm: number;
+    durationMin?: number | null;
+    serviceable?: boolean | null;
+    storeKptMinutes?: number | null;
+  }
+): Record<string, unknown> {
+  const base =
+    billingSnapshot && typeof billingSnapshot === "object"
+      ? { ...billingSnapshot }
+      : {};
+  const deliveryType = opts.deliveryType || "delivery";
+  if (base.deliveryType == null) base.deliveryType = deliveryType;
+  if (base.distanceKm == null && Number.isFinite(opts.distanceKm)) {
+    base.distanceKm = opts.distanceKm;
+  }
+  if (base.durationMin == null && opts.durationMin != null) {
+    base.durationMin = opts.durationMin;
+  }
+  if (base.duration_min == null && opts.durationMin != null) {
+    base.duration_min = opts.durationMin;
+  }
+  const kpt = opts.storeKptMinutes;
+  if (kpt != null && Number.isFinite(kpt) && kpt > 0) {
+    if (base.default_system_kpt_minutes == null) base.default_system_kpt_minutes = kpt;
+    if (base.system_kpt_minutes == null) base.system_kpt_minutes = kpt;
+  }
+  if (opts.serviceable === true || opts.serviceable === false) {
+    base.serviceable = opts.serviceable;
+  } else if (base.serviceable == null) {
+    base.serviceable = true;
+  }
+  if (base.computedAt == null) {
+    base.computedAt = new Date().toISOString();
+  }
+  return base;
+}

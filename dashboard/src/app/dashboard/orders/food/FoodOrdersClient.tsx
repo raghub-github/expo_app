@@ -1,14 +1,19 @@
 "use client";
 
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { useSearchParams, useRouter, usePathname } from "next/navigation";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams, useRouter } from "next/navigation";
+import { useFoodOrdersListActive } from "@/hooks/useFoodOrdersListActive";
 import Link from "next/link";
 import { X, RefreshCw, Filter, CheckCircle2, ChevronDown } from "lucide-react";
 import { type CSSProperties } from "react";
 import { useAuthOptional } from "@/providers/AuthProvider";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 import { queryKeys } from "@/lib/queryKeys";
+import {
+  fetchOrderCorePayload,
+  orderDetailQueryKey,
+} from "@/hooks/queries/useOrderDetailQuery";
 // Exact color codes from reference image
 const MINT_GREEN = "#4EE5C1"; // Active buttons and elements
 const PAGE_BG = "#F4F6F9"; // Page background
@@ -29,6 +34,14 @@ export type OrderStatusFilter =
   | "DESPATCHED"
   | "BULK"
   | null;
+
+const FOOD_STATUS_TABS: Exclude<OrderStatusFilter, null>[] = [
+  "PAYMENT DONE",
+  "ACCEPTED",
+  "DESPATCH READY",
+  "DESPATCHED",
+  "BULK",
+];
 
 interface OrdersCoreRow {
   id: number;
@@ -57,6 +70,10 @@ interface OrdersCoreRow {
   merchantStoreId: number | null;
   /** Actual store_id from merchant_stores (e.g. GMMC123). */
   storeId?: string | null;
+  /** Locality from merchant store address (landmark / city). */
+  merchantLocality?: string | null;
+  pickupAddressRaw?: string | null;
+  pickupAddressNormalized?: string | null;
   dropAddressRaw: string | null;
   dropAddressNormalized?: string | null;
   /** Order source / delivery provider (\"internal\" = GatiMitra). */
@@ -183,10 +200,10 @@ function useFoodOrdersQuery(
     enabled,
     ...(initialSnapshot != null ? { initialData: initialSnapshot } : {}),
     staleTime: 2 * 60 * 1000,
-    gcTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
     refetchOnWindowFocus: false,
-    // Do not keep previous rows when search/filters change — avoids showing wrong orders (e.g. stale mobiles).
-    refetchOnMount: true,
+    refetchOnMount: false,
+    placeholderData: undefined,
   });
 
   useEffect(() => {
@@ -198,12 +215,19 @@ function useFoodOrdersQuery(
 }
 
 export default function FoodOrdersClient() {
-  const pathname = usePathname();
+  const [hasMounted, setHasMounted] = useState(false);
+  useEffect(() => setHasMounted(true), []);
+
+  const isFoodOrdersListActive = useFoodOrdersListActive();
+  const queryClient = useQueryClient();
   const auth = useAuthOptional();
   const authReady = auth?.authReady ?? false;
   const sessionUser = auth?.user;
   const permissions = auth?.permissions;
-  const shouldFetch = pathname === "/dashboard/orders/food" && Boolean(authReady && sessionUser && permissions);
+  const shouldFetch =
+    hasMounted &&
+    isFoodOrdersListActive &&
+    Boolean(authReady && sessionUser && permissions);
 
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -249,11 +273,12 @@ export default function FoodOrdersClient() {
 
   // Default tab: PAYMENT DONE when URL has no statusFilter
   useEffect(() => {
+    if (!isFoodOrdersListActive) return;
     if (urlStatus) return;
     const params = new URLSearchParams(searchParams.toString());
     params.set("statusFilter", "PAYMENT DONE");
     router.replace(`/dashboard/orders/food?${params.toString()}`, { scroll: false });
-  }, [urlStatus, searchParams, router]);
+  }, [isFoodOrdersListActive, urlStatus, searchParams, router]);
   const [page] = useState(1);
   const [limit] = useState(20);
   const debouncedSearch = useDebouncedValue(urlSearch, 400);
@@ -294,27 +319,44 @@ export default function FoodOrdersClient() {
     [selectedStatus, debouncedSearch, urlSearchType, page, limit, foodFiltersPayload]
   );
 
-  const SNAPSHOT_TTL_MS = 10_000;
+  const SNAPSHOT_TTL_MS = 5 * 60 * 1000;
   const snapshotKey = useMemo(() => {
     if (!shouldFetch) return null;
-    return `dashboard_snapshot:orders_food:${pathname}:${JSON.stringify(filtersForQuery)}`;
-  }, [shouldFetch, pathname, filtersForQuery]);
+    return `dashboard_snapshot:orders_food_v2:/dashboard/orders/food:${JSON.stringify(filtersForQuery)}`;
+  }, [shouldFetch, filtersForQuery]);
 
   const initialSnapshot = useMemo(() => {
-    if (!snapshotKey) return null;
+    if (!hasMounted || !snapshotKey) return null;
     return loadClientSnapshot<Awaited<ReturnType<typeof fetchFoodOrders>>>(snapshotKey, SNAPSHOT_TTL_MS);
-  }, [snapshotKey]);
+  }, [hasMounted, snapshotKey]);
 
   const {
     data: ordersData,
     isFetching,
-    isLoading,
+    isPending,
     refetch: refetchOrders,
   } = useFoodOrdersQuery(filtersForQuery, shouldFetch, snapshotKey, initialSnapshot);
 
-  const orders = ordersData?.orders ?? [];
-  const total = ordersData?.total ?? 0;
-  const loading = isFetching || (isLoading && !ordersData);
+  // Prefetch other status tabs in the background so tab switches feel instant.
+  useEffect(() => {
+    if (!shouldFetch) return;
+    for (const status of FOOD_STATUS_TABS) {
+      if (status === selectedStatus) continue;
+      const tabFilters: OrdersFilters = { ...filtersForQuery, statusFilter: status };
+      void queryClient.prefetchQuery({
+        queryKey: queryKeys.ordersCore.foodList(
+          tabFilters as unknown as Record<string, unknown>
+        ),
+        queryFn: ({ signal }) => fetchFoodOrders(tabFilters, signal),
+        staleTime: 2 * 60 * 1000,
+      });
+    }
+  }, [shouldFetch, filtersForQuery, selectedStatus, queryClient]);
+
+  const orders = hasMounted ? (ordersData?.orders ?? []) : [];
+  const total = hasMounted ? (ordersData?.total ?? 0) : 0;
+  const showTableLoading = hasMounted && isPending && orders.length === 0;
+  const isRefreshing = hasMounted && isFetching && orders.length > 0;
   const hasActiveSearch = Boolean(debouncedSearch.trim());
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -454,12 +496,13 @@ export default function FoodOrdersClient() {
       const routedTo = row.routedToEmail ?? "";
       const merchantIdDisplay =
         row.storeId != null && row.storeId !== "" ? row.storeId : null;
-      const localitySource =
-        row.dropAddressNormalized ?? row.dropAddressRaw ?? null;
       const locality =
-        localitySource != null && localitySource.length > 0
-          ? localitySource.split(",")[0]?.trim() || localitySource
-          : null;
+        row.merchantLocality?.trim() ||
+        (row.pickupAddressNormalized ?? row.pickupAddressRaw ?? "")
+          .split(",")
+          .map((p) => p.trim())
+          .find((p) => p.length >= 2 && !/^\d{5,6}$/.test(p)) ||
+        null;
       const deliverProvider =
         !row.orderSource || row.orderSource === "internal"
           ? "GatiMitra"
@@ -476,6 +519,15 @@ export default function FoodOrdersClient() {
               href={`/order/${encodeURIComponent(publicId)}`}
               target="_blank"
               rel="noopener noreferrer"
+              prefetch={false}
+              onMouseEnter={() => {
+                void queryClient.prefetchQuery({
+                  queryKey: orderDetailQueryKey(publicId),
+                  queryFn: ({ signal }) =>
+                    fetchOrderCorePayload({ orderPublicId: publicId }, signal),
+                  staleTime: 3 * 60 * 1000,
+                });
+              }}
               className="inline-flex items-center px-2 py-0.5 rounded font-medium cursor-pointer hover:underline text-[11px]"
               style={{ backgroundColor: ORDER_TAG_BG, color: ORDER_TAG_TEXT }}
             >
@@ -517,9 +569,6 @@ export default function FoodOrdersClient() {
           >
             {locality ?? "—"}
           </td>
-          <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
-            {row.updatedAt ? new Date(row.updatedAt).toLocaleString() : "—"}
-          </td>
           <td
             className="px-2 py-1.5 whitespace-nowrap"
             style={{ color: TABLE_TEXT }}
@@ -529,7 +578,7 @@ export default function FoodOrdersClient() {
         </tr>
       );
     },
-    [orders, stageInstructionText]
+    [orders, stageInstructionText, queryClient]
   );
 
   // Helper function to get button styles - prevents hydration mismatch
@@ -781,11 +830,11 @@ export default function FoodOrdersClient() {
           <button
             type="button"
             onClick={refreshData}
-            disabled={loading}
+            disabled={isFetching && orders.length === 0}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border cursor-pointer disabled:opacity-60"
             style={{ backgroundColor: MINT_GREEN, color: DARK_TEXT, borderColor: BORDER_COLOR }}
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
             Refresh Data
           </button>
           <button
@@ -832,23 +881,20 @@ export default function FoodOrdersClient() {
                 Mx locality
               </th>
               <th className="px-2 py-1.5 text-left font-medium whitespace-nowrap" style={{ color: DARK_TEXT }}>
-                Updated time
-              </th>
-              <th className="px-2 py-1.5 text-left font-medium whitespace-nowrap" style={{ color: DARK_TEXT }}>
                 DE provider
               </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200" style={{ backgroundColor: CONTENT_BG }}>
-            {loading ? (
+            {showTableLoading ? (
               <tr>
-                <td colSpan={10} className="px-2 py-4 text-center" style={{ color: TABLE_TEXT }}>
+                <td colSpan={9} className="px-2 py-4 text-center" style={{ color: TABLE_TEXT }}>
                   Loading…
                 </td>
               </tr>
             ) : orders.length === 0 ? (
               <tr>
-                <td colSpan={10} className="px-2 py-4 text-center text-xs" style={{ color: TABLE_TEXT }}>
+                <td colSpan={9} className="px-2 py-4 text-center text-xs" style={{ color: TABLE_TEXT }}>
                   {hasActiveSearch
                     ? "We couldn't find any data for this ID."
                     : "No orders found."}

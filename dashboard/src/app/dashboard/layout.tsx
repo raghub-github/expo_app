@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import AuthenticatedShell from "@/providers/AuthenticatedShell";
 import DashboardLayoutClient from "./DashboardLayoutClient";
 import { GatiSpinner } from "@/components/ui/GatiSpinner";
 
@@ -24,8 +25,10 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   return (
-    <Suspense fallback={<DashboardLayoutFallback />}>
-      <DashboardLayoutClient>{children}</DashboardLayoutClient>
-    </Suspense>
+    <AuthenticatedShell>
+      <Suspense fallback={<DashboardLayoutFallback />}>
+        <DashboardLayoutClient>{children}</DashboardLayoutClient>
+      </Suspense>
+    </AuthenticatedShell>
   );
 }

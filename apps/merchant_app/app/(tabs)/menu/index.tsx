@@ -31,7 +31,7 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useMenuCategories, useMenuItems, usePatchItemStock, useDeleteCategory, menuKeys } from "@/hooks/useMenuQueries";
-import type { MenuItemRow, MenuCategory, MenuItemDetail } from "@/services/menuApi";
+import type { MenuItemRow, MenuCategory, MenuItemDetail, ListItemsResponse } from "@/services/menuApi";
 import type { ComboRow, ComboDetail } from "@/services/menuApi";
 import {
   deleteMenuItem,
@@ -48,7 +48,7 @@ import {
   type OutOfStockMode as ApiOutOfStockMode,
 } from "@/services/menuApi";
 import { resolveImageUrl } from "@/services/outletApi";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import * as SecureStore from "expo-secure-store";
 import { OutOfStockModal, type OutOfStockPayload } from "@/components/OutOfStockModal";
 import {
@@ -142,20 +142,29 @@ function parseOosUntilDate(untilValue: unknown): Date | null {
   }
   const raw = String(untilValue ?? "").trim();
   if (!raw) return null;
-  // Hermes/Android can fail on some non-ISO timestamp shapes.
-  // Normalize common backend variants:
-  // - "YYYY-MM-DD HH:mm:ss+00" -> "YYYY-MM-DDTHH:mm:ss+00:00"
-  // - "YYYY-MM-DDTHH:mm:ss+0530" -> "...+05:30"
-  const candidates = Array.from(
-    new Set([
-      raw,
-      raw.includes(" ") && !raw.includes("T") ? raw.replace(" ", "T") : raw,
-      raw.replace(/([+\-]\d{2})(\d{2})$/, "$1:$2"),
-      raw.replace(" ", "T").replace(/([+\-]\d{2})(\d{2})$/, "$1:$2"),
-      /^[0-9]{4}-[0-9]{2}-[0-9]{2}T/.test(raw) && !/[zZ]|[+\-][0-9]{2}:[0-9]{2}$/.test(raw) ? `${raw}Z` : raw,
-    ])
-  );
-  const d = candidates
+
+  const candidates = new Set<string>([raw]);
+  const spaced = raw.includes(" ") && !raw.includes("T") ? raw.replace(" ", "T") : raw;
+  candidates.add(spaced);
+
+  // Postgres / pgbouncer: "2026-05-26 12:54:00+00" — Hermes rejects "+00" without ":00".
+  for (const base of [raw, spaced]) {
+    const withMinutes = base.match(/^(.+)([+\-]\d{2})(\d{2})$/);
+    if (withMinutes) candidates.add(`${withMinutes[1]}${withMinutes[2]}:${withMinutes[3]}`);
+    const shortTz = base.match(/^(.+)([+\-]\d{2})$/);
+    if (shortTz) {
+      candidates.add(`${shortTz[1]}${shortTz[2]}:00`);
+      if (shortTz[2] === "+00" || shortTz[2] === "-00") {
+        candidates.add(`${shortTz[1].replace(/[+\-]\d{2}$/, "")}Z`);
+      }
+    }
+  }
+
+  if (/^[0-9]{4}-[0-9]{2}-[0-9]{2}T/.test(raw) && !/[zZ]|[+\-][0-9]{2}(:[0-9]{2})?$/.test(raw)) {
+    candidates.add(`${raw}Z`);
+  }
+
+  const d = [...candidates]
     .map((s) => new Date(s))
     .find((x) => Number.isFinite(x.getTime()));
   return d ?? null;
@@ -165,25 +174,26 @@ function formatOosUntilLabel(untilValue: unknown) {
   const d = parseOosUntilDate(untilValue);
   if (!d) return null;
 
-  const now = new Date();
-  const isSameDay =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate();
-
-  const time = new Intl.DateTimeFormat("en-IN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: true,
-  }).format(d);
-  if (isSameDay) return `Out of stock till ${time}`;
-
-  const date = new Intl.DateTimeFormat("en-GB", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "2-digit",
-  }).format(d);
+  const time = d.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" });
+  const date = d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
   return `Out of stock till ${time}, ${date}`;
+}
+
+function isOosActiveAt(manual?: boolean | null, until?: unknown, nowMs = Date.now()): boolean {
+  if (manual) return true;
+  const d = parseOosUntilDate(until);
+  if (!d) return false;
+  return d.getTime() > nowMs;
+}
+
+function categoryOosUntilLabel(untilValue: unknown): string | null {
+  const fmt = formatOosUntilLabel(untilValue);
+  return fmt ? fmt.replace("Out of stock till", "Out of stock (category) till") : null;
+}
+
+function normalizeOosUntilIso(value: unknown): string | null {
+  const d = parseOosUntilDate(value);
+  return d ? d.toISOString() : null;
 }
 
 function MenuItemCard({
@@ -328,7 +338,7 @@ function MenuItemCard({
             </Text>
           ) : null}
           {oosLabel ? (
-            <Text style={styles.oosSubtext} numberOfLines={1}>
+            <Text style={styles.oosSubtext} numberOfLines={2}>
               {oosLabel}
             </Text>
           ) : (
@@ -760,28 +770,53 @@ export default function MenuScreen() {
   }, [manageSheetVisible, manageParentCategories]);
   const itemsFilters = useMemo(
     () => ({
-      categoryId: effectiveCategoryId ?? undefined,
-      search: searchDebounced || undefined,
       limit: 100,
       offset: 0,
-      approvalStatus: approvalFilter === "ALL" ? undefined : approvalFilter,
-      inStock: stockFilter === "ALL" ? undefined : stockFilter === "IN_STOCK",
-      changeRequestType: changeRequestFilter === "ALL" ? undefined : changeRequestFilter,
     }),
-    [effectiveCategoryId, searchDebounced, approvalFilter, stockFilter, changeRequestFilter]
+    []
   );
-  const { data: itemsData, isLoading: itemsLoading, error: itemsError, refetch: refetchItems, isRefetching: itemsRefetching } = useMenuItems(storeId, token, itemsFilters);
-  const items = itemsData?.items ?? [];
-  const total = itemsData?.total ?? 0;
+  const {
+    data: catalogData,
+    isLoading: catalogLoading,
+    error: catalogError,
+    refetch: refetchCatalog,
+    isRefetching: catalogRefetching,
+  } = useMenuItems(storeId, token, itemsFilters);
+  const allItems = catalogData?.items ?? [];
+  const catalogTotal = catalogData?.total ?? allItems.length;
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!storeId || !token) return;
+      void refetchCatalog();
+      void refetchCategories();
+    }, [storeId, token, refetchCatalog, refetchCategories])
+  );
+
+  useEffect(() => {
+    if (!storeId) return;
+    const hasStaleExpired =
+      allItems.some(
+        (item) =>
+          !(item as any).out_of_stock_manual &&
+          (item as any).out_of_stock_until != null &&
+          new Date(String((item as any).out_of_stock_until)).getTime() <= nowTick &&
+          item.in_stock === false
+      ) ||
+      categories.some(
+        (c) =>
+          !c.out_of_stock_manual &&
+          c.out_of_stock_until != null &&
+          new Date(String(c.out_of_stock_until)).getTime() <= nowTick
+      );
+    if (!hasStaleExpired) return;
+    void refetchCatalog();
+    void refetchCategories();
+  }, [nowTick, storeId, allItems, categories, refetchCatalog, refetchCategories]);
 
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
   const isOosActive = useCallback(
-    (manual?: boolean | null, until?: string | null) => {
-      if (manual) return true;
-      if (!until) return false;
-      const ms = new Date(until).getTime();
-      return Number.isFinite(ms) && ms > nowTick;
-    },
+    (manual?: boolean | null, until?: unknown) => isOosActiveAt(manual, until, nowTick),
     [nowTick]
   );
   /** Category OOS blocks an item only when the item row still carries the category cascade marker (Partner Site parity). */
@@ -802,45 +837,119 @@ export default function MenuScreen() {
   );
   const itemInStockIgnoringCategory = useCallback(
     (item: MenuItemRow) => {
-      const base = item.in_stock !== false;
-      const itemOos = isOosActive((item as any).out_of_stock_manual, (item as any).out_of_stock_until ?? null);
-      return base && !itemOos;
+      if (isOosActive((item as any).out_of_stock_manual, (item as any).out_of_stock_until ?? null)) {
+        return false;
+      }
+      if (
+        !(item as any).out_of_stock_manual &&
+        (item as any).out_of_stock_until != null &&
+        item.in_stock === false
+      ) {
+        const d = parseOosUntilDate((item as any).out_of_stock_until);
+        if (d && d.getTime() > nowTick) return false;
+        if (!d) return false;
+      }
+      if (
+        !(item as any).out_of_stock_manual &&
+        (item as any).out_of_stock_until == null &&
+        item.in_stock === false &&
+        ((item as any).out_of_stock_updated_at == null ||
+          String((item as any).out_of_stock_updated_at).trim() === "")
+      ) {
+        return false;
+      }
+      return true;
     },
-    [isOosActive]
+    [isOosActive, nowTick]
   );
   const effectiveInStock = useCallback(
     (item: MenuItemRow) => {
+      if (typeof item.effective_in_stock === "boolean") return item.effective_in_stock;
       if (!itemInStockIgnoringCategory(item)) return false;
       return !isItemBlockedByCategoryOos(item);
     },
     [isItemBlockedByCategoryOos, itemInStockIgnoringCategory]
   );
+
+  const filteredItems = useMemo(() => {
+    let list = allItems;
+    if (effectiveCategoryId != null) {
+      list = list.filter((it) => it.category_id === effectiveCategoryId);
+    }
+    if (searchDebounced) {
+      const q = searchDebounced.toLowerCase();
+      list = list.filter(
+        (it) =>
+          it.item_name.toLowerCase().includes(q) ||
+          String(it.item_description ?? "").toLowerCase().includes(q)
+      );
+    }
+    if (approvalFilter !== "ALL") {
+      list = list.filter((it) => (it.approval_status ?? null) === approvalFilter);
+    }
+    if (changeRequestFilter !== "ALL") {
+      list = list.filter((it) => {
+        if (!it.has_pending_change_request) return false;
+        if (changeRequestFilter === "DELETE") return it.pending_change_request_type === "DELETE";
+        return it.pending_change_request_type === "UPDATE";
+      });
+    }
+    if (stockFilter === "IN_STOCK") {
+      list = list.filter((it) => effectiveInStock(it));
+    } else if (stockFilter === "OUT_OF_STOCK") {
+      list = list.filter((it) => !effectiveInStock(it));
+    }
+    return list;
+  }, [
+    allItems,
+    effectiveCategoryId,
+    searchDebounced,
+    approvalFilter,
+    changeRequestFilter,
+    stockFilter,
+    effectiveInStock,
+  ]);
+
+  const hasActiveItemFilters =
+    effectiveCategoryId != null ||
+    Boolean(searchDebounced) ||
+    approvalFilter !== "ALL" ||
+    stockFilter !== "ALL" ||
+    changeRequestFilter !== "ALL";
+  const items = filteredItems;
+  const total = hasActiveItemFilters ? filteredItems.length : catalogTotal;
   const getItemOosLabel = useCallback(
     (item: MenuItemRow) => {
       if (effectiveInStock(item)) return null;
+
       if (item.category_id != null) {
         const c: any = categoryById.get(item.category_id);
         if (c && isItemBlockedByCategoryOos(item)) {
-          if (c.out_of_stock_manual) return "No time set. Turn item in stock manually";
-          if (c.out_of_stock_until) {
-            const fmt = formatOosUntilLabel(c.out_of_stock_until);
-            return fmt ?? "Out of stock";
+          if (Boolean(c.out_of_stock_manual ?? item.category_out_of_stock_manual)) {
+            return "Out of stock (category) · manual";
           }
-          const itemUntilInCategory = (item as any).out_of_stock_until as unknown;
-          if (itemUntilInCategory != null) {
-            const fmt = formatOosUntilLabel(itemUntilInCategory);
-            if (fmt) return fmt;
+          const catUntil = c.out_of_stock_until ?? item.category_out_of_stock_until ?? null;
+          if (catUntil && isOosActiveAt(c.out_of_stock_manual, catUntil, nowTick)) {
+            return categoryOosUntilLabel(catUntil) ?? "Out of stock (category)";
           }
-          return "Out of stock";
+          if (item.out_of_stock_until && isOosActiveAt(false, item.out_of_stock_until, nowTick)) {
+            return categoryOosUntilLabel(item.out_of_stock_until) ?? "Out of stock (category)";
+          }
+          return "Out of stock (category)";
         }
       }
-      if ((item as any).out_of_stock_manual) return "No time set. Turn item in stock manually";
-      const until = (item as any).out_of_stock_until as string | null | undefined;
-      if (until) return formatOosUntilLabel(until) ?? "Out of stock";
+
+      if (item.out_of_stock_manual) return "Out of stock · manual";
+
+      const until = item.out_of_stock_until ?? item.category_out_of_stock_until ?? null;
+      if (until && isOosActiveAt(false, until, nowTick)) {
+        return formatOosUntilLabel(until) ?? "Out of stock";
+      }
+
       if (item.in_stock === false) return "Out of stock";
       return "Out of stock";
     },
-    [categoryById, effectiveInStock, isItemBlockedByCategoryOos]
+    [categoryById, effectiveInStock, isItemBlockedByCategoryOos, nowTick]
   );
 
   // Combos (kept here so modal counts + UI can use it safely)
@@ -850,9 +959,6 @@ export default function MenuScreen() {
   const [combosReady, setCombosReady] = useState(false);
 
   // For counts inside the Categories popup (should not change with filters)
-  const { data: allItemsData } = useMenuItems(storeId, token, { limit: 2000, offset: 0 });
-  const allItems = allItemsData?.items ?? [];
-
   const manageCategoryRows = useMemo(() => {
     // Build rows exactly like Tree groups (so tap can scroll there).
     const byKey = new Map<string, { key: string; label: string; count: number }>();
@@ -972,6 +1078,7 @@ export default function MenuScreen() {
   }, [allItems, searchDebounced]);
 
   useEffect(() => {
+    if (kindFilter !== "ADDONS") return;
     if (!storeId || !token || custItemIds.length === 0) return;
 
     let cancelled = false;
@@ -1006,7 +1113,7 @@ export default function MenuScreen() {
     return () => {
       cancelled = true;
     };
-  }, [storeId, token, custItemIdsSig, custItemIds, queryClient]);
+  }, [kindFilter, storeId, token, custItemIdsSig, custItemIds, queryClient]);
 
   const handleCustDetailsChange = useCallback((itemId: number, detail: MenuItemDetail) => {
     setCustDetailsById((prev) => ({ ...prev, [itemId]: detail }));
@@ -1062,7 +1169,7 @@ export default function MenuScreen() {
 
   const deleteCat = useDeleteCategory(storeId, token);
   const patchStock = usePatchItemStock(storeId, token);
-  const refreshing = categoriesRefetching || itemsRefetching;
+  const refreshing = categoriesRefetching || catalogRefetching;
 
   const handleDeleteCategoryFromSheet = (c: MenuCategory) => {
     Alert.alert("Delete category", `Remove "${c.category_name}"? You can only delete when it has no items.`, [
@@ -1097,8 +1204,8 @@ export default function MenuScreen() {
   const onRefresh = useCallback(() => {
     if (!storeId || !token) return;
     refetchCategories();
-    refetchItems();
-  }, [storeId, token, refetchCategories, refetchItems]);
+    refetchCatalog();
+  }, [storeId, token, refetchCategories, refetchCatalog]);
 
   const handleToggleStock = useCallback(
     async (itemId: number, inStock: boolean) => {
@@ -1118,39 +1225,6 @@ export default function MenuScreen() {
         setOosModal({ kind: "ITEM", itemId: item.id, itemName: item.item_name });
         return;
       }
-      // If the category itself is out-of-stock, restoring the item alone won't make it available.
-      // Match partnersite behavior: offer to restore the category (and clear item OOS too).
-      if (item.category_id != null && isItemBlockedByCategoryOos(item)) {
-        const c: any = categoryById.get(item.category_id);
-        const categoryName = (c?.category_name as string) ?? "this category";
-        setRestoreConfirm({
-          title: "Category is out of stock",
-          message: `This item is under "${categoryName}", which is currently out of stock. Restore the category to bring this item back in stock.`,
-          onConfirm: async () => {
-            setRestoreConfirm(null);
-            setOosBusy(true);
-            try {
-              console.log("[menu] restore item: category oos -> clearing", { itemId: item.id, categoryId: item.category_id });
-              const catRes = await patchCategoryOutOfStock(storeId, item.category_id!, token, { mode: "CLEAR" });
-              const itemRes = await patchItemOutOfStock(storeId, item.id, token, { mode: "CLEAR" });
-              console.log("[menu] restore item: cleared oos", { catRes, itemRes });
-              if (item.in_stock === false) {
-                await patchStock.mutateAsync({ itemId: item.id, inStock: true });
-              }
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : String(e);
-              console.error("[menu] restore item failed", e);
-              Alert.alert("Could not restore in stock", msg);
-            } finally {
-              setOosBusy(false);
-              setOosModal(null);
-              await refetchItems();
-              await refetchCategories();
-            }
-          },
-        });
-        return;
-      }
       setRestoreConfirm({
         title: "Bring back in stock?",
         message: "This will make it available to customers and start receiving orders.",
@@ -1158,48 +1232,20 @@ export default function MenuScreen() {
           setRestoreConfirm(null);
           setOosBusy(true);
           try {
-            console.log("[menu] restore item: clearing item oos", { itemId: item.id, inStock: item.in_stock });
-            // Clear item-level out-of-stock (if any).
-            const itemRes = await patchItemOutOfStock(storeId, item.id, token, { mode: "CLEAR" });
-            console.log("[menu] restore item: cleared item oos", { itemRes });
-            // If legacy base flag is off, restore it so item can show as in-stock.
-            if (item.in_stock === false) {
-              await patchStock.mutateAsync({ itemId: item.id, inStock: true });
-            }
-            const catId = item.category_id ?? null;
-            if (catId != null) {
-              const cat = categoryById.get(catId) as any;
-              const catOosActive = cat ? isOosActive(cat.out_of_stock_manual, cat.out_of_stock_until ?? null) : false;
-              if (catOosActive) {
-                const { items: catItems } = await fetchMenuItems(storeId, token, {
-                  categoryId: catId,
-                  limit: 100,
-                  offset: 0,
-                });
-                const allBack = (catItems ?? []).filter((it) => it.is_deleted !== true).every((it) => {
-                  const base = it.in_stock !== false;
-                  const itemOos = isOosActive((it as any).out_of_stock_manual, (it as any).out_of_stock_until ?? null);
-                  return base && !itemOos;
-                });
-                if (allBack) {
-                  await patchCategoryOutOfStock(storeId, catId, token, { mode: "CLEAR" });
-                }
-              }
-            }
+            await patchItemOutOfStock(storeId, item.id, token, { mode: "CLEAR" });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            console.error("[menu] restore item failed", e);
             Alert.alert("Could not restore in stock", msg);
           } finally {
             setOosBusy(false);
             setOosModal(null);
-            await refetchItems();
+            await refetchCatalog();
             await refetchCategories();
           }
         },
       });
     },
-    [storeId, token, patchStock, refetchItems, refetchCategories, isItemBlockedByCategoryOos, categoryById, isOosActive]
+    [storeId, token, refetchCatalog, refetchCategories]
   );
 
   const reloadCombos = useCallback(async () => {
@@ -1244,24 +1290,89 @@ export default function MenuScreen() {
                 ? "CUSTOM"
                 : "MANUAL";
 
+        const patchBody = {
+          mode,
+          hours: payload.mode === "HOURS" ? payload.hours : undefined,
+          until: payload.mode === "CUSTOM" ? payload.until : undefined,
+        };
+        const marker = new Date().toISOString();
+
         if (oosModal.kind === "ITEM") {
-          await patchItemOutOfStock(storeId, oosModal.itemId, token, {
-            mode,
-            hours: payload.mode === "HOURS" ? payload.hours : undefined,
-            until: payload.mode === "CUSTOM" ? payload.until : undefined,
-          });
+          const result = await patchItemOutOfStock(storeId, oosModal.itemId, token, patchBody);
+          const until = normalizeOosUntilIso(result.out_of_stock_until) ?? result.out_of_stock_until;
+          queryClient.setQueriesData<ListItemsResponse>(
+            { queryKey: ["menu", "items", storeId] },
+            (old) => {
+              if (!old?.items) return old;
+              return {
+                ...old,
+                items: old.items.map((it) =>
+                  it.id === oosModal.itemId
+                    ? {
+                        ...it,
+                        in_stock: false,
+                        out_of_stock_manual: Boolean(result.out_of_stock_manual),
+                        out_of_stock_until: until,
+                        out_of_stock_updated_at: marker,
+                      }
+                    : it
+                ),
+              };
+            }
+          );
         } else if (oosModal.kind === "CATEGORY") {
-          await patchCategoryOutOfStock(storeId, oosModal.categoryId, token, {
-            mode,
-            hours: payload.mode === "HOURS" ? payload.hours : undefined,
-            until: payload.mode === "CUSTOM" ? payload.until : undefined,
-          });
+          const result = await patchCategoryOutOfStock(storeId, oosModal.categoryId, token, patchBody);
+          const until = normalizeOosUntilIso(result.out_of_stock_until) ?? result.out_of_stock_until;
+          queryClient.setQueryData<MenuCategory[]>(menuKeys.categories(storeId), (old) =>
+            (old ?? []).map((c) =>
+              c.id === oosModal.categoryId
+                ? {
+                    ...c,
+                    out_of_stock_manual: Boolean(result.out_of_stock_manual),
+                    out_of_stock_until: until,
+                    out_of_stock_updated_at: marker,
+                  }
+                : c
+            )
+          );
+          queryClient.setQueriesData<ListItemsResponse>(
+            { queryKey: ["menu", "items", storeId] },
+            (old) => {
+              if (!old?.items) return old;
+              return {
+                ...old,
+                items: old.items.map((it) => {
+                  if ((it.category_id ?? null) !== oosModal.categoryId) return it;
+                  const itemAlreadyOos = isOosActive(it.out_of_stock_manual, it.out_of_stock_until ?? null);
+                  if (itemAlreadyOos) return it;
+                  return {
+                    ...it,
+                    in_stock: false,
+                    out_of_stock_manual: false,
+                    out_of_stock_until: until,
+                    out_of_stock_updated_at: marker,
+                    category_out_of_stock_manual: Boolean(result.out_of_stock_manual),
+                    category_out_of_stock_until: until,
+                    category_out_of_stock_updated_at: marker,
+                  };
+                }),
+              };
+            }
+          );
         } else {
-          await patchComboOutOfStock(storeId, oosModal.comboId, token, {
-            mode,
-            hours: payload.mode === "HOURS" ? payload.hours : undefined,
-            until: payload.mode === "CUSTOM" ? payload.until : undefined,
-          });
+          const result = await patchComboOutOfStock(storeId, oosModal.comboId, token, patchBody);
+          const until = normalizeOosUntilIso(result.out_of_stock_until) ?? result.out_of_stock_until;
+          setCombos((prev) =>
+            prev.map((c) =>
+              c.id === oosModal.comboId
+                ? {
+                    ...c,
+                    out_of_stock_manual: Boolean(result.out_of_stock_manual),
+                    out_of_stock_until: until,
+                  }
+                : c
+            )
+          );
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -1269,12 +1380,21 @@ export default function MenuScreen() {
       } finally {
         setOosBusy(false);
         setOosModal(null);
-        await refetchItems();
+        await refetchCatalog();
         await refetchCategories();
         await reloadCombos();
       }
     },
-    [storeId, token, oosModal, refetchItems, refetchCategories, reloadCombos]
+    [
+      storeId,
+      token,
+      oosModal,
+      queryClient,
+      isOosActive,
+      refetchCatalog,
+      refetchCategories,
+      reloadCombos,
+    ]
   );
 
   const handleToggleComboActive = useCallback(
@@ -1329,9 +1449,9 @@ export default function MenuScreen() {
   const getComboOosLabel = useCallback(
     (combo: ComboRow, detail: ComboDetail | null, map: Map<number, MenuItemRow>) => {
       if (effectiveComboInStock(combo, detail, map)) return null;
-      const until = (combo as any)?.out_of_stock_until as string | null | undefined;
-      if (until) return formatOosUntilLabel(until) ?? "Out of stock";
-      if (Boolean((combo as any)?.out_of_stock_manual)) return "No time set. Turn item in stock manually";
+      if (Boolean((combo as any)?.out_of_stock_manual)) return "Out of stock · manual";
+      const until = (combo as any)?.out_of_stock_until;
+      if (until && isOosActiveAt(false, until, nowTick)) return formatOosUntilLabel(until) ?? "Out of stock";
       const blockedByItem = (detail?.components ?? []).some((c) => {
         const it = map.get(c.menu_item_id);
         return it ? !effectiveInStock(it) : false;
@@ -1339,7 +1459,7 @@ export default function MenuScreen() {
       if (blockedByItem) return "Not available · an item is out of stock";
       return "Out of stock";
     },
-    [effectiveComboInStock, effectiveInStock]
+    [effectiveComboInStock, effectiveInStock, nowTick]
   );
 
   const handleToggleComboStock = useCallback(
@@ -1396,7 +1516,7 @@ export default function MenuScreen() {
                       (async () => {
                         try {
                           await createDeleteRequest(storeId, item.id, token);
-                          await refetchItems();
+                          await refetchCatalog();
                           setItemAction(null);
                           Alert.alert("Request sent", "Delete request submitted. An agent will review it.");
                         } catch (e) {
@@ -1431,7 +1551,7 @@ export default function MenuScreen() {
                       (async () => {
                         try {
                           await deleteMenuItem(storeId, item.id, token);
-                          await refetchItems();
+                          await refetchCatalog();
                           setItemAction(null);
                         } catch (e) {
                           setItemAction(null);
@@ -1465,7 +1585,7 @@ export default function MenuScreen() {
         { cancelable: true }
       );
     },
-    [storeId, token, refetchItems, router]
+    [storeId, token, refetchCatalog, router]
   );
 
   const handleComboOptions = useCallback(
@@ -1550,8 +1670,8 @@ export default function MenuScreen() {
       })
     : categories;
   const canFetch = Boolean(token && storeId);
-  const error = itemsError ? (itemsError instanceof Error ? itemsError.message : "Failed to load items") : null;
-  const loading = itemsLoading;
+  const error = catalogError ? (catalogError instanceof Error ? catalogError.message : "Failed to load items") : null;
+  const loading = catalogLoading;
 
   const showItems = kindFilter !== "COMBOS" && kindFilter !== "ADDONS";
   const showCombos = kindFilter !== "ITEMS" && kindFilter !== "ADDONS";
@@ -1566,7 +1686,7 @@ export default function MenuScreen() {
     (showCombos ? (visibleCombos?.length ?? 0) : 0) +
     (showAddons ? custScopeRows.length : 0);
 
-  const catalogAllCount = total + (combos?.length ?? 0);
+  const catalogAllCount = catalogTotal + (combos?.length ?? 0);
   const catalogComboCount = combos?.length ?? 0;
   const catalogAddonsCount = useMemo(
     () => allItems.filter(itemHasCustomizationContent).length,
@@ -1676,7 +1796,7 @@ export default function MenuScreen() {
                     {combo.combo_name}
                   </Text>
                   {getComboOosLabel(combo, comboDetails.get(combo.id) ?? null, itemById) ? (
-                    <Text style={styles.treeOosSubtext} numberOfLines={1}>
+                    <Text style={styles.treeOosSubtext} numberOfLines={2}>
                       {getComboOosLabel(combo, comboDetails.get(combo.id) ?? null, itemById)}
                     </Text>
                   ) : (
@@ -1737,9 +1857,9 @@ export default function MenuScreen() {
   const catalogListEmpty =
     kindFilter === "COMBOS"
       ? combosReady && visibleCombos.length === 0
-      : kindFilter === "ITEMS"
-        ? !itemsLoading && items.length === 0
-        : !itemsLoading && items.length === 0 && combosReady && combos.length === 0;
+      : kindFilter === "ADDONS"
+        ? !catalogLoading && custScopeRows.length === 0
+        : !catalogLoading && items.length === 0 && (kindFilter === "ITEMS" || (combosReady && combos.length === 0));
 
   if (!canFetch) {
     return (
@@ -2197,6 +2317,12 @@ export default function MenuScreen() {
           />
         ) : (
           <>
+            {loading && allItems.length === 0 ? (
+              <View style={styles.loadingWrap}>
+                <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
+                <Text style={styles.emptyText}>Loading menu…</Text>
+              </View>
+            ) : null}
             <View style={styles.itemGrid}>
               {showItems &&
                 (viewMode === "card" ? (
@@ -2304,7 +2430,7 @@ export default function MenuScreen() {
                                         );
                                       } finally {
                                         setOosBusy(false);
-                                        await refetchItems();
+                                        await refetchCatalog();
                                         await refetchCategories();
                                       }
                                     },
@@ -2327,7 +2453,7 @@ export default function MenuScreen() {
                                       }
                                     })
                                   );
-                                  await refetchItems();
+                                  await refetchCatalog();
                                 } catch {
                                   // ignore
                                 }
@@ -2354,7 +2480,7 @@ export default function MenuScreen() {
                                     {item.item_name}
                                   </Text>
                                   {getItemOosLabel(item) ? (
-                                    <Text style={styles.treeOosSubtext} numberOfLines={1}>
+                                    <Text style={styles.treeOosSubtext} numberOfLines={2}>
                                       {getItemOosLabel(item)}
                                     </Text>
                                   ) : (

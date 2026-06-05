@@ -50,6 +50,7 @@ import { useTicketResponseTemplatesQuery } from "@/hooks/tickets/useTicketRespon
 import { isImageUrl } from "./AttachmentModal";
 import { useAuth } from "@/providers/AuthProvider";
 import { useToast } from "@/context/ToastContext";
+import { parseTicketAttachmentItem } from "@/lib/tickets/parse-ticket-attachment";
 const SEND_STATUS_OPTIONS = [
   { value: "no_change", label: "Send without status change" },
   { value: "PENDING", label: "Send and set as Pending" },
@@ -414,67 +415,14 @@ function normalizeConversationAttachment(raw: unknown): {
   name?: string;
   mimeType?: string;
 } {
-  const fromObject = (obj: {
-    url?: unknown;
-    storageKey?: unknown;
-    name?: unknown;
-    mimeType?: unknown;
-    mime_type?: unknown;
-  }) => {
-    const url = typeof obj.url === "string" ? obj.url.trim() : "";
-    const storageKey = typeof obj.storageKey === "string" ? obj.storageKey.trim() : "";
-    const name = typeof obj.name === "string" ? obj.name.trim() : "";
-    const mimeType =
-      typeof obj.mimeType === "string"
-        ? obj.mimeType.trim()
-        : typeof obj.mime_type === "string"
-          ? obj.mime_type.trim()
-          : "";
-    return {
-      url: url || undefined,
-      storageKey: storageKey || undefined,
-      name: name || undefined,
-      mimeType: mimeType || undefined,
-    };
+  const parsed = parseTicketAttachmentItem(raw);
+  if (!parsed) return {};
+  return {
+    storageKey: parsed.storageKey,
+    url: parsed.url,
+    name: parsed.name,
+    mimeType: parsed.mimeType,
   };
-
-  if (raw && typeof raw === "object") return fromObject(raw as any);
-  if (typeof raw !== "string") return {};
-  const text = raw.trim();
-  if (!text) return {};
-
-  if (text.startsWith("tickets/images/")) {
-    return {
-      storageKey: text,
-      url: `/api/attachments/proxy?key=${encodeURIComponent(text)}`,
-      name: "Attachment",
-    };
-  }
-  if (/^https?:\/\//i.test(text) || text.startsWith("/")) {
-    return { url: text, name: "Attachment" };
-  }
-  if (text.startsWith("{") || text.startsWith("\"{")) {
-    try {
-      const parsed = JSON.parse(text) as unknown;
-      if (typeof parsed === "string") {
-        const parsedInner = JSON.parse(parsed) as Record<string, unknown>;
-        return fromObject(parsedInner as any);
-      }
-      if (parsed && typeof parsed === "object") return fromObject(parsed as any);
-    } catch {
-      // fallback below
-    }
-  }
-  const urlMatch = /"url"\s*:\s*"([^"]+)"/i.exec(text);
-  const keyMatch = /"storageKey"\s*:\s*"([^"]+)"/i.exec(text);
-  if (urlMatch?.[1] || keyMatch?.[1]) {
-    return {
-      url: urlMatch?.[1] ? urlMatch[1] : keyMatch?.[1] ? `/api/attachments/proxy?key=${encodeURIComponent(keyMatch[1])}` : undefined,
-      storageKey: keyMatch?.[1] || undefined,
-      name: "Attachment",
-    };
-  }
-  return {};
 }
 
 function MessageAttachment({

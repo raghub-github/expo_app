@@ -13,7 +13,10 @@ export type RouteResult = {
   distanceKm: number;
   etaMinutes: number;
   geometry?: string;
+  polyline?: string;
+  source?: "mapbox" | "osrm" | "haversine";
   fromRoutingEngine: boolean;
+  approximate?: boolean;
 };
 
 const DISTANCE_PREFIX = "/v1/distance";

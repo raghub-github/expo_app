@@ -1,62 +1,222 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+
+export type RiderTimelineData = {
+  assigned_at?: string | null;
+  accepted_at?: string | null;
+  reached_merchant_at?: string | null;
+  picked_up_at?: string | null;
+  delivered_at?: string | null;
+  events?: Array<{
+    event_type: string;
+    occurred_at: string;
+    merchant_distance_km?: number | null;
+    customer_distance_km?: number | null;
+  }>;
+};
 
 interface RiderTimelineProps {
-  createdAt?: string | null;
-  pickedUpAt?: string | null;
-  deliveredAt?: string | null;
-  status?: string | null;
-  distanceKm?: number | null;
+  orderId: number;
+  riderId?: number | null;
+  /** When provided with order fetch, timeline renders instantly (no loading state). */
+  initialData?: RiderTimelineData | null;
+  className?: string;
 }
 
-const riderStages = [
-  "Assigned",
-  "Reached Mx",
-  "Picked Up",
-  "Delivered",
+const RIDER_STEPS = [
+  { key: "assigned", label: "Assigned", at: (data: RiderTimelineData) => data.assigned_at },
+  {
+    key: "reached_merchant",
+    label: "Reached Mx",
+    at: (data: RiderTimelineData) => data.reached_merchant_at,
+  },
+  { key: "picked_up", label: "Picked Up", at: (data: RiderTimelineData) => data.picked_up_at },
+  { key: "delivered", label: "Delivered", at: (data: RiderTimelineData) => data.delivered_at },
 ] as const;
 
-export default function RiderTimeline({
-  createdAt,
-  pickedUpAt,
-  deliveredAt,
-  status,
-  distanceKm,
-}: RiderTimelineProps) {
-  const baseDate = createdAt ? new Date(createdAt) : new Date();
+function formatDistKm(v: number | null | undefined): string | null {
+  if (v == null || !Number.isFinite(Number(v))) return null;
+  const n = Number(v);
+  if (n < 0) return null;
+  return `${n.toFixed(2)}km`;
+}
 
-  const stages = useMemo(() => {
-    const times: (Date | null)[] = [
-      baseDate,
-      pickedUpAt ? new Date(pickedUpAt) : null,
-      pickedUpAt ? new Date(pickedUpAt) : null,
-      deliveredAt ? new Date(deliveredAt) : null,
-    ];
-
-    return riderStages.map((stage, idx) => ({
-      stage,
-      time: times[idx] ?? baseDate,
-      duration: 0,
-    }));
-  }, [baseDate, pickedUpAt, deliveredAt]);
-
-  const statusString = (status || "").toLowerCase();
-  const statusRank: Record<string, number> = {
-    assigned: 0,
-    accepted: 0,
-    reached_store: 1,
-    picked_up: 2,
-    in_transit: 2,
-    delivered: 3,
-    cancelled: 3,
-    failed: 3,
+function eventDistances(
+  data: RiderTimelineData | null,
+  eventType: string
+): { mx: string | null; cx: string | null } {
+  const hit = data?.events?.find((e) => e.event_type === eventType);
+  return {
+    mx: formatDistKm(hit?.merchant_distance_km),
+    cx: formatDistKm(hit?.customer_distance_km),
   };
-  const currentIndex =
-    statusRank[statusString] !== undefined ? statusRank[statusString] : 0;
+}
 
-  const formatTimeShort = (date: Date) => {
-    if (!date || isNaN(date.getTime())) return "—";
+const ROW_H = "h-[14px]";
+const LEADER_W = 22;
+const LEADER_H = 28;
+const LABEL_Y = 7;
+const TIME_Y = 21;
+const JOIN_X = 14;
+
+function DistanceLeaderLines({ hasMx, hasCx }: { hasMx: boolean; hasCx: boolean }) {
+  const both = hasMx && hasCx;
+  const endX = LEADER_W;
+
+  return (
+    <svg
+      width={LEADER_W}
+      height={LEADER_H}
+      viewBox={`0 0 ${LEADER_W} ${LEADER_H}`}
+      className="shrink-0 text-emerald-500/90"
+      aria-hidden
+    >
+      {hasMx ? (
+        <line
+          x1={0}
+          y1={LABEL_Y}
+          x2={endX}
+          y2={LABEL_Y}
+          stroke="currentColor"
+          strokeWidth={1.25}
+          strokeLinecap="round"
+        />
+      ) : null}
+      {hasCx ? (
+        <line
+          x1={0}
+          y1={TIME_Y}
+          x2={both ? JOIN_X : endX}
+          y2={TIME_Y}
+          stroke="currentColor"
+          strokeWidth={1.25}
+          strokeLinecap="round"
+        />
+      ) : null}
+      {both ? (
+        <line
+          x1={JOIN_X}
+          y1={TIME_Y}
+          x2={JOIN_X}
+          y2={LABEL_Y}
+          stroke="currentColor"
+          strokeWidth={1.25}
+          strokeLinecap="round"
+        />
+      ) : null}
+    </svg>
+  );
+}
+
+function TimelineDistances({
+  dist,
+  labelColor,
+  timeColor,
+  label,
+  timeText,
+}: {
+  dist: { mx: string | null; cx: string | null };
+  labelColor: string;
+  timeColor: string;
+  label: string;
+  timeText: string;
+}) {
+  const hasMx = Boolean(dist.mx);
+  const hasCx = Boolean(dist.cx);
+
+  return (
+    <div className="flex w-full min-w-0 max-w-full items-stretch gap-1 pr-0.5">
+      <div className="min-w-0 shrink">
+        <p className={`${ROW_H} whitespace-nowrap text-[11px] font-semibold leading-[14px] ${labelColor}`}>
+          {label}
+        </p>
+        <p className={`${ROW_H} whitespace-nowrap text-[10px] font-medium leading-[14px] ${timeColor}`}>
+          {timeText}
+        </p>
+      </div>
+
+      <DistanceLeaderLines hasMx={hasMx} hasCx={hasCx} />
+
+      <div className="ml-0.5 w-[4.1rem] shrink-0 rounded border border-emerald-200 bg-emerald-50/95 px-1 py-0.5">
+        {hasMx ? (
+          <p
+            className={`${ROW_H} whitespace-nowrap text-right text-[8px] font-semibold leading-[14px] text-emerald-700 tabular-nums`}
+          >
+            MX – {dist.mx}
+          </p>
+        ) : (
+          <div className={ROW_H} aria-hidden />
+        )}
+        {hasCx ? (
+          <p
+            className={`${ROW_H} whitespace-nowrap text-right text-[8px] font-semibold leading-[14px] text-emerald-700 tabular-nums`}
+          >
+            CX – {dist.cx}
+          </p>
+        ) : (
+          <div className={ROW_H} aria-hidden />
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function RiderTimeline({
+  orderId,
+  riderId,
+  initialData,
+  className = "",
+}: RiderTimelineProps) {
+  const [data, setData] = useState<RiderTimelineData | null>(initialData ?? null);
+  const [loading, setLoading] = useState(initialData === undefined);
+
+  useEffect(() => {
+    if (initialData !== undefined) {
+      setData(initialData);
+      setLoading(false);
+      return;
+    }
+
+    if (!riderId || !orderId) {
+      setData(null);
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+
+    fetch(`/api/orders/${orderId}/rider-timeline?rider_id=${riderId}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json: RiderTimelineData | null) => {
+        if (!cancelled) setData(json);
+      })
+      .catch(() => {
+        if (!cancelled) setData(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [orderId, riderId, initialData]);
+
+  const currentStepIdx = useMemo(() => {
+    if (!riderId) return -1;
+    let idx = 0;
+    RIDER_STEPS.forEach((step, i) => {
+      if (data && step.at(data)) idx = i;
+    });
+    return idx;
+  }, [data, riderId]);
+
+  const formatTimeShort = (s: string | null | undefined) => {
+    if (!s) return "";
+    const date = new Date(s);
+    if (isNaN(date.getTime())) return "";
     let hours = date.getHours();
     const minutes = String(date.getMinutes()).padStart(2, "0");
     const ampm = hours >= 12 ? "PM" : "AM";
@@ -64,88 +224,67 @@ export default function RiderTimeline({
     return `${hours}:${minutes} ${ampm}`;
   };
 
-  const distanceLabel =
-    distanceKm != null && Number.isFinite(distanceKm)
-      ? `${Number(distanceKm).toFixed(2)}km`
-      : "—";
+  if (!riderId) return null;
+  if (loading) return null;
 
   return (
-    <div className="bg-white/95 rounded-lg pl-0 pr-2.5 py-1 shadow-[0_1px_2px_rgba(15,23,42,0.06)] border border-slate-200 relative">
-      <div className="grid grid-cols-4 mb-1 pr-1">
-        {stages.map((stage) => (
-          <div
-            key={stage.stage}
-            className="px-1 text-[8px] sm:text-[9px] font-medium text-center whitespace-normal break-words leading-tight text-slate-600"
-          >
-            {stage.stage}
-          </div>
-        ))}
-      </div>
+    <div
+      className={`relative flex h-full min-h-0 flex-col ${className}`}
+      role="list"
+      aria-label="Rider delivery progress"
+    >
+      <ol className="flex flex-col py-0.5">
+        {RIDER_STEPS.map((step, index) => {
+          const ts = data ? step.at(data) : null;
+          const done = currentStepIdx >= index;
+          const isActive = index === currentStepIdx && !ts;
+          const isComplete = Boolean(ts);
+          const dist = eventDistances(data, step.key);
+          const isLast = index === RIDER_STEPS.length - 1;
+          const segmentDone = currentStepIdx > index;
+          const dotColor = done || isActive ? "bg-emerald-500 ring-emerald-100" : "bg-slate-300 ring-slate-100";
+          const labelColor = done || isActive ? "text-emerald-800" : "text-slate-500";
+          const timeColor = isComplete ? "text-emerald-600" : "text-slate-400";
 
-      <div className="relative mt-0.5 overflow-x-auto pb-1 sm:overflow-visible">
-        <div className="relative h-20 min-w-[360px] sm:min-w-0">
-          <div className="absolute top-[8px] left-1 right-3 sm:left-0 sm:right-0">
-            <div className="grid grid-cols-4 relative">
-              {stages.slice(0, stages.length - 1).map((_, index) => (
+          return (
+            <li key={step.key} className="flex gap-2" role="listitem">
+              <div className="flex w-3.5 shrink-0 flex-col items-center">
                 <div
-                  key={`line-${index}`}
-                  className="absolute top-1/2 h-[3px] transform -translate-y-1/2 z-0"
-                  style={{
-                    left: `${(index * 100) / stages.length + 100 / (stages.length * 2)}%`,
-                    width: `${100 / stages.length}%`,
-                    background:
-                      index < currentIndex ? "#10B981" : "rgba(148,163,184,0.7)",
-                  }}
-                />
-              ))}
-
-              {stages.map((stage, index) => {
-                const isCompleted = index <= currentIndex;
-                const dotColor = isCompleted ? "bg-emerald-500" : "bg-slate-300";
-                const textColor = isCompleted
-                  ? "text-emerald-600"
-                  : "text-slate-500";
-
-                const time =
-                  index === 0
-                    ? formatTimeShort(stage.time)
-                    : formatTimeShort(stage.time);
-
-                return (
+                  className={`relative z-10 mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full border-2 border-white ring-2 ${dotColor}`}
+                >
+                  <span className="absolute inset-[3px] rounded-full bg-white" />
+                </div>
+                {!isLast ? (
                   <div
-                    key={`dot-${stage.stage}`}
-                    className="relative flex flex-col items-center"
-                    style={{
-                      gridColumn: index + 1,
-                    }}
-                  >
-                    <div className="absolute top-[10px] left-1/2 transform -translate-x-1/2 h-4 w-[2px] bg-slate-200" />
+                    className={`mt-0.5 w-[2px] flex-1 min-h-[28px] rounded-full ${
+                      segmentDone ? "bg-emerald-500" : "bg-slate-200"
+                    }`}
+                  />
+                ) : null}
+              </div>
 
-                    <div
-                      className={`w-3.5 h-3.5 rounded-full flex items-center justify-center z-10 border border-white ${dotColor} relative`}
-                    >
-                      <div className="absolute w-4 h-4 rounded-full border border-white/70" />
-                      <div className="w-1.5 h-1.5 rounded-full bg-white" />
-                    </div>
-
-                    <div
-                      className={`absolute top-[30px] text-[9px] sm:text-[10px] font-normal leading-tight whitespace-nowrap ${textColor}`}
-                    >
-                      {isCompleted ? time : ""}
-                    </div>
-
-                    <div className="absolute top-[46px] text-[8px] sm:text-[9px] font-normal px-1 py-0.5 rounded text-emerald-700 bg-emerald-50">
-                      <span className="block">MX – {distanceLabel}</span>
-                      <span className="block">CX – {distanceLabel}</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      </div>
+              <div className={`min-w-0 flex-1 max-w-full ${isLast ? "pb-0" : "pb-2.5"}`}>
+                {dist.mx || dist.cx ? (
+                  <TimelineDistances
+                    dist={dist}
+                    labelColor={labelColor}
+                    timeColor={timeColor}
+                    label={step.label}
+                    timeText={ts ? formatTimeShort(ts) : done || isActive ? "—" : "Pending"}
+                  />
+                ) : (
+                  <>
+                    <p className={`text-[11px] font-semibold leading-tight ${labelColor}`}>{step.label}</p>
+                    <p className={`mt-0.5 text-[10px] font-medium leading-tight ${timeColor}`}>
+                      {ts ? formatTimeShort(ts) : done || isActive ? "—" : "Pending"}
+                    </p>
+                  </>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 }
-

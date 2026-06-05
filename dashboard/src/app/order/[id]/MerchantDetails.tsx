@@ -1,7 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Check, Copy } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Check, Copy, Star } from "lucide-react";
+import {
+  isStoreOperationallyOpen,
+  resolveStoreTimingsDisplay,
+} from "@/lib/merchants/store-open-display";
+import type { OrderCustomerFeedback } from "@/lib/orders/order-customer-feedback";
+import { hasMerchantFeedback } from "@/lib/orders/order-customer-feedback";
 
 interface Merchant {
   storeId?: number | null;
@@ -16,6 +22,8 @@ interface MerchantDetailsProps {
   merchant: Merchant;
   /** When provided, MX card shows immediately without waiting for profile-full fetch */
   initialProfile?: MerchantProfile | null;
+  customerFeedback?: OrderCustomerFeedback | null;
+  onOpenFeedback?: () => void;
   onCopy: (text: string) => void;
 }
 
@@ -46,9 +54,25 @@ interface MerchantProfile {
   merchantType: string | null;
   assignedUserEmail: string | null;
   assignedUserDepartment: string | null;
+  approval_status?: string | null;
+  operational_status?: string | null;
+  is_active?: boolean | null;
+  is_accepting_orders?: boolean | null;
+  is_available?: boolean | null;
+  deleted_at?: string | null;
+  delisted_at?: string | null;
 }
 
-export default function MerchantDetails({ merchant, initialProfile, onCopy }: MerchantDetailsProps) {
+const STORE_STATUS_PILL =
+  "inline-flex items-center rounded px-1 py-px text-[9px] font-semibold leading-none border";
+
+export default function MerchantDetails({
+  merchant,
+  initialProfile,
+  customerFeedback,
+  onOpenFeedback,
+  onCopy,
+}: MerchantDetailsProps) {
   const storeId = merchant.storeId ?? null;
   const [profile, setProfile] = useState<MerchantProfile | null>(initialProfile ?? null);
   const [loading, setLoading] = useState(false);
@@ -130,6 +154,13 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
           merchantType: store.store_type ?? null,
           assignedUserEmail: areaManager?.email ?? null,
           assignedUserDepartment: areaManager ? "Area Manager" : null,
+          approval_status: store.approval_status ?? null,
+          operational_status: store.operational_status ?? null,
+          is_active: store.is_active ?? null,
+          is_accepting_orders: store.is_accepting_orders ?? null,
+          is_available: store.is_available ?? null,
+          deleted_at: store.deleted_at ?? null,
+          delisted_at: store.delisted_at ?? null,
         });
       })
       .catch(() => {
@@ -194,7 +225,18 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
     return { isOpen: true, label: parts.join(" , ") || "Open today" };
   };
 
-  const todaySummary = getTodaySummary();
+  const scheduleSummary = getTodaySummary();
+
+  const timingsDisplay = useMemo(() => {
+    if (!profile) {
+      return { isOpen: false, pill: "Closed" as const, label: "—" };
+    }
+    return resolveStoreTimingsDisplay({
+      withinHours: scheduleSummary.isOpen,
+      hoursLabel: scheduleSummary.label,
+      operationallyOpen: isStoreOperationallyOpen(profile),
+    });
+  }, [profile, scheduleSummary.isOpen, scheduleSummary.label]);
 
   const dayOrder: { key: DayKey; label: string }[] = [
     { key: "monday", label: "Monday" },
@@ -297,31 +339,6 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
           </div>
         </div>
 
-        {/* Store Internal Id (numeric PK) */}
-        <div className="grid grid-cols-[140px_1fr] items-start min-h-[20px]">
-          <div className="text-[12px] text-gati-text-secondary font-medium">
-            Store Internal Id:
-          </div>
-          <div className="text-[12px] text-gati-text-primary font-normal flex items-center gap-1.5 leading-snug">
-            <span className="font-mono">{profile?.internalStoreId ?? storeId ?? "—"}</span>
-            {(profile?.internalStoreId ?? storeId) != null && (
-              <button
-                type="button"
-                className="inline-flex items-center justify-center text-[11px] cursor-pointer opacity-80 hover:opacity-100 transition-opacity ml-1"
-                onClick={() => handleCopyGeneric(profile?.internalStoreId ?? storeId, "storeInternalId")}
-                aria-label="Copy store internal id"
-              >
-                {copiedKey === "storeInternalId" ? (
-                  <Check className="h-3 w-3 text-emerald-600" />
-                ) : (
-                  <Copy className="h-3 w-3 text-gati-primary" />
-                )}
-                <span className="sr-only">Copy</span>
-              </button>
-            )}
-          </div>
-        </div>
-
         {/* Store Name (web link removed as per design) */}
         <div className="grid grid-cols-[140px_1fr] items-start min-h-[20px]">
           <div className="text-[12px] text-gati-text-secondary font-medium">Name:</div>
@@ -330,24 +347,7 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
           </div>
         </div>
 
-        {/* MX Notifications placeholder */}
-        <div className="grid grid-cols-[140px_1fr] items-start min-h-[20px]">
-          <div className="text-[12px] text-gati-text-secondary font-medium">
-            Mx Notifications:
-          </div>
-          <div className="text-[12px] text-gati-text-primary font-normal">
-            <a
-              href="#"
-              target="_blank"
-              className="inline-flex items-center gap-0.5 text-gati-primary no-underline font-medium text-[10px] px-1 py-0.5 rounded-full bg-gati-primary-super-light border border-gati-primary-light cursor-pointer whitespace-nowrap"
-            >
-              <i className="bi bi-link-45deg text-[10px]" />
-              link
-            </a>
-          </div>
-        </div>
-
-        {/* Mobile */}
+        {/* Store Name (web link removed as per design) */}
         <div className="grid grid-cols-[140px_1fr] items-start min-h-[20px]">
           <div className="text-[12px] text-gati-text-secondary font-medium">Mobile:</div>
           <div className="text-[12px] text-gati-text-primary font-normal flex items-center gap-1.5 leading-snug flex-wrap">
@@ -390,15 +390,15 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
                 className="inline-flex items-center gap-1.5 text-[12px] text-gati-text-primary cursor-pointer"
               >
                 <span
-                  className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold border whitespace-nowrap ${
-                    todaySummary.isOpen
+                  className={`${STORE_STATUS_PILL} whitespace-nowrap ${
+                    timingsDisplay.isOpen
                       ? "bg-emerald-50 text-emerald-700 border-emerald-100"
                       : "bg-red-50 text-red-700 border-red-100"
                   }`}
                 >
-                  {todaySummary.isOpen ? "Open" : "Closed"}
+                  {timingsDisplay.pill}
                 </span>
-                <span className="ml-1">{todaySummary.label}</span>
+                <span className="ml-1 text-[11px] text-slate-700">{timingsDisplay.label}</span>
                 <span className="ml-1 text-[10px] text-slate-500">▾</span>
               </button>
             ) : (
@@ -406,6 +406,25 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
             )}
           </div>
         </div>
+
+        {hasMerchantFeedback(customerFeedback) && customerFeedback?.storeRating != null ? (
+          <div className="grid grid-cols-[140px_1fr] items-start min-h-[22px]">
+            <div className="text-[12px] text-gati-text-secondary font-medium">Cx rating:</div>
+            <button
+              type="button"
+              onClick={onOpenFeedback}
+              className="inline-flex items-center gap-1.5 text-left cursor-pointer group"
+            >
+              <span className="text-[13px] font-semibold text-gati-text-primary">
+                {customerFeedback.storeRating}
+              </span>
+              <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400 shrink-0" aria-hidden />
+              <span className="text-[11px] font-semibold text-emerald-700 group-hover:underline">
+                View feedback
+              </span>
+            </button>
+          </div>
+        ) : null}
 
         {/* More details link */}
         <div className="mt-1 flex justify-end">
@@ -475,7 +494,7 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
                     <span className="w-24 text-[11px] font-medium text-slate-500">{label}</span>
                     <div className="flex-1 flex items-center justify-between gap-2">
                       <span
-                        className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold border whitespace-nowrap ${
+                        className={`${STORE_STATUS_PILL} whitespace-nowrap ${
                           isOpen
                             ? "bg-emerald-50 text-emerald-700 border-emerald-100"
                             : "bg-red-50 text-red-700 border-red-100"

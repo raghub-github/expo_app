@@ -57,6 +57,10 @@ import { clientStoreOpsDebugLog } from '@/lib/store-ops-client-debug';
 import { toStoredDocumentUrl } from '@/lib/r2';
 import NeedHelpBadge from '@/components/NeedHelpBadge';
 import { usePartnerDeviceOrderAlerts } from '@/hooks/usePartnerDeviceOrderAlerts';
+import {
+  PARTNER_SELECTED_STORE_CHANGED,
+  readPartnerSelectedStoreId,
+} from '@/lib/partner-selected-store';
 import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
 import { emitPartnerStoreOperationsRefresh } from '@/lib/partnerStoreOperationsRefresh';
 import {
@@ -399,8 +403,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const merchantSession = useMerchantSession();
   const userEmail = merchantSession?.user?.email ?? merchantSession?.user?.phone ?? '';
 
-  /** SSR-safe: only props on first paint; localStorage merged after mount (fixes hydration). */
-  const [resolvedStoreId, setResolvedStoreId] = useState(() => (restaurantId || '').trim());
+  /** SSR-safe: empty until mount — never treat layout placeholders like "No ID" as store_id. */
+  const [resolvedStoreId, setResolvedStoreId] = useState('');
   const [storeList, setStoreList] = useState<
     Array<{ store_id: string; store_name: string; full_address: string; banner_url?: string | null }>
   >([]);
@@ -669,10 +673,34 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     }
   }, [resolvedStoreId, fetchPartnerNotifications]);
 
+  const clearAllPartnerNotifications = useCallback(async () => {
+    if (!resolvedStoreId) return;
+    try {
+      const res = await fetch('/api/merchant/store-notifications', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ store_id: resolvedStoreId, action: 'clear_all' }),
+      });
+      if (res.ok) await fetchPartnerNotifications();
+    } catch {
+      /* ignore */
+    }
+  }, [resolvedStoreId, fetchPartnerNotifications]);
+
   useEffect(() => {
-    const fromStorage =
-      typeof window !== 'undefined' ? (localStorage.getItem('selectedStoreId') || '').trim() : '';
-    setResolvedStoreId((restaurantId || '').trim() || fromStorage);
+    const sync = () => setResolvedStoreId(readPartnerSelectedStoreId(restaurantId));
+    sync();
+    const onStore = () => sync();
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'selectedStoreId') sync();
+    };
+    window.addEventListener(PARTNER_SELECTED_STORE_CHANGED, onStore);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener(PARTNER_SELECTED_STORE_CHANGED, onStore);
+      window.removeEventListener('storage', onStorage);
+    };
   }, [restaurantId]);
 
   useEffect(() => {
@@ -2764,14 +2792,25 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                     <h2 id="partner-sheet-title" className="truncate text-sm font-semibold leading-tight text-gray-900 sm:text-base">
                       {sheetTitle[sheet]}
                     </h2>
-                    {sheet === 'notifications' && partnerUnreadCount > 0 ? (
-                      <button
-                        type="button"
-                        onClick={() => void markAllPartnerNotificationsRead()}
-                        className="shrink-0 text-xs font-semibold text-sky-600 hover:text-sky-800"
-                      >
-                        Mark all read
-                      </button>
+                    {sheet === 'notifications' && partnerNotifications.length > 0 ? (
+                      <>
+                        {partnerUnreadCount > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => void markAllPartnerNotificationsRead()}
+                            className="shrink-0 text-xs font-semibold text-sky-600 hover:text-sky-800"
+                          >
+                            Mark all read
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => void clearAllPartnerNotifications()}
+                          className="shrink-0 text-xs font-semibold text-red-600 hover:text-red-800"
+                        >
+                          Clear all
+                        </button>
+                      </>
                     ) : null}
                   </div>
                   {sheet === 'status' && activeOutletSummary ? (

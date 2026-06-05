@@ -108,8 +108,14 @@ export async function POST(
       );
     }
 
+    const body = (await request.json().catch(() => ({}))) as { displayDocType?: string };
+    const displayDocType =
+      typeof body.displayDocType === "string" && body.displayDocType.trim()
+        ? body.displayDocType.trim()
+        : undefined;
+
     // Approve document (handles KYC, onboarding stage, and rider status in one place)
-    const result = await approveRiderDocument(documentId, agent.id);
+    const result = await approveRiderDocument(documentId, agent.id, { displayDocType });
 
     if (!result) {
       return NextResponse.json(
@@ -159,6 +165,8 @@ export async function POST(
       success: true,
       data: {
         document: approvedDoc,
+        displayDocType: result.displayDocType ?? displayDocType ?? null,
+        sideVerified: result.sideVerified ?? false,
         allDocumentsVerified: allVerified,
         kycStatus: riderState.kycStatus,
         onboardingStage: riderState.onboardingStage,

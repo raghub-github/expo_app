@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabase/client";
 import { Logo } from "@/components/brand/Logo";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 import { postSetCookieWithTokens } from "@/lib/auth/sync-server-session";
+import { markDashboardFreshLogin } from "@/lib/dashboard-auth-client-state";
 
 function parseHashParams(hash: string): Record<string, string> {
   const params: Record<string, string> = {};
@@ -79,6 +80,7 @@ function AuthCallbackContent() {
             return;
           }
           sessionStorage.removeItem("auth_redirect");
+          markDashboardFreshLogin();
           window.history.replaceState(null, "", window.location.pathname + window.location.search);
           window.location.href = next;
           return;
@@ -105,6 +107,7 @@ function AuthCallbackContent() {
             return;
           }
           sessionStorage.removeItem("auth_redirect");
+          markDashboardFreshLogin();
           window.location.href = next;
           return;
         }
@@ -146,6 +149,7 @@ function AuthCallbackContent() {
           return;
         }
         sessionStorage.removeItem("auth_redirect");
+        markDashboardFreshLogin();
         window.location.href = next;
         return;
       }

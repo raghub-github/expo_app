@@ -3,6 +3,9 @@ import { createClient } from "@supabase/supabase-js";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
 import { logStoreActivity } from "@/lib/store-activity-feed";
+import { buildMenuItemOosModePatch } from "@/lib/merchant-menu-item-stock";
+import { client as pgClient } from "@/lib/drizzle";
+import { expireTimedMenuOutOfStockForStore } from "@/lib/menu-oos-expiry";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -211,6 +214,8 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "Store does not belong to this merchant" }, { status: 403 });
     }
 
+    await expireTimedMenuOutOfStockForStore(pgClient, store.id);
+
     let patch = resolveUpdate(mode, body?.hours, body?.until);
     if (mode === "NEXT_OPEN") {
       const nextIso = await computeNextOpenIsoForStore(store.id);
@@ -273,6 +278,7 @@ export async function PATCH(req: NextRequest) {
             out_of_stock_manual: false,
             out_of_stock_until: (data as any).out_of_stock_until ?? null,
             out_of_stock_updated_at: markerIso,
+            in_stock: false,
             updated_at,
           })
           .eq("store_id", store.id)
@@ -288,6 +294,7 @@ export async function PATCH(req: NextRequest) {
             out_of_stock_manual: false,
             out_of_stock_until: null,
             out_of_stock_updated_at: markerIso,
+            in_stock: true,
             updated_at,
           })
           .eq("store_id", store.id)
@@ -347,14 +354,10 @@ export async function PATCH(req: NextRequest) {
 
     const itemId = String(body?.id ?? body?.item_id ?? body?.itemId ?? "").trim();
     if (!itemId) return NextResponse.json({ error: "item_id required" }, { status: 400 });
+    const itemPatch = buildMenuItemOosModePatch(patch.manual, patch.until, updated_at);
     const { data, error } = await supabase
       .from("merchant_menu_items")
-      .update({
-        out_of_stock_manual: patch.manual,
-        out_of_stock_until: patch.until ? patch.until.toISOString() : null,
-        out_of_stock_updated_at: updated_at,
-        updated_at,
-      })
+      .update(itemPatch)
       .eq("store_id", store.id)
       .eq("item_id", itemId)
       .select("id, out_of_stock_manual, out_of_stock_until")
@@ -376,6 +379,7 @@ export async function PATCH(req: NextRequest) {
       out_of_stock_manual: Boolean((data as any).out_of_stock_manual),
       out_of_stock_until: (data as any).out_of_stock_until ?? null,
       out_of_stock_updated_at: (data as any).out_of_stock_updated_at ?? updated_at,
+      in_stock: (itemPatch as { in_stock?: boolean }).in_stock,
     });
   } catch (err) {
     console.error("[menu-out-of-stock PATCH]", err);

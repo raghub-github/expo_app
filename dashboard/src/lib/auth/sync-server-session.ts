@@ -4,12 +4,14 @@ import { supabase } from "@/lib/supabase/client";
 import { safeParseJson } from "@/lib/utils";
 
 export type SetCookieResult = { ok: true } | { ok: false; error: string };
-const SERVER_COOKIE_SYNCED_KEY = "gm_server_cookie_synced";
+const SERVER_COOKIE_SYNCED_KEY = "gm_server_cookie_synced_v1";
+const SERVER_COOKIE_SYNC_TTL_MS = 30 * 60 * 1000;
 
 function markServerCookieSynced(): void {
   if (typeof window === "undefined") return;
   try {
-    sessionStorage.setItem(SERVER_COOKIE_SYNCED_KEY, "1");
+    // Shared across tabs — sessionStorage caused every new tab to re-post refresh tokens.
+    window.localStorage.setItem(SERVER_COOKIE_SYNCED_KEY, String(Date.now()));
   } catch {
     // ignore storage failures
   }
@@ -18,7 +20,11 @@ function markServerCookieSynced(): void {
 function isServerCookieAlreadySynced(): boolean {
   if (typeof window === "undefined") return false;
   try {
-    return sessionStorage.getItem(SERVER_COOKIE_SYNCED_KEY) === "1";
+    const raw = window.localStorage.getItem(SERVER_COOKIE_SYNCED_KEY);
+    if (!raw) return false;
+    const ts = Number(raw);
+    if (!Number.isFinite(ts)) return false;
+    return Date.now() - ts < SERVER_COOKIE_SYNC_TTL_MS;
   } catch {
     return false;
   }

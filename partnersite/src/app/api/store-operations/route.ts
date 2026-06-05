@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import { createClient } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import {
@@ -197,6 +198,9 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const storeId = searchParams.get('store_id');
     if (!storeId) return NextResponse.json({ error: 'store_id is required' }, { status: 400 });
+    if (!isValidPartnerStoreId(storeId)) {
+      return NextResponse.json({ error: 'Invalid store_id' }, { status: 400 });
+    }
 
     const includeDebugBody = storeOpsDebugEnabled() && searchParams.get('debug') === '1';
     const debugTrace: Record<string, unknown>[] = [];

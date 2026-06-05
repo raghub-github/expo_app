@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/** POST { store_id, action: "ensure_waiting" | "mark_read" | "mark_all_read", notification_id? } */
+/** POST { store_id, action: "ensure_waiting" | "mark_read" | "mark_all_read" | "clear_all", notification_id? } */
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
@@ -68,6 +68,18 @@ export async function POST(req: NextRequest) {
       if (error) {
         console.error('[store-notifications POST] mark_all_read', error);
         return NextResponse.json({ error: 'update_failed' }, { status: 500 });
+      }
+      return NextResponse.json({ ok: true });
+    }
+
+    if (action === 'clear_all') {
+      const { error } = await db
+        .from('merchant_store_notifications')
+        .delete()
+        .eq('store_id', gate.storeIdNum);
+      if (error) {
+        console.error('[store-notifications POST] clear_all', error);
+        return NextResponse.json({ error: 'delete_failed' }, { status: 500 });
       }
       return NextResponse.json({ ok: true });
     }

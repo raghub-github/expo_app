@@ -16,6 +16,12 @@ import {
   loadSnapshotsByOrderTexts,
 } from "@/lib/merchant-visible-pricing";
 import type { OrdersFoodRow } from "@/lib/types/food-orders";
+import { parseMerchantInstructionsList } from "@/lib/merchant-order-instructions";
+import {
+  getRiderSelfieViewUrl,
+  resolveRiderSelfieFromStored,
+} from "@/lib/rider-selfie-url";
+import { loadMerchantRiderUniformByOrderCoreIds } from "@/lib/merchant-food-orders/rider-uniform-feedback";
 
 type CoreRow = Record<string, unknown>;
 type FoodRow = Record<string, unknown>;
@@ -370,6 +376,7 @@ export async function loadMerchantStoreFoodOrders(
       ...new Set(coreRows.map((c) => c.rider_id).filter((x) => x != null).map((x) => Number(x))),
     ];
     const riderById = new Map<number, Record<string, unknown>>();
+    const riderSelfieById = new Map<number, string | null>();
     if (riderIds.length > 0) {
       const { data: riders } = await db
         .from('riders')
@@ -378,7 +385,20 @@ export async function loadMerchantStoreFoodOrders(
       for (const r of riders || []) {
         riderById.set(Number((r as { id: number }).id), r as Record<string, unknown>);
       }
+      await Promise.all(
+        riderIds.map(async (id) => {
+          try {
+            riderSelfieById.set(id, await getRiderSelfieViewUrl(id));
+          } catch {
+            const raw = (riderById.get(id) as { selfie_url?: string | null } | undefined)?.selfie_url;
+            riderSelfieById.set(id, resolveRiderSelfieFromStored(raw));
+          }
+        })
+      );
     }
+
+    const coreIds = coreRows.map((c) => Number(c.id)).filter((id) => Number.isFinite(id));
+    const uniformByCoreId = await loadMerchantRiderUniformByOrderCoreIds(db, coreIds);
 
     const ordersWithDetails = await Promise.all(
       coreRows.map(async (core) => {
@@ -547,7 +567,10 @@ export async function loadMerchantStoreFoodOrders(
           restaurant_phone: (food?.restaurant_phone as string | null) ?? null,
           preparation_time_minutes:
             food?.preparation_time_minutes != null ? Number(food.preparation_time_minutes) : null,
-          prep_ready_by_at: (food?.prep_ready_by_at as string | null) ?? null,
+          prep_ready_by_at:
+            (food?.prep_ready_by_at as string | null) ??
+            ((core as Record<string, unknown>).prep_ready_by_at as string | null) ??
+            null,
           prep_time_source: (food?.prep_time_source as string | null) ?? null,
           prep_delay_minutes:
             food?.prep_delay_minutes != null ? Number(food.prep_delay_minutes) : 0,
@@ -556,12 +579,21 @@ export async function loadMerchantStoreFoodOrders(
           estimated_delivery_time: (core.estimated_delivery_time as string | null) ?? null,
           food_items_count: displayItemCount,
           display_item_count: displayItemCount,
-          food_items_total_value: pricingTotal ?? 0,
+          food_items_total_value: bill.total,
+          customer_paid_total: pricingTotal ?? customerPricing.total,
+          total_ctm:
+            core.total_ctm != null && core.total_ctm !== ''
+              ? Number(core.total_ctm)
+              : bill.total,
           requires_utensils: food?.requires_utensils ?? null,
           is_fragile: food?.is_fragile ?? false,
           is_high_value: food?.is_high_value ?? false,
           veg_non_veg: food?.veg_non_veg ?? null,
           delivery_instructions: (food?.delivery_instructions as string | null) ?? null,
+          merchant_instructions_list: parseMerchantInstructionsList(
+            food?.merchant_instructions_list ??
+              (core as Record<string, unknown>).merchant_instructions_list
+          ),
           customer_id: custId,
           customer_name:
             (food?.customer_name as string | null) ??
@@ -583,6 +615,7 @@ export async function loadMerchantStoreFoodOrders(
             custId != null && core.created_at
               ? platformOrdinalByKey.get(`p:${custId}:${String(core.created_at)}`) ?? null
               : null,
+          merchant_rider_in_uniform: uniformByCoreId.get(coreId) ?? null,
           rider_id: riderId,
           rider_name: (riderDetails?.name as string | null) ?? (food?.rider_name as string | null) ?? null,
           rider_phone: (riderDetails?.mobile as string | null) ?? (food?.rider_phone as string | null) ?? null,
@@ -591,7 +624,9 @@ export async function loadMerchantStoreFoodOrders(
                 id: Number(riderDetails.id),
                 name: riderDetails.name as string,
                 mobile: riderDetails.mobile as string,
-                selfie_url: riderDetails.selfie_url as string | null,
+                selfie_url:
+                  (riderId != null ? riderSelfieById.get(riderId) : null) ??
+                  resolveRiderSelfieFromStored(riderDetails.selfie_url as string | null),
                 status: riderDetails.status as string | undefined,
                 city: riderDetails.city as string | null,
                 lat: riderDetails.lat != null ? Number(riderDetails.lat) : null,

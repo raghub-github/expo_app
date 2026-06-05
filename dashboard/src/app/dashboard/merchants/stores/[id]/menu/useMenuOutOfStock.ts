@@ -54,6 +54,25 @@ export function useMenuOutOfStock({
     return () => clearInterval(t);
   }, []);
 
+  useEffect(() => {
+    const hasExpiredTimedOos =
+      menuItems.some(
+        (item) =>
+          !item.out_of_stock_manual &&
+          item.out_of_stock_until != null &&
+          new Date(item.out_of_stock_until).getTime() <= nowTick &&
+          item.in_stock === false
+      ) ||
+      categories.some(
+        (c) =>
+          !c.out_of_stock_manual &&
+          c.out_of_stock_until != null &&
+          new Date(c.out_of_stock_until).getTime() <= nowTick
+      );
+    if (!hasExpiredTimedOos) return;
+    void queryClient.refetchQueries({ queryKey: queryKeys.merchantStore.menu(storeId), type: "active" });
+  }, [nowTick, menuItems, categories, queryClient, storeId]);
+
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
 
   const patchMenuCache = useCallback(

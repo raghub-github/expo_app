@@ -50,27 +50,31 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
   const [internalMobileOpen, setInternalMobileOpen] = useState(false);
   const isMobileMenuOpen = mobileCtx ? mobileCtx.isMobileMenuOpen : internalMobileOpen;
   const setMobileMenuOpen = mobileCtx ? mobileCtx.setMobileMenuOpen : setInternalMobileOpen;
-  const [skeletonExpired, setSkeletonExpired] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   /** Optimistic active state: set on mousedown so the clicked item highlights instantly before route/API. */
   const [pendingNavHref, setPendingNavHref] = useState<string | null>(null);
-  const { user: authUser } = useAuth();
+  const { user: authUser, systemUser } = useAuth();
   const logoutMutation = useLogout();
-  const userEmail = authUser?.email ?? null;
-  const userMetadata = (authUser as any)?.user_metadata ?? {};
+  const [identityReady, setIdentityReady] = useState(false);
+  const userEmail = systemUser?.email ?? authUser?.email ?? null;
+  const userMetadata = (authUser as { user_metadata?: Record<string, unknown> } | null)?.user_metadata ?? {};
   const userName =
-    userMetadata?.full_name ??
-    userMetadata?.name ??
+    systemUser?.fullName ??
+    (typeof userMetadata?.full_name === "string" ? userMetadata.full_name : null) ??
+    (typeof userMetadata?.name === "string" ? userMetadata.name : null) ??
     (userEmail ? userEmail.split("@")[0] : null) ??
     null;
-  const avatarUrl = userMetadata?.avatar_url ?? userMetadata?.picture ?? null;
-  const currentRouteCtx = useCurrentRoute();
+  const avatarUrl =
+    (typeof userMetadata?.avatar_url === "string" ? userMetadata.avatar_url : null) ??
+    (typeof userMetadata?.picture === "string" ? userMetadata.picture : null) ??
+    null;
 
-  // Short skeleton (0.5s) so sidebar appears fast; then show real nav
   useEffect(() => {
-    const t = setTimeout(() => setSkeletonExpired(true), 500);
-    return () => clearTimeout(t);
+    setIdentityReady(true);
+    setHydrated(true);
   }, []);
+  const currentRouteCtx = useCurrentRoute();
 
   // Remove query parameters for comparison
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
@@ -100,17 +104,16 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
 
   const isLoading = accessLoading || permissionsLoading;
   const hasError = Boolean(accessError || permissionsError);
-  const useFallback = isLoading && skeletonExpired;
 
-  // null = show all items; Set = filter by access. While loading (useFallback) show all so sidebar isn't empty.
+  // null = super-admin / error fallback (show all dashboard sections); Set = filter by access.
   const accessibleDashboards = useMemo(() => {
     if (hasError) return null;
-    if (useFallback) return null; // Still loading: show full nav; filter once data loads
-    if (dashboards.length === 0) return null;
+    if (isLoading) return new Set<string>();
+    if (dashboards.length === 0) return isSuperAdmin ? null : new Set<string>();
     return new Set(
       dashboards.filter((d) => d.isActive).map((d) => d.dashboardType)
     );
-  }, [dashboards, useFallback, hasError]);
+  }, [dashboards, isLoading, hasError, isSuperAdmin]);
 
   // Clear optimistic active state as soon as pathname changes (navigation completed or user navigated elsewhere)
   useEffect(() => {
@@ -130,13 +133,13 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
     [cleanPathname, router]
   );
 
-  const effectiveSuperAdmin = hasError || useFallback ? true : isSuperAdmin;
+  const effectiveSuperAdmin = hasError ? true : isSuperAdmin;
 
   const filteredNavigation = useMemo(() => {
     return mainNavigation.filter((item) => {
       if (item.href === "/dashboard") return true;
-      if (accessibleDashboards === null) return true;
       if (item.requiresSuperAdmin) return effectiveSuperAdmin;
+      if (accessibleDashboards === null) return true;
       if (item.dashboardType) {
         if (effectiveSuperAdmin) return true;
         if (item.dashboardType === "ORDER_FOOD") {
@@ -165,7 +168,8 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
     return () => window.removeEventListener("popstate", onPop);
   }, [isMobileMenuOpen, setMobileMenuOpen]);
 
-  const showSkeleton = isLoading && !skeletonExpired;
+  // SSR and first client paint must match; persisted RQ cache only applies after mount.
+  const showSkeleton = !hydrated || isLoading;
   // Same width as right sidebar: w-56 (224px) when expanded, w-16 when collapsed. Mobile: w-72 when open.
   const sidebarWidth = `max-lg:w-72 ${isOpen ? "lg:w-56" : "lg:w-16"}`;
   const mobileTranslate = isMobileMenuOpen ? "max-lg:translate-x-0" : "max-lg:-translate-x-full";
@@ -391,15 +395,29 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
             </button>
           </div>
           <div className="lg:hidden px-4 py-5">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="h-10 w-10 rounded-full bg-white/20 flex items-center justify-center text-white text-sm font-semibold overflow-hidden shrink-0">
-                {avatarUrl ? <img src={avatarUrl} alt="" className="h-full w-full object-cover" /> : getUserInitials(userName, userEmail)}
+            {!identityReady ? (
+              <div className="flex items-center gap-3 mb-3" aria-hidden>
+                <div className="h-10 w-10 rounded-full bg-white/20 shrink-0 animate-pulse" />
+                <div className="min-w-0 flex-1 space-y-2">
+                  <div className="h-4 w-24 rounded bg-white/20 animate-pulse" />
+                  <div className="h-3 w-32 rounded bg-white/15 animate-pulse" />
+                </div>
               </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold text-white truncate">{userName || "User"}</p>
-                {userEmail && <p className="text-xs text-white/70 truncate">{userEmail}</p>}
+            ) : (
+              <div className="flex items-center gap-3 mb-3">
+                <div className="h-10 w-10 rounded-full bg-white/20 flex items-center justify-center text-white text-sm font-semibold overflow-hidden shrink-0">
+                  {avatarUrl ? (
+                    <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    getUserInitials(userName, userEmail)
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-white truncate">{userName || "User"}</p>
+                  {userEmail ? <p className="text-xs text-white/70 truncate">{userEmail}</p> : null}
+                </div>
               </div>
-            </div>
+            )}
             {!isTicketsQueueWorkspace && (
               <button
                 type="button"

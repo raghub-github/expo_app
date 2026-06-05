@@ -1,20 +1,33 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { STANDARD_REMARKS } from "@/lib/remarks/standardRemarks";
 import { useAuthOptional } from "@/providers/AuthProvider";
-import { ClipboardCheck, MessageCircle, Pencil, UserCircle2, X } from "lucide-react";
+import { Bell, ClipboardCheck, MessageCircle, Pencil, UserCircle2, X } from "lucide-react";
 import ItemsRefundModal from "./ItemsRefundModal";
 import type { OrderItemsPayload } from "@/lib/orderItemsPayload";
 import { computeOrderItemQuantityCount } from "@/lib/merchantOrderFoodActions";
 import {
   formatFirstEtaAt,
   formatKptMinutes,
+  formatMerchantExtraPrepMinutes,
   formatOrderDeliveryTypeLabel,
   formatOrderInitiatedByLabel,
   formatScheduledOrderLabel,
   shouldShowMerchantUpdatedKpt,
 } from "@/lib/orders/order-detail-display";
+import { formatRtoOtpDisplay } from "@/lib/orderOtps";
+import {
+  formatCancelledByType,
+  formatRejectionAmount,
+  hasOrderCancellationInfo,
+  isFaultDebitMetadataLine,
+  merchantCancellationDisplay,
+  pickPreferredRefundStatus,
+  rejectionAmountsMatch,
+  rejectionTimesMatch,
+  type OrderCancellationInfo,
+} from "@/lib/merchant-cancellation-display";
 
 interface OrderRightSidebarProps {
   order: {
@@ -48,12 +61,16 @@ interface OrderRightSidebarProps {
     itemCount?: number | null;
     systemKptMinutes?: number | null;
     merchantUpdatedKptMinutes?: number | null;
+    merchantExtraPrepMinutes?: number | null;
     isScheduledOrder?: boolean;
     scheduledDeliverySummary?: string | null;
     deliveryType?: string | null;
     contactlessDelivery?: boolean | null;
     localityIsSafe?: boolean | null;
     deliveryInitiator?: string | null;
+    pickupOtp?: string | null;
+    rtoOtp?: string | null;
+    cancellationInfo?: OrderCancellationInfo | null;
   };
   /** Line-item count (prefetched items or API enrichment). */
   itemCount?: number;
@@ -76,6 +93,8 @@ interface OrderRightSidebarProps {
   onRefundCreated?: () => void;
   /** Preloaded from GET /api/orders/[id]/items so Items modal opens instantly. */
   prefetchedOrderItems?: OrderItemsPayload | null;
+  /** Warm items cache before opening the modal (hover / click). */
+  onPrefetchOrderItems?: () => void;
 }
 
 interface Remark {
@@ -116,16 +135,405 @@ interface AssignedRiderOption {
 interface Recon {
   id: string;
   rider: string;
+  providerName?: string | null;
+  riderName?: string | null;
+  riderMobile?: string | null;
   reason: string;
+  reasonCategory: string | null;
+  comment: string | null;
   time: string;
   actorEmail?: string | null;
   actorName?: string | null;
+  actorRole?: string | null;
 }
 
-interface Notification {
+const RECON_REASON_SEP = " !!!!!! ";
+
+/** Show GatiMitra instead of internal for provider name */
+function normalizeProviderName(name: string | null | undefined): string | null {
+  if (!name || !String(name).trim()) return null;
+  const t = String(name).trim().toLowerCase();
+  if (t === "internal") return "GatiMitra";
+  return String(name).trim();
+}
+
+/** e.g. SHIPROCKET_DIRECT( rahul prajapati [ 9540799989 ] ) */
+function buildReconRiderLabel(params: {
+  providerName?: string | null;
+  riderName?: string | null;
+  riderMobile?: string | null;
+}): string {
+  const provider =
+    normalizeProviderName(params.providerName) ?? params.providerName?.trim() ?? "";
+  const name = params.riderName?.trim() ?? "";
+  const mobile = params.riderMobile?.trim() ?? "";
+  if (!provider && !name && !mobile) return "Unknown rider";
+  if (!provider) {
+    if (name && mobile) return `${name} [ ${mobile} ]`;
+    return name || mobile || "Unknown rider";
+  }
+  if (!name && !mobile) return provider;
+  if (name && mobile) return `${provider}( ${name} [ ${mobile} ] )`;
+  if (name) return `${provider}( ${name} )`;
+  return `${provider}( [ ${mobile} ] )`;
+}
+
+function riderOptionDedupeKey(r: AssignedRiderOption): string {
+  if (r.riderId != null) return `rider_${r.riderId}`;
+  const mobile = (r.riderMobile ?? "").replace(/\D/g, "");
+  const name = (r.riderName ?? "").trim().toLowerCase();
+  if (mobile.length >= 8) return `mobile_${mobile}`;
+  if (name) return `name_${name}`;
+  return `id_${r.id}`;
+}
+
+function pickBetterRiderOption(
+  existing: AssignedRiderOption,
+  incoming: AssignedRiderOption
+): AssignedRiderOption {
+  const riderId = existing.riderId ?? incoming.riderId;
+  const riderName =
+    existing.riderName?.trim() || incoming.riderName?.trim() || null;
+  const riderMobile =
+    existing.riderMobile?.trim() || incoming.riderMobile?.trim() || null;
+  const providerName =
+    existing.providerName?.trim() || incoming.providerName?.trim() || null;
+  const preferId = !existing.id.startsWith("assign_")
+    ? existing.id
+    : !incoming.id.startsWith("assign_")
+      ? incoming.id
+      : existing.id;
+  return {
+    id: preferId,
+    riderId: riderId ?? null,
+    riderName,
+    riderMobile,
+    providerName,
+  };
+}
+
+function mergeAssignedRiderOptions(lists: AssignedRiderOption[][]): AssignedRiderOption[] {
+  const byKey = new Map<string, AssignedRiderOption>();
+  for (const list of lists) {
+    for (const r of list) {
+      const key = riderOptionDedupeKey(r);
+      const prev = byKey.get(key);
+      byKey.set(key, prev ? pickBetterRiderOption(prev, r) : r);
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+function assignedRidersFromOrder(order: OrderRightSidebarProps["order"]): AssignedRiderOption[] {
+  if (order.riderId == null && !order.riderName?.trim() && !order.riderMobile?.trim()) {
+    return [];
+  }
+  return [
+    {
+      id: order.riderId != null ? String(order.riderId) : "current",
+      riderId: order.riderId ?? null,
+      riderName: order.riderName ?? null,
+      riderMobile: order.riderMobile ?? null,
+      providerName: normalizeProviderName(order.orderSource) ?? order.orderSource ?? null,
+    },
+  ];
+}
+
+function assignedRidersFromAssignments(
+  items: Array<{
+    id: number;
+    riderId: number | null;
+    riderName: string | null;
+    riderMobile: string | null;
+    deliveryProvider: string | null;
+  }>
+): AssignedRiderOption[] {
+  return items.map((a) => ({
+    id: `assign_${a.id}`,
+    riderId: a.riderId,
+    riderName: a.riderName,
+    riderMobile: a.riderMobile,
+    providerName: normalizeProviderName(a.deliveryProvider) ?? a.deliveryProvider,
+  }));
+}
+
+function assignedRidersFromReconRecords(
+  items: Array<{
+    id: number;
+    riderId?: number | null;
+    providerName: string | null;
+    riderName: string | null;
+    riderMobile: string | null;
+  }>
+): AssignedRiderOption[] {
+  const out: AssignedRiderOption[] = [];
+  const seen = new Set<string>();
+  for (const r of items) {
+    const option: AssignedRiderOption = {
+      id: r.riderId != null ? String(r.riderId) : `recon_${r.id}`,
+      riderId: r.riderId ?? null,
+      riderName: r.riderName ?? null,
+      riderMobile: r.riderMobile ?? null,
+      providerName: normalizeProviderName(r.providerName) ?? r.providerName ?? null,
+    };
+    const key = riderOptionDedupeKey(option);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(option);
+  }
+  return out;
+}
+
+type RejectionInfoEntry = {
+  id: string;
+  kind: "refund" | "cancellation" | "merged";
+  reason: string;
+  detail: string | null;
+  source: string | null;
+  by: string | null;
+  at: string;
+  rider: string | null;
+  amount: string | null;
+  status: string | null;
+};
+
+function formatRejectionAt(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+function pickRejectionActor(...actors: Array<string | null | undefined>): string | null {
+  const list = actors.map((a) => a?.trim()).filter(Boolean) as string[];
+  if (list.length === 0) return null;
+  const generic = (s: string) =>
+    /^super[_\s-]?admin$/i.test(s) || s.toUpperCase() === "SUPER_ADMIN";
+  const email = list.find((a) => a.includes("@"));
+  if (email) return email;
+  const nonGeneric = list.find((a) => !generic(a));
+  return nonGeneric ?? list[0];
+}
+
+function pickPrimaryRejectionReason(...candidates: Array<string | null | undefined>): string {
+  const list = candidates.map((c) => c?.trim()).filter(Boolean) as string[];
+  if (list.length === 0) return "Order cancelled";
+  const catalogStyle = list.find((t) => !isFaultDebitMetadataLine(t) && t.includes(" - "));
+  if (catalogStyle) return catalogStyle;
+  const nonMeta = list.find((t) => !isFaultDebitMetadataLine(t));
+  return nonMeta ?? list[0];
+}
+
+function pickRejectionDetail(
+  reason: string,
+  ...details: Array<string | null | undefined>
+): string | null {
+  const reasonNorm = reason.trim().toLowerCase();
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const d of details) {
+    const t = d?.trim();
+    if (!t) continue;
+    const key = t.toLowerCase();
+    if (key === reasonNorm) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    lines.push(t);
+  }
+  return lines.length ? lines.join("\n") : null;
+}
+
+function shouldMergeRejectionPair(
+  cancellation: RejectionInfoEntry & { atIso: string | null },
+  refund: RejectionInfoEntry & { atIso: string | null },
+  refundCount: number
+): boolean {
+  if (refundCount === 1) return true;
+  return (
+    rejectionAmountsMatch(cancellation.amount, refund.amount) &&
+    rejectionTimesMatch(cancellation.atIso, refund.atIso)
+  );
+}
+
+function mergeRejectionPair(
+  cancellation: RejectionInfoEntry,
+  refund: RejectionInfoEntry
+): RejectionInfoEntry {
+  const reason = pickPrimaryRejectionReason(refund.reason, cancellation.reason, cancellation.detail);
+  return {
+    id: `merged-${refund.id}`,
+    kind: "merged",
+    reason,
+    detail: pickRejectionDetail(
+      reason,
+      isFaultDebitMetadataLine(cancellation.reason) ? cancellation.reason : null,
+      cancellation.detail,
+      refund.detail,
+      isFaultDebitMetadataLine(refund.reason) ? refund.reason : null
+    ),
+    source: cancellation.source ?? refund.source,
+    by: pickRejectionActor(refund.by, cancellation.by),
+    at: cancellation.at !== "—" ? cancellation.at : refund.at,
+    rider: cancellation.rider ?? refund.rider,
+    amount: cancellation.amount ?? refund.amount,
+    status: pickPreferredRefundStatus(cancellation.status, refund.status),
+  };
+}
+
+function dedupeRejectionEntries(
+  cancellation: (RejectionInfoEntry & { atIso: string | null }) | null,
+  refunds: Array<RejectionInfoEntry & { atIso: string | null }>
+): RejectionInfoEntry[] {
+  const out: RejectionInfoEntry[] = [];
+  let cancelLeft = cancellation;
+  const mergedRefundIds = new Set<string>();
+
+  if (cancelLeft) {
+    for (const refund of refunds) {
+      if (
+        !mergedRefundIds.has(refund.id) &&
+        shouldMergeRejectionPair(cancelLeft, refund, refunds.length)
+      ) {
+        out.push(mergeRejectionPair(cancelLeft, refund));
+        mergedRefundIds.add(refund.id);
+        cancelLeft = null;
+        break;
+      }
+    }
+  }
+
+  if (cancelLeft) out.push(cancelLeft);
+  for (const refund of refunds) {
+    if (!mergedRefundIds.has(refund.id)) out.push(refund);
+  }
+  return out;
+}
+
+function parseReconReasonFields(
+  reconReason: string,
+  reconReasonCategory: string | null | undefined
+): { reasonCategory: string | null; comment: string | null } {
+  const sepIdx = reconReason.indexOf(RECON_REASON_SEP);
+  if (sepIdx >= 0) {
+    return {
+      reasonCategory: reconReason.slice(0, sepIdx).trim() || null,
+      comment: reconReason.slice(sepIdx + RECON_REASON_SEP.length).trim() || null,
+    };
+  }
+  const category = reconReasonCategory?.trim() || null;
+  if (category && category !== reconReason.trim()) {
+    return { reasonCategory: category, comment: reconReason.trim() || null };
+  }
+  return { reasonCategory: null, comment: reconReason.trim() || null };
+}
+
+function AgentRoleBadge({ role }: { role: string | null | undefined }) {
+  const label = role?.trim();
+  if (!label) return null;
+  return (
+    <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-[2px] text-[9px] font-medium text-slate-700 whitespace-nowrap">
+      {label}
+    </span>
+  );
+}
+
+function ReconRiderBlock({
+  providerName,
+  riderName,
+  riderMobile,
+  fallbackLabel,
+  layout = "stacked",
+}: {
+  providerName?: string | null;
+  riderName?: string | null;
+  riderMobile?: string | null;
+  fallbackLabel?: string;
+  layout?: "stacked" | "inline";
+}) {
+  const provider = normalizeProviderName(providerName) ?? providerName?.trim() ?? "";
+  const name = riderName?.trim() ?? "";
+  const mobile = riderMobile?.trim() ?? "";
+
+  if (!provider && !name && !mobile) {
+    const label = fallbackLabel?.trim();
+    if (!label || label === "Unknown rider") {
+      return <span className="text-[12px] text-slate-500">—</span>;
+    }
+    return <span className="text-[12px] font-medium text-slate-800">{label}</span>;
+  }
+
+  if (layout === "inline") {
+    return (
+      <span className="block min-w-0 text-[12px] leading-snug text-slate-800">
+        {buildReconRiderLabel({ providerName, riderName, riderMobile })}
+      </span>
+    );
+  }
+
+  return (
+    <div className="min-w-0 space-y-0.5">
+      {provider ? (
+        <p className="text-[11px] font-semibold text-emerald-800">{provider}</p>
+      ) : null}
+      {name || mobile ? (
+        <p className="text-[12px] text-slate-800">
+          {name}
+          {name && mobile ? (
+            <span className="text-slate-400"> · </span>
+          ) : null}
+          {mobile ? <span className="font-mono text-[11px] text-slate-600">{mobile}</span> : null}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function formatReconDisplayTime(isoOrDate: string | Date): string {
+  const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+function ReconInlineField({
+  label,
+  children,
+  className = "",
+}: {
+  label: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={`flex min-w-0 items-start gap-1.5 ${className}`}>
+      <span className="shrink-0 pt-px text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+        {label}:
+      </span>
+      <div className="min-w-0 text-[12px] leading-snug text-slate-800">{children}</div>
+    </div>
+  );
+}
+
+interface CxNotification {
   id: string;
   message: string;
   time: string;
+  actorType: string | null;
+  actorName: string | null;
+  actorEmail: string | null;
 }
 
 export default function OrderRightSidebar({
@@ -136,6 +544,7 @@ export default function OrderRightSidebar({
   onRoutedToChange,
   orderRefunds = [],
   prefetchedOrderItems = null,
+  onPrefetchOrderItems,
   onRefundCreated,
 }: OrderRightSidebarProps) {
   const auth = useAuthOptional();
@@ -148,8 +557,11 @@ export default function OrderRightSidebar({
   const [isSavingRemark, setIsSavingRemark] = useState(false);
   const [showRemarksModal, setShowRemarksModal] = useState(false);
 
-  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [notifications, setNotifications] = useState<CxNotification[]>([]);
   const [notificationText, setNotificationText] = useState("");
+  const [isLoadingNotifications, setIsLoadingNotifications] = useState(false);
+  const [isSavingNotification, setIsSavingNotification] = useState(false);
+  const [showNotificationsModal, setShowNotificationsModal] = useState(false);
 
   const [recons, setRecons] = useState<Recon[]>([]);
   const [assignedRiders, setAssignedRiders] = useState<AssignedRiderOption[]>([]);
@@ -170,6 +582,15 @@ export default function OrderRightSidebar({
   );
   const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null);
   const [showItemsRefundModal, setShowItemsRefundModal] = useState(false);
+
+  const openItemsModal = () => {
+    onPrefetchOrderItems?.();
+    setShowItemsRefundModal(true);
+  };
+
+  useEffect(() => {
+    if (order?.id != null) onPrefetchOrderItems?.();
+  }, [order?.id, onPrefetchOrderItems]);
 
   const prefetchedQtyCount =
     prefetchedOrderItems?.items && prefetchedOrderItems.items.length > 0
@@ -193,6 +614,17 @@ export default function OrderRightSidebar({
     order.systemKptMinutes,
     order.merchantUpdatedKptMinutes
   );
+  const merchantExtraPrepMinutes =
+    order.merchantExtraPrepMinutes != null &&
+    Number.isFinite(order.merchantExtraPrepMinutes) &&
+    order.merchantExtraPrepMinutes > 0
+      ? Math.round(order.merchantExtraPrepMinutes)
+      : null;
+  const showMerchantExtraPrep = merchantExtraPrepMinutes != null;
+  const orderStatusForOtp = (order.currentStatus || order.status || "").toString();
+  const pickupOtpDisplay = order.pickupOtp?.trim() || "—";
+  const rtoOtpDisplay =
+    formatRtoOtpDisplay(orderStatusForOtp, order.rtoOtp?.trim() || null) ?? "—";
   const riderInstructionLines =
     order.riderInstructionsList?.length
       ? order.riderInstructionsList
@@ -207,52 +639,75 @@ export default function OrderRightSidebar({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [showCxInstructions, setShowCxInstructions] = useState(false);
 
+  const rejectionEntries = useMemo(() => {
+    let cancellationEntry: (RejectionInfoEntry & { atIso: string | null }) | null = null;
+    const refundEntries: Array<RejectionInfoEntry & { atIso: string | null }> = [];
+
+    const cancellation = order.cancellationInfo;
+    if (hasOrderCancellationInfo(cancellation)) {
+      const { headline, detail } = merchantCancellationDisplay({
+        rejected_reason: cancellation!.rejectedReason,
+        cancelled_by_label: cancellation!.cancelledByLabel,
+      });
+      const reasonText = cancellation!.reasonText?.trim() || null;
+      const reason =
+        headline ||
+        reasonText ||
+        cancellation!.reasonCode?.trim() ||
+        cancellation!.rejectedReason?.trim() ||
+        "Order cancelled";
+      let detailText = detail;
+      if (!detailText && reasonText && reasonText !== reason) {
+        detailText = reasonText;
+      }
+      const source =
+        formatCancelledByType(cancellation!.cancelledByType) ||
+        cancellation!.cancelledByLabel?.trim() ||
+        null;
+
+      cancellationEntry = {
+        id: "cancellation",
+        kind: "cancellation",
+        reason,
+        detail: detailText,
+        source,
+        by: cancellation!.cancelledBy?.trim() || null,
+        at: formatRejectionAt(cancellation!.cancelledAtIso),
+        atIso: cancellation!.cancelledAtIso ?? null,
+        rider: null,
+        amount: formatRejectionAmount(cancellation!.refundAmount),
+        status: cancellation!.refundStatus?.trim() || null,
+      };
+    }
+
+    for (const r of orderRefunds) {
+      const createdIso = String(r.createdAt ?? "");
+      refundEntries.push({
+        id: `refund-${r.id}`,
+        kind: "refund",
+        reason: r.refundReason?.trim() || "Refund / cancellation",
+        detail: r.refundDescription?.trim() || null,
+        source: null,
+        by: r.initiatedByEmail?.trim() || null,
+        at: formatRejectionAt(createdIso),
+        atIso: createdIso || null,
+        rider: null,
+        amount: formatRejectionAmount(r.refundAmount),
+        status: r.refundStatus?.trim() || null,
+      });
+    }
+
+    return dedupeRejectionEntries(cancellationEntry, refundEntries);
+  }, [order.cancellationInfo, orderRefunds]);
+
+  const showRejectionInfo = rejectionEntries.length > 0;
+
   // Auto-hide recon warning after 2 seconds
   useEffect(() => {
     if (!reconError) return;
     const t = setTimeout(() => setReconError(null), 2000);
     return () => clearTimeout(t);
   }, [reconError]);
-
-  const nowLabel = () =>
-    new Date().toLocaleString("en-IN", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: true,
-    });
-
-  /** Show GatiMitra instead of internal for provider name */
-  const normalizeProviderName = (name: string | null | undefined): string | null => {
-    if (!name || !String(name).trim()) return null;
-    const t = String(name).trim().toLowerCase();
-    if (t === "internal") return "GatiMitra";
-    return name.trim();
-  };
-
-  const buildReconRiderLabel = (params: {
-    providerName?: string | null;
-    riderName?: string | null;
-    riderMobile?: string | null;
-  }): string => {
-    const provider = normalizeProviderName(params.providerName) ?? params.providerName?.trim();
-    const name = params.riderName?.trim();
-    const mobile = params.riderMobile?.trim();
-    if (provider || name || mobile) {
-      const parts: string[] = [];
-      if (provider) parts.push(provider);
-      const riderBits: string[] = [];
-      if (name) riderBits.push(name);
-      if (mobile) riderBits.push(mobile);
-      if (riderBits.length > 0) {
-        parts.push(`(${riderBits.join(" / ")})`);
-      }
-      return parts.join(" ");
-    }
-    return "Unknown rider";
-  };
 
   const loadRemarks = async () => {
     try {
@@ -381,22 +836,55 @@ export default function OrderRightSidebar({
     }
   };
 
+  const loadNotifications = async () => {
+    try {
+      setIsLoadingNotifications(true);
+      const res = await fetch(`/api/orders/${order.id}/notifications`);
+      if (!res.ok) {
+        console.error("Failed to load notifications", await res.text());
+        return;
+      }
+      const json = await res.json();
+      const items =
+        (json?.data as Array<{
+          id: number;
+          message: string;
+          sentByEmail?: string | null;
+          sentByName?: string | null;
+          sentByRole?: string | null;
+          sentAt?: string;
+        }> | null) ?? [];
+
+      const mapped: CxNotification[] = items.map((n) => {
+        const sent = n.sentAt ? new Date(n.sentAt) : new Date();
+        return {
+          id: String(n.id),
+          message: n.message,
+          actorType: n.sentByRole ?? null,
+          actorName: n.sentByName ?? null,
+          actorEmail: n.sentByEmail ?? null,
+          time: sent.toLocaleString("en-IN", {
+            day: "2-digit",
+            month: "2-digit",
+            year: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: true,
+          }),
+        };
+      });
+      setNotifications(mapped);
+    } catch (error) {
+      console.error("Error loading notifications", error);
+    } finally {
+      setIsLoadingNotifications(false);
+    }
+  };
+
   useEffect(() => {
     void loadRemarks();
-    // Seed dropdown with current order rider immediately so "Select rider" has at least one option
-    setAssignedRiders(
-      order.riderId != null || order.riderName || order.riderMobile
-        ? [
-            {
-              id: "current",
-              riderId: order.riderId ?? null,
-              riderName: order.riderName ?? null,
-              riderMobile: order.riderMobile ?? null,
-              providerName: normalizeProviderName(order.orderSource) ?? order.orderSource ?? null,
-            },
-          ]
-        : []
-    );
+    void loadNotifications();
+    setAssignedRiders(assignedRidersFromOrder(order));
 
     const loadAssignments = async () => {
       try {
@@ -414,31 +902,15 @@ export default function OrderRightSidebar({
             assignedAt: string | Date | null;
           }> | null) ?? [];
 
-        const ridersList: AssignedRiderOption[] = [];
-        const seen = new Set<string>();
-
-        for (const a of items) {
-          const key =
-            a.riderId != null
-              ? `rider_${a.riderId}`
-              : `n_${a.riderName ?? ""}_m_${a.riderMobile ?? ""}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          ridersList.push({
-            id: a.riderId != null ? String(a.riderId) : `assign_${a.id}`,
-            riderId: a.riderId,
-            riderName: a.riderName,
-            riderMobile: a.riderMobile,
-            providerName: normalizeProviderName(a.deliveryProvider) ?? a.deliveryProvider,
-          });
-        }
-
-        // Fallback: if API returns nothing but order has current rider, keep seeded current
-        if (ridersList.length > 0) {
-          setAssignedRiders(ridersList);
-        }
+        setAssignedRiders((prev) =>
+          mergeAssignedRiderOptions([
+            assignedRidersFromAssignments(items),
+            assignedRidersFromOrder(order),
+            prev,
+          ])
+        );
       } catch {
-        // ignore, we still have seeded current rider
+        // keep order-seeded riders
       }
     };
 
@@ -463,70 +935,47 @@ export default function OrderRightSidebar({
             riderName: string | null;
             riderMobile: string | null;
             actorEmail?: string | null;
+            actorRole?: string | null;
             reconReason: string;
+            reconReasonCategory?: string | null;
             reconAt: string | Date;
           }> | null) ?? [];
 
         const mapped: Recon[] = items.map((r) => {
           const created =
             r.reconAt instanceof Date ? r.reconAt : new Date(r.reconAt);
+          const { reasonCategory, comment } = parseReconReasonFields(
+            r.reconReason,
+            r.reconReasonCategory
+          );
           return {
             id: String(r.id),
+            providerName: r.providerName,
+            riderName: r.riderName,
+            riderMobile: r.riderMobile,
             rider: buildReconRiderLabel({
               providerName: normalizeProviderName(r.providerName) ?? r.providerName,
               riderName: r.riderName,
               riderMobile: r.riderMobile,
             }),
             reason: r.reconReason,
-            time: created.toLocaleString("en-IN", {
-              day: "2-digit",
-              month: "2-digit",
-              year: "2-digit",
-              hour: "2-digit",
-              minute: "2-digit",
-              hour12: true,
-            }),
+            reasonCategory,
+            comment,
+            time: formatReconDisplayTime(created),
             actorEmail: r.actorEmail ?? null,
+            actorRole: r.actorRole ?? null,
           };
         });
 
         setRecons(mapped);
 
-        // Build assigned riders: current order rider + distinct riders from recons
-        const ridersList: AssignedRiderOption[] = [];
-        const seen = new Set<string>();
-
-        const currentKey =
-          order.riderId != null
-            ? `rider_${order.riderId}`
-            : `n_${order.riderName ?? ""}_m_${order.riderMobile ?? ""}`;
-        if (!seen.has(currentKey)) {
-          seen.add(currentKey);
-          ridersList.push({
-            id: "current",
-            riderId: order.riderId ?? null,
-            riderName: order.riderName ?? null,
-            riderMobile: order.riderMobile ?? null,
-            providerName: normalizeProviderName(order.orderSource) ?? order.orderSource ?? null,
-          });
-        }
-        for (const r of items) {
-          const key =
-            r.riderId != null
-              ? `rider_${r.riderId}`
-              : `n_${r.riderName ?? ""}_m_${r.riderMobile ?? ""}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-          ridersList.push({
-            id: r.riderId != null ? String(r.riderId) : `recon_${r.id}`,
-            riderId: r.riderId ?? null,
-            riderName: r.riderName ?? null,
-            riderMobile: r.riderMobile ?? null,
-            providerName: normalizeProviderName(r.providerName) ?? r.providerName ?? null,
-          });
-          }
-        }
-        setAssignedRiders(ridersList);
+        setAssignedRiders((prev) =>
+          mergeAssignedRiderOptions([
+            prev,
+            assignedRidersFromOrder(order),
+            assignedRidersFromReconRecords(items),
+          ])
+        );
       } catch (error) {
         // eslint-disable-next-line no-console
         console.error("Error loading recons", error);
@@ -681,17 +1130,34 @@ export default function OrderRightSidebar({
     }
   };
 
-  const addNotification = () => {
-    if (!notificationText.trim()) return;
-    setNotifications((prev) => [
-      {
-        id: Date.now().toString(),
-        message: notificationText.trim(),
-        time: nowLabel(),
-      },
-      ...prev,
-    ]);
-    setNotificationText("");
+  const addNotification = async () => {
+    const message = notificationText.trim();
+    if (!message || isSavingNotification) return;
+
+    setIsSavingNotification(true);
+    try {
+      const res = await fetch(`/api/orders/${order.id}/notifications`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.success) {
+        setToastMessage(
+          typeof json?.error === "string"
+            ? json.error
+            : "Could not send notification. Please try again."
+        );
+        return;
+      }
+      setNotificationText("");
+      await loadNotifications();
+      setToastMessage("Notification saved.");
+    } catch {
+      setToastMessage("Could not send notification. Please try again.");
+    } finally {
+      setIsSavingNotification(false);
+    }
   };
 
   const addRecon = async () => {
@@ -767,7 +1233,9 @@ export default function OrderRightSidebar({
             riderName: string | null;
             riderMobile: string | null;
             actorEmail?: string | null;
+            actorRole?: string | null;
             reconReason: string;
+            reconReasonCategory?: string | null;
             reconAt: string | Date;
           }
         | undefined;
@@ -779,23 +1247,26 @@ export default function OrderRightSidebar({
           ? saved.reconAt
           : new Date(saved.reconAt);
 
+      const { reasonCategory, comment } = parseReconReasonFields(
+        saved.reconReason,
+        saved.reconReasonCategory
+      );
       const mapped: Recon = {
         id: String(saved.id),
+        providerName: saved.providerName,
+        riderName: saved.riderName,
+        riderMobile: saved.riderMobile,
         rider: buildReconRiderLabel({
           providerName: normalizeProviderName(saved.providerName) ?? saved.providerName,
           riderName: saved.riderName,
           riderMobile: saved.riderMobile,
         }),
         reason: saved.reconReason,
-        time: created.toLocaleString("en-IN", {
-          day: "2-digit",
-          month: "2-digit",
-          year: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: true,
-        }),
-        actorEmail: saved.actorEmail ?? null,
+        reasonCategory,
+        comment,
+        time: formatReconDisplayTime(created),
+        actorEmail: saved.actorEmail ?? userEmail,
+        actorRole: saved.actorRole ?? null,
       };
 
       setRecons((prev) => [mapped, ...prev.filter((r) => r.id !== mapped.id)]);
@@ -1028,7 +1499,7 @@ export default function OrderRightSidebar({
             Order details
           </h3>
         </div>
-        <dl className="space-y-1 text-[11px] text-slate-600">
+        <dl className="mt-1.5 flex flex-col gap-1.5 text-[11px] text-slate-600">
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">Items:</dt>
             <dd className="flex min-w-0 items-center justify-end gap-1.5 font-medium text-slate-700">
@@ -1037,8 +1508,9 @@ export default function OrderRightSidebar({
                 role="button"
                 tabIndex={0}
                 className="cursor-pointer text-emerald-600 hover:text-emerald-700"
-                onClick={() => setShowItemsRefundModal(true)}
-                onKeyDown={(e) => e.key === "Enter" && setShowItemsRefundModal(true)}
+                onPointerEnter={() => onPrefetchOrderItems?.()}
+                onClick={openItemsModal}
+                onKeyDown={(e) => e.key === "Enter" && openItemsModal()}
               >
                 <i className="bi bi-eye" /> View
               </span>
@@ -1098,7 +1570,13 @@ export default function OrderRightSidebar({
           </div>
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">System KPT:</dt>
-            <dd className="font-medium text-slate-700">
+            <dd
+              className={`font-medium ${
+                showMerchantKpt
+                  ? "text-slate-400 line-through decoration-slate-400"
+                  : "text-slate-700"
+              }`}
+            >
               {formatKptMinutes(order.systemKptMinutes)}
             </dd>
           </div>
@@ -1107,6 +1585,18 @@ export default function OrderRightSidebar({
               <dt className="shrink-0">Merchant updated KPT:</dt>
               <dd className="font-medium text-slate-700">
                 {formatKptMinutes(order.merchantUpdatedKptMinutes)}
+              </dd>
+            </div>
+          ) : null}
+          {showMerchantExtraPrep ? (
+            <div className="flex items-center justify-between gap-2">
+              <dt className="shrink-0" title="Merchant used Need more time while preparing">
+              Kitchen Delay Buffer (MX):
+              </dt>
+              <dd>
+                <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 ring-1 ring-amber-200">
+                  {formatMerchantExtraPrepMinutes(merchantExtraPrepMinutes)}
+                </span>
               </dd>
             </div>
           ) : null}
@@ -1163,6 +1653,20 @@ export default function OrderRightSidebar({
               </span>
             </dd>
           </div>
+          <div className="flex items-center justify-between gap-2">
+            <p className="min-w-0 shrink-0 whitespace-nowrap text-[11px] leading-snug">
+              <span className="font-medium text-slate-600">Pickup OTP - </span>
+              <span className="font-mono font-semibold tracking-wide text-emerald-700">
+                {pickupOtpDisplay}
+              </span>
+            </p>
+            <p className="min-w-0 truncate whitespace-nowrap text-right text-[11px] leading-snug">
+              <span className="font-medium text-slate-600">RTO OTP - </span>
+              <span className="font-mono font-semibold tracking-wide text-emerald-700">
+                {rtoOtpDisplay}
+              </span>
+            </p>
+          </div>
         </dl>
       </section>
 
@@ -1171,7 +1675,8 @@ export default function OrderRightSidebar({
         <button
           type="button"
           className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-[13px] font-medium text-white shadow-sm transition hover:bg-emerald-600 cursor-pointer"
-          onClick={() => setShowItemsRefundModal(true)}
+          onPointerEnter={() => onPrefetchOrderItems?.()}
+          onClick={openItemsModal}
         >
           <i className="bi bi-arrow-counterclockwise" />
           Create refund
@@ -1258,9 +1763,14 @@ export default function OrderRightSidebar({
             <i className="bi bi-bell text-emerald-500" />
             Send Cx notification
           </h3>
-          <span className="text-xs text-slate-500">
-            Total: {notifications.length}
-          </span>
+          <button
+            type="button"
+            className="flex items-center gap-1 text-xs font-medium text-emerald-600 hover:text-emerald-700 cursor-pointer"
+            onClick={() => setShowNotificationsModal(true)}
+          >
+            <i className="bi bi-list-check" />
+            See all ({notifications.length > 0 || !isLoadingNotifications ? notifications.length : 0})
+          </button>
         </div>
         <div className="space-y-2">
           <textarea
@@ -1270,11 +1780,22 @@ export default function OrderRightSidebar({
             className="min-h-[60px] w-full rounded border border-slate-200 bg-white p-2 text-[12px] text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
           />
           <button
-            onClick={addNotification}
-            className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-500 px-4 py-2 text-[12px] font-medium text-white shadow-sm transition hover:bg-emerald-600 cursor-pointer"
+            type="button"
+            onClick={() => void addNotification()}
+            disabled={isSavingNotification || !notificationText.trim()}
+            className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-500 px-4 py-2 text-[12px] font-medium text-white shadow-sm transition hover:bg-emerald-600 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            <i className="bi bi-send" />
-            Send notification
+            {isSavingNotification ? (
+              <>
+                <span className="inline-block h-4 w-4 animate-spin rounded-full border-[1.5px] border-white border-r-transparent" />
+                Sending...
+              </>
+            ) : (
+              <>
+                <i className="bi bi-send" />
+                Send notification
+              </>
+            )}
           </button>
         </div>
       </section>
@@ -1303,19 +1824,24 @@ export default function OrderRightSidebar({
             }}
             className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-[12px] text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
           >
-            <option value="">Select rider</option>
-            {assignedRiders.map((r) => {
-              const label = buildReconRiderLabel({
-                providerName: r.providerName,
-                riderName: r.riderName,
-                riderMobile: r.riderMobile,
+            <option value="">Select Rider Option</option>
+            {(() => {
+              const seenLabels = new Set<string>();
+              return assignedRiders.map((r) => {
+                const label = buildReconRiderLabel({
+                  providerName: r.providerName,
+                  riderName: r.riderName,
+                  riderMobile: r.riderMobile,
+                });
+                if (label === "Unknown rider" || seenLabels.has(label)) return null;
+                seenLabels.add(label);
+                return (
+                  <option key={riderOptionDedupeKey(r)} value={r.id}>
+                    {label}
+                  </option>
+                );
               });
-              return (
-                <option key={r.id} value={r.id}>
-                  {label || (r.id === "current" ? "Current rider" : `Rider ${r.id}`)}
-                </option>
-              );
-            })}
+            })()}
           </select>
           <select
             value={reconReason}
@@ -1436,7 +1962,7 @@ export default function OrderRightSidebar({
           </button>
         </div>
 
-        {/* Rejection Info – show when order has refund(s) */}
+        {showRejectionInfo ? (
         <div className="mt-3 rounded-xl border border-slate-200/90 bg-white shadow-sm overflow-hidden">
           <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-100">
             <h3 className="text-[13px] font-semibold text-slate-800 tracking-tight">
@@ -1444,53 +1970,65 @@ export default function OrderRightSidebar({
             </h3>
           </div>
           <div className="p-3">
-            {orderRefunds.length > 0 ? (
-              <div className="space-y-3">
-                {orderRefunds.map((r) => (
-                  <div
-                    key={r.id}
-                    className="rounded-lg border border-slate-100 bg-slate-50/60 p-3 space-y-2.5"
+            {rejectionEntries.map((entry) => (
+              <div
+                key={entry.id}
+                className="rounded-lg border border-slate-100 bg-slate-50/60 p-3 space-y-2"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                      entry.kind === "refund"
+                        ? "bg-red-50 text-red-700 border border-red-100"
+                        : "bg-rose-50 text-rose-800 border border-rose-100"
+                    }`}
                   >
-                    <p className="text-slate-800 text-[12px] leading-snug">
-                      <span className="font-medium text-slate-700">Reason:</span>{" "}
-                      {r.refundReason}
-                    </p>
-                    {r.refundDescription && (
-                      <p className="text-slate-600 text-[11px] leading-relaxed pl-0">
-                        {r.refundDescription}
-                      </p>
-                    )}
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-600">
-                      <span>
-                        <span className="font-medium text-slate-600">Rejected at:</span>{" "}
-                        {new Date(r.createdAt).toLocaleString("en-IN", {
-                          day: "2-digit",
-                          month: "short",
-                          year: "numeric",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                          hour12: true,
-                        })}
-                      </span>
-                      <span>
-                        <span className="font-medium text-slate-600">By:</span>{" "}
-                        {r.initiatedByEmail ?? "—"}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-slate-500 pt-0.5">
-                      Refund amount: ₹{Number(r.refundAmount).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-                    </p>
-                  </div>
-                ))}
+                    {entry.kind === "refund" ? "Refund / Cancel" : "Cancellation"}
+                  </span>
+                  {entry.status ? (
+                    <span className="text-[10px] font-medium text-slate-500 uppercase">
+                      {entry.status}
+                    </span>
+                  ) : null}
+                </div>
+                <p className="text-slate-800 text-[12px] leading-snug">
+                  <span className="font-medium text-slate-700">Reason:</span> {entry.reason}
+                </p>
+                {entry.detail ? (
+                  <p className="text-slate-600 text-[11px] leading-relaxed whitespace-pre-wrap">
+                    {entry.detail}
+                  </p>
+                ) : null}
+                {entry.source ? (
+                  <p className="text-[11px] text-slate-600">
+                    <span className="font-medium text-slate-600">Source:</span> {entry.source}
+                  </p>
+                ) : null}
+                {entry.rider ? (
+                  <p className="text-[11px] text-slate-600">
+                    <span className="font-medium text-slate-600">Rider:</span> {entry.rider}
+                  </p>
+                ) : null}
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-600">
+                  <span>
+                    <span className="font-medium text-slate-600">Rejected at:</span> {entry.at}
+                  </span>
+                  {entry.by ? (
+                    <span>
+                      <span className="font-medium text-slate-600">By:</span> {entry.by}
+                    </span>
+                  ) : null}
+                </div>
+                {entry.amount ? (
+                  <p className="text-[11px] text-slate-500 pt-0.5">
+                    Refund amount: ₹{entry.amount}
+                  </p>
+                ) : null}
               </div>
-            ) : (
-              <p className="text-slate-500 text-[12px]">
-                No refund / rejection recorded for this order. Rider recon entries are in{" "}
-                <span className="font-medium text-emerald-700">See all</span> above.
-              </p>
-            )}
+            ))}
           </div>
         </div>
+        ) : null}
       </section>
 
       {/* All remarks modal */}
@@ -1738,68 +2276,202 @@ export default function OrderRightSidebar({
         </div>
       )}
 
-      {/* All recons modal */}
-      {showReconsModal && (
+      {/* All CX notifications modal */}
+      {showNotificationsModal && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-2">
           <div className="w-full max-w-3xl rounded-xl bg-[#f1faf5] shadow-xl border border-emerald-100">
-            {/* Modal header */}
             <div className="flex items-center justify-between px-5 py-3 border-b border-emerald-100">
+              <div className="flex items-center gap-2">
+                <Bell className="h-4 w-4 text-emerald-500" />
+                <h2 className="text-[14px] font-semibold text-slate-800">
+                  All Cx Notifications
+                </h2>
+              </div>
+              <button
+                type="button"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full text-slate-500 hover:text-slate-700 hover:bg-emerald-50 cursor-pointer"
+                onClick={() => setShowNotificationsModal(false)}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+            <div className="max-h-[440px] overflow-y-auto px-5 py-3 bg-white rounded-b-xl">
+              {isLoadingNotifications ? (
+                <div className="py-6 text-center text-xs text-slate-500">
+                  Loading notifications...
+                </div>
+              ) : notifications.length === 0 ? (
+                <div className="py-6 text-center text-xs text-slate-500">
+                  No notifications sent yet.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {notifications.map((n) => (
+                    <div
+                      key={n.id}
+                      className="border-b border-slate-100 pb-3 last:border-b-0 last:pb-0"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-start gap-2 min-w-0">
+                          <div className="mt-[2px] text-slate-400">
+                            <UserCircle2 className="h-4 w-4" />
+                          </div>
+                          <div className="space-y-1 min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-[11px] font-semibold text-slate-800">
+                                {n.actorName || "Agent"}
+                              </span>
+                              <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-[2px] text-[9px] font-medium text-slate-700">
+                                {n.actorType || "AGENT"}
+                              </span>
+                              {n.actorEmail ? (
+                                <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-[2px] text-[9px] font-medium text-slate-600">
+                                  {n.actorEmail}
+                                </span>
+                              ) : null}
+                              <span className="inline-flex items-center rounded-full bg-sky-600 px-2 py-[2px] text-[9px] font-semibold text-white">
+                                CUSTOMER
+                              </span>
+                            </div>
+                            <p className="text-[12px] leading-relaxed text-slate-700 whitespace-pre-line">
+                              {n.message}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="text-[11px] text-slate-500 whitespace-nowrap shrink-0">
+                          {n.time}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* All recons modal */}
+      {showReconsModal && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-3 py-4">
+          <div className="flex max-h-[min(90vh,640px)] w-full max-w-5xl flex-col rounded-xl bg-[#f1faf5] shadow-xl border border-emerald-100">
+            <div className="flex shrink-0 items-center justify-between px-5 py-3 border-b border-emerald-100">
               <div className="flex items-center gap-2">
                 <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
                   <ClipboardCheck className="h-3.5 w-3.5" />
                 </span>
                 <h2 className="text-[14px] font-semibold text-slate-800">
                   All Recons
+                  {!isLoadingRecons && recons.length > 0 ? (
+                    <span className="ml-1.5 font-normal text-slate-500">({recons.length})</span>
+                  ) : null}
                 </h2>
               </div>
               <button
                 type="button"
                 className="inline-flex h-7 w-7 items-center justify-center rounded-full text-slate-500 hover:text-slate-700 hover:bg-emerald-50 cursor-pointer"
                 onClick={() => setShowReconsModal(false)}
+                aria-label="Close"
               >
                 <X className="h-3 w-3" />
               </button>
             </div>
 
-            {/* Modal body */}
-            <div className="max-h-[440px] overflow-y-auto px-5 py-4 bg-white rounded-b-xl text-[12px] text-slate-800">
+            <div className="min-h-0 flex-1 overflow-y-auto bg-white rounded-b-xl px-4 py-3 sm:px-5 sm:py-4">
               {isLoadingRecons ? (
-                <div className="py-6 text-center text-xs text-slate-500">
-                  Loading recons...
-                </div>
+                <div className="py-8 text-center text-xs text-slate-500">Loading recons...</div>
               ) : recons.length === 0 ? (
-                <div className="py-6 text-center text-xs text-slate-500">
-                  No recons available.
-                </div>
+                <div className="py-8 text-center text-xs text-slate-500">No recons available.</div>
               ) : (
-                <div className="space-y-3">
-                  {recons.map((r) => (
-                    <div
-                      key={r.id}
-                      className="rounded-lg border border-slate-100 bg-slate-50/70 px-3 py-2.5"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="space-y-0.5 min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-[11px] font-semibold text-slate-800">
-                              {r.rider}
-                            </span>
-                            {r.actorEmail && (
-                              <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-[2px] text-[9px] font-medium text-slate-600 truncate max-w-[180px]" title={r.actorEmail}>
-                                {r.actorEmail}
+                <div className="space-y-2">
+                  <div className="hidden lg:grid lg:grid-cols-[minmax(11rem,1.15fr)_minmax(7rem,0.75fr)_minmax(9rem,1fr)_minmax(10rem,1.1fr)_minmax(8.5rem,0.85fr)] gap-3 px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                    <span>Rider</span>
+                    <span>Date &amp; time</span>
+                    <span>Rejection option</span>
+                    <span>Reason / comment</span>
+                    <span>Submitted by</span>
+                  </div>
+                  {recons.map((r) => {
+                    const rejectionOption = r.reasonCategory?.trim() || null;
+                    const commentText =
+                      r.comment?.trim() ||
+                      (!rejectionOption ? r.reason?.trim() : null) ||
+                      null;
+
+                    return (
+                      <article
+                        key={r.id}
+                        className="rounded-lg border border-slate-200 bg-slate-50/40 px-3 py-2.5 shadow-sm"
+                      >
+                        <div className="flex flex-col gap-3 lg:grid lg:grid-cols-[minmax(11rem,1.15fr)_minmax(7rem,0.75fr)_minmax(9rem,1fr)_minmax(10rem,1.1fr)_minmax(8.5rem,0.85fr)] lg:items-start lg:gap-3">
+                          <ReconInlineField
+                            label="Rider"
+                            className="lg:flex-col lg:gap-1 lg:[&>span]:hidden"
+                          >
+                            <div className="flex min-w-0 items-start gap-2">
+                              <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 lg:hidden">
+                                <UserCircle2 className="h-3.5 w-3.5" />
                               </span>
+                              <ReconRiderBlock
+                                providerName={r.providerName}
+                                riderName={r.riderName}
+                                riderMobile={r.riderMobile}
+                                fallbackLabel={r.rider}
+                                layout="inline"
+                              />
+                            </div>
+                          </ReconInlineField>
+
+                          <ReconInlineField
+                            label="Date & time"
+                            className="lg:[&>span]:hidden"
+                          >
+                            <span className="whitespace-nowrap font-medium text-slate-700">
+                              {r.time}
+                            </span>
+                          </ReconInlineField>
+
+                          <ReconInlineField
+                            label="Rejection option"
+                            className="lg:[&>span]:hidden"
+                          >
+                            {rejectionOption ?? (
+                              <span className="text-slate-400">Not selected</span>
                             )}
-                          </div>
-                          <p className="text-[11px] text-slate-700 whitespace-pre-line mt-1">
-                            {r.reason}
-                          </p>
+                          </ReconInlineField>
+
+                          <ReconInlineField
+                            label="Reason / comment"
+                            className="lg:[&>span]:hidden"
+                          >
+                            {commentText ? (
+                              <span className="text-slate-700 whitespace-pre-line">
+                                {commentText}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </ReconInlineField>
+
+                          <ReconInlineField
+                            label="Submitted by"
+                            className="lg:[&>span]:hidden"
+                          >
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {r.actorEmail ? (
+                                <span className="break-all" title={r.actorEmail}>
+                                  {r.actorEmail}
+                                </span>
+                              ) : (
+                                <span className="text-slate-400">—</span>
+                              )}
+                              <AgentRoleBadge role={r.actorRole} />
+                            </div>
+                          </ReconInlineField>
                         </div>
-                        <div className="text-right text-[10px] text-slate-500 whitespace-nowrap shrink-0">
-                          <div>{r.time}</div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                      </article>
+                    );
+                  })}
                 </div>
               )}
             </div>

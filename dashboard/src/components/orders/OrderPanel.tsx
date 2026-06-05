@@ -22,6 +22,8 @@ import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverR
 import { formatRtoOtpDisplay, resolveOrderOtps, type CachedOrderOtps } from '@/lib/orderOtps';
 import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import { formatOrderDropAddress } from '@/lib/formatOrderAddress';
+import { RiderDeliveryPartnerCard } from '@/components/orders/RiderDeliveryPartnerCard';
+import { deliveryEtaMinutesLabel } from '@/lib/order-prep-time';
 
 /** Panel preview only — full list via sidesheet (+N more). No scroll on items. */
 const ITEMS_PREVIEW_MAX = 4;
@@ -148,6 +150,8 @@ export type OrderPanelProps = {
   onViewPastRiders?: () => void;
   onTrackRider?: () => void;
   onOrderHelp?: () => void;
+  onUniformFeedback?: (inUniform: boolean) => void;
+  uniformFeedback?: boolean | null;
   className?: string;
   nowMs?: number;
 };
@@ -171,6 +175,8 @@ export function OrderPanel({
   onViewPastRiders,
   onTrackRider,
   onOrderHelp,
+  onUniformFeedback,
+  uniformFeedback,
   className,
   nowMs,
 }: OrderPanelProps) {
@@ -190,6 +196,8 @@ export function OrderPanel({
   const riderPhoto = order.rider_details?.selfie_url;
   const status = order.order_status || 'CREATED';
   const isReadyForPickup = status === 'READY_FOR_PICKUP';
+  const isPickedUp = status === 'OUT_FOR_DELIVERY';
+  const deliveryLabel = deliveryEtaMinutesLabel(order.eta_seconds);
   const otps = resolveOrderOtps(order, otpCache);
   const legacyOtp = otpCode && !otps.pickup && !otps.rto ? { pickup: otpCode, rto: null as string | null } : otps;
   const displayOtps =
@@ -345,64 +353,23 @@ export function OrderPanel({
               <X size={18} />
             </button>
           )}
-          {showRiderCard && (
-            <div className="mt-6 shrink-0 flex flex-col rounded-xl border border-gray-200 bg-gradient-to-b from-slate-50 to-white p-3 shadow-sm">
-              <div className="mb-2">
-                <p className="text-xs font-bold uppercase tracking-wide text-gray-500">Delivery partner</p>
-              </div>
-              <div className="flex flex-col gap-2">
-              <div className="flex gap-3">
-                {riderPhoto ? (
-                  <img
-                    src={riderPhoto}
-                    alt=""
-                    className="h-14 w-14 shrink-0 rounded-full border-2 border-white object-cover shadow-sm ring-1 ring-gray-200"
-                  />
-                ) : (
-                  <div className="w-12 h-12 rounded-full bg-gray-100 shrink-0" />
-                )}
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-gray-900 leading-snug">
-                    {riderName ? `${riderName} has arrived` : 'Delivery partner'}
-                  </p>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                    {riderMobile && (
-                      <span className="font-semibold text-gray-800 tabular-nums">{riderMobile}</span>
-                    )}
-                    {displayOtps.pickup && (
-                      <>
-                        {riderMobile && <span className="text-gray-300">|</span>}
-                        <span className="font-mono font-bold text-gray-900">Pickup: {displayOtps.pickup}</span>
-                      </>
-                    )}
-                    {rtoDisplay && (
-                      <>
-                        {(riderMobile || displayOtps.pickup) && <span className="text-gray-300">|</span>}
-                        <span className="font-mono font-bold text-orange-800">RTO: {rtoDisplay}</span>
-                      </>
-                    )}
-                    {!displayOtps.pickup && !displayOtps.rto && otpCode && (
-                      <>
-                        {riderMobile && <span className="text-gray-300">|</span>}
-                        <span className="font-mono font-bold text-gray-900">OTP: {otpCode}</span>
-                        {otpType && <span className="text-gray-500">({otpType})</span>}
-                      </>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={onTrackRider}
-                    className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:underline disabled:opacity-50"
-                    disabled={!onTrackRider}
-                  >
-                    <MapPin size={12} />
-                    Track location
-                  </button>
-                </div>
-              </div>
-              </div>
-            </div>
-          )}
+          {showRiderCard && riderName ? (
+            <RiderDeliveryPartnerCard
+              className="mt-6 shrink-0"
+              riderName={riderName}
+              riderPhone={riderMobile}
+              riderSelfieUrl={riderPhoto}
+              variant={isPickedUp ? 'picked_up' : 'arrived'}
+              pickupOtp={displayOtps.pickup}
+              rtoDisplay={rtoDisplay ?? undefined}
+              legacyOtp={!displayOtps.pickup && !displayOtps.rto ? otpCode : undefined}
+              legacyOtpType={otpType}
+              deliveryLabel={isPickedUp ? deliveryLabel ?? undefined : undefined}
+              onTrackRider={onTrackRider}
+              onUniformFeedback={isPickedUp ? onUniformFeedback : undefined}
+              uniformFeedback={uniformFeedback}
+            />
+          ) : null}
 
           <div className="mt-3 shrink-0 flex flex-col gap-2">
             {onViewPastRiders ? (

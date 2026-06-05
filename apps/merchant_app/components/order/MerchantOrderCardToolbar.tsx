@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { formatOrderIdDisplay } from "@/components/order/orderFormatters";
+import { FormattedOrderId } from "@/components/order/FormattedOrderId";
 
 const MINT_GREEN = "#98FF98";
 const MINT_GREEN_BORDER = "#4ADE80";
@@ -16,8 +17,6 @@ export function MerchantOrderIdRow({ formattedOrderId, fallbackOrderId }: Props)
   const [copied, setCopied] = useState(false);
   const display = formatOrderIdDisplay(formattedOrderId, fallbackOrderId);
   const body = display.replace(/^#?/i, "");
-  const prefix = body.length > 4 ? body.slice(0, -4) : body;
-  const last4 = body.length > 4 ? body.slice(-4) : "";
 
   const onCopy = async () => {
     await Clipboard.setStringAsync(body);
@@ -27,9 +26,12 @@ export function MerchantOrderIdRow({ formattedOrderId, fallbackOrderId }: Props)
 
   return (
     <View style={styles.row}>
-      <Text style={styles.hash}>#</Text>
-      <Text style={styles.idMain}>{prefix}</Text>
-      {last4 ? <Text style={styles.idLast4}>{last4}</Text> : null}
+      <FormattedOrderId
+        formattedOrderId={formattedOrderId}
+        fallbackCoreId={fallbackOrderId}
+        size="md"
+        showHash
+      />
       <Pressable onPress={() => void onCopy()} hitSlop={8} style={styles.copyBtn}>
         <Ionicons
           name={copied ? "checkmark" : "copy-outline"}
@@ -72,11 +74,8 @@ export function MerchantOrderCardToolbar({ onSpeak, onMenu, speakingActive }: To
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: "row", alignItems: "center", gap: 1, minWidth: 0 },
-  hash: { fontSize: 18, fontWeight: "800", color: "#1A1A1A" },
-  idMain: { fontSize: 18, fontWeight: "800", color: "#1A1A1A" },
-  idLast4: { fontSize: 18, fontWeight: "800", color: "#1A1A1A" },
-  copyBtn: { marginLeft: 6, padding: 4 },
+  row: { flexDirection: "row", alignItems: "center", gap: 4, minWidth: 0, flexShrink: 1 },
+  copyBtn: { padding: 4 },
   toolbar: { flexDirection: "row", alignItems: "center", gap: 8 },
   iconBtn: {
     width: 36,

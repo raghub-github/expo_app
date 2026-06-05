@@ -3,7 +3,7 @@
  * Handles all CRUD operations for user management
  */
 
-import { getDb } from "../client";
+import { getDb, getSql } from "../client";
 import { systemUsers, userSessions } from "../schema";
 import { eq, and, or, ilike, isNull, sql, desc, asc, inArray } from "drizzle-orm";
 import { closeAllOpenUserSessions } from "./user-sessions";
@@ -144,6 +144,59 @@ export async function getSystemUserByEmail(email: string) {
     .limit(1);
   
   return user || null;
+}
+
+/** Batch lookup primary_role by system_users.id. */
+export async function getPrimaryRolesBySystemUserIds(
+  ids: number[]
+): Promise<Map<number, string>> {
+  const unique = [...new Set(ids.filter((id) => Number.isFinite(id) && id > 0))];
+  if (unique.length === 0) return new Map();
+
+  const db = getDb();
+  const rows = await db
+    .select({
+      id: systemUsers.id,
+      primaryRole: systemUsers.primaryRole,
+    })
+    .from(systemUsers)
+    .where(and(inArray(systemUsers.id, unique), isNull(systemUsers.deletedAt)));
+
+  const map = new Map<number, string>();
+  for (const row of rows) {
+    if (row.primaryRole) map.set(row.id, row.primaryRole);
+  }
+  return map;
+}
+
+/** Batch lookup primary_role by email (case-insensitive). */
+export async function getPrimaryRolesByEmails(
+  emails: string[]
+): Promise<Map<string, string>> {
+  const normalized = [
+    ...new Set(
+      emails
+        .map((e) => e?.trim().toLowerCase())
+        .filter((e): e is string => Boolean(e))
+    ),
+  ];
+  if (normalized.length === 0) return new Map();
+
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT LOWER(TRIM(email)) AS email, primary_role AS "primaryRole"
+    FROM system_users
+    WHERE deleted_at IS NULL
+      AND LOWER(TRIM(email)) IN ${sql(normalized)}
+  `) as Array<{ email: string; primaryRole: string }>;
+
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    if (row.email && row.primaryRole) {
+      map.set(row.email.toLowerCase(), row.primaryRole);
+    }
+  }
+  return map;
 }
 
 /**

@@ -12,6 +12,8 @@ import { merchantKeys } from '@/lib/query-keys';
 // ---------- Types ----------
 export interface WalletSummary {
   available_balance: number;
+  locked_balance?: number;
+  withdrawable_balance?: number;
   pending_balance: number;
   today_earning: number;
   yesterday_earning: number;
@@ -161,6 +163,8 @@ async function fetchWallet(storeId: string): Promise<WalletSummary> {
   if (data.error) throw new Error(data.error);
   return {
     available_balance: data.available_balance ?? 0,
+    locked_balance: data.locked_balance ?? 0,
+    withdrawable_balance: data.withdrawable_balance ?? data.available_balance ?? 0,
     pending_balance: data.pending_balance ?? 0,
     today_earning: data.today_earning ?? 0,
     yesterday_earning: data.yesterday_earning ?? 0,

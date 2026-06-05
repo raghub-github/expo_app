@@ -16,6 +16,7 @@ export declare const QUEUE_NAMES: {
     readonly PAYMENT_RECONCILE: "q.payment.reconcile";
     readonly PAYMENT_WEBHOOK_RETRY: "q.payment.webhook-retry";
     readonly ETA_RECALC: "q.eta.recalc";
+    readonly FINANCIAL_RULE_APPROVAL_NOTIFY: "q.financial-rule.approval-notify";
 };
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
 export type PushSendJob = {
@@ -48,10 +49,14 @@ export type EtaRecalcJob = {
     orderIdText: string;
     reason: "RIDER_ASSIGNED" | "RIDER_PICKED_UP" | "TRAFFIC_UPDATE" | "WEATHER_UPDATE" | "MERCHANT_DELAY" | "STATUS_CHANGE";
 };
+export type FinancialRuleApprovalNotifyJob = {
+    scheduled: boolean;
+};
 export type JobShape = {
     [QUEUE_NAMES.PUSH_SEND]: PushSendJob;
     [QUEUE_NAMES.PAYMENT_RECONCILE]: PaymentReconcileJob;
     [QUEUE_NAMES.PAYMENT_WEBHOOK_RETRY]: PaymentWebhookRetryJob;
     [QUEUE_NAMES.ETA_RECALC]: EtaRecalcJob;
+    [QUEUE_NAMES.FINANCIAL_RULE_APPROVAL_NOTIFY]: FinancialRuleApprovalNotifyJob;
 };
 //# sourceMappingURL=topics.d.ts.map

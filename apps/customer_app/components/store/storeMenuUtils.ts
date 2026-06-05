@@ -70,7 +70,27 @@ export function buildHighlyReorderedIds(
   return ids;
 }
 
-/** Map API ordered-together rows to menu combo cards. Skips pairs whose items are not on the current menu. */
+/** Resolve a menu row strictly within the current store menu (no cross-store / fuzzy match). */
+function resolveMenuItemInStoreMenu(
+  menu: MenuItem[],
+  pk: number,
+  publicId: string
+): MenuItem | undefined {
+  const idKey = publicId.trim();
+  const byPk = menu.filter((m) => m.menuItemId != null && m.menuItemId === pk);
+  if (byPk.length === 1) {
+    const only = byPk[0]!;
+    if (!idKey || only.id === idKey) return only;
+  }
+  if (idKey) {
+    const byId = menu.find((m) => m.id === idKey);
+    if (byId && byId.menuItemId != null && byId.menuItemId === pk) return byId;
+    if (byId && byPk.length === 0) return byId;
+  }
+  return undefined;
+}
+
+/** Map API rows to combo cards. Skips pairs whose items are not on the current store menu. */
 export function mapOrderedTogetherPairsToCombos(
   menu: MenuItem[],
   pairs: Array<{
@@ -80,33 +100,60 @@ export function mapOrderedTogetherPairsToCombos(
     item1MenuItemPk: number;
     item2MenuItemPk: number;
     orderCount: number;
+    source?: "co_purchase" | "popular_fallback";
   }>
 ): ComboPair[] {
   if (!menu.length || !pairs.length) return [];
 
-  const byPk = new Map<number, MenuItem>();
-  const byId = new Map<string, MenuItem>();
-  for (const item of menu) {
-    byId.set(item.id, item);
-    if (item.menuItemId != null) byPk.set(item.menuItemId, item);
-  }
-
   const out: ComboPair[] = [];
+  const seen = new Set<string>();
   for (const pair of pairs) {
-    const item1 =
-      byPk.get(pair.item1MenuItemPk) ??
-      byId.get(pair.item1Id) ??
-      menu.find((m) => String(m.menuItemId) === String(pair.item1MenuItemPk));
-    const item2 =
-      byPk.get(pair.item2MenuItemPk) ??
-      byId.get(pair.item2Id) ??
-      menu.find((m) => String(m.menuItemId) === String(pair.item2MenuItemPk));
-    if (!item1 || !item2) continue;
+    const item1 = resolveMenuItemInStoreMenu(menu, pair.item1MenuItemPk, pair.item1Id);
+    const item2 = resolveMenuItemInStoreMenu(menu, pair.item2MenuItemPk, pair.item2Id);
+    if (!item1 || !item2 || item1.id === item2.id) continue;
+    const dedupeKey = [item1.id, item2.id].sort().join("|");
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
     out.push({
       id: pair.id,
       item1,
       item2,
       customerCount: pair.orderCount,
+      source: pair.source,
+    });
+  }
+  return out;
+}
+
+/** Per-anchor pairs → menu items frequently bought with the anchor (item2 side). */
+export function mapAnchorPairsToCompanionItems(
+  menu: MenuItem[],
+  anchorItemId: string,
+  pairs: Array<{
+    item1Id: string;
+    item2Id: string;
+    item1MenuItemPk: number;
+    item2MenuItemPk: number;
+    orderCount: number;
+    source?: "co_purchase" | "popular_fallback";
+  }>
+): Array<{ item: MenuItem; orderCount: number; source?: "co_purchase" | "popular_fallback" }> {
+  if (!menu.length || !pairs.length) return [];
+  const combos = mapOrderedTogetherPairsToCombos(menu, pairs as Parameters<typeof mapOrderedTogetherPairsToCombos>[1]);
+  const anchorKey = anchorItemId.trim();
+  const out: Array<{ item: MenuItem; orderCount: number; source?: "co_purchase" | "popular_fallback" }> = [];
+  for (const combo of combos) {
+    const companion =
+      combo.item1.id === anchorKey || String(combo.item1.menuItemId) === anchorKey
+        ? combo.item2
+        : combo.item2.id === anchorKey || String(combo.item2.menuItemId) === anchorKey
+          ? combo.item1
+          : combo.item2;
+    if (companion.id === anchorKey) continue;
+    out.push({
+      item: companion,
+      orderCount: combo.customerCount ?? 0,
+      source: combo.source,
     });
   }
   return out;

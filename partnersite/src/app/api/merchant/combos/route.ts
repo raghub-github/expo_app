@@ -7,6 +7,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { assertStoreAccess } from '@/lib/auth/assert-store-access'
 import { logStoreActivity } from '@/lib/store-activity-feed'
+import { client as pgClient } from '@/lib/drizzle'
+import { expireTimedMenuOutOfStockForStore } from '@/lib/menu-oos-expiry'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co"
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key"
@@ -20,6 +22,7 @@ export async function GET(req: NextRequest) {
   if (!access.ok) {
     return NextResponse.json({ success: false, error: access.error }, { status: access.status })
   }
+  await expireTimedMenuOutOfStockForStore(pgClient, access.storeIdNum)
   const { data, error } = await supabase
     .from('merchant_menu_combos')
     .select('id, combo_name, description, combo_price, image_url, is_active, is_deleted, display_order, out_of_stock_manual, out_of_stock_until')

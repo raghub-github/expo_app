@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyError, FastifyRequest, FastifyReply } from "fastify";
 import { ZodError } from "zod";
 import fp from "fastify-plugin";
+import { isTransientDbError } from "../lib/db/is-transient-db-error.js";
 
 /**
  * Global Error Handler
@@ -76,12 +77,17 @@ async function errorHandlerPlugin(app: FastifyInstance) {
       });
     }
 
-    // Handle database errors (don't expose internal details)
-    if (error.message?.includes("database") || error.message?.includes("connection")) {
+    // Handle database / pool errors (don't expose internal details)
+    const dbUnavailable =
+      isTransientDbError(error) ||
+      error.message?.includes("Failed query") ||
+      error.message?.toLowerCase().includes("database") ||
+      error.message?.toLowerCase().includes("connection");
+    if (dbUnavailable) {
       app.log.error({ error: error.message, stack: error.stack }, "Database error");
-      return reply.status(500).send({
-        error: "database_error",
-        message: "A database error occurred. Please try again later.",
+      return reply.status(503).send({
+        error: "database_unavailable",
+        message: "Database is busy. Please try again in a moment.",
         requestId,
       });
     }

@@ -120,6 +120,20 @@ services:
       - backend
     networks: [app]
 
+  financial-rule-worker:
+    build:
+      context: ../..
+      dockerfile: services/financial-rule-worker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../services/financial-rule-worker/.env
+    environment:
+      NODE_ENV: production
+      BACKEND_INTERNAL_URL: http://backend:3000
+    depends_on:
+      - backend
+    networks: [app]
+
   outbox-relay:
     build:
       context: ../..

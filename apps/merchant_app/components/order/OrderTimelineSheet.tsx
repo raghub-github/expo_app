@@ -17,7 +17,7 @@ import {
 } from "@/lib/orderTimelineCache";
 import { MerchantOrderVerticalTimeline } from "@/components/order/MerchantOrderVerticalTimeline";
 import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
-import { formatOrderIdDisplay } from "@/components/order/orderFormatters";
+import { MerchantOrderIdRow } from "@/components/order/MerchantOrderCardToolbar";
 
 const SHEET_MIN_HEIGHT = Math.round(Dimensions.get("window").height * 0.55);
 
@@ -138,8 +138,6 @@ export function OrderTimelineSheet({ visible, order, onClose }: Props) {
 
   if (!order) return null;
 
-  const orderIdLabel = formatOrderIdDisplay(order.formattedOrderId, order.ordersCoreId);
-
   return (
     <MerchantBottomSheetShell visible={visible} onClose={onClose} maxHeightPercent="88%">
       <View style={[styles.body, { minHeight: SHEET_MIN_HEIGHT }]}>
@@ -148,7 +146,10 @@ export function OrderTimelineSheet({ visible, order, onClose }: Props) {
         </View>
 
         <View style={styles.metaBlock}>
-          <Text style={styles.orderId}>ID: {orderIdLabel}</Text>
+          <MerchantOrderIdRow
+            formattedOrderId={order.formattedOrderId}
+            fallbackOrderId={order.ordersCoreId}
+          />
           {deliverySummary ? (
             <Text style={styles.deliverySummary}>{deliverySummary}</Text>
           ) : null}

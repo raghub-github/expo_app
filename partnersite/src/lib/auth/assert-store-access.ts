@@ -4,7 +4,9 @@
  */
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant'
+import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import { client as pgClient } from '@/lib/drizzle'
 
 // Lazy singleton — building this at module load fails during `next build`'s
 // "Collecting page data" pass because process.env.NEXT_PUBLIC_SUPABASE_URL is
@@ -30,15 +32,59 @@ export type AssertStoreResult =
   | { ok: true; storeIdNum: number }
   | { ok: false; error: string; status: number }
 
+function normalizePhoneForLookup(phone: string): { e164: string; tenDigit: string } {
+  const digits = phone.replace(/\D/g, '')
+  const ten = digits.length > 10 ? digits.slice(-10) : digits
+  const tenDigit = ten.length === 10 ? ten : ''
+  const e164 = tenDigit ? `+91${tenDigit}` : phone.startsWith('+') ? phone : ''
+  return { e164, tenDigit }
+}
+
+/** Store row when the logged-in user owns the store via supabase id, email, or phone. */
+async function findStoreOwnedBySessionUser(
+  storeIdPublic: string,
+  user: { id: string; email?: string | null; phone?: string | null }
+): Promise<{ id: number; parent_id: number } | null> {
+  const emailNorm = user.email?.trim().toLowerCase() ?? ''
+  const phoneRaw = user.phone?.trim() ?? ''
+  const { e164, tenDigit } = phoneRaw ? normalizePhoneForLookup(phoneRaw) : { e164: '', tenDigit: '' }
+
+  const rows = await pgClient`
+    SELECT s.id, s.parent_id
+    FROM merchant_stores s
+    INNER JOIN merchant_parents p ON p.id = s.parent_id
+    WHERE s.store_id = ${storeIdPublic.trim()}
+      AND (
+        p.supabase_user_id = ${user.id}
+        OR (${emailNorm} <> '' AND lower(trim(coalesce(p.owner_email, ''))) = ${emailNorm})
+        OR (${e164} <> '' AND p.registered_phone = ${e164})
+        OR (${tenDigit} <> '' AND p.registered_phone_normalized = ${tenDigit})
+      )
+    LIMIT 1
+  `
+
+  const row = rows[0] as { id: unknown; parent_id: unknown } | undefined
+  if (!row) return null
+  const id = Number(row.id)
+  const parent_id = Number(row.parent_id)
+  if (!Number.isFinite(id) || !Number.isFinite(parent_id)) return null
+  return { id, parent_id }
+}
+
 export async function assertStoreAccess(storeIdParam: string | null): Promise<AssertStoreResult> {
   if (!storeIdParam || String(storeIdParam).trim() === '') {
     return { ok: false, error: 'storeId required', status: 400 }
   }
+  if (!isValidPartnerStoreId(storeIdParam)) {
+    return { ok: false, error: 'Invalid storeId', status: 400 }
+  }
+
   const supabaseServer = await createServerSupabaseClient()
   const { data: { user }, error: userError } = await supabaseServer.auth.getUser()
   if (userError || !user) {
     return { ok: false, error: 'Not authenticated', status: 401 }
   }
+
   const validation = await validateMerchantFromSession({
     id: user.id,
     email: user.email ?? null,
@@ -47,16 +93,24 @@ export async function assertStoreAccess(storeIdParam: string | null): Promise<As
   if (!validation.isValid) {
     return { ok: false, error: validation.error ?? 'Merchant not found', status: 403 }
   }
-  const { data: store, error: storeError } = await getSupabase()
+  const owned = await findStoreOwnedBySessionUser(String(storeIdParam), user)
+  if (owned) {
+    return { ok: true, storeIdNum: owned.id }
+  }
+
+  const { data: storeExists, error: storeError } = await getSupabase()
     .from('merchant_stores')
-    .select('id, parent_id')
+    .select('id')
     .eq('store_id', String(storeIdParam).trim())
-    .single()
-  if (storeError || !store?.id || !store?.parent_id) {
+    .maybeSingle()
+
+  if (storeError) {
+    return { ok: false, error: 'Store lookup failed', status: 500 }
+  }
+
+  if (!storeExists?.id) {
     return { ok: false, error: 'Store not found', status: 404 }
   }
-  if (store.parent_id !== validation.merchantParentId) {
-    return { ok: false, error: 'Store does not belong to this merchant', status: 403 }
-  }
-  return { ok: true, storeIdNum: store.id as number }
+
+  return { ok: false, error: 'Store does not belong to this merchant', status: 403 }
 }

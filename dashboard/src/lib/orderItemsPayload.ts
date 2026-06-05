@@ -1,6 +1,14 @@
 /** Shared types + helpers for GET /api/orders/[orderId]/items (order detail + refund modal). */
 
 import type { OrderItemCustomisationDetail } from "@/lib/order-item-customisation";
+import { customerDiscountLinesFromBilling, discountTotalFromBilling } from "@/lib/merchant-billing-discount";
+
+export type OrderItemLineAmounts = {
+  amountPerQuantity: number;
+  taxPerQuantity: number;
+  chargesPerQuantity: number;
+  totalPerQuantity: number;
+};
 
 export type OrderItemApiRow = {
   id: number;
@@ -8,10 +16,13 @@ export type OrderItemApiRow = {
   customisation: string;
   customisationDetail?: OrderItemCustomisationDetail | null;
   quantity: number;
+  /** Merchant (CTM) line amounts — default columns in items table. */
   amountPerQuantity: number;
   taxPerQuantity: number;
   chargesPerQuantity: number;
   totalPerQuantity: number;
+  /** Customer (CTC) line amounts when bill view is Customer. */
+  customer?: OrderItemLineAmounts;
   hasImage: boolean;
   imageUrl: string | null;
   status: string;
@@ -22,10 +33,11 @@ export type OrderPricingLine = {
   label: string;
   amount: number;
   kind: "charge" | "tax" | "discount";
+  /** Platform vs store funding for discount lines. */
+  discountTag?: "platform" | "store" | "mixed";
 };
 
-export type OrderItemsPricing = {
-  /** Display lines that sum (with discounts subtracted) to totalOrderAmount. */
+export type OrderPricingSummary = {
   lines: OrderPricingLine[];
   itemsAmountTotal: number;
   packaging: number;
@@ -41,6 +53,12 @@ export type OrderItemsPricing = {
   tipAmount: number;
   donationAmount: number;
   totalOrderAmount: number;
+};
+
+export type OrderItemsPricing = OrderPricingSummary & {
+  /** Merchant-facing bill lines (CTM view — matches partnersite / merchant app). */
+  /** Full customer-facing bill breakdown. */
+  customer?: OrderPricingSummary | null;
 };
 
 export type OrderItemsPayload = {
@@ -109,7 +127,7 @@ export function buildOrderPricingSummary(
   const gst = round2(asNum(snap.tax_total));
   const tipAmount = round2(asNum(snap.tip_amount));
   const donationAmount = round2(asNum(snap.donation_amount));
-  const discount = round2(asNum(snap.discount_total));
+  const discount = discountTotalFromBilling(snap);
 
   pushCharge("packaging", "Packaging", packaging);
   if (packagingTax > 0 && gst <= 0) {
@@ -128,7 +146,20 @@ export function buildOrderPricingSummary(
   pushCharge("donation", "Donation", donationAmount);
 
   if (discount > 0) {
-    lines.push({ key: "discount", label: "Discount", amount: discount, kind: "discount" });
+    const discountLines = customerDiscountLinesFromBilling(snap);
+    if (discountLines.length > 0) {
+      discountLines.forEach((d, i) => {
+        lines.push({
+          key: `discount_${i}`,
+          label: d.label,
+          amount: d.amount,
+          kind: "discount",
+          discountTag: d.tag,
+        });
+      });
+    } else {
+      lines.push({ key: "discount", label: "Discount", amount: discount, kind: "discount" });
+    }
   }
 
   const foodNum = foodTotal != null && foodTotal !== "" ? Number(foodTotal) : NaN;
@@ -174,6 +205,81 @@ export function buildOrderPricingSummary(
   };
 }
 
+function parsePricingSummary(pr: Record<string, unknown>): OrderPricingSummary {
+  const lines = Array.isArray(pr.lines)
+    ? (pr.lines as OrderPricingLine[])
+    : buildOrderPricingSummary(null, {}, null).lines;
+
+  return {
+    lines,
+    itemsAmountTotal: Number(pr.itemsAmountTotal) || 0,
+    packaging: Number(pr.packaging) || 0,
+    packagingTax: Number(pr.packagingTax) || 0,
+    gst: Number(pr.gst) || 0,
+    deliveryFee: Number(pr.deliveryFee) || 0,
+    discount: Number(pr.discount) || 0,
+    platformFee: Number(pr.platformFee) || 0,
+    surgeFee: Number(pr.surgeFee) || 0,
+    smallOrderFee: Number(pr.smallOrderFee) || 0,
+    convenienceFee: Number(pr.convenienceFee) || 0,
+    miscFee: Number(pr.miscFee) || 0,
+    tipAmount: Number(pr.tipAmount) || 0,
+    donationAmount: Number(pr.donationAmount) || 0,
+    totalOrderAmount: Number(pr.totalOrderAmount) || 0,
+  };
+}
+
+function parsePricingBlock(pr: Record<string, unknown>): OrderItemsPricing {
+  const customerRaw = pr.customer;
+  const customer =
+    customerRaw && typeof customerRaw === "object"
+      ? parsePricingSummary(customerRaw as Record<string, unknown>)
+      : null;
+
+  return {
+    ...parsePricingSummary(pr),
+    customer,
+  };
+}
+
+import type { OrderDiscountOfferSource } from "@/lib/merchant-billing-discount";
+
+/** Customer-facing discount from items API pricing (CTC bill, incl. platform offers). */
+export function customerDiscountFromOrderPricing(
+  pricing: OrderItemsPricing | null | undefined,
+): { amount: number | null; offerSource: OrderDiscountOfferSource | null } {
+  if (!pricing) return { amount: null, offerSource: null };
+
+  const customer = pricing.customer ?? pricing;
+  const discountLines = customer.lines?.filter((l) => l.kind === "discount") ?? [];
+
+  if (discountLines.length > 0) {
+    const amount = discountLines.reduce((s, l) => s + Math.abs(l.amount), 0);
+    if (amount <= 0) return { amount: null, offerSource: null };
+
+    const tags = new Set(
+      discountLines
+        .map((l) => l.discountTag)
+        .filter(Boolean) as Array<"platform" | "store" | "mixed">,
+    );
+    let offerSource: OrderDiscountOfferSource | null = null;
+    if (tags.size === 1) {
+      const only = [...tags][0];
+      offerSource =
+        only === "platform" ? "Platform" : only === "store" ? "Store" : "Mixed";
+    } else if (tags.size > 1) {
+      offerSource = "Mixed";
+    }
+    return { amount, offerSource };
+  }
+
+  if (customer.discount != null && customer.discount > 0) {
+    return { amount: customer.discount, offerSource: null };
+  }
+
+  return { amount: null, offerSource: null };
+}
+
 export function parseOrderItemsApiResponse(data: unknown): OrderItemsPayload | null {
   if (!data || typeof data !== "object") return null;
   const body = data as { success?: boolean; items?: unknown; pricing?: unknown };
@@ -186,30 +292,10 @@ export function parseOrderItemsApiResponse(data: unknown): OrderItemsPayload | n
       pricing: buildOrderPricingSummary(null, {}, null),
     };
   }
-  const pr = p as Record<string, unknown>;
-  const lines = Array.isArray(pr.lines)
-    ? (pr.lines as OrderPricingLine[])
-    : buildOrderPricingSummary(null, {}, null).lines;
 
   return {
     items: rows as OrderItemApiRow[],
-    pricing: {
-      lines,
-      itemsAmountTotal: Number(pr.itemsAmountTotal) || 0,
-      packaging: Number(pr.packaging) || 0,
-      packagingTax: Number(pr.packagingTax) || 0,
-      gst: Number(pr.gst) || 0,
-      deliveryFee: Number(pr.deliveryFee) || 0,
-      discount: Number(pr.discount) || 0,
-      platformFee: Number(pr.platformFee) || 0,
-      surgeFee: Number(pr.surgeFee) || 0,
-      smallOrderFee: Number(pr.smallOrderFee) || 0,
-      convenienceFee: Number(pr.convenienceFee) || 0,
-      miscFee: Number(pr.miscFee) || 0,
-      tipAmount: Number(pr.tipAmount) || 0,
-      donationAmount: Number(pr.donationAmount) || 0,
-      totalOrderAmount: Number(pr.totalOrderAmount) || 0,
-    },
+    pricing: parsePricingBlock(p as Record<string, unknown>),
   };
 }
 

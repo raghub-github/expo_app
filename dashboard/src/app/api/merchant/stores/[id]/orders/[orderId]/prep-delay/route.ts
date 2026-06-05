@@ -8,6 +8,7 @@ import { ensureMerchantStoreDashboardAccess } from '@/lib/merchant-food-orders/s
 import { loadMerchantStoreFoodOrders } from '@/lib/merchant-food-orders/load-store-food-orders';
 import { resolveMerchantFoodOrder } from '@/lib/merchant-food-orders/resolve-order-food-row';
 import { extendPrepReadyByAtIso, PREP_DELAY_OPTIONS } from '@/lib/order-prep-time';
+import { notifyCustomerPrepDelay } from '@/lib/notify-customer-prep-delay';
 
 export const runtime = 'nodejs';
 
@@ -121,6 +122,11 @@ export async function POST(
     } catch (logErr) {
       console.warn('[prep-delay] action log failed:', logErr);
     }
+
+    void notifyCustomerPrepDelay({
+      ordersCoreId: existing.order_id as number,
+      additionalMinutes: additional as 5 | 10 | 15,
+    });
 
     const merged = await loadMerchantStoreFoodOrders(storeInternalId, {
       ordersFoodId: resolved.foodRowId,

@@ -36,6 +36,10 @@ function toPlanRow(row: Record<string, unknown>) {
     displayOrder: row.display_order != null ? Number(row.display_order) : null,
     isActive: Boolean(row.is_active),
     isPopular: Boolean(row.is_popular),
+    sheetBadgeLabel: (row.sheet_badge_label as string) ?? null,
+    sheetHeadline: (row.sheet_headline as string) ?? null,
+    sheetCtaLabel: (row.sheet_cta_label as string) ?? null,
+    benefitsJson: row.benefits_json ?? [],
     createdAt: (row.created_at as string) ?? null,
   };
 }
@@ -146,6 +150,10 @@ export async function POST(request: NextRequest) {
       displayOrder,
       isActive = true,
       isPopular = false,
+      sheetBadgeLabel,
+      sheetHeadline,
+      sheetCtaLabel,
+      benefitsJson,
     } = body;
 
     if (!planName || !planCode) {
@@ -170,6 +178,12 @@ export async function POST(request: NextRequest) {
       ? String(billingCycle).toUpperCase()
       : "MONTHLY";
 
+    const benefitsPayload = Array.isArray(benefitsJson)
+      ? benefitsJson
+      : typeof benefitsJson === "string"
+        ? benefitsJson.split("\n").map((s: string) => s.trim()).filter(Boolean)
+        : [];
+
     const sql = getSql();
     const [inserted] = await sql`
       INSERT INTO merchant_plans (
@@ -178,7 +192,8 @@ export async function POST(request: NextRequest) {
         image_upload_allowed, max_image_uploads,
         analytics_access, advanced_analytics, priority_support,
         marketing_automation, custom_api_integrations, dedicated_account_manager,
-        display_order, is_active, is_popular
+        display_order, is_active, is_popular,
+        sheet_badge_label, sheet_headline, sheet_cta_label, benefits_json
       )
       VALUES (
         ${pt}::public.subscription_plan_type,
@@ -201,7 +216,11 @@ export async function POST(request: NextRequest) {
         ${Boolean(dedicatedAccountManager)},
         ${displayOrder != null ? Number(displayOrder) : null},
         ${Boolean(isActive)},
-        ${Boolean(isPopular)}
+        ${Boolean(isPopular)},
+        ${sheetBadgeLabel ? String(sheetBadgeLabel).trim() : null},
+        ${sheetHeadline ? String(sheetHeadline).trim() : null},
+        ${sheetCtaLabel ? String(sheetCtaLabel).trim() : null},
+        ${JSON.stringify(benefitsPayload)}::jsonb
       )
       RETURNING *
     `;

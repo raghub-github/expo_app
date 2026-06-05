@@ -23,12 +23,22 @@ export function formatOosUntil(untilIso: string): string | null {
 }
 
 export function itemInStockIgnoringCategory(
-  item: Pick<MenuItem, "in_stock" | "out_of_stock_manual" | "out_of_stock_until">,
+  item: Pick<MenuItem, "in_stock" | "out_of_stock_manual" | "out_of_stock_until" | "out_of_stock_updated_at">,
   nowMs = Date.now()
 ): boolean {
-  const base = item.in_stock !== false;
-  const itemOos = isOosActive(item.out_of_stock_manual, item.out_of_stock_until ?? null, nowMs);
-  return base && !itemOos;
+  if (isOosActive(item.out_of_stock_manual, item.out_of_stock_until ?? null, nowMs)) {
+    return false;
+  }
+  // Legacy in_stock=false only applies when the item was never touched by the OOS system.
+  if (
+    !item.out_of_stock_manual &&
+    item.out_of_stock_until == null &&
+    item.in_stock === false &&
+    (item.out_of_stock_updated_at == null || String(item.out_of_stock_updated_at).trim() === "")
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export function isItemBlockedByCategoryOos(
@@ -66,7 +76,7 @@ export function getItemOosLabel(
     const c = categoryById.get(item.category_id);
     if (c && isItemBlockedByCategoryOos(item, c, nowMs)) {
       if (c.out_of_stock_manual) return "Out of stock (category) · manual";
-      if (c.out_of_stock_until) {
+      if (c.out_of_stock_until && isOosActive(c.out_of_stock_manual, c.out_of_stock_until, nowMs)) {
         const fmt = formatOosUntil(c.out_of_stock_until);
         return fmt ? `Out of stock (category) till ${fmt}` : "Out of stock (category)";
       }
@@ -75,8 +85,10 @@ export function getItemOosLabel(
   }
   if (item.out_of_stock_manual) return "Out of stock · manual";
   if (item.out_of_stock_until) {
-    const fmt = formatOosUntil(item.out_of_stock_until);
-    return fmt ? `Out of stock till ${fmt}` : "Out of stock";
+    if (isOosActive(item.out_of_stock_manual, item.out_of_stock_until, nowMs)) {
+      const fmt = formatOosUntil(item.out_of_stock_until);
+      return fmt ? `Out of stock till ${fmt}` : "Out of stock";
+    }
   }
   if (item.in_stock === false) return "Out of stock";
   return "Out of stock";

@@ -13,28 +13,93 @@ import MerchantDetails from "./MerchantDetails";
 import PaymentDetails from "./PaymentDetails";
 import type { OrderPaymentDetail } from "@/lib/orders/order-payment-detail";
 import RiderDetails from "./RiderDetails";
+import type { RiderTimelineData } from "./RiderTimeline";
+import type { OrderRiderTrackingPayload } from "@/lib/db/operations/order-rider-tracking";
 import RiderRouteMap from "./RiderRouteMap";
 import { useAuthOptional } from "@/providers/AuthProvider";
+import { useIsActiveRoute } from "@/hooks/useIsActiveRoute";
+import { usePageVisible } from "@/hooks/usePageVisible";
 import { ChevronDown, History, RefreshCw, X } from "lucide-react";
+import Link from "next/link";
+import type { OrderCancellationInfo } from "@/lib/merchant-cancellation-display";
+import type { OrderCustomerFeedback } from "@/lib/orders/order-customer-feedback";
+import {
+  OrderCustomerFeedbackSideSheet,
+  type FeedbackSheetTarget,
+} from "./OrderCustomerFeedbackSideSheet";
+import {
+  isManualStatusOptionDisabled,
+  canApplyManualStatusUpdate,
+  resolveDispatchManualStage,
+  MANUAL_STATUS_LABELS,
+  type ManualStatusValue,
+} from "@/lib/orders/order-dispatch-status";
+import {
+  parseGeocodedLatLon,
+  resolveMapCoordinatePair,
+} from "@/lib/orders/parse-order-map-coords";
+import { isHardPageReload } from "@/lib/navigation/is-hard-page-reload";
 
 /** Status options for "Update order status" modal (value = DB enum) */
 const STATUS_OPTIONS = [
-  { value: "picked_up" as const, label: "Dispatch Ready" },
-  { value: "in_transit" as const, label: "Dispatched" },
-  { value: "delivered" as const, label: "Delivered" },
+  { value: "picked_up" as const, label: MANUAL_STATUS_LABELS.picked_up },
+  { value: "in_transit" as const, label: MANUAL_STATUS_LABELS.in_transit },
+  { value: "delivered" as const, label: MANUAL_STATUS_LABELS.delivered },
 ] as const;
-
-const STATUS_TO_LABEL: Record<string, string> = {
-  picked_up: "Dispatch Ready",
-  in_transit: "Dispatched",
-  delivered: "Delivered",
-};
 
 /** Single entry from GET /api/orders/core statusHistory (manual status updates). */
 export interface OrderStatusHistoryEntry {
   toStatus: string;
   updatedByEmail: string;
+  updatedByRole: string;
   createdAt: string;
+}
+
+type TimelineEntryFromApi = Omit<OrderTimelineEntry, "occurredAt" | "expectedByAt"> & {
+  occurredAt?: unknown;
+  expectedByAt?: unknown;
+};
+
+function normalizeTimelineAt(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  return String(value ?? "");
+}
+
+function normalizeTimelineAtNullable(value: unknown): string | null {
+  if (value == null) return null;
+  return normalizeTimelineAt(value);
+}
+
+function mapTimelineEntries(raw: TimelineEntryFromApi[]): OrderTimelineEntry[] {
+  return raw.map((e) => ({
+    ...e,
+    occurredAt: normalizeTimelineAt(e.occurredAt),
+    expectedByAt: normalizeTimelineAtNullable(e.expectedByAt),
+  }));
+}
+
+function parseStatusHistoryEntry(raw: unknown): OrderStatusHistoryEntry | null {
+  if (raw == null || typeof raw !== "object") return null;
+  const h = raw as Record<string, unknown>;
+  if (typeof h.toStatus !== "string" || typeof h.updatedByEmail !== "string") return null;
+  return {
+    toStatus: h.toStatus,
+    updatedByEmail: h.updatedByEmail,
+    updatedByRole:
+      typeof h.updatedByRole === "string" && h.updatedByRole.trim()
+        ? h.updatedByRole.trim()
+        : "AGENT",
+    createdAt: typeof h.createdAt === "string" ? h.createdAt : String(h.createdAt ?? ""),
+  };
+}
+
+function AgentRoleBadge({ role }: { role: string }) {
+  const label = role?.trim() || "AGENT";
+  return (
+    <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-[2px] text-[9px] font-medium text-slate-700 whitespace-nowrap">
+      {label}
+    </span>
+  );
 }
 
 interface OrderDetail {
@@ -69,6 +134,9 @@ interface OrderDetail {
   dropAddressRaw: string | null;
   dropAddressNormalized?: string | null;
   dropAddressGeocoded?: string | null;
+  pickupAddressRaw?: string | null;
+  pickupAddressNormalized?: string | null;
+  pickupAddressGeocoded?: string | null;
   pickupLat?: number | null;
   pickupLon?: number | null;
   dropLat?: number | null;
@@ -81,6 +149,8 @@ interface OrderDetail {
   merchantParentId: number | null;
   /** Email of last user who manually updated order status. */
   manualStatusUpdatedByEmail?: string | null;
+  /** orders_food.order_status — drives Dispatch Ready enablement with rider-at-store. */
+  foodOrderStatus?: string | null;
   /** Delivery instructions from orders_food (food orders only). */
   deliveryInstructions?: string | null;
   /** ETA in seconds from creation (for timeline). */
@@ -99,6 +169,8 @@ interface OrderDetail {
   itemCount?: number | null;
   systemKptMinutes?: number | null;
   merchantUpdatedKptMinutes?: number | null;
+  /** Cumulative minutes from merchant "Need more time". */
+  merchantExtraPrepMinutes?: number | null;
   isScheduledOrder?: boolean;
   scheduledDeliverySummary?: string | null;
   deliveryType?: string | null;
@@ -111,6 +183,11 @@ interface OrderDetail {
   customerUserType?: string | null;
   riderInstructionsList?: string[];
   merchantInstructionsList?: string[];
+  cancellationInfo?: OrderCancellationInfo | null;
+  pickupOtp?: string | null;
+  rtoOtp?: string | null;
+  deliveryOtp?: string | null;
+  customerFeedback?: OrderCustomerFeedback | null;
 }
 
 /** Merchant summary from order API for MX card (show immediately on load) */
@@ -134,6 +211,13 @@ interface MerchantSummaryFromApi {
   merchantType?: string | null;
   assignedUserEmail?: string | null;
   assignedUserDepartment?: string | null;
+  approval_status?: string | null;
+  operational_status?: string | null;
+  is_active?: boolean | null;
+  is_accepting_orders?: boolean | null;
+  is_available?: boolean | null;
+  deleted_at?: string | null;
+  delisted_at?: string | null;
 }
 
 /** Refund list item from GET /api/orders/[id]/refunds */
@@ -182,7 +266,33 @@ function toMerchantProfile(summary: MerchantSummaryFromApi) {
     merchantType: summary.merchantType ?? null,
     assignedUserEmail: summary.assignedUserEmail ?? null,
     assignedUserDepartment: summary.assignedUserDepartment ?? null,
+    approval_status: summary.approval_status ?? null,
+    operational_status: summary.operational_status ?? null,
+    is_active: summary.is_active ?? null,
+    is_accepting_orders: summary.is_accepting_orders ?? null,
+    is_available: summary.is_available ?? null,
+    deleted_at: summary.deleted_at ?? null,
+    delisted_at: summary.delisted_at ?? null,
   };
+}
+
+function normalizeOrderPublicId(value: string): string {
+  return String(value || "")
+    .trim()
+    .replace(/[-\s]/g, "")
+    .toUpperCase();
+}
+
+function orderMatchesPublicId(order: OrderDetail, publicId: string): boolean {
+  const target = normalizeOrderPublicId(publicId);
+  if (!target) return false;
+  const candidates = [
+    order.formattedOrderId,
+    order.orderId,
+    order.id != null ? `GMF${String(order.id).padStart(6, "0")}` : null,
+    order.id != null ? String(order.id) : null,
+  ];
+  return candidates.some((c) => c != null && normalizeOrderPublicId(String(c)) === target);
 }
 
 function InfinitySpinner() {
@@ -239,6 +349,9 @@ export default function OrderDetailClient({
   onLoadingChange,
   onNotFoundChange,
 }: OrderDetailClientProps) {
+  const isHardReloadRef = useRef(false);
+  const [hasHydrated, setHasHydrated] = useState(false);
+  const [isHardReload, setIsHardReload] = useState(false);
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [merchantSummary, setMerchantSummary] = useState<MerchantSummaryFromApi | null>(null);
   const [initialRemarksCount, setInitialRemarksCount] = useState<number>(0);
@@ -254,20 +367,62 @@ export default function OrderDetailClient({
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
   const [orderRefunds, setOrderRefunds] = useState<OrderRefundListItem[]>([]);
   const [orderItemsPayload, setOrderItemsPayload] = useState<OrderItemsPayload | null>(null);
+  const itemsPrefetchInFlight = useRef(false);
   const [orderTickets, setOrderTickets] = useState<OrderTicketSummary[]>([]);
   const [showTicketsModal, setShowTicketsModal] = useState(false);
   const [statusHistory, setStatusHistory] = useState<OrderStatusHistoryEntry[]>([]);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [statusUpdateError, setStatusUpdateError] = useState<string | null>(null);
   const [timelineEntries, setTimelineEntries] = useState<OrderTimelineEntry[] | null>(null);
+  const [riderTimelineInitial, setRiderTimelineInitial] = useState<
+    RiderTimelineData | null | undefined
+  >(undefined);
+  const [riderTrackingInitial, setRiderTrackingInitial] = useState<
+    OrderRiderTrackingPayload | null | undefined
+  >(undefined);
   const [paymentDetail, setPaymentDetail] = useState<OrderPaymentDetail | null>(null);
   const [copiedOrderId, setCopiedOrderId] = useState(false);
   const copyOrderIdResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [feedbackSheetTarget, setFeedbackSheetTarget] = useState<FeedbackSheetTarget | null>(
+    null
+  );
+
+  const ensureOrderItemsPrefetch = useCallback(() => {
+    const orderId = order?.id;
+    if (orderId == null || !Number.isFinite(orderId)) return;
+    if (orderItemsPayload?.items?.length) return;
+    if (itemsPrefetchInFlight.current) return;
+
+    itemsPrefetchInFlight.current = true;
+    void fetch(`/api/orders/${orderId}/items`, { credentials: "include" })
+      .then((res) => res.json())
+      .then((body) => parseOrderItemsApiResponse(body))
+      .then((parsed) => {
+        if (parsed) setOrderItemsPayload(parsed);
+      })
+      .catch(() => {
+        /* modal may fetch on miss */
+      })
+      .finally(() => {
+        itemsPrefetchInFlight.current = false;
+      });
+  }, [order?.id, orderItemsPayload?.items?.length]);
+
   const auth = useAuthOptional();
   const loggedInEmail = auth?.user?.email ?? null;
+  const isOrderPage = useIsActiveRoute("/order");
+  const pageVisible = usePageVisible();
 
   useEffect(() => {
-    onLoadingChange?.(loading);
-  }, [loading, onLoadingChange]);
+    const hard = isHardPageReload();
+    isHardReloadRef.current = hard;
+    setIsHardReload(hard);
+    setHasHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    onLoadingChange?.(hasHydrated && isHardReload && loading && !order);
+  }, [hasHydrated, isHardReload, loading, order, onLoadingChange]);
 
   useEffect(() => {
     onNotFoundChange?.(!loading && Boolean(error || !order));
@@ -300,12 +455,17 @@ export default function OrderDetailClient({
   }, [order?.id]);
 
   useEffect(() => {
+    if (!isOrderPage || !pageVisible) return;
+
     let cancelled = false;
 
-    if (!orderPublicId) {
+    const normalizedPublicId = orderPublicId.trim().replace(/[-\s]/g, "");
+
+    if (!normalizedPublicId) {
       setOrder(null);
       setPaymentDetail(null);
       setTimelineEntries(null);
+      setRiderTimelineInitial(undefined);
       setOrderItemsPayload(null);
       setError("Invalid order ID.");
       setLoading(false);
@@ -314,50 +474,115 @@ export default function OrderDetailClient({
 
     setOrderItemsPayload(null);
 
-    if (refetchTrigger === 0) setLoading(true);
-    else setIsRefreshing(true);
+    setOrder((prev) => {
+      if (!prev) return null;
+      return orderMatchesPublicId(prev, normalizedPublicId) ? prev : null;
+    });
+
+    if (refetchTrigger > 0) {
+      setIsRefreshing(true);
+    } else if (isHardReloadRef.current) {
+      setLoading(true);
+      setIsRefreshing(false);
+    } else {
+      setLoading(true);
+      setIsRefreshing(true);
+    }
     setError(null);
 
     const params = new URLSearchParams({
       orderType: "food",
       searchType: "Order Id",
-      search: orderPublicId,
+      search: normalizedPublicId,
       limit: "1",
     });
     if (refetchTrigger > 0) {
       params.set("skipCache", "1");
     }
 
-    const orderIdForParallel = refetchTrigger > 0 && order?.id ? order.id : null;
-
-    const fetchOrder = fetch(`/api/orders/core?${params.toString()}`).then((res) => res.json());
-    const fetchTimeline =
-      orderIdForParallel != null
-        ? fetch(`/api/orders/${orderIdForParallel}/timeline`).then((res) => res.json().catch(() => null))
-        : Promise.resolve(null);
-
-    Promise.all([fetchOrder, orderIdForParallel != null ? fetchTimeline : Promise.resolve(null)])
-      .then(async ([body, timelineBodyOrNull]) => {
-        if (cancelled) return;
-        let timelineBody = timelineBodyOrNull;
-        if (timelineBody == null && body?.success && Array.isArray(body?.data) && body.data.length > 0) {
-          const row = body.data[0] as any;
-          const embedded = (body as { timeline?: unknown }).timeline;
-          if (Array.isArray(embedded)) {
-            timelineBody = { success: true, data: embedded };
-          } else {
-            timelineBody = await fetch(`/api/orders/${row.id}/timeline`).then((r) => r.json().catch(() => null));
+    const loadTimelineInBackground = (coreOrderId: number) => {
+      void fetch(`/api/orders/${coreOrderId}/timeline`)
+        .then((r) => r.json().catch(() => null))
+        .then((timelineBody) => {
+          if (cancelled) return;
+          if (timelineBody?.success && Array.isArray(timelineBody?.data)) {
+            setTimelineEntries(
+              mapTimelineEntries(timelineBody.data as OrderTimelineEntry[])
+            );
           }
+        });
+    };
+
+    const loadRiderTimelineInBackground = (coreOrderId: number, riderId: number) => {
+      void fetch(`/api/orders/${coreOrderId}/rider-timeline?rider_id=${riderId}`)
+        .then((r) => r.json().catch(() => null))
+        .then((body: RiderTimelineData | null) => {
+          if (cancelled) return;
+          if (body && typeof body === "object") {
+            setRiderTimelineInitial(body);
+          }
+        });
+    };
+
+    fetch(`/api/orders/core?${params.toString()}`)
+      .then(async (res) => {
+        const text = await res.text();
+        if (!text.trim()) {
+          return { success: false, error: res.ok ? "Empty response" : `HTTP ${res.status}` };
         }
+        try {
+          return JSON.parse(text) as {
+            success?: boolean;
+            data?: unknown[];
+            error?: string;
+            timeline?: OrderTimelineEntry[];
+            riderTimeline?: RiderTimelineData | null;
+            riderTracking?: OrderRiderTrackingPayload | null;
+            merchantSummary?: unknown;
+            remarksCount?: number;
+            reconsCount?: number;
+            statusHistory?: unknown[];
+            paymentDetail?: OrderPaymentDetail;
+          };
+        } catch {
+          throw new Error("Invalid order response");
+        }
+      })
+      .then(async (body) => {
+        if (cancelled) return;
         if (body.success && Array.isArray(body.data) && body.data.length > 0) {
           const row = body.data[0] as any;
-          const timeline =
-            timelineBody?.success && Array.isArray(timelineBody?.data)
-              ? (timelineBody.data as OrderTimelineEntry[])
-              : [];
+          const coreOrderId =
+            row.id != null && Number.isFinite(Number(row.id)) ? Number(row.id) : null;
+          const itemsPromise =
+            coreOrderId != null
+              ? fetch(`/api/orders/${coreOrderId}/items`, { credentials: "include" })
+                  .then((res) => res.json())
+                  .then((itemsBody) => parseOrderItemsApiResponse(itemsBody))
+              : Promise.resolve(null);
+
+          const embedded = body.timeline;
+          const timeline = Array.isArray(embedded) ? embedded : [];
+          const hasEmbeddedTimeline = body.timeline !== undefined;
+          const embeddedRiderTimeline = body.riderTimeline;
+          const hasEmbeddedRiderTimeline = body.riderTimeline !== undefined;
+          const embeddedRiderTracking = body.riderTracking;
+          const hasEmbeddedRiderTracking = body.riderTracking !== undefined;
           if (cancelled) return;
+
+          const toNumberOrNull = (v: unknown): number | null => {
+            if (v === null || v === undefined) return null;
+            const n = Number(v);
+            return Number.isFinite(n) ? n : null;
+          };
+
           if (body.merchantSummary != null && typeof body.merchantSummary === "object") {
-            setMerchantSummary(body.merchantSummary as MerchantSummaryFromApi);
+            const raw = body.merchantSummary as MerchantSummaryFromApi;
+            setMerchantSummary({
+              ...raw,
+              latitude: toNumberOrNull(raw.latitude),
+              longitude: toNumberOrNull(raw.longitude),
+            });
           } else {
             setMerchantSummary(null);
           }
@@ -369,46 +594,43 @@ export default function OrderDetailClient({
           );
           if (Array.isArray(body.statusHistory)) {
             setStatusHistory(
-              body.statusHistory.map((h: { toStatus: string; updatedByEmail: string; createdAt: string }) => ({
-                toStatus: h.toStatus,
-                updatedByEmail: h.updatedByEmail,
-                createdAt: h.createdAt,
-              }))
+              body.statusHistory
+                .map(parseStatusHistoryEntry)
+                .filter((h): h is OrderStatusHistoryEntry => h != null)
             );
           } else {
             setStatusHistory([]);
           }
-
-          const toNumberOrNull = (v: unknown): number | null => {
-            if (v === null || v === undefined) return null;
-            const n = Number(v);
-            return Number.isFinite(n) ? n : null;
-          };
 
           const paymentFromApi =
             (body as { paymentDetail?: OrderPaymentDetail }).paymentDetail ??
             (row.paymentDetail as OrderPaymentDetail | undefined);
           setPaymentDetail(paymentFromApi ?? null);
 
-          setTimelineEntries(
-            timeline.map((e) => {
-              // API may hand back Date objects when serialized through some
-              // paths; type says string but be defensive.
-              const occ = e.occurredAt as unknown;
-              const exp = e.expectedByAt as unknown;
-              return {
-                ...e,
-                occurredAt:
-                  occ instanceof Date ? occ.toISOString() : String(occ ?? ""),
-                expectedByAt:
-                  exp instanceof Date
-                    ? exp.toISOString()
-                    : exp != null
-                      ? String(exp)
-                      : null,
-              };
-            })
-          );
+          setTimelineEntries(timeline.length > 0 ? mapTimelineEntries(timeline) : []);
+          if (hasEmbeddedRiderTimeline) {
+            setRiderTimelineInitial(
+              embeddedRiderTimeline && typeof embeddedRiderTimeline === "object"
+                ? embeddedRiderTimeline
+                : null
+            );
+          } else if (coreOrderId != null && row.riderId != null && Number.isFinite(Number(row.riderId))) {
+            loadRiderTimelineInBackground(coreOrderId, Number(row.riderId));
+          } else {
+            setRiderTimelineInitial(null);
+          }
+          if (hasEmbeddedRiderTracking) {
+            setRiderTrackingInitial(
+              embeddedRiderTracking && typeof embeddedRiderTracking === "object"
+                ? embeddedRiderTracking
+                : null
+            );
+          } else {
+            setRiderTrackingInitial(null);
+          }
+          if (coreOrderId != null && !hasEmbeddedTimeline) {
+            loadTimelineInBackground(coreOrderId);
+          }
           setOrder({
             id: row.id,
             formattedOrderId: row.formattedOrderId,
@@ -442,10 +664,13 @@ export default function OrderDetailClient({
             dropAddressRaw: row.dropAddressRaw,
             dropAddressNormalized: row.dropAddressNormalized ?? null,
             dropAddressGeocoded: row.dropAddressGeocoded ?? null,
-            pickupLat: row.pickupLat ?? null,
-            pickupLon: row.pickupLon ?? null,
-            dropLat: row.dropLat ?? null,
-            dropLon: row.dropLon ?? null,
+            pickupAddressRaw: row.pickupAddressRaw ?? null,
+            pickupAddressNormalized: row.pickupAddressNormalized ?? null,
+            pickupAddressGeocoded: row.pickupAddressGeocoded ?? null,
+            pickupLat: toNumberOrNull(row.pickupLat),
+            pickupLon: toNumberOrNull(row.pickupLon),
+            dropLat: toNumberOrNull(row.dropLat),
+            dropLon: toNumberOrNull(row.dropLon),
             pickupAddressDeviationMeters: row.pickupAddressDeviationMeters ?? null,
             dropAddressDeviationMeters: row.dropAddressDeviationMeters ?? null,
             distanceMismatchFlagged: row.distanceMismatchFlagged ?? false,
@@ -455,6 +680,8 @@ export default function OrderDetailClient({
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
             manualStatusUpdatedByEmail: row.manualStatusUpdatedByEmail ?? null,
+            foodOrderStatus:
+              typeof row.foodOrderStatus === "string" ? row.foodOrderStatus : null,
             deliveryInstructions: row.deliveryInstructions ?? null,
             etaSeconds: row.etaSeconds ?? null,
             estimatedDeliveryTime: row.estimatedDeliveryTime != null ? String(row.estimatedDeliveryTime) : null,
@@ -470,6 +697,10 @@ export default function OrderDetailClient({
             merchantUpdatedKptMinutes:
               row.merchantUpdatedKptMinutes != null
                 ? Number(row.merchantUpdatedKptMinutes)
+                : null,
+            merchantExtraPrepMinutes:
+              row.merchantExtraPrepMinutes != null
+                ? Number(row.merchantExtraPrepMinutes)
                 : null,
             isScheduledOrder: Boolean(row.isScheduledOrder),
             scheduledDeliverySummary:
@@ -505,6 +736,26 @@ export default function OrderDetailClient({
             merchantInstructionsList: Array.isArray(row.merchantInstructionsList)
               ? (row.merchantInstructionsList as string[])
               : [],
+            cancellationInfo:
+              row.cancellationInfo && typeof row.cancellationInfo === "object"
+                ? (row.cancellationInfo as OrderCancellationInfo)
+                : null,
+            pickupOtp:
+              row.pickupOtp != null && String(row.pickupOtp).trim()
+                ? String(row.pickupOtp).trim()
+                : null,
+            rtoOtp:
+              row.rtoOtp != null && String(row.rtoOtp).trim()
+                ? String(row.rtoOtp).trim()
+                : null,
+            deliveryOtp:
+              row.deliveryOtp != null && String(row.deliveryOtp).trim()
+                ? String(row.deliveryOtp).trim()
+                : null,
+            customerFeedback:
+              row.customerFeedback && typeof row.customerFeedback === "object"
+                ? (row.customerFeedback as OrderCustomerFeedback)
+                : null,
           });
 
           // Refunds + line items load in background so the page renders without extra round trips.
@@ -522,16 +773,10 @@ export default function OrderDetailClient({
             }
           })();
 
-          void (async () => {
-            try {
-              const itemsRes = await fetch(`/api/orders/${row.id}/items`, { credentials: "include" });
-              const itemsBody = await itemsRes.json().catch(() => null);
-              const parsed = parseOrderItemsApiResponse(itemsBody);
-              if (!cancelled && parsed) setOrderItemsPayload(parsed);
-            } catch {
-              if (!cancelled) setOrderItemsPayload(null);
-            }
-          })();
+          void itemsPromise.then((parsed) => {
+            if (!cancelled && parsed) setOrderItemsPayload(parsed);
+            else if (!cancelled) setOrderItemsPayload(null);
+          });
 
           // Load tickets for this order via order-scoped API (uses ORDER_FOOD access, not TICKET)
           if (!cancelled && row.id != null && Number.isFinite(Number(row.id))) {
@@ -559,7 +804,11 @@ export default function OrderDetailClient({
           setOrderTickets([]);
         }
       })
-      .catch(() => !cancelled && setError("Failed to load order."))
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        const msg = err instanceof Error ? err.message : "";
+        setError(msg ? `Failed to load order: ${msg}` : "Failed to load order.");
+      })
       .finally(() => {
         if (!cancelled) {
           setLoading(false);
@@ -569,26 +818,39 @@ export default function OrderDetailClient({
     return () => {
       cancelled = true;
     };
-  }, [orderPublicId, refetchTrigger]);
+  }, [orderPublicId, refetchTrigger, isOrderPage, pageVisible]);
+
+  const dispatchStage = useMemo(
+    () =>
+      order
+        ? resolveDispatchManualStage({
+            status: order.status,
+            currentStatus: order.currentStatus,
+            foodOrderStatus: order.foodOrderStatus,
+          })
+        : "open",
+    [order?.status, order?.currentStatus, order?.foodOrderStatus]
+  );
 
   const openStatusModal = useCallback(() => {
-    const status = order?.status?.toLowerCase();
-    if (status === "cancelled" || status === "rejected") return;
-    if (
-      status === "picked_up" ||
-      status === "in_transit" ||
-      status === "delivered"
-    ) {
-      setSelectedStatus(status);
-    } else {
-      setSelectedStatus("picked_up");
-    }
+    if (!order) return;
+    if (dispatchStage === "cancelled" || dispatchStage === "delivered") return;
+    setStatusUpdateError(null);
+    const firstEnabled =
+      STATUS_OPTIONS.find((opt) => !isManualStatusOptionDisabled(dispatchStage, opt.value))
+        ?.value ?? "delivered";
+    setSelectedStatus(firstEnabled);
     setShowStatusModal(true);
-  }, [order?.status]);
+  }, [order, dispatchStage]);
 
   const submitStatusUpdate = useCallback(async () => {
     if (!order?.id || isUpdatingStatus) return;
+    if (!canApplyManualStatusUpdate(dispatchStage, selectedStatus)) {
+      setStatusUpdateError("This status is already set or cannot be applied again.");
+      return;
+    }
     setIsUpdatingStatus(true);
+    setStatusUpdateError(null);
     try {
       const res = await fetch(`/api/orders/${order.id}/status`, {
         method: "PATCH",
@@ -597,33 +859,47 @@ export default function OrderDetailClient({
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) {
+        const label = MANUAL_STATUS_LABELS[selectedStatus];
         setShowStatusModal(false);
-        // Optimistic update: show new status and timeline entry instantly
         setOrder((prev) =>
-          prev
-            ? { ...prev, status: selectedStatus, currentStatus: selectedStatus }
-            : prev
+          prev ? { ...prev, status: selectedStatus, currentStatus: label } : prev
         );
         setTimelineEntries((prev) => {
           const newEntry: OrderTimelineEntry = {
             id: -Date.now(),
             orderId: order.id,
-            status: selectedStatus,
-            previousStatus: order.status ?? null,
-            actorType: "system",
+            status: label,
+            previousStatus: order.currentStatus ?? order.status ?? null,
+            actorType: "agent",
             actorId: null,
-            actorName: null,
+            actorName: loggedInEmail,
             statusMessage: null,
             occurredAt: new Date().toISOString(),
           };
           return [...(prev ?? []), newEntry];
         });
         setRefetchTrigger((t) => t + 1);
+      } else {
+        setStatusUpdateError(
+          typeof data.error === "string"
+            ? data.error
+            : "Could not update order status. Please try again."
+        );
       }
+    } catch {
+      setStatusUpdateError("Could not update order status. Please try again.");
     } finally {
       setIsUpdatingStatus(false);
     }
-  }, [order?.id, selectedStatus, isUpdatingStatus]);
+  }, [
+    order?.id,
+    order?.status,
+    order?.currentStatus,
+    selectedStatus,
+    isUpdatingStatus,
+    dispatchStage,
+    loggedInEmail,
+  ]);
 
   const handleRefreshOrder = useCallback(() => {
     setRefetchTrigger((t) => t + 1);
@@ -651,10 +927,22 @@ export default function OrderDetailClient({
     };
   }, [order?.id, displayId]);
 
-  if (loading) {
+  const riderSelfieUrl = riderTrackingInitial?.rider?.selfie_url ?? null;
+
+  useEffect(() => {
+    const url = riderSelfieUrl?.trim();
+    if (!url) return;
+    const img = new Image();
+    img.decoding = "async";
+    img.src = url;
+  }, [riderSelfieUrl]);
+
+  const awaitingOrder = !order && (loading || isRefreshing);
+
+  if (awaitingOrder) {
     return (
       <div
-        className="flex h-[calc(100vh-56px)] w-full items-center justify-center bg-slate-50"
+        className="fixed inset-x-0 bottom-0 top-11 z-10 flex items-center justify-center bg-[#F8FAFC] sm:top-12"
         aria-busy="true"
         aria-label="Loading order details"
       >
@@ -733,22 +1021,19 @@ export default function OrderDetailClient({
   })();
 
   // For the dropdown trigger, show current status label or "Select Option".
-  const dbStatus = (order.status ?? "").toString().toLowerCase();
-  const statusOptionMatch = STATUS_OPTIONS.find((opt) => opt.value === dbStatus);
+  const statusOptionMatch = STATUS_OPTIONS.find(
+    (opt) => opt.value === (order.status ?? "").toString().toLowerCase()
+  );
   const statusButtonLabel = statusOptionMatch ? statusOptionMatch.label : "Select Option";
-  const isOrderCancelledOrRejected = dbStatus === "cancelled" || dbStatus === "rejected";
+  const isOrderCancelledOrRejected = dispatchStage === "cancelled";
 
-  // Status rules: no status can be marked twice; flow follows progression.
-  // Dispatch Ready (current): Dispatched & Delivered active; Dispatch Ready not selectable again.
-  // Dispatched (current): Delivered active; Dispatch Ready & Dispatched disabled.
-  // Delivered (current): all options and Update button disabled.
-  const isOptionDisabled = (value: "picked_up" | "in_transit" | "delivered") => {
-    if (dbStatus === "delivered") return true;
-    if (dbStatus === "in_transit") return value === "picked_up" || value === "in_transit";
-    if (dbStatus === "picked_up") return value === "picked_up";
-    return false;
-  };
-  const isUpdateStatusButtonDisabled = dbStatus === "delivered";
+  const isOptionDisabled = (value: ManualStatusValue) =>
+    isManualStatusOptionDisabled(dispatchStage, value);
+
+  const isUpdateStatusButtonDisabled =
+    dispatchStage === "delivered" ||
+    dispatchStage === "cancelled" ||
+    !canApplyManualStatusUpdate(dispatchStage, selectedStatus);
 
   const lastStatusUpdaterEmail = order.manualStatusUpdatedByEmail?.trim() || null;
   const hasManualStatusUpdate = !!lastStatusUpdaterEmail;
@@ -775,15 +1060,16 @@ export default function OrderDetailClient({
     (order.pickupAddressDeviationMeters ?? 0) > 800 ||
     (order.dropAddressDeviationMeters ?? 0) > 800;
 
-  const hasRiderRouteMap =
-    order.pickupLat != null &&
-    order.pickupLon != null &&
-    order.dropLat != null &&
-    order.dropLon != null &&
-    Number.isFinite(order.pickupLat) &&
-    Number.isFinite(order.pickupLon) &&
-    Number.isFinite(order.dropLat) &&
-    Number.isFinite(order.dropLon);
+  const hasAssignedRider =
+    order.riderId != null && Number.isFinite(Number(order.riderId)) && Number(order.riderId) > 0;
+
+  const mapDrop = resolveMapCoordinatePair(
+    order.dropLat,
+    order.dropLon,
+    parseGeocodedLatLon(order.dropAddressGeocoded)
+  );
+  const mapDropLat = mapDrop?.lat ?? null;
+  const mapDropLon = mapDrop?.lon ?? null;
 
   const handleCopy = (text: string) => {
     if (!text) return;
@@ -1008,6 +1294,11 @@ export default function OrderDetailClient({
                       );
                     })}
                   </div>
+                  {statusUpdateError ? (
+                    <p className="mt-1 px-2 text-[10px] text-red-600" role="alert">
+                      {statusUpdateError}
+                    </p>
+                  ) : null}
                   <div className="mt-1 border-t border-slate-100 pt-1.5 px-1">
                     <button
                       type="button"
@@ -1039,6 +1330,7 @@ export default function OrderDetailClient({
             currentStatus={statusLabel || undefined}
             orderCreatedAt={order.createdAt ? new Date(order.createdAt) : undefined}
             etaAt={(() => {
+              if (order.firstEtaAt) return new Date(order.firstEtaAt);
               if (order.estimatedDeliveryTime)
                 return new Date(order.estimatedDeliveryTime);
               if (order.etaSeconds != null && order.createdAt)
@@ -1052,7 +1344,6 @@ export default function OrderDetailClient({
               }
               return undefined;
             })()}
-            etaBreachedTimelineId={order.etaBreachedTimelineId ?? undefined}
           />
         </div>
 
@@ -1095,6 +1386,8 @@ export default function OrderDetailClient({
                 orderPaidAtLabel: createdLabel,
               }}
               initialProfile={merchantSummary ? toMerchantProfile(merchantSummary) : undefined}
+              customerFeedback={order.customerFeedback ?? null}
+              onOpenFeedback={() => setFeedbackSheetTarget("merchant")}
               onCopy={handleCopy}
             />
 
@@ -1104,35 +1397,64 @@ export default function OrderDetailClient({
               displayId={displayId}
               orderRefunds={orderRefunds}
               paymentDetail={paymentDetail}
+              orderItemsPricing={orderItemsPayload?.pricing ?? null}
             />
           </div>
 
-          {/* Rider details + map */}
-          <div className="mt-3 grid gap-3 md:grid-cols-2">
+          {/* Rider details + map — map only while a rider is assigned */}
+          <div
+            className={`mt-3 grid gap-3 md:items-stretch ${
+              hasAssignedRider ? "md:grid-cols-2" : "grid-cols-1"
+            }`}
+          >
             <RiderDetails
+              className={hasAssignedRider ? "h-full flex flex-col" : ""}
+              initialRiderTimeline={riderTimelineInitial}
+              riderSelfieUrl={riderSelfieUrl}
               order={{
+                orderId: order.id,
+                riderId: order.riderId ?? null,
                 riderName: order.riderName,
                 riderMobile: order.riderMobile,
                 riderProvider: order.orderSource,
                 trackingOrderId: displayId,
                 trackingUrl: null,
-                otp: null,
+                deliveryOtp: order.deliveryOtp ?? null,
                 status: order.status,
                 currentStatus: order.currentStatus,
                 createdAt: order.createdAt,
                 distanceKm: order.distanceKm ?? null,
               }}
+              customerFeedback={order.customerFeedback ?? null}
+              tipAmount={order.tipAmount}
+              onOpenFeedback={() => setFeedbackSheetTarget("rider")}
               onCopy={handleCopy}
               onPhoneClick={handleCustomerPhoneClick}
             />
-            {hasRiderRouteMap && (
+            {hasAssignedRider ? (
               <RiderRouteMap
+                key={`rider-map-${order.riderId}`}
+                className="h-full flex flex-col"
+                orderId={order.id}
+                riderId={order.riderId ?? null}
+                riderName={order.riderName}
+                storeName={merchantSummary?.storeName ?? null}
+                customerName={order.customerName}
+                dropAddressFallback={
+                  order.dropAddressNormalized ?? order.dropAddressRaw ?? null
+                }
+                merchantStoreLat={merchantSummary?.latitude ?? null}
+                merchantStoreLon={merchantSummary?.longitude ?? null}
+                pickupAddressGeocoded={order.pickupAddressGeocoded ?? null}
+                orderStatus={order.currentStatus ?? order.status}
+                pickedUpAt={riderTimelineInitial?.picked_up_at ?? null}
                 pickupLat={order.pickupLat ?? null}
                 pickupLon={order.pickupLon ?? null}
-                dropLat={order.dropLat ?? null}
-                dropLon={order.dropLon ?? null}
+                dropLat={mapDropLat}
+                dropLon={mapDropLon}
+                initialTracking={riderTrackingInitial ?? null}
               />
-            )}
+            ) : null}
           </div>
         </div>
       </div>
@@ -1157,6 +1479,7 @@ export default function OrderDetailClient({
             setOrder((prev) => (prev ? { ...prev, routedToEmail: email } : prev))
           }
           onRefundCreated={() => setRefetchTrigger((t) => t + 1)}
+          onPrefetchOrderItems={ensureOrderItemsPrefetch}
         />
       </div>
     </div>
@@ -1193,8 +1516,9 @@ export default function OrderDetailClient({
                 <table className="w-full text-[11px] text-left border-collapse">
                   <thead>
                     <tr className="border-b border-slate-200">
-                      <th className="py-2 pr-4 font-semibold text-slate-700">Status</th>
-                      <th className="py-2 pr-4 font-semibold text-slate-700">Date & time</th>
+                      <th className="py-2 pr-3 font-semibold text-slate-700">Status</th>
+                      <th className="py-2 pr-3 font-semibold text-slate-700">Date & time</th>
+                      <th className="py-2 pr-3 font-semibold text-slate-700">Role</th>
                       <th className="py-2 font-semibold text-slate-700">Updated by</th>
                     </tr>
                   </thead>
@@ -1202,12 +1526,16 @@ export default function OrderDetailClient({
                     {statusHistory.map((entry, i) => (
                       <tr key={i} className="border-b border-slate-100 hover:bg-slate-50/50">
                         <td className="py-2 pr-4 font-medium text-slate-800">
-                          {STATUS_TO_LABEL[entry.toStatus] ?? entry.toStatus.replace(/_/g, " ")}
+                          {MANUAL_STATUS_LABELS[entry.toStatus as ManualStatusValue] ??
+                            entry.toStatus.replace(/_/g, " ")}
                         </td>
-                        <td className="py-2 pr-4 text-slate-600">
+                        <td className="py-2 pr-3 text-slate-600 whitespace-nowrap">
                           {new Date(entry.createdAt).toLocaleString()}
                         </td>
-                        <td className="py-2 text-slate-600 truncate max-w-[200px]" title={entry.updatedByEmail}>
+                        <td className="py-2 pr-3">
+                          <AgentRoleBadge role={entry.updatedByRole} />
+                        </td>
+                        <td className="py-2 text-slate-600 truncate max-w-[180px]" title={entry.updatedByEmail}>
                           {entry.updatedByEmail}
                         </td>
                       </tr>
@@ -1248,13 +1576,13 @@ export default function OrderDetailClient({
                   ? t.ticketSource.replace(/\b\w/g, (c) => c.toUpperCase())
                   : null;
                 return (
-                  <button
+                  <Link
                     key={t.id}
-                    type="button"
-                    className="w-full text-left px-3 py-2 rounded-md border border-slate-100 hover:bg-slate-50 flex flex-col gap-0.5 cursor-pointer"
-                    onClick={() => {
-                      window.open(`/dashboard/tickets/${t.id}`, "_blank");
-                    }}
+                    href={`/dashboard/tickets/${t.id}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    prefetch={false}
+                    className="w-full text-left px-3 py-2 rounded-md border border-slate-100 hover:bg-slate-50 flex flex-col gap-0.5 cursor-pointer no-underline"
                   >
                     <div className="flex items-center justify-between gap-2 flex-wrap">
                       <span className="font-mono text-[11px] text-emerald-700">
@@ -1292,13 +1620,24 @@ export default function OrderDetailClient({
                         </>
                       ) : null}
                     </p>
-                  </button>
+                  </Link>
                 );
               })}
             </div>
           </div>
         </div>
       )}
+
+      {feedbackSheetTarget != null && order?.customerFeedback ? (
+        <OrderCustomerFeedbackSideSheet
+          target={feedbackSheetTarget}
+          feedback={order.customerFeedback}
+          tipAmount={order.tipAmount}
+          merchantName={merchantSummary?.storeName}
+          riderName={order.riderName}
+          onClose={() => setFeedbackSheetTarget(null)}
+        />
+      ) : null}
     </>
   );
 }

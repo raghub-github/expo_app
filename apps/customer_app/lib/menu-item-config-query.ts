@@ -1,9 +1,17 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { MenuItem, MenuItemFullConfig } from "@/services/merchant.service";
-import { merchantService } from "@/services/merchant.service";
+import {
+  getCachedMenuItemFullConfig,
+  setCachedMenuItemFullConfig,
+  clearCachedMenuItemFullConfig,
+  MENU_ITEM_CONFIG_CACHE_TTL_MS,
+} from "@/lib/menu-item-config-cache";
 
-const CACHE_TTL_MS = 15 * 60 * 1000;
-const memoryCache = new Map<string, { data: MenuItemFullConfig; at: number }>();
+export {
+  getCachedMenuItemFullConfig,
+  setCachedMenuItemFullConfig,
+  clearCachedMenuItemFullConfig,
+};
 
 export function menuItemConfigQueryKey(storeId: string, itemId: string) {
   return ["menu-item-full-config", storeId, itemId] as const;
@@ -15,28 +23,6 @@ export function resolveFullConfigItemId(item: Pick<MenuItem, "id" | "menuItemId"
   const pkStr = item.menuItemId != null ? String(item.menuItemId) : "";
   if (idStr && idStr !== pkStr) return idStr;
   return pkStr || idStr;
-}
-
-export function getCachedMenuItemFullConfig(
-  storeId: string,
-  itemId: string
-): MenuItemFullConfig | undefined {
-  const entry = memoryCache.get(`${storeId}:${itemId}`);
-  if (!entry || Date.now() - entry.at > CACHE_TTL_MS) return undefined;
-  return entry.data;
-}
-
-export function setCachedMenuItemFullConfig(
-  storeId: string,
-  itemId: string,
-  data: MenuItemFullConfig | null | undefined
-): void {
-  if (!data) return;
-  memoryCache.set(`${storeId}:${itemId}`, { data, at: Date.now() });
-}
-
-export function clearCachedMenuItemFullConfig(storeId: string, itemId: string): void {
-  memoryCache.delete(`${storeId}:${itemId}`);
 }
 
 export async function prefetchMenuItemFullConfig(
@@ -54,11 +40,12 @@ export async function prefetchMenuItemFullConfig(
   await queryClient.prefetchQuery({
     queryKey,
     queryFn: async () => {
+      const { merchantService } = await import("@/services/merchant.service");
       const data = await merchantService.getMenuItemFullConfig(storeId, itemId);
       if (data) setCachedMenuItemFullConfig(storeId, itemId, data);
       return data;
     },
-    staleTime: CACHE_TTL_MS,
+    staleTime: MENU_ITEM_CONFIG_CACHE_TTL_MS,
   });
 }
 

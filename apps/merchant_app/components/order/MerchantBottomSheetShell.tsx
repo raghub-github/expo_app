@@ -11,6 +11,8 @@ type Props = {
   footer?: ReactNode;
   /** Max height of sheet area, e.g. "94%" */
   maxHeightPercent?: `${number}%`;
+  /** Hide the floating close button above the sheet (use an in-sheet close control). */
+  hideCloseFab?: boolean;
 };
 
 export function MerchantBottomSheetShell({
@@ -19,6 +21,7 @@ export function MerchantBottomSheetShell({
   children,
   footer,
   maxHeightPercent = "88%",
+  hideCloseFab = false,
 }: Props) {
   const insets = useSafeAreaInsets();
 
@@ -27,15 +30,17 @@ export function MerchantBottomSheetShell({
       <View style={styles.overlay}>
         <Pressable style={styles.dismissArea} onPress={onClose} accessibilityLabel="Close" />
         <View style={[styles.sheetWrap, { maxHeight: maxHeightPercent }]}>
-          <Pressable
-            onPress={onClose}
-            style={styles.closeFab}
-            hitSlop={12}
-            accessibilityRole="button"
-            accessibilityLabel="Close"
-          >
-            <Ionicons name="close" size={22} color={GatiMitraMerchant.textPrimary} />
-          </Pressable>
+          {!hideCloseFab ? (
+            <Pressable
+              onPress={onClose}
+              style={styles.closeFab}
+              hitSlop={12}
+              accessibilityRole="button"
+              accessibilityLabel="Close"
+            >
+              <Ionicons name="close" size={22} color={GatiMitraMerchant.textPrimary} />
+            </Pressable>
+          ) : null}
 
           <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 12) }]}>
             {children}

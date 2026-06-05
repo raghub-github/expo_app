@@ -12,6 +12,9 @@ export interface CreatePaymentOrderRequest {
 export interface CreatePaymentOrderResponse {
   orderId: string;
   amount: number;
+  subtotalPaise?: number;
+  gstAmountPaise?: number;
+  gstPercentApplied?: number;
   currency: string;
   key: string;
 }

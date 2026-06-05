@@ -3,7 +3,10 @@
  */
 
 import api from "./api";
-import { getCachedMenuItemFullConfig, setCachedMenuItemFullConfig } from "@/lib/menu-item-config-query";
+import {
+  getCachedMenuItemFullConfig,
+  setCachedMenuItemFullConfig,
+} from "@/lib/menu-item-config-cache";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 const MERCHANTS_PREFIX = "/v1/merchants";
@@ -68,6 +71,8 @@ export type MenuItem = {
   hasCustomizations?: boolean;
   hasAddons?: boolean;
   hasVariants?: boolean;
+  /** False when item is out of stock; omitted means available. */
+  inStock?: boolean;
 };
 
 export type MenuItemFullConfig = {
@@ -122,6 +127,12 @@ export type OrderedTogetherPair = {
   item1MenuItemPk: number;
   item2MenuItemPk: number;
   orderCount: number;
+  source?: "co_purchase" | "popular_fallback";
+};
+
+export type OrderedTogetherRecommendations = {
+  pairs: OrderedTogetherPair[];
+  byAnchorItemId: Record<string, OrderedTogetherPair[]>;
 };
 
 export type MerchantDetail = MerchantSummary & {
@@ -196,6 +207,15 @@ function pickFirstString(...candidates: unknown[]): string | null {
   return null;
 }
 
+function pickOpenAtValue(...candidates: unknown[]): string | number | null {
+  for (const c of candidates) {
+    if (c == null) continue;
+    if (typeof c === "string" && c.trim().length > 0) return c.trim();
+    if (typeof c === "number" && Number.isFinite(c)) return c;
+  }
+  return null;
+}
+
 function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknown>): MerchantSummary {
   const bannerRaw = pickFirstString(item.banner_url, item.bannerUrl);
   const logoRaw = pickFirstString(
@@ -218,16 +238,16 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
     banner_url: bannerAbs ?? bannerRaw,
     displayImage: toAbsoluteImageUrl(chosen),
     galleryImages: galleryImages.length > 0 ? galleryImages : undefined,
-    nextOpenAt:
-      item.nextOpenAt ??
-      (item as Record<string, unknown>).nextOpenAt ??
-      (item as Record<string, unknown>).next_open_at ??
-      null,
-    nextCloseAt:
-      item.nextCloseAt ??
-      (item as Record<string, unknown>).nextCloseAt ??
-      (item as Record<string, unknown>).next_close_at ??
-      null,
+    nextOpenAt: pickOpenAtValue(
+      item.nextOpenAt,
+      (item as Record<string, unknown>).nextOpenAt,
+      (item as Record<string, unknown>).next_open_at
+    ),
+    nextCloseAt: pickOpenAtValue(
+      item.nextCloseAt,
+      (item as Record<string, unknown>).nextCloseAt,
+      (item as Record<string, unknown>).next_close_at
+    ),
     completedOrderCount: (() => {
       const raw =
         item.completedOrderCount ??
@@ -301,9 +321,8 @@ function normalizeMerchantDetail(data: MerchantDetail): MerchantDetail {
     liveStatus:
       data.liveStatus ??
       (r.liveStatus === "OPEN" || r.liveStatus === "CLOSED" ? r.liveStatus : undefined),
-    nextOpenAt: data.nextOpenAt ?? (r.nextOpenAt as string | null) ?? (r.next_open_at as string | null) ?? null,
-    nextCloseAt:
-      data.nextCloseAt ?? (r.nextCloseAt as string | null) ?? (r.next_close_at as string | null) ?? null,
+    nextOpenAt: pickOpenAtValue(data.nextOpenAt, r.nextOpenAt, r.next_open_at),
+    nextCloseAt: pickOpenAtValue(data.nextCloseAt, r.nextCloseAt, r.next_close_at),
   };
 }
 
@@ -408,15 +427,39 @@ export const merchantService = {
     }
   },
 
-  /** Pairs of items frequently ordered together at this store (from completed order history). */
-  async getOrderedTogetherPairs(storeId: string): Promise<OrderedTogetherPair[]> {
+  /** Pairs frequently ordered together at this store (from order history + popular fallback). */
+  async getOrderedTogetherPairs(
+    storeId: string,
+    opts?: { anchorMenuItemId?: string; limit?: number }
+  ): Promise<OrderedTogetherPair[]> {
     try {
+      const params = new URLSearchParams();
+      if (opts?.anchorMenuItemId) params.set("anchorMenuItemId", opts.anchorMenuItemId);
+      if (opts?.limit != null) params.set("limit", String(opts.limit));
+      const qs = params.toString();
       const { data } = await api.get<{ pairs: OrderedTogetherPair[] }>(
-        `${MERCHANTS_PREFIX}/${storeId}/menu/ordered-together`
+        `${MERCHANTS_PREFIX}/${storeId}/menu/ordered-together${qs ? `?${qs}` : ""}`
       );
       return Array.isArray(data?.pairs) ? data.pairs : [];
     } catch {
       return [];
+    }
+  },
+
+  /** Store-level pairs plus per-anchor recommendations for menu UI. */
+  async getOrderedTogetherRecommendations(
+    storeId: string
+  ): Promise<OrderedTogetherRecommendations> {
+    try {
+      const { data } = await api.get<OrderedTogetherRecommendations>(
+        `${MERCHANTS_PREFIX}/${storeId}/menu/ordered-together/recommendations`
+      );
+      return {
+        pairs: Array.isArray(data?.pairs) ? data.pairs : [],
+        byAnchorItemId: data?.byAnchorItemId ?? {},
+      };
+    } catch {
+      return { pairs: [], byAnchorItemId: {} };
     }
   },
 

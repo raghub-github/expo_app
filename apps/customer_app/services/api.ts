@@ -35,6 +35,13 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (res) => res,
   (err: AxiosError<{ message?: string; error?: string }>) => {
+    const isCanceled =
+      err.code === "ERR_CANCELED" ||
+      err.name === "CanceledError" ||
+      (typeof err.message === "string" && err.message.toLowerCase() === "canceled");
+    if (isCanceled) {
+      return Promise.reject(err);
+    }
     const status = err.response?.status;
     const message = err.response?.data?.message ?? err.response?.data?.error ?? err.message ?? "Network Error";
     if (__DEV__) {

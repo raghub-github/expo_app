@@ -79,6 +79,7 @@ export function OrderTimelineModal({
   const [entries, setEntries] = useState<OrderTimelineEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [riderReachedAt, setRiderReachedAt] = useState<string | null>(null);
+  const [riderAssignedAt, setRiderAssignedAt] = useState<string | null>(null);
   const [actions, setActions] = useState<MerchantOrderActionForTimeline[]>([]);
   const [timelineEntries, setTimelineEntries] = useState<
     Array<{ status: string; occurred_at: string; status_message?: string | null }>
@@ -95,10 +96,11 @@ export function OrderTimelineModal({
     if (!order || !isMerchant) return [];
     return buildMerchantVisibleTimeline(order, {
       riderReachedAt,
+      riderAssignedAt,
       actions,
       timelineEntries,
     });
-  }, [order, isMerchant, riderReachedAt, actions, timelineEntries]);
+  }, [order, isMerchant, riderReachedAt, riderAssignedAt, actions, timelineEntries]);
 
   useEffect(() => {
     if (!open) return;
@@ -123,7 +125,7 @@ export function OrderTimelineModal({
     }
 
     let cancelled = false;
-    void fetchOrderTimelineCached(orderFoodId, resolvedTimelineUrl).then((list) => {
+    void fetchOrderTimelineCached(orderFoodId, resolvedTimelineUrl, { force: true }).then((list) => {
       if (cancelled) return;
       setTimelineEntries(
         list.map((e) => ({
@@ -142,6 +144,7 @@ export function OrderTimelineModal({
   useEffect(() => {
     if (!open || !isMerchant || orderFoodId <= 0) {
       setRiderReachedAt(null);
+      setRiderAssignedAt(null);
       setActions([]);
       return;
     }
@@ -150,14 +153,30 @@ export function OrderTimelineModal({
 
     void fetch(`/api/food-orders/${orderFoodId}/riders-log`)
       .then((r) => (r.ok ? r.json() : { riders: [] }))
-      .then((data: { riders?: Array<{ reached_merchant_at?: string | null }> }) => {
+      .then(
+        (data: {
+          riders?: Array<{
+            reached_merchant_at?: string | null;
+            accepted_at?: string | null;
+            assigned_at?: string | null;
+          }>;
+        }) => {
         if (cancelled) return;
+        const riders = data.riders ?? [];
         const reached =
-          (data.riders ?? []).find((r) => r.reached_merchant_at)?.reached_merchant_at ?? null;
+          riders.find((r) => r.reached_merchant_at)?.reached_merchant_at ?? null;
+        const assigned =
+          riders.find((r) => r.accepted_at)?.accepted_at ??
+          riders.find((r) => r.assigned_at)?.assigned_at ??
+          null;
         setRiderReachedAt(reached);
+        setRiderAssignedAt(assigned);
       })
       .catch(() => {
-        if (!cancelled) setRiderReachedAt(null);
+        if (!cancelled) {
+          setRiderReachedAt(null);
+          setRiderAssignedAt(null);
+        }
       });
 
     if (storeId) {

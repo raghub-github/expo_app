@@ -35,6 +35,10 @@ export declare const WalletTransactionCategory: z.ZodEnum<{
     HOLD_LOCK: "HOLD_LOCK";
     HOLD_RELEASE: "HOLD_RELEASE";
     FAILED_SETTLEMENT_REVERSAL: "FAILED_SETTLEMENT_REVERSAL";
+    SETTLEMENT_REVERSAL: "SETTLEMENT_REVERSAL";
+    CHARGEBACK: "CHARGEBACK";
+    PAYOUT_HOLD: "PAYOUT_HOLD";
+    PAYOUT_RELEASE: "PAYOUT_RELEASE";
     ONBOARDING_FEE: "ONBOARDING_FEE";
     SUBSCRIPTION_DEBIT: "SUBSCRIPTION_DEBIT";
 }>;
@@ -107,6 +111,11 @@ export declare const WalletSummarySchema: z.ZodObject<{
     today_earning: z.ZodNumber;
     yesterday_earning: z.ZodNumber;
     pending_withdrawal_total: z.ZodNumber;
+    locked_settlement_total: z.ZodOptional<z.ZodNumber>;
+    withdrawable_balance: z.ZodOptional<z.ZodNumber>;
+    total_balance: z.ZodOptional<z.ZodNumber>;
+    settlement_paused: z.ZodOptional<z.ZodBoolean>;
+    delivered_today: z.ZodOptional<z.ZodNumber>;
 }, z.core.$strip>;
 export type WalletSummary = z.infer<typeof WalletSummarySchema>;
 export declare const LedgerEntrySchema: z.ZodObject<{
@@ -198,4 +207,13 @@ export declare const WALLET_CONSTANTS: {
 };
 export declare function roundMoney(n: number): number;
 export declare function idempotencyKey(prefix: string, ...parts: (string | number)[]): string;
+/** Unified balance buckets for merchant app, partnersite, and dashboard. */
+export declare function normalizeMerchantWalletDisplay(summary: WalletSummary): {
+    withdrawable: number;
+    locked: number;
+    hold: number;
+    pending: number;
+    total: number;
+    settlement_paused: boolean;
+};
 //# sourceMappingURL=wallet.d.ts.map

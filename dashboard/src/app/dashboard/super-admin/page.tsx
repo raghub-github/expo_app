@@ -82,6 +82,31 @@ const OrderAcceptanceIcon = dynamic(async () => {
   return (props: { className?: string }) => <TimerReset {...props} />;
 });
 
+const RuleEngineIcon = dynamic(async () => {
+  const { Shield } = await import("lucide-react");
+  return (props: { className?: string }) => <Shield {...props} />;
+});
+
+const CancellationReasonsIcon = dynamic(async () => {
+  const { ListX } = await import("lucide-react");
+  return (props: { className?: string }) => <ListX {...props} />;
+});
+
+const RiderVehicleTypesIcon = dynamic(async () => {
+  const { Bike } = await import("lucide-react");
+  return (props: { className?: string }) => <Bike {...props} />;
+});
+
+const RiderDocumentTypesIcon = dynamic(async () => {
+  const { FileText } = await import("lucide-react");
+  return (props: { className?: string }) => <FileText {...props} />;
+});
+
+const RiderDispatchRadiusIcon = dynamic(async () => {
+  const { Radar } = await import("lucide-react");
+  return (props: { className?: string }) => <Radar {...props} />;
+});
+
 const adminOptions: AdminOption[] = [
   {
     name: "Users",
@@ -147,6 +172,47 @@ const adminOptions: AdminOption[] = [
     color: "text-slate-700",
     bgColor: "bg-slate-50 hover:bg-slate-100",
   },
+  {
+    name: "Financial rule engine",
+    href: "/dashboard/super-admin/rule-engine",
+    Icon: RuleEngineIcon,
+    description: "Cancellation, refund, penalty, settlement & dispute rules (centralized)",
+    color: "text-indigo-700",
+    bgColor: "bg-indigo-50 hover:bg-indigo-100",
+  },
+  {
+    name: "Cancellation reasons",
+    href: "/dashboard/super-admin/cancellation-reasons",
+    Icon: CancellationReasonsIcon,
+    description: "Manage order cancellation and refund rejection options by attribute",
+    color: "text-red-700",
+    bgColor: "bg-red-50 hover:bg-red-100",
+  },
+  {
+    name: "Rider vehicle types",
+    href: "/dashboard/super-admin/rider-onboarding-vehicle-types",
+    Icon: RiderVehicleTypesIcon,
+    description: "Manage rider onboarding vehicle options, icons, flows, and document rules",
+    color: "text-teal-700",
+    bgColor: "bg-teal-50 hover:bg-teal-100",
+  },
+  {
+    name: "Rider document types",
+    href: "/dashboard/super-admin/rider-onboarding-document-types",
+    Icon: RiderDocumentTypesIcon,
+    description: "Manage DL, RC, rental proof and other upload documents for rider onboarding",
+    color: "text-sky-700",
+    bgColor: "bg-sky-50 hover:bg-sky-100",
+  },
+  {
+    name: "Rider assignment controls",
+    href: "/dashboard/super-admin/rider-assignment-controls",
+    Icon: GeoIcon,
+    description:
+      "Assignment limits, geo-fenced milestones, and dispatch wave settings (food / parcel / ride)",
+    color: "text-indigo-700",
+    bgColor: "bg-indigo-50 hover:bg-indigo-100",
+  },
 
   // ✅ YOUR MODULES
   {
@@ -184,7 +250,7 @@ const adminOptions: AdminOption[] = [
 
   // ✅ INCOMING MODULE (merged)
   {
-    name: "Store onboarding fee",
+    name: "Onboarding fee",
     href: "/dashboard/super-admin/store-onboarding-fee",
     Icon: StoreOnboardingIcon,
     description: "Onboarding fee & commission config",

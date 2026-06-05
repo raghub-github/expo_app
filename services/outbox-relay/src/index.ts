@@ -110,6 +110,7 @@ async function relayBatch(): Promise<number> {
     SELECT id, topic, payload
     FROM event_outbox
     WHERE published_at IS NULL
+      AND topic NOT LIKE 'financial_rule.%'
     ORDER BY created_at ASC
     LIMIT ${BATCH_SIZE}
     FOR UPDATE SKIP LOCKED
@@ -119,8 +120,11 @@ async function relayBatch(): Promise<number> {
   let published = 0;
   for (const row of rows) {
     try {
-      // Schema-validate before publishing so we never put garbage on the bus.
-      const evt = eventSchema.parse(row.payload);
+      // Financial rule events use a separate worker; domain events stay schema-validated.
+      const evt =
+        row.topic.startsWith("financial_rule.")
+          ? row.payload
+          : eventSchema.parse(row.payload);
       await bus.publish(row.topic, evt);
       await sql`UPDATE event_outbox SET published_at = NOW() WHERE id = ${row.id}`;
       published++;

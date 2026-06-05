@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import type { ApiFoodOrder } from "@/services/ordersApi";
 import { GatiMitraMerchant, CARD_PADDING, CARD_RADIUS } from "@/constants/theme";
 import { merchantOrderBillTotal } from "@/lib/merchant-line-total";
@@ -31,7 +32,10 @@ export function OrderBillDetails({ order }: Props) {
 
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionHeading}>TOTAL BILL</Text>
+      <View style={styles.sectionHead}>
+        <Ionicons name="receipt-outline" size={18} color="#444444" />
+        <Text style={styles.sectionHeading}>Total bill</Text>
+      </View>
       <Pressable
         onPress={() => setBillOpen(true)}
         style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
@@ -72,12 +76,17 @@ const styles = StyleSheet.create({
   section: {
     marginTop: 16,
   },
-  sectionHeading: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: GatiMitraMerchant.textSecondary,
-    letterSpacing: 0.6,
+  sectionHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
     marginBottom: 10,
+  },
+  sectionHeading: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
   },
   card: {
     backgroundColor: GatiMitraMerchant.cardBg,

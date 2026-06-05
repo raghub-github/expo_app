@@ -54,6 +54,26 @@ export const DEFAULT_ITEM_FORM_DATA: ItemFormData = {
   variants: [],
 };
 
+function parseNullableInt(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
+/** Prefer item_image_url column; fall back to primary row in merchant_menu_item_images. */
+function resolveItemImageUrl(source: Record<string, unknown>): string {
+  const direct = String(source.item_image_url ?? "").trim();
+  if (direct) return direct;
+  const images = source.images;
+  if (Array.isArray(images) && images.length > 0) {
+    const rows = images as Array<{ is_primary?: boolean; image_url?: unknown }>;
+    const primary = rows.find((img) => img.is_primary === true) ?? rows[0];
+    const url = String(primary?.image_url ?? "").trim();
+    if (url) return url;
+  }
+  return "";
+}
+
 function allergensToFormString(allergens: unknown): string {
   if (Array.isArray(allergens)) return allergens.join(", ");
   if (typeof allergens === "string") return allergens;
@@ -93,7 +113,7 @@ export function mapMenuItemToEditForm(
     ...DEFAULT_ITEM_FORM_DATA,
     item_name: String(source.item_name ?? ""),
     item_description: String(source.item_description ?? ""),
-    item_image_url: String(source.item_image_url ?? ""),
+    item_image_url: resolveItemImageUrl(source),
     food_type: normalizeFoodTypeForForm(source.food_type as string | undefined),
     spice_level: normalizeSpiceLevelForForm(source.spice_level as string | undefined),
     cuisine_type: String(source.cuisine_type ?? ""),
@@ -133,8 +153,7 @@ export function mapMenuItemToEditForm(
     item_tags: itemTagsToFormString(source.item_tags),
     is_active: source.is_active !== false,
     allergens: allergensToFormString(source.allergens),
-    category_id:
-      source.category_id != null ? Number(source.category_id) : null,
+    category_id: parseNullableInt(source.category_id),
     customizations,
     variants,
   };

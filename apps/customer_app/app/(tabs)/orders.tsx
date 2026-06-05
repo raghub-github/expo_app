@@ -1,8 +1,8 @@
 /**
- * Orders tab – Order History (Zomato-style reference UI).
+ * My Orders — Active (live tracking) + History tabs.
  */
 
-import { useMemo, useState, useCallback } from "react";
+import { useMemo, useState, useCallback, type ReactNode } from "react";
 import {
   View,
   Text,
@@ -24,12 +24,23 @@ import type { OrderSummary } from "@/services/order.service";
 import { addressService } from "@/services/address.service";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { DietIndicator } from "@/components/store/DietIndicator";
+import { RideHistoryRow } from "@/components/ride/RideHistoryRow";
+import { RideActiveHistoryRow } from "@/components/ride/RideActiveHistoryRow";
+import { isPersonRideOrderSummary } from "@/lib/person-ride-orders";
+import { getRideDropTitle } from "@/lib/ride-order-display";
 import { useStoreDeliveryQuote } from "@/hooks/useStoreDeliveryQuote";
 import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
 import { useLocationStore } from "@/store/locationStore";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { populateCartFromOrder, resolveOrderItemDiet } from "@/lib/reorderFromOrder";
+import {
+  getActiveOrderBadge,
+  getHistoryOrderStatusLabel,
+  isActiveOrderStatus,
+  isTerminalOrderStatus,
+  normalizeCustomerOrderStatus,
+} from "@/lib/customer-order-status-display";
 
 const GREEN = GatiMitraColors.primaryMint;
 const ERROR = GatiMitraColors.errorRed;
@@ -40,32 +51,24 @@ const BORDER = "#EBEBEB";
 const PAGE_BG = "#F5F5F5";
 const PAD = 16;
 
+type OrdersTab = "active" | "history";
+
 function formatOrderDate(iso: string) {
   try {
     const d = new Date(iso);
     const day = d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
     const time = d
       .toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true })
-      .replace(/\s/g, "");
+      .replace(/\s/g, " ");
     return `${day}, ${time}`;
   } catch {
     return iso;
   }
 }
 
-function isPaymentFailed(status: string) {
-  const s = status.toUpperCase();
-  return s === "CANCELLED" || s === "PAYMENT_FAILED" || s === "FAILED";
-}
-
-function isDelivered(status: string) {
-  return status.toUpperCase() === "DELIVERED";
-}
-
-function getStatusLabel(status: string): string {
-  if (isPaymentFailed(status)) return "Payment failed";
-  if (isDelivered(status)) return "Delivered";
-  return status.replace(/_/g, " ").toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
+function displayOrderId(order: OrderSummary): string {
+  const id = order.formattedOrderId?.trim() || order.orderId;
+  return id.startsWith("#") ? id : `#${id}`;
 }
 
 function toDietType(itemVeg: string | null | undefined): "veg" | "nonveg" | "egg" | null {
@@ -84,11 +87,134 @@ function DashedDivider() {
   return <View style={styles.dashedDivider} />;
 }
 
-function OrderCard({
+function ActiveOrderCard({
+  order,
+  onTrack,
+  onViewMenu,
+}: {
+  order: OrderSummary;
+  onTrack: () => void;
+  onViewMenu: () => void;
+}) {
+  const badge = getActiveOrderBadge(order.status);
+  const restaurantName = order.merchantPublicName ?? order.merchantName ?? "";
+  const merchantArea = getCompactAddressLine(order.merchantAddress);
+  const bannerUri = toAbsoluteImageUrl(order.merchantBannerUrl);
+  const items = order.items ?? [];
+  const primaryItems = items.slice(0, 2);
+  const moreCount = Math.max(0, items.length - 2);
+
+  return (
+    <View style={styles.orderCard}>
+      <View style={styles.orderCardHeader}>
+        <View style={styles.orderThumb}>
+          {bannerUri ? (
+            <Image source={{ uri: bannerUri }} style={styles.orderThumbImage} resizeMode="cover" />
+          ) : (
+            <View style={styles.orderThumbFallback}>
+              <Ionicons name="restaurant-outline" size={22} color="#B0B0B0" />
+            </View>
+          )}
+        </View>
+
+        <View style={styles.orderCardHeadRight}>
+          {!!restaurantName && (
+            <Text style={styles.orderRestaurantName} numberOfLines={1}>
+              {restaurantName}
+            </Text>
+          )}
+          {!!merchantArea && (
+            <Text style={styles.orderLocation} numberOfLines={1}>
+              {merchantArea}
+            </Text>
+          )}
+          <TouchableOpacity onPress={onViewMenu} style={styles.viewMenuBtn} activeOpacity={0.8}>
+            <Text style={styles.viewMenuText}>View menu</Text>
+            <Ionicons name="chevron-forward" size={12} color={GREEN} />
+          </TouchableOpacity>
+        </View>
+
+        <View style={[styles.statusBadge, { backgroundColor: badge.bg }]}>
+          <Text style={[styles.statusBadgeText, { color: badge.color }]}>{badge.label}</Text>
+        </View>
+      </View>
+
+      {primaryItems.length > 0 && (
+        <>
+          <DashedDivider />
+          <TouchableOpacity
+            style={styles.orderItemsBlock}
+            onPress={onTrack}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Track order"
+          >
+            {primaryItems.map((item, index) => {
+              const diet = toDietType(item.vegNonVeg);
+              const subtext = item.customization?.trim() || item.variantName?.trim() || "";
+              return (
+                <View key={`${order.orderId}-item-${index}`} style={styles.orderLineWrap}>
+                  <View style={styles.orderLine}>
+                    {diet != null && (
+                      <View style={styles.dietWrap}>
+                        <DietIndicator type={diet} />
+                      </View>
+                    )}
+                    <View style={styles.orderLineContent}>
+                      <Text style={styles.orderLineText} numberOfLines={2}>
+                        <Text style={styles.orderQty}>{item.quantity} x </Text>
+                        {item.name}
+                      </Text>
+                      {!!subtext && (
+                        <Text style={styles.orderLineSubtext} numberOfLines={2}>
+                          {subtext}
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                </View>
+              );
+            })}
+            {moreCount > 0 && (
+              <Text style={styles.moreItemsText}>+{moreCount} more item{moreCount > 1 ? "s" : ""}</Text>
+            )}
+          </TouchableOpacity>
+        </>
+      )}
+
+      <DashedDivider />
+
+      <TouchableOpacity style={styles.orderFooter} onPress={onTrack} activeOpacity={0.85}>
+        <Text style={styles.orderDate}>Order placed on {formatOrderDate(order.createdAt)}</Text>
+        <View style={styles.priceRow}>
+          {order.totalAmount != null && (
+            <Text style={styles.orderPrice}>₹{order.totalAmount.toFixed(2)}</Text>
+          )}
+          <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+        </View>
+      </TouchableOpacity>
+
+      <DashedDivider />
+
+      <View style={styles.actionRow}>
+        <View style={styles.actionLeft}>
+          <Text style={styles.activeStatusText}>{displayOrderId(order)}</Text>
+        </View>
+        <TouchableOpacity style={styles.trackBtn} onPress={onTrack} activeOpacity={0.85}>
+          <Text style={styles.trackBtnText}>Track Order</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+function HistoryOrderCard({
   order,
   onPress,
   onViewMenu,
   onReorder,
+  onShareFeedback,
+  onViewFeedback,
   isMenuOpen,
   onToggleMenu,
   onShareRestaurant,
@@ -101,6 +227,8 @@ function OrderCard({
   onPress: () => void;
   onViewMenu: () => void;
   onReorder: () => void;
+  onShareFeedback: () => void;
+  onViewFeedback: () => void;
   isMenuOpen: boolean;
   onToggleMenu: () => void;
   onShareRestaurant: () => void;
@@ -110,9 +238,12 @@ function OrderCard({
   dropCoords: { latitude: number; longitude: number } | null;
 }) {
   const storeId = order.merchantPublicStoreId?.trim() || null;
-  const paymentFailed = isPaymentFailed(order.status);
-  const delivered = isDelivered(order.status);
+  const statusNorm = normalizeCustomerOrderStatus(order.status);
+  const paymentFailed =
+    statusNorm === "CANCELLED" || statusNorm === "PAYMENT_FAILED" || statusNorm === "FAILED";
+  const delivered = statusNorm === "DELIVERED";
   const showActionRow = delivered || paymentFailed;
+  const hasRating = order.storeRatingSubmitted === true && order.storeRating != null;
 
   const { data: storeQuote } = useStoreDeliveryQuote({
     storeId: storeId ?? "",
@@ -220,22 +351,42 @@ function OrderCard({
                 </View>
               );
             })}
-            {moreCount > 0 && <Text style={styles.moreItemsText}>+{moreCount} more item{moreCount > 1 ? "s" : ""}</Text>}
+            {moreCount > 0 && (
+              <Text style={styles.moreItemsText}>+{moreCount} more item{moreCount > 1 ? "s" : ""}</Text>
+            )}
           </TouchableOpacity>
         </>
       )}
 
       <DashedDivider />
 
-      <TouchableOpacity style={styles.orderFooter} onPress={onPress} activeOpacity={0.85}>
-        <Text style={styles.orderDate}>Order placed on {formatOrderDate(order.createdAt)}</Text>
-        <View style={styles.priceRow}>
-          {order.totalAmount != null && (
-            <Text style={styles.orderPrice}>₹{order.totalAmount.toFixed(2)}</Text>
-          )}
-          <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
-        </View>
-      </TouchableOpacity>
+      {delivered && !paymentFailed ? (
+        <>
+          <TouchableOpacity style={styles.orderFooterDateOnly} onPress={onPress} activeOpacity={0.85}>
+            <Text style={styles.orderDate}>Order placed on {formatOrderDate(order.createdAt)}</Text>
+          </TouchableOpacity>
+          <DashedDivider />
+          <TouchableOpacity style={styles.statusPriceRow} onPress={onPress} activeOpacity={0.85}>
+            <Text style={styles.deliveredText}>{getHistoryOrderStatusLabel(order.status)}</Text>
+            <View style={styles.priceRow}>
+              {order.totalAmount != null && (
+                <Text style={styles.orderPrice}>₹{order.totalAmount.toFixed(2)}</Text>
+              )}
+              <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+            </View>
+          </TouchableOpacity>
+        </>
+      ) : (
+        <TouchableOpacity style={styles.orderFooter} onPress={onPress} activeOpacity={0.85}>
+          <Text style={styles.orderDate}>Order placed on {formatOrderDate(order.createdAt)}</Text>
+          <View style={styles.priceRow}>
+            {order.totalAmount != null && (
+              <Text style={styles.orderPrice}>₹{order.totalAmount.toFixed(2)}</Text>
+            )}
+            <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+          </View>
+        </TouchableOpacity>
+      )}
 
       {showActionRow && (
         <>
@@ -243,12 +394,29 @@ function OrderCard({
           <View style={styles.actionRow}>
             <View style={styles.actionLeft}>
               {paymentFailed ? (
-                <>
+                <View style={styles.actionLeftRow}>
                   <Ionicons name="alert-circle" size={16} color={ERROR} />
                   <Text style={styles.paymentFailedText}>Payment failed</Text>
-                </>
+                </View>
+              ) : hasRating ? (
+                <View style={styles.ratingBlock}>
+                  <View style={styles.ratedRow}>
+                    <Text style={styles.ratedLabel}>You rated {order.storeRating}</Text>
+                    <Ionicons name="star" size={14} color="#F59E0B" />
+                  </View>
+                  <TouchableOpacity
+                    style={styles.viewFeedbackBtn}
+                    onPress={onViewFeedback}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.viewFeedbackText}>View your feedback</Text>
+                    <Ionicons name="chevron-forward" size={12} color={GREEN} />
+                  </TouchableOpacity>
+                </View>
               ) : (
-                <Text style={styles.deliveredText}>{getStatusLabel(order.status)}</Text>
+                <TouchableOpacity onPress={onShareFeedback} activeOpacity={0.8} style={styles.shareFeedbackBtn}>
+                  <Text style={styles.shareFeedbackText}>Share feedback</Text>
+                </TouchableOpacity>
               )}
             </View>
 
@@ -273,6 +441,7 @@ export default function OrdersScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const insets = useSafeAreaInsets();
+  const [tab, setTab] = useState<OrdersTab>("active");
   const [search, setSearch] = useState("");
   const [openMenuOrderId, setOpenMenuOrderId] = useState<string | null>(null);
   const [hiddenOrderIds, setHiddenOrderIds] = useState<Set<string>>(new Set());
@@ -293,12 +462,7 @@ export default function OrdersScreen() {
 
   const resolvedDeliveryAddress = useMemo(
     () =>
-      resolveCheckoutDeliveryAddress(
-        addresses,
-        coords,
-        locationSource,
-        activeLocation
-      ),
+      resolveCheckoutDeliveryAddress(addresses, coords, locationSource, activeLocation),
     [addresses, coords, locationSource, activeLocation]
   );
 
@@ -313,17 +477,46 @@ export default function OrdersScreen() {
   const { data: orders = [], isLoading } = useQuery({
     queryKey: ["my-orders"],
     queryFn: () => orderService.getMyOrders({ limit: 50 }),
+    refetchInterval: tab === "active" ? 15_000 : false,
   });
 
   const visibleOrders = orders.filter((o) => !hiddenOrderIds.has(o.orderId));
-  const filteredOrders = search.trim()
-    ? visibleOrders.filter(
-        (o) =>
-          (o.merchantName?.toLowerCase().includes(search.toLowerCase())) ||
-          (o.merchantPublicName?.toLowerCase().includes(search.toLowerCase())) ||
-          o.items?.some((i) => i.name.toLowerCase().includes(search.toLowerCase()))
-      )
-    : visibleOrders;
+
+  const activeOrders = useMemo(
+    () =>
+      visibleOrders
+        .filter((o) => isActiveOrderStatus(o.status))
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [visibleOrders]
+  );
+
+  const historyOrders = useMemo(
+    () =>
+      visibleOrders
+        .filter((o) => isTerminalOrderStatus(o.status))
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [visibleOrders]
+  );
+
+  const filteredHistory = search.trim()
+    ? historyOrders.filter((o) => {
+        const q = search.toLowerCase();
+        if (isPersonRideOrderSummary(o)) {
+          return (
+            getRideDropTitle(o).toLowerCase().includes(q) ||
+            o.merchantAddress?.toLowerCase().includes(q) ||
+            o.deliveryAddress?.toLowerCase().includes(q)
+          );
+        }
+        return (
+          o.merchantName?.toLowerCase().includes(q) ||
+          o.merchantPublicName?.toLowerCase().includes(q) ||
+          o.items?.some((i) => i.name.toLowerCase().includes(q))
+        );
+      })
+    : historyOrders;
+
+  const listOrders = tab === "active" ? activeOrders : filteredHistory;
 
   const handleShareRestaurant = async (order: OrderSummary) => {
     setOpenMenuOrderId(null);
@@ -362,12 +555,16 @@ export default function OrdersScreen() {
     if (storeId) router.push(`/home/merchant/${storeId}`);
   };
 
-  const openOrderDetails = (orderId: string) => {
+  const openOrderDetails = (orderId: string, opts?: { rate?: boolean }) => {
     void queryClient.prefetchQuery({
       queryKey: ["order", orderId],
       queryFn: () => orderService.getOrder(orderId),
       staleTime: 30_000,
     });
+    if (opts?.rate) {
+      router.push({ pathname: "/orders/[id]", params: { id: orderId, rate: "1" } });
+      return;
+    }
     router.push(`/orders/${orderId}`);
   };
 
@@ -396,46 +593,126 @@ export default function OrdersScreen() {
     [router]
   );
 
+  const emptyTitle = tab === "active" ? "No active orders" : "No past orders";
+  const emptySub =
+    tab === "active"
+      ? "When you place an order, track it here until delivery."
+      : "Delivered and cancelled orders will show up here.";
+
+  const renderHistoryList = () => {
+    const nodes: ReactNode[] = [];
+    let rideGroup: OrderSummary[] = [];
+
+    const flushRideGroup = () => {
+      if (rideGroup.length === 0) return;
+      nodes.push(
+        <View key={`ride-group-${rideGroup[0]!.orderId}`} style={styles.rideHistoryList}>
+          {rideGroup.map((order, index) => (
+            <View key={order.orderId}>
+              {index > 0 ? <View style={styles.rideHistoryDivider} /> : null}
+              <RideHistoryRow order={order} onPress={() => openOrderDetails(order.orderId)} />
+            </View>
+          ))}
+        </View>
+      );
+      rideGroup = [];
+    };
+
+    for (const order of filteredHistory) {
+      if (isPersonRideOrderSummary(order)) {
+        rideGroup.push(order);
+        continue;
+      }
+      flushRideGroup();
+      nodes.push(
+        <HistoryOrderCard
+          key={order.orderId}
+          order={order}
+          onPress={() => openOrderDetails(order.orderId)}
+          onViewMenu={() => navigateToStore(order)}
+          onReorder={() => handleReorder(order)}
+          onShareFeedback={() => openOrderDetails(order.orderId, { rate: true })}
+          onViewFeedback={() => openOrderDetails(order.orderId)}
+          isMenuOpen={openMenuOrderId === order.orderId}
+          onToggleMenu={() =>
+            setOpenMenuOrderId((prev) => (prev === order.orderId ? null : order.orderId))
+          }
+          onShareRestaurant={() => handleShareRestaurant(order)}
+          onOrderDetails={() => {
+            setOpenMenuOrderId(null);
+            openOrderDetails(order.orderId);
+          }}
+          onDeleteOrder={() => handleDeleteOrder(order.orderId)}
+          deliveryAddressId={resolvedDeliveryAddress?.id ?? null}
+          dropCoords={dropCoords}
+        />
+      );
+    }
+    flushRideGroup();
+    return nodes;
+  };
+
   return (
     <View style={styles.container}>
-      <View style={[styles.header, { paddingTop: Math.max(insets.top - 6, 0) }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={10} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={22} color={TITLE_DARK} />
-        </TouchableOpacity>
-        <Text style={styles.pageTitle}>Your Orders</Text>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, 8) }]}>
+        <Text style={styles.pageTitle}>My Orders</Text>
       </View>
 
-      <View style={styles.searchWrap}>
-        <Ionicons name="search" size={18} color={GREEN} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search by restaurant or dish"
-          placeholderTextColor={TEXT_GRAY}
-          value={search}
-          onChangeText={setSearch}
-        />
-        <TouchableOpacity hitSlop={8} style={styles.micBtn}>
-          <Ionicons name="mic" size={18} color={GREEN} />
+      <View style={styles.tabRow}>
+        <TouchableOpacity
+          style={styles.tabBtn}
+          onPress={() => setTab("active")}
+          activeOpacity={0.85}
+        >
+          <Text style={[styles.tabLabel, tab === "active" && styles.tabLabelActive]}>Active</Text>
+          {tab === "active" ? <View style={styles.tabIndicator} /> : <View style={styles.tabIndicatorSpacer} />}
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.tabBtn}
+          onPress={() => setTab("history")}
+          activeOpacity={0.85}
+        >
+          <Text style={[styles.tabLabel, tab === "history" && styles.tabLabelActive]}>History</Text>
+          {tab === "history" ? <View style={styles.tabIndicator} /> : <View style={styles.tabIndicatorSpacer} />}
         </TouchableOpacity>
       </View>
+
+      {tab === "history" ? (
+        <View style={styles.searchWrap}>
+          <Ionicons name="search" size={18} color={GREEN} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search by destination or restaurant"
+            placeholderTextColor={TEXT_GRAY}
+            value={search}
+            onChangeText={setSearch}
+          />
+        </View>
+      ) : null}
 
       {isLoading ? (
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={GREEN} />
           <Text style={styles.loadingText}>Loading orders...</Text>
         </View>
-      ) : filteredOrders.length === 0 ? (
+      ) : listOrders.length === 0 ? (
         <View style={styles.centered}>
-          <Ionicons name="receipt-outline" size={56} color={BORDER} />
-          <Text style={styles.emptyTitle}>No orders yet</Text>
-          <Text style={styles.emptySub}>Order from a restaurant to see them here.</Text>
-          <TouchableOpacity
-            onPress={() => router.push("/home")}
-            style={styles.exploreBtn}
-            activeOpacity={0.9}
-          >
-            <Text style={styles.exploreBtnText}>Explore restaurants</Text>
-          </TouchableOpacity>
+          <Ionicons
+            name={tab === "active" ? "bicycle-outline" : "receipt-outline"}
+            size={56}
+            color={BORDER}
+          />
+          <Text style={styles.emptyTitle}>{emptyTitle}</Text>
+          <Text style={styles.emptySub}>{emptySub}</Text>
+          {tab === "active" ? (
+            <TouchableOpacity
+              onPress={() => router.push("/home")}
+              style={styles.exploreBtn}
+              activeOpacity={0.9}
+            >
+              <Text style={styles.exploreBtnText}>Order food</Text>
+            </TouchableOpacity>
+          ) : null}
           <BrandingFooter />
         </View>
       ) : (
@@ -445,27 +722,24 @@ export default function OrdersScreen() {
           showsVerticalScrollIndicator={false}
           onScrollBeginDrag={() => setOpenMenuOrderId(null)}
         >
-          {filteredOrders.map((order) => (
-            <OrderCard
-              key={order.orderId}
-              order={order}
-              onPress={() => openOrderDetails(order.orderId)}
-              onViewMenu={() => navigateToStore(order)}
-              onReorder={() => handleReorder(order)}
-              isMenuOpen={openMenuOrderId === order.orderId}
-              onToggleMenu={() =>
-                setOpenMenuOrderId((prev) => (prev === order.orderId ? null : order.orderId))
-              }
-              onShareRestaurant={() => handleShareRestaurant(order)}
-              onOrderDetails={() => {
-                setOpenMenuOrderId(null);
-                openOrderDetails(order.orderId);
-              }}
-              onDeleteOrder={() => handleDeleteOrder(order.orderId)}
-              deliveryAddressId={resolvedDeliveryAddress?.id ?? null}
-              dropCoords={dropCoords}
-            />
-          ))}
+          {tab === "active"
+            ? activeOrders.map((order) =>
+                isPersonRideOrderSummary(order) ? (
+                  <RideActiveHistoryRow
+                    key={order.orderId}
+                    order={order}
+                    onPress={() => openOrderDetails(order.orderId)}
+                  />
+                ) : (
+                  <ActiveOrderCard
+                    key={order.orderId}
+                    order={order}
+                    onTrack={() => openOrderDetails(order.orderId)}
+                    onViewMenu={() => navigateToStore(order)}
+                  />
+                )
+              )
+            : renderHistoryList()}
           <BrandingFooter />
         </ScrollView>
       )}
@@ -476,30 +750,56 @@ export default function OrdersScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: PAGE_BG },
   header: {
-    flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: PAD,
-    paddingBottom: 6,
+    paddingBottom: 4,
     backgroundColor: PAGE_BG,
-    gap: 12,
-  },
-  backBtn: {
-    width: 32,
-    height: 32,
-    alignItems: "center",
-    justifyContent: "center",
   },
   pageTitle: {
-    fontSize: 20,
-    lineHeight: 24,
+    fontSize: 22,
+    lineHeight: 28,
     fontWeight: "700",
     color: TITLE_DARK,
+  },
+  tabRow: {
+    flexDirection: "row",
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+    backgroundColor: PAGE_BG,
+  },
+  tabBtn: {
+    flex: 1,
+    alignItems: "center",
+    paddingTop: 10,
+    paddingBottom: 0,
+  },
+  tabLabel: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: TEXT_GRAY,
+    paddingBottom: 10,
+  },
+  tabLabelActive: {
+    color: GREEN,
+    fontWeight: "700",
+  },
+  tabIndicator: {
+    height: 3,
+    width: "100%",
+    backgroundColor: GREEN,
+    borderTopLeftRadius: 3,
+    borderTopRightRadius: 3,
+  },
+  tabIndicatorSpacer: {
+    height: 3,
+    width: "100%",
   },
   searchWrap: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: CARD_BG,
     marginHorizontal: PAD,
+    marginTop: 12,
     marginBottom: 10,
     minHeight: 42,
     paddingHorizontal: 14,
@@ -514,9 +814,20 @@ const styles = StyleSheet.create({
     color: TITLE_DARK,
     paddingVertical: 8,
   },
-  micBtn: { padding: 2 },
   scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: PAD, gap: 12 },
+  scrollContent: { paddingHorizontal: PAD, paddingTop: 12, gap: 12 },
+  rideHistoryList: {
+    backgroundColor: CARD_BG,
+    borderRadius: 14,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  rideHistoryDivider: {
+    height: 1,
+    backgroundColor: BORDER,
+    marginHorizontal: 16,
+  },
   centered: {
     flex: 1,
     justifyContent: "center",
@@ -534,6 +845,38 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   exploreBtnText: { fontSize: 15, fontWeight: "600", color: "#fff" },
+
+  statusBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    alignSelf: "flex-start",
+    marginTop: 2,
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  activeStatusText: {
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: "600",
+    color: TEXT_GRAY,
+  },
+  trackBtn: {
+    borderWidth: 1.5,
+    borderColor: GREEN,
+    borderRadius: 10,
+    paddingVertical: 9,
+    paddingHorizontal: 16,
+    backgroundColor: "#fff",
+  },
+  trackBtnText: {
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: "700",
+    color: GREEN,
+  },
 
   orderCard: {
     backgroundColor: CARD_BG,
@@ -640,9 +983,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E8F5EE",
   },
-  orderLineWrap: {
-    paddingVertical: 2,
-  },
+  orderLineWrap: { paddingVertical: 2 },
   orderLine: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -680,6 +1021,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
+  orderFooterDateOnly: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  statusPriceRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
   orderDate: {
     fontSize: 12,
     lineHeight: 16,
@@ -707,10 +1059,52 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   actionLeft: {
+    flexDirection: "column",
+    alignItems: "flex-start",
+    justifyContent: "center",
+    flex: 1,
+    gap: 2,
+  },
+  actionLeftRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
     flex: 1,
+  },
+  ratingBlock: {
+    gap: 2,
+  },
+  ratedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  ratedLabel: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "600",
+    color: TITLE_DARK,
+  },
+  viewFeedbackBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    marginTop: 2,
+  },
+  viewFeedbackText: {
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: "600",
+    color: GREEN,
+  },
+  shareFeedbackBtn: {
+    alignSelf: "flex-start",
+  },
+  shareFeedbackText: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "700",
+    color: GREEN,
   },
   paymentFailedText: {
     fontSize: 14,

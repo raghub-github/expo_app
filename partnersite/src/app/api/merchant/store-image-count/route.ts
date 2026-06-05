@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { validateMerchantFromSession } from '@/lib/auth/validate-merchant'
+import { assertStoreAccess } from '@/lib/auth/assert-store-access'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co"
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key"
@@ -16,40 +15,20 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey, {
  */
 export async function GET(req: NextRequest) {
   try {
-    const supabaseServer = await createServerSupabaseClient()
-    const { data: { user }, error: userError } = await supabaseServer.auth.getUser()
-    if (userError || !user) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
-    }
-
     const storeId = req.nextUrl.searchParams.get('storeId')
     if (!storeId) {
       return NextResponse.json({ error: 'storeId required' }, { status: 400 })
     }
 
-    const validation = await validateMerchantFromSession({
-      id: user.id,
-      email: user.email ?? null,
-      phone: user.phone ?? null,
-    })
-    if (!validation.isValid) {
-      return NextResponse.json({ error: validation.error ?? 'Forbidden' }, { status: 403 })
-    }
-
-    const { data: store, error: storeError } = await supabase
-      .from('merchant_stores')
-      .select('id, parent_id')
-      .eq('store_id', String(storeId).trim())
-      .single()
-
-    if (storeError || !store?.id || store.parent_id !== validation.merchantParentId) {
-      return NextResponse.json({ error: 'Store not found or access denied' }, { status: 404 })
+    const access = await assertStoreAccess(storeId)
+    if (!access.ok) {
+      return NextResponse.json({ error: access.error }, { status: access.status })
     }
 
     const { count: itemImages } = await supabase
       .from('merchant_menu_items')
       .select('id', { count: 'exact', head: true })
-      .eq('store_id', store.id)
+      .eq('store_id', access.storeIdNum)
       .not('item_image_url', 'is', null)
 
     const totalUsed = itemImages ?? 0

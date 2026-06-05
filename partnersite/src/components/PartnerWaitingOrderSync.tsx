@@ -1,9 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useRef } from 'react';
+import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import { WAITING_FOR_ORDER_TITLE } from '@/lib/partner-notification-constants';
 
-const POLL_MS = 8000;
+const POLL_MS = 12_000;
 const RETRIGGER_MS = 4000;
 
 type Props = {
@@ -28,6 +29,7 @@ export function PartnerWaitingOrderSync({
   const skipRetriggerRef = useRef(false);
   const prevHadWaitingRef = useRef(false);
   const retriggerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshListTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const storeIdRef = useRef(storeId);
   const isOnlineRef = useRef(isOnline);
   const onListChangeRef = useRef(onListChange);
@@ -44,6 +46,14 @@ export function PartnerWaitingOrderSync({
     }
   }, []);
 
+  const scheduleRefreshList = useCallback(() => {
+    if (refreshListTimerRef.current) clearTimeout(refreshListTimerRef.current);
+    refreshListTimerRef.current = setTimeout(() => {
+      refreshListTimerRef.current = null;
+      refreshList();
+    }, 600);
+  }, [refreshList]);
+
   /** User deleted waiting row while still idle → re-ensure after delay */
   useEffect(() => {
     const prev = prevHadWaitingRef.current;
@@ -52,7 +62,15 @@ export function PartnerWaitingOrderSync({
     const sid = storeIdRef.current;
     const online = isOnlineRef.current;
 
-    if (!sid || !online) {
+    if (!sid || !isValidPartnerStoreId(sid)) {
+      if (retriggerTimerRef.current) {
+        clearTimeout(retriggerTimerRef.current);
+        retriggerTimerRef.current = null;
+      }
+      return;
+    }
+
+    if (!online) {
       if (retriggerTimerRef.current) {
         clearTimeout(retriggerTimerRef.current);
         retriggerTimerRef.current = null;
@@ -98,12 +116,12 @@ export function PartnerWaitingOrderSync({
   }, [hasWaitingInList, refreshList]);
 
   useEffect(() => {
-    if (!storeId) return undefined;
+    if (!storeId || !isValidPartnerStoreId(storeId)) return undefined;
 
     let cancelled = false;
 
     const run = async () => {
-      if (cancelled || !storeIdRef.current) return;
+      if (cancelled || !storeIdRef.current || !isValidPartnerStoreId(storeIdRef.current)) return;
       const sid = storeIdRef.current;
       try {
         const acRes = await fetch(
@@ -120,7 +138,7 @@ export function PartnerWaitingOrderSync({
               `/api/merchant/store-notifications?store_id=${encodeURIComponent(sid)}&kind=waiting`,
               { method: 'DELETE', credentials: 'include' }
             );
-            refreshList();
+            scheduleRefreshList();
           } finally {
             window.setTimeout(() => {
               skipRetriggerRef.current = false;
@@ -136,7 +154,7 @@ export function PartnerWaitingOrderSync({
               `/api/merchant/store-notifications?store_id=${encodeURIComponent(sid)}&kind=waiting`,
               { method: 'DELETE', credentials: 'include' }
             );
-            refreshList();
+            scheduleRefreshList();
           } finally {
             window.setTimeout(() => {
               skipRetriggerRef.current = false;
@@ -166,7 +184,7 @@ export function PartnerWaitingOrderSync({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [storeId, isOnline, refreshList]);
+  }, [storeId, isOnline, refreshList, scheduleRefreshList]);
 
   return null;
 }

@@ -276,7 +276,10 @@ export async function fetchMenuCategories(
     const err = await res.json().catch(() => ({}));
     throw new Error((err as { message?: string }).message || `Categories failed: ${res.status}`);
   }
-  return res.json() as Promise<ListCategoriesResponse>;
+  const data = (await readJsonResponseSafe(res)) as ListCategoriesResponse;
+  return {
+    categories: (data.categories ?? []).map(normalizeMenuCategoryRow),
+  };
 }
 
 /** Type-ahead: distinct category names from other stores (excludes names already on this store). */
@@ -517,7 +520,11 @@ export async function fetchMenuItems(
     const err = await res.json().catch(() => ({}));
     throw new Error((err as { message?: string }).message || `Items failed: ${res.status}`);
   }
-  return res.json() as Promise<ListItemsResponse>;
+  const data = (await readJsonResponseSafe(res)) as ListItemsResponse;
+  return {
+    items: (data.items ?? []).map(normalizeMenuItemRow),
+    total: data.total ?? (data.items?.length ?? 0),
+  };
 }
 
 export async function patchItemStock(
@@ -564,11 +571,6 @@ function serializeMerchantMenuOutOfStockBody(body: {
   return JSON.stringify(out);
 }
 
-/**
- * Parse JSON from a fetch Response without using `Response.text()`.
- * On some Android/React Native builds, `.text()` can throw:
- * "The \"string\" argument must be of type string ... Received an instance of Date".
- */
 async function readJsonResponseSafe(res: Response): Promise<any> {
   try {
     const buf = await res.arrayBuffer();
@@ -580,6 +582,36 @@ async function readJsonResponseSafe(res: Response): Promise<any> {
   } catch {
     return {};
   }
+}
+
+function toIsoTimestamptzOrNull(value: unknown): string | null {
+  if (value == null) return null;
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.toISOString() : null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  let normalized = raw.includes(" ") && !raw.includes("T") ? raw.replace(" ", "T") : raw;
+  normalized = normalized.replace(/([+\-]\d{2})$/, "$1:00");
+  normalized = normalized.replace(/([+\-]\d{2})(\d{2})$/, "$1:$2");
+  const d = new Date(normalized);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+
+function normalizeMenuCategoryRow(category: MenuCategory): MenuCategory {
+  return {
+    ...category,
+    out_of_stock_until: toIsoTimestamptzOrNull(category.out_of_stock_until),
+    out_of_stock_updated_at: toIsoTimestamptzOrNull(category.out_of_stock_updated_at),
+  };
+}
+
+function normalizeMenuItemRow(item: MenuItemRow): MenuItemRow {
+  return {
+    ...item,
+    out_of_stock_until: toIsoTimestamptzOrNull(item.out_of_stock_until),
+    out_of_stock_updated_at: toIsoTimestamptzOrNull(item.out_of_stock_updated_at),
+    category_out_of_stock_until: toIsoTimestamptzOrNull(item.category_out_of_stock_until),
+    category_out_of_stock_updated_at: toIsoTimestamptzOrNull(item.category_out_of_stock_updated_at),
+  };
 }
 
 export async function patchItemOutOfStock(

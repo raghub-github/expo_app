@@ -79,17 +79,26 @@ import {
 } from '@/hooks/queries/useMerchantStoreQueries';
 import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
 import {
-  isPrepCountdownExpired,
-  prepReadyCountdownLabel,
   prepReadyDeadlineMs,
 } from '@/lib/order-prep-time';
-import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
+import {
+  MerchantPreparingOrderActions,
+  OrderPrepDelayedBanner,
+  OrderPreparedLateTopBanner,
+  computePrepExpired,
+} from '@/components/merchant/MerchantPreparingOrderActions';
+import {
+  formatMerchantInstructionsForCard,
+  resolveMerchantInstructionsForDisplay,
+} from '@/lib/merchant-order-instructions';
+import { resolvePreparedLateMinutes } from '@/lib/order-prep-time';
+import { resolveMerchantCtm } from '@/lib/merchant-order-ctm';
 import { MerchantOrderPipelineCard } from '@/components/merchant/MerchantOrderPipelineCard';
-import { MerchantPreparingOrderCard } from '@/components/merchant/MerchantPreparingOrderCard';
 import { MerchantPrepDelayModal } from '@/components/merchant/MerchantPrepDelayModal';
 import { StoreClosedActiveOrdersNotice } from '@/components/orders/StoreClosedActiveOrdersNotice';
 import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';
-import { isActiveMerchantFoodOrderStatus } from '@/lib/merchantActiveOrders';
+import { isActiveMerchantFoodOrderStatus, canMerchantMarkDelivered } from '@/lib/merchantActiveOrders';
+import { countLiveSidebarPipelineOrders } from '@/lib/foodOrdersLivePipeline';
 import {
   dispatchMerchantStoreOrderUpdated,
   isIncomingOrderModalOpen,
@@ -816,6 +825,33 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     });
   };
   const { toast } = useToast();
+  const submitRiderUniformFeedback = useCallback(
+    async (order: OrdersFoodRow, inUniform: boolean) => {
+      setUniformFeedbackByOrderId((prev) => ({ ...prev, [order.id]: inUniform }));
+      try {
+        const res = await fetch(
+          `/api/merchant/stores/${storeId}/orders/${merchantOrderApiId(order)}/rider-uniform-feedback`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+              in_uniform: inUniform,
+              rider_id: order.rider_id ?? null,
+            }),
+          }
+        );
+        if (!res.ok) {
+          const data = (await res.json().catch(() => ({}))) as { error?: string };
+          toast(data.error ?? 'Could not save uniform feedback', 'error');
+        }
+      } catch {
+        toast('Could not save uniform feedback', 'error');
+      }
+    },
+    [storeId, toast]
+  );
+
   const { subscribe } = useStoreFoodOrders(storeId, storeInternalId);
   const playNewOrderSound = useNewOrderSound(notifyEnabled, merchantPublicStoreId, acceptanceSettings);
 
@@ -1160,7 +1196,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const selectedOrderPricing = useMemo((): OrderPricingBreakdown | null => {
     if (!selectedOrder) return null;
     if (selectedOrder.pricing) return selectedOrder.pricing;
-    const total = Number(selectedOrder.food_items_total_value ?? selectedOrderLineSum);
+    const total = resolveMerchantCtm(selectedOrder);
     return {
       subtotal: selectedOrderLineSum,
       packaging: 0,
@@ -1583,10 +1619,10 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         setSelectedOrder(order);
         setRiderTrackingOpen(true);
       }}
-      onUniformFeedback={(inUniform) =>
-        setUniformFeedbackByOrderId((prev) => ({ ...prev, [order.id]: inUniform }))
+      onUniformFeedback={(inUniform) => void submitRiderUniformFeedback(order, inUniform)}
+      uniformFeedback={
+        uniformFeedbackByOrderId[order.id] ?? order.merchant_rider_in_uniform ?? null
       }
-      uniformFeedback={uniformFeedbackByOrderId[order.id] ?? null}
       loading={actionLoading === order.id}
       nowMs={nowTick}
     />
@@ -1722,6 +1758,11 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     RTO: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'RTO')).length,
   };
 
+  const liveActiveCount = useMemo(
+    () => countLiveSidebarPipelineOrders(orders),
+    [orders]
+  );
+
   const hasActiveOrders = useMemo(
     () => orders.some((o) => isActiveMerchantFoodOrderStatus(o.order_status)),
     [orders]
@@ -1854,7 +1895,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                 {stats && (
                   <div className="flex items-center gap-2 shrink-0">
                     <StatBadge label="Today" value={String(stats.ordersTodayActive ?? stats.ordersToday)} />
-                    <StatBadge label="Active" value={String(stats.activeOrders ?? stats.ordersTodayActive ?? 0)} accent />
+                    <StatBadge label="Active" value={String(orders.length > 0 ? liveActiveCount : (stats.activeOrders ?? 0))} accent title="Pending live orders (New + Preparing + Ready + Picked up + RTO)" />
                   </div>
                 )}
                 {stats && (
@@ -2244,7 +2285,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                         {o.customer_name && <p className="text-xs text-gray-600 mt-0.5">By {o.customer_name}</p>}
                         <p className="text-xs text-gray-500 mt-1 line-clamp-2">{formatItemsSummary(o)}</p>
                         <p className="text-sm font-bold text-gray-900 text-right mt-2">
-                          ₹{Number((o as any).food_items_total_value || (o as any).total_amount || 0).toFixed(2)}
+                          ₹{resolveMerchantCtm(o as OrdersFoodRow).toFixed(2)}
                         </p>
                       </button>
                     );
@@ -2401,6 +2442,14 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                       onOpenTimeline={() => setTimelineModalOpen(true)}
                       onPrintBill={() => setPrintBillOpen(true)}
                       onTrackRider={() => setRiderTrackingOpen(true)}
+                      onUniformFeedback={(inUniform) =>
+                        void submitRiderUniformFeedback(selectedOrder, inUniform)
+                      }
+                      uniformFeedback={
+                        uniformFeedbackByOrderId[selectedOrder.id] ??
+                        selectedOrder.merchant_rider_in_uniform ??
+                        null
+                      }
                       onClose={closeOrderPanel}
                       onViewPastRiders={() => {
                         setRidersLogModalOrderId(merchantOrderApiId(selectedOrder));
@@ -2529,13 +2578,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                 {displayOrders.map((order) => renderPipelineCard(order))}
               </div>
               ) : (
-              <div
-                className={
-                  filter === 'PREPARING'
-                    ? 'mx-auto grid w-full max-w-md grid-cols-1 gap-3'
-                    : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-3'
-                }
-              >
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-3">
                 {displayOrders.map((order) => (
                   <OrderCard
                     key={order.id}
@@ -3282,7 +3325,7 @@ function OrderDetailMobile({
         : status === 'CANCELLED'
           ? 'bg-gray-100 text-gray-700'
           : 'bg-blue-100 text-blue-800';
-  const totalValue = Number(order.food_items_total_value || 0).toFixed(2);
+  const totalValue = resolveMerchantCtm(order).toFixed(2);
   const hasFlags =
     order.requires_utensils ||
     order.is_fragile ||
@@ -3489,19 +3532,23 @@ function OrderDetailMobile({
           )}
           <div className="mt-2.5 pt-2.5 border-t border-gray-100 flex justify-between items-center">
             <span className="text-xs text-gray-600">Total</span>
-            <span className="font-bold text-gray-900">₹{Number(order.food_items_total_value || 0).toFixed(2)}</span>
+            <span className="font-bold text-gray-900">₹{resolveMerchantCtm(order).toFixed(2)}</span>
           </div>
         </div>
 
-        {/* Delivery Instructions */}
-        {order.delivery_instructions && (
+        {/* Merchant instructions (kitchen notes — not rider delivery instructions) */}
+        {(() => {
+          const lines = resolveMerchantInstructionsForDisplay(order);
+          if (lines.length === 0) return null;
+          return (
           <div className="rounded-lg bg-amber-50/60 p-2.5 border border-amber-100">
             <div className="flex items-start gap-2">
               <MapPin size={12} className="shrink-0 mt-0.5 text-amber-600" />
-              <p className="text-xs text-gray-700 leading-relaxed break-words">{order.delivery_instructions}</p>
+              <p className="text-xs text-gray-700 leading-relaxed break-words">{lines.join(' · ')}</p>
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* Flags - compact */}
         {(order.requires_utensils || (order.veg_non_veg && order.veg_non_veg !== 'na') || order.is_fragile || order.is_high_value) && (
@@ -3611,42 +3658,46 @@ function OrderCard({
   nowMs?: number;
 }) {
   const status = order.order_status || 'CREATED';
-  const isPreparingPipeline =
-    status === 'PREPARING' || status === 'ACCEPTED';
-
-  if (isPreparingPipeline && nowMs != null) {
-    return (
-      <MerchantPreparingOrderCard
-        order={order}
-        storeName={order.restaurant_name}
-        selected={selected}
-        onClick={onClick}
-        onReady={onReady}
-        onNeedMoreTime={onNeedMoreTime}
-        loading={loading}
-        nowMs={nowMs}
-      />
-    );
-  }
-
   const isNew = status === 'CREATED' || status === 'NEW';
-  const value = Number(order.food_items_total_value || 0);
+  const isPrepPipeline = status === 'PREPARING' || status === 'ACCEPTED';
+  const prepExpired =
+    isPrepPipeline && nowMs != null && computePrepExpired(order, nowMs);
+  const value = resolveMerchantCtm(order);
   const label = statusLabel ?? STATUS_LABEL[status] ?? status;
+  const merchantInstructionsText = formatMerchantInstructionsForCard(order);
+  const preparedLateMins =
+    status === 'READY_FOR_PICKUP' || status === 'OUT_FOR_DELIVERY'
+      ? resolvePreparedLateMinutes(order)
+      : null;
+  const showPreparedLateBanner = preparedLateMins != null && preparedLateMins > 0;
+  const showTopDelayBanner =
+    (prepExpired && nowMs != null) || showPreparedLateBanner;
 
   return (
-    <div
-      onClick={onClick}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
-      className={`rounded-lg border-2 p-2.5 sm:p-3 cursor-pointer transition-all overflow-hidden min-w-0 touch-manipulation active:scale-[0.99] ${
-        selected
-          ? 'border-orange-500 bg-orange-50 shadow-md'
-          : isNew
-            ? 'border-red-300 bg-red-50/50 ring-2 ring-red-200/50'
-            : 'border-gray-200 bg-white hover:border-gray-300 hover:shadow'
-      }`}
-    >
+    <div className="min-w-0 touch-manipulation">
+      <div className="overflow-hidden rounded-lg">
+        {showTopDelayBanner ? (
+          prepExpired && nowMs != null ? (
+            <OrderPrepDelayedBanner order={order} nowMs={nowMs} />
+          ) : showPreparedLateBanner ? (
+            <OrderPreparedLateTopBanner lateMinutes={preparedLateMins!} />
+          ) : null
+        ) : null}
+        <div
+          onClick={onClick}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
+          className={`rounded-lg border-2 p-2.5 sm:p-3 cursor-pointer transition-all overflow-hidden min-w-0 active:scale-[0.99] ${
+            showTopDelayBanner ? 'rounded-t-none border-t-0' : ''
+          } ${
+            selected
+              ? 'border-orange-500 bg-orange-50 shadow-md'
+              : isNew
+                ? 'border-red-300 bg-red-50/50 ring-2 ring-red-200/50'
+                : 'border-gray-200 bg-white hover:border-gray-300 hover:shadow'
+          }`}
+        >
       <div className="flex items-start justify-between gap-2 mb-1.5 min-w-0">
         <div className="min-w-0 flex-1">
           <FormattedOrderId 
@@ -3709,11 +3760,12 @@ function OrderCard({
           </span>
         )}
       </div>
-      {order.delivery_instructions && (
-        <p className="text-xs text-amber-700 mb-2 flex items-center gap-1 truncate" title={order.delivery_instructions}>
-          <AlertTriangle size={12} /> {order.delivery_instructions}
+      {merchantInstructionsText ? (
+        <p className="text-xs text-amber-700 mb-2 flex items-center gap-1 truncate" title={merchantInstructionsText}>
+          <AlertTriangle size={12} /> {merchantInstructionsText}
         </p>
-      )}
+      ) : null}
+
       {(status === 'READY_FOR_PICKUP' || status === 'OUT_FOR_DELIVERY') && (otpCode || onFetchOtp) && (
         <div className="mb-2 px-2 py-1 bg-slate-100 rounded text-xs flex items-center justify-between">
           <span className="text-slate-600">OTP ({otpType || 'PICKUP'}):</span>
@@ -3759,6 +3811,8 @@ function OrderCard({
             Details <ChevronRight size={14} />
           </button>
         ) : null}
+      </div>
+        </div>
       </div>
     </div>
   );
@@ -3808,7 +3862,7 @@ function OrderListRow({
   nowMs?: number;
 }) {
   const status = order.order_status || 'CREATED';
-  const value = Number(order.food_items_total_value || 0);
+  const value = resolveMerchantCtm(order);
   const label = statusLabel ?? STATUS_LABEL[status] ?? status;
   const isNew = status === 'CREATED' || status === 'NEW';
 
@@ -4038,45 +4092,30 @@ function ActionBtns({
   };
 
   if (status === 'PREPARING' || status === 'ACCEPTED') {
-    const prepCountdown =
-      nowMs != null
-        ? prepReadyCountdownLabel(order, nowMs)
-        : { label: 'Mark as ready', secondsLeft: 0 };
-    const prepExpired =
-      nowMs != null &&
-      (isPrepCountdownExpired(order, nowMs) || !prepCountdown.label.includes('('));
-    const showNeedMore = prepExpired && onNeedMoreTime && !compact;
-    const prepBtnPair =
-      'w-full min-h-[44px] rounded-xl px-3 py-2.5 text-sm font-semibold';
-    return (
-      <div className={`w-full ${showNeedMore ? 'grid grid-cols-2 gap-2' : 'flex gap-2 items-stretch'}`}>
-        {showNeedMore ? (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onNeedMoreTime();
-            }}
-            disabled={dis}
-            className={`${btnBase} ${prepBtnPair} border border-blue-600 bg-white text-blue-700 hover:bg-blue-50`}
-          >
-            Need more time
-          </button>
-        ) : null}
-        <MarkAsReadyCountdownButton
-          order={order}
-          nowMs={nowMs}
-          disabled={dis}
-          compact={compact}
-          fullWidth={topRightLayout || showNeedMore || !compact}
-          className={`${prepBtnPair} ${showNeedMore ? 'min-w-0' : topRightLayout ? 'flex-1 min-w-0' : 'min-w-0'}`}
+    if (nowMs == null) {
+      return (
+        <button
+          type="button"
           onClick={(e) => {
             e.stopPropagation();
             onReady();
           }}
-        />
-        {!showNeedMore ? <RtoMenu /> : null}
-      </div>
+          disabled={dis}
+          className={`${btnBase} w-full min-h-[44px] rounded-xl px-3 py-2.5 text-sm font-semibold bg-slate-800 text-white hover:bg-slate-900`}
+        >
+          Order Ready
+        </button>
+      );
+    }
+    return (
+      <MerchantPreparingOrderActions
+        order={order}
+        nowMs={nowMs}
+        onReady={onReady}
+        onNeedMoreTime={onNeedMoreTime}
+        loading={dis}
+        compact={compact}
+      />
     );
   }
   if (status === 'READY_FOR_PICKUP') {
@@ -4093,15 +4132,24 @@ function ActionBtns({
     );
   }
   if (status === 'OUT_FOR_DELIVERY') {
+    const showMerchantComplete = canMerchantMarkDelivered(order);
     return (
-      <div className={`flex gap-2 items-center ${topRightLayout ? 'w-full' : 'flex-wrap'}`}>
-        <button
-          onClick={(e) => { e.stopPropagation(); onComplete(); }}
-          disabled={dis}
-          className={`${btnBase} ${topRightLayout ? 'flex-[2] px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-green-600 text-white hover:bg-green-700 hover:shadow-md border-green-700/20`}
-        >
-          Complete
-        </button>
+      <div className={`flex flex-col gap-2 ${topRightLayout ? 'w-full' : ''}`}>
+        {showMerchantComplete ? (
+          <button
+            onClick={(e) => { e.stopPropagation(); onComplete(); }}
+            disabled={dis}
+            className={`${btnBase} ${topRightLayout ? 'flex-[2] px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-green-600 text-white hover:bg-green-700 hover:shadow-md border-green-700/20`}
+          >
+            Mark delivered
+          </button>
+        ) : (
+          <p
+            className={`text-center text-sm font-medium text-gray-600 ${topRightLayout ? 'w-full py-2' : 'px-2 py-1'}`}
+          >
+            Rider will complete delivery
+          </p>
+        )}
         <RtoMenu />
       </div>
     );

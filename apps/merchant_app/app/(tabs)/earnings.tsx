@@ -142,7 +142,8 @@ export default function EarningsScreen() {
     if (!storeId || !token || !withdrawBankId) return;
     const amt = parseFloat(withdrawAmount);
     if (isNaN(amt) || amt < 100) { Alert.alert("Invalid", "Min ₹100"); return; }
-    if (amt > (wallet?.available_balance ?? 0)) { Alert.alert("Insufficient", "Not enough balance"); return; }
+    const withdrawable = wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0;
+    if (amt > withdrawable) { Alert.alert("Insufficient", "Not enough withdrawable balance"); return; }
     setWithdrawing(true);
     try {
       const result = await createPayoutRequest(storeId, amt, withdrawBankId, token);
@@ -203,8 +204,15 @@ export default function EarningsScreen() {
 
             {/* Balance hero */}
             <View style={s.heroCard}>
-              <Text style={s.heroLabel}>Available Balance</Text>
-              <Text style={s.heroBalance}>{formatCurrency(wallet?.available_balance ?? 0)}</Text>
+              <Text style={s.heroLabel}>Withdrawable</Text>
+              <Text style={s.heroBalance}>
+                {formatCurrency(wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0)}
+              </Text>
+              {(wallet?.locked_settlement_total ?? wallet?.locked_balance ?? 0) > 0 ? (
+                <Text style={{ fontSize: 12, color: "#fde68a", marginTop: 4 }}>
+                  In refund window: {formatCurrency(wallet?.locked_settlement_total ?? wallet?.locked_balance ?? 0)}
+                </Text>
+              ) : null}
               <View style={s.heroRow}>
                 <View style={s.heroStat}>
                   <Text style={s.heroStatLabel}>Today</Text>

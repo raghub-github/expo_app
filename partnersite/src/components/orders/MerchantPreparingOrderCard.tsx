@@ -17,10 +17,11 @@ import {
 } from 'lucide-react';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
-import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
+import { resolveMerchantCtm } from '@/lib/merchant-order-ctm';
 import {
   isPrepCountdownExpired,
   prepReadyCountdownLabel,
+  canUseNeedMoreTime,
 } from '@/lib/order-prep-time';
 import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
 
@@ -193,7 +194,7 @@ export function MerchantPreparingOrderCard({
   const items = Array.isArray(order.items) ? order.items : [];
   const itemCount = computeOrderItemQuantityCount(order);
   const total =
-    order.pricing?.total ?? Number(order.food_items_total_value ?? order.grand_total ?? 0);
+    resolveMerchantCtm(order);
   const badge = vegBadgeLabel(order.veg_non_veg);
   const utensilsLabel = getUtensilsCustomerLabel(order);
   const showCutlery =
@@ -217,6 +218,15 @@ export function MerchantPreparingOrderCard({
   const prepExpired =
     isPrepCountdownExpired(order, nowMs) ||
     !prepReadyCountdownLabel(order, nowMs, { prefix: 'Order Ready' }).label.includes('(');
+
+  const canNeedMore =
+    prepExpired &&
+    !!onNeedMoreTime &&
+    canUseNeedMoreTime(
+      order.prep_delay_use_count,
+      Boolean(order.is_bulk_order),
+      order.prep_delay_minutes
+    );
 
   const restaurantLabel =
     (storeName || order.restaurant_name || '').trim() || 'Restaurant';
@@ -412,7 +422,7 @@ export function MerchantPreparingOrderCard({
 
       {/* Order Ready CTA */}
       <div className="px-4 pb-4 pt-0" onClick={(e) => e.stopPropagation()}>
-        {prepExpired && onNeedMoreTime ? (
+        {prepExpired && canNeedMore ? (
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"

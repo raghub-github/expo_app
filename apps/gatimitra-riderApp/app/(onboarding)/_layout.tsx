@@ -2,7 +2,8 @@ import { Stack } from "expo-router";
 
 export default function OnboardingLayout() {
   return (
-    <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#FFFFFF' } }}>
+    <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#f4fbf6' } }}>
+      <Stack.Screen name="method-selection" />
       <Stack.Screen name="language" />
       <Stack.Screen name="help" />
       <Stack.Screen name="location" />

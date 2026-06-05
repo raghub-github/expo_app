@@ -134,7 +134,9 @@ export function listMerchantOffersForCheckout(
 
   for (const offer of dataset.merchantOffers) {
     const tech = merchantOfferEligibilityReason(offer, ctx, grossCart);
-    if (!tech) {
+    // Listing-only: coupon offers are shown as applicable rows even before the
+    // customer enters a code — actual apply still validates the code in billing.
+    if (!tech || tech === "coupon_code_required") {
       eligible.push(offer);
       continue;
     }

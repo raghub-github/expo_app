@@ -7,6 +7,7 @@ import { useAuthOptional } from "@/providers/AuthProvider";
 import { usePathname } from "next/navigation";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 import { ticketsPathTicketId } from "@/lib/tickets/ticket-path-utils";
+import { humanizeTicketsFetchError } from "@/lib/tickets/humanize-tickets-fetch-error";
 
 export interface TicketFilters {
   serviceTypes?: string[];
@@ -198,17 +199,20 @@ export async function fetchTickets(filters: TicketFilters = {}, signal?: AbortSi
   }
 
   try {
-      const response = await fetch(`/api/tickets?${params.toString()}`, { signal: controller.signal });
+      const response = await fetch(`/api/tickets?${params.toString()}`, {
+        signal: controller.signal,
+        credentials: "include",
+        cache: "no-store",
+      });
     clearTimeout(timeoutId);
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(
-        errorData.error || `Failed to fetch tickets: ${response.status} ${response.statusText}`
-      );
+      const errorData = (await response.json().catch(() => ({}))) as { error?: string };
+      const raw = errorData.error || `Failed to fetch tickets: ${response.status} ${response.statusText}`;
+      throw new Error(humanizeTicketsFetchError(raw));
     }
     const data = await response.json();
     if (!data.success) {
-      throw new Error(data.error || "Failed to fetch tickets");
+      throw new Error(humanizeTicketsFetchError(data.error || "Failed to fetch tickets"));
     }
     return data.data as TicketsResponse;
   } catch (err) {
@@ -260,6 +264,11 @@ export function useTickets(
     gcTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
     /** Inherit global refetchOnMount: false so returning from ticket detail keeps the list cache without a forced refetch. */
+    retry: (failureCount, err) => {
+      if (failureCount >= 2) return false;
+      if (err instanceof Error && err.name === "AbortError") return false;
+      return true;
+    },
   });
 
   useEffect(() => {

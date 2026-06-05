@@ -2,7 +2,7 @@
  * Order detail — loads from merchant-partner food-orders API.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -24,6 +24,7 @@ import {
   patchFoodOrderStatus,
   type ApiFoodOrder,
   type FoodOrderTimelineEntry,
+  type FoodOrderRiderLogEntry,
   type MerchantOrderActionForTimeline,
 } from "@/services/ordersApi";
 import { apiFoodOrderToTimelineOrder } from "@/lib/merchantVisibleTimeline";
@@ -31,12 +32,12 @@ import { MerchantOrderVerticalTimeline } from "@/components/order/MerchantOrderV
 import { OrderItemDetails } from "@/components/order/OrderItemDetails";
 import { OrderBillDetails } from "@/components/order/OrderBillDetails";
 import { OrderDetailCustomerCard } from "@/components/order/OrderDetailCustomerCard";
+import { OrderDetailRiderCard } from "@/components/order/OrderDetailRiderCard";
+import { OrderDetailOtpRow } from "@/components/order/OrderDetailOtpRow";
+import { FormattedOrderId } from "@/components/order/FormattedOrderId";
 import { fetchOrderEta, minutesUntil, prepDeadlineIso, type OrderEtaResponse } from "@/services/etaApi";
 import { apiStatusToStage, type OrderStage } from "@/hooks/useOrders";
 import { OrderDetailSkeleton } from "@/components/order/OrderDetailSkeleton";
-import {
-  formatOrderIdDisplay,
-} from "@/components/order/orderFormatters";
 import {
   GatiMitraMerchant,
   H_PADDING,
@@ -131,7 +132,9 @@ export default function OrderDetailScreen() {
   const [timeline, setTimeline] = useState<FoodOrderTimelineEntry[]>([]);
   const [actions, setActions] = useState<MerchantOrderActionForTimeline[]>([]);
   const [riderReachedAt, setRiderReachedAt] = useState<string | null>(null);
+  const [activeRider, setActiveRider] = useState<FoodOrderRiderLogEntry | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const markReadyInFlightRef = useRef(false);
   const [eta, setEta] = useState<OrderEtaResponse | null>(null);
 
   const load = useCallback(async () => {
@@ -157,6 +160,14 @@ export default function OrderDetailScreen() {
       setOrder(o);
       setTimeline(tl);
       setActions(act);
+      const active =
+        [...riders]
+          .reverse()
+          .find((r) => {
+            const st = (r.assignment_status ?? "").toUpperCase();
+            return st !== "CANCELLED" && st !== "REJECTED";
+          }) ?? null;
+      setActiveRider(active);
       const reached =
         riders.find((r) => r.reached_merchant_at)?.reached_merchant_at ?? null;
       setRiderReachedAt(reached);
@@ -173,6 +184,7 @@ export default function OrderDetailScreen() {
       setTimeline([]);
       setActions([]);
       setRiderReachedAt(null);
+      setActiveRider(null);
       setError(e instanceof Error ? e.message : "Failed to load order");
     } finally {
       setLoading(false);
@@ -198,10 +210,6 @@ export default function OrderDetailScreen() {
     [timeline]
   );
 
-  const displayId = order
-    ? formatOrderIdDisplay(order.formatted_order_id, order.orders_core_id, order.orders_food_id)
-    : routeId;
-
   const prepByIso = prepDeadlineIso(eta);
   const prepMinsLeft = minutesUntil(prepByIso);
 
@@ -222,6 +230,14 @@ export default function OrderDetailScreen() {
       setTimeline(tl);
       setActions(act);
       setRiderReachedAt(riders.find((r) => r.reached_merchant_at)?.reached_merchant_at ?? null);
+      setActiveRider(
+        [...riders]
+          .reverse()
+          .find((r) => {
+            const st = (r.assignment_status ?? "").toUpperCase();
+            return st !== "CANCELLED" && st !== "REJECTED";
+          }) ?? null
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : "Update failed");
     } finally {
@@ -239,6 +255,14 @@ export default function OrderDetailScreen() {
     setTimeline(tl);
     setActions(act);
     setRiderReachedAt(riders.find((r) => r.reached_merchant_at)?.reached_merchant_at ?? null);
+    setActiveRider(
+      [...riders]
+        .reverse()
+        .find((r) => {
+          const st = (r.assignment_status ?? "").toUpperCase();
+          return st !== "CANCELLED" && st !== "REJECTED";
+        }) ?? null
+    );
   };
 
   const showAccept = stage === "created";
@@ -268,7 +292,18 @@ export default function OrderDetailScreen() {
         >
           <Ionicons name="arrow-back" size={24} color={GatiMitraMerchant.textPrimary} />
         </Pressable>
-        <Text style={styles.headerTitle}>Order details</Text>
+        <View style={styles.headerTitles}>
+          <Text style={styles.headerTitle}>Order details</Text>
+          {order && !loading ? (
+            <FormattedOrderId
+              formattedOrderId={order.formatted_order_id}
+              fallbackCoreId={order.orders_core_id}
+              fallbackFoodId={order.orders_food_id}
+              size="md"
+              showHash
+            />
+          ) : null}
+        </View>
       </View>
 
       <ScrollView
@@ -291,7 +326,6 @@ export default function OrderDetailScreen() {
             <View style={{ marginHorizontal: H_PADDING, marginTop: 14 }}>
               <OrderDetailCustomerCard
                 order={order}
-                displayId={displayId}
                 stage={stage}
                 statusStyle={statusStyle}
                 prepBanner={
@@ -335,12 +369,28 @@ export default function OrderDetailScreen() {
               <OrderBillDetails order={order} />
             </View>
 
-            <View style={styles.card}>
+            <View style={{ marginHorizontal: H_PADDING }}>
+              <OrderDetailRiderCard
+                rider={activeRider}
+                deliveryType={order.delivery_type}
+                riderReachedAt={riderReachedAt}
+              />
+            </View>
+
+            <View style={styles.infoCard}>
+              <Text style={styles.infoCardTitle}>Delivery & payment</Text>
               <DetailRow label="Payment" value={paymentLabel(order.payment_method)} />
               {order.drop_address ? (
-                <DetailRow label="Address" value={order.drop_address} />
+                <View style={styles.addressRow}>
+                  <Ionicons name="location-outline" size={16} color="#666" />
+                  <Text style={styles.addressText}>{order.drop_address}</Text>
+                </View>
               ) : null}
-              {order.pickup_otp ? <DetailRow label="Pickup OTP" value={order.pickup_otp} /> : null}
+              <OrderDetailOtpRow
+                orderStatus={order.order_status}
+                pickupOtp={order.pickup_otp}
+                rtoOtp={order.rto_otp}
+              />
             </View>
 
             <View style={styles.timelineSection}>
@@ -368,10 +418,22 @@ export default function OrderDetailScreen() {
                   variant="primary"
                   loading={actionLoading}
                   onPress={async () => {
-                    if (!token || !storeId || ordersFoodId == null) return;
+                    if (
+                      !token ||
+                      !storeId ||
+                      ordersFoodId == null ||
+                      actionLoading ||
+                      markReadyInFlightRef.current
+                    ) {
+                      return;
+                    }
+                    const st = order.order_status.toUpperCase();
+                    if (st === "READY_FOR_PICKUP" || st === "OUT_FOR_DELIVERY" || st === "DELIVERED") {
+                      return;
+                    }
+                    markReadyInFlightRef.current = true;
                     setActionLoading(true);
                     try {
-                      const st = order.order_status.toUpperCase();
                       if (st === "ACCEPTED") {
                         await patchFoodOrderStatus(storeId, ordersFoodId, token, "PREPARING", undefined, {
                           action_source: "app",
@@ -389,8 +451,15 @@ export default function OrderDetailScreen() {
                       await refreshTimeline();
                       setError(null);
                     } catch (e) {
-                      setError(e instanceof Error ? e.message : "Update failed");
+                      const msg = e instanceof Error ? e.message : "Update failed";
+                      if (/invalid transition.*READY_FOR_PICKUP:READY_FOR_PICKUP/i.test(msg)) {
+                        await load();
+                        setError(null);
+                        return;
+                      }
+                      setError(msg);
                     } finally {
+                      markReadyInFlightRef.current = false;
                       setActionLoading(false);
                     }
                   }}
@@ -440,6 +509,13 @@ const styles = StyleSheet.create({
     borderBottomColor: GatiMitraMerchant.border,
     backgroundColor: GatiMitraMerchant.cardBg,
   },
+  headerTitles: { flex: 1, minWidth: 0 },
+  headerSubtitle: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textSecondary,
+    marginTop: 2,
+  },
   backBtn: { padding: 8, marginRight: 8 },
   headerTitle: {
     fontSize: 18,
@@ -448,6 +524,37 @@ const styles = StyleSheet.create({
   },
   scroll: { flex: 1 },
   scrollContent: { paddingTop: 0 },
+  infoCard: {
+    marginBottom: 14,
+    marginHorizontal: H_PADDING,
+    marginTop: 14,
+    padding: CARD_PADDING,
+    backgroundColor: GatiMitraMerchant.cardBg,
+    borderRadius: CARD_RADIUS,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    ...GatiMitraMerchant.shadowSm,
+  },
+  infoCardTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+    marginBottom: 12,
+  },
+  addressRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  addressText: {
+    flex: 1,
+    fontSize: FONT_LABEL,
+    fontWeight: "500",
+    color: GatiMitraMerchant.textPrimary,
+    lineHeight: 20,
+  },
   card: {
     marginBottom: 14,
     marginHorizontal: H_PADDING,

@@ -1,5 +1,6 @@
 module.exports = function (api) {
-  api.cache(true);
+  // Persistent Babel cache in dev breaks Fast Refresh after refactors (e.g. removed imports).
+  api.cache(() => process.env.NODE_ENV === "production");
 
   const reanimated = require("react-native-reanimated/plugin");
 

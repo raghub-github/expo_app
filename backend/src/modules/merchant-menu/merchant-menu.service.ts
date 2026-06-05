@@ -1,5 +1,7 @@
 import { ulid } from "ulid";
 import { getSql } from "../../db/client.js";
+import { getMenuItemEffectiveInStockExprFull } from "../../lib/menu-item-effective-stock.js";
+import { expireTimedMenuOutOfStockForStore } from "../../lib/menu-oos-expiry.js";
 import { getNextOpenIso, nowInStoreTz } from "../merchant-partner/store-schedule-engine.js";
 import {
   buildFoodLegacyAttributesFromItemRow,
@@ -74,6 +76,7 @@ export async function listCategories(storeIdNum: number): Promise<
   }>
 > {
   const sql = getSql();
+  await expireTimedMenuOutOfStockForStore(sql, storeIdNum);
   const rows = await sql`
     SELECT
       id,
@@ -98,7 +101,11 @@ export async function listCategories(storeIdNum: number): Promise<
       AND COALESCE(is_deleted, FALSE) = FALSE
     ORDER BY parent_category_id NULLS FIRST, display_order ASC, id ASC
   `;
-  return rows as any;
+  return (rows as any[]).map((row) => ({
+    ...row,
+    out_of_stock_until: toApiIsoTimestamptz(row.out_of_stock_until),
+    out_of_stock_updated_at: toApiIsoTimestamptz(row.out_of_stock_updated_at),
+  }));
 }
 
 export type OutOfStockMode = "CLEAR" | "MANUAL" | "HOURS" | "NEXT_OPEN" | "CUSTOM";
@@ -125,6 +132,19 @@ function sqlTimestamptz(value: Date | string | null | undefined): string | null 
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "string") return value;
   const d = new Date(value as string);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+/** JSON-safe ISO timestamps (pgbouncer may return "YYYY-MM-DD HH:mm:ss+00" which Hermes cannot parse). */
+function toApiIsoTimestamptz(value: Date | string | null | undefined): string | null {
+  if (value == null) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  const raw = String(value).trim();
+  if (!raw) return null;
+  let normalized = raw.includes(" ") && !raw.includes("T") ? raw.replace(" ", "T") : raw;
+  normalized = normalized.replace(/([+\-]\d{2})$/, "$1:00");
+  normalized = normalized.replace(/([+\-]\d{2})(\d{2})$/, "$1:$2");
+  const d = new Date(normalized);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
@@ -171,6 +191,7 @@ export async function patchCategoryOutOfStock(
   body: { mode: OutOfStockMode; hours?: unknown; until?: unknown }
 ): Promise<{ ok: boolean; out_of_stock_until: string | null; out_of_stock_manual: boolean }> {
   const sql = getSql();
+  await expireTimedMenuOutOfStockForStore(sql, storeIdNum);
   const [cat] = await sql`
     SELECT id, out_of_stock_updated_at, out_of_stock_until
     FROM merchant_menu_categories
@@ -266,6 +287,7 @@ export async function patchItemOutOfStock(
   body: { mode: OutOfStockMode; hours?: unknown; until?: unknown }
 ): Promise<{ ok: boolean; out_of_stock_until: string | null; out_of_stock_manual: boolean }> {
   const sql = getSql();
+  await expireTimedMenuOutOfStockForStore(sql, storeIdNum);
   const [it] = await sql`
     SELECT id FROM merchant_menu_items
     WHERE id = ${itemId} AND store_id = ${storeIdNum}
@@ -787,6 +809,7 @@ export async function listItems(
   total: number;
 }> {
   const sql = getSql();
+  await expireTimedMenuOutOfStockForStore(sql, storeIdNum);
   const limit = Math.min(100, Math.max(1, opts.limit ?? 20));
   const offset = Math.max(0, opts.offset ?? 0);
   const search = opts.search?.trim();
@@ -803,19 +826,7 @@ export async function listItems(
       ? sql`true`
       : sql`merchant_menu_items.approval_status = ${approvalStatus}::merchant_menu_item_approval_status`;
   // Partner Site parity: category OOS cascades via matching out_of_stock_updated_at; manual item OOS / CLEAR breaks the link.
-  const effectiveStockExpr = sql`(
-    CASE
-      WHEN merchant_menu_items.in_stock = FALSE THEN FALSE
-      WHEN (COALESCE(merchant_menu_items.out_of_stock_manual, FALSE) = TRUE OR (merchant_menu_items.out_of_stock_until IS NOT NULL AND merchant_menu_items.out_of_stock_until > NOW())) THEN FALSE
-      WHEN (
-        (COALESCE(c.out_of_stock_manual, FALSE) = TRUE OR (c.out_of_stock_until IS NOT NULL AND c.out_of_stock_until > NOW()))
-        AND c.out_of_stock_updated_at IS NOT NULL
-        AND merchant_menu_items.out_of_stock_updated_at IS NOT NULL
-        AND c.out_of_stock_updated_at = merchant_menu_items.out_of_stock_updated_at
-      ) THEN FALSE
-      ELSE TRUE
-    END
-  )`;
+  const effectiveStockExpr = getMenuItemEffectiveInStockExprFull(sql);
   const stockCondition = inStock == null ? sql`true` : sql`${effectiveStockExpr} = ${inStock}`;
   const changeRequestCondition =
     changeRequestType == null
@@ -893,7 +904,14 @@ export async function listItems(
   `;
 
   const total = Number((countResult[0] as any)?.c ?? 0);
-  return { items: itemsResult as any, total };
+  const items = (itemsResult as any[]).map((row) => ({
+    ...row,
+    out_of_stock_until: toApiIsoTimestamptz(row.out_of_stock_until),
+    out_of_stock_updated_at: toApiIsoTimestamptz(row.out_of_stock_updated_at),
+    category_out_of_stock_until: toApiIsoTimestamptz(row.category_out_of_stock_until),
+    category_out_of_stock_updated_at: toApiIsoTimestamptz(row.category_out_of_stock_updated_at),
+  }));
+  return { items, total };
 }
 
 /** Get single item by numeric id; ensure it belongs to store. */
@@ -2018,6 +2036,7 @@ export async function listCombos(storeIdNum: number): Promise<
   }>
 > {
   const sql = getSql();
+  await expireTimedMenuOutOfStockForStore(sql, storeIdNum);
   const rows = await sql`
     SELECT id, combo_name, description, combo_price, image_url, is_active, is_deleted, display_order,
            combo_type, pricing_strategy, combo_metadata,
@@ -2126,6 +2145,7 @@ export async function patchComboOutOfStock(
   body: { mode: OutOfStockMode; hours?: unknown; until?: unknown }
 ): Promise<{ ok: boolean; out_of_stock_until: string | null; out_of_stock_manual: boolean }> {
   const sql = getSql();
+  await expireTimedMenuOutOfStockForStore(sql, storeIdNum);
   const [c] = await sql`
     SELECT id FROM merchant_menu_combos
     WHERE id = ${comboId} AND store_id = ${storeIdNum}

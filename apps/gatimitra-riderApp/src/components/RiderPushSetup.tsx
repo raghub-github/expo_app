@@ -1,6 +1,8 @@
 import { useEffect, useRef, useCallback } from "react";
 import { AppState, Platform, type AppStateStatus } from "react-native";
+import * as Notifications from "expo-notifications";
 import { useRouter } from "expo-router";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   ensureAndroidChannel,
   getFreshExpoPushToken,
@@ -11,6 +13,11 @@ import {
 } from "@gatimitra/expo-push-kit";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { getRiderAppConfig } from "@/src/config/env";
+import {
+  notificationFromPushPayload,
+  useNotificationInboxStore,
+} from "@/src/stores/notificationInboxStore";
+import { RIDER_AVAILABLE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
 
 function deviceType(): "ios" | "android" | "web" | "unknown" {
   if (Platform.OS === "ios") return "ios";
@@ -24,6 +31,7 @@ function deviceType(): "ios" | "android" | "web" | "unknown" {
  */
 export function RiderPushSetup() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const session = useSessionStore((s) => s.session);
   const hydrated = useSessionStore((s) => s.hydrated);
   const lastTokenRef = useRef<string | null>(null);
@@ -66,6 +74,34 @@ export function RiderPushSetup() {
       a.remove();
     };
   }, [router]);
+
+  useEffect(() => {
+    const sub = Notifications.addNotificationReceivedListener((notification) => {
+      const content = notification.request.content;
+      const data = (content.data ?? {}) as Record<string, unknown>;
+      const title =
+        (typeof content.title === "string" && content.title) ||
+        (typeof data.gmTitle === "string" ? data.gmTitle : "") ||
+        "GatiMitra";
+      const body =
+        (typeof content.body === "string" && content.body) ||
+        (typeof data.gmMessage === "string" ? data.gmMessage : "") ||
+        "";
+      useNotificationInboxStore.getState().add(notificationFromPushPayload(title, body, data));
+
+      const type = typeof data.type === "string" ? data.type : "";
+      if (
+        type === "new_order" ||
+        type === "order_assigned" ||
+        type === "dispatch_offer" ||
+        type === "incoming_order" ||
+        type.includes("order")
+      ) {
+        void queryClient.invalidateQueries({ queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY });
+      }
+    });
+    return () => sub.remove();
+  }, [queryClient]);
 
   return null;
 }

@@ -73,6 +73,7 @@ export function useMenuItems(
         offset: filters.offset ?? 0,
       }),
     enabled: Boolean(storeId && token),
+    staleTime: 15_000,
   });
 }
 

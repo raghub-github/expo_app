@@ -9,6 +9,7 @@ import { safeParseJson } from "@/lib/utils";
 import { Mail, Lock, ArrowRight, Loader2 } from "lucide-react";
 import { saveBootstrapToStorage } from "@/lib/dashboard-bootstrap-storage";
 import { postSetCookieWithTokens } from "@/lib/auth/sync-server-session";
+import { markDashboardFreshLogin } from "@/lib/dashboard-auth-client-state";
 
 const OTP_LENGTH = 8;
 
@@ -147,6 +148,7 @@ export default function LoginPage() {
 
         // Preload dashboard bootstrap payload before we navigate so the dashboard
         // can render from cache instantly on first paint, then revalidate in the background.
+        markDashboardFreshLogin();
         try {
           const bootstrapResponse = await fetch("/api/auth/bootstrap", {
             credentials: "include",

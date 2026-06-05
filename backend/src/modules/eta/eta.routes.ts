@@ -14,17 +14,11 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getSql } from "../../db/client.js";
-import { getEnv } from "../../config/env.js";
-import { getRoute } from "../distance/distance.service.js";
 import {
-  computeEta,
-  resolveStorePrepMinutes,
-} from "./eta.engine.js";
-import {
-  appendEtaRecalc,
   getEtaForOrder,
   type EtaRecalcReason,
 } from "./eta.repository.js";
+import { recalcOrderEta } from "./eta.recalc-service.js";
 
 const RECALC_REASONS: EtaRecalcReason[] = [
   "RIDER_ASSIGNED",
@@ -127,95 +121,14 @@ export async function etaRoutes(app: FastifyInstance) {
         return reply.code(400).send({ ok: false, error: "Invalid reason" });
       }
 
-      const sql = getSql();
-      const rows = await sql<
-        Array<{
-          merchant_store_id: number;
-          pickup_lat: string;
-          pickup_lon: string;
-          drop_lat: string;
-          drop_lon: string;
-          distance_km: string | null;
-          prep_time_minutes: number | null;
-        }>
-      >`
-        SELECT merchant_store_id,
-               pickup_lat::text AS pickup_lat,
-               pickup_lon::text AS pickup_lon,
-               drop_lat::text   AS drop_lat,
-               drop_lon::text   AS drop_lon,
-               distance_km::text AS distance_km,
-               prep_time_minutes
-        FROM orders_core
-        WHERE order_id = ${orderIdText}
-        LIMIT 1
-      `;
-      if (rows.length === 0) {
+      const snap = await recalcOrderEta(orderIdText, {
+        reason: body.reason,
+        extraWeatherMinutes: body.extraWeatherMinutes,
+        riderId: body.riderId,
+      });
+      if (!snap) {
         return reply.code(404).send({ ok: false, error: "Order not found" });
       }
-      const row = rows[0]!;
-      const env = getEnv();
-      let routeKm = row.distance_km != null ? Number(row.distance_km) : 0;
-      let routeMinutes = 0;
-      try {
-        const route = await getRoute({
-          origin: { lat: Number(row.pickup_lat), lng: Number(row.pickup_lon) },
-          destination: { lat: Number(row.drop_lat), lng: Number(row.drop_lon) },
-          profile: "driving",
-          mapboxToken: env.MAPBOX_ACCESS_TOKEN || undefined,
-          osrmBaseUrl: env.OSRM_BASE_URL || undefined,
-        });
-        if (route.distanceKm > 0) routeKm = route.distanceKm;
-        if (route.etaMinutes > 0) routeMinutes = route.etaMinutes;
-      } catch {
-        routeMinutes = Math.max(5, Math.round((routeKm / 18) * 60));
-      }
-
-      // After rider pickup, prep is done and we've left the store — collapse
-      // food prep + rider assignment to zero in the recalc.
-      const noPrep = body.reason === "RIDER_PICKED_UP";
-      const orderPrep =
-        row.prep_time_minutes != null && Number(row.prep_time_minutes) > 0
-          ? Math.round(Number(row.prep_time_minutes))
-          : null;
-      const prepMinutes = noPrep
-        ? 0
-        : orderPrep != null
-          ? orderPrep
-          : await resolveStorePrepMinutes(Number(row.merchant_store_id));
-      const noAssignment =
-        body.reason === "RIDER_PICKED_UP" || body.reason === "RIDER_ASSIGNED";
-      const { getActiveOrdersForStore } = await import("./restaurantLoad.js");
-      const activeOrders = noPrep ? 0 : await getActiveOrdersForStore(Number(row.merchant_store_id));
-
-      const snap = computeEta({
-        items: noPrep
-          ? [{ kptMinutes: 0, quantity: 1 }]
-          : [{ kptMinutes: prepMinutes, quantity: 1 }],
-        fallbackPrepMinutes: prepMinutes,
-        routeMinutes,
-        routeKm,
-        activeOrdersAtStore: activeOrders,
-        riderAssigned: noAssignment ? true : false,
-        riderAssignmentDelayMinutes: noAssignment ? 0 : undefined,
-        // Caller can nudge multipliers via extra minutes (treated as additional
-        // traffic / weather signal — the engine applies them as part of its
-        // normal traffic/weather chain).
-        weather:
-          (body.extraWeatherMinutes ?? 0) >= 8
-            ? "HEAVY_RAIN"
-            : (body.extraWeatherMinutes ?? 0) >= 3
-              ? "LIGHT_RAIN"
-              : "CLEAR",
-      });
-
-      await appendEtaRecalc({
-        orderIdText,
-        newSnap: snap,
-        reason: body.reason,
-        riderId: body.riderId ?? null,
-        merchantStoreId: Number(row.merchant_store_id),
-      });
 
       return reply.send({
         ok: true,

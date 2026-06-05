@@ -1,14 +1,12 @@
 import OrderPageClient from "./OrderPageClient";
 
-export const dynamic = "force-dynamic";
-
 export default async function StandaloneOrderPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const publicId = decodeURIComponent(id ?? "");
+  const publicId = decodeURIComponent(id ?? "").trim().replace(/[-\s]/g, "");
 
   if (!publicId) {
     return (

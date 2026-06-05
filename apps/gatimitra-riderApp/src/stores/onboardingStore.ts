@@ -18,11 +18,16 @@ export type OnboardingData = {
   aadhaarNumber?: string;
   fullName?: string;
   dob?: string; // ISO date string
-  aadhaarPhotoUri?: string; // local URI before upload
-  aadhaarPhotoSignedUrl?: string; // after R2 upload
+  aadhaarPhotoUri?: string; // legacy — treated as front
+  aadhaarPhotoSignedUrl?: string; // legacy — front signed URL
+  aadhaarFrontPhotoUri?: string;
+  aadhaarBackPhotoUri?: string;
+  aadhaarFrontPhotoSignedUrl?: string;
+  aadhaarBackPhotoSignedUrl?: string;
   
   // Step 2: PAN + PAN Photo + Selfie
   panNumber?: string;
+  panSkipped?: boolean;
   panPhotoUri?: string; // local URI before upload
   panPhotoSignedUrl?: string; // after R2 upload
   selfieUri?: string; // local URI before upload
@@ -30,12 +35,17 @@ export type OnboardingData = {
   
   // Step 3: DL + RC
   dlNumber?: string;
-  dlPhotoUri?: string; // local URI before upload
-  dlPhotoSignedUrl?: string; // after R2 upload
+  dlPhotoUri?: string; // front — local URI before upload
+  dlPhotoSignedUrl?: string; // front — after R2 upload
+  dlBackPhotoUri?: string;
+  dlBackPhotoSignedUrl?: string;
   rcNumber?: string;
   rcPhotoUri?: string; // local URI before upload
   rcPhotoSignedUrl?: string; // after R2 upload
-  hasOwnVehicle?: boolean; // false = rental/EV
+  hasOwnVehicle?: boolean; // false = rental/EV/cycle
+  vehicleChoice?: string;
+  vehicleCategoryCode?: string;
+  vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment";
   
   // Step 3b: Rental/EV alternative
   rentalProofUri?: string; // local URI before upload
@@ -43,6 +53,16 @@ export type OnboardingData = {
   evProofUri?: string;
   evProofSignedUrl?: string;
   maxSpeedDeclaration?: number;
+  documentUploads?: Record<
+    string,
+    {
+      localUri?: string;
+      signedUrl?: string;
+      backLocalUri?: string;
+      backSignedUrl?: string;
+      textValue?: string;
+    }
+  >;
   
   // Location data
   lat?: number;

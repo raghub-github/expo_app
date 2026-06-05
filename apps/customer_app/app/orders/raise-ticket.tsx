@@ -25,6 +25,9 @@ import {
 } from "@/services/customerSupport.service";
 import { orderService } from "@/services/order.service";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
+import { isPersonRideOrder } from "@/lib/customer-order-status-display";
+import { getRideHistoryStatusLabel, getRideServiceLabel, formatRideFare } from "@/lib/ride-order-display";
+import { resolvePlaceDisplayName } from "@/services/location.service";
 
 const GREEN = "#22C55E";
 const PAGE_BG = "#F5F5F5";
@@ -40,7 +43,20 @@ function paramOne(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function statusBadge(status: string): { label: string; color: string; bg: string } {
+function statusForHelpFilter(status: string | null | undefined): string | undefined {
+  const raw = (status ?? "").trim();
+  if (!raw) return undefined;
+  return raw.toLowerCase();
+}
+
+function statusBadge(status: string, isRide: boolean): { label: string; color: string; bg: string } {
+  if (isRide) {
+    const label = getRideHistoryStatusLabel(status);
+    const s = status.toUpperCase();
+    if (s.includes("CANCEL") || s.includes("FAIL")) return { label, color: "#B91C1C", bg: "#FEE2E2" };
+    if (s.includes("DELIVER")) return { label, color: "#15803d", bg: "#DCFCE7" };
+    return { label, color: "#1D4ED8", bg: "#DBEAFE" };
+  }
   const s = status.toUpperCase();
   if (s.includes("DELIVER")) return { label: "Delivered", color: "#15803d", bg: "#DCFCE7" };
   if (s.includes("CANCEL") || s.includes("FAIL")) return { label: "Cancelled", color: "#B91C1C", bg: "#FEE2E2" };
@@ -116,13 +132,26 @@ export default function OrderRaiseTicketScreen() {
   });
 
   const order = orderDetailQ.data;
-  const statusForTopics = resolved?.status ?? order?.status;
-  const badge = statusBadge(String(statusForTopics ?? ""));
+  const isRideOrder = useMemo(() => {
+    if (order && isPersonRideOrder(order)) return true;
+    if ((resolved?.order_type ?? "").trim().toLowerCase() === "person_ride") return true;
+    const ref = (resolved?.formatted_order_id ?? resolved?.order_id ?? orderRefParam ?? orderIdParam).trim().toUpperCase();
+    return /^GMP\d*/.test(ref);
+  }, [order, resolved, orderRefParam, orderIdParam]);
+
+  const statusForTopics = statusForHelpFilter(
+    order?.status ?? resolved?.current_status ?? resolved?.status
+  );
+  const helpServiceType = isRideOrder ? "person_ride" : "food";
+  const badge = statusBadge(String(order?.status ?? resolved?.current_status ?? resolved?.status ?? ""), isRideOrder);
 
   const concernsQ = useQuery({
-    queryKey: ["customer-support-help-sections", statusForTopics, showAllTopics, coreOrderId],
+    queryKey: ["customer-support-help-sections", statusForTopics, showAllTopics, coreOrderId, helpServiceType],
     queryFn: () =>
-      customerSupportService.getHelpSections(showAllTopics ? undefined : statusForTopics),
+      customerSupportService.getHelpSections(
+        showAllTopics ? undefined : statusForTopics,
+        helpServiceType
+      ),
     enabled: coreOrderId != null && step === "topics",
     staleTime: 60_000,
   });
@@ -136,7 +165,7 @@ export default function OrderRaiseTicketScreen() {
       if (!map.has(k)) map.set(k, []);
       map.get(k)!.push(t);
     }
-    const orderKeys = ["orders", "payments", "account", "app", "general"];
+    const orderKeys = ["orders", "rides", "payments", "account", "app", "general"];
     const out: Array<{ key: string; items: HelpSection[] }> = [];
     for (const k of orderKeys) if (map.has(k)) out.push({ key: k, items: map.get(k)! });
     for (const [k, v] of map) if (!orderKeys.includes(k)) out.push({ key: k, items: v });
@@ -150,8 +179,8 @@ export default function OrderRaiseTicketScreen() {
       const subj =
         subject.trim() ||
         (selectedTitle.title_text
-          ? `Order #${displayOrderId} — ${selectedTitle.title_text}`
-          : `Order #${displayOrderId} help`);
+          ? `${isRideOrder ? "Ride" : "Order"} #${displayOrderId} — ${selectedTitle.title_text}`
+          : `${isRideOrder ? "Ride" : "Order"} #${displayOrderId} help`);
       const desc = description.trim();
       if (desc.length < 10) throw new Error("Please describe the issue in at least 10 characters.");
       return customerSupportService.createTicket({
@@ -176,9 +205,18 @@ export default function OrderRaiseTicketScreen() {
     order?.merchantName ??
     resolved?.merchant_store_name ??
     "Restaurant";
+  const rideLabel = getRideServiceLabel(order?.rideType);
   const totalAmount = order?.totalAmount ?? resolved?.grand_total ?? null;
   const itemPreview = (order?.items ?? []).slice(0, 3);
   const moreItems = Math.max(0, (order?.items?.length ?? 0) - itemPreview.length);
+  const ridePickup = resolvePlaceDisplayName({
+    primary: order?.merchantAddress,
+    fullAddress: order?.merchantAddress,
+  });
+  const rideDrop = resolvePlaceDisplayName({
+    primary: order?.deliveryAddress,
+    fullAddress: order?.deliveryAddress,
+  });
 
   const renderBody = () => {
     if (lookupRefs.length === 0) {
@@ -224,21 +262,42 @@ export default function OrderRaiseTicketScreen() {
       >
         <View style={styles.orderCard}>
           <View style={styles.orderCardTop}>
-            <View style={styles.orderIconWrap}>
-              <Ionicons name="restaurant-outline" size={20} color={GREEN} />
+            <View style={[styles.orderIconWrap, isRideOrder && styles.rideIconWrap]}>
+              <Ionicons
+                name={isRideOrder ? "bicycle-outline" : "restaurant-outline"}
+                size={20}
+                color={isRideOrder ? "#2563EB" : GREEN}
+              />
             </View>
             <View style={styles.orderCardMeta}>
               <Text style={styles.merchantName} numberOfLines={1}>
-                {merchantName}
+                {isRideOrder ? rideLabel : merchantName}
               </Text>
-              <Text style={styles.orderIdLine}>Order #{displayOrderId}</Text>
+              <Text style={styles.orderIdLine}>
+                {isRideOrder ? "Ride" : "Order"} #{displayOrderId}
+              </Text>
             </View>
             <View style={[styles.badge, { backgroundColor: badge.bg }]}>
               <Text style={[styles.badgeText, { color: badge.color }]}>{badge.label}</Text>
             </View>
           </View>
 
-          {itemPreview.length > 0 ? (
+          {isRideOrder ? (
+            ridePickup || rideDrop ? (
+              <View style={styles.itemsPreview}>
+                {ridePickup ? (
+                  <Text style={styles.itemLine} numberOfLines={1}>
+                    Pickup · {ridePickup}
+                  </Text>
+                ) : null}
+                {rideDrop ? (
+                  <Text style={styles.itemLine} numberOfLines={1}>
+                    Drop · {rideDrop}
+                  </Text>
+                ) : null}
+              </View>
+            ) : null
+          ) : itemPreview.length > 0 ? (
             <View style={styles.itemsPreview}>
               {itemPreview.map((item, idx) => (
                 <Text key={`${item.name}-${idx}`} style={styles.itemLine} numberOfLines={1}>
@@ -254,7 +313,9 @@ export default function OrderRaiseTicketScreen() {
           ) : null}
 
           {totalAmount != null ? (
-            <Text style={styles.totalLine}>Total paid · ₹{Math.round(totalAmount)}</Text>
+            <Text style={styles.totalLine}>
+              {isRideOrder ? "Fare" : "Total paid"} · {formatRideFare(totalAmount)}
+            </Text>
           ) : null}
         </View>
 
@@ -287,7 +348,7 @@ export default function OrderRaiseTicketScreen() {
                         title={t.title_text ?? "Help"}
                         onPress={() => {
                           setSelectedTitle(t);
-                          setSubject(`Order #${displayOrderId} — ${t.title_text ?? "Help"}`);
+                          setSubject(`${isRideOrder ? "Ride" : "Order"} #${displayOrderId} — ${t.title_text ?? "Help"}`);
                           setStep("details");
                         }}
                       />
@@ -303,7 +364,7 @@ export default function OrderRaiseTicketScreen() {
                     title={t.title_text ?? "Help"}
                     onPress={() => {
                       setSelectedTitle(t);
-                      setSubject(`Order #${displayOrderId} — ${t.title_text ?? "Help"}`);
+                      setSubject(`${isRideOrder ? "Ride" : "Order"} #${displayOrderId} — ${t.title_text ?? "Help"}`);
                       setStep("details");
                     }}
                   />
@@ -480,6 +541,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#ECFDF5",
     alignItems: "center",
     justifyContent: "center",
+  },
+  rideIconWrap: {
+    backgroundColor: "#EFF6FF",
   },
   orderCardMeta: { flex: 1 },
   merchantName: { fontSize: 15, fontWeight: "700", color: TEXT },

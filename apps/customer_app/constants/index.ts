@@ -32,13 +32,16 @@ export const OTP_LENGTH = 6;
 export const ORDER_STATUS_LABELS: Record<string, string> = {
   ORDER_PLACED: "Order Placed",
   PREPARING: "Preparing",
-  PICKED_BY_RIDER: "Picked by Rider",
+  PICKED_BY_RIDER: "On the Way",
   ON_THE_WAY: "On the Way",
+  OUT_FOR_DELIVERY: "On the Way",
+  IN_TRANSIT: "On the Way",
+  DISPATCHED: "On the Way",
   DELIVERED: "Delivered",
   CANCELLED: "Cancelled",
   ASSIGNED: "Assigned",
   ACCEPTED: "Accepted",
   ARRIVED_PICKUP: "At Restaurant",
-  PICKED_UP: "Picked Up",
+  PICKED_UP: "On the Way",
   ARRIVED_DROP: "Arrived",
 };

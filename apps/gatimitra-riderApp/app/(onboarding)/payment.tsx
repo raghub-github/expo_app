@@ -1,24 +1,111 @@
-import React, { useState, useEffect } from "react";
-import { View, Text, ScrollView, Alert, Platform } from "react-native";
+"use client";
+
+import React, { useState, useEffect, useMemo, useCallback } from "react";
+import {
+  View,
+  Text,
+  ScrollView,
+  Alert,
+  StyleSheet,
+  Platform,
+  TouchableOpacity,
+  ActivityIndicator,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
+import { LinearGradient } from "expo-linear-gradient";
+import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useTranslation } from "react-i18next";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
-import { Button } from "@/src/components/ui/Button";
 import { colors } from "@/src/theme";
 import { useCreatePaymentOrder, useVerifyPayment } from "@/src/hooks/usePayment";
+import {
+  formatRupeeFromPaise,
+  useOnboardingFeeConfig,
+} from "@/src/hooks/useOnboardingFeeConfig";
+import {
+  StepProgress,
+  ErrorBanner,
+  onboardingFormStyles as form,
+} from "@/src/components/onboarding/OnboardingFormUi";
 
-// TODO: Install Razorpay React Native SDK for production:
-// npm install react-native-razorpay
-// Then import: import RazorpayCheckout from 'react-native-razorpay';
+const ACCENT = "#39d353";
+const ACCENT_DARK = "#22a745";
+const BG = "#f4fbf6";
+
+const ONBOARDING_STEPS = ["KYC", "Vehicle", "Payment"];
+
+function PayButton({
+  label,
+  onPress,
+  loading,
+  disabled,
+}: {
+  label: string;
+  onPress: () => void;
+  loading?: boolean;
+  disabled?: boolean;
+}) {
+  const inactive = Boolean(loading || disabled);
+
+  return (
+    <TouchableOpacity
+      activeOpacity={inactive ? 1 : 0.88}
+      onPress={() => {
+        if (!inactive) onPress();
+      }}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      style={[styles.payBtn, inactive && styles.payBtnDisabled]}
+    >
+      {loading ? (
+        <ActivityIndicator color="#ffffff" />
+      ) : (
+        <>
+          <Ionicons name="wallet-outline" size={20} color="#ffffff" />
+          <Text style={styles.payBtnText}>{label}</Text>
+          <Ionicons name="arrow-forward" size={18} color="#ffffff" />
+        </>
+      )}
+    </TouchableOpacity>
+  );
+}
+
+function PriceRow({
+  label,
+  value,
+  bold,
+  accent,
+}: {
+  label: string;
+  value: string;
+  bold?: boolean;
+  accent?: boolean;
+}) {
+  return (
+    <View style={styles.priceRow}>
+      <Text style={[styles.priceRowLabel, bold && styles.priceRowLabelBold]}>{label}</Text>
+      <Text
+        style={[
+          styles.priceRowValue,
+          bold && styles.priceRowValueBold,
+          accent && styles.priceRowValueAccent,
+        ]}
+      >
+        {value}
+      </Text>
+    </View>
+  );
+}
 
 export default function PaymentScreen() {
-  const { t } = useTranslation();
   const session = useSessionStore((s) => s.session);
   const { data, hydrate } = useOnboardingStore();
   const createOrder = useCreatePaymentOrder();
   const verifyPayment = useVerifyPayment();
+  const feeConfigQuery = useOnboardingFeeConfig();
+  const feeConfig = feeConfigQuery.data;
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -28,12 +115,83 @@ export default function PaymentScreen() {
     hydrate();
   }, [hydrate]);
 
+  const totalDisplay = useMemo(
+    () => formatRupeeFromPaise(feeConfig?.totalPaise ?? 5782),
+    [feeConfig?.totalPaise]
+  );
+  const subtotalDisplay = useMemo(
+    () => formatRupeeFromPaise(feeConfig?.subtotalPaise ?? 4900),
+    [feeConfig?.subtotalPaise]
+  );
+  const gstDisplay = useMemo(
+    () => formatRupeeFromPaise(feeConfig?.gstAmountPaise ?? 0),
+    [feeConfig?.gstAmountPaise]
+  );
+  const gstPct = useMemo(() => {
+    const n = parseFloat(feeConfig?.gstPercent ?? "0");
+    return Number.isFinite(n) ? n : 0;
+  }, [feeConfig?.gstPercent]);
+  const discountPct = useMemo(() => {
+    const n = parseFloat(feeConfig?.discountPercent ?? "0");
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+  }, [feeConfig?.discountPercent]);
+  const standardDisplay = feeConfig?.standardOnboardingFee ?? "99";
+  const payButtonLabel =
+    feeConfig?.payButtonText?.trim() || `Pay ₹${totalDisplay}`;
+
+  const isPaying = loading || createOrder.isPending;
+
+  const handlePaymentSuccess = useCallback(() => {
+    Alert.alert(
+      "Payment Successful",
+      "Your onboarding fee has been paid. Waiting for admin approval.",
+      [{ text: "OK", onPress: () => router.replace("/(onboarding)/pending") }]
+    );
+  }, []);
+
+  const handleVerifyPayment = async (
+    razorpayOrderId: string,
+    razorpayPaymentId: string,
+    razorpaySignature: string
+  ) => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      if (!data.riderId) throw new Error("Rider ID not found");
+
+      const result = await verifyPayment.mutateAsync({
+        riderId: data.riderId,
+        razorpayOrderId,
+        razorpayPaymentId,
+        razorpaySignature,
+      });
+
+      if (result.success) {
+        handlePaymentSuccess();
+      } else {
+        setError("Payment verification failed");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Payment verification failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSimulatePayment = async (razorpayOrderId: string) => {
+    if (!__DEV__) {
+      setError("Simulation only available in development");
+      return;
+    }
+    await handleVerifyPayment(razorpayOrderId, `pay_${Date.now()}`, "simulated_signature");
+  };
+
   const handleInitiatePayment = async () => {
     if (!data.riderId) {
       setError("Rider ID not found");
       return;
     }
-
     if (!session?.accessToken) {
       setError("Not authenticated. Please login again.");
       return;
@@ -46,55 +204,13 @@ export default function PaymentScreen() {
       const order = await createOrder.mutateAsync({ riderId: data.riderId });
       setOrderId(order.orderId);
 
-      // TODO: Replace with Razorpay React Native SDK integration
-      // Example code (after installing react-native-razorpay):
-      /*
-      import RazorpayCheckout from 'react-native-razorpay';
-      
-      const options = {
-        description: 'Onboarding Fee',
-        image: 'https://your-logo-url.com/logo.png',
-        currency: order.currency,
-        key: order.key,
-        amount: order.amount,
-        name: 'GatiMitra',
-        order_id: order.orderId,
-        prefill: {
-          email: '',
-          contact: phoneNumber,
-          name: riderName,
-        },
-        theme: { color: '#14b8a6' },
-      };
-
-      RazorpayCheckout.open(options)
-        .then(async (data) => {
-          // Payment successful
-          await handleVerifyPayment(order.orderId, data.razorpay_payment_id, data.razorpay_signature);
-        })
-        .catch((error) => {
-          // Payment failed or cancelled
-          if (error.code !== 'BAD_REQUEST_ERROR') {
-            setError(error.description || 'Payment cancelled');
-          }
-        });
-      */
-
-      // For development: Show simulation option
       if (__DEV__) {
         Alert.alert(
           "Payment Required",
-          `Please pay ₹49 for onboarding fee.\n\nOrder ID: ${order.orderId}\n\nIn production, this will open Razorpay checkout.`,
+          `Please pay ₹${formatRupeeFromPaise(order.amount)} for onboarding fee.\n\nOrder ID: ${order.orderId}\n\nIn production, this will open Razorpay checkout.`,
           [
-            {
-              text: "Cancel",
-              style: "cancel",
-              onPress: () => setLoading(false),
-            },
-            {
-              text: "Simulate Payment",
-              onPress: () => handleSimulatePayment(order.orderId),
-            },
+            { text: "Cancel", style: "cancel", onPress: () => setLoading(false) },
+            { text: "Simulate Payment", onPress: () => handleSimulatePayment(order.orderId) },
           ]
         );
       } else {
@@ -107,182 +223,285 @@ export default function PaymentScreen() {
     }
   };
 
-  const handleSimulatePayment = async (razorpayOrderId: string) => {
-    // In production, this would be called after Razorpay payment success
-    // For now, we simulate with fake payment ID (development only)
-    if (!__DEV__) {
-      setError("Simulation only available in development");
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      if (!data.riderId) {
-        throw new Error("Rider ID not found");
-      }
-
-      // Simulate payment verification
-      // In production, Razorpay will provide these values
-      const result = await verifyPayment.mutateAsync({
-        riderId: data.riderId,
-        razorpayOrderId,
-        razorpayPaymentId: `pay_${Date.now()}`,
-        razorpaySignature: "simulated_signature",
-      });
-
-      if (result.success) {
-        Alert.alert("Payment Successful", "Your onboarding fee has been paid. Waiting for admin approval.", [
-          {
-            text: "OK",
-            onPress: () => {
-              router.replace("/(onboarding)/pending");
-            },
-          },
-        ]);
-      } else {
-        setError("Payment verification failed");
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Payment verification failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleVerifyPayment = async (
-    razorpayOrderId: string,
-    razorpayPaymentId: string,
-    razorpaySignature: string
-  ) => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      if (!data.riderId) {
-        throw new Error("Rider ID not found");
-      }
-
-      const result = await verifyPayment.mutateAsync({
-        riderId: data.riderId,
-        razorpayOrderId,
-        razorpayPaymentId,
-        razorpaySignature,
-      });
-
-      if (result.success) {
-        Alert.alert("Payment Successful", "Your onboarding fee has been paid. Waiting for admin approval.", [
-          {
-            text: "OK",
-            onPress: () => {
-              router.replace("/(onboarding)/pending");
-            },
-          },
-        ]);
-      } else {
-        setError("Payment verification failed");
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Payment verification failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: "#FFFFFF" }}>
-      <ScrollView
-        contentContainerStyle={{ flexGrow: 1, paddingHorizontal: 24, paddingTop: 48, paddingBottom: 32 }}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Header */}
-        <View style={{ marginBottom: 32 }}>
-          <Text style={{ fontSize: 30, fontWeight: "bold", color: "#111827", marginBottom: 8 }}>
-            Onboarding Fee
-          </Text>
-          <Text style={{ fontSize: 16, color: "#4B5563" }}>
-            Complete your onboarding by paying the registration fee
-          </Text>
-        </View>
+    <View style={form.root}>
+      <StatusBar style="dark" backgroundColor={BG} translucent={false} />
 
-        {/* Payment Details */}
-        <View style={{ flex: 1, justifyContent: "center" }}>
-          <View
-            style={{
-              backgroundColor: "#F9FAFB",
-              borderRadius: 12,
-              padding: 24,
-              marginBottom: 24,
-              alignItems: "center",
-            }}
+      <SafeAreaView style={form.safeArea} edges={["top", "bottom"]}>
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={form.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          <LinearGradient
+            colors={["#dff5e4", BG]}
+            start={{ x: 0.5, y: 0 }}
+            end={{ x: 0.5, y: 1 }}
+            style={[form.header, styles.headerExtra]}
           >
-            <Text style={{ fontSize: 48, fontWeight: "bold", color: colors.primary[500], marginBottom: 8 }}>
-              ₹49
+            <StepProgress steps={ONBOARDING_STEPS} currentIndex={2} />
+
+            <View style={[form.stepPill, styles.stepPillSpaced]}>
+              <Ionicons name="card-outline" size={14} color={ACCENT_DARK} />
+              <Text style={form.stepPillText}>Step 3 · Payment</Text>
+            </View>
+
+            <Text style={form.title}>{feeConfig?.headline ?? "Onboarding Fee"}</Text>
+            <Text style={form.subtitle}>
+              {feeConfig?.subtitle ?? "Complete your onboarding by paying the registration fee"}
             </Text>
-            <Text style={{ fontSize: 16, color: "#6B7280", marginBottom: 16 }}>
-              One-time onboarding fee
-            </Text>
-            <View
-              style={{
-                backgroundColor: "#E0F2FE",
-                borderRadius: 8,
-                padding: 12,
-                width: "100%",
-              }}
-            >
-              <Text style={{ fontSize: 14, color: "#0369A1", textAlign: "center" }}>
-                This fee covers document verification and account setup
+          </LinearGradient>
+
+          <View style={[form.formCard, styles.paymentCard]}>
+            <View style={styles.heroBlock}>
+              {discountPct != null ? (
+                <View style={styles.discountBadge}>
+                  <Ionicons name="pricetag" size={12} color="#b45309" />
+                  <Text style={styles.discountBadgeText}>{discountPct}% off</Text>
+                </View>
+              ) : null}
+
+              <Text style={styles.heroAmount}>₹{totalDisplay}</Text>
+              <Text style={styles.heroLabel}>{feeConfig?.feeLabel ?? "One-time onboarding fee"}</Text>
+
+              {standardDisplay !== feeConfig?.discountedOnboardingFee ? (
+                <Text style={styles.heroStruck}>₹{standardDisplay}</Text>
+              ) : null}
+            </View>
+
+            <View style={styles.breakdownBox}>
+              <PriceRow label="Onboarding fee" value={`₹${subtotalDisplay}`} />
+              {gstPct > 0 ? (
+                <PriceRow label={`GST (${gstPct}%)`} value={`₹${gstDisplay}`} />
+              ) : null}
+              <View style={styles.breakdownDivider} />
+              <PriceRow label="Total payable" value={`₹${totalDisplay}`} bold accent />
+            </View>
+
+            <View style={styles.infoBanner}>
+              <Ionicons name="information-circle-outline" size={20} color="#0369A1" />
+              <Text style={styles.infoBannerText}>
+                {feeConfig?.infoMessage ?? "This fee covers document verification and account setup"}
               </Text>
             </View>
+
+            {feeConfig?.alertNotice ? (
+              <View style={styles.alertBox}>
+                <Ionicons name="shield-checkmark-outline" size={18} color={ACCENT_DARK} />
+                <Text style={styles.alertText}>{feeConfig.alertNotice}</Text>
+              </View>
+            ) : null}
+
+            {error ? <ErrorBanner message={error} /> : null}
+
+            {orderId ? (
+              <View style={styles.orderBox}>
+                <Text style={styles.orderText}>Order ID: {orderId}</Text>
+                <Text style={styles.orderHint}>Dev mode — Razorpay checkout opens in production</Text>
+              </View>
+            ) : null}
           </View>
+        </ScrollView>
 
-          {error && (
-            <View
-              style={{
-                marginBottom: 16,
-                padding: 12,
-                backgroundColor: "#FEF2F2",
-                borderWidth: 1,
-                borderColor: "#FECACA",
-                borderRadius: 8,
-              }}
-            >
-              <Text style={{ fontSize: 14, color: colors.error[600] }}>{error}</Text>
-            </View>
-          )}
-
-          <Button
+        <View style={styles.footer}>
+          <PayButton
+            label={payButtonLabel}
             onPress={handleInitiatePayment}
-            loading={loading || createOrder.isPending}
-            disabled={loading || createOrder.isPending}
-            size="lg"
-            style={{ marginBottom: 12 }}
-          >
-            Pay ₹49
-          </Button>
+            loading={isPaying}
+            disabled={isPaying}
+          />
 
-          {orderId && (
-            <View
-              style={{
-                marginTop: 16,
-                padding: 12,
-                backgroundColor: "#F0FDF4",
-                borderWidth: 1,
-                borderColor: "#BBF7D0",
-                borderRadius: 8,
-              }}
-            >
-              <Text style={{ fontSize: 12, color: "#166534", marginBottom: 4 }}>
-                Order ID: {orderId}
-              </Text>
-              <Text style={{ fontSize: 12, color: "#166534" }}>
-                In production, Razorpay checkout will open here
-              </Text>
-            </View>
-          )}
+          {feeConfig?.footerNote ? (
+            <Text style={styles.footerNote}>{feeConfig.footerNote}</Text>
+          ) : null}
         </View>
-      </ScrollView>
-    </SafeAreaView>
+      </SafeAreaView>
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  scroll: {
+    flex: 1,
+  },
+  headerExtra: {
+    paddingBottom: 24,
+  },
+  stepPillSpaced: {
+    marginTop: 8,
+  },
+  paymentCard: {
+    gap: 16,
+    marginBottom: 8,
+  },
+  heroBlock: {
+    alignItems: "center",
+    paddingVertical: 8,
+    gap: 4,
+  },
+  discountBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#fef3c7",
+    borderWidth: 1,
+    borderColor: "#fde68a",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 20,
+    marginBottom: 4,
+  },
+  discountBadgeText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#b45309",
+  },
+  heroAmount: {
+    fontSize: 48,
+    fontWeight: "800",
+    color: ACCENT_DARK,
+    letterSpacing: -1,
+  },
+  heroLabel: {
+    fontSize: 14,
+    color: colors.gray[500],
+    fontWeight: "500",
+  },
+  heroStruck: {
+    fontSize: 15,
+    color: colors.gray[400],
+    textDecorationLine: "line-through",
+    marginTop: 2,
+  },
+  breakdownBox: {
+    backgroundColor: colors.gray[50],
+    borderRadius: 14,
+    padding: 14,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: colors.gray[100],
+  },
+  priceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  priceRowLabel: {
+    fontSize: 14,
+    color: colors.gray[600],
+  },
+  priceRowLabelBold: {
+    fontWeight: "700",
+    color: colors.gray[900],
+  },
+  priceRowValue: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: colors.gray[800],
+  },
+  priceRowValueBold: {
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  priceRowValueAccent: {
+    color: ACCENT_DARK,
+  },
+  breakdownDivider: {
+    height: 1,
+    backgroundColor: colors.gray[200],
+    marginVertical: 2,
+  },
+  infoBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    backgroundColor: "#E0F2FE",
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#bae6fd",
+  },
+  infoBannerText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 19,
+    color: "#0369A1",
+  },
+  alertBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    backgroundColor: "#edf8f0",
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "rgba(57, 211, 83, 0.2)",
+  },
+  alertText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 19,
+    color: colors.gray[700],
+  },
+  orderBox: {
+    padding: 12,
+    backgroundColor: "#F0FDF4",
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+    borderRadius: 10,
+  },
+  orderText: {
+    fontSize: 12,
+    color: "#166534",
+    marginBottom: 4,
+  },
+  orderHint: {
+    fontSize: 11,
+    color: "#166534",
+  },
+  footer: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === "ios" ? 4 : 12,
+    backgroundColor: BG,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(57, 211, 83, 0.15)",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 8,
+      },
+      android: { elevation: 8 },
+    }),
+  },
+  payBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: ACCENT,
+    borderRadius: 14,
+    paddingVertical: 16,
+    minHeight: 54,
+    width: "100%",
+  },
+  payBtnDisabled: {
+    opacity: 0.65,
+  },
+  payBtnText: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#ffffff",
+    letterSpacing: 0.2,
+  },
+  footerNote: {
+    fontSize: 11,
+    lineHeight: 16,
+    color: colors.gray[500],
+    textAlign: "center",
+    marginTop: 10,
+  },
+});

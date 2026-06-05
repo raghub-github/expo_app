@@ -1,23 +1,31 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { fetchTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
-import { queryKeys } from "@/lib/queryKeys";
-
 /** List view: no global postgres subscription (avoids load on every unified_tickets change). */
 const POLL_INTERVAL_MS = 12_000;
+/** Avoid stacking long-running process-jobs calls that exhaust the DB pool. */
+const AUTOMATION_DRAIN_TIMEOUT_MS = 8_000;
+let automationDrainInFlight = false;
 
 async function drainTicketAutomationJobs(): Promise<void> {
+  if (automationDrainInFlight) return;
+  automationDrainInFlight = true;
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), AUTOMATION_DRAIN_TIMEOUT_MS);
   try {
     await fetch("/api/tickets/automation/process-jobs", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ limit: 25 }),
+      body: JSON.stringify({ limit: 10 }),
+      signal: controller.signal,
     });
   } catch {
-    // non-fatal; GET /api/tickets also drains jobs
+    // non-fatal; GET /api/tickets also drains jobs in background
+  } finally {
+    window.clearTimeout(timeoutId);
+    automationDrainInFlight = false;
   }
 }
 
@@ -30,9 +38,7 @@ export type TicketsPollFilters = Omit<TicketFilters, "limit" | "offset">;
  * IMPORTANT: This must NOT increase for status changes/priority updates on existing tickets.
  */
 export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: boolean) {
-  const queryClient = useQueryClient();
-  const [newTicketsCount, setNewTicketsCount] = useState(0);
-  const ackTimeIsoRef = useRef<string | null>(null);
+  const [newTicketsCount, setNewTicketsCount] = useState(0);  const ackTimeIsoRef = useRef<string | null>(null);
   const pollBaseKeyRef = useRef<string>("");
 
   const pollBaseKey = JSON.stringify(pollBase);
@@ -79,13 +85,13 @@ export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: bool
       void (async () => {
         await drainTicketAutomationJobs();
         void runPoll();
-        void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.lists() });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
+        // Do not invalidate the main list on every poll — that caused background
+        // refetch failures ("not_found") while stale snapshot data stayed visible.
+        // Agents use the "N new tickets" pill + manual refresh to reload the list.
       })();
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [listReady, runPoll, queryClient]);
-
+  }, [listReady, runPoll]);
   return {
     hasNewTickets: newTicketsCount > 0,
     newTicketsCount,

@@ -74,6 +74,15 @@ export function installErrorSuppression() {
       // Suppress - we handle this gracefully
       return;
     }
+
+    if (
+      message.includes("SafeAreaView has been deprecated") ||
+      message.includes("Require cycles are allowed") ||
+      message.includes("[Worklets] Tried to modify key `current`") ||
+      message.includes("VirtualizedList: You have a large list that is slow to update")
+    ) {
+      return;
+    }
     
     originalWarn.apply(console, args);
   };

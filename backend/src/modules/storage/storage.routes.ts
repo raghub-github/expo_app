@@ -3,6 +3,7 @@ import { z } from "zod";
 import multipart from "@fastify/multipart";
 import { auth } from "../../plugins/auth.js";
 import { uploadToR2, getR2SignedUrl, deleteFromR2 } from "../../services/r2/r2Service.js";
+import { attachmentsProxyUrlFromKeyForApi } from "../../utils/attachments-proxy-url.js";
 import { getEnv } from "../../config/env.js";
 
 /**
@@ -26,7 +27,11 @@ export async function storageRoutes(app: FastifyInstance) {
     {
       schema: {
         response: {
-          200: z.object({ signedUrl: z.string(), key: z.string() }),
+          200: z.object({
+            signedUrl: z.string(),
+            key: z.string(),
+            proxyUrl: z.string(),
+          }),
           400: z.object({ error: z.string() }),
           500: z.object({ error: z.string(), message: z.string() }),
         },
@@ -34,50 +39,56 @@ export async function storageRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       try {
-        // Process multipart form data - iterate through all parts
-        const parts = req.parts();
         let folder = "documents";
         let key: string | null = null;
-        let fileData: any = null;
+        let fileBuffer: Buffer | null = null;
+        let mimeType = "image/jpeg";
 
+        const parts = req.parts();
         for await (const part of parts) {
           if (part.type === "file") {
-            fileData = part;
+            // Must consume the stream inside the loop — deferring toBuffer() hangs the parser.
+            fileBuffer = await part.toBuffer();
+            mimeType = part.mimetype || mimeType;
           } else if (part.type === "field") {
             if (part.fieldname === "folder") {
-              folder = part.value as string;
+              folder = String(part.value);
             } else if (part.fieldname === "key") {
-              key = part.value as string;
+              key = String(part.value);
             }
           }
         }
 
-        if (!fileData) {
+        if (!fileBuffer) {
           return reply.code(400).send({ error: "No file provided" });
         }
 
-        // If key not provided, generate one
         if (!key) {
           const timestamp = Date.now();
           const random = Math.random().toString(36).substring(7);
-          key = `${folder}/${timestamp}-${random}-${fileData.filename || "file"}`;
+          key = `${folder}/${timestamp}-${random}.jpg`;
         }
 
-        const buffer = await fileData.toBuffer();
-
-        // Validate file size (10MB limit)
-        if (buffer.length > 10 * 1024 * 1024) {
+        if (fileBuffer.length > 10 * 1024 * 1024) {
           return reply.code(400).send({ error: "File size exceeds 10MB limit" });
         }
 
-        // Upload to R2 using service
-        const result = await uploadToR2(buffer, key, fileData.mimetype || "image/jpeg");
+        req.log.info(
+          { key, bytes: fileBuffer.length, mimeType },
+          "[storage/upload] Received file, uploading to R2"
+        );
+
+        const result = await uploadToR2(fileBuffer, key, mimeType);
+
+        req.log.info({ key: result.key }, "[storage/upload] R2 upload complete");
 
         return reply.send({
           signedUrl: result.signedUrl,
           key: result.key,
+          proxyUrl: attachmentsProxyUrlFromKeyForApi(result.key),
         });
       } catch (error) {
+        req.log.error(error, "[storage/upload] Upload failed");
         return reply.code(500).send({
           error: "Upload failed",
           message: error instanceof Error ? error.message : String(error),

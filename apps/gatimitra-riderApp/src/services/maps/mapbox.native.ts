@@ -5,6 +5,7 @@
 
 import Constants from "expo-constants";
 import { getRiderAppConfig } from "../../config/env";
+import { resolveMapboxPublicToken } from "../../lib/mapbox-env";
 
 let initialized = false;
 let isAvailable = false;
@@ -27,7 +28,7 @@ export function initializeMapbox() {
     hasToken: !!token,
     tokenLength: token?.length || 0,
     tokenPrefix: token?.substring(0, 15) || "N/A",
-    envVar: process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN ? "SET" : "NOT SET",
+    envVar: resolveMapboxPublicToken() ? "SET" : "NOT SET",
   });
 
   if (!token) {

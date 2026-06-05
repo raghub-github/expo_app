@@ -37,3 +37,10 @@ export function resolveMerchantInstructionsForDisplay(order: {
   if (order.requires_utensils === false) return ["Don't send cutlery"];
   return [];
 }
+
+export function formatMerchantInstructionsForCard(order: {
+  merchant_instructions_list?: unknown;
+  requires_utensils?: boolean | null;
+}): string {
+  return resolveMerchantInstructionsForDisplay(order).join(' | ');
+}

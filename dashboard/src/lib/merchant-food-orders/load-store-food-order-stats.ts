@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase/server";
 import { resolvePartnerPipeline } from "@/lib/partner-orders-unify";
+import { isLiveSidebarPipelineFromCore } from "@/lib/foodOrdersLivePipeline";
 import type { FoodOrderStats } from "@/lib/types/food-orders";
 
 function getDb() {
@@ -52,7 +53,38 @@ export async function loadMerchantStoreFoodOrderStats(
   const ordersTodayActive = list.filter((o) =>
     pipelineTodayStatuses.includes(effectiveUi(o as { status?: string; current_status?: string | null }))
   ).length;
-  const activeOrders = ordersTodayActive;
+  const { data: activeCoreRows, error: activeCountError } = await db
+    .from("orders_core")
+    .select("id, status, current_status")
+    .eq("merchant_store_id", merchantStoreInternalId);
+  if (activeCountError) {
+    throw new Error(activeCountError.message);
+  }
+  const coreForActive = activeCoreRows || [];
+  let activeOrders = 0;
+  if (coreForActive.length > 0) {
+    const coreIds = coreForActive.map((c) => Number((c as { id: number }).id)).filter(Number.isFinite);
+    const { data: foodRows } = await db
+      .from("orders_food")
+      .select("order_id, order_status")
+      .in("order_id", coreIds);
+    const foodStatusByCoreId = new Map<number, string | null>();
+    for (const row of foodRows || []) {
+      const oid = Number((row as { order_id: number }).order_id);
+      if (Number.isFinite(oid)) {
+        foodStatusByCoreId.set(oid, (row as { order_status?: string | null }).order_status ?? null);
+      }
+    }
+    activeOrders = coreForActive.filter((core) => {
+      const id = Number((core as { id: number }).id);
+      const c = core as { status?: string; current_status?: string | null };
+      return isLiveSidebarPipelineFromCore(
+        foodStatusByCoreId.get(id) ?? null,
+        c.status ?? "assigned",
+        c.current_status ?? null
+      );
+    }).length;
+  }
 
   const deliveredTodayList = list.filter(
     (o) => effectiveUi(o as { status?: string; current_status?: string | null }) === "DELIVERED"

@@ -45,6 +45,7 @@ import {
   useCreatePayoutRequestMutation,
 } from "@/store/api/merchantStoreApi";
 import { useMerchantWalletRequestsSummaryQuery } from "@/hooks/queries/useMerchantWalletRequestsSummaryQuery";
+import { RefundPolicyContent } from "@/components/RefundPolicyContent";
 
 const LEDGER_CATEGORIES = [
   "ORDER_EARNING",
@@ -127,10 +128,17 @@ function pctChangeLabel(current: number, prior: number): { text: string; positiv
   return { text: `${pct > 0 ? "+" : ""}${pct}%`, positive: pct >= 0 };
 }
 
-export function StorePaymentsClient({ storeId }: { storeId: string }) {
+export function StorePaymentsClient({
+  storeId,
+  initialRefundPolicyOpen = false,
+}: {
+  storeId: string;
+  initialRefundPolicyOpen?: boolean;
+}) {
   const { toast } = useToast();
   const [storeName, setStoreName] = useState<string>("");
   const [isLoading, setIsLoading] = useState(true);
+  const [showRefundPolicy, setShowRefundPolicy] = useState(initialRefundPolicyOpen);
   const [showWithdrawal, setShowWithdrawal] = useState(false);
   const [withdrawalAmount, setWithdrawalAmount] = useState("");
   const [isWithdrawing, setIsWithdrawing] = useState(false);
@@ -423,7 +431,7 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
       toast("Enter a valid amount (min ₹100)");
       return;
     }
-    const available = wallet?.available_balance ?? 0;
+    const available = wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0;
     if (available < 100) {
       toast("Available balance is below the minimum withdrawal (₹100).");
       return;
@@ -698,13 +706,14 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
             ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Link
-              href={storeId ? `/dashboard/merchants/stores/${storeId}/refund-policy` : "#"}
+            <button
+              type="button"
+              onClick={() => setShowRefundPolicy(true)}
               className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 text-xs font-medium hover:bg-blue-100 transition-colors"
             >
               <FileText size={16} />
               View refund policy
-            </Link>
+            </button>
           </div>
         </div>
       </div>
@@ -714,11 +723,20 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
           <div className="lg:col-span-1 bg-emerald-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Available Balance</p>
+                <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Withdrawable</p>
                 {walletLoading ? (
                   <div className="h-7 w-20 mt-1.5 bg-gray-200 rounded animate-pulse" />
                 ) : (
-                  <p className="text-xl font-bold text-gray-900 mt-1">{formatInr(wallet?.available_balance ?? 0)}</p>
+                  <>
+                    <p className="text-xl font-bold text-gray-900 mt-1">
+                      {formatInr(wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0)}
+                    </p>
+                    {(wallet?.locked_settlement_total ?? wallet?.locked_balance ?? 0) > 0 ? (
+                      <p className="text-[10px] text-amber-700 mt-1">
+                        In refund window: {formatInr(wallet?.locked_settlement_total ?? wallet?.locked_balance ?? 0)}
+                      </p>
+                    ) : null}
+                  </>
                 )}
               </div>
               <div className="p-2 rounded-lg bg-emerald-100 flex-shrink-0">
@@ -1907,6 +1925,35 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {showRefundPolicy && (
+        <div className="fixed inset-0 z-[9999] flex">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setShowRefundPolicy(false)}
+            aria-hidden
+          />
+          <aside className="relative ml-auto w-full max-w-3xl h-full bg-white shadow-2xl flex flex-col overflow-hidden border-l border-gray-200">
+            <div className="flex-shrink-0 px-4 sm:px-5 py-4 border-b border-gray-200 bg-white/95 backdrop-blur flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[11px] uppercase tracking-[0.18em] text-orange-600 font-semibold">Policy</p>
+                <h2 className="text-base sm:text-lg font-bold text-gray-900 leading-tight">Refund Policy</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRefundPolicy(false)}
+                className="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-xl hover:bg-gray-100 text-gray-600"
+                aria-label="Close refund policy"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto hide-scrollbar px-0 py-0">
+              <RefundPolicyContent compact />
+            </div>
+          </aside>
         </div>
       )}
     </>

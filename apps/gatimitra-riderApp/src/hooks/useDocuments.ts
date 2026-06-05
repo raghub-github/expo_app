@@ -7,12 +7,18 @@ const API_BASE = () => getRiderAppConfig().apiBaseUrl;
 
 export interface SaveDocumentRequest {
   riderId: number;
-  docType: "aadhaar" | "pan" | "dl" | "rc" | "selfie";
-  fileUrl: string; // Signed URL from R2
-  r2Key?: string; // R2 storage key - allows URL regeneration if signed URL expires
+  docType: string;
+  fileUrl: string; // Proxy URL stored in DB
+  r2Key?: string;
   extractedName?: string;
-  extractedDob?: string; // ISO date string
+  extractedDob?: string;
   metadata?: Record<string, any>;
+  files?: {
+    side: "front" | "back" | "single";
+    fileUrl: string;
+    r2Key?: string;
+    mimeType?: string;
+  }[];
 }
 
 export interface SaveDocumentResponse {

@@ -2,19 +2,11 @@
  * Orders hook — loads food orders from merchant-partner API (Partner Site pipeline).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useAuth } from "@/context/AuthContext";
-import { useSelectedStore } from "@/context/SelectedStoreContext";
-import {
-  fetchFoodOrders,
-  patchFoodOrderStatus,
-  type ApiFoodOrder,
-  type ApiFoodOrderItem,
+import type {
+  ApiFoodOrder,
+  ApiFoodOrderItem,
 } from "@/services/ordersApi";
 import { merchantOrderBillTotal } from "@/lib/merchant-line-total";
-import { prefetchMenuItemsForOrders } from "@/lib/menuItemCache";
-import { prefetchOrderTimeline } from "@/lib/orderTimelineCache";
-import { getStoreSettings } from "@/services/storeSettingsApi";
 
 export type DeliveryType = "GATIMITRA_RIDER" | "SELF_DELIVERY" | "SELF_PICKUP";
 
@@ -33,6 +25,8 @@ export type LineItem = {
   price: number;
   menuItemId?: number | null;
   vegNonveg?: string | null;
+  customizations?: string[];
+  variant_tag?: string | null;
   customization_lines?: ApiFoodOrderItem["customization_lines"];
   base_amount?: number;
   customizations_total?: number;
@@ -71,6 +65,9 @@ export type OrderRecord = {
   deliveredAt?: string | null;
   preparationTimeMinutes?: number | null;
   prepReadyByAt?: string | null;
+  prepDelayMinutes?: number | null;
+  prepDelayUseCount?: number | null;
+  preparedLateMinutes?: number | null;
   customerPhone?: string | null;
   customerEmail?: string | null;
   dropAddress?: string | null;
@@ -82,6 +79,7 @@ export type OrderRecord = {
   vegNonVeg?: string | null;
   requiresUtensils?: boolean | null;
   merchantInstructionsList?: unknown;
+  deliveryInstructions?: string | null;
   isScheduledOrder?: boolean;
   scheduledDeliverySummary?: string | null;
 };
@@ -150,7 +148,7 @@ export function stageTransitionToApi(from: OrderStage, to: OrderStage): string {
   return to.toUpperCase();
 }
 
-function mapApiOrder(o: ApiFoodOrder): OrderRecord {
+export function mapApiOrder(o: ApiFoodOrder): OrderRecord {
   const formatted = (o.formatted_order_id ?? "").trim();
   const orderNumber =
     formatted.length > 0
@@ -181,6 +179,8 @@ function mapApiOrder(o: ApiFoodOrder): OrderRecord {
           ? Number(it.menu_item_id)
           : null,
       vegNonveg: it.veg_nonveg ?? null,
+      customizations: it.customizations,
+      variant_tag: it.variant_tag ?? null,
       customization_lines: it.customization_lines,
       base_amount: it.base_amount,
       customizations_total: it.customizations_total,
@@ -209,6 +209,10 @@ function mapApiOrder(o: ApiFoodOrder): OrderRecord {
   preparationTimeMinutes:
       o.preparation_time_minutes != null ? Number(o.preparation_time_minutes) : null,
     prepReadyByAt: o.prep_ready_by_at?.trim() || null,
+    prepDelayMinutes: o.prep_delay_minutes != null ? Number(o.prep_delay_minutes) : null,
+    prepDelayUseCount: o.prep_delay_use_count != null ? Number(o.prep_delay_use_count) : null,
+    preparedLateMinutes:
+      o.prepared_late_minutes != null ? Number(o.prepared_late_minutes) : null,
     customerPhone: o.customer_phone?.trim() || null,
     customerEmail: o.customer_email?.trim() || null,
     dropAddress: o.drop_address?.trim() || null,
@@ -220,18 +224,10 @@ function mapApiOrder(o: ApiFoodOrder): OrderRecord {
     vegNonVeg: o.veg_non_veg ?? null,
     requiresUtensils: o.requires_utensils ?? null,
     merchantInstructionsList: o.merchant_instructions_list,
+    deliveryInstructions: o.delivery_instructions?.trim() || null,
     isScheduledOrder: Boolean(o.is_scheduled_order),
     scheduledDeliverySummary: o.scheduled_delivery_summary?.trim() || null,
   };
-}
-
-function canTransition(order: OrderRecord, next: OrderStage): boolean {
-  if (order.deliveryType === "GATIMITRA_RIDER") {
-    if (next === "picked_up" || next === "delivered" || next === "rto") {
-      return false;
-    }
-  }
-  return true;
 }
 
 export type OrdersState = {
@@ -241,185 +237,4 @@ export type OrdersState = {
   counts: OrderCounts;
 };
 
-export function useOrders(pollIntervalMs = 8000) {
-  const { token } = useAuth();
-  const { selectedStore } = useSelectedStore();
-  const storeId = selectedStore?.id ?? null;
-
-  const [orders, setOrders] = useState<OrderRecord[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const autoAcceptedRef = useRef<Set<number>>(new Set());
-  const autoAcceptTimersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
-
-  const refetch = useCallback(async () => {
-    if (!token || !storeId) {
-      setOrders([]);
-      setLoading(false);
-      return;
-    }
-    setError(null);
-    try {
-      const [list, storeSettings] = await Promise.all([
-        fetchFoodOrders(storeId, token, { limit: 200 }),
-        getStoreSettings(storeId, token).catch(() => null),
-      ]);
-      const mapped = list.map(mapApiOrder);
-      setOrders(mapped);
-      prefetchMenuItemsForOrders(
-        storeId,
-        token,
-        mapped.flatMap((o) => o.lineItems)
-      );
-      for (const row of mapped) {
-        if (row.id.startsWith("core-")) continue;
-        const foodId = parseInt(row.id, 10);
-        if (Number.isFinite(foodId)) prefetchOrderTimeline(storeId, foodId, token);
-      }
-
-      if (storeSettings?.auto_accept_orders) {
-        const delayMs = Math.max(0, Math.min(600, storeSettings.auto_accept_time_seconds || 0)) * 1000;
-        for (const row of list) {
-          const st = apiStatusToStage(row.order_status);
-          if (st !== "created" || row.core_only) continue;
-          const fid = row.orders_food_id;
-          if (autoAcceptedRef.current.has(fid)) continue;
-          if (autoAcceptTimersRef.current.has(fid)) continue;
-          const timer = setTimeout(() => {
-            autoAcceptTimersRef.current.delete(fid);
-            if (autoAcceptedRef.current.has(fid)) return;
-            autoAcceptedRef.current.add(fid);
-            void patchFoodOrderStatus(storeId, fid, token, "ACCEPTED", undefined, {
-              action_source: "app",
-              accept_mode: "auto",
-            })
-              .then((updated) => {
-                setOrders((prev) =>
-                  prev.map((o) => (o.id === String(fid) ? mapApiOrder(updated) : o))
-                );
-              })
-              .catch(() => {
-                autoAcceptedRef.current.delete(fid);
-              });
-          }, delayMs);
-          autoAcceptTimersRef.current.set(fid, timer);
-        }
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load orders");
-    } finally {
-      setLoading(false);
-    }
-  }, [token, storeId]);
-
-  useEffect(() => {
-    setLoading(true);
-    void refetch();
-  }, [refetch]);
-
-  useEffect(() => {
-    if (!pollIntervalMs || pollIntervalMs <= 0) return undefined;
-    const id = setInterval(() => {
-      void refetch();
-    }, pollIntervalMs);
-    return () => clearInterval(id);
-  }, [pollIntervalMs, refetch]);
-
-  const transitionOrder = useCallback(
-    async (
-      orderId: string,
-      nextStatus: OrderStage,
-      opts?: { rejectedReason?: string }
-    ) => {
-      if (!token || !storeId) return;
-      if (orderId.startsWith("core-")) {
-        setError("Order is still syncing; refresh in a moment or use Partner Site.");
-        return;
-      }
-      const order = orders.find((o) => o.id === orderId);
-      if (!order || !canTransition(order, nextStatus)) return;
-
-      const apiStatus = stageTransitionToApi(order.status, nextStatus);
-      const rejectedReason =
-        nextStatus === "rejected" ? opts?.rejectedReason?.trim() : undefined;
-      if (nextStatus === "rejected" && !rejectedReason) {
-        setError("Select a cancellation reason.");
-        return;
-      }
-
-      const prev = orders;
-      setOrders((list) =>
-        list.map((o) => (o.id === orderId ? { ...o, status: nextStatus } : o))
-      );
-
-      const patchOpts = {
-        action_source: "app" as const,
-        accept_mode: "manual" as const,
-        cancel_mode: "manual" as const,
-      };
-
-      try {
-        if (apiStatus === "READY_FOR_PICKUP" && order.pipelineStatus === "ACCEPTED") {
-          try {
-            await patchFoodOrderStatus(
-              storeId,
-              Number(orderId),
-              token,
-              "PREPARING",
-              undefined,
-              patchOpts
-            );
-          } catch (prepErr) {
-            const msg = prepErr instanceof Error ? prepErr.message : "";
-            if (!/invalid transition/i.test(msg)) throw prepErr;
-          }
-        }
-
-        const updated = await patchFoodOrderStatus(
-          storeId,
-          Number(orderId),
-          token,
-          apiStatus,
-          rejectedReason,
-          patchOpts
-        );
-        setOrders((list) =>
-          list.map((o) => (o.id === orderId ? mapApiOrder(updated) : o))
-        );
-        setError(null);
-      } catch (e) {
-        setOrders(prev);
-        setError(e instanceof Error ? e.message : "Failed to update order");
-        throw e;
-      }
-    },
-    [token, storeId, orders]
-  );
-
-  const counts: OrderCounts = useMemo(() => {
-    const base: OrderCounts = {
-      all: orders.length,
-      created: 0,
-      preparing: 0,
-      ready: 0,
-      picked_up: 0,
-      delivered: 0,
-      rejected: 0,
-      rto: 0,
-    };
-    for (const o of orders) {
-      base[o.status] += 1;
-    }
-    return base;
-  }, [orders]);
-
-  return {
-    orders,
-    loading,
-    error,
-    refetch,
-    transitionOrder,
-    counts,
-    formatRelativeTime,
-  };
-}
+export { useOrdersContext as useOrders } from "@/context/OrdersContext";

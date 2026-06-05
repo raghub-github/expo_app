@@ -1,9 +1,14 @@
 /**
- * GatiMitra Location Search Engine – Zomato/Swiggy-level coverage.
- * Multi-layer: Mapbox → local DB fallback → fuzzy → India keyword boost → city→areas.
+ * GatiMitra Location Search Engine – Search Box API + local DB fallback.
+ * Forward search uses @mapbox/search-js-core (Search Box API), not Geocoding v5.
  */
 
 import { getConfig } from "@/config/env";
+import {
+  mapboxSearchSuggest,
+  type MapboxSearchSessionContext,
+} from "@/services/mapboxSearch.service";
+import { finalizeRapidoSuggestions, primaryMatchScore } from "@/lib/location-search-ranking";
 
 const COUNTRY_INDIA = "IN";
 const CACHE_TTL_MS = 30_000;
@@ -88,6 +93,16 @@ export type EnrichedPlaceResult = {
   usageCount?: number;
   /** True when result is from pincode-only search (exact match); use for 3-line display. */
   isPincodeResult?: boolean;
+  /** Mapbox Search Box suggestion — retrieve on select for exact coordinates. */
+  mapboxSuggestion?: import("@mapbox/search-js-core").SearchBoxSuggestion;
+  /** True when coordinates must be fetched via Search Box retrieve. */
+  pendingRetrieve?: boolean;
+  /** POI / address / place feature type from Search Box. */
+  featureType?: string;
+  /** Saved address label (Home / Work). */
+  savedLabel?: string;
+  /** Section hint for UI: saved | recent | search */
+  resultSection?: "saved" | "recent" | "search";
 };
 
 /** Local suggestion from backend (popular_locations / saved addresses). */
@@ -420,6 +435,8 @@ export type LocationSearchOptions = {
   signal?: AbortSignal;
   proximity?: { longitude: number; latitude: number };
   recentLocationKeys?: Set<string>;
+  /** Search Box session context for suggest/retrieve token reuse. */
+  sessionContext?: MapboxSearchSessionContext;
   /** Local fallback when Mapbox confidence < threshold (popular_locations + saved addresses). */
   getLocalSuggestions?: (q: string) => Promise<LocalSuggestionInput[]>;
   /** City→areas expansion (e.g. "Patna" → Kankarbagh, Boring Road). */
@@ -464,28 +481,43 @@ function localToEnriched(
   };
 }
 
-/** Delivery-style order: nearest distance first (ascending), then exact match, then confidence. */
+function textMatchRank(result: EnrichedPlaceResult, query: string): number {
+  const q = query.trim().toLowerCase();
+  if (!q) return 0;
+  const haystack = [result.primary, result.secondary, result.fullAddress, result.area, result.city]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (!haystack) return 0;
+  if (haystack.startsWith(q)) return 4;
+  const words = haystack.split(/\s+/);
+  if (words.some((w) => w.startsWith(q))) return 3;
+  if (haystack.includes(q)) return 2;
+  if ((result.matchText ?? "").toLowerCase().includes(q)) return 1;
+  return 0;
+}
+
+/** Autocomplete: typed query matches first; browse/empty: nearest distance first. */
 function sortByDeliveryPriority(
   results: EnrichedPlaceResult[],
   query: string,
   userCoords?: { latitude: number; longitude: number }
 ): void {
   const q = query.trim().toLowerCase();
+  const hasQuery = q.length >= 2;
   const hasDistance = userCoords != null;
   results.sort((a, b) => {
-    // 1. When user location available: sort by distance ascending (nearest first)
+    if (hasQuery) {
+      const textDelta = textMatchRank(b, q) - textMatchRank(a, q);
+      if (textDelta !== 0) return textDelta;
+      const confDelta = (b.confidenceScore ?? 0) - (a.confidenceScore ?? 0);
+      if (Math.abs(confDelta) > 0.04) return confDelta;
+    }
     if (hasDistance) {
       const da = a.distanceKm ?? Infinity;
       const db = b.distanceKm ?? Infinity;
       if (da !== db) return da - db;
     }
-    // 2. Then by exact match (address/query)
-    const aAddr = (a.area ?? a.primary ?? "").toLowerCase();
-    const bAddr = (b.area ?? b.primary ?? "").toLowerCase();
-    const aExact = aAddr.includes(q) || (a.fullAddress ?? "").toLowerCase().includes(q);
-    const bExact = bAddr.includes(q) || (b.fullAddress ?? "").toLowerCase().includes(q);
-    if (aExact && !bExact) return -1;
-    if (!aExact && bExact) return 1;
     return (b.confidenceScore ?? 0) - (a.confidenceScore ?? 0);
   });
 }
@@ -531,30 +563,49 @@ export async function searchLocations(
     return results;
   }
 
-  let features: MapboxFeature[] = [];
+  let results: EnrichedPlaceResult[] = [];
   if (mapboxAccessToken) {
-    features = await fetchMapboxForward(
-      trimmed,
-      proximityStr,
-      options?.signal,
-      mapboxAccessToken
-    );
-    if (features.length === 0) {
+    try {
+      results = await mapboxSearchSuggest(trimmed, {
+        signal: options?.signal,
+        proximity: userCoords
+          ? { longitude: userCoords.longitude, latitude: userCoords.latitude }
+          : undefined,
+        sessionContext: options?.sessionContext ?? "location-picker",
+      });
+    } catch {
+      results = [];
+    }
+
+    if (results.length === 0) {
       const normalized = normalizeQueryForFuzzy(trimmed);
       if (normalized !== trimmed.toLowerCase()) {
-        features = await fetchMapboxForward(
-          normalized,
-          proximityStr,
-          options?.signal,
-          mapboxAccessToken
-        );
+        try {
+          results = await mapboxSearchSuggest(normalized, {
+            signal: options?.signal,
+            proximity: userCoords
+              ? { longitude: userCoords.longitude, latitude: userCoords.latitude }
+              : undefined,
+            sessionContext: options?.sessionContext ?? "location-picker",
+          });
+        } catch {
+          results = [];
+        }
       }
     }
   }
 
   if (options?.signal?.aborted) return [];
 
-  let results = parseAndEnrich(features, userCoords, trimmed, recentKeys);
+  results = results.map((r) => {
+    const histKey = locationKey(r.latitude, r.longitude, r.primary);
+    const historyBoost = recentKeys.has(histKey) ? 0.08 : 0;
+    return {
+      ...r,
+      confidenceScore: Math.min(1, (r.confidenceScore ?? 0.7) + historyBoost),
+      resultSection: "search" as const,
+    };
+  });
   const avgRelevance =
     results.length > 0
       ? results.reduce((s, r) => s + (r.confidenceScore ?? 0), 0) / results.length
@@ -586,16 +637,19 @@ export async function searchLocations(
 
   sortByDeliveryPriority(results, trimmed, userCoords);
 
-  const top = results[0];
+  // Rapido-style: skip city→areas flood when Mapbox already returned POI/city matches.
   const getCityAreas = options?.getCityAreas;
-  if (
+  const shouldExpandCityAreas =
     getCityAreas &&
-    top?.city &&
-    (top.primary === top.city || (top.area == null && top.city != null))
-  ) {
+    results.length < 4 &&
+    trimmed.split(/\s+/).length === 1 &&
+    primaryMatchScore(results[0]?.primary ?? "", trimmed) >= 9;
+
+  if (shouldExpandCityAreas) {
+    const top = results[0];
     try {
-      const areas = await getCityAreas(top.city);
-      if (options?.signal?.aborted) return results;
+      const areas = await getCityAreas(top!.city!);
+      if (options?.signal?.aborted) return finalizeRapidoSuggestions(results, trimmed);
       const enrichedAreas = areas.map((loc) =>
         localToEnriched(loc, userCoords, recentKeys)
       );
@@ -607,14 +661,14 @@ export async function searchLocations(
           results.push(r);
         }
       });
-      sortByDeliveryPriority(results, trimmed, userCoords);
     } catch {
       // ignore
     }
   }
 
-  setCache(cacheKeyStr, results);
-  return results;
+  const finalized = finalizeRapidoSuggestions(results, trimmed);
+  setCache(cacheKeyStr, finalized);
+  return finalized;
 }
 
 /**

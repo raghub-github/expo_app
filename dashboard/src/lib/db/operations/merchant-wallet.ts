@@ -8,9 +8,14 @@ import type {
   LedgerEntry,
   LedgerQueryOptions,
   ReconciliationReport,
+  PayoutResult,
 } from "@gatimitra/contracts";
-import { roundMoney, WALLET_CONSTANTS } from "@gatimitra/contracts";
+import { roundMoney, WALLET_CONSTANTS, idempotencyKey } from "@gatimitra/contracts";
+import { enrichWalletSummary } from "@/lib/payment/wallet-summary-enrichment";
+import { getPaymentPayoutQuote } from "@/lib/payment/payout-quote";
 import { getSql } from "../client";
+
+export { getPaymentPayoutQuote };
 
 // ─── Get or create wallet ─────────────────────────────────────────────────────
 
@@ -93,7 +98,7 @@ export async function getWalletSummary(storeId: number): Promise<WalletSummary> 
       pendingWithdrawalTotal = 0;
     }
   }
-  return {
+  const base: WalletSummary = {
     wallet_id: walletId,
     available_balance: roundMoney(Number(wr.available_balance ?? 0)),
     pending_balance: roundMoney(Number(wr.pending_balance ?? 0)),
@@ -112,6 +117,7 @@ export async function getWalletSummary(storeId: number): Promise<WalletSummary> 
     yesterday_earning: roundMoney(yesterdayEarning),
     pending_withdrawal_total: roundMoney(pendingWithdrawalTotal),
   };
+  return enrichWalletSummary(sql, walletId, base);
 }
 
 // ─── Ledger query (V2) ───────────────────────────────────────────────────────
@@ -224,5 +230,72 @@ export async function reconcileWallet(storeId: number): Promise<ReconciliationRe
     difference,
     is_consistent: Math.abs(difference) < 0.01,
     checked_at: new Date().toISOString(),
+  };
+}
+
+export async function createWithdrawalRequest(
+  storeId: number,
+  amount: number,
+  bankAccountId: number
+): Promise<PayoutResult> {
+  const sql = getSql();
+  const quote = await getPaymentPayoutQuote(sql, storeId, amount);
+  if (amount < quote.min_payout_amount) {
+    throw new Error(`Amount must be at least ₹${quote.min_payout_amount}`);
+  }
+
+  const walletId = await getOrCreateWalletId(storeId);
+  const pendingRows = await sql`
+    SELECT COUNT(*)::int AS cnt FROM merchant_payout_requests
+    WHERE wallet_id = ${walletId} AND status IN ('PENDING', 'APPROVED', 'PROCESSING')
+  `;
+  const pendingCount = Number((pendingRows[0] as { cnt?: number })?.cnt ?? 0);
+  if (pendingCount >= WALLET_CONSTANTS.MAX_PENDING_WITHDRAWALS) {
+    throw new Error(`Maximum ${WALLET_CONSTANTS.MAX_PENDING_WITHDRAWALS} pending withdrawals allowed`);
+  }
+
+  const bankCheck = await sql`
+    SELECT id FROM merchant_store_bank_accounts WHERE id = ${bankAccountId} AND store_id = ${storeId} LIMIT 1
+  `;
+  if (bankCheck.length === 0) throw new Error("Invalid bank account");
+
+  const holdKey = idempotencyKey("payout_hold", walletId, Date.now());
+  const [holdResult] = await sql`
+    SELECT merchant_wallet_debit(
+      ${walletId}, ${amount}, ${"HOLD_LOCK"}, ${"AVAILABLE"},
+      ${"WITHDRAWAL"}, ${0}, ${holdKey},
+      ${"Withdrawal hold"}, ${JSON.stringify({ net: quote.net_payout_amount })}::jsonb
+    ) AS ledger_id
+  `;
+  const holdLedgerId = Number((holdResult as { ledger_id?: number })?.ledger_id);
+
+  await sql`
+    SELECT merchant_wallet_credit(
+      ${walletId}, ${amount}, ${"HOLD_LOCK"}, ${"HOLD"},
+      ${"WITHDRAWAL"}, ${0}, ${holdKey + "_credit_hold"},
+      ${"Withdrawal hold (hold bucket)"}, ${JSON.stringify({ hold_debit_ledger_id: holdLedgerId })}::jsonb
+    )
+  `;
+
+  const [payoutRow] = await sql`
+    INSERT INTO merchant_payout_requests (
+      wallet_id, amount, status,
+      commission_percentage, commission_amount, net_payout_amount,
+      bank_account_id, hold_ledger_id
+    ) VALUES (
+      ${walletId}, ${amount}, 'PENDING',
+      ${quote.commission_percentage}, ${quote.commission_amount}, ${quote.net_payout_amount},
+      ${bankAccountId}, ${holdLedgerId}
+    ) RETURNING id, amount, commission_percentage, commission_amount, net_payout_amount, status
+  `;
+  const pr = payoutRow as Record<string, unknown>;
+  return {
+    payout_request_id: Number(pr.id),
+    amount: Number(pr.amount),
+    commission_percentage: Number(pr.commission_percentage),
+    commission_amount: Number(pr.commission_amount),
+    net_payout_amount: Number(pr.net_payout_amount),
+    status: String(pr.status) as PayoutResult["status"],
+    hold_ledger_id: holdLedgerId,
   };
 }

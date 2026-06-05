@@ -6,20 +6,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
-import { riders, orders, ordersCore, withdrawalRequests, tickets, blacklistHistory, dutyLogs, riderVehicles, riderPenalties, riderWallet, riderWalletFreezeHistory, riderNegativeWalletBlocks, riderDocuments, systemUsers, onboardingPayments } from "@/lib/db/schema";
+import { fetchRiderUnifiedTickets } from "@/lib/riders/rider-unified-tickets";
+import { riders, orders, ordersCore, withdrawalRequests, blacklistHistory, dutyLogs, riderVehicles, riderPenalties, riderWallet, riderWalletFreezeHistory, riderNegativeWalletBlocks, systemUsers, onboardingPayments } from "@/lib/db/schema";
 import { eq, and, or, desc, gte, lte, isNull, sql } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getRedisClient } from "@/lib/redis";
 import { getCached, setCached } from "@/lib/server-cache";
+import { getRiderLogoutSessionSnapshot } from "@/lib/db/operations/rider-logout-events";
+import { getRiderSelfieViewUrl } from "@/lib/rider-selfie-url";
 
 export const runtime = 'nodejs';
 
 /** Query params are strings; Drizzle enum columns need the schema literal union */
 type OrdersCoreRow = InferSelectModel<typeof ordersCore>;
 type OrdersLegacyRow = InferSelectModel<typeof orders>;
-type TicketRow = InferSelectModel<typeof tickets>;
 type RiderPenaltyRow = InferSelectModel<typeof riderPenalties>;
 
 interface SummaryQueryParams {
@@ -298,46 +300,14 @@ export async function GET(
       .orderBy(desc(withdrawalRequests.createdAt))
       .limit(params_obj.withdrawalsLimit || 10);
 
-    // Get recent tickets
-    const ticketsConditions: any[] = [eq(tickets.riderId, riderId)];
-    if (params_obj.ticketsFrom) {
-      ticketsConditions.push(gte(tickets.createdAt, new Date(params_obj.ticketsFrom)));
-    }
-    if (params_obj.ticketsTo) {
-      ticketsConditions.push(lte(tickets.createdAt, new Date(params_obj.ticketsTo)));
-    }
-    if (params_obj.ticketsStatus && params_obj.ticketsStatus !== "all") {
-      ticketsConditions.push(
-        eq(tickets.status, params_obj.ticketsStatus as TicketRow["status"])
-      );
-    }
-    if (params_obj.ticketsCategory && params_obj.ticketsCategory !== "all") {
-      ticketsConditions.push(eq(tickets.category, params_obj.ticketsCategory));
-    }
-    if (params_obj.ticketsPriority && params_obj.ticketsPriority !== "all") {
-      ticketsConditions.push(eq(tickets.priority, params_obj.ticketsPriority));
-    }
-
-    // Explicit select so this works even if migration 0080 (resolved_by) has not been run
-    const recentTickets = await db
-      .select({
-        id: tickets.id,
-        riderId: tickets.riderId,
-        orderId: tickets.orderId,
-        category: tickets.category,
-        priority: tickets.priority,
-        subject: tickets.subject,
-        message: tickets.message,
-        status: tickets.status,
-        resolution: tickets.resolution,
-        createdAt: tickets.createdAt,
-        updatedAt: tickets.updatedAt,
-        resolvedAt: tickets.resolvedAt,
-      })
-      .from(tickets)
-      .where(ticketsConditions.length > 1 ? and(...ticketsConditions) : ticketsConditions[0])
-      .orderBy(desc(tickets.createdAt))
-      .limit(params_obj.ticketsLimit || 10);
+    const { tickets: recentTickets } = await fetchRiderUnifiedTickets(riderId, {
+      limit: params_obj.ticketsLimit || 10,
+      from: params_obj.ticketsFrom,
+      to: params_obj.ticketsTo,
+      status: params_obj.ticketsStatus,
+      category: params_obj.ticketsCategory,
+      priority: params_obj.ticketsPriority,
+    });
 
     // Get vehicle information (active vehicle)
     const [activeVehicle] = await db
@@ -538,17 +508,7 @@ export async function GET(
       console.warn("[Summary API] Penalties table not found, skipping penalties data");
     }
 
-    // Rider selfie: from riders.selfieUrl or latest rider_documents (docType = 'selfie')
-    let selfieUrl: string | null = (rider as { selfieUrl?: string | null }).selfieUrl ?? null;
-    if (!selfieUrl) {
-      const [selfieDoc] = await db
-        .select({ fileUrl: riderDocuments.fileUrl })
-        .from(riderDocuments)
-        .where(and(eq(riderDocuments.riderId, riderId), eq(riderDocuments.docType, "selfie")))
-        .orderBy(desc(riderDocuments.createdAt))
-        .limit(1);
-      if (selfieDoc?.fileUrl) selfieUrl = selfieDoc.fileUrl;
-    }
+    const selfieUrl = await getRiderSelfieViewUrl(riderId);
 
     // Negative wallet blocks (temporary per-service block when balance <= -50)
     const negativeWalletBlockRows = await db
@@ -633,6 +593,8 @@ export async function GET(
     const isOnline =
       isFullyOnboarded && latestDutyLog ? latestDutyLog.status === "ON" : false;
 
+    const logoutSession = await getRiderLogoutSessionSnapshot(riderId);
+
     // Calculate order metrics per service type
     // Note: This uses orders table - for detailed assignment tracking, use order_rider_assignments if available
     const orderMetrics = {
@@ -704,17 +666,7 @@ export async function GET(
           createdAt: withdrawal.createdAt,
           processedAt: withdrawal.processedAt,
         })),
-        recentTickets: recentTickets.map(ticket => ({
-          id: ticket.id,
-          orderId: ticket.orderId ?? undefined,
-          category: ticket.category,
-          priority: ticket.priority,
-          subject: ticket.subject,
-          message: ticket.message,
-          status: ticket.status,
-          createdAt: ticket.createdAt,
-          resolvedAt: ticket.resolvedAt,
-        })),
+        recentTickets,
         vehicle: activeVehicle ? {
           id: activeVehicle.id,
           vehicleType: activeVehicle.vehicleType,
@@ -786,6 +738,7 @@ export async function GET(
         })() : null,
         orderMetrics,
         onboardingFees,
+        logoutSession,
       },
     } as const;
 

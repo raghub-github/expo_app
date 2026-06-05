@@ -53,8 +53,8 @@ const SHADOW_CARD = {
   elevation: 3,
 };
 
-/** Food-only launch: faded + disabled; UI still matches reference. */
-const ACTIVE_SERVICE_IDS = new Set<string>(["food"]);
+/** Enabled service cards on home; others stay faded + disabled. */
+const ACTIVE_SERVICE_IDS = new Set<string>(["food", "ride"]);
 
 type CategoryTheme = {
   pillBg: string;

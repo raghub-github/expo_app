@@ -157,6 +157,21 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
   setAddressAndCoords: (address, coords, meta) => {
     const source: LocationSource = meta?.source ?? "selected";
+    const prev = get();
+    const sameCoords =
+      prev.coords != null &&
+      Math.abs(prev.coords.latitude - coords.latitude) < 1e-6 &&
+      Math.abs(prev.coords.longitude - coords.longitude) < 1e-6;
+    const sameAddress =
+      prev.address?.fullAddress === address.fullAddress &&
+      prev.address?.primary === address.primary &&
+      prev.address?.secondary === address.secondary &&
+      prev.address?.city === address.city &&
+      prev.address?.state === address.state &&
+      prev.address?.pincode === address.pincode;
+    if (sameCoords && sameAddress && prev.locationSource === source) {
+      return;
+    }
     set({ address, coords, locationSource: source });
     if (source === "selected") {
       const payload: PersistedSelectedLocation = {

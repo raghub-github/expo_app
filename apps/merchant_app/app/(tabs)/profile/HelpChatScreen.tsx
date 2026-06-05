@@ -31,9 +31,16 @@ import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { getConfig, resolveUrlForDevice } from "@/config/env";
 import { ticketDebugLog } from "@/lib/ticketDebugLog";
+import { formatTicketMessageForDisplay } from "@/lib/formatTicketMessage";
+import {
+  getCachedTicketChat,
+  normalizeTicketMessages,
+  setCachedTicketChat,
+} from "@/lib/ticketChatCache";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { useLiveSupportTicket } from "@/context/LiveSupportTicketContext";
 import { useTicketCopresence } from "@/hooks/useTicketCopresence";
 import { useTicketMessagesRealtime } from "@/hooks/useTicketMessagesRealtime";
 import { getSupabaseAuth } from "@/lib/supabaseClient";
@@ -154,6 +161,13 @@ const CHAT_FOCUS_POLL_MS = 4_000;
 /** Focused + Realtime subscribed: light backup poll. */
 const CHAT_FOCUS_POLL_WITH_REALTIME_MS = 12_000;
 const MERCHANT_OPTIMISTIC_MATCH_WINDOW_MS = 3 * 60 * 1000;
+
+type ComposerPendingAttachment = {
+  id: string;
+  uri: string;
+  fileName?: string;
+  mimeType?: string;
+};
 
 function normalizeTicketMessageBody(text: unknown): string {
   return String(text ?? "")
@@ -453,17 +467,34 @@ export default function HelpChatScreen() {
   const router = useRouter();
   const { token, supabaseUserId, partner } = useAuth();
   const { selectedStore } = useSelectedStore();
+  const storeId = selectedStore?.id ?? null;
   const p = useLocalSearchParams<{
     ticketId?: string | string[];
     sectionId?: string | string[];
     sectionTitle?: string | string[];
     /** ticket_titles.id from Contact Us — disambiguates duplicate section codes. */
     ticketTitleId?: string | string[];
+    /** orders_core.id when opened from Live order support on an order card. */
+    orderCoreId?: string | string[];
+    ordersFoodId?: string | string[];
+    formattedOrderId?: string | string[];
+    autoSendMessage?: string | string[];
+    fromLiveOrderSupport?: string | string[];
+    quickOptionsJson?: string | string[];
   }>();
   const ticketId = firstRouteString(p.ticketId);
   const sectionId = firstRouteString(p.sectionId);
   const sectionTitle = firstRouteString(p.sectionTitle);
   const ticketTitleIdParam = firstRouteString(p.ticketTitleId);
+  const orderCoreIdParam = firstRouteString(p.orderCoreId);
+  const ordersFoodIdParam = firstRouteString(p.ordersFoodId);
+  const formattedOrderIdParam = firstRouteString(p.formattedOrderId);
+  const autoSendMessageParam = firstRouteString(p.autoSendMessage);
+  const fromLiveOrderSupportParam = firstRouteString(p.fromLiveOrderSupport);
+  const quickOptionsJsonParam = firstRouteString(p.quickOptionsJson);
+
+  const isLiveOrderSupportFlow =
+    fromLiveOrderSupportParam === "1" || fromLiveOrderSupportParam === "true";
 
   const resolvedTicketTitleId = useMemo(() => {
     const raw = typeof ticketTitleIdParam === "string" ? ticketTitleIdParam.trim() : "";
@@ -471,13 +502,33 @@ export default function HelpChatScreen() {
     const n = Number(raw);
     return Number.isInteger(n) && n > 0 ? n : 0;
   }, [ticketTitleIdParam]);
+
+  const resolvedOrderCoreId = useMemo(() => {
+    const raw = typeof orderCoreIdParam === "string" ? orderCoreIdParam.trim() : "";
+    if (!/^\d+$/.test(raw)) return null;
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  }, [orderCoreIdParam]);
+
+  const resolvedOrdersFoodId = useMemo(() => {
+    const raw = typeof ordersFoodIdParam === "string" ? ordersFoodIdParam.trim() : "";
+    if (!/^\d+$/.test(raw)) return null;
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  }, [ordersFoodIdParam]);
+
+  const linkedOrderLabel = useMemo(() => {
+    const raw = typeof formattedOrderIdParam === "string" ? formattedOrderIdParam.trim() : "";
+    if (raw) return raw.startsWith("#") ? raw : `#${raw}`;
+    if (resolvedOrderCoreId != null) return `#${resolvedOrderCoreId}`;
+    return null;
+  }, [formattedOrderIdParam, resolvedOrderCoreId]);
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
 
   const [ticket, setTicket] = useState<TicketSummary | null>(null);
   const [messages, setMessages] = useState<TicketMessage[]>([]);
   const [serverQuickBySection, setServerQuickBySection] = useState<Record<string, string[]>>({});
-  const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [input, setInput] = useState("");
@@ -493,6 +544,7 @@ export default function HelpChatScreen() {
   const [showTicketCreatedToast, setShowTicketCreatedToast] = useState(false);
   const [showRequestReceivedCard, setShowRequestReceivedCard] = useState(true);
   const [previewAttachmentUri, setPreviewAttachmentUri] = useState<string | null>(null);
+  const [pendingAttachments, setPendingAttachments] = useState<ComposerPendingAttachment[]>([]);
   /** False when user navigates away — stops slow polling; refetch on focus. */
   const [chatScreenFocused, setChatScreenFocused] = useState(false);
   /** Android: IME often overlays the composer with tab bar + `pan`; pad root by keyboard height. */
@@ -500,10 +552,12 @@ export default function HelpChatScreen() {
 
   /** Ticket ID created in this session via Help & Support (create flow). Used to show "Request received" only then, not when opening from My Tickets. */
   const createdInThisSessionRef = useRef<number | null>(null);
+  const autoSendDoneRef = useRef(false);
   const prevSnoozeUiActiveRef = useRef<boolean | null>(null);
   /** Skip setState on silent polls when API payload matches last apply (avoids pointless re-renders). */
   const lastSyncFingerprintRef = useRef<string | null>(null);
   const chatScrollRef = useRef<ScrollView>(null);
+  const messagesRef = useRef<TicketMessage[]>([]);
   /** When true, follow the thread (scroll on layout/content growth, e.g. images loading). */
   const stickChatToEndRef = useRef(true);
   /** Last message tail used to avoid redundant scrollToEnd on silent polls / identical merges. */
@@ -512,33 +566,39 @@ export default function HelpChatScreen() {
   const contentSizeScrollDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatScrollGenerationRef = useRef(0);
 
-  const skeletonPulse = useState(() => new Animated.Value(0.5))[0];
   const [snoozeTick, setSnoozeTick] = useState(0);
 
-  useEffect(() => {
-    const animation = Animated.loop(
-      Animated.sequence([
-        Animated.timing(skeletonPulse, {
-          toValue: 0.9,
-          duration: 700,
-          useNativeDriver: true,
-        }),
-        Animated.timing(skeletonPulse, {
-          toValue: 0.5,
-          duration: 700,
-          useNativeDriver: true,
-        }),
-      ])
-    );
-    animation.start();
-    return () => animation.stop();
-  }, [skeletonPulse]);
-
-  const storeId = selectedStore?.id ?? null;
   const initialNumericId = ticketId ? Number(ticketId) : NaN;
   const [activeTicketId, setActiveTicketId] = useState<number | null>(
     Number.isInteger(initialNumericId) && initialNumericId > 0 ? initialNumericId : null
   );
+  const { registerLiveSupportTicket, syncLiveSupportTicketStatus, activeTicket: floatingLiveTicket, markLiveSupportAsRead, setLiveSupportChatOpen } =
+    useLiveSupportTicket();
+
+  useEffect(() => {
+    if (!ticket) return;
+    if (resolvedOrderCoreId != null) {
+      registerLiveSupportTicket({
+        ticketId: ticket.id,
+        ticketDisplayId: ticket.ticket_id,
+        orderCoreId: resolvedOrderCoreId,
+        formattedOrderId: linkedOrderLabel?.replace(/^#?/i, "") ?? null,
+        subject: ticket.subject ?? ticket.ticket_title ?? null,
+        status: ticket.status,
+      });
+      return;
+    }
+    if (floatingLiveTicket?.ticketId === ticket.id) {
+      syncLiveSupportTicketStatus(ticket.id, ticket.status);
+    }
+  }, [
+    ticket,
+    resolvedOrderCoreId,
+    linkedOrderLabel,
+    registerLiveSupportTicket,
+    syncLiveSupportTicketStatus,
+    floatingLiveTicket?.ticketId,
+  ]);
 
   const presenceDisplayName = useMemo(
     () => (typeof partner?.parent?.owner_name === "string" ? partner.parent.owner_name.trim() : ""),
@@ -660,46 +720,18 @@ export default function HelpChatScreen() {
     };
   }, [ticket]);
 
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!token || !storeId || activeTicketId == null) {
-      if (!opts?.silent) setLoading(false);
       return;
     }
-    const silent = opts?.silent === true;
-    if (!silent) setLoading(true);
+    const silent = opts?.silent !== false;
     try {
       const data = await getTicketMessages(storeId, activeTicketId, token);
-      const fallbackCreatedAt = data.ticket?.created_at ?? new Date().toISOString();
-      const normalizedMessages = (data.messages ?? []).map((m) => ({
-        ...m,
-        created_at:
-          typeof m.created_at === "string" && m.created_at.trim()
-            ? m.created_at.trim()
-            : fallbackCreatedAt,
-      }));
-      const description = (data.ticket?.description ?? "").trim();
-      const normalizedDescription = description.replace(/\r\n/g, "\n");
-      const hasSameMerchantMessage = normalizedMessages.some((m) => {
-        if (String(m.sender_type ?? "").toUpperCase() !== "MERCHANT") return false;
-        const body = String(m.message_text ?? "").trim().replace(/\r\n/g, "\n");
-        return body === normalizedDescription;
-      });
-      const withSelectedIssue =
-        normalizedDescription.length > 0 && !hasSameMerchantMessage
-          ? ([
-              {
-                id: -(data.ticket?.id ?? activeTicketId),
-                message_text: description,
-                message_type: "TEXT",
-                sender_type: "MERCHANT",
-                sender_id: null,
-                sender_name: null,
-                attachments: [],
-                created_at: data.ticket?.created_at ?? new Date().toISOString(),
-              } as TicketMessage,
-              ...normalizedMessages,
-            ] as TicketMessage[])
-          : normalizedMessages;
+      const withSelectedIssue = normalizeTicketMessages(data.ticket, data.messages, activeTicketId);
 
       const t = data.ticket;
       const fp = JSON.stringify({
@@ -721,13 +753,19 @@ export default function HelpChatScreen() {
 
       setTicket(data.ticket);
       setMessages((prev) => mergeServerTicketMessagesWithPending(withSelectedIssue, prev));
+      setCachedTicketChat(storeId, activeTicketId, data.ticket, withSelectedIssue);
       setError(null);
+      if (
+        chatScreenFocused &&
+        activeTicketId != null &&
+        floatingLiveTicket?.ticketId === activeTicketId
+      ) {
+        markLiveSupportAsRead(undefined, withSelectedIssue as TicketMessage[]);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load conversation.");
-    } finally {
-      if (!silent) setLoading(false);
     }
-  }, [storeId, token, activeTicketId]);
+  }, [storeId, token, activeTicketId, chatScreenFocused, floatingLiveTicket?.ticketId, markLiveSupportAsRead]);
 
   const loadRef = useRef(load);
   loadRef.current = load;
@@ -738,8 +776,31 @@ export default function HelpChatScreen() {
       if (activeTicketId != null && token && storeId) {
         void loadRef.current({ silent: true });
       }
-      return () => setChatScreenFocused(false);
-    }, [activeTicketId, token, storeId])
+      if (
+        activeTicketId != null &&
+        floatingLiveTicket?.ticketId === activeTicketId
+      ) {
+        setLiveSupportChatOpen(activeTicketId);
+      }
+      return () => {
+        setChatScreenFocused(false);
+        setLiveSupportChatOpen(null);
+        if (
+          activeTicketId != null &&
+          floatingLiveTicket?.ticketId === activeTicketId &&
+          messagesRef.current.length > 0
+        ) {
+          markLiveSupportAsRead(undefined, messagesRef.current);
+        }
+      };
+    }, [
+      activeTicketId,
+      token,
+      storeId,
+      floatingLiveTicket?.ticketId,
+      setLiveSupportChatOpen,
+      markLiveSupportAsRead,
+    ])
   );
 
   const { postgresLive } = useTicketMessagesRealtime({
@@ -783,6 +844,22 @@ export default function HelpChatScreen() {
   }, [ticket?.status, ticket?.snoozed_until, snoozeUiActive, load]);
 
   useEffect(() => {
+    if (activeTicketId == null || storeId == null) {
+      setTicket(null);
+      setMessages([]);
+      return;
+    }
+    const cached = getCachedTicketChat(storeId, activeTicketId);
+    if (cached) {
+      setTicket(cached.ticket);
+      setMessages(cached.messages);
+    } else {
+      setTicket(null);
+      setMessages([]);
+    }
+  }, [activeTicketId, storeId]);
+
+  useEffect(() => {
     prevSnoozeUiActiveRef.current = null;
     lastSyncFingerprintRef.current = null;
     messagesScrollTailRef.current = null;
@@ -795,9 +872,7 @@ export default function HelpChatScreen() {
 
   useEffect(() => {
     if (activeTicketId != null) {
-      void load();
-    } else {
-      setLoading(false);
+      void load({ silent: true });
     }
   }, [load, activeTicketId, token, storeId]);
 
@@ -876,6 +951,17 @@ export default function HelpChatScreen() {
   }, [token]);
 
   const quickOptions = useMemo(() => {
+    if (quickOptionsJsonParam) {
+      try {
+        const parsed = JSON.parse(quickOptionsJsonParam) as unknown;
+        if (Array.isArray(parsed)) {
+          const fromRoute = parsed.map((x) => String(x).trim()).filter(Boolean);
+          if (fromRoute.length > 0) return fromRoute;
+        }
+      } catch {
+        /* fall through */
+      }
+    }
     const sec = typeof sectionId === "string" ? sectionId.toLowerCase() : "";
     if (resolvedTicketTitleId > 0) {
       const byTitle = serverQuickBySection[`__tid_${resolvedTicketTitleId}`];
@@ -886,7 +972,15 @@ export default function HelpChatScreen() {
       STATIC_QUICK_OPTIONS_BY_SECTION[sec] ??
       DEFAULT_QUICK_OPTIONS
     );
-  }, [sectionId, serverQuickBySection, resolvedTicketTitleId]);
+  }, [sectionId, serverQuickBySection, resolvedTicketTitleId, quickOptionsJsonParam]);
+
+  const showLiveOrderMessagePicker =
+    isLiveOrderSupportFlow &&
+    resolvedOrderCoreId != null &&
+    activeTicketId == null &&
+    showQuickOptions &&
+    messages.length === 0 &&
+    quickOptions.length > 0;
 
   const firstMerchantMessage = useMemo(
     () => messages.find((m) => m.sender_type === "MERCHANT"),
@@ -996,7 +1090,7 @@ export default function HelpChatScreen() {
 
   /** Only scroll when the last row actually changes (new/updated tail). No scroll on identical silent refresh. */
   useEffect(() => {
-    if (loading || activeTicketId == null) return;
+    if (activeTicketId == null) return;
     if (messages.length === 0) {
       messagesScrollTailRef.current = null;
       return;
@@ -1019,7 +1113,7 @@ export default function HelpChatScreen() {
       scrollChatToEndOnce(animated);
       messagesScrollTailRef.current = tail;
     }, delay);
-  }, [messages, loading, activeTicketId, scrollChatToEndOnce]);
+  }, [messages, activeTicketId, scrollChatToEndOnce]);
 
   /** Keypad: one non-animated scroll after layout — no burst of scrollToEnd calls. */
   useEffect(() => {
@@ -1169,24 +1263,38 @@ export default function HelpChatScreen() {
   const sendMessage = async (
     textToSend: string,
     attachments?: Array<string | { uri: string; fileName?: string; mimeType?: string }>
-  ) => {
+  ): Promise<boolean> => {
     const trimmed = textToSend.trim();
-    if (!trimmed || !token || !storeId || sending) return;
+    const attachmentList = attachments ?? [];
+    const hasAttachments = attachmentList.length > 0;
+    if ((!trimmed && !hasAttachments) || !token || !storeId || sending) return false;
+
+    const messageText =
+      trimmed ||
+      (attachmentList.length > 1 ? "Shared attachments" : "Shared an attachment");
+
     setSending(true);
     let clientTempId: string | null = null;
     try {
       let ticketIdToUse = activeTicketId;
       let createdNow = false;
       if (ticketIdToUse == null) {
-        if (!sectionId && resolvedTicketTitleId < 1) {
+        if (!sectionId && resolvedTicketTitleId < 1 && resolvedOrderCoreId == null) {
           Alert.alert("Cannot start chat", "Support section missing. Please go back and try again.");
-          return;
+          return false;
         }
         const sectionCode = (sectionId ?? "").trim().toLowerCase();
+        if (!sectionCode && resolvedTicketTitleId < 1) {
+          Alert.alert("Cannot start chat", "Support section missing. Please go back and try again.");
+          return false;
+        }
         const created = await createStoreTicket(storeId, sectionCode, token, {
           subject: typeof sectionTitle === "string" ? sectionTitle : undefined,
-          description: trimmed,
+          description: messageText,
           ticketTitleId: resolvedTicketTitleId > 0 ? resolvedTicketTitleId : undefined,
+          orderId: resolvedOrderCoreId,
+          ordersFoodId: resolvedOrdersFoodId,
+          formattedOrderId: linkedOrderLabel?.replace(/^#?/i, "") ?? null,
         });
         ticketIdToUse = created.id;
         createdNow = true;
@@ -1259,13 +1367,13 @@ export default function HelpChatScreen() {
         suppressComposerEchoRef.current = { until: Date.now() + 950, text: trimmed };
         setInput("");
         requestAnimationFrame(() => composerRef.current?.clear?.());
-        return;
+        return true;
       }
 
       clientTempId = `m_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
       const temp: TicketMessage = {
         id: -Math.abs(Date.now()),
-        message_text: trimmed,
+        message_text: messageText,
         message_type: "TEXT",
         sender_type: "MERCHANT",
         sender_id: null,
@@ -1280,7 +1388,7 @@ export default function HelpChatScreen() {
       setInput("");
       requestAnimationFrame(() => composerRef.current?.clear?.());
 
-      const saved = await postTicketMessage(storeId, ticketIdToUse!, trimmed, token, attachmentPayload);
+      const saved = await postTicketMessage(storeId, ticketIdToUse!, messageText, token, attachmentPayload);
       setMessages((prev) =>
         prev.map((m) =>
           m.client_temp_id === clientTempId
@@ -1288,6 +1396,7 @@ export default function HelpChatScreen() {
             : m
         )
       );
+      return true;
     } catch (e) {
       if (clientTempId != null) {
         setMessages((prev) => prev.filter((m) => m.client_temp_id !== clientTempId));
@@ -1313,31 +1422,45 @@ export default function HelpChatScreen() {
       })();
       Alert.alert("Message not sent", `${msg} You can edit the text below and try again.`);
       setInput(trimmed);
+      return false;
     } finally {
       setSending(false);
       setShowQuickOptions(false);
     }
   };
 
+  const removePendingAttachment = useCallback((id: string) => {
+    setPendingAttachments((prev) => prev.filter((a) => a.id !== id));
+  }, []);
+
   const canSend = useMemo(() => {
     if (sending) return false;
     if (!token || !storeId) return false;
-    if (activeTicketId == null && !sectionId && resolvedTicketTitleId < 1) return false;
-    return input.trim().length > 0;
-  }, [sending, token, storeId, activeTicketId, sectionId, resolvedTicketTitleId, input]);
+    if (activeTicketId == null && !sectionId && resolvedTicketTitleId < 1 && resolvedOrderCoreId == null) return false;
+    return input.trim().length > 0 || pendingAttachments.length > 0;
+  }, [sending, token, storeId, activeTicketId, sectionId, resolvedTicketTitleId, input, pendingAttachments.length]);
 
   const onSend = async () => {
     const trimmed = input.trim();
-    if (!trimmed) return;
+    if (!trimmed && pendingAttachments.length === 0) return;
     if (!token || !storeId) {
       Alert.alert("Cannot send", "Please select a store and login again.");
       return;
     }
-    if (activeTicketId == null && !sectionId && resolvedTicketTitleId < 1) {
+    if (activeTicketId == null && !sectionId && resolvedTicketTitleId < 1 && resolvedOrderCoreId == null) {
       Alert.alert("Cannot send", "Support section missing. Please go back and try again.");
       return;
     }
-    await sendMessage(trimmed);
+    const attachmentsToSend = pendingAttachments.map(({ uri, fileName, mimeType }) => ({
+      uri,
+      fileName,
+      mimeType,
+    }));
+    const ok = await sendMessage(
+      trimmed,
+      attachmentsToSend.length > 0 ? attachmentsToSend : undefined
+    );
+    if (ok) setPendingAttachments([]);
   };
 
   const onQuickOptionPress = (label: string) => {
@@ -1349,6 +1472,32 @@ export default function HelpChatScreen() {
     setInput(label);
     void sendMessage(label);
   };
+
+  const sendMessageRef = useRef(sendMessage);
+  sendMessageRef.current = sendMessage;
+
+  useEffect(() => {
+    autoSendDoneRef.current = false;
+  }, [autoSendMessageParam, sectionId, resolvedTicketTitleId, resolvedOrderCoreId]);
+
+  useEffect(() => {
+    const msg = (autoSendMessageParam ?? "").trim();
+    if (!msg || autoSendDoneRef.current) return;
+    if (activeTicketId != null || sending) return;
+    if (!token || !storeId) return;
+    if (!sectionId && resolvedTicketTitleId < 1) return;
+    autoSendDoneRef.current = true;
+    setShowQuickOptions(false);
+    void sendMessageRef.current(msg);
+  }, [
+    autoSendMessageParam,
+    activeTicketId,
+    sending,
+    token,
+    storeId,
+    sectionId,
+    resolvedTicketTitleId,
+  ]);
 
   const openAttachmentPicker = useCallback(async () => {
     try {
@@ -1379,11 +1528,22 @@ export default function HelpChatScreen() {
         })
         .filter((x) => Boolean(x.uri));
       if (picked.length === 0) return;
-      await sendMessage(picked.length > 1 ? "Shared attachments" : "Shared an attachment", picked);
+      setPendingAttachments((prev) => {
+        const merged = [...prev];
+        for (const asset of picked) {
+          merged.push({
+            id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            uri: asset.uri,
+            fileName: asset.fileName,
+            mimeType: asset.mimeType,
+          });
+        }
+        return merged.slice(0, 10);
+      });
     } catch {
       Alert.alert("Attachment failed", "Could not open gallery. Please try again.");
     }
-  }, [sendMessage]);
+  }, []);
 
   /** iOS: align with tab header (custom header may report 0 — keep a safe-area minimum). */
   const keyboardVerticalOffset =
@@ -1426,7 +1586,10 @@ export default function HelpChatScreen() {
       <SafeAreaView style={styles.container} edges={["top", "left", "right"]}>
         <View style={styles.header}>
           <Pressable
-            onPress={() => router.back()}
+            onPress={() => {
+              if (router.canGoBack()) router.back();
+              else router.replace("/(tabs)");
+            }}
             style={({ pressed }) => [
               styles.backButton,
               pressed && styles.backButtonPressed,
@@ -1440,12 +1603,14 @@ export default function HelpChatScreen() {
           </Pressable>
           <View style={styles.headerLeft}>
             <Text style={styles.headerTitle} numberOfLines={1}>
-              Support chat
+              {isLiveOrderSupportFlow ? "Live order support" : "Support chat"}
             </Text>
             <Text style={styles.headerSubtitle} numberOfLines={1}>
               {ticket?.ticket_id
                 ? `Ticket ${ticket.ticket_id}`
-                : sectionTitle ?? "New support request"}
+                : linkedOrderLabel
+                  ? `${sectionTitle ?? "Live order support"} · ${linkedOrderLabel}`
+                  : sectionTitle ?? "New support request"}
             </Text>
           </View>
           <View style={styles.headerRight}>
@@ -1489,26 +1654,14 @@ export default function HelpChatScreen() {
           </View>
         </View>
 
-        {loading && (
-          <Animated.View
-            style={[
-              styles.ticketToast,
-              { opacity: skeletonPulse },
-            ]}
-          >
-            <ActivityIndicator size="small" color={GatiMitraMerchant.primary} />
-            <Text style={styles.ticketToastText}>Opening support chat…</Text>
-          </Animated.View>
-        )}
-
-        {error && !loading && (
+        {error && (
           <View style={styles.errorBanner}>
             <Ionicons name="alert-circle-outline" size={18} color="#B91C1C" style={{ marginRight: 8 }} />
             <Text style={styles.errorBannerText}>{error}</Text>
           </View>
         )}
 
-        {showTicketCreatedToast && !loading && (
+        {showTicketCreatedToast && (
           <View style={styles.ticketToast}>
             <Ionicons
               name="checkmark-circle"
@@ -1524,7 +1677,6 @@ export default function HelpChatScreen() {
 
         {activeTicketId != null &&
           ticket &&
-          !loading &&
           showRequestReceivedCard &&
           createdInThisSessionRef.current === activeTicketId && (
             <View style={styles.systemInfoCard}>
@@ -1545,7 +1697,9 @@ export default function HelpChatScreen() {
                 <View style={styles.systemSelectedIssueWrap}>
                   <Text style={styles.systemSelectedIssueLabel}>Selected issue</Text>
                   <View style={[styles.bubble, styles.bubbleMerchant, styles.systemSelectedIssueBubble]}>
-                    <Text style={styles.bubbleTextMerchant}>{raisedConcernText}</Text>
+                    <Text style={styles.bubbleTextMerchant}>
+                      {formatTicketMessageForDisplay(raisedConcernText)}
+                    </Text>
                   </View>
                 </View>
               )}
@@ -1573,6 +1727,55 @@ export default function HelpChatScreen() {
             />
           }
         >
+        {showLiveOrderMessagePicker ? (
+          <View style={styles.liveOrderPicker}>
+            <View style={styles.liveOrderPickerHeader}>
+              <View style={styles.liveOrderPickerIcon}>
+                <Ionicons name="chatbubbles" size={20} color={GatiMitraMerchant.primary} />
+              </View>
+              <View style={styles.liveOrderPickerHeaderText}>
+                <Text style={styles.liveOrderPickerTitle}>Tell us what happened</Text>
+                <Text style={styles.liveOrderPickerHint}>
+                  Select a message below — it will be sent to our support team instantly
+                </Text>
+              </View>
+            </View>
+            {linkedOrderLabel ? (
+              <View style={styles.liveOrderPickerOrderRow}>
+                <Ionicons name="receipt-outline" size={14} color={GatiMitraMerchant.textSecondary} />
+                <Text style={styles.liveOrderPickerOrderText}>{linkedOrderLabel}</Text>
+              </View>
+            ) : null}
+            <View style={styles.liveOrderPickerList}>
+              {quickOptions.map((q, idx) => {
+                const isOther = q.trim().toLowerCase().startsWith("other");
+                return (
+                  <Pressable
+                    key={q}
+                    onPress={() => onQuickOptionPress(q)}
+                    style={({ pressed }) => [
+                      styles.liveOrderPickerItem,
+                      pressed && styles.liveOrderPickerItemPressed,
+                    ]}
+                  >
+                    <View style={[styles.liveOrderPickerIndex, isOther && styles.liveOrderPickerIndexOther]}>
+                      <Text
+                        style={[
+                          styles.liveOrderPickerIndexText,
+                          isOther && styles.liveOrderPickerIndexTextOther,
+                        ]}
+                      >
+                        {isOther ? "✎" : idx + 1}
+                      </Text>
+                    </View>
+                    <Text style={styles.liveOrderPickerItemText}>{q}</Text>
+                    <Ionicons name="send" size={16} color={GatiMitraMerchant.primary} />
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        ) : null}
         {chatTimeline.map((item) => {
           if (item.type === "date") {
             return (
@@ -1649,7 +1852,7 @@ export default function HelpChatScreen() {
                         isMerchant ? styles.bubbleTextMerchant : styles.bubbleTextAgent
                       }
                     >
-                      {m.message_text}
+                      {formatTicketMessageForDisplay(m.message_text)}
                     </Text>
                     {isMerchant ? (
                       <View style={styles.bubbleMetaRow}>
@@ -1746,7 +1949,7 @@ export default function HelpChatScreen() {
                               ]}
                               numberOfLines={1}
                             >
-                              {(m.message_text ?? "").trim() || `Attachment ${idx + 1}`}
+                              {formatTicketMessageForDisplay(m.message_text) || `Attachment ${idx + 1}`}
                             </Text>
                             {isMerchant ? (
                               <View style={styles.attachmentBottomMeta}>
@@ -1986,7 +2189,7 @@ export default function HelpChatScreen() {
                 ) : null}
               </View>
             ) : null}
-            {showQuickOptions && activeTicketId == null && (
+            {showQuickOptions && activeTicketId == null && !showLiveOrderMessagePicker && (
               <View style={styles.quickColumn}>
                 {quickOptions.map((q) => (
                   <Pressable
@@ -2011,6 +2214,29 @@ export default function HelpChatScreen() {
                 ))}
               </View>
             )}
+            {pendingAttachments.length > 0 ? (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={styles.pendingAttachmentsRow}
+                contentContainerStyle={styles.pendingAttachmentsContent}
+              >
+                {pendingAttachments.map((att) => (
+                  <View key={att.id} style={styles.pendingThumbWrap}>
+                    <Pressable onPress={() => setPreviewAttachmentUri(att.uri)}>
+                      <Image source={{ uri: att.uri }} style={styles.pendingThumb} />
+                    </Pressable>
+                    <Pressable
+                      onPress={() => removePendingAttachment(att.id)}
+                      style={styles.pendingRemoveBtn}
+                      hitSlop={8}
+                    >
+                      <Ionicons name="close-circle" size={20} color="#EF4444" />
+                    </Pressable>
+                  </View>
+                ))}
+              </ScrollView>
+            ) : null}
             <View style={styles.inputRow}>
               <Pressable
                 onPress={openAttachmentPicker}
@@ -2439,6 +2665,34 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraMerchant.cardBg,
   },
   attachBtnPressed: { opacity: 0.8 },
+  pendingAttachmentsRow: {
+    marginBottom: 8,
+    maxHeight: 84,
+  },
+  pendingAttachmentsContent: {
+    gap: 8,
+    paddingVertical: 2,
+  },
+  pendingThumbWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 10,
+    overflow: "visible",
+    position: "relative",
+  },
+  pendingThumb: {
+    width: 72,
+    height: 72,
+    borderRadius: 10,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+  },
+  pendingRemoveBtn: {
+    position: "absolute",
+    top: -6,
+    right: -6,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+  },
   sendBtn: {
     width: 40,
     height: 40,
@@ -2492,6 +2746,98 @@ const styles = StyleSheet.create({
   },
   quickChipIcon: {
     marginLeft: 8,
+  },
+  liveOrderPicker: {
+    marginBottom: 16,
+    padding: 16,
+    borderRadius: CARD_RADIUS,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  liveOrderPickerHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    marginBottom: 12,
+  },
+  liveOrderPickerIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: "#E8F8F1",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  liveOrderPickerHeaderText: { flex: 1, minWidth: 0, gap: 4 },
+  liveOrderPickerTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  liveOrderPickerHint: {
+    fontSize: 13,
+    color: GatiMitraMerchant.textSecondary,
+    lineHeight: 18,
+  },
+  liveOrderPickerOrderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    marginBottom: 12,
+  },
+  liveOrderPickerOrderText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  liveOrderPickerList: { gap: 8 },
+  liveOrderPickerItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 14,
+    borderRadius: 12,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  liveOrderPickerItemPressed: {
+    backgroundColor: GatiMitraMerchant.cardBg,
+    opacity: 0.92,
+  },
+  liveOrderPickerIndex: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: GatiMitraMerchant.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  liveOrderPickerIndexOther: {
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  liveOrderPickerIndexText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#FFFFFF",
+  },
+  liveOrderPickerIndexTextOther: {
+    color: GatiMitraMerchant.textSecondary,
+  },
+  liveOrderPickerItemText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "500",
+    color: GatiMitraMerchant.textPrimary,
+    lineHeight: 20,
   },
   attachmentStack: {
     marginTop: 6,

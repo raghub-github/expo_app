@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import Constants from "expo-constants";
 import * as Location from "expo-location";
 import { permissionManager } from "./permissionManager";
 import {
@@ -35,6 +36,10 @@ export interface PermissionCheckResult {
  * 
  * The button ALWAYS says "Allow" - this logic happens behind it.
  */
+function isExpoGo(): boolean {
+  return Constants.appOwnership === "expo";
+}
+
 export class SmartPermissionHandler {
   /**
    * Check current permission status
@@ -59,42 +64,100 @@ export class SmartPermissionHandler {
   }
 
   /**
-   * Handle "Allow" button press
-   * 
-   * This is the core logic - decides request vs settings redirect
+   * Handle "Allow" button press.
+   * @returns true when permission is already granted or was just granted.
    */
-  async handleAllow(stepKey: PermissionStepKey): Promise<void> {
+  async handleAllow(stepKey: PermissionStepKey): Promise<boolean> {
+    if (stepKey === "location") {
+      await this.handleLocationAllowAction();
+      const locationStatus = await this.isLocationFullyEnabled();
+      return locationStatus.enabled;
+    }
+
+    if (stepKey === "notifications") {
+      return this.handleNotificationAllowAction();
+    }
+
     const check = await this.checkPermission(stepKey);
 
-    // If already granted, still open settings for configuration
     if (check.status === "granted") {
-      await this.openSettingsForStep(stepKey);
-      return;
+      return true;
     }
 
-    // If requires settings (can't request directly), open settings
     if (check.requiresSettings) {
       await this.openSettingsForStep(stepKey);
+      return false;
+    }
+
+    if (check.canAskAgain) {
+      try {
+        await this.requestPermission(stepKey);
+        const after = await this.checkPermission(stepKey);
+        if (after.status === "granted") {
+          return true;
+        }
+      } catch (error) {
+        console.warn(`Error requesting ${stepKey}:`, error);
+      }
+    }
+
+    await this.openSettingsForStep(stepKey);
+    return false;
+  }
+
+  /**
+   * Notification allow flow: native prompt first, settings only if still needed.
+   */
+  async handleNotificationAllowAction(): Promise<boolean> {
+    let check = await this.checkNotificationPermission();
+    if (check.status === "granted") {
+      return true;
+    }
+
+    if (check.canAskAgain) {
+      await this.requestPermission("notifications");
+      check = await this.checkNotificationPermission();
+      if (check.status === "granted") {
+        return true;
+      }
+    }
+
+    await openNotificationPermissionSettings();
+    return false;
+  }
+
+  /**
+   * Location-specific allow flow: native prompts first, then settings if needed.
+   */
+  async handleLocationAllowAction(): Promise<void> {
+    const gpsEnabled = await permissionManager.checkLocationServicesEnabled();
+    if (!gpsEnabled) {
+      await openLocationServicesSettings();
       return;
     }
 
-    // If can ask again, try to request directly first
-    if (check.canAskAgain) {
-      try {
-        const result = await this.requestPermission(stepKey);
-        
-        // After requesting, always open settings for configuration
-        // This ensures user can set "Allow all the time" for location
-        // and enable sound/vibration for notifications
-        await this.openSettingsForStep(stepKey);
-      } catch (error) {
-        console.warn(`Error requesting ${stepKey}:`, error);
-        // On error, still try to open settings
-        await this.openSettingsForStep(stepKey);
+    const foreground = await Location.getForegroundPermissionsAsync();
+
+    if (foreground.status !== "granted" && foreground.canAskAgain !== false) {
+      await Location.requestForegroundPermissionsAsync();
+    }
+
+    const foregroundAfter = await Location.getForegroundPermissionsAsync();
+    if (foregroundAfter.status !== "granted") {
+      await openLocationPermissionSettings();
+      return;
+    }
+
+    if (!isExpoGo()) {
+      const background = await Location.getBackgroundPermissionsAsync();
+      if (background.status !== "granted" && background.canAskAgain !== false) {
+        await Location.requestBackgroundPermissionsAsync();
       }
-    } else {
-      // Can't ask again - must open settings
-      await this.openSettingsForStep(stepKey);
+
+      const backgroundAfter = await Location.getBackgroundPermissionsAsync();
+      if (backgroundAfter.status !== "granted") {
+        await openLocationPermissionSettings();
+      }
     }
   }
 
@@ -146,8 +209,10 @@ export class SmartPermissionHandler {
       const foreground = await Location.getForegroundPermissionsAsync();
       const background = await Location.getBackgroundPermissionsAsync();
 
-      // Both must be granted
-      if (foreground.status === "granted" && background?.status === "granted") {
+      if (
+        foreground.status === "granted" &&
+        (isExpoGo() || background?.status === "granted")
+      ) {
         return { status: "granted", canAskAgain: false, requiresSettings: false };
       }
 
@@ -186,10 +251,11 @@ export class SmartPermissionHandler {
   private async checkNotificationPermission(): Promise<PermissionCheckResult> {
     try {
       const result = await getNotificationPermissions();
+      const granted = result.status === "granted";
       return {
-        status: result.status === "granted" ? "granted" : result.status === "denied" ? "denied" : "undetermined",
+        status: granted ? "granted" : result.status === "denied" ? "denied" : "undetermined",
         canAskAgain: result.status !== "denied",
-        requiresSettings: result.status === "denied", // If denied, must use settings
+        requiresSettings: result.status === "denied",
       };
     } catch (error) {
       return { status: "undetermined", canAskAgain: true, requiresSettings: false };
@@ -292,7 +358,7 @@ export class SmartPermissionHandler {
         return { enabled: false, reason: "denied" };
       }
 
-      if (background?.status !== "granted") {
+      if (!isExpoGo() && background?.status !== "granted") {
         return { enabled: false, reason: "background_denied" };
       }
 

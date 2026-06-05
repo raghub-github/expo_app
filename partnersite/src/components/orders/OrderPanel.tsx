@@ -23,7 +23,14 @@ import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverR
 import { formatRtoOtpDisplay, resolveOrderOtps, type CachedOrderOtps } from '@/lib/orderOtps';
 import { resolveMerchantInstructionsForDisplay } from '@/lib/merchant-order-instructions';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
+import { RiderDeliveryPartnerCard } from '@/components/orders/RiderDeliveryPartnerCard';
+import { RiderAssignPendingCard } from '@/components/orders/RiderAssignPendingCard';
+import { useNearbyDispatchRiders } from '@/hooks/useNearbyDispatchRiders';
+import { useRiderArrivalToMerchant } from '@/hooks/useRiderArrivalToMerchant';
+import { hasRiderReachedMerchant } from '@/lib/rider-merchant-arrival-display';
+import { deliveryEtaMinutesLabel } from '@/lib/order-prep-time';
 import { formatOrderDropAddress } from '@/lib/formatOrderAddress';
+import { usePastRidersEligibility } from '@/hooks/usePastRidersEligibility';
 
 /** Panel preview only — full list via sidesheet (+N more). No scroll on items. */
 const ITEMS_PREVIEW_MAX = 4;
@@ -150,7 +157,10 @@ export type OrderPanelProps = {
   rtoVerified?: boolean;
   onViewPastRiders?: () => void;
   onTrackRider?: () => void;
+  onOpenRiderPhoto?: (url: string) => void;
   onOrderHelp?: () => void;
+  onUniformFeedback?: (inUniform: boolean) => void;
+  uniformFeedback?: boolean | null;
   className?: string;
   nowMs?: number;
   /** Live pipeline vs completed order history (badge label). */
@@ -175,7 +185,10 @@ export function OrderPanel({
   rtoVerified,
   onViewPastRiders,
   onTrackRider,
+  onOpenRiderPhoto,
   onOrderHelp,
+  onUniformFeedback,
+  uniformFeedback,
   className,
   nowMs,
   panelMode = 'live',
@@ -197,6 +210,27 @@ export function OrderPanel({
   const riderPhoto = order.rider_details?.selfie_url;
   const status = order.order_status || 'CREATED';
   const isReadyForPickup = status === 'READY_FOR_PICKUP';
+  const isPickedUp = status === 'OUT_FOR_DELIVERY';
+  const deliveryLabel = deliveryEtaMinutesLabel(order.eta_seconds);
+  const riderReachedMerchant = hasRiderReachedMerchant({
+    core_status: order.core_status,
+    current_status: order.current_status,
+    reached_merchant_at:
+      (order as { reached_merchant_at?: string | null }).reached_merchant_at ?? null,
+  });
+  const riderAssigned = !!(
+    order.rider_id ??
+    order.rider_details?.id ??
+    order.rider_name ??
+    order.rider_phone
+  );
+  const terminalStatus = ['DELIVERED', 'CANCELLED', 'RTO'].includes(status);
+  const showPendingRiderAssign =
+    panelMode === 'live' && !riderAssigned && !terminalStatus;
+  const { summary: nearbyRiderSummary, loading: nearbyRidersLoading } = useNearbyDispatchRiders(
+    order.id,
+    showPendingRiderAssign
+  );
   const otps = resolveOrderOtps(order, otpCache);
   const legacyOtp = otpCode && !otps.pickup && !otps.rto ? { pickup: otpCode, rto: null as string | null } : otps;
   const displayOtps =
@@ -205,14 +239,32 @@ export function OrderPanel({
       : otps;
   const merchantInstructions = resolveMerchantInstructionsForDisplay(order);
   const rtoDisplay = formatRtoOtpDisplay(status, displayOtps.rto);
+  const showPastRidersButton = usePastRidersEligibility(order.id, !!onViewPastRiders);
   const showRiderCard =
-    !!riderName || !!displayOtps.pickup || !!displayOtps.rto || !!otpCode || !!onViewPastRiders;
+    riderAssigned ||
+    !!riderName ||
+    !!displayOtps.pickup ||
+    !!displayOtps.rto ||
+    !!otpCode;
+
+  const riderEnRouteToMerchant =
+    showRiderCard && riderAssigned && !isPickedUp && !riderReachedMerchant;
+  const { arrivalSubtitle: riderArrivalSubtitle } = useRiderArrivalToMerchant(
+    order.id,
+    riderEnRouteToMerchant
+  );
+
+  const riderCardVariant = isPickedUp
+    ? 'picked_up'
+    : riderReachedMerchant
+      ? 'arrived'
+      : 'on_the_way';
 
   return (
     <div
       className={`relative flex flex-col h-auto max-h-[calc(100dvh-10rem)] bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden ${className ?? ''}`}
     >
-      <div className="flex flex-col xl:flex-row divide-y xl:divide-y-0 xl:divide-x divide-dashed divide-gray-200 overflow-y-auto hide-scrollbar flex-1 min-h-0">
+      <div className="flex flex-col xl:flex-row xl:items-stretch divide-y xl:divide-y-0 xl:divide-x divide-dashed divide-gray-200 overflow-y-auto hide-scrollbar flex-1 min-h-0">
         <div className="flex flex-col p-4 xl:w-[32%] min-w-0 shrink-0">
           <div className="flex items-center justify-between gap-2 mb-3">
             <span
@@ -349,7 +401,7 @@ export function OrderPanel({
           />
         </div>
 
-        <div className="relative flex flex-col p-4 xl:w-[28%] min-w-[240px] shrink-0 gap-2 min-h-0">
+        <div className="relative flex flex-col flex-1 self-stretch p-4 xl:w-[28%] min-w-[240px] shrink-0 min-h-[240px] xl:min-h-0">
           {onClose && (
             <button
               type="button"
@@ -360,67 +412,41 @@ export function OrderPanel({
               <X size={18} />
             </button>
           )}
-          {showRiderCard && (
-            <div className="mt-6 shrink-0 flex flex-col rounded-xl border border-gray-200 bg-gradient-to-b from-slate-50 to-white p-3 shadow-sm">
-              <div className="mb-2">
-                <p className="text-xs font-bold uppercase tracking-wide text-gray-500">Delivery partner</p>
-              </div>
-              <div className="flex flex-col gap-2">
-              <div className="flex gap-3">
-                {riderPhoto ? (
-                  <img
-                    src={riderPhoto}
-                    alt=""
-                    className="h-14 w-14 shrink-0 rounded-full border-2 border-white object-cover shadow-sm ring-1 ring-gray-200"
-                  />
-                ) : (
-                  <div className="w-12 h-12 rounded-full bg-gray-100 shrink-0" />
-                )}
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-gray-900 leading-snug">
-                    {riderName ? `${riderName} has arrived` : 'Delivery partner'}
-                  </p>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                    {riderMobile && (
-                      <span className="font-semibold text-gray-800 tabular-nums">{riderMobile}</span>
-                    )}
-                    {displayOtps.pickup && (
-                      <>
-                        {riderMobile && <span className="text-gray-300">|</span>}
-                        <span className="font-mono font-bold text-gray-900">Pickup: {displayOtps.pickup}</span>
-                      </>
-                    )}
-                    {rtoDisplay && (
-                      <>
-                        {(riderMobile || displayOtps.pickup) && <span className="text-gray-300">|</span>}
-                        <span className="font-mono font-bold text-orange-800">RTO: {rtoDisplay}</span>
-                      </>
-                    )}
-                    {!displayOtps.pickup && !displayOtps.rto && otpCode && (
-                      <>
-                        {riderMobile && <span className="text-gray-300">|</span>}
-                        <span className="font-mono font-bold text-gray-900">OTP: {otpCode}</span>
-                        {otpType && <span className="text-gray-500">({otpType})</span>}
-                      </>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={onTrackRider}
-                    className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:underline disabled:opacity-50"
-                    disabled={!onTrackRider}
-                  >
-                    <MapPin size={12} />
-                    Track location
-                  </button>
-                </div>
-              </div>
-              </div>
-            </div>
-          )}
+          {showPendingRiderAssign ? (
+            <RiderAssignPendingCard
+              className="mt-6 flex-1 min-h-0"
+              nearbyCount={nearbyRiderSummary?.nearbyCount ?? 0}
+              assignSoonMessage={
+                nearbyRiderSummary?.assignSoonMessage ??
+                'Looking for nearby riders — we will assign one soon'
+              }
+              radiusKm={nearbyRiderSummary?.radiusKm}
+              loading={nearbyRidersLoading && !nearbyRiderSummary}
+            />
+          ) : showRiderCard ? (
+            <RiderDeliveryPartnerCard
+              className="mt-6 flex-1 min-h-0"
+              riderName={riderName ?? 'Delivery partner'}
+              riderPhone={riderMobile}
+              riderSelfieUrl={riderPhoto}
+              variant={riderCardVariant}
+              arrivalSubtitle={riderEnRouteToMerchant ? riderArrivalSubtitle : undefined}
+              pickupOtp={riderReachedMerchant ? displayOtps.pickup : undefined}
+              rtoDisplay={riderReachedMerchant ? (rtoDisplay ?? undefined) : undefined}
+              legacyOtp={
+                riderReachedMerchant && !displayOtps.pickup && !displayOtps.rto ? otpCode : undefined
+              }
+              legacyOtpType={otpType}
+              deliveryLabel={isPickedUp ? deliveryLabel ?? undefined : undefined}
+              onTrackRider={onTrackRider}
+              onOpenRiderPhoto={onOpenRiderPhoto}
+              onUniformFeedback={isPickedUp ? onUniformFeedback : undefined}
+              uniformFeedback={uniformFeedback}
+            />
+          ) : null}
 
-          <div className="mt-3 shrink-0 flex flex-col gap-2">
-            {onViewPastRiders ? (
+          <div className="mt-auto shrink-0 flex flex-col gap-2.5 pt-5 w-full">
+            {showPastRidersButton && onViewPastRiders ? (
               <button
                 type="button"
                 onClick={onViewPastRiders}

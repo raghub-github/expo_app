@@ -24,22 +24,33 @@ export type ActiveOrder = {
   placedAt: number;
 };
 
+export type PrepDelayBanner = {
+  orderId: string;
+  message: string;
+  expiresAt: number;
+};
+
 type OrderState = {
   /** @deprecated Use activeOrders and setActiveOrder for single add; kept for backward compat. */
   activeOrder: ActiveOrder | null;
   /** All active (non-delivered, non-cancelled) orders for multi-order dock. */
   activeOrders: ActiveOrder[];
+  /** Transient marquee when merchant adds prep delay (20s). */
+  prepDelayBanner: PrepDelayBanner | null;
   setActiveOrder: (order: ActiveOrder | null) => void;
   addActiveOrder: (order: ActiveOrder) => void;
   removeActiveOrder: (orderId: string) => void;
   updateStatus: (status: OrderStatus, etaMinutes?: number) => void;
   updateOrderStatus: (orderId: string, status: OrderStatus, etaMinutes?: number) => void;
+  showPrepDelayBanner: (orderId: string, message: string, durationMs?: number) => void;
+  clearPrepDelayBanner: () => void;
   clearActiveOrder: () => void;
 };
 
 export const useOrderStore = create<OrderState>((set) => ({
   activeOrder: null,
   activeOrders: [],
+  prepDelayBanner: null,
 
   setActiveOrder: (order) =>
     set((s) => {
@@ -83,5 +94,16 @@ export const useOrderStore = create<OrderState>((set) => ({
       ),
     })),
 
-  clearActiveOrder: () => set({ activeOrder: null, activeOrders: [] }),
+  showPrepDelayBanner: (orderId, message, durationMs = 20_000) =>
+    set({
+      prepDelayBanner: {
+        orderId,
+        message,
+        expiresAt: Date.now() + durationMs,
+      },
+    }),
+
+  clearPrepDelayBanner: () => set({ prepDelayBanner: null }),
+
+  clearActiveOrder: () => set({ activeOrder: null, activeOrders: [], prepDelayBanner: null }),
 }));

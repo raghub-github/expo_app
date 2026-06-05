@@ -636,8 +636,11 @@ export default function RiderDetailsPage() {
               const verStatus = (doc.verificationStatus || (doc.verified ? "approved" : "pending")).toLowerCase();
               const hasMultipleFiles = doc.files && doc.files.length > 0;
               const displayFiles = hasMultipleFiles ? doc.files! : (doc.fileUrl ? [{ id: 0, fileUrl: doc.fileUrl, side: "single" }] : []);
+              const docKey =
+                (doc as RiderDocument & { docKey?: string }).docKey ??
+                `${doc.id}-${doc.docType}`;
               return (
-                <div key={doc.id} className="rounded-xl border border-gray-200 bg-gray-50/50 p-4 hover:border-gray-300 hover:shadow-sm transition-all">
+                <div key={docKey} className="rounded-xl border border-gray-200 bg-gray-50/50 p-4 hover:border-gray-300 hover:shadow-sm transition-all">
                   <div className="flex items-start justify-between gap-2 mb-3">
                     <h3 className="font-semibold text-gray-900 text-sm leading-tight">
                       {documentLabels[doc.docType] || doc.docType}

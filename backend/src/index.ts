@@ -8,6 +8,7 @@ import swaggerUi from "@fastify/swagger-ui";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
 import { ulid } from "ulid";
 import { loadEnv } from "./config/loadEnv.js";
+import { isTransientDbError } from "./lib/db/is-transient-db-error.js";
 import { getEnv } from "./config/env.js";
 import { healthRoutes } from "./routes/health.routes.js";
 import { attachmentsRoutes } from "./routes/attachments.routes.js";
@@ -24,6 +25,7 @@ import { merchantRoutes } from "./modules/merchants/merchant.routes.js";
 import { merchantReportRoutes } from "./modules/merchants/merchant-report.routes.js";
 import { bookmarkRoutes } from "./modules/bookmarks/bookmark.routes.js";
 import { orderRoutes } from "./modules/orders/order.routes.js";
+import { rideRoutes } from "./modules/rides/ride.routes.js";
 import { billingModule } from "./modules/billing/billing.routes.js";
 import { addressRoutes } from "./modules/addresses/address.routes.js";
 import { locationSearchRoutes } from "./modules/location-search/location-search.routes.js";
@@ -37,6 +39,8 @@ import { etaRoutes } from "./modules/eta/eta.routes.js";
 import { billingDebugRoutes } from "./modules/billing/billing.debug.routes.js";
 import { runStoreScheduleTick, runStoreScheduleTickForStore } from "./modules/merchant-partner/store-schedule-engine.js";
 import { runOrderAcceptanceTimeoutTick } from "./services/order-acceptance-timeout.js";
+import { runRideSearchTimeoutTick } from "./services/ride-search-timeout.js";
+import { runOrderDispatchWaveTick } from "./lib/order-dispatch-tick.js";
 import { withLock, closeRedis } from "@gatimitra/redis";
 import { incrCounter, renderPrometheus } from "@gatimitra/logger";
 import { merchantMenuRoutes } from "./modules/merchant-menu/merchant-menu.routes.js";
@@ -46,6 +50,7 @@ import { errorHandler } from "./plugins/errorHandler.js";
 import { requestLogger } from "./plugins/requestLogger.js";
 import { getDb } from "./db/client.js";
 import { reconcilePendingPayments } from "./modules/orders/order.placement.service.js";
+import { runCompetitorSnapshotsTick } from "./services/merchant-competitor-snapshots-tick.js";
 
 loadEnv();
 const env = getEnv();
@@ -313,6 +318,8 @@ await app.register(addressRoutes, { prefix: "/v1/me" });
 await app.register(locationSearchRoutes, { prefix: "/v1/me" });
 await app.register(supportRoutes, { prefix: "/v1/support" });
 await app.register(customerSupportRoutes, { prefix: "/v1/customer-support" });
+const { riderSupportRoutes } = await import("./modules/rider-support/rider-support.routes.js");
+await app.register(riderSupportRoutes, { prefix: "/v1/rider-support" });
 await app.register(merchantRoutes, { prefix: "/v1" });
 await app.register(plansRoutes, { prefix: "/v1" });
 await app.register(merchantPartnerRoutes, { prefix: "/v1" });
@@ -324,6 +331,7 @@ await app.register(merchantReportRoutes, { prefix: "/v1/merchants" });
 await app.register(bookmarkRoutes, { prefix: "/v1/bookmarks" });
 await app.register(billingModule, { prefix: "/v1/billing" });
 await app.register(orderRoutes, { prefix: "/v1/orders" });
+await app.register(rideRoutes, { prefix: "/v1/rides" });
 await app.register(distanceModule, { prefix: "/v1/distance" });
 // distanceRoutes kept exported for other test harnesses; register is via distanceModule above.
 void distanceRoutes;
@@ -337,6 +345,36 @@ await app.register(offersRoutes, { prefix: "/v1/offers" });
 // the shared INTERNAL_API_TOKEN header. Not exposed to the public internet.
 const { paymentInternalRoutes } = await import("./modules/payment/payment.internal.routes.js");
 await app.register(paymentInternalRoutes, { prefix: "/v1/internal" });
+const { financialRulesInternalRoutes } = await import(
+  "./modules/financial-rules/financial-rules.internal.routes.js"
+);
+await app.register(financialRulesInternalRoutes, { prefix: "/v1/internal" });
+const { ordersInternalRoutes } = await import("./modules/orders/orders.internal.routes.js");
+await app.register(ordersInternalRoutes, { prefix: "/v1/internal" });
+
+app.post<{ Params: { riderId: string } }>(
+  "/v1/internal/riders/:riderId/vehicle-verified-notify",
+  async (req, reply) => {
+    const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+    if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+    const riderId = Number((req.params as { riderId: string }).riderId);
+    if (!Number.isInteger(riderId) || riderId < 1) {
+      return reply.code(400).send({ error: "invalid_rider_id" });
+    }
+    try {
+      const { notifyRiderVehicleVerified } = await import("./lib/notify-rider-vehicle-verified.js");
+      await notifyRiderVehicleVerified(riderId);
+      return reply.send({ ok: true });
+    } catch (e) {
+      req.log.error({ err: e, riderId }, "vehicle_verified_notify_failed");
+      return reply.code(500).send({ error: "notify_failed" });
+    }
+  },
+);
+const { registerFinancialRulesRoutes } = await import("./modules/financial-rules/financial-rules.routes.js");
+await registerFinancialRulesRoutes(app);
 
 // Mints short-lived JWTs the client trades for a websocket connection.
 const { wsTicketRoutes } = await import("./modules/auth/ws-ticket.routes.js");
@@ -367,6 +405,9 @@ app.addHook("onResponse", async (req, reply) => {
 let storeScheduleInterval: ReturnType<typeof setInterval> | null = null;
 let pendingPaymentReconcilerInterval: ReturnType<typeof setInterval> | null = null;
 let orderAcceptanceTimeoutInterval: ReturnType<typeof setInterval> | null = null;
+let rideSearchTimeoutInterval: ReturnType<typeof setInterval> | null = null;
+let orderDispatchWaveInterval: ReturnType<typeof setInterval> | null = null;
+let competitorSnapshotsInterval: ReturnType<typeof setInterval> | null = null;
 let shuttingDown = false;
 let inFlightRequests = 0;
 
@@ -405,6 +446,9 @@ const gracefulShutdown = async (signal: string) => {
   if (storeScheduleInterval) { clearInterval(storeScheduleInterval); storeScheduleInterval = null; }
   if (pendingPaymentReconcilerInterval) { clearInterval(pendingPaymentReconcilerInterval); pendingPaymentReconcilerInterval = null; }
   if (orderAcceptanceTimeoutInterval) { clearInterval(orderAcceptanceTimeoutInterval); orderAcceptanceTimeoutInterval = null; }
+  if (rideSearchTimeoutInterval) { clearInterval(rideSearchTimeoutInterval); rideSearchTimeoutInterval = null; }
+  if (orderDispatchWaveInterval) { clearInterval(orderDispatchWaveInterval); orderDispatchWaveInterval = null; }
+  if (competitorSnapshotsInterval) { clearInterval(competitorSnapshotsInterval); competitorSnapshotsInterval = null; }
 
   const drainStart = Date.now();
   while (inFlightRequests > 0 && Date.now() - drainStart < SHUTDOWN_DRAIN_TIMEOUT_MS) {
@@ -437,15 +481,11 @@ process.on("uncaughtException", (error) => {
 });
 
 process.on("unhandledRejection", (reason, promise) => {
-  app.log.error({ reason, promise }, "Unhandled rejection");
-  // Statement timeout (57014) is often load/index related; don't take down the API process.
-  const code =
-    reason && typeof reason === "object" && "code" in reason
-      ? String((reason as { code?: unknown }).code)
-      : "";
-  if (code === "57014") {
+  if (isTransientDbError(reason)) {
+    app.log.warn({ reason }, "Transient DB rejection (ignored)");
     return;
   }
+  app.log.error({ reason, promise }, "Unhandled rejection");
   gracefulShutdown("unhandledRejection");
 });
 
@@ -517,6 +557,66 @@ try {
         .catch((err) => app.log.error({ err }, "order_acceptance_timeout_tick"));
     await runAcceptanceTickLocked();
     orderAcceptanceTimeoutInterval = setInterval(() => { void runAcceptanceTickLocked(); }, orderAcceptanceIntervalMs);
+
+    // Ride search auto-cancel — every 15 s; lock TTL 25 s.
+    const rideSearchTimeoutIntervalMs = 15_000;
+    const runRideSearchTickLocked = () =>
+      withLock("tick:ride-search-timeout", 25_000, () => runRideSearchTimeoutTick(app.log))
+        .then((result) => {
+          incrCounter(
+            "tick_runs_total",
+            "Polling tick outcomes by lock state",
+            1,
+            { tick: "ride_search_timeout", outcome: result === null ? "skipped" : "ran" },
+          );
+        })
+        .catch((err) => app.log.error({ err }, "ride_search_timeout_tick"));
+    void runRideSearchTickLocked();
+    rideSearchTimeoutInterval = setInterval(() => { void runRideSearchTickLocked(); }, rideSearchTimeoutIntervalMs);
+
+    // Dispatch wave expansion — every 10 s; lock TTL 20 s.
+    const orderDispatchWaveIntervalMs = 10_000;
+    const runDispatchWaveTickLocked = () =>
+      withLock("tick:order-dispatch-waves", 20_000, () => runOrderDispatchWaveTick(app.log))
+        .then((result) => {
+          incrCounter(
+            "tick_runs_total",
+            "Polling tick outcomes by lock state",
+            1,
+            { tick: "order_dispatch_waves", outcome: result === null ? "skipped" : "ran" },
+          );
+        })
+        .catch((err) => app.log.error({ err }, "order_dispatch_wave_tick"));
+    void runDispatchWaveTickLocked();
+    orderDispatchWaveInterval = setInterval(() => {
+      void runDispatchWaveTickLocked();
+    }, orderDispatchWaveIntervalMs);
+    app.log.info({ intervalMs: orderDispatchWaveIntervalMs }, "order dispatch wave tick started");
+
+    // Competitor affinity snapshots (city + pincode) — every 24 h; lock TTL 25 h.
+    const competitorSnapshotIntervalMs = 24 * 60 * 60 * 1000;
+    const competitorSnapshotLockMs = 25 * 60 * 60 * 1000;
+    const runCompetitorSnapshotLocked = () =>
+      withLock("tick:competitor-snapshots", competitorSnapshotLockMs, () =>
+        runCompetitorSnapshotsTick(app.log)
+      )
+        .then((result) => {
+          incrCounter(
+            "tick_runs_total",
+            "Polling tick outcomes by lock state",
+            1,
+            { tick: "competitor_snapshots", outcome: result === null ? "skipped" : "ran" }
+          );
+        })
+        .catch((err) => app.log.error({ err }, "competitor_snapshots_tick"));
+    void runCompetitorSnapshotLocked();
+    competitorSnapshotsInterval = setInterval(() => {
+      void runCompetitorSnapshotLocked();
+    }, competitorSnapshotIntervalMs);
+    app.log.info(
+      { intervalHours: 24 },
+      "merchant competitor snapshots tick started (city + locality, all stores)"
+    );
   }
 } catch (error) {
   app.log.error({ error }, "Failed to start server");

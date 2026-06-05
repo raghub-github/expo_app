@@ -7,6 +7,7 @@ import { MerchantCustomHeader } from "@/components/MerchantHeader";
 import { FloatingTabBar } from "@/components/FloatingTabBar";
 import { FloatingPendingOrdersBar } from "@/components/FloatingPendingOrdersBar";
 import { ActiveTabProvider } from "@/context/ActiveTabContext";
+import { usePrefetchLiveOrderSupportTopics } from "@/hooks/useLiveOrderSupportTopics";
 
 const LABEL_FONT_SIZE = 12;
 
@@ -33,6 +34,7 @@ export default function TabsLayout() {
   const insets = useSafeAreaInsets();
   const bottomInset = insets.bottom;
   const tabBarTotalHeight = TAB_BAR_HEIGHT + bottomInset + TAB_BAR_FLOATING_GAP;
+  usePrefetchLiveOrderSupportTopics();
 
   return (
     <ActiveTabProvider>

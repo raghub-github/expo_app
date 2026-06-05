@@ -46,7 +46,7 @@ import { paymentService } from "@/services/payment.service";
 import { addressService, type Address } from "@/services/address.service";
 import { profileService } from "@/services/profile.service";
 import { RazorpayCheckoutModal, type RazorpayPaymentResult, type RazorpayOrderParams } from "@/components/RazorpayCheckoutModal";
-import { merchantService, type MerchantSummary } from "@/services/merchant.service";
+import { merchantService, type MerchantSummary, type MenuItem } from "@/services/merchant.service";
 import { ItemCustomizationSheet } from "@/components/ItemCustomizationSheet";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { HEADER_PADDING_TOP } from "@/constants/layout";
@@ -433,6 +433,7 @@ export default function CheckoutScreen() {
   const [instrDontRingBell, setInstrDontRingBell] = useState(false);
   const [instrPetAtHome, setInstrPetAtHome] = useState(false);
   const [editingCartItemId, setEditingCartItemId] = useState<string | null>(null);
+  const [pendingCustomizationItem, setPendingCustomizationItem] = useState<MenuItem | null>(null);
   const [paymentSheetVisible, setPaymentSheetVisible] = useState(false);
   const [billSummarySheetVisible, setBillSummarySheetVisible] = useState(false);
   /** Modal showing the per-line GST + extras breakdown when the user taps the `i` chip. */
@@ -527,40 +528,58 @@ export default function CheckoutScreen() {
   // This makes store distance consistent across Home, Merchant detail, and Checkout.
   useEffect(() => {
     if (!selectedAddress) return;
+
+    const lat = selectedAddress.latitude;
+    const lng = selectedAddress.longitude;
+
+    const sameAsSession =
+      locationSource === "selected" &&
+      sessionCoords != null &&
+      Math.abs(sessionCoords.latitude - lat) < 1e-6 &&
+      Math.abs(sessionCoords.longitude - lng) < 1e-6;
+
     const activeLat = activeLocation?.latitude;
     const activeLng = activeLocation?.longitude;
     const sameAsActive =
       activeLat != null &&
       activeLng != null &&
-      Math.abs(activeLat - selectedAddress.latitude) < 1e-6 &&
-      Math.abs(activeLng - selectedAddress.longitude) < 1e-6;
-    if (sameAsActive) return;
+      Math.abs(activeLat - lat) < 1e-6 &&
+      Math.abs(activeLng - lng) < 1e-6;
+
+    if (sameAsSession && sameAsActive) return;
 
     // Update local app "selected" location (used by merchants list + merchant detail).
-    setAddressAndCoords(
-      {
-        primary: selectedAddress.label ?? "Delivery location",
-        secondary: [selectedAddress.city, selectedAddress.state].filter(Boolean).join(", "),
-        fullAddress: selectedAddress.fullAddress,
-        city: selectedAddress.city ?? null,
-        state: selectedAddress.state ?? null,
-        pincode: selectedAddress.pincode ?? null,
-      },
-      { latitude: selectedAddress.latitude, longitude: selectedAddress.longitude },
-      { source: "selected" }
-    );
+    if (!sameAsSession) {
+      setAddressAndCoords(
+        {
+          primary: selectedAddress.label ?? "Delivery location",
+          secondary: [selectedAddress.city, selectedAddress.state].filter(Boolean).join(", "),
+          fullAddress: selectedAddress.fullAddress,
+          city: selectedAddress.city ?? null,
+          state: selectedAddress.state ?? null,
+          pincode: selectedAddress.pincode ?? null,
+        },
+        { latitude: lat, longitude: lng },
+        { source: "selected" }
+      );
+    }
 
     // Best-effort: update backend active location so future sessions/devices are consistent.
-    addressService
-      .setActiveLocation({
-        latitude: selectedAddress.latitude,
-        longitude: selectedAddress.longitude,
-        address: selectedAddress.fullAddress,
-      })
-      .catch(() => {});
+    if (!sameAsActive) {
+      addressService
+        .setActiveLocation({
+          latitude: lat,
+          longitude: lng,
+          address: selectedAddress.fullAddress,
+        })
+        .catch(() => {});
+    }
   }, [
     activeLocation?.latitude,
     activeLocation?.longitude,
+    locationSource,
+    sessionCoords?.latitude,
+    sessionCoords?.longitude,
     selectedAddress?.id,
     selectedAddress?.latitude,
     selectedAddress?.longitude,
@@ -605,7 +624,8 @@ export default function CheckoutScreen() {
     }
 
     if (resolved != null) {
-      setSelectedAddressId(resolved);
+      // Only snap to map/active pin on first resolve — don't fight checkout address sync.
+      setSelectedAddressId((prev) => (prev != null ? prev : resolved));
       return;
     }
 
@@ -2016,6 +2036,7 @@ export default function CheckoutScreen() {
           merchantId,
           resolveFullConfigItemId(refItem)
         );
+        setPendingCustomizationItem(null);
         setEditingCartItemId(cartLine.menuItemId);
         return;
       }
@@ -2037,16 +2058,34 @@ export default function CheckoutScreen() {
     const menu = Array.isArray(raw) ? raw : [];
     const normalized = menu
       .filter((m) => m && (m.id ?? (m as { item_id?: string }).item_id) && (m.name ?? (m as { item_name?: string }).item_name))
-      .map((m) => ({
-        id: String((m as { id?: string }).id ?? (m as { item_id?: string }).item_id ?? ""),
-        menuItemId: (m as { menuItemId?: number }).menuItemId,
-        name: String((m as { name?: string }).name ?? (m as { item_name?: string }).item_name ?? ""),
-        price: Number((m as { price?: number }).price ?? (m as { selling_price?: number }).selling_price ?? 0),
-        isVeg: Boolean((m as { isVeg?: boolean }).isVeg ?? (m as { food_type?: string }).food_type?.toLowerCase().startsWith("veg")),
-        imageUrl: (m as { imageUrl?: string }).imageUrl ?? (m as { item_image_url?: string }).item_image_url,
-        isRecommended: (m as { isRecommended?: boolean }).isRecommended ?? (m as { is_recommended?: boolean }).is_recommended,
-        isPopular: (m as { isPopular?: boolean }).isPopular ?? (m as { is_popular?: boolean }).is_popular,
-      }));
+      .map((m) => {
+        const rawImage =
+          (m as { imageUrl?: string }).imageUrl ??
+          (m as { item_image_url?: string }).item_image_url ??
+          (m as { displayImage?: string }).displayImage;
+        const imageUrl =
+          typeof rawImage === "string" && rawImage.trim()
+            ? toAbsoluteImageUrl(rawImage.trim()) ?? rawImage.trim()
+            : undefined;
+        return {
+          id: String((m as { id?: string }).id ?? (m as { item_id?: string }).item_id ?? ""),
+          menuItemId: (m as { menuItemId?: number }).menuItemId,
+          name: String((m as { name?: string }).name ?? (m as { item_name?: string }).item_name ?? ""),
+          price: Number((m as { price?: number }).price ?? (m as { selling_price?: number }).selling_price ?? 0),
+          isVeg: Boolean((m as { isVeg?: boolean }).isVeg ?? (m as { food_type?: string }).food_type?.toLowerCase().startsWith("veg")),
+          imageUrl,
+          isRecommended: (m as { isRecommended?: boolean }).isRecommended ?? (m as { is_recommended?: boolean }).is_recommended,
+          isPopular: (m as { isPopular?: boolean }).isPopular ?? (m as { is_popular?: boolean }).is_popular,
+          hasVariants: Boolean((m as { hasVariants?: boolean }).hasVariants ?? (m as { has_variants?: boolean }).has_variants),
+          hasAddons: Boolean((m as { hasAddons?: boolean }).hasAddons ?? (m as { has_addons?: boolean }).has_addons),
+          hasCustomizations: Boolean(
+            (m as { hasCustomizations?: boolean }).hasCustomizations ??
+              (m as { has_customizations?: boolean }).has_customizations
+          ),
+          description: (m as { description?: string }).description,
+        };
+      })
+      .filter((m) => Boolean(m.imageUrl));
     const isAlreadyInCart = (m: (typeof normalized)[number]) => {
       const numId = m.menuItemId != null ? String(m.menuItemId) : null;
       return items.some(
@@ -2065,6 +2104,49 @@ export default function CheckoutScreen() {
       .filter((m) => !isAlreadyInCart(m))
       .slice(0, 10);
   }, [merchant, items]);
+
+  const handleUpsellItemPress = useCallback(
+    (m: (typeof completeYourMealItems)[number]) => {
+      if (!merchantId || !merchantName) return;
+      const menuItem: MenuItem =
+        findMenuItemByCartBaseId(merchant?.menu, m.id) ?? {
+          id: m.id,
+          menuItemId: m.menuItemId,
+          name: m.name,
+          price: m.price,
+          isVeg: m.isVeg,
+          imageUrl: m.imageUrl,
+          description: m.description,
+          hasVariants: m.hasVariants,
+          hasAddons: m.hasAddons,
+          hasCustomizations: m.hasCustomizations,
+        };
+      const needsCustomization = !!(menuItem.hasVariants || menuItem.hasAddons || menuItem.hasCustomizations);
+      if (needsCustomization) {
+        void prefetchMenuItemFullConfig(queryClient, merchantId, resolveFullConfigItemId(menuItem));
+        setEditingCartItemId(null);
+        setPendingCustomizationItem(menuItem);
+        return;
+      }
+      useCartStore.getState().addItem(
+        merchantId,
+        merchantName,
+        {
+          menuItemId: String(m.menuItemId ?? m.id),
+          name: m.name,
+          price: m.price,
+          isVeg: m.isVeg,
+          imageUrl: m.imageUrl ?? null,
+        },
+        1,
+        checkoutCartBannerUrl
+      );
+    },
+    [merchantId, merchantName, merchant?.menu, queryClient, checkoutCartBannerUrl]
+  );
+
+  const customizationSheetItem = editingItem ?? pendingCustomizationItem;
+  const customizationSheetVisible = !!editingCartItemId || !!pendingCustomizationItem;
 
   /**
    * Exactly ~3.5 cards visible: 3.5·chipW + 3·gaps ≤ track.
@@ -2325,15 +2407,7 @@ export default function CheckoutScreen() {
                     return (
                       <Pressable
                         key={m.id}
-                        onPress={() => {
-                          useCartStore.getState().addItem(merchantId!, merchantName!, {
-                            menuItemId: String(m.menuItemId ?? m.id),
-                            name: m.name,
-                            price: m.price,
-                            isVeg: m.isVeg,
-                            imageUrl: m.imageUrl ?? null,
-                          }, 1, checkoutCartBannerUrl);
-                        }}
+                        onPress={() => handleUpsellItemPress(m)}
                         style={({ pressed }) => [
                           styles.upsellCard,
                           {
@@ -3127,17 +3201,23 @@ export default function CheckoutScreen() {
         </View>
       </View>
 
-      {editingItem && merchantId && (
+      {customizationSheetItem && merchantId && (
         <ItemCustomizationSheet
-          visible={!!editingCartItemId}
-          onClose={() => setEditingCartItemId(null)}
+          visible={customizationSheetVisible}
+          onClose={() => {
+            setEditingCartItemId(null);
+            setPendingCustomizationItem(null);
+          }}
           storeId={merchantId}
-          item={editingItem}
+          item={customizationSheetItem}
           merchantName={merchantName ?? ""}
           isStoreClosed={isStoreClosed}
-          initialSelection={editingCartSelection}
+          storeMenu={merchant?.menu}
+          initialSelection={editingCartItemId ? editingCartSelection : null}
           onAdd={(params) => {
-            updateQuantity(editingCartItemId!, -999);
+            if (editingCartItemId) {
+              updateQuantity(editingCartItemId, -999);
+            }
             useCartStore.getState().addItem(merchantId!, merchantName!, {
               menuItemId: params.menuItemId,
               name: params.name,
@@ -3147,9 +3227,10 @@ export default function CheckoutScreen() {
               variantId: params.variantId,
               variantName: params.variantName,
               addons: params.addons,
-              imageUrl: params.imageUrl ?? editingItem?.imageUrl ?? null,
+              imageUrl: params.imageUrl ?? customizationSheetItem?.imageUrl ?? null,
             }, params.quantity, checkoutCartBannerUrl);
             setEditingCartItemId(null);
+            setPendingCustomizationItem(null);
           }}
         />
       )}

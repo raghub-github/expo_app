@@ -17,7 +17,7 @@ const SHARED_OPTIONS = {
 } as const;
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { credentials: "include" });
+  const res = await fetch(url, { credentials: "include", cache: "no-store" });
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new Error((data as { error?: string })?.error ?? "Request failed");
   return data as T;

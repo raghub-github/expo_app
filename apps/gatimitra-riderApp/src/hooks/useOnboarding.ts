@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { getRiderAppConfig } from "@/src/config/env";
-import { postJson } from "@/src/services/http";
+import { postJson, getJson, isRiderNotFoundError } from "@/src/services/http";
 
 const API_BASE = () => getRiderAppConfig().apiBaseUrl;
 
@@ -178,17 +178,39 @@ export function useRiderStatus(riderId: string | undefined) {
         return null;
       }
       
-      return postJson<{
+      return getJson<{
         riderId: string;
+        name?: string | null;
+        mobile?: string;
+        referralCode?: string | null;
+        preferredLanguage?: string;
+        selfieUrl?: string | null;
         onboardingStatus: string;
         approvalStatus: string;
-      }>(
-        `${API_BASE()}/v1/rider/${riderId}/status`,
-        {},
-        { headers: { authorization: `Bearer ${session.accessToken}` } }
-      );
+        accountStatus?: string;
+        hasHomeLocation?: boolean;
+        homeAddress?: {
+          city: string | null;
+          state: string | null;
+          pincode: string | null;
+          address: string | null;
+          lat: number | null;
+          lon: number | null;
+        } | null;
+        nextOnboardingStep?: string;
+        completedOnboardingSteps?: string[];
+        rating?: number | null;
+      }>(`${API_BASE()}/v1/rider/${riderId}/status`, {
+        headers: { authorization: `Bearer ${session.accessToken}` },
+      });
     },
     enabled: !!riderId && !!session?.accessToken,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    retry: (failureCount, error) => {
+      if (isRiderNotFoundError(error)) return false;
+      return failureCount < 2;
+    },
   });
 }
 

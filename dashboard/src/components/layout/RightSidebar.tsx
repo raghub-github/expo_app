@@ -44,6 +44,12 @@ import {
 } from "@/lib/tickets/queue-supervisor-sections";
 import { queueSupervisorHref } from "@/lib/tickets/queue-supervisor-paths";
 import { usePermission } from "@/hooks/usePermission";
+import { usePermissions } from "@/hooks/usePermissions";
+import {
+  parsePortalParam,
+  readStoredMerchantsPortal,
+  resolveMerchantsPortal,
+} from "@/lib/merchants/portal-preference";
 import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
 import { StoreInfoCard, StoreInfoCardSkeleton, type StoreInfoCardData } from "@/components/layout/StoreInfoCard";
 import { WalletRequestsSummarySidebar } from "@/components/merchants/WalletRequestsSummarySidebar";
@@ -75,6 +81,7 @@ export function RightSidebar({
   const searchParams = useSearchParams();
   const rightSidebarCtx = useRightSidebar();
   const { hasDashboardAccess, isSuperAdmin, canPerformAction } = usePermission();
+  const { canTogglePortal = false } = usePermissions();
   
   // Remove query parameters for comparison
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
@@ -86,7 +93,11 @@ export function RightSidebar({
   );
 
   const isStorePath = /^\/dashboard\/merchants\/stores\/\d+/.test(cleanPathname);
-  const portal = searchParams.get("portal") || "merchant";
+  const portal = resolveMerchantsPortal({
+    portalFromUrl: parsePortalParam(searchParams.get("portal")),
+    canTogglePortal,
+    storedPortal: typeof window !== "undefined" ? readStoredMerchantsPortal() : null,
+  });
 
   // Sub-routes for current dashboard. When on merchants: admin portal = only All Merchants + Verifications; merchant portal = Dashboard, Orders, Menu, etc. When on a store page, show store-scoped links.
   const rawSubRoutes = useMemo(() => {
@@ -299,6 +310,13 @@ export function RightSidebar({
     || canPerformAction("TICKET", "VIEW", { access_point_group: "TICKET_QUEUE_SUPERVISOR" });
   const canViewQueueManager = isSuperAdmin
     || canPerformAction("TICKET", "VIEW", { access_point_group: "TICKET_QUEUE_MANAGER" });
+  /** Avoid SSR/client mismatch when React Query restores cached permissions before hydration. */
+  const [queuePermissionsMounted, setQueuePermissionsMounted] = useState(false);
+  useEffect(() => {
+    setQueuePermissionsMounted(true);
+  }, []);
+  const showQueueSupervisorNav = queuePermissionsMounted && canViewQueueSupervisor;
+  const showQueueManagerNav = queuePermissionsMounted && canViewQueueManager;
 
   const isRiderDashboard =
     cleanPathname === "/dashboard/riders" ||
@@ -485,7 +503,7 @@ export function RightSidebar({
                         />
                       ) : null}
                     </Link>
-                    {canViewQueueSupervisor ? (
+                    {showQueueSupervisorNav ? (
                       <Link
                         href={queueSupervisorHref("updated-agents", queueSupervisorAgentInUrl || undefined)}
                         scroll={false}
@@ -510,7 +528,7 @@ export function RightSidebar({
                         />
                       </Link>
                     ) : null}
-                    {canViewQueueSupervisor && onQueueSupervisor ? (
+                    {showQueueSupervisorNav && onQueueSupervisor ? (
                       <div className="mt-2 space-y-1.5 border-l border-white/15 pl-3 ml-1">
                         {(
                           [
@@ -547,7 +565,7 @@ export function RightSidebar({
                         })}
                       </div>
                     ) : null}
-                    {canViewQueueManager ? (
+                    {showQueueManagerNav ? (
                       <Link
                         href={TICKETS_QUEUE_MANAGER_PATH}
                         scroll={false}
@@ -572,7 +590,7 @@ export function RightSidebar({
                         />
                       </Link>
                     ) : null}
-                    {canViewQueueManager && onQueueManager ? (
+                    {showQueueManagerNav && onQueueManager ? (
                       <div className="mt-2 space-y-1.5 border-l border-white/15 pl-3 ml-1">
                         {(
                           [
@@ -672,7 +690,7 @@ export function RightSidebar({
                     ) : null}
                     <Home className="h-5 w-5 shrink-0" aria-hidden />
                   </Link>
-                  {canViewQueueSupervisor ? (
+                  {showQueueSupervisorNav ? (
                     <Link
                       href={queueSupervisorHref("updated-agents", queueSupervisorAgentInUrl || undefined)}
                       className={`group relative flex w-full cursor-pointer items-center justify-center rounded-xl p-2.5 transition-all duration-150 ${
@@ -689,7 +707,7 @@ export function RightSidebar({
                       <Users className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
                     </Link>
                   ) : null}
-                  {canViewQueueManager ? (
+                  {showQueueManagerNav ? (
                     <Link
                       href={TICKETS_QUEUE_MANAGER_PATH}
                       className={`group relative flex w-full cursor-pointer items-center justify-center rounded-xl p-2.5 transition-all duration-150 ${

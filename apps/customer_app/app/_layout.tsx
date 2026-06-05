@@ -21,6 +21,7 @@ import { useStoreStatusRealtime } from "@/hooks/useStoreStatusRealtime";
 import { useOrderRealtime } from "@/hooks/useOrderRealtime";
 import { LocationPermissionModal } from "@/components/LocationPermissionModal";
 import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
+import { GlobalPrepDelayMarquee } from "@/components/GlobalPrepDelayMarquee";
 import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
 import { setOnSessionRevoked } from "@/services/api";
 import { PushNotificationBootstrap } from "@/components/PushNotificationBootstrap";
@@ -32,6 +33,7 @@ import "@/lib/i18n";
 import { setAppLanguage } from "@/lib/i18n";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { setRuntimeApiBaseUrl } from "@/config/env";
+import { ensureMapboxSearchReady } from "@/services/location.service";
 
 /** Storage key used by the in-app "Configure API URL" sheet on the login screen. */
 const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
@@ -41,6 +43,7 @@ const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
 // before React starts rendering (and well before the first OTP send).
 void (async () => {
   try {
+    ensureMapboxSearchReady();
     const stored = await AsyncStorage.getItem(API_URL_OVERRIDE_KEY);
     if (stored && stored.trim().length > 0) {
       setRuntimeApiBaseUrl(stored);
@@ -57,6 +60,9 @@ LogBox.ignoreLogs([
   "Unable to activate keep awake",
   "Unable to deactivate keep awake",
   "SafeAreaView has been deprecated",
+  "Require cycles are allowed",
+  "[Worklets] Tried to modify key `current`",
+  "VirtualizedList: You have a large list that is slow to update",
 ]);
 
 SplashScreen.preventAutoHideAsync().catch(() => {
@@ -135,6 +141,7 @@ export default function RootLayout() {
               <LanguageSync />
               <RootStack onLayoutRootView={onLayoutRootView} />
               <GlobalFloatingCart />
+              <GlobalPrepDelayMarquee />
               <LocationModalWrapper />
               <PushNotificationBootstrap />
             </>

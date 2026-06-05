@@ -1,6 +1,23 @@
-import React, { useMemo, useState } from "react";
-import { View, Text, TextInput, ScrollView, KeyboardAvoidingView, Platform } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  View,
+  Text,
+  TextInput,
+  Platform,
+  StyleSheet,
+  Image,
+  Pressable,
+  Alert,
+  useWindowDimensions,
+  ActivityIndicator,
+  Keyboard,
+  TouchableOpacity,
+  Linking,
+  type KeyboardEvent,
+} from "react-native";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { LinearGradient } from "expo-linear-gradient";
+import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { createOtpService, retryOtp } from "@/src/services/auth/otp";
@@ -8,12 +25,121 @@ import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useCheckMobile, useCreateRider } from "@/src/hooks/useOnboarding";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
-import { Button } from "@/src/components/ui/Button";
-import { colors } from "@/src/theme";
-import { Logo } from "@/src/components/Logo";
+
+const riderHero = require("../../assets/images/riderlogin.png");
+const brandLogo = require("../../assets/images/logo.png");
+
+const ACCENT = "#39d353";
+const ACCENT_DARK = "#22a745";
+const OTP_LENGTH = 6;
+
+function StatBadge({
+  icon,
+  label,
+  compact = false,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  compact?: boolean;
+}) {
+  return (
+    <View style={[styles.statBadge, compact && styles.statBadgeCompact]}>
+      <View style={[styles.statIconWrap, compact && styles.statIconWrapCompact]}>
+        <Ionicons name={icon} size={compact ? 13 : 15} color={ACCENT} />
+      </View>
+      <Text style={[styles.statLabel, compact && styles.statLabelCompact]} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+function TrustItem({
+  icon,
+  label,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+}) {
+  return (
+    <View style={styles.trustItem}>
+      <View style={styles.trustIconWrap}>
+        <Ionicons name={icon} size={18} color={ACCENT_DARK} />
+      </View>
+      <Text style={styles.trustLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function ContinueButton({
+  label,
+  onPress,
+  disabled,
+  loading,
+}: {
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+  loading?: boolean;
+}) {
+  const isInactive = Boolean(disabled || loading);
+
+  return (
+    <TouchableOpacity
+      activeOpacity={isInactive ? 1 : 0.85}
+      onPress={() => {
+        if (!isInactive) onPress();
+      }}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: isInactive }}
+      style={[styles.continueBtn, isInactive ? styles.continueBtnDisabled : null]}
+    >
+      {loading ? (
+        <ActivityIndicator color={ACCENT_DARK} />
+      ) : (
+        <>
+          <Text style={[styles.continueBtnText, isInactive && styles.continueBtnTextDisabled]}>
+            {label}
+          </Text>
+          <Ionicons
+            name="arrow-forward"
+            size={18}
+            color={isInactive ? "#7cb889" : "#ffffff"}
+          />
+        </>
+      )}
+    </TouchableOpacity>
+  );
+}
+
+function LegalTermsLine() {
+  const { t } = useTranslation();
+  const prefix = t("login.termsPrefix");
+  const link = t("login.termsLink");
+
+  const openLegal = () => {
+    Linking.openURL("https://gatimitra.com/terms").catch(() => {});
+  };
+
+  if (!prefix || prefix === "login.termsPrefix" || !link || link === "login.termsLink") {
+    return <Text style={styles.legalText}>{t("login.terms")}</Text>;
+  }
+
+  return (
+    <Text style={styles.legalText}>
+      <Text style={styles.legalTextMuted}>{prefix}</Text>
+      <Text style={styles.legalLink} onPress={openLegal}>
+        {link}
+      </Text>
+    </Text>
+  );
+}
 
 export default function LoginScreen() {
   const { t } = useTranslation();
+  const { height: windowHeight } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+
   const { service } = useMemo(() => createOtpService(), []);
   const setSession = useSessionStore((s) => s.setSession);
   const checkMobile = useCheckMobile();
@@ -27,71 +153,97 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(0);
   const [requestId, setRequestId] = useState<string | null>(null);
-  const [devOtpShown, setDevOtpShown] = useState(false); // when backend returns OTP (no SMS)
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
 
-  // Request OTP using MSG91 SDK
+  const phoneDigits = phoneE164.replace(/\D/g, "");
+  const phoneValid = phoneDigits.length >= 10;
+  const otpValid = otp.trim().length === OTP_LENGTH;
+  const heroMinHeight = Math.round(windowHeight * 0.46);
+  const sheetMinHeight = keyboardVisible ? undefined : heroMinHeight;
+  const safeBottom = Math.max(insets.bottom, 12);
+  const sheetBottomPad = keyboardVisible ? 20 : safeBottom;
+  const keyboardOffset = keyboardVisible && keyboardHeight > 0 ? keyboardHeight : 0;
+
+  useEffect(() => {
+    const onShow = (event: KeyboardEvent) => {
+      setKeyboardVisible(true);
+      setKeyboardHeight(event.endCoordinates.height);
+    };
+    const onHide = () => {
+      setKeyboardVisible(false);
+      setKeyboardHeight(0);
+    };
+
+    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+
+    const showSub = Keyboard.addListener(showEvent, onShow);
+    const hideSub = Keyboard.addListener(hideEvent, onHide);
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  const startCountdown = () => {
+    setCountdown(30);
+    const interval = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
   const onRequestOtp = async () => {
-    if (!phoneE164.trim() || phoneE164.trim().length < 10) {
-      setError("Please enter a valid phone number");
+    if (!phoneValid) {
+      setError("Please enter a valid 10-digit phone number");
       return;
     }
 
     setBusy(true);
     setError(null);
     try {
-      // Add timeout wrapper (20 seconds)
       const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error("Request timeout. Please check your internet connection and try again.")), 20000);
+        setTimeout(
+          () => reject(new Error("Request timeout. Please check your internet connection and try again.")),
+          20000
+        );
       });
 
-      const response = await Promise.race([
-        service.requestOtp(phoneE164.trim()),
+      const normalizedPhone = phoneDigits.length === 10 ? `+91${phoneDigits}` : phoneE164.trim();
+      const response = (await Promise.race([
+        service.requestOtp(normalizedPhone),
         timeoutPromise,
-      ]) as Awaited<ReturnType<typeof service.requestOtp>>;
+      ])) as Awaited<ReturnType<typeof service.requestOtp>>;
 
-      // Store request ID for retry functionality
       if (response.requestId) {
         setRequestId(response.requestId);
       }
 
-      // When backend returns OTP (e.g. dev/Expo Go), show it so user can enter it
-      const devOtp = (response as { otp?: string }).otp;
-      if (devOtp) {
-        setOtp(devOtp);
-        setDevOtpShown(true);
-      } else {
-        setDevOtpShown(false);
-      }
-
       setStep("otp");
-      setCountdown(30); // 30 seconds resend delay
-      const interval = setInterval(() => {
-        setCountdown((prev) => {
-          if (prev <= 1) {
-            clearInterval(interval);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
+      startCountdown();
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
-      const errorMessage = err.message;
+      let errorMessage = err.message;
+      if (err.message?.toLowerCase().includes("network") || err.message?.toLowerCase().includes("failed")) {
+        errorMessage = `${errorMessage} Make sure backend is running and the app API URL is correct.`;
+      }
       setError(errorMessage);
       console.error("OTP request error:", e);
-      // Hint when likely a network/backend connectivity issue
-      if (err.message?.toLowerCase().includes("network") || err.message?.toLowerCase().includes("failed")) {
-        setError(`${errorMessage} Make sure backend is running and app uses correct API URL (e.g. http://10.19.200.18:3000 on device).`);
-      }
     } finally {
       setBusy(false);
     }
   };
 
-  // Verify OTP using MSG91 SDK
   const onVerifyOtp = async () => {
-    if (!otp.trim() || otp.trim().length !== 4) {
-      setError("Please enter a valid 4-digit OTP");
+    if (!otp.trim() || otp.trim().length !== OTP_LENGTH) {
+      setError(`Please enter a valid ${OTP_LENGTH}-digit OTP`);
       return;
     }
 
@@ -99,46 +251,36 @@ export default function LoginScreen() {
     setError(null);
     try {
       const deviceId = await getOrCreateDeviceId();
-      const phone = phoneE164.trim();
+      const normalizedPhone = phoneDigits.length === 10 ? `+91${phoneDigits}` : phoneE164.trim();
+      const otpValue = otp.trim();
 
-      // Pass requestId from UI state so verify works even after hot reload / new service instance
       const session = await service.verifyOtp({
-        phoneE164: phone,
-        otp: otp.trim(),
+        phoneE164: normalizedPhone,
+        otp: otpValue,
         deviceId,
         requestId: requestId ?? undefined,
       });
       await setSession(session);
-      
-      // Check if rider exists
-      const checkResult = await checkMobile.mutateAsync(phone);
-      
+
+      const checkResult = await checkMobile.mutateAsync(normalizedPhone);
+
       if (checkResult.exists && checkResult.riderId) {
-        // Save riderId to onboarding store
         await setOnboardingData({ riderId: checkResult.riderId });
-        
-        // Existing rider - check onboarding status
+
         if (checkResult.onboardingStatus === "approved") {
-          // Fully onboarded - go to home
           router.replace("/(tabs)/orders");
         } else if (checkResult.onboardingStatus === "pending_approval") {
-          // Pending approval - go to pending screen
           router.replace("/(onboarding)/pending");
         } else {
-          // In progress or not started - go to onboarding method selection
-          router.replace("/(onboarding)/method-selection");
+          router.replace("/");
         }
       } else {
-        // New rider - create rider record and start onboarding
         const createResult = await createRider.mutateAsync({
-          phoneE164: phone,
+          phoneE164: normalizedPhone,
           deviceId,
         });
-        
-        // Save riderId to onboarding store
+
         await setOnboardingData({ riderId: createResult.riderId });
-        
-        // Start onboarding flow - go to method selection
         router.replace("/(onboarding)/method-selection");
       }
     } catch (e) {
@@ -148,25 +290,15 @@ export default function LoginScreen() {
     }
   };
 
-  // Retry OTP on different channel
   const onRetryOtp = async () => {
     if (countdown > 0 || !requestId) return;
-    
+
     setBusy(true);
     setError(null);
     try {
       const result = await retryOtp(requestId, "SMS");
       if (result.success) {
-        setCountdown(30);
-        const interval = setInterval(() => {
-          setCountdown((prev) => {
-            if (prev <= 1) {
-              clearInterval(interval);
-              return 0;
-            }
-            return prev - 1;
-          });
-        }, 1000);
+        startCountdown();
         Alert.alert("Success", "OTP has been resent to your phone number.");
       } else {
         setError(result.message || "Failed to resend OTP");
@@ -178,189 +310,584 @@ export default function LoginScreen() {
     }
   };
 
-  const onResendOtp = async () => {
-    if (countdown > 0) return;
-    await onRetryOtp();
+  const resetToPhone = () => {
+    setStep("phone");
+    setOtp("");
+    setRequestId(null);
+    setError(null);
+    setCountdown(0);
   };
 
+  const phoneForm = (
+    <View style={[styles.sheetInner, sheetMinHeight ? styles.sheetInnerExpanded : null]}>
+      <View style={styles.sheetMain}>
+        {!keyboardVisible ? (
+          <>
+            <Text style={styles.formTitle}>Enter your mobile number</Text>
+            <Text style={styles.formDescription}>{t("login.phoneDescription")}</Text>
+          </>
+        ) : (
+          <>
+            <Text style={styles.formTitleCompact}>Enter your mobile number</Text>
+            <Text style={styles.formDescriptionCompact}>{t("login.phoneDescription")}</Text>
+          </>
+        )}
+
+        <View style={[styles.phoneField, error ? styles.phoneFieldError : null]}>
+          <View style={styles.phonePrefix}>
+            <Text style={styles.flagEmoji}>🇮🇳</Text>
+            <Text style={styles.prefixCode}>+91</Text>
+            <Ionicons name="chevron-down" size={14} color="#9ca3af" />
+          </View>
+          <View style={styles.phoneDivider} />
+          <Ionicons name="phone-portrait-outline" size={18} color="#9ca3af" style={styles.phoneFieldIcon} />
+          <TextInput
+            value={phoneE164}
+            onChangeText={(text) => {
+              setPhoneE164(text.replace(/\D/g, "").slice(0, 10));
+              setError(null);
+            }}
+            placeholder="9876543210"
+            placeholderTextColor="#9ca3af"
+            keyboardType="phone-pad"
+            maxLength={10}
+            style={styles.phoneInput}
+          />
+        </View>
+
+        {error ? (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        ) : null}
+
+        <ContinueButton
+          label="Continue"
+          onPress={onRequestOtp}
+          disabled={!phoneValid}
+          loading={busy}
+        />
+      </View>
+
+      {!keyboardVisible ? (
+        <>
+          <View style={styles.trustRow}>
+            <TrustItem icon="shield-checkmark-outline" label={"Secure OTP\nVerification"} />
+            <View style={styles.trustDivider} />
+            <TrustItem icon="ribbon-outline" label={"No Hidden\nCharges"} />
+            <View style={styles.trustDivider} />
+            <TrustItem icon="time-outline" label={"Instant\nApproval"} />
+          </View>
+          <LegalTermsLine />
+        </>
+      ) : null}
+    </View>
+  );
+
+  const otpForm = (
+    <View style={styles.sheetMain}>
+      {!keyboardVisible ? (
+        <>
+          <Text style={styles.formTitle}>{t("login.enterOtp")}</Text>
+          <Text style={styles.formDescription}>
+            Enter the {OTP_LENGTH}-digit code sent to +91 {phoneDigits}
+          </Text>
+        </>
+      ) : (
+        <>
+          <Text style={styles.formTitleCompact}>{t("login.enterOtp")}</Text>
+          <Text style={styles.formDescriptionCompact}>
+            Enter the {OTP_LENGTH}-digit code sent to +91 {phoneDigits}
+          </Text>
+        </>
+      )}
+
+      <TextInput
+        value={otp}
+        onChangeText={(text) => {
+          setOtp(text.replace(/[^0-9]/g, "").slice(0, OTP_LENGTH));
+          setError(null);
+        }}
+        placeholder="000000"
+        placeholderTextColor="#9ca3af"
+        keyboardType="number-pad"
+        maxLength={OTP_LENGTH}
+        autoFocus
+        style={[
+          styles.otpInput,
+          otpValid ? styles.otpInputReady : null,
+          error ? styles.phoneFieldError : null,
+        ]}
+      />
+
+      {error ? (
+        <View style={styles.errorBox}>
+          <Text style={styles.errorText}>{error}</Text>
+        </View>
+      ) : null}
+
+      <ContinueButton
+        label={t("login.verifyOtp")}
+        onPress={onVerifyOtp}
+        disabled={!otpValid}
+        loading={busy}
+      />
+
+      <View style={styles.otpActions}>
+        <Text style={styles.resendHint}>
+          {t("login.didntReceive")}{" "}
+          {countdown > 0 ? (
+            <Text style={styles.resendCountdown}>{t("login.resendIn", { count: countdown })}</Text>
+          ) : null}
+        </Text>
+        {countdown === 0 ? (
+          <Pressable onPress={onRetryOtp} disabled={busy} hitSlop={8}>
+            <Text style={styles.linkText}>{t("login.resendOtp")}</Text>
+          </Pressable>
+        ) : null}
+        <Pressable onPress={resetToPhone} hitSlop={8}>
+          <Text style={styles.linkTextMuted}>{t("login.changePhone")}</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#FFFFFF' }} className="flex-1 bg-white">
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={{ flex: 1 }}
-        className="flex-1"
+    <View style={[styles.root, keyboardOffset > 0 ? { marginBottom: keyboardOffset } : null]}>
+      <View
+        style={[
+          styles.hero,
+          keyboardVisible
+            ? styles.heroKeyboard
+            : { flex: 1, minHeight: heroMinHeight },
+        ]}
       >
-        <ScrollView
-          contentContainerStyle={{ flexGrow: 1 }}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
+        <Image source={riderHero} style={styles.heroImage} resizeMode="cover" />
+        <LinearGradient
+          colors={["rgba(0,0,0,0.12)", "rgba(0,0,0,0.5)", "rgba(0,0,0,0.92)"]}
+          locations={[0, 0.5, 1]}
+          style={StyleSheet.absoluteFill}
+        />
+
+        <SafeAreaView
+          edges={["top"]}
+          style={[styles.heroSafe, keyboardVisible && styles.heroSafeCompact]}
         >
-          <View style={{ flex: 1, paddingHorizontal: 24, paddingTop: 48, paddingBottom: 32 }} className="flex-1 px-6 pt-12 pb-8">
-            {/* Logo/Brand Section */}
-            <View style={{ alignItems: 'center', marginBottom: 48 }} className="items-center mb-12">
-              <Logo size="large" vertical style={{ marginBottom: 24 }} />
-              <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#111827', marginBottom: 8 }} className="text-3xl font-bold text-gray-900 mb-2">{t("login.welcome")}</Text>
-              <Text style={{ fontSize: 16, color: '#4B5563', textAlign: 'center' }} className="text-base text-gray-600 text-center">{t("login.tagline")}</Text>
-            </View>
+          <Image
+            source={brandLogo}
+            style={[styles.brandLogo, keyboardVisible && styles.brandLogoCompact]}
+            resizeMode="contain"
+          />
 
-            {/* Form Section */}
-            <View style={{ flex: 1, justifyContent: 'center' }} className="flex-1 justify-center">
-              {step === "phone" ? (
-                <>
-                  <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#111827', marginBottom: 8 }} className="text-2xl font-bold text-gray-900 mb-2">{t("login.enterPhone")}</Text>
-                  <Text style={{ fontSize: 14, color: '#4B5563', marginBottom: 24 }} className="text-sm text-gray-600 mb-6">{t("login.phoneDescription")}</Text>
+          <View style={[styles.heroBottom, keyboardVisible && styles.heroBottomCompact]}>
+            <Text style={[styles.heroHeadline, keyboardVisible && styles.heroHeadlineCompact]}>
+              Deliver Smiles.{"\n"}
+              <Text style={styles.heroHeadlineAccent}>Earn More.</Text>
+            </Text>
+            <Text style={[styles.heroSubline, keyboardVisible && styles.heroSublineCompact]}>
+              Join GatiMitra & grow your income on every delivery.
+            </Text>
 
-                  <View style={{ marginBottom: 16 }} className="mb-4">
-                    <Text style={{ fontSize: 14, fontWeight: '500', color: '#374151', marginBottom: 8 }} className="text-sm font-medium text-gray-700 mb-2">{t("login.phoneNumber")}</Text>
-                    <TextInput
-                      value={phoneE164}
-                      onChangeText={setPhoneE164}
-                      placeholder={t("login.phonePlaceholder")}
-                      placeholderTextColor={colors.gray[400]}
-                      autoCapitalize="none"
-                      keyboardType="phone-pad"
-                      style={{ 
-                        backgroundColor: '#F9FAFB', 
-                        borderWidth: 1, 
-                        borderColor: '#E5E7EB', 
-                        borderRadius: 12, 
-                        paddingHorizontal: 16, 
-                        paddingVertical: 16, 
-                        fontSize: 16, 
-                        color: '#111827' 
-                      }}
-                      className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-4 text-base text-gray-900"
-                    />
-                  </View>
-
-                  {error && (
-                    <View style={{ marginBottom: 16, padding: 12, backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA', borderRadius: 8 }} className="mb-4 p-3 bg-error-50 border border-error-200 rounded-lg">
-                      <Text style={{ fontSize: 14, color: colors.error[600] }} className="text-sm text-error-600">{error}</Text>
-                    </View>
-                  )}
-
-                  <Button
-                    onPress={onRequestOtp}
-                    disabled={busy || phoneE164.trim().length < 10}
-                    loading={busy}
-                    size="lg"
-                    className="mt-2"
-                  >
-                    {t("login.sendOtp")}
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#111827', marginBottom: 8 }} className="text-2xl font-bold text-gray-900 mb-2">{t("login.enterOtp")}</Text>
-                  <Text style={{ fontSize: 14, color: '#4B5563', marginBottom: 16 }} className="text-sm text-gray-600 mb-6">
-                    {t("login.otpDescription", { phone: phoneE164 })}
-                  </Text>
-
-                  {devOtpShown && (
-                    <View style={{ marginBottom: 16, padding: 12, backgroundColor: '#E0F2FE', borderRadius: 12, borderWidth: 1, borderColor: '#7DD3FC' }}>
-                      <Text style={{ fontSize: 12, color: '#0369A1', marginBottom: 4 }}>Development: use the code below (no SMS sent)</Text>
-                      <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#0C4A6E', letterSpacing: 4 }}>{otp || '—'}</Text>
-                    </View>
-                  )}
-
-                  {/* OTP Input Section */}
-                  <View style={{ marginBottom: 16 }} className="mb-4">
-                    <Text style={{ fontSize: 14, fontWeight: '500', color: '#374151', marginBottom: 8 }} className="text-sm font-medium text-gray-700 mb-2">
-                      {t("login.otpCode")} (4 digits)
-                    </Text>
-                    <TextInput
-                      value={otp}
-                      onChangeText={(text) => {
-                        // Only allow 4 digits
-                        const cleaned = text.replace(/[^0-9]/g, '').slice(0, 4);
-                        setOtp(cleaned);
-                        setError(null); // Clear error on input
-                      }}
-                      placeholder="0000"
-                      placeholderTextColor={colors.gray[400]}
-                      keyboardType="number-pad"
-                      maxLength={4}
-                      autoFocus
-                      style={{ 
-                        backgroundColor: '#F9FAFB', 
-                        borderWidth: 2, 
-                        borderColor: otp.length === 4 ? colors.primary[500] : '#E5E7EB', 
-                        borderRadius: 16, 
-                        paddingHorizontal: 20, 
-                        paddingVertical: 20, 
-                        fontSize: 32, 
-                        fontWeight: 'bold',
-                        color: '#111827', 
-                        textAlign: 'center', 
-                        letterSpacing: 12 
-                      }}
-                      className="bg-gray-50 border-2 rounded-2xl px-5 py-5 text-center"
-                    />
-                    <Text style={{ fontSize: 12, color: '#6B7280', marginTop: 8, textAlign: 'center' }} className="text-xs text-gray-500 mt-2 text-center">
-                      Enter the 4-digit code sent to {phoneE164}
-                    </Text>
-                  </View>
-
-                  {error && (
-                    <View style={{ marginBottom: 16, padding: 12, backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA', borderRadius: 8 }} className="mb-4 p-3 bg-error-50 border border-error-200 rounded-lg">
-                      <Text style={{ fontSize: 14, color: colors.error[600] }} className="text-sm text-error-600">{error}</Text>
-                    </View>
-                  )}
-
-                  <Button
-                    onPress={onVerifyOtp}
-                    disabled={busy || otp.trim().length !== 4}
-                    loading={busy}
-                    size="lg"
-                    className="mt-2"
-                  >
-                    {t("login.verifyOtp")}
-                  </Button>
-
-                  <View style={{ marginTop: 24, alignItems: 'center' }} className="mt-6 items-center">
-                    <Text style={{ fontSize: 14, color: '#4B5563', marginBottom: 8 }} className="text-sm text-gray-600 mb-2">
-                      {t("login.didntReceive")}{" "}
-                      {countdown > 0 && (
-                        <Text style={{ fontWeight: '500' }} className="font-medium">{t("login.resendIn", { count: countdown })}</Text>
-                      )}
-                    </Text>
-                    {countdown === 0 && (
-                      <Button
-                        onPress={onResendOtp}
-                        variant="ghost"
-                        size="sm"
-                        disabled={busy}
-                      >
-                        {t("login.resendOtp")}
-                      </Button>
-                    )}
-                    <Button
-                      onPress={() => {
-                        setStep("phone");
-                        setOtp("");
-                        setRequestId(null);
-                        setDevOtpShown(false);
-                        setError(null);
-                        setCountdown(0);
-                      }}
-                      variant="ghost"
-                      size="sm"
-                      className="mt-2"
-                    >
-                      {t("login.changePhone")}
-                    </Button>
-                  </View>
-                </>
-              )}
-            </View>
-
-            {/* Footer */}
-            <View style={{ marginTop: 32 }} className="mt-8">
-              <Text style={{ fontSize: 12, textAlign: 'center', color: '#6B7280' }} className="text-xs text-center text-gray-500">{t("login.terms")}</Text>
+            <View style={styles.statsColumn}>
+              <StatBadge icon="star" label="4.8  Partner Rating" compact={keyboardVisible} />
+              <StatBadge icon="wallet-outline" label="Earn upto ₹700–1,200 /day" compact={keyboardVisible} />
+              <StatBadge icon="flash-outline" label="Instant Payouts" compact={keyboardVisible} />
             </View>
           </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+        </SafeAreaView>
+      </View>
+
+      <View style={styles.sheetFill}>
+        <View
+          style={[
+            styles.sheet,
+            sheetMinHeight ? { minHeight: sheetMinHeight } : null,
+            keyboardVisible ? styles.sheetCompact : null,
+            { paddingBottom: sheetBottomPad },
+          ]}
+        >
+          <View style={[styles.sheetHandle, keyboardVisible && styles.sheetHandleCompact]} />
+
+          {step === "phone" ? (
+            phoneForm
+          ) : (
+            otpForm
+          )}
+        </View>
+      </View>
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    width: "100%",
+    backgroundColor: "#0a0a0a",
+  },
+  hero: {
+    width: "100%",
+    backgroundColor: "#0a0a0a",
+  },
+  heroKeyboard: {
+    flex: 1,
+    minHeight: 200,
+  },
+  heroImage: {
+    ...StyleSheet.absoluteFillObject,
+    width: "100%",
+    height: "100%",
+  },
+  heroSafe: {
+    flex: 1,
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+  },
+  heroSafeCompact: {
+    justifyContent: "space-between",
+    paddingBottom: 10,
+  },
+  brandLogo: {
+    width: 148,
+    height: 40,
+    marginTop: 4,
+  },
+  brandLogoCompact: {
+    width: 128,
+    height: 34,
+  },
+  heroBottom: {
+    gap: 6,
+    paddingBottom: 4,
+  },
+  heroBottomCompact: {
+    gap: 4,
+    paddingBottom: 2,
+  },
+  heroHeadline: {
+    fontSize: 28,
+    fontWeight: "800",
+    color: "#ffffff",
+    lineHeight: 34,
+    letterSpacing: -0.5,
+  },
+  heroHeadlineCompact: {
+    fontSize: 22,
+    lineHeight: 28,
+  },
+  heroHeadlineAccent: {
+    color: ACCENT,
+  },
+  heroSubline: {
+    fontSize: 13,
+    color: "rgba(255,255,255,0.8)",
+    lineHeight: 19,
+    marginBottom: 2,
+    maxWidth: 290,
+  },
+  heroSublineCompact: {
+    fontSize: 11,
+    lineHeight: 15,
+    marginBottom: 0,
+  },
+  statsColumn: {
+    gap: 6,
+  },
+  statBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    backgroundColor: "rgba(0,0,0,0.58)",
+    borderRadius: 999,
+    paddingVertical: 6,
+    paddingHorizontal: 11,
+    borderWidth: 1,
+    borderColor: "rgba(57,211,83,0.3)",
+    gap: 8,
+    maxWidth: "100%",
+  },
+  statBadgeCompact: {
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    gap: 6,
+  },
+  statIconWrap: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "rgba(57,211,83,0.18)",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  statIconWrapCompact: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+  },
+  statLabel: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#ffffff",
+    flexShrink: 1,
+  },
+  statLabelCompact: {
+    fontSize: 11,
+  },
+  sheetFill: {
+    width: "100%",
+    flexShrink: 0,
+  },
+  sheet: {
+    width: "100%",
+    backgroundColor: "#ffffff",
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingTop: 10,
+    paddingHorizontal: 22,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(57,211,83,0.25)",
+  },
+  sheetCompact: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 8,
+    marginTop: -12,
+  },
+  sheetHandle: {
+    alignSelf: "center",
+    width: 44,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: ACCENT,
+    marginBottom: 14,
+  },
+  sheetHandleCompact: {
+    marginBottom: 10,
+  },
+  sheetInner: {
+    width: "100%",
+  },
+  sheetInnerExpanded: {
+    minHeight: 280,
+    justifyContent: "space-between",
+  },
+  sheetMain: {
+    width: "100%",
+  },
+  formTitle: {
+    fontSize: 21,
+    fontWeight: "800",
+    color: "#111827",
+    marginBottom: 4,
+  },
+  formTitleCompact: {
+    fontSize: 19,
+    fontWeight: "800",
+    color: "#111827",
+    marginBottom: 2,
+  },
+  formDescription: {
+    fontSize: 13,
+    color: "#6b7280",
+    lineHeight: 18,
+    marginBottom: 14,
+  },
+  formDescriptionCompact: {
+    fontSize: 12,
+    color: "#6b7280",
+    lineHeight: 16,
+    marginBottom: 10,
+  },
+  phoneField: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1.5,
+    borderColor: "#e5e7eb",
+    borderRadius: 14,
+    backgroundColor: "#f9fafb",
+    paddingHorizontal: 12,
+    minHeight: 54,
+    marginBottom: 14,
+  },
+  phoneFieldError: {
+    borderColor: "#fca5a5",
+    backgroundColor: "#fef2f2",
+  },
+  phonePrefix: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingRight: 10,
+  },
+  flagEmoji: {
+    fontSize: 18,
+  },
+  prefixCode: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  phoneDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: "#e5e7eb",
+    marginRight: 10,
+  },
+  phoneFieldIcon: {
+    marginRight: 8,
+  },
+  phoneInput: {
+    flex: 1,
+    fontSize: 19,
+    fontWeight: "bold",
+    color: "#111827",
+    paddingVertical: 12,
+    letterSpacing: 0.8,
+    ...(Platform.OS === "android" ? { includeFontPadding: false, textAlignVertical: "center" } : {}),
+  },
+  continueBtn: {
+    width: "100%",
+    height: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: ACCENT,
+    borderRadius: 999,
+    paddingHorizontal: 20,
+    marginTop: 4,
+    shadowColor: ACCENT_DARK,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  continueBtnDisabled: {
+    backgroundColor: "#edf8f0",
+    borderWidth: 1.5,
+    borderColor: "#c2e8cb",
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  continueBtnText: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#ffffff",
+  },
+  continueBtnTextDisabled: {
+    color: "#6aab78",
+  },
+  trustRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    marginTop: 22,
+    marginBottom: 6,
+    paddingTop: 18,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#eef0f2",
+  },
+  trustItem: {
+    flex: 1,
+    alignItems: "center",
+    paddingHorizontal: 4,
+  },
+  trustIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "rgba(57,211,83,0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 6,
+  },
+  trustLabel: {
+    fontSize: 11,
+    lineHeight: 15,
+    textAlign: "center",
+    color: "#6b7280",
+    fontWeight: "500",
+  },
+  trustDivider: {
+    width: 1,
+    height: 44,
+    backgroundColor: "#e5e7eb",
+    marginTop: 6,
+  },
+  legalText: {
+    fontSize: 11,
+    lineHeight: 17,
+    textAlign: "center",
+    marginTop: 20,
+    paddingHorizontal: 8,
+    paddingBottom: 4,
+  },
+  legalTextMuted: {
+    color: "#9ca3af",
+  },
+  legalLink: {
+    color: ACCENT_DARK,
+    fontWeight: "600",
+    textDecorationLine: "underline",
+    textDecorationStyle: "dotted",
+    textDecorationColor: ACCENT_DARK,
+  },
+  otpInput: {
+    borderWidth: 1.5,
+    borderColor: "#e5e7eb",
+    borderRadius: 16,
+    backgroundColor: "#f9fafb",
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    fontSize: 28,
+    fontWeight: "bold",
+    color: "#111827",
+    textAlign: "center",
+    letterSpacing: 10,
+    marginBottom: 14,
+    ...(Platform.OS === "android" ? { includeFontPadding: false } : {}),
+  },
+  otpInputReady: {
+    borderColor: ACCENT,
+    backgroundColor: "rgba(57,211,83,0.08)",
+  },
+  errorBox: {
+    marginBottom: 12,
+    padding: 12,
+    backgroundColor: "#fef2f2",
+    borderWidth: 1,
+    borderColor: "#fecaca",
+    borderRadius: 12,
+  },
+  errorText: {
+    fontSize: 13,
+    color: "#dc2626",
+    lineHeight: 18,
+  },
+  otpActions: {
+    marginTop: 16,
+    alignItems: "center",
+    gap: 10,
+  },
+  resendHint: {
+    fontSize: 14,
+    color: "#6b7280",
+    textAlign: "center",
+  },
+  resendCountdown: {
+    fontWeight: "700",
+    color: "#374151",
+  },
+  linkText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: ACCENT_DARK,
+  },
+  linkTextMuted: {
+    fontSize: 14,
+    fontWeight: "500",
+    color: "#9ca3af",
+  },
+});

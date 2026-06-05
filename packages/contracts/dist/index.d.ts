@@ -104,9 +104,18 @@ export declare const SessionSchema: z.ZodObject<{
 export type Session = z.infer<typeof SessionSchema>;
 export declare const RiderProfileSchema: z.ZodObject<{
     riderId: z.ZodString;
-    name: z.ZodString;
-    city: z.ZodString;
+    riderDisplayId: z.ZodString;
+    userId: z.ZodString;
+    name: z.ZodNullable<z.ZodString>;
+    mobile: z.ZodString;
+    city: z.ZodNullable<z.ZodString>;
+    state: z.ZodNullable<z.ZodString>;
+    pincode: z.ZodNullable<z.ZodString>;
+    address: z.ZodNullable<z.ZodString>;
     preferredLanguage: z.ZodString;
+    referralCode: z.ZodNullable<z.ZodString>;
+    referredByDisplayId: z.ZodNullable<z.ZodString>;
+    selfieUrl: z.ZodNullable<z.ZodString>;
     approvalStatus: z.ZodEnum<{
         SUSPENDED: "SUSPENDED";
         APPROVED: "APPROVED";
@@ -114,6 +123,8 @@ export declare const RiderProfileSchema: z.ZodObject<{
         PENDING_APPROVAL: "PENDING_APPROVAL";
         REJECTED: "REJECTED";
     }>;
+    accountStatus: z.ZodString;
+    onboardingStatus: z.ZodString;
 }, z.core.$strip>;
 export type RiderProfile = z.infer<typeof RiderProfileSchema>;
 export declare const RiderLocationPingSchema: z.ZodObject<{

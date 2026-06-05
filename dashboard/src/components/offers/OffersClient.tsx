@@ -23,6 +23,7 @@ import {
   type MerchantPlan,
 } from "@/hooks/queries/useMerchantPlansQuery";
 import { MerchantPlanForm } from "./MerchantPlanForm";
+import { RiderSubscriptionPlansAdmin } from "./RiderSubscriptionPlansAdmin";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 
 type OfferTab = "merchant" | "rider" | "customer";
@@ -312,7 +313,7 @@ export function OffersClient() {
         </div>
       </div>
 
-      {tab === "merchant" && (
+      {(tab === "merchant") && (
         <>
           <div className="flex flex-col sm:flex-row sm:items-center gap-4">
             <div className="flex flex-1 flex-wrap items-center gap-2">
@@ -409,10 +410,12 @@ export function OffersClient() {
         </>
       )}
 
-      {(tab === "rider" || tab === "customer") && (
+      {tab === "rider" && <RiderSubscriptionPlansAdmin />}
+
+      {tab === "customer" && (
         <div className="rounded-2xl border-2 border-dashed border-gray-200 bg-gray-50/50 px-6 py-16 text-center">
           <Gift className="h-14 w-14 text-gray-300 mx-auto mb-4" />
-          <p className="text-lg font-medium text-gray-700">{tab === "rider" ? "Rider" : "User"} subscription plans coming soon</p>
+          <p className="text-lg font-medium text-gray-700">User subscription plans coming soon</p>
           <p className="text-sm text-gray-500 mt-1">This section will be available in a future update</p>
         </div>
       )}

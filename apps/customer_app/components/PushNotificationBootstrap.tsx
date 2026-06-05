@@ -26,6 +26,8 @@ import {
   subscribeToPushNotificationResponse,
 } from "@gatimitra/expo-push-kit";
 import { useAuthStore } from "@/store/authStore";
+import { useOrderStore } from "@/store/orderStore";
+import { buildPrepDelayMessage } from "@/lib/order-eta-display";
 import { getConfig } from "@/config/env";
 import { colors } from "@/theme";
 
@@ -47,6 +49,28 @@ export function PushNotificationBootstrap() {
     body: string;
     imageUrl: string;
   } | null>(null);
+
+  const showPrepDelayBanner = useOrderStore((s) => s.showPrepDelayBanner);
+
+  const handlePrepDelayPush = useCallback(
+    (data: Record<string, unknown>) => {
+      const gmType = typeof data.gmType === "string" ? data.gmType : "";
+      if (gmType !== "ORDER_PREP_DELAY") return;
+      const orderId = typeof data.orderId === "string" ? data.orderId : "";
+      if (!orderId) return;
+      const additionalMinutes = Number(data.additionalMinutes);
+      const etaMinutes = Number(data.etaMinutes);
+      const gmMessage = typeof data.gmMessage === "string" ? data.gmMessage.trim() : "";
+      const message =
+        gmMessage ||
+        buildPrepDelayMessage(
+          Number.isFinite(additionalMinutes) ? additionalMinutes : 5,
+          Number.isFinite(etaMinutes) ? etaMinutes : null
+        );
+      showPrepDelayBanner(orderId, message, 20_000);
+    },
+    [showPrepDelayBanner]
+  );
 
   const syncToken = useCallback(async () => {
     if (!hydrated || !session?.accessToken || session.role !== "customer") return;
@@ -83,6 +107,7 @@ export function PushNotificationBootstrap() {
 
   useEffect(() => {
     const subOpen = subscribeToPushNotificationResponse(({ data }) => {
+      handlePrepDelayPush(data);
       navigateFromPushData(router, data);
       const gmType = typeof data.gmType === "string" ? data.gmType : "";
       const imageUrl = typeof data.imageUrl === "string" ? data.imageUrl.trim() : "";
@@ -94,6 +119,7 @@ export function PushNotificationBootstrap() {
     });
 
     const subFg = subscribeToForegroundNotifications(({ data }) => {
+      handlePrepDelayPush(data);
       const gmType = typeof data.gmType === "string" ? data.gmType : "";
       const imageUrl = typeof data.imageUrl === "string" ? data.imageUrl.trim() : "";
       if (gmType === "RICH" && imageUrl.length > 0) {
@@ -107,7 +133,7 @@ export function PushNotificationBootstrap() {
       subOpen.remove();
       subFg.remove();
     };
-  }, [router]);
+  }, [router, handlePrepDelayPush]);
 
   return (
     <Modal visible={!!richModal} transparent animationType="fade" onRequestClose={() => setRichModal(null)}>

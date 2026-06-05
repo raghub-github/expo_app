@@ -112,8 +112,15 @@ export default function CustomerDetails({
           <div className="text-[12px] text-gati-text-secondary font-medium">
             Name:
           </div>
-          <div className="text-[12px] text-gati-text-primary font-normal break-words leading-snug">
-            {order.customerName || "—"}
+          <div className="text-[12px] text-gati-text-primary font-normal break-words leading-snug flex flex-wrap items-center gap-1.5">
+            <span>{order.customerName || "—"}</span>
+            {order.userType?.trim() ? (
+              <span
+                className={`inline-flex items-center rounded-full bg-slate-50 px-2 py-0.5 text-[10px] font-semibold tracking-wide whitespace-nowrap ring-1 ring-slate-200 ${userTypeTierClass(order.userType)}`}
+              >
+                {order.userType.trim()}
+              </span>
+            ) : null}
           </div>
         </div>
 
@@ -188,31 +195,36 @@ export default function CustomerDetails({
           <div className="text-[12px] text-gati-text-secondary font-medium">
             Address:
           </div>
-          <div className="text-[12px] text-gati-text-primary font-normal flex items-start gap-1.5 leading-snug flex-wrap">
+          <div className="min-w-0 text-[12px] text-gati-text-primary font-normal leading-snug break-words">
             {cleanedPrimaryAddress}
-            <button
-              type="button"
-              className="inline-flex items-center justify-center text-[11px] cursor-pointer opacity-80 hover:opacity-100 transition-opacity ml-1"
-              onClick={() => {
-                onCopy(cleanedPrimaryAddress === "—" ? "" : cleanedPrimaryAddress);
-                markCopied("address");
-              }}
-              aria-label="Copy customer address"
-            >
-              {copiedField === "address" ? (
-                <Check className="h-3 w-3 text-emerald-600" />
-              ) : (
-                <Copy className="h-3 w-3 text-gati-primary" />
-              )}
-              <span className="sr-only">Copy</span>
-            </button>
+            {cleanedPrimaryAddress !== "—" ? (
+              <>
+                {"\u00A0"}
+                <button
+                  type="button"
+                  className="inline align-middle text-[11px] cursor-pointer opacity-80 hover:opacity-100 transition-opacity p-0 border-0 bg-transparent leading-none"
+                  onClick={() => {
+                    onCopy(cleanedPrimaryAddress);
+                    markCopied("address");
+                  }}
+                  aria-label="Copy customer address"
+                >
+                  {copiedField === "address" ? (
+                    <Check className="inline h-3 w-3 text-emerald-600 align-middle" />
+                  ) : (
+                    <Copy className="inline h-3 w-3 text-gati-primary align-middle" />
+                  )}
+                  <span className="sr-only">Copy</span>
+                </button>
+              </>
+            ) : null}
             {order.locationMismatch && (
-              <span className="inline-flex items-center rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700 border border-red-100 whitespace-nowrap">
+              <span className="mt-1 inline-flex items-center rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700 border border-red-100 whitespace-nowrap">
                 Address mismatch &gt; 800m
               </span>
             )}
             {rawAddressCleaned && rawAddressCleaned !== cleanedPrimaryAddress && (
-              <span className="w-full text-[11px] text-gati-text-secondary">
+              <span className="mt-1 block text-[11px] text-gati-text-secondary">
                 Raw: {rawAddressCleaned}
               </span>
             )}
@@ -275,19 +287,6 @@ export default function CustomerDetails({
           </div>
         </div>
 
-        {/* User Type / Risk / Location */}
-        <div className="grid grid-cols-[120px_1fr] items-start min-h-[22px]">
-          <div className="text-[12px] text-gati-text-secondary font-medium">
-            User Type:
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-gati-text-primary">
-            <span
-              className={`inline-flex items-center rounded-full bg-slate-50 px-2 py-0.5 text-[10px] font-semibold tracking-wide whitespace-nowrap ring-1 ring-slate-200 ${userTypeTierClass(order.userType)}`}
-            >
-              {order.userType?.trim() || "—"}
-            </span>
-          </div>
-        </div>
       </div>
     </div>
   );

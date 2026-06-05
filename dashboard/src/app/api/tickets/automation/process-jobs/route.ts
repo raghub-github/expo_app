@@ -16,6 +16,8 @@ import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 import { processPendingAutomationJobs } from "@/lib/tickets/ticket-automation/job-processor";
 
 export const runtime = "nodejs";
+/** Prevent overlapping browser polls from holding connections for minutes. */
+export const maxDuration = 25;
 
 async function requireTicketManager() {
   const supabase = await createServerSupabaseClient();

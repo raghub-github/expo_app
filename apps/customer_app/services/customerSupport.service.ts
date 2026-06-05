@@ -45,6 +45,7 @@ export type RecentOrder = {
   id: number;
   order_id: string | null;
   formatted_order_id?: string | null;
+  order_type?: string | null;
   status: string;
   current_status: string | null;
   grand_total: number | null;
@@ -128,9 +129,12 @@ export const customerSupportService = {
    * item / Damaged / Food quality / Refund request"). Pass `"NO_ORDER"` for
    * the not-about-an-order flow. Omit for the full catalog (section picker).
    */
-  async getHelpSections(orderStatus?: string): Promise<HelpSection[]> {
+  async getHelpSections(orderStatus?: string, serviceType?: string): Promise<HelpSection[]> {
+    const params: Record<string, string> = {};
+    if (orderStatus) params.order_status = orderStatus;
+    if (serviceType) params.service_type = serviceType;
     const { data } = await api.get<{ ok: boolean; sections: HelpSection[] }>(`${PREFIX}/help-sections`, {
-      params: orderStatus ? { order_status: orderStatus } : undefined,
+      params: Object.keys(params).length > 0 ? params : undefined,
     });
     return data.sections ?? [];
   },

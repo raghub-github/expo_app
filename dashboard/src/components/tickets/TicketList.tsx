@@ -240,9 +240,10 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
   /** Queue home: wait for agent status before fetching tickets so we never show a stale "online" list after going offline. */
   const queueHomeTicketsEnabled =
     !isQueueHome || ((agentStatusFetched || queueGateTimedOut) && !queueHomeAgentOffline);
-  const { data, isLoading, isPending, error, refetch } = useTickets(queryFilters, {
+  const { data, isLoading, isPending, isError, isRefetchError, error, refetch } = useTickets(queryFilters, {
     enabled: queueListReady && queueHomeTicketsEnabled,
   });
+  const [refreshErrorDismissed, setRefreshErrorDismissed] = useState(false);
   const activeCountFilters = useMemo<TicketFilters>(() => {
     const { limit: _l, offset: _o, includeSnoozed: _is, snoozedOnly: _so, ...base } = queryFilters;
     return {
@@ -267,17 +268,19 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
     queryKey: [...queryKeys.tickets.list(activeCountFilters as unknown as Record<string, unknown>), "countOnly"],
     queryFn: ({ signal }) => fetchTickets(activeCountFilters, signal),
     enabled: queueListReady && queueHomeTicketsEnabled,
-    staleTime: 3_000,
-    refetchInterval: 5_000,
+    staleTime: 15_000,
+    refetchInterval: 20_000,
     refetchIntervalInBackground: true,
+    retry: 1,
   });
   const { data: snoozedCountData } = useQuery({
     queryKey: [...queryKeys.tickets.list(snoozedCountFilters as unknown as Record<string, unknown>), "countOnly"],
     queryFn: ({ signal }) => fetchTickets(snoozedCountFilters, signal),
     enabled: queueListReady && queueHomeTicketsEnabled,
-    staleTime: 3_000,
-    refetchInterval: 5_000,
+    staleTime: 15_000,
+    refetchInterval: 20_000,
     refetchIntervalInBackground: true,
+    retry: 1,
   });
   const [loadingMessageSlow, setLoadingMessageSlow] = useState(false);
   const currentTotal = data?.total ?? 0;
@@ -407,6 +410,30 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
     const id = window.setTimeout(() => setLoadingMessageSlow(true), 55_000);
     return () => clearTimeout(id);
   }, [isLoading, isPending, data]);
+
+  const inlineErrorMessage = error instanceof Error ? error.message : "Unknown error";
+  const hasCachedData = Boolean(data);
+  const showRefreshErrorModal =
+    !refreshErrorDismissed &&
+    ((isRefetchError && hasCachedData) || (isError && !hasCachedData));
+
+  useEffect(() => {
+    if (isError || isRefetchError) {
+      setRefreshErrorDismissed(false);
+    }
+  }, [inlineErrorMessage, isError, isRefetchError]);
+
+  const ticketsFetchErrorModal = (
+    <TicketsFetchErrorModal
+      open={showRefreshErrorModal}
+      message={inlineErrorMessage}
+      onRetry={() => {
+        setRefreshErrorDismissed(true);
+        void refetch();
+      }}
+      onDismiss={() => setRefreshErrorDismissed(true)}
+    />
+  );
 
   const handleLoadNewTickets = useCallback(async () => {
     try {
@@ -820,6 +847,7 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
   if (awaitingTickets) {
     return (
       <div className="flex h-full min-h-0 w-full flex-1 flex-col items-center justify-center gap-4 bg-white px-4 text-center">
+        {ticketsFetchErrorModal}
         <LoadingSpinner />
         <p className="text-sm text-gray-500 max-w-md">
           {loadingMessageSlow
@@ -830,45 +858,10 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
     );
   }
 
-  const inlineErrorMessage = error instanceof Error ? error.message : "Unknown error";
-  const hasCachedData = Boolean(data);
-
-  // Non-blocking error UX: if we have cached/snapshot data, keep rendering the UI
-  // and show an inline retry banner. Only block when we have nothing to show.
-  if (error && !hasCachedData) {
-    return (
-      <div className="p-8 text-center">
-        <p className="text-red-600 font-medium">Failed to load tickets</p>
-        <p className="text-sm text-gray-600 mt-2">{inlineErrorMessage}</p>
-        <button
-          type="button"
-          onClick={() => refetch()}
-          className="mt-4 rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700"
-        >
-          Retry
-        </button>
-      </div>
-    );
-  }
-
-  const showInlineError = Boolean(error && hasCachedData);
-
   if (queueHomeAgentOffline) {
     return (
       <div className="flex h-full min-h-0 w-full flex-1 flex-col bg-white">
-        {showInlineError && (
-          <div className="shrink-0 border-b border-red-100 bg-red-50 px-4 py-3">
-            <p className="text-sm font-medium text-red-700">Failed to refresh tickets</p>
-            <p className="text-xs text-red-600 mt-1">{inlineErrorMessage}</p>
-            <button
-              type="button"
-              onClick={() => refetch()}
-              className="mt-3 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-            >
-              Retry
-            </button>
-          </div>
-        )}
+        {ticketsFetchErrorModal}
         <div className="flex flex-1 min-h-0 flex-col items-center justify-center px-4 py-12 text-center">
           <div className="max-w-md text-gray-800">
             <p className="text-base font-semibold text-gray-900">
@@ -884,19 +877,7 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
     const emptyBecauseOfFilters = appliedTicketFilterCount > 0;
     return (
       <div className="flex h-full min-h-0 w-full flex-1 flex-col bg-white">
-        {showInlineError && (
-          <div className="shrink-0 border-b border-red-100 bg-red-50 px-4 py-3">
-            <p className="text-sm font-medium text-red-700">Failed to refresh tickets</p>
-            <p className="text-xs text-red-600 mt-1">{inlineErrorMessage}</p>
-            <button
-              type="button"
-              onClick={() => refetch()}
-              className="mt-3 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-            >
-              Retry
-            </button>
-          </div>
-        )}
+        {ticketsFetchErrorModal}
         <div className="flex flex-1 min-h-0 flex-col items-center justify-center px-4 py-12 text-center">
           {queueHomeAgentOffline ? (
             <div className="max-w-md text-gray-800">
@@ -928,23 +909,9 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-white overflow-hidden">
-      {showInlineError && (
-        <div className="px-3 py-2 border-b border-red-100 bg-red-50 text-red-700 flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-sm font-medium">Failed to refresh tickets</p>
-            <p className="text-xs text-red-600 truncate">{inlineErrorMessage}</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => refetch()}
-            className="shrink-0 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-          >
-            Retry
-          </button>
-        </div>
-      )}
+      {ticketsFetchErrorModal}
       {/* Toolbar: fixed 3-column layout so Sort by position never changes */}
-      <div className="sticky top-0 z-30 flex-shrink-0 flex items-center gap-2 border-b border-gray-200/90 bg-white px-3 py-2">
+      <div className="flex-shrink-0 z-20 flex items-center gap-2 border-b border-gray-200/90 bg-white px-3 py-2">
         {/* Left: Sort by + scope tabs */}
         <div className="flex items-center gap-2 shrink-0">
           <span className="hidden sm:inline font-medium text-gray-700">Sort by:</span>
@@ -1610,6 +1577,64 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
             aria-label="Next page"
           >
             <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TicketsFetchErrorModal({
+  open,
+  message,
+  onRetry,
+  onDismiss,
+}: {
+  open: boolean;
+  message: string;
+  onRetry: () => void;
+  onDismiss: () => void;
+}) {
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[12000] flex items-center justify-center bg-slate-900/45 p-4 backdrop-blur-[1px]"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="tickets-fetch-error-title"
+    >
+      <div className="w-full max-w-md rounded-xl border border-red-100 bg-white p-6 shadow-xl">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 id="tickets-fetch-error-title" className="text-base font-semibold text-gray-900">
+              Failed to refresh tickets
+            </h3>
+            <p className="mt-2 text-sm leading-relaxed text-gray-600">{message}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="shrink-0 rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+        <div className="mt-6 flex flex-wrap justify-end gap-2">
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            Dismiss
+          </button>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+          >
+            Retry
           </button>
         </div>
       </div>

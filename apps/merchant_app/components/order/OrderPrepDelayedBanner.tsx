@@ -1,0 +1,54 @@
+import { View, Text, StyleSheet } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import {
+  formatPrepDelayedBannerLabel,
+  prepOverdueMinutes,
+  type PrepCountdownOrder,
+} from "@/lib/order-prep-time";
+
+const BLOOD_RED = "#8B0000";
+
+type Props = {
+  order: PrepCountdownOrder;
+  nowMs: number;
+};
+
+/** Top-of-card banner — live overdue minutes vs prep_ready_by_at (KPT + need-more-time). */
+export function OrderPrepDelayedBanner({ order, nowMs }: Props) {
+  const overdueMins = prepOverdueMinutes(order, nowMs);
+  const label = formatPrepDelayedBannerLabel(overdueMins);
+
+  return <OrderDelayTopBanner label={label} />;
+}
+
+/** Top banner on ready / picked-up cards — frozen delay from when order was marked ready. */
+export function OrderPreparedLateTopBanner({ lateMinutes }: { lateMinutes: number }) {
+  return <OrderDelayTopBanner label={formatPrepDelayedBannerLabel(lateMinutes)} />;
+}
+
+function OrderDelayTopBanner({ label }: { label: string }) {
+  return (
+    <View style={styles.wrap}>
+      <Ionicons name="hourglass-outline" size={14} color="#FFFFFF" />
+      <Text style={styles.text}>{label}</Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  wrap: {
+    backgroundColor: BLOOD_RED,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  text: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.3,
+  },
+});

@@ -28,6 +28,7 @@ import type {
 } from "@gatimitra/contracts";
 import { roundMoney, idempotencyKey, WALLET_CONSTANTS } from "@gatimitra/contracts";
 import { getSql } from "../db/client.js";
+import { countMerchantDeliveredOrdersIst } from "./merchant-growth-metrics.js";
 import { logStoreActivity } from "./store-activity-feed.js";
 
 // ─── Get or create wallet ─────────────────────────────────────────────────────
@@ -69,24 +70,28 @@ export async function getWalletSummary(storeId: number): Promise<WalletSummary> 
   `;
   const wr = w as any;
 
-  const now = new Date();
-  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const todayEnd = new Date(todayStart); todayEnd.setUTCDate(todayEnd.getUTCDate() + 1);
-  const yesterdayStart = new Date(todayStart); yesterdayStart.setUTCDate(yesterdayStart.getUTCDate() - 1);
-
   const earningRows = await sql`
-    SELECT amount, created_at FROM merchant_wallet_ledger
-    WHERE wallet_id = ${walletId} AND direction = 'CREDIT' AND category = 'ORDER_EARNING'
-      AND created_at >= ${yesterdayStart.toISOString()} AND created_at < ${todayEnd.toISOString()}
+    SELECT
+      COALESCE(SUM(l.amount) FILTER (
+        WHERE (l.created_at AT TIME ZONE 'Asia/Kolkata')::date =
+              (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
+      ), 0)::numeric AS today_earning,
+      COALESCE(SUM(l.amount) FILTER (
+        WHERE (l.created_at AT TIME ZONE 'Asia/Kolkata')::date =
+              ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date - INTERVAL '1 day')::date
+      ), 0)::numeric AS yesterday_earning
+    FROM merchant_wallet_ledger l
+    WHERE l.wallet_id = ${walletId}
+      AND l.direction = 'CREDIT'
+      AND l.category = 'ORDER_EARNING'
+      AND (l.created_at AT TIME ZONE 'Asia/Kolkata')::date >=
+          ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date - INTERVAL '1 day')::date
+      AND (l.created_at AT TIME ZONE 'Asia/Kolkata')::date <=
+          (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
   `;
-
-  let todayEarning = 0, yesterdayEarning = 0;
-  for (const r of earningRows as any[]) {
-    const amt = Number(r.amount ?? 0);
-    const at = new Date(r.created_at);
-    if (at >= todayStart && at < todayEnd) todayEarning += amt;
-    else if (at >= yesterdayStart && at < todayStart) yesterdayEarning += amt;
-  }
+  const er = earningRows[0] as { today_earning?: unknown; yesterday_earning?: unknown } | undefined;
+  const todayEarning = Number(er?.today_earning ?? 0);
+  const yesterdayEarning = Number(er?.yesterday_earning ?? 0);
 
   const payoutRows = await sql`
     SELECT COALESCE(SUM(net_payout_amount), 0) AS total
@@ -95,9 +100,45 @@ export async function getWalletSummary(storeId: number): Promise<WalletSummary> 
   `;
   const pendingWithdrawal = Number((payoutRows[0] as any)?.total ?? 0);
 
+  let settlementPaused = false;
+  let lockedSettlementTotal = 0;
+  try {
+    const [sp] = await sql`
+      SELECT COALESCE(settlement_paused, false) AS settlement_paused
+      FROM merchant_wallet WHERE id = ${walletId}
+    `;
+    settlementPaused = Boolean((sp as { settlement_paused?: boolean })?.settlement_paused);
+  } catch {
+    /* pre-0239 */
+  }
+  try {
+    const lockedRows = await sql`
+      SELECT COALESCE(SUM(merchant_net), 0) AS total
+      FROM payment_order_settlements
+      WHERE wallet_id = ${walletId} AND lifecycle_status IN ('LOCKED', 'HOLD')
+    `;
+    lockedSettlementTotal = Number((lockedRows[0] as { total?: number })?.total ?? 0);
+  } catch {
+    lockedSettlementTotal = Number(wr.locked_balance ?? 0);
+  }
+
+  const available = roundMoney(Number(wr.available_balance ?? 0));
+  const locked = roundMoney(Number(wr.locked_balance ?? 0));
+  const hold = roundMoney(Number(wr.hold_balance ?? 0));
+  const pending = roundMoney(Number(wr.pending_balance ?? 0));
+
+  const istTodayRows = await sql`
+    SELECT (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date AS today
+  `;
+  const todayYmd = String((istTodayRows[0] as { today?: string | Date })?.today ?? "").slice(0, 10);
+  const deliveredToday =
+    todayYmd.length >= 10
+      ? await countMerchantDeliveredOrdersIst(sql, storeId, todayYmd, todayYmd)
+      : 0;
+
   return {
     wallet_id: walletId,
-    available_balance: roundMoney(Number(wr.available_balance ?? 0)),
+    available_balance: available,
     pending_balance: roundMoney(Number(wr.pending_balance ?? 0)),
     hold_balance: roundMoney(Number(wr.hold_balance ?? 0)),
     reserve_balance: roundMoney(Number(wr.reserve_balance ?? 0)),
@@ -113,6 +154,11 @@ export async function getWalletSummary(storeId: number): Promise<WalletSummary> 
     today_earning: roundMoney(todayEarning),
     yesterday_earning: roundMoney(yesterdayEarning),
     pending_withdrawal_total: roundMoney(pendingWithdrawal),
+    locked_settlement_total: roundMoney(lockedSettlementTotal),
+    withdrawable_balance: available,
+    total_balance: roundMoney(available + locked + hold + pending),
+    settlement_paused: settlementPaused,
+    delivered_today: deliveredToday,
   };
 }
 
@@ -250,8 +296,20 @@ export async function createWithdrawalRequest(
 ): Promise<PayoutResult> {
   const sql = getSql();
 
-  if (amount < WALLET_CONSTANTS.MIN_WITHDRAWAL_AMOUNT) {
-    throw new Error(`Amount must be at least ₹${WALLET_CONSTANTS.MIN_WITHDRAWAL_AMOUNT}`);
+  let minAmount = WALLET_CONSTANTS.MIN_WITHDRAWAL_AMOUNT;
+  try {
+    const payoutRule = await sql`
+      SELECT min_payout_amount FROM payment_payout_rules
+      WHERE is_active AND party_type = 'MERCHANT' ORDER BY id DESC LIMIT 1
+    `;
+    if (payoutRule.length > 0) {
+      minAmount = Number((payoutRule[0] as { min_payout_amount?: number }).min_payout_amount ?? minAmount);
+    }
+  } catch {
+    /* pre-0239 */
+  }
+  if (amount < minAmount) {
+    throw new Error(`Amount must be at least ₹${minAmount}`);
   }
 
   const wallet = await getOrCreateWallet(storeId);

@@ -328,3 +328,152 @@ body.mx-no-page-scroll .mx-main-scroll {
 .partner-radar-ring {
   animation: partner-radar-pulse 1.8s ease-out infinite;
 }
+
+/* Live rider tracking map — same markers as dashboard order detail */
+.gm-location-marker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: auto;
+  filter: drop-shadow(0 4px 10px rgba(15, 23, 42, 0.22));
+}
+
+.gm-location-marker--store {
+  z-index: 3;
+}
+
+.gm-location-marker--rider {
+  z-index: 5;
+}
+
+.gm-location-marker__chip {
+  display: none;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  max-width: 168px;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  padding-top: 4px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.97);
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
+  position: relative;
+  pointer-events: auto;
+}
+
+.gm-location-marker--label-open .gm-location-marker__chip {
+  display: flex;
+}
+
+.gm-location-marker__chip-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.gm-location-marker__close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.gm-location-marker__close:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.gm-location-marker--store .gm-location-marker__badge {
+  color: #111827;
+  background: #f1f5f9;
+}
+
+.gm-location-marker__badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1.4;
+}
+
+.gm-location-marker__name {
+  display: block;
+  max-width: 152px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  color: #0f172a;
+  line-height: 1.3;
+}
+
+.gm-location-marker__pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.gm-teardrop-pin {
+  position: relative;
+  width: 28px;
+  height: 38px;
+}
+
+.gm-teardrop-pin__shape {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.gm-location-marker--store .gm-teardrop-pin__shape {
+  fill: #1a1a1a;
+}
+
+.gm-teardrop-pin__icon {
+  position: absolute;
+  left: 50%;
+  top: 40%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.gm-location-marker__pin--teardrop {
+  width: 28px;
+  height: 38px;
+}
+
+.gm-location-marker__bike {
+  display: block;
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+  pointer-events: none;
+  transform-origin: center center;
+  transition: transform 0.35s ease-out;
+}

@@ -287,9 +287,11 @@ export async function GET(request: NextRequest) {
           console.error("[GET /api/tickets] processPendingAutomationJobs(queue):", jobErr);
         });
       } else {
-        await processPendingAutomationJobs(sqlClient, {
-          limit: 25,
+        void processPendingAutomationJobs(sqlClient, {
+          limit: 10,
           workerId: "api-get-tickets",
+        }).catch((jobErr) => {
+          console.error("[GET /api/tickets] processPendingAutomationJobs:", jobErr);
         });
       }
     } catch (jobErr) {

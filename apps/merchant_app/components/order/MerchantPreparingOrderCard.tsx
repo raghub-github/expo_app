@@ -1,16 +1,23 @@
 import { useMemo, useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import { GatiMitraMerchant, CARD_RADIUS } from "@/constants/theme";
 import type { OrderRecord, LineItem } from "@/hooks/useOrders";
+import { useOrderSpeech } from "@/hooks/useOrderSpeech";
 import { MarkAsReadyCountdownButton } from "@/components/order/MarkAsReadyCountdownButton";
+import { MerchantOrderCardLayout } from "@/components/order/MerchantOrderCardLayout";
+import { MerchantOrderActionsSheet } from "@/components/order/MerchantOrderActionsSheet";
+import { OrderCustomerBottomSheet } from "@/components/order/OrderCustomerBottomSheet";
+import { OrderTimelineSheet } from "@/components/order/OrderTimelineSheet";
 import {
+  isPrepCountdownExpired,
   PLATFORM_DEFAULT_PREP_MINUTES,
+  prepReadyCountdownLabel,
+  canUseNeedMoreTime,
   type PrepCountdownOrder,
 } from "@/lib/order-prep-time";
-import { sliceOrderLineItems } from "@/lib/orderCardDisplay";
-import { formatCustomerPossessiveOrderLabel } from "@/components/order/orderFormatters";
-import { OrderCardItemRow } from "@/components/order/OrderCardItemRow";
+import { OrderPrepDelayedBanner } from "@/components/order/OrderPrepDelayedBanner";
+import {
+  formatOrderDateTime,
+} from "@/components/order/orderFormatters";
 
 export function orderToPrepCountdown(order: OrderRecord): PrepCountdownOrder {
   return {
@@ -20,14 +27,8 @@ export function orderToPrepCountdown(order: OrderRecord): PrepCountdownOrder {
     preparation_time_minutes:
       order.preparationTimeMinutes ?? PLATFORM_DEFAULT_PREP_MINUTES,
     prep_ready_by_at: order.prepReadyByAt ?? null,
+    prep_delay_minutes: order.prepDelayMinutes ?? null,
   };
-}
-
-function vegBadge(veg?: string | null): string | null {
-  if (veg === "veg") return "VEG ONLY";
-  if (veg === "non_veg") return "NON VEG ONLY";
-  if (veg === "mixed") return "MIXED";
-  return null;
 }
 
 type Props = {
@@ -35,6 +36,7 @@ type Props = {
   storeName?: string | null;
   nowMs: number;
   onReady: () => void;
+  onNeedMoreTime?: () => void;
   onViewDetail: () => void;
   onItemPress?: (item: LineItem) => void;
   loading?: boolean;
@@ -45,169 +47,150 @@ export function MerchantPreparingOrderCard({
   storeName,
   nowMs,
   onReady,
+  onNeedMoreTime,
   onViewDetail,
   onItemPress,
   loading,
 }: Props) {
-  const [detailsOpen, setDetailsOpen] = useState(true);
-  const badge = vegBadge(order.vegNonVeg);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [timelineOpen, setTimelineOpen] = useState(false);
+  const [customerOpen, setCustomerOpen] = useState(false);
+  const { speaking, speak } = useOrderSpeech();
+
   const prepOrder = useMemo(() => orderToPrepCountdown(order), [order]);
-  const itemCount = order.lineItems.reduce((s, it) => s + it.qty, 0);
-  const { visible: visibleItems, moreCount } = sliceOrderLineItems(order.lineItems);
-  const customerLabel = formatCustomerPossessiveOrderLabel(
-    order.customerName,
-    order.customerStoreOrderOrdinal
-  );
+  const placedAt = formatOrderDateTime(order.createdAt);
 
-  return (
-    <View style={styles.card}>
-      <View style={styles.topRow}>
-        <View style={styles.topLeft}>
-          {badge ? (
-            <View style={styles.vegBadge}>
-              <Ionicons name="leaf" size={11} color="#2E7D32" />
-              <Text style={styles.vegBadgeText}>{badge}</Text>
-            </View>
-          ) : null}
-          <Text style={styles.orderId}>
-            {order.formattedOrderId ?? order.orderNumber}
-          </Text>
-          {storeName ? (
-            <Text style={styles.storeName} numberOfLines={1}>
-              {storeName}
-            </Text>
-          ) : null}
-        </View>
-        <Pressable onPress={onViewDetail} hitSlop={8}>
-          <Ionicons name="ellipsis-vertical" size={18} color={GatiMitraMerchant.textSecondary} />
+  const prepExpired =
+    isPrepCountdownExpired(prepOrder, nowMs, { prefix: "Order Ready" }) ||
+    !prepReadyCountdownLabel(prepOrder, nowMs, { prefix: "Order Ready" }).label.includes("(");
+
+  const canNeedMore =
+    prepExpired &&
+    !!onNeedMoreTime &&
+    canUseNeedMoreTime(
+      order.prepDelayUseCount,
+      Boolean(order.isBulkOrder),
+      order.prepDelayMinutes
+    );
+
+  const footerButtons = prepExpired ? (
+    canNeedMore ? (
+      <View style={styles.actionRow}>
+        <Pressable
+          onPress={onNeedMoreTime}
+          disabled={loading}
+          style={({ pressed }) => [
+            styles.needMoreBtn,
+            loading && styles.btnDisabled,
+            pressed && !loading && styles.pressed,
+          ]}
+        >
+          <Text style={styles.needMoreText}>Need more time</Text>
         </Pressable>
-      </View>
-
-      <View style={styles.customerRow}>
-        <Text style={styles.customerName} numberOfLines={2}>
-          {customerLabel}
-        </Text>
-        <Text style={styles.time}>{order.displayTime}</Text>
-      </View>
-
-      <Pressable
-        onPress={() => setDetailsOpen((v) => !v)}
-        style={styles.detailsToggle}
-      >
-        <Text style={styles.detailsLabel}>
-          Details · {itemCount} item{itemCount === 1 ? "" : "s"}
-        </Text>
-        <Ionicons
-          name={detailsOpen ? "chevron-up" : "chevron-down"}
-          size={16}
-          color={GatiMitraMerchant.textSecondary}
-        />
-      </Pressable>
-
-      {detailsOpen ? (
-        <View style={styles.itemsBox}>
-          {visibleItems.map((item, idx) => (
-            <OrderCardItemRow
-              key={`${order.id}-${idx}`}
-              item={item}
-              orderVeg={order.vegNonVeg}
-              onItemNamePress={() => onItemPress?.(item)}
-              onRowPress={onViewDetail}
-            />
-          ))}
-          {moreCount > 0 ? (
-            <Pressable onPress={onViewDetail}>
-              <Text style={styles.moreItems}>+{moreCount} more</Text>
-            </Pressable>
-          ) : null}
+        <View style={styles.readyBtnWrap}>
+          <MarkAsReadyCountdownButton
+            order={prepOrder}
+            nowMs={nowMs}
+            onPress={onReady}
+            disabled={loading}
+            labelPrefix="Order Ready"
+            theme="dark"
+            fullWidth
+          />
         </View>
-      ) : null}
-
-      <View style={styles.totalRow}>
-        <Text style={styles.totalLabel}>Total bill</Text>
-        <Text style={styles.totalValue}>₹ {order.total.toLocaleString("en-IN")}</Text>
       </View>
-
-      <View style={styles.riderRow}>
-        <Ionicons name="bicycle-outline" size={16} color="#666" />
-        <Text style={styles.riderText}>Assigning delivery partner…</Text>
-      </View>
-
+    ) : (
       <MarkAsReadyCountdownButton
         order={prepOrder}
         nowMs={nowMs}
         onPress={onReady}
         disabled={loading}
         labelPrefix="Order Ready"
+        theme="dark"
       />
-    </View>
+    )
+  ) : (
+    <MarkAsReadyCountdownButton
+      order={prepOrder}
+      nowMs={nowMs}
+      onPress={onReady}
+      disabled={loading}
+      labelPrefix="Order Ready"
+      theme="dark"
+    />
+  );
+
+  return (
+    <>
+      <MerchantOrderCardLayout
+        order={order}
+        storeName={storeName}
+        placedAt={placedAt}
+        onViewDetail={onViewDetail}
+        onItemPress={onItemPress}
+        onCustomerPress={() => setCustomerOpen(true)}
+        speakingActive={speaking}
+        onSpeak={() => void speak(order)}
+        onMenu={() => setMenuOpen(true)}
+        outerBanner={
+          prepExpired ? (
+            <OrderPrepDelayedBanner order={prepOrder} nowMs={nowMs} />
+          ) : undefined
+        }
+        footer={footerButtons}
+      />
+
+      <MerchantOrderActionsSheet
+        visible={menuOpen}
+        order={order}
+        storeName={storeName}
+        onClose={() => setMenuOpen(false)}
+        onOpenTimeline={() => setTimelineOpen(true)}
+        onOpenCustomer={() => setCustomerOpen(true)}
+      />
+
+      <OrderCustomerBottomSheet
+        visible={customerOpen}
+        order={order}
+        onClose={() => setCustomerOpen(false)}
+      />
+
+      <OrderTimelineSheet
+        visible={timelineOpen}
+        order={order}
+        onClose={() => setTimelineOpen(false)}
+      />
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: CARD_RADIUS,
-    borderWidth: 1,
-    borderColor: "#EEEEEE",
-    padding: 16,
-    gap: 10,
-    ...GatiMitraMerchant.shadowSm,
-  },
-  topRow: { flexDirection: "row", justifyContent: "space-between", gap: 8 },
-  topLeft: { flex: 1, minWidth: 0, gap: 6 },
-  vegBadge: {
-    alignSelf: "flex-start",
+  actionRow: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: "#E8F5E9",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  vegBadgeText: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: "#2E7D32",
-    letterSpacing: 0.4,
-  },
-  orderId: { fontSize: 16, fontWeight: "800", color: "#1A1A1A" },
-  storeName: { fontSize: 12, fontWeight: "500", color: "#666666" },
-  customerRow: {
-    flexDirection: "row",
-    alignItems: "center",
     gap: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#EEEEEE",
-    paddingBottom: 10,
+    alignItems: "stretch",
   },
-  customerName: {
+  needMoreBtn: {
     flex: 1,
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#1A1A1A",
+    minHeight: 48,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: "#2563EB",
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+  needMoreText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#2563EB",
+    textAlign: "center",
+  },
+  readyBtnWrap: {
+    flex: 1,
     minWidth: 0,
   },
-  time: { fontSize: 12, color: "#666666" },
-  detailsToggle: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  detailsLabel: { fontSize: 13, fontWeight: "600", color: "#444444" },
-  itemsBox: { gap: 6 },
-  itemRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  itemText: { flex: 1, fontSize: 13, color: "#1A1A1A" },
-  moreItems: { fontSize: 12, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
-  totalRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  totalLabel: { fontSize: 13, color: "#666666" },
-  totalValue: { fontSize: 15, fontWeight: "700", color: "#1A1A1A" },
-  riderRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  riderText: { fontSize: 12, fontWeight: "500", color: "#666666" },
-  pressed: { opacity: 0.85 },
+  btnDisabled: { opacity: 0.5 },
+  pressed: { opacity: 0.88 },
 });

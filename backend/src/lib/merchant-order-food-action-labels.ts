@@ -40,7 +40,7 @@ export function buildCancelledByLabel(
   if (/^auto cancelled/i.test(r) || (source === "system" && mode === "auto")) {
     return "Auto Cancelled";
   }
-  if (source === "admin") return "Cancelled by GatiMitra Team";
+  if (source === "admin") return "Rejected by GatiMitra Team";
   if (source === "app") {
     return mode === "auto" ? "Cancelled - Merchant App (Auto)" : "Cancelled - Merchant App (Manual)";
   }

@@ -3,7 +3,7 @@
  * List food/parcel/ride orders with search and status filters.
  */
 
-import { getDb } from "../client";
+import { getDb, getSql } from "../client";
 import { ordersCore, orderManualStatusHistory, orderTimelines, ordersFood, customers, riders, orderCancellationReasons } from "../schema";
 import {
   eq,
@@ -22,10 +22,18 @@ import {
 import type { CustomerTrustTier } from "@/lib/customers/trust-tier";
 import { TRUST_TIER_LABEL } from "@/lib/customers/trust-tier";
 import { sqlCustomerPrimaryMobileOrderSearch } from "./customers";
+import { resolveEtaBreachTimelineEntryId } from "@/lib/orders/eta-breach";
 import {
   sqlFoodOrderActiveListScope,
   sqlFoodOrderDashboardStageFilter,
 } from "./food-orders-dashboard-stages";
+import {
+  canApplyManualStatusUpdate,
+  resolveDispatchManualStage,
+  type ManualStatusValue,
+} from "@/lib/orders/order-dispatch-status";
+import { getPrimaryRolesByEmails } from "./users";
+import { publicColumnExists } from "../schema-ensure";
 
 export type OrderStatusFilter =
   | "PAYMENT DONE"
@@ -136,6 +144,9 @@ export interface OrdersCoreRow {
   // Merchant / order meta
   merchantStoreId: number | null;
   merchantParentId: number | null;
+  pickupAddressRaw?: string | null;
+  pickupAddressNormalized?: string | null;
+  pickupAddressGeocoded?: string | null;
   dropAddressRaw: string | null;
   dropAddressNormalized: string | null;
   dropAddressGeocoded: string | null;
@@ -405,6 +416,9 @@ export async function listOrdersCore(
         riderMobile: riders.mobile,
         merchantStoreId: ordersCore.merchantStoreId,
         merchantParentId: ordersCore.merchantParentId,
+        pickupAddressRaw: ordersCore.pickupAddressRaw,
+        pickupAddressNormalized: ordersCore.pickupAddressNormalized,
+        pickupAddressGeocoded: ordersCore.pickupAddressGeocoded,
         dropAddressRaw: ordersCore.dropAddressRaw,
         dropAddressNormalized: ordersCore.dropAddressNormalized,
         dropAddressGeocoded: ordersCore.dropAddressGeocoded,
@@ -516,6 +530,9 @@ export async function listOrdersCore(
         riderMobile: riders.mobile,
         merchantStoreId: ordersCore.merchantStoreId,
         merchantParentId: ordersCore.merchantParentId,
+        pickupAddressRaw: ordersCore.pickupAddressRaw,
+        pickupAddressNormalized: ordersCore.pickupAddressNormalized,
+        pickupAddressGeocoded: ordersCore.pickupAddressGeocoded,
         dropAddressRaw: ordersCore.dropAddressRaw,
         dropAddressNormalized: ordersCore.dropAddressNormalized,
         dropAddressGeocoded: ordersCore.dropAddressGeocoded,
@@ -625,6 +642,9 @@ export async function listOrdersCore(
       riderMobile: riders.mobile,
       merchantStoreId: ordersCore.merchantStoreId,
       merchantParentId: ordersCore.merchantParentId,
+      pickupAddressRaw: ordersCore.pickupAddressRaw,
+      pickupAddressNormalized: ordersCore.pickupAddressNormalized,
+      pickupAddressGeocoded: ordersCore.pickupAddressGeocoded,
       dropAddressRaw: ordersCore.dropAddressRaw,
       dropAddressNormalized: ordersCore.dropAddressNormalized,
       dropAddressGeocoded: ordersCore.dropAddressGeocoded,
@@ -701,47 +721,60 @@ const STATUS_TO_LABEL: Record<UpdateableOrderStatus, string> = {
   delivered: "Delivered",
 };
 
+export async function getFoodOrderStatus(orderId: number): Promise<string | null> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT order_status
+    FROM orders_food
+    WHERE order_id = ${orderId}
+    LIMIT 1
+  `;
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  const status = (row as { order_status?: string | null } | undefined)?.order_status;
+  return status != null && String(status).trim() !== "" ? String(status) : null;
+}
+
 async function syncOrdersFoodForDashboardStatus(
   orderId: number,
   status: UpdateableOrderStatus,
   now: Date
 ): Promise<void> {
-  const db = getDb();
+  const sql = getSql();
   const nowIso = now.toISOString();
 
   if (status === "picked_up") {
-    await db.execute(sql`
+    await sql`
       UPDATE orders_food
       SET
         order_status = 'READY_FOR_PICKUP',
         updated_at = ${nowIso}::timestamptz,
         prepared_at = COALESCE(prepared_at, ${nowIso}::timestamptz)
       WHERE order_id = ${orderId}
-    `);
+    `;
     return;
   }
 
   if (status === "in_transit") {
-    await db.execute(sql`
+    await sql`
       UPDATE orders_food
       SET
         order_status = 'OUT_FOR_DELIVERY',
         updated_at = ${nowIso}::timestamptz,
         dispatched_at = COALESCE(dispatched_at, ${nowIso}::timestamptz)
       WHERE order_id = ${orderId}
-    `);
+    `;
     return;
   }
 
   if (status === "delivered") {
-    await db.execute(sql`
+    await sql`
       UPDATE orders_food
       SET
         order_status = 'DELIVERED',
         updated_at = ${nowIso}::timestamptz,
         delivered_at = COALESCE(delivered_at, ${nowIso}::timestamptz)
       WHERE order_id = ${orderId}
-    `);
+    `;
   }
 }
 
@@ -902,10 +935,9 @@ export async function ensureOrderEtaWhenAccepted(
 }
 
 /**
- * If order is in progress and ETA is breached (now > expected delivery), record it once:
- * set eta_breached_at and eta_breached_timeline_id to the timeline entry that was current
- * when ETA was crossed (latest entry with occurred_at <= ETA time). Mins elapsed is
- * computed at display time. Returns the updated values if an update was performed; null otherwise.
+ * If order is in progress and First ETA is breached (now > first_eta_at), record it once:
+ * set eta_breached_at and eta_breached_timeline_id to the first timeline stage strictly
+ * after First ETA (stages completed before First ETA are not marked breached).
  */
 export async function recordEtaBreachIfNeeded(
   orderId: number
@@ -915,6 +947,7 @@ export async function recordEtaBreachIfNeeded(
   const [row] = await db
     .select({
       etaBreachedAt: ordersCore.etaBreachedAt,
+      firstEtaAt: ordersCore.firstEtaAt,
       estimatedDeliveryTime: ordersCore.estimatedDeliveryTime,
       createdAt: ordersCore.createdAt,
       etaSeconds: ordersCore.etaSeconds,
@@ -929,30 +962,20 @@ export async function recordEtaBreachIfNeeded(
   if (statusLower === "delivered" || statusLower === "cancelled" || statusLower === "rejected")
     return null;
   const etaAt =
-    row.estimatedDeliveryTime != null
-      ? new Date(row.estimatedDeliveryTime)
-      : row.createdAt != null && row.etaSeconds != null && Number.isFinite(row.etaSeconds)
-        ? new Date(new Date(row.createdAt).getTime() + Number(row.etaSeconds) * 1000)
-        : null;
+    row.firstEtaAt != null
+      ? new Date(row.firstEtaAt)
+      : row.estimatedDeliveryTime != null
+        ? new Date(row.estimatedDeliveryTime)
+        : row.createdAt != null && row.etaSeconds != null && Number.isFinite(row.etaSeconds)
+          ? new Date(new Date(row.createdAt).getTime() + Number(row.etaSeconds) * 1000)
+          : null;
   if (!etaAt || isNaN(etaAt.getTime()) || now.getTime() <= etaAt.getTime()) return null;
-  // Stage that was current when ETA was crossed: latest timeline entry with occurred_at <= ETA time
-  const [entryAtEta] = await db
-    .select({ id: orderTimelines.id })
+  const timelineRows = await db
+    .select({ id: orderTimelines.id, occurredAt: orderTimelines.occurredAt })
     .from(orderTimelines)
-    .where(and(eq(orderTimelines.orderId, orderId), lte(orderTimelines.occurredAt, etaAt)))
-    .orderBy(desc(orderTimelines.occurredAt))
-    .limit(1);
-  // If no entry occurred at or before ETA (edge case), use the earliest entry
-  let timelineId: number | null = entryAtEta?.id ?? null;
-  if (timelineId == null) {
-    const [firstEntry] = await db
-      .select({ id: orderTimelines.id })
-      .from(orderTimelines)
-      .where(eq(orderTimelines.orderId, orderId))
-      .orderBy(asc(orderTimelines.occurredAt))
-      .limit(1);
-    timelineId = firstEntry?.id ?? null;
-  }
+    .where(eq(orderTimelines.orderId, orderId))
+    .orderBy(asc(orderTimelines.occurredAt));
+  const timelineId = resolveEtaBreachTimelineEntryId(timelineRows, etaAt);
   await db
     .update(ordersCore)
     .set({
@@ -1024,14 +1047,20 @@ export async function getOrderTimelineEntriesWithFallback(
  * Records the updater email on the order, appends to order_manual_status_history, and appends to order_timelines.
  * If the order has no ETA yet, sets estimated_delivery_time to now + DEFAULT_ETA_MINUTES so the timeline ETA tag updates.
  */
+export type UpdateOrderStatusResult =
+  | { updated: true }
+  | { updated: false; reason: "NOT_FOUND" | "INVALID_TRANSITION" };
+
 export async function updateOrderStatus(
   orderId: number,
   status: UpdateableOrderStatus,
-  updatedByEmail: string
-): Promise<{ updated: boolean }> {
+  updatedByEmail: string,
+  updatedByRole?: string | null
+): Promise<UpdateOrderStatusResult> {
   const db = getDb();
   const [existing] = await db
     .select({
+      status: ordersCore.status,
       currentStatus: ordersCore.currentStatus,
       estimatedDeliveryTime: ordersCore.estimatedDeliveryTime,
       firstEtaAt: ordersCore.firstEtaAt,
@@ -1039,11 +1068,24 @@ export async function updateOrderStatus(
     .from(ordersCore)
     .where(eq(ordersCore.id, orderId))
     .limit(1);
-  const previousLabel = existing?.currentStatus ?? null;
 
+  if (!existing) return { updated: false, reason: "NOT_FOUND" };
+
+  const foodOrderStatus = await getFoodOrderStatus(orderId);
+  const stage = resolveDispatchManualStage({
+    status: existing.status,
+    currentStatus: existing.currentStatus,
+    foodOrderStatus,
+  });
+
+  if (!canApplyManualStatusUpdate(stage, status as ManualStatusValue)) {
+    return { updated: false, reason: "INVALID_TRANSITION" };
+  }
+
+  const previousLabel = existing.currentStatus ?? null;
   const label = STATUS_TO_LABEL[status];
   const now = new Date();
-  const existingEta = existing?.estimatedDeliveryTime
+  const existingEta = existing.estimatedDeliveryTime
     ? new Date(existing.estimatedDeliveryTime)
     : null;
   const etaToSet =
@@ -1051,41 +1093,63 @@ export async function updateOrderStatus(
       ? existingEta
       : new Date(now.getTime() + DEFAULT_ETA_MINUTES_AFTER_STATUS_UPDATE * 60 * 1000);
 
-  const [result] = await db
-    .update(ordersCore)
-    .set({
-      status,
-      currentStatus: label,
-      manualStatusUpdatedByEmail: updatedByEmail,
-      updatedAt: now,
-      ...(existingEta == null || isNaN(existingEta.getTime())
-        ? {
-            estimatedDeliveryTime: etaToSet,
-            ...(existing?.firstEtaAt == null ? { firstEtaAt: etaToSet } : {}),
-          }
-        : {}),
-    })
-    .where(eq(ordersCore.id, orderId))
-    .returning({ id: ordersCore.id });
-  if (!result) return { updated: false };
-  await db.insert(orderManualStatusHistory).values({
-    orderId,
-    toStatus: status,
-    updatedByEmail,
-  });
-  await insertOrderTimelineEntry({
-    orderId,
-    status: label,
-    previousStatus: previousLabel,
-    actorType: "agent",
-    actorName: updatedByEmail,
-    expectedByAt: etaToSet,
-  });
-
   try {
+    await db.transaction(async (tx) => {
+      const [result] = await tx
+        .update(ordersCore)
+        .set({
+          status,
+          currentStatus: label,
+          manualStatusUpdatedByEmail: updatedByEmail,
+          updatedAt: now,
+          ...(existingEta == null || isNaN(existingEta.getTime())
+            ? {
+                estimatedDeliveryTime: etaToSet,
+                ...(existing.firstEtaAt == null ? { firstEtaAt: etaToSet } : {}),
+              }
+            : {}),
+        })
+        .where(eq(ordersCore.id, orderId))
+        .returning({ id: ordersCore.id });
+
+      if (!result) {
+        throw new Error("ORDER_UPDATE_FAILED");
+      }
+
+      await ensureOrderManualStatusRoleColumn();
+
+      await tx.insert(orderManualStatusHistory).values({
+        orderId,
+        toStatus: status,
+        updatedByEmail,
+        updatedByRole: updatedByRole?.trim() || "AGENT",
+      });
+    });
+
+    await insertOrderTimelineEntry({
+      orderId,
+      status: label,
+      previousStatus: previousLabel,
+      actorType: "agent",
+      actorName: updatedByEmail,
+      expectedByAt: etaToSet,
+    });
+
     await syncOrdersFoodForDashboardStatus(orderId, status, now);
-  } catch (foodSyncErr) {
-    console.warn("[updateOrderStatus] orders_food sync failed:", foodSyncErr);
+
+    if (status === "delivered") {
+      const { creditMerchantWalletForDeliveredCoreOrder } = await import(
+        "@/lib/credit-merchant-wallet-after-delivery"
+      );
+      try {
+        await creditMerchantWalletForDeliveredCoreOrder(orderId, previousLabel);
+      } catch (walletErr) {
+        console.warn("[updateOrderStatus] wallet credit failed:", walletErr);
+      }
+    }
+  } catch (err) {
+    console.error("[updateOrderStatus] failed:", err);
+    return { updated: false, reason: "NOT_FOUND" };
   }
 
   return { updated: true };
@@ -1094,7 +1158,25 @@ export async function updateOrderStatus(
 export interface OrderManualStatusHistoryEntry {
   toStatus: string;
   updatedByEmail: string;
+  updatedByRole: string;
   createdAt: Date;
+}
+
+let orderManualStatusRoleColumnReady = false;
+
+/** Idempotent: adds updated_by_role when migration has not been applied yet. */
+async function ensureOrderManualStatusRoleColumn(): Promise<void> {
+  if (orderManualStatusRoleColumnReady) return;
+  if (await publicColumnExists("order_manual_status_history", "updated_by_role")) {
+    orderManualStatusRoleColumnReady = true;
+    return;
+  }
+  const sql = getSql();
+  await sql`
+    ALTER TABLE order_manual_status_history
+    ADD COLUMN updated_by_role TEXT
+  `;
+  orderManualStatusRoleColumnReady = true;
 }
 
 /**
@@ -1103,17 +1185,39 @@ export interface OrderManualStatusHistoryEntry {
 export async function getOrderManualStatusHistory(
   orderId: number
 ): Promise<OrderManualStatusHistoryEntry[]> {
+  await ensureOrderManualStatusRoleColumn();
   const db = getDb();
   const rows = await db
     .select({
       toStatus: orderManualStatusHistory.toStatus,
       updatedByEmail: orderManualStatusHistory.updatedByEmail,
+      updatedByRole: orderManualStatusHistory.updatedByRole,
       createdAt: orderManualStatusHistory.createdAt,
     })
     .from(orderManualStatusHistory)
     .where(eq(orderManualStatusHistory.orderId, orderId))
     .orderBy(desc(orderManualStatusHistory.createdAt));
-  return rows;
+
+  const missingRoleEmails = rows
+    .filter((r) => !r.updatedByRole?.trim())
+    .map((r) => r.updatedByEmail);
+  const roleByEmail =
+    missingRoleEmails.length > 0
+      ? await getPrimaryRolesByEmails(missingRoleEmails)
+      : new Map<string, string>();
+
+  return rows.map((row) => {
+    const emailKey = row.updatedByEmail.trim().toLowerCase();
+    return {
+      toStatus: row.toStatus,
+      updatedByEmail: row.updatedByEmail,
+      updatedByRole:
+        row.updatedByRole?.trim() ||
+        roleByEmail.get(emailKey) ||
+        "AGENT",
+      createdAt: row.createdAt,
+    };
+  });
 }
 
 /**
@@ -1131,6 +1235,13 @@ export async function getFoodDeliveryInstructions(
   return row?.deliveryInstructions ?? null;
 }
 
+export type OrderCancellationActorType =
+  | "store"
+  | "customer"
+  | "system"
+  | "rider"
+  | "admin";
+
 export interface InsertOrderCancellationReasonInput {
   orderId: number;
   cancelledBy: string;
@@ -1139,7 +1250,26 @@ export interface InsertOrderCancellationReasonInput {
   reasonText?: string | null;
   refundStatus?: string;
   refundAmount?: number | null;
+  penaltyApplied?: boolean;
+  penaltyAmount?: number | null;
   metadata?: Record<string, unknown>;
+  catalogReasonId?: number | null;
+  cancelledByType?: OrderCancellationActorType | null;
+  cancelledByLabel?: string | null;
+  displayReason?: string | null;
+  attribute?: string | null;
+  rejectionLabel?: string | null;
+  actionSource?: string | null;
+  cancelMode?: "auto" | "manual" | null;
+}
+
+function slugReasonCode(text: string): string {
+  const slug = text
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return (slug || "CANCELLED").slice(0, 200);
 }
 
 /**
@@ -1150,66 +1280,440 @@ export async function insertOrderCancellationReason(
   input: InsertOrderCancellationReasonInput
 ): Promise<number | null> {
   const db = getDb();
-  const [row] = await db
-    .insert(orderCancellationReasons)
-    .values({
-      orderId: input.orderId,
-      cancelledBy: input.cancelledBy,
-      cancelledById: input.cancelledById,
-      reasonCode: input.reasonCode,
-      reasonText: input.reasonText ?? null,
-      refundStatus: input.refundStatus ?? "pending",
-      refundAmount:
-        input.refundAmount == null ? null : String(input.refundAmount),      metadata: (input.metadata ?? {}) as Record<string, unknown>,
-    })
-    .returning({ id: orderCancellationReasons.id });
-  return row?.id ?? null;
+  const sql = getSql();
+  const metadata = (input.metadata ?? {}) as Record<string, unknown>;
+  const displayReason =
+    (input.displayReason ?? input.reasonText ?? "").trim() || null;
+
+  try {
+    const [row] = await db
+      .insert(orderCancellationReasons)
+      .values({
+        orderId: input.orderId,
+        cancelledBy: input.cancelledBy,
+        cancelledById: input.cancelledById,
+        reasonCode: input.reasonCode,
+        reasonText: input.reasonText ?? null,
+        refundStatus: input.refundStatus ?? "pending",
+        refundAmount:
+          input.refundAmount == null ? null : String(input.refundAmount),
+        penaltyApplied: input.penaltyApplied ?? false,
+        penaltyAmount:
+          input.penaltyAmount == null ? null : String(input.penaltyAmount),
+        metadata,
+        catalogReasonId: input.catalogReasonId ?? null,
+        cancelledByType: input.cancelledByType ?? null,
+        cancelledByLabel: input.cancelledByLabel ?? null,
+        displayReason,
+        attribute: input.attribute ?? null,
+        rejectionLabel: input.rejectionLabel ?? null,
+        actionSource: input.actionSource ?? null,
+        cancelMode: input.cancelMode ?? null,
+      })
+      .returning({ id: orderCancellationReasons.id });
+    return row?.id ?? null;
+  } catch {
+    /* enriched columns may be missing before migration 0237 */
+    const [legacy] = await sql<{ id: number }[]>`
+      INSERT INTO order_cancellation_reasons (
+        order_id, cancelled_by, cancelled_by_id, reason_code, reason_text,
+        refund_status, refund_amount, penalty_applied, penalty_amount, metadata
+      ) VALUES (
+        ${input.orderId},
+        ${input.cancelledBy},
+        ${input.cancelledById},
+        ${input.reasonCode},
+        ${input.reasonText ?? null},
+        ${input.refundStatus ?? "pending"},
+        ${input.refundAmount == null ? null : input.refundAmount},
+        ${input.penaltyApplied ?? false},
+        ${input.penaltyAmount == null ? null : input.penaltyAmount},
+        ${JSON.stringify({
+          ...metadata,
+          catalogReasonId: input.catalogReasonId ?? null,
+          attribute: input.attribute ?? null,
+          rejection: input.rejectionLabel ?? null,
+          source: input.cancelledByType ?? null,
+          cancelled_by_label: input.cancelledByLabel ?? null,
+          rejected_reason: displayReason,
+          action_source: input.actionSource ?? null,
+          cancel_mode: input.cancelMode ?? null,
+        })}::jsonb
+      )
+      RETURNING id
+    `;
+    return legacy?.id ?? null;
+  }
 }
+
+export interface RecordOrderCancellationInput
+  extends InsertOrderCancellationReasonInput {
+  cancelledByType: OrderCancellationActorType;
+  cancelledByLabel: string;
+  displayReason: string;
+  cancellationDetails?: Record<string, unknown>;
+  /** When false, only inserts reason row + links orders_core (status already cancelled). */
+  fullCoreSync?: boolean;
+  previousStatus?: string | null;
+}
+
+/**
+ * Canonical write: order_cancellation_reasons + orders_core.cancellation_reason_id + orders_food display.
+ */
+export async function recordOrderCancellation(
+  input: RecordOrderCancellationInput
+): Promise<{ cancellationReasonId: number | null; updated: boolean }> {
+  const sql = getSql();
+  const existing = await sql<{ id: number; cancellation_reason_id: number | null }[]>`
+    SELECT ocr.id, COALESCE(f.cancellation_reason_id, c.cancellation_reason_id) AS cancellation_reason_id
+    FROM orders_core c
+    LEFT JOIN orders_food f ON f.order_id = c.id
+    LEFT JOIN LATERAL (
+      SELECT id FROM order_cancellation_reasons
+      WHERE order_id = ${input.orderId}
+      ORDER BY created_at DESC
+      LIMIT 1
+    ) ocr ON TRUE
+    WHERE c.id = ${input.orderId}
+    LIMIT 1
+  `;
+  const linkedId = Number(existing[0]?.cancellation_reason_id);
+  const latestId = Number(existing[0]?.id);
+  if (Number.isFinite(linkedId) && linkedId > 0) {
+    return { cancellationReasonId: linkedId, updated: true };
+  }
+  if (Number.isFinite(latestId) && latestId > 0) {
+    await sql`
+      UPDATE orders_core SET cancellation_reason_id = ${latestId} WHERE id = ${input.orderId}
+    `;
+    await sql`
+      UPDATE orders_food SET cancellation_reason_id = ${latestId} WHERE order_id = ${input.orderId}
+    `;
+    return { cancellationReasonId: latestId, updated: true };
+  }
+
+  const reasonCode =
+    (input.reasonCode ?? "").trim() ||
+    slugReasonCode(input.displayReason || input.reasonText || "CANCELLED");
+
+  const cancellationReasonId = await insertOrderCancellationReason({
+    ...input,
+    reasonCode,
+    displayReason: input.displayReason,
+  });
+
+  if (input.fullCoreSync === false) {
+    const sql = getSql();
+    if (cancellationReasonId != null) {
+      try {
+        await sql`
+          UPDATE orders_core
+          SET
+            cancellation_reason_id = ${cancellationReasonId},
+            cancelled_by_type = ${input.cancelledByType},
+            cancellation_details = COALESCE(cancellation_details, '{}'::jsonb)
+              || ${JSON.stringify(input.cancellationDetails ?? {})}::jsonb,
+            updated_at = NOW()
+          WHERE id = ${input.orderId}
+        `;
+      } catch {
+        await sql`
+          UPDATE orders_core
+          SET cancellation_reason_id = ${cancellationReasonId}
+          WHERE id = ${input.orderId}
+        `;
+      }
+    }
+    await syncOrdersFoodForDashboardCancellation(input.orderId, {
+      cancelledAt: new Date(),
+      rejectedReason: input.displayReason,
+      cancelledByLabel: input.cancelledByLabel,
+      cancelledByType: input.cancelledByType,
+      cancellationDetails:
+        input.cancellationDetails ??
+        ({
+          version: 1,
+          source: input.cancelledByType,
+          cancelled_by_label: input.cancelledByLabel,
+          rejected_reason: input.displayReason,
+        } as Record<string, unknown>),
+    });
+    return { cancellationReasonId, updated: true };
+  }
+
+  const { updated } = await updateOrdersCoreCancellation(input.orderId, {
+    cancelledBy: input.cancelledBy,
+    cancelledById: input.cancelledById,
+    cancellationReasonId,
+    cancelledByType: input.cancelledByType,
+    rejectedReason: input.displayReason,
+    cancelledByLabel: input.cancelledByLabel,
+    cancellationDetails: input.cancellationDetails,
+  });
+  return { cancellationReasonId, updated };
+}
+
+export { slugReasonCode };
 
 export interface UpdateOrdersCoreCancellationInput {
   cancelledBy: string;
   cancelledById: number | null;
   cancellationReasonId?: number | null;
   cancelledByType?: "store" | "customer" | "system" | "rider" | "admin";
+  /** Catalog / UI reason shown to merchant (e.g. "RIDER - Food not delivered"). */
+  rejectedReason?: string | null;
+  /** Merchant-facing actor label (defaults to Rejected by GatiMitra Team for admin). */
+  cancelledByLabel?: string | null;
+  /** Canonical payload for merchant apps (orders_core + orders_food JSON). */
+  cancellationDetails?: Record<string, unknown>;
+}
+
+async function syncOrdersFoodForDashboardCancellation(
+  orderId: number,
+  args: {
+    cancelledAt: Date;
+    rejectedReason: string | null;
+    cancelledByLabel: string;
+    cancelledByType: string;
+    cancellationDetails: Record<string, unknown>;
+  }
+): Promise<void> {
+  const sql = getSql();
+  const nowIso = args.cancelledAt.toISOString();
+  const detailsJson = JSON.stringify(args.cancellationDetails);
+  try {
+    await sql`
+      UPDATE orders_food
+      SET
+        order_status = 'CANCELLED',
+        cancelled_at = COALESCE(cancelled_at, ${nowIso}::timestamptz),
+        rejected_reason = ${args.rejectedReason},
+        cancelled_by_label = ${args.cancelledByLabel},
+        cancelled_by_type = ${args.cancelledByType},
+        cancellation_details = COALESCE(cancellation_details, '{}'::jsonb) || ${detailsJson}::jsonb,
+        updated_at = ${nowIso}::timestamptz
+      WHERE order_id = ${orderId}
+    `;
+  } catch (err) {
+    try {
+      await sql`
+        UPDATE orders_food
+        SET
+          order_status = 'CANCELLED',
+          cancelled_at = COALESCE(cancelled_at, ${nowIso}::timestamptz),
+          rejected_reason = ${args.rejectedReason},
+          cancelled_by_label = ${args.cancelledByLabel},
+          updated_at = ${nowIso}::timestamptz
+        WHERE order_id = ${orderId}
+      `;
+    } catch (fallbackErr) {
+      console.error("[updateOrdersCoreCancellation] orders_food sync failed", fallbackErr);
+    }
+  }
 }
 
 /**
  * Set cancellation fields on orders_core when an order is cancelled (e.g. via refund flow).
  * Sets status to 'cancelled', cancelled_at, cancelled_by, cancelled_by_id, and optionally cancellation_reason_id.
- * Appends a Cancelled entry to order_timelines.
+ * Appends a Cancelled entry to order_timelines and syncs orders_food for merchant / partner UIs.
  */
 export async function updateOrdersCoreCancellation(
   orderId: number,
   input: UpdateOrdersCoreCancellationInput
 ): Promise<{ updated: boolean }> {
   const db = getDb();
+  const sql = getSql();
   const [existing] = await db
     .select({ currentStatus: ordersCore.currentStatus })
     .from(ordersCore)
     .where(eq(ordersCore.id, orderId))
     .limit(1);
   const previousStatus = existing?.currentStatus ?? "Delivered";
+  const cancelledAt = new Date();
+  const cancelledByType = input.cancelledByType ?? "admin";
+  const timelineLabel =
+    (input.cancelledByLabel ?? "").trim() || "Rejected by GatiMitra Team";
+  const rejectedReason = (input.rejectedReason ?? "").trim() || null;
 
   const [result] = await db
     .update(ordersCore)
     .set({
       status: "cancelled",
       currentStatus: "Cancelled",
-      cancelledAt: new Date(),
+      cancelledAt,
       cancelledBy: input.cancelledBy,
       cancelledById: input.cancelledById,
       cancellationReasonId: input.cancellationReasonId ?? null,
-      updatedAt: new Date(),
+      updatedAt: cancelledAt,
     })
     .where(eq(ordersCore.id, orderId))
     .returning({ id: ordersCore.id });
   if (!result) return { updated: false };
+
+  const cancellationDetails = input.cancellationDetails ?? {
+    version: 1,
+    source: cancelledByType,
+    cancelled_by_label: timelineLabel,
+    rejected_reason: rejectedReason,
+  };
+
+  try {
+    await sql`
+      UPDATE orders_core
+      SET
+        cancelled_by_type = ${cancelledByType},
+        cancellation_details = COALESCE(cancellation_details, '{}'::jsonb) || ${JSON.stringify(cancellationDetails)}::jsonb
+      WHERE id = ${orderId}
+    `;
+  } catch {
+    try {
+      await sql`
+        UPDATE orders_core
+        SET cancelled_by_type = ${cancelledByType}
+        WHERE id = ${orderId}
+      `;
+    } catch {
+      /* column may be missing on older DBs */
+    }
+  }
+
+  await syncOrdersFoodForDashboardCancellation(orderId, {
+    cancelledAt,
+    rejectedReason,
+    cancelledByLabel: timelineLabel,
+    cancelledByType,
+    cancellationDetails,
+  });
+
   await insertOrderTimelineEntry({
     orderId,
     status: "Cancelled",
     previousStatus,
-    actorType: input.cancelledByType ?? "admin",
+    actorType: cancelledByType,
     actorName: input.cancelledBy,
+    statusMessage: timelineLabel,
+    metadata: {
+      rejected_reason: rejectedReason,
+      cancelled_by_label: timelineLabel,
+      cancel_mode: "manual",
+      action_source: "admin",
+    },
   });
   return { updated: true };
+}
+
+export type CancellationDisplayDbRow = {
+  order_id: number;
+  food_rejected_reason: string | null;
+  food_cancelled_by_label: string | null;
+  cancelled_by_type: string | null;
+  cancellation_details: unknown;
+  reason_text: string | null;
+  catalog_metadata: unknown;
+  refund_reason: string | null;
+  ocr_display_reason: string | null;
+  ocr_cancelled_by_label: string | null;
+  ocr_cancelled_by_type: string | null;
+  ocr_attribute: string | null;
+  ocr_rejection_label: string | null;
+};
+
+/** Load cancellation fields for merchant UIs (resolves stale orders_food rows from catalog/refunds). */
+export async function fetchCancellationDisplayByOrderIds(
+  orderIds: number[]
+): Promise<Map<number, CancellationDisplayDbRow>> {
+  if (!orderIds.length) return new Map();
+  const sql = getSql();
+  try {
+    const rows = await sql<CancellationDisplayDbRow[]>`
+      SELECT
+        c.id AS order_id,
+        f.rejected_reason AS food_rejected_reason,
+        f.cancelled_by_label AS food_cancelled_by_label,
+        COALESCE(f.cancelled_by_type, c.cancelled_by_type) AS cancelled_by_type,
+        COALESCE(f.cancellation_details, c.cancellation_details) AS cancellation_details,
+        ocr.reason_text,
+        ocr.metadata AS catalog_metadata,
+        ocr.display_reason AS ocr_display_reason,
+        ocr.cancelled_by_label AS ocr_cancelled_by_label,
+        ocr.cancelled_by_type AS ocr_cancelled_by_type,
+        ocr.attribute AS ocr_attribute,
+        ocr.rejection_label AS ocr_rejection_label,
+        (
+          SELECT r.refund_reason
+          FROM order_refunds r
+          WHERE r.order_id = c.id
+          ORDER BY r.created_at DESC
+          LIMIT 1
+        ) AS refund_reason
+      FROM orders_core c
+      LEFT JOIN orders_food f ON f.order_id = c.id
+      LEFT JOIN LATERAL (
+        SELECT
+          reason_text,
+          metadata,
+          display_reason,
+          cancelled_by_label,
+          cancelled_by_type,
+          attribute,
+          rejection_label
+        FROM order_cancellation_reasons
+        WHERE id = c.cancellation_reason_id
+           OR (c.cancellation_reason_id IS NULL AND order_id = c.id)
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) ocr ON TRUE
+      WHERE c.id = ANY(${orderIds})
+    `;
+    const map = new Map<number, CancellationDisplayDbRow>();
+    for (const row of rows) {
+      map.set(Number(row.order_id), row);
+    }
+    return map;
+  } catch (err) {
+    console.warn("[fetchCancellationDisplayByOrderIds] enriched query failed, retrying legacy", err);
+    try {
+      const rows = await sql<CancellationDisplayDbRow[]>`
+        SELECT
+          c.id AS order_id,
+          f.rejected_reason AS food_rejected_reason,
+          f.cancelled_by_label AS food_cancelled_by_label,
+          COALESCE(f.cancelled_by_type, c.cancelled_by_type) AS cancelled_by_type,
+          COALESCE(f.cancellation_details, c.cancellation_details) AS cancellation_details,
+          ocr.reason_text,
+          ocr.metadata AS catalog_metadata,
+          NULL::text AS ocr_display_reason,
+          NULL::text AS ocr_cancelled_by_label,
+          NULL::text AS ocr_cancelled_by_type,
+          NULL::text AS ocr_attribute,
+          NULL::text AS ocr_rejection_label,
+          (
+            SELECT r.refund_reason
+            FROM order_refunds r
+            WHERE r.order_id = c.id
+            ORDER BY r.created_at DESC
+            LIMIT 1
+          ) AS refund_reason
+        FROM orders_core c
+        LEFT JOIN orders_food f ON f.order_id = c.id
+        LEFT JOIN LATERAL (
+          SELECT reason_text, metadata
+          FROM order_cancellation_reasons
+          WHERE id = c.cancellation_reason_id
+             OR (c.cancellation_reason_id IS NULL AND order_id = c.id)
+          ORDER BY created_at DESC
+          LIMIT 1
+        ) ocr ON TRUE
+        WHERE c.id = ANY(${orderIds})
+      `;
+      const map = new Map<number, CancellationDisplayDbRow>();
+      for (const row of rows) {
+        map.set(Number(row.order_id), row);
+      }
+      return map;
+    } catch (legacyErr) {
+      console.error("[fetchCancellationDisplayByOrderIds]", legacyErr);
+      return new Map();
+    }
+  }
 }

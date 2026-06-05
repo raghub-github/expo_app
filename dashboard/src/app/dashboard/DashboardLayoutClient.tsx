@@ -6,7 +6,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { HierarchicalSidebar } from "@/components/layout/HierarchicalSidebar";
 import { RightSidebar } from "@/components/layout/RightSidebar";
 import { Header } from "@/components/layout/Header";
-import { AuthProvider } from "@/providers/AuthProvider";
 import {
   RightSidebarProvider,
   useRightSidebar,
@@ -20,10 +19,6 @@ import { TicketFilterSidebarProvider, useTicketFilterSidebar } from "@/context/T
 import { getCurrentDashboard, getCurrentDashboardSubRoutes } from "@/lib/navigation/dashboard-routes";
 import { queryKeys } from "@/lib/queryKeys";
 import { TicketFilters } from "@/components/tickets/TicketFilters";
-import { fetchBootstrapAndSeedCache } from "@/hooks/queries/useBootstrapQuery";
-import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
-import { syncServerSessionCookies } from "@/lib/auth/sync-server-session";
-import { hydrateBrowserSupabaseFromCookies } from "@/lib/auth/hydrate-browser-supabase";
 import { GatiSpinner } from "@/components/ui/GatiSpinner";
 import { CurrentRouteProvider, useCurrentRoute } from "@/context/CurrentRouteContext";
 import {
@@ -33,127 +28,6 @@ import {
   ticketsPathTicketId,
 } from "@/lib/tickets/ticket-path-utils";
 import type { TicketOtherAgentViewer } from "@/lib/tickets/ticket-presence";
-/** Full-page skeleton shown until bootstrap has run (or cache exists) so only one auth request is made. */
-function DashboardBootstrapSkeleton() {
-  return (
-    <div className="flex h-screen overflow-hidden" style={{ backgroundColor: "#E6F6F5" }}>
-      <div className="w-56 shrink-0 bg-[#0f2d42]" aria-hidden>
-        <div className="h-14 border-b border-white/10 flex items-center px-3 gap-2">
-          <div className="h-9 w-9 rounded-lg bg-white/15 animate-pulse" />
-          <div className="h-4 w-24 rounded bg-white/15 animate-pulse" />
-        </div>
-        <div className="p-2 space-y-1">
-          {[1, 2, 3, 4, 5, 6].map((i) => (
-            <div key={i} className="h-10 rounded-xl bg-white/10 animate-pulse" />
-          ))}
-        </div>
-      </div>
-      <div className="flex-1 flex flex-col min-w-0">
-        <div className="h-14 border-b border-gray-200 bg-white/80 animate-pulse" />
-        <main className="flex-1 p-4 overflow-auto">
-          <div className="h-8 w-48 rounded bg-gray-200 animate-pulse mb-4" />
-          <div className="rounded-lg border border-gray-200 bg-white p-4">
-            <div className="space-y-3">
-              {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
-                <div key={i} className="h-4 bg-gray-100 rounded animate-pulse" />
-              ))}
-            </div>
-          </div>
-        </main>
-      </div>
-    </div>
-  );
-}
-
-let bootstrapInFlight: Promise<void> | null = null;
-
-/**
- * Bootstrap gate
- *
- * Previous behavior: blocked the entire dashboard shell until /api/auth/bootstrap
- * completed when no cache existed. This created a full-page blank state.
- *
- * New behavior: run the same bootstrap/cache seeding logic, but **never block
- * rendering**. The dashboard renders immediately using whatever cached data is
- * available (React Query or localStorage), and bootstrap revalidates in the
- * background (stale-while-revalidate).
- */
-function useBootstrapGate(queryClient: ReturnType<typeof useQueryClient>) {
-  const didRun = useRef(false);
-  const [authReady, setAuthReady] = useState(false);
-
-  useEffect(() => {
-    if (didRun.current) return;
-    didRun.current = true;
-
-    const run = async () => {
-      // Mirror Supabase client session → httpOnly cookies when /auth/callback was skipped
-      // (wrong Site URL / redirect) but the user still has tokens in the browser.
-      await syncServerSessionCookies();
-      // Cookie-only sessions: copy server session into the browser client for Realtime + RLS.
-      void hydrateBrowserSupabaseFromCookies();
-
-      const cached = queryClient.getQueryData(["auth", "session"]);
-      if (cached != null) {
-        setAuthReady(true);
-        return;
-      }
-
-      // 1) Try fast path: hydrate from localStorage without any network call so
-      // the dashboard can render instantly after navigation/login.
-      const stored = loadBootstrapFromStorage<{
-        session: { user: Record<string, unknown> };
-        permissions: unknown;
-        dashboardAccess: unknown;
-        systemUser?: { id: number; systemUserId: string; fullName: string; email: string } | null;
-      }>(10 * 60 * 1000); // 10 minutes max age to match React Query staleTime
-
-      if (stored?.data) {
-        const { session, permissions, dashboardAccess, systemUser } = stored.data;
-        queryClient.setQueryData(["auth", "session"], {
-          session,
-          permissions,
-          systemUser: systemUser ?? null,
-        });
-        queryClient.setQueryData(queryKeys.permissions(), permissions as unknown);
-        queryClient.setQueryData(queryKeys.dashboardAccess(), dashboardAccess as unknown);
-        // SWR-style: in the background, revalidate with a fresh bootstrap call
-        // but do not block the initial render.
-        if (!bootstrapInFlight) {
-          bootstrapInFlight = fetchBootstrapAndSeedCache(queryClient)
-            .catch(() => false)
-            .then(() => undefined)
-            .finally(() => {
-              bootstrapInFlight = null;
-            });
-        }
-        void bootstrapInFlight.finally(() => {
-          setAuthReady(true);
-        });
-        return;
-      }
-
-      // 2) Slow path: no cached payload, call bootstrap once in the background.
-      // Views that depend on this data will show their own lightweight loaders,
-      // but the global layout (sidebar/header) never blocks on this.
-      if (!bootstrapInFlight) {
-        bootstrapInFlight = fetchBootstrapAndSeedCache(queryClient)
-          .catch(() => false)
-          .then(() => undefined)
-          .finally(() => {
-            bootstrapInFlight = null;
-          });
-      }
-      void bootstrapInFlight.finally(() => {
-        setAuthReady(true);
-      });
-    };
-
-    void run();
-  }, [queryClient]);
-
-  return authReady;
-}
 
 const SIDEBAR_STATE_KEY = "dashboard-sidebar-open";
 
@@ -195,7 +69,6 @@ function DashboardLayoutClient({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
-  const bootstrapReady = useBootstrapGate(queryClient);
 
   // Cancel in-flight page queries as soon as route changes to avoid outdated requests
   // overwriting the newly navigated UI. Auth bootstrap is excluded so auth state
@@ -214,6 +87,20 @@ function DashboardLayoutClient({
     const cleanNext = (pathname ?? "").split("?")[0].split("#")[0];
     // Main tickets list, queue workspace, CSAT, etc.: keep list/detail caches when moving within this area.
     if (cleanPrev.startsWith("/dashboard/tickets") && cleanNext.startsWith("/dashboard/tickets")) {
+      return;
+    }
+    // Food orders list ↔ standalone order page: preserve orders list cache (same auth shell).
+    if (
+      (cleanPrev.startsWith("/dashboard/orders") && cleanNext.startsWith("/order")) ||
+      (cleanPrev.startsWith("/order") && cleanNext.startsWith("/dashboard/orders"))
+    ) {
+      return;
+    }
+    // Order detail ↔ tickets: do not invalidate orders list or ticket caches on cross-nav.
+    if (
+      (cleanPrev.startsWith("/order") && cleanNext.startsWith("/dashboard/tickets")) ||
+      (cleanPrev.startsWith("/dashboard/tickets") && cleanNext.startsWith("/order"))
+    ) {
       return;
     }
 
@@ -404,32 +291,28 @@ function DashboardLayoutClient({
 
   if (isAddChildPage) {
     return (
-      <AuthProvider authReady={bootstrapReady}>
-        <div className="flex h-screen overflow-hidden bg-gradient-to-br from-slate-50 to-slate-100 text-gray-900">
-          {children}
-        </div>
-      </AuthProvider>
+      <div className="flex h-screen overflow-hidden bg-gradient-to-br from-slate-50 to-slate-100 text-gray-900">
+        {children}
+      </div>
     );
   }
 
   return (
-    <AuthProvider authReady={bootstrapReady}>
-      <CurrentRouteProvider>
-        <TicketFilterSidebarProvider>
-          <DashboardLayoutContent
-            isLeftSidebarOpen={isLeftSidebarOpen}
-            isRightSidebarOpen={isRightSidebarOpen}
-            setRightSidebarOpen={setIsRightSidebarOpen}
-            hasRightSidebar={hasRightSidebar}
-            handleRightSidebarToggle={handleRightSidebarToggle}
-            handleLeftSidebarToggle={handleLeftSidebarToggle}
-            isInSpecificDashboard={isInSpecificDashboard}
-          >
-            {children}
-          </DashboardLayoutContent>
-        </TicketFilterSidebarProvider>
-      </CurrentRouteProvider>
-    </AuthProvider>
+    <CurrentRouteProvider>
+      <TicketFilterSidebarProvider>
+        <DashboardLayoutContent
+          isLeftSidebarOpen={isLeftSidebarOpen}
+          isRightSidebarOpen={isRightSidebarOpen}
+          setRightSidebarOpen={setIsRightSidebarOpen}
+          hasRightSidebar={hasRightSidebar}
+          handleRightSidebarToggle={handleRightSidebarToggle}
+          handleLeftSidebarToggle={handleLeftSidebarToggle}
+          isInSpecificDashboard={isInSpecificDashboard}
+        >
+          {children}
+        </DashboardLayoutContent>
+      </TicketFilterSidebarProvider>
+    </CurrentRouteProvider>
   );
 }
 
@@ -465,6 +348,9 @@ function DashboardLayoutContent({
   const isTicketsHubGreyPage =
     cleanPathname === "/dashboard/tickets/agent-activity" ||
     cleanPathname === "/dashboard/tickets/dashboard_snapshot";
+  /** Tickets list / queue / detail: fill space below header without main scroll (inner panes scroll). */
+  const isTicketsFullBleedLayout =
+    cleanPathname.startsWith("/dashboard/tickets") && !isTicketsHubGreyPage;
   const isFilterSidebarOpen = Boolean(isTicketDetailPage && filterSidebar?.isFilterSidebarOpen);
 
   const [ticketRightSidebarPanel, setTicketRightSidebarPanel] = useState<TicketRightSidebarPanel>("properties");
@@ -721,8 +607,12 @@ function DashboardLayoutContent({
                 <Header />
                 <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden w-full">
                   <main
-                    className={`flex-1 overflow-y-auto transition-all duration-300 w-full flex flex-col min-h-0 relative text-gray-900 ${
-                      isTicketsHubGreyPage ? "bg-[#f4f5f7] p-4 sm:p-6" : "bg-white p-3 sm:p-4"
+                    className={`flex-1 transition-all duration-300 w-full flex flex-col min-h-0 relative text-gray-900 ${
+                      isTicketsFullBleedLayout
+                        ? "overflow-hidden bg-white px-2 pb-3 pt-2 sm:px-3 sm:pb-4 sm:pt-2.5"
+                        : isTicketsHubGreyPage
+                          ? "overflow-y-auto bg-[#f4f5f7] p-4 sm:p-6"
+                          : "overflow-y-auto bg-white p-3 sm:p-4"
                     }`}
                   >
                     <div className="w-full max-w-full min-w-0 flex-1 flex flex-col min-h-0 relative">

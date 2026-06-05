@@ -130,22 +130,47 @@ export async function GET(req: NextRequest) {
         .in('id', foodIds);
       const foodMap = new Map((foodRows || []).map((f: { id: number; order_id: number }) => [f.id, f.order_id]));
       const orderIds = [...new Set((foodRows || []).map((f: { order_id: number }) => f.order_id))];
-      let orderMeta: { id: number; formatted_order_id: string | null }[] = [];
+      let orderMeta: { id: number; order_id: string | null; formatted_order_id: string | null }[] = [];
       if (orderIds.length > 0) {
-        const { data: coreRows } = await db.from('orders_core').select('id, formatted_order_id').in('id', orderIds);
+        const { data: coreRows } = await db
+          .from('orders_core')
+          .select('id, order_id, formatted_order_id')
+          .in('id', orderIds);
         if (coreRows?.length) {
-          orderMeta = coreRows as { id: number; formatted_order_id: string | null }[];
+          orderMeta = coreRows as {
+            id: number;
+            order_id: string | null;
+            formatted_order_id: string | null;
+          }[];
         } else {
-          const { data: ordRows } = await db.from('orders').select('id, formatted_order_id').in('id', orderIds);
-          orderMeta = (ordRows || []) as { id: number; formatted_order_id: string | null }[];
+          const { data: ordRows } = await db
+            .from('orders')
+            .select('id, order_id, formatted_order_id')
+            .in('id', orderIds);
+          orderMeta = (ordRows || []) as {
+            id: number;
+            order_id: string | null;
+            formatted_order_id: string | null;
+          }[];
         }
       }
-      const orderMetaMap = new Map(orderMeta.map((o) => [o.id, o.formatted_order_id]));
+      const orderMetaMap = new Map(
+        orderMeta.map((o) => [
+          o.id,
+          o.formatted_order_id?.trim() || o.order_id?.trim() || null,
+        ])
+      );
       orderRefs.forEach((e) => {
         const oid = foodMap.get(Number(e.reference_id!));
         if (oid != null) {
           e.order_id = oid;
           e.formatted_order_id = orderMetaMap.get(oid) ?? null;
+          if (e.formatted_order_id && e.description) {
+            e.description = e.description.replace(
+              /Order #\d+/i,
+              `Order ${e.formatted_order_id}`
+            );
+          }
         }
       });
     }

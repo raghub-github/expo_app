@@ -8,6 +8,7 @@ export type CoreOrderStatus =
   | "assigned"
   | "accepted"
   | "reached_store"
+  | "reached_user"
   | "picked_up"
   | "in_transit"
   | "delivered"
@@ -23,6 +24,8 @@ export function mapCoreStatusToPartnerUi(coreStatus: string | null | undefined):
       return "ACCEPTED";
     case "reached_store":
       return "READY_FOR_PICKUP";
+    case "reached_user":
+      return "ACCEPTED";
     case "picked_up":
     case "in_transit":
       return "OUT_FOR_DELIVERY";

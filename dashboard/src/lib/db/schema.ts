@@ -711,6 +711,30 @@ export const storeOnboardingCommissionConfig = pgTable(
 );
 
 /**
+ * Rider onboarding fee config — super-admin singleton for rider app payment screen.
+ */
+export const riderOnboardingCommissionConfig = pgTable(
+  "rider_onboarding_commission_config",
+  {
+    id: smallint("id").primaryKey().default(1),
+    standardOnboardingFee: numeric("standard_onboarding_fee", { precision: 12, scale: 2 }).notNull(),
+    discountedOnboardingFee: numeric("discounted_onboarding_fee", { precision: 12, scale: 2 }).notNull(),
+    discountPercent: numeric("discount_percent", { precision: 6, scale: 2 }).notNull(),
+    gstPercent: numeric("gst_percent", { precision: 6, scale: 2 }).notNull().default("18"),
+    discountPeriodLabel: text("discount_period_label").notNull().default("for limited time"),
+    headline: text("headline").notNull().default("Onboarding Fee"),
+    subtitle: text("subtitle").notNull(),
+    feeLabel: text("fee_label").notNull().default("One-time onboarding fee"),
+    infoMessage: text("info_message").notNull(),
+    alertNotice: text("alert_notice").notNull(),
+    footerNote: text("footer_note").notNull(),
+    payButtonText: text("pay_button_text"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  }
+);
+
+/**
  * Dashboard Access table - Stores which dashboards a user can access
  */
 export const dashboardAccess = pgTable(
@@ -1455,6 +1479,89 @@ export const onboardingRulePolicies = pgTable(
 );
 
 /**
+ * Rider onboarding vehicle categories — 2 / 3 / 4 wheeler groups.
+ */
+export const riderOnboardingVehicleCategories = pgTable(
+  "rider_onboarding_vehicle_categories",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    code: text("code").notNull(),
+    label: text("label").notNull(),
+    hint: text("hint"),
+    icon: text("icon"),
+    wheelCount: integer("wheel_count").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    codeUq: uniqueIndex("rider_onboarding_vehicle_categories_code_uq").on(table.code),
+    sortIdx: index("rider_onboarding_vehicle_categories_sort_idx").on(table.sortOrder, table.id),
+  })
+);
+
+/**
+ * Rider onboarding vehicle types — super-admin catalog for operating vehicle selection UI.
+ */
+export const riderOnboardingVehicleTypes = pgTable(
+  "rider_onboarding_vehicle_types",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    code: text("code").notNull(),
+    categoryCode: text("category_code"),
+    label: text("label").notNull(),
+    hint: text("hint"),
+    icon: text("icon"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    onboardingFlow: text("onboarding_flow").notNull().default("dl_rc"),
+    documentRequirements: jsonb("document_requirements").notNull().default({}),
+    infoMessage: text("info_message"),
+    mapsToVehicleType: text("maps_to_vehicle_type"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    codeUq: uniqueIndex("rider_onboarding_vehicle_types_code_uq").on(table.code),
+    sortIdx: index("rider_onboarding_vehicle_types_sort_idx").on(table.sortOrder, table.id),
+    categoryIdx: index("rider_onboarding_vehicle_types_category_idx").on(
+      table.categoryCode,
+      table.sortOrder,
+      table.id
+    ),
+  })
+);
+
+export const riderOnboardingDocumentTypes = pgTable(
+  "rider_onboarding_document_types",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    code: text("code").notNull(),
+    label: text("label").notNull(),
+    hint: text("hint"),
+    icon: text("icon"),
+    captureGroup: text("capture_group").notNull().default("dl_rc"),
+    requiresTextField: boolean("requires_text_field").notNull().default(false),
+    textFieldLabel: text("text_field_label"),
+    textFieldPlaceholder: text("text_field_placeholder"),
+    minTextLength: integer("min_text_length").notNull().default(4),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    codeUq: uniqueIndex("rider_onboarding_document_types_code_uq").on(table.code),
+    sortIdx: index("rider_onboarding_document_types_sort_idx").on(
+      table.captureGroup,
+      table.sortOrder,
+      table.id
+    ),
+  })
+);
+
+/**
  * Rider service activation - per-rider per-service status; driven by Service Activation Engine
  */
 export const riderServiceActivation = pgTable(
@@ -1560,6 +1667,27 @@ export const dutyLogs = pgTable(
       table.status,
       table.timestamp
     ),
+  })
+);
+
+/** Rider app logout events with self-reported reason */
+export const riderLogoutEvents = pgTable(
+  "rider_logout_events",
+  {
+    id: text("id").primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull(),
+    deviceId: text("device_id"),
+    reasonCode: text("reason_code").notNull(),
+    reasonText: text("reason_text"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    riderIdIdx: index("rider_logout_events_rider_id_idx").on(table.riderId),
+    reasonCodeIdx: index("rider_logout_events_reason_code_idx").on(table.reasonCode),
+    createdAtIdx: index("rider_logout_events_created_at_idx").on(table.createdAt),
   })
 );
 
@@ -1823,6 +1951,45 @@ export const orderRemarkEdits = pgTable(
 );
 
 // ============================================================================
+// Cancellation attributes (CUSTOMER, MERCHANT, … — super-admin managed)
+export const orderCancellationAttributes = pgTable("order_cancellation_attributes", {
+  code: text("code").primaryKey(),
+  displayLabel: text("display_label").notNull(),
+  defaultFault: text("default_fault").notNull().default(""),
+  sortOrder: integer("sort_order").notNull().default(0),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// Cancellation reason catalog (configurable; super-admin managed)
+export const orderCancellationReasonCatalog = pgTable(
+  "order_cancellation_reason_catalog",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    attribute: text("attribute").notNull(),
+    label: text("label").notNull(),
+    reasonCode: text("reason_code").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    attributeIdx: index("order_cancellation_reason_catalog_attribute_idx").on(
+      table.attribute
+    ),
+  })
+);
+
 // Order cancellation reasons (orders_core.cancellation_reason_id references this)
 export const orderCancellationReasons = pgTable(
   "order_cancellation_reasons",
@@ -1838,6 +2005,14 @@ export const orderCancellationReasons = pgTable(
     penaltyApplied: boolean("penalty_applied").default(false),
     penaltyAmount: numeric("penalty_amount", { precision: 10, scale: 2 }),
     metadata: jsonb("metadata").default({}),
+    catalogReasonId: bigint("catalog_reason_id", { mode: "number" }),
+    cancelledByType: text("cancelled_by_type"),
+    cancelledByLabel: text("cancelled_by_label"),
+    displayReason: text("display_reason"),
+    attribute: text("attribute"),
+    rejectionLabel: text("rejection_label"),
+    actionSource: text("action_source"),
+    cancelMode: text("cancel_mode"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1985,6 +2160,7 @@ export const orderManualStatusHistory = pgTable(
       .references(() => ordersCore.id, { onDelete: "cascade" }),
     toStatus: text("to_status").notNull(),
     updatedByEmail: text("updated_by_email").notNull(),
+    updatedByRole: text("updated_by_role"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -2111,6 +2287,27 @@ export const ordersRide = pgTable(
     passengerName: text("passenger_name"),
     passengerPhone: text("passenger_phone"),
     passengerCount: integer("passenger_count").default(1),
+    bookedForSelf: boolean("booked_for_self").notNull().default(true),
+    pickupDistanceFromBookerKm: numeric("pickup_distance_from_booker_km", {
+      precision: 8,
+      scale: 2,
+    }),
+    farPickupPromptShown: boolean("far_pickup_prompt_shown").notNull().default(false),
+    farPickupAcknowledged: boolean("far_pickup_acknowledged").notNull().default(false),
+    intermediateStops: jsonb("intermediate_stops").notNull().default([]),
+    pickupAddress: text("pickup_address"),
+    pickupLat: numeric("pickup_lat", { precision: 9, scale: 6 }),
+    pickupLon: numeric("pickup_lon", { precision: 9, scale: 6 }),
+    dropAddress: text("drop_address"),
+    dropLat: numeric("drop_lat", { precision: 9, scale: 6 }),
+    dropLon: numeric("drop_lon", { precision: 9, scale: 6 }),
+    stop1Address: text("stop_1_address"),
+    stop1Lat: numeric("stop_1_lat", { precision: 9, scale: 6 }),
+    stop1Lon: numeric("stop_1_lon", { precision: 9, scale: 6 }),
+    stop2Address: text("stop_2_address"),
+    stop2Lat: numeric("stop_2_lat", { precision: 9, scale: 6 }),
+    stop2Lon: numeric("stop_2_lon", { precision: 9, scale: 6 }),
+    pickupOtp: text("pickup_otp"),
     rideType: text("ride_type"),
     vehicleTypeRequired: text("vehicle_type_required"),
     waitingCharges: numeric("waiting_charges", { precision: 10, scale: 2 }).default("0"),
@@ -2135,6 +2332,11 @@ export const ordersRide = pgTable(
     scheduledIdx: index("orders_ride_scheduled_idx").on(
       table.scheduledRide,
       table.scheduledPickupTime
+    ),
+    bookedForSelfIdx: index("orders_ride_booked_for_self_idx").on(table.bookedForSelf),
+    farPickupIdx: index("orders_ride_far_pickup_idx").on(
+      table.farPickupPromptShown,
+      table.farPickupAcknowledged
     ),
   })
 );

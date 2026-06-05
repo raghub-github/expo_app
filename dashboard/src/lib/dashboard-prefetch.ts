@@ -31,6 +31,13 @@ const defaultFoodOrdersFilters: OrdersFilters = {
 };
 
 export function prefetchDashboardSection(queryClient: QueryClient, href: string): void {
+  if (typeof window !== "undefined") {
+    const current = window.location.pathname.split("?")[0].split("#")[0];
+    if (current.startsWith("/order") || !current.startsWith("/dashboard")) {
+      return;
+    }
+  }
+
   const path = href.split("?")[0];
 
   if (path === "/dashboard/customers" || path.startsWith("/dashboard/customers")) {

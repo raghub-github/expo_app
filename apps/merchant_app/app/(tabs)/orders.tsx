@@ -1,6 +1,6 @@
 /**
  * Orders Management — real-time operational board for GatiMitra Partner.
- * - Horizontal status nav: All | Created | Preparing | Ready | Picked Up | Completed | Scheduled
+ * - Horizontal status nav: Preparing | Ready | Picked Up | Completed | Scheduled
  * - Swipe left/right on the list to switch tabs.
  */
 
@@ -44,7 +44,10 @@ import {
   type OrdersFilters,
 } from "@/components/order/ordersFilterTypes";
 import { RejectOrderSheet } from "@/components/order/RejectOrderSheet";
+import { MerchantPrepDelaySheet } from "@/components/order/MerchantPrepDelaySheet";
+import { RejectFollowUpHost, useRejectFollowUp } from "@/components/order/RejectFollowUpHost";
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
+import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
 import { PastOrdersBanner } from "@/components/order/PastOrdersBanner";
 import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedActiveOrdersNotice";
 import {
@@ -68,28 +71,22 @@ const STATUS_GREEN = "#22C55E";
 const STATUS_RED = "#EF4444";
 const SLIDER_DISABLED_BG = "#E5E7EB";
 const SLIDER_LABEL_TEXT = "#FFFFFF";
-type FilterKey =
-  | "all"
-  | "created"
-  | "preparing"
-  | "ready"
-  | "picked_up"
-  | "completed"
-  | "scheduled";
+type LiveFilterKey = "preparing" | "ready" | "picked_up" | "completed" | "scheduled";
+type FilterKey = LiveFilterKey | "all";
 
-const STATUS_TABS: { key: FilterKey; label: string }[] = [
-  { key: "all", label: "All" },
-  { key: "created", label: "Created" },
+const STATUS_TABS: { key: LiveFilterKey; label: string }[] = [
   { key: "preparing", label: "Preparing" },
   { key: "ready", label: "Ready" },
   { key: "picked_up", label: "Picked Up" },
   { key: "completed", label: "Completed" },
 ];
 
-const SCHEDULED_TAB: { key: FilterKey; label: string } = { key: "scheduled", label: "Scheduled" };
+const SCHEDULED_TAB: { key: LiveFilterKey; label: string } = { key: "scheduled", label: "Scheduled" };
+
+const DEFAULT_LIVE_TAB: LiveFilterKey = "preparing";
 
 /** Tab order used for swipe navigation (left = previous, right = next). */
-const SWIPE_TAB_ORDER: FilterKey[] = [
+const SWIPE_TAB_ORDER: LiveFilterKey[] = [
   ...STATUS_TABS.map((t) => t.key),
   SCHEDULED_TAB.key,
 ];
@@ -172,14 +169,14 @@ function StatusTabs({
   counts,
   onChange,
 }: {
-  activeKey: FilterKey;
-  counts: Partial<Record<FilterKey, number>>;
-  onChange: (key: FilterKey) => void;
+  activeKey: LiveFilterKey;
+  counts: Partial<Record<LiveFilterKey, number>>;
+  onChange: (key: LiveFilterKey) => void;
 }) {
   const scrollRef = useRef<ScrollView | null>(null);
-  const layouts = useRef<Partial<Record<FilterKey, TabLayout>>>({});
+  const layouts = useRef<Partial<Record<LiveFilterKey, TabLayout>>>({});
 
-  const scrollToKey = useCallback((key: FilterKey) => {
+  const scrollToKey = useCallback((key: LiveFilterKey) => {
     const layout = layouts.current[key];
     if (!layout) return;
     scrollRef.current?.scrollTo({
@@ -193,7 +190,7 @@ function StatusTabs({
   }, [activeKey, scrollToKey]);
 
   const handleLayout =
-    (key: FilterKey) =>
+    (key: LiveFilterKey) =>
     (e: LayoutChangeEvent): void => {
       const { x, width } = e.nativeEvent.layout;
       layouts.current[key] = { x, width };
@@ -263,18 +260,28 @@ function StatusTabs({
   );
 }
 
-function resolveInitialFilterKey(tabParam: string, orders: OrderRecord[]): FilterKey {
-  if (tabParam === "active") return "all";
-  if (tabParam === "new") return "created";
-  if (tabParam === "delivered" || tabParam === "rejected" || tabParam === "rto") return "completed";
-  const allowed = new Set(SWIPE_TAB_ORDER);
-  if (allowed.has(tabParam as FilterKey) && tabParam !== "all") {
-    return tabParam as FilterKey;
+function resolveInitialFilterKey(tabParam: string, orders: OrderRecord[]): LiveFilterKey {
+  if (tabParam === "active" || tabParam === "new" || tabParam === "created" || tabParam === "all") {
+    return DEFAULT_LIVE_TAB;
   }
-  const hasCreated = orders.some((o) => o.status === "created" && !isOpenScheduledOrder(o));
-  if (hasCreated) return "created";
-  const hasActive = orders.some((o) => isActiveMerchantOrderStage(o.status) && !isOpenScheduledOrder(o));
-  return hasActive ? "all" : "created";
+  if (tabParam === "delivered" || tabParam === "rejected" || tabParam === "rto") return "completed";
+  if (SWIPE_TAB_ORDER.includes(tabParam as LiveFilterKey)) {
+    return tabParam as LiveFilterKey;
+  }
+  for (const key of SWIPE_TAB_ORDER) {
+    if (key === "scheduled") {
+      if (orders.some((o) => isOpenScheduledOrder(o))) return key;
+      continue;
+    }
+    if (key === "completed") {
+      if (orders.some((o) => isTerminalCompletedStatus(o.status) && !isOpenScheduledOrder(o))) {
+        return key;
+      }
+      continue;
+    }
+    if (orders.some((o) => o.status === key && !isOpenScheduledOrder(o))) return key;
+  }
+  return DEFAULT_LIVE_TAB;
 }
 
 function isTerminalStatus(status: OrderStage): boolean {
@@ -304,7 +311,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   const { selectedStore } = useSelectedStore();
   const { isOnline } = useStoreStatus();
 
-  const { orders, loading, error, refetch, transitionOrder } = useOrders();
+  const { orders, loading, error, refetch, transitionOrder, extendPrepDelay, acceptanceWindowMinutes } = useOrders();
 
   const [search, setSearch] = useState("");
   const [sheetFilters, setSheetFilters] = useState<OrdersFilters>(EMPTY_ORDERS_FILTERS);
@@ -322,6 +329,9 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   const [nowMs, setNowMs] = useState(Date.now());
   const [rejectTarget, setRejectTarget] = useState<OrderRecord | null>(null);
   const [rejectLoading, setRejectLoading] = useState(false);
+  const [prepDelayOrder, setPrepDelayOrder] = useState<OrderRecord | null>(null);
+  const [prepDelayLoading, setPrepDelayLoading] = useState(false);
+  const { followUp, beginFollowUp, dismissFollowUp, setFollowUp } = useRejectFollowUp();
 
   useEffect(() => {
     const id = setInterval(() => setNowMs(Date.now()), 1000);
@@ -346,13 +356,14 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     setFilterKey(resolveInitialFilterKey("", orders));
   }, [isHistory, loading, initialTabParam, orders]);
 
-  const handleFilterChange = useCallback((key: FilterKey) => {
+  const handleFilterChange = useCallback((key: LiveFilterKey) => {
     userSelectedTabRef.current = true;
     setFilterKey(key);
   }, []);
 
   const shiftTabBySwipe = useCallback(
     (direction: "left" | "right") => {
+      if (filterKey === "all") return;
       const idx = SWIPE_TAB_ORDER.indexOf(filterKey);
       if (idx < 0) return;
       const nextIdx = direction === "right" ? idx + 1 : idx - 1;
@@ -427,7 +438,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
 
       if (isOpenScheduledOrder(o)) return false;
 
-      const matchesStatus = filterKey === "all" ? true : o.status === filterKey;
+      const matchesStatus = o.status === filterKey;
       return matchesSearch && matchesStatus && matchesSheet && matchesTime;
     });
 
@@ -442,9 +453,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   }, [orders, search, filterKey, sheetFilters, isHistory, dateRange, nowMs]);
 
   const liveCounts = useMemo(() => {
-    const base: Partial<Record<FilterKey, number>> = {
-      all: 0,
-      created: 0,
+    const base: Partial<Record<LiveFilterKey, number>> = {
       preparing: 0,
       ready: 0,
       picked_up: 0,
@@ -456,15 +465,9 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
         base.scheduled! += 1;
         continue;
       }
-      base.all! += 1;
       if (isTerminalCompletedStatus(o.status)) {
         base.completed! += 1;
-      } else if (
-        o.status === "created" ||
-        o.status === "preparing" ||
-        o.status === "ready" ||
-        o.status === "picked_up"
-      ) {
+      } else if (o.status === "preparing" || o.status === "ready" || o.status === "picked_up") {
         base[o.status]! += 1;
       }
     }
@@ -489,6 +492,14 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   const confirmReject = useCallback(
     async (reason: MerchantCancellationReason) => {
       if (!rejectTarget) return;
+      const orderSnap = rejectTarget;
+      if (rejectReasonNeedsFollowUp(reason)) {
+        setRejectTarget(null);
+        beginFollowUp(reason, orderSnap.lineItems, () =>
+          transitionOrder(orderSnap.id, "rejected", { rejectedReason: reason })
+        );
+        return;
+      }
       setRejectLoading(true);
       try {
         await transitionOrder(rejectTarget.id, "rejected", { rejectedReason: reason });
@@ -499,7 +510,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
         setRejectLoading(false);
       }
     },
-    [rejectTarget, transitionOrder]
+    [rejectTarget, transitionOrder, beginFollowUp]
   );
 
   const handleAdvance = useCallback(
@@ -530,6 +541,26 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     [router]
   );
 
+  const handleNeedMoreTime = useCallback((order: OrderRecord) => {
+    setPrepDelayOrder(order);
+  }, []);
+
+  const confirmPrepDelay = useCallback(
+    async (minutes: number) => {
+      if (!prepDelayOrder) return;
+      setPrepDelayLoading(true);
+      try {
+        await extendPrepDelay(prepDelayOrder.id, minutes);
+        setPrepDelayOrder(null);
+      } catch {
+        /* error surfaced via OrdersContext */
+      } finally {
+        setPrepDelayLoading(false);
+      }
+    },
+    [prepDelayOrder, extendPrepDelay]
+  );
+
   const renderOrder = ({ item }: { item: OrderRecord }) => {
     if (isHistory || filterKey === "completed") {
       return (
@@ -545,10 +576,12 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
       <LiveOrderCard
         order={item}
         nowMs={nowMs}
+        acceptanceWindowMinutes={acceptanceWindowMinutes}
         storeName={selectedStore?.store_name}
         onAccept={() => handleAccept(item)}
         onReject={() => handleReject(item)}
         onAdvance={() => handleAdvance(item)}
+        onNeedMoreTime={() => handleNeedMoreTime(item)}
         onViewDetail={() => handleViewDetail(item)}
       />
     );
@@ -578,7 +611,11 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
       />
       <PastOrdersBanner onPress={() => router.push("/order-history" as any)} />
       <StoreClosedActiveOrdersNotice visible={!isOnline && hasActiveOrders} />
-      <StatusTabs activeKey={filterKey} counts={liveCounts} onChange={handleFilterChange} />
+      <StatusTabs
+        activeKey={filterKey as LiveFilterKey}
+        counts={liveCounts}
+        onChange={handleFilterChange}
+      />
     </>
   );
 
@@ -633,6 +670,17 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
         onClose={() => !rejectLoading && setRejectTarget(null)}
         onConfirm={confirmReject}
       />
+      <RejectFollowUpHost
+        followUp={followUp}
+        onDismiss={dismissFollowUp}
+        setFollowUp={setFollowUp}
+      />
+      <MerchantPrepDelaySheet
+        visible={prepDelayOrder != null}
+        loading={prepDelayLoading}
+        onClose={() => !prepDelayLoading && setPrepDelayOrder(null)}
+        onSelectMinutes={(mins) => void confirmPrepDelay(mins)}
+      />
       <View style={styles.listSwipeArea} {...tabSwipePanHandlers}>
           <FlatList
             data={filteredOrders}
@@ -679,11 +727,9 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
                           ? "No scheduled orders right now"
                           : filterKey === "completed"
                             ? "No completed orders in the last 24 hours"
-                            : filterKey === "all"
-                              ? "No orders to show"
-                              : isActiveMerchantOrderStage(filterKey)
-                                ? `No ${filterKey.replace("_", " ")} orders`
-                                : `No orders in ${filterKey.replace("_", " ")}`}
+                            : isActiveMerchantOrderStage(filterKey)
+                              ? `No ${filterKey.replace("_", " ")} orders`
+                              : `No orders in ${filterKey.replace("_", " ")}`}
                   </Text>
                 </View>
               )

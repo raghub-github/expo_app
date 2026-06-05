@@ -26,7 +26,15 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Location from "expo-location";
 import { useLocationStore } from "@/store/locationStore";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
-import { searchPlacesEnriched, isPincodeSearchMode, type EnrichedPlaceResult } from "@/services/location.service";
+import {
+  searchPlacesEnriched,
+  isPincodeSearchMode,
+  resolveMapboxEnrichedPlace,
+  geocodeAddressToCoord,
+  type EnrichedPlaceResult,
+  MAPBOX_SEARCH_DEBOUNCE_MS,
+} from "@/services/location.service";
+import { isValidMapCoordinate } from "@/lib/map-coordinates";
 import { reverseGeocode } from "@/services/location.service";
 import { addressService, type Address, type LocalSuggestionResult } from "@/services/address.service";
 import { profileService } from "@/services/profile.service";
@@ -50,7 +58,7 @@ const SHADOW = Platform.select({
   android: { elevation: 3 },
 });
 
-const SEARCH_DEBOUNCE_MS = 350;
+const SEARCH_DEBOUNCE_MS = MAPBOX_SEARCH_DEBOUNCE_MS;
 const NEAR_SAVED_RADIUS_METERS = 500;
 
 function toRad(deg: number) {
@@ -114,6 +122,7 @@ export default function SelectLocationScreen() {
   } = useRecentLocationStore();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<EnrichedPlaceResult[]>([]);
+  const [resolvingSearchPlace, setResolvingSearchPlace] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchFailsafe, setSearchFailsafe] = useState(false);
   const [savedAddressLoading, setSavedAddressLoading] = useState<number | null>(null);
@@ -367,6 +376,7 @@ export default function SelectLocationScreen() {
       searchPlacesEnriched(query, {
         signal: controller.signal,
         proximity,
+        sessionContext: "food-delivery",
         recentLocationKeys: getRecentLocationKeys(),
         getLocalSuggestions: getLocal,
         getCityAreas,
@@ -525,23 +535,48 @@ export default function SelectLocationScreen() {
     });
   };
 
-  const handleSelectSearchResult = (place: EnrichedPlaceResult) => {
-    addRecentLocation({
-      latitude: place.latitude,
-      longitude: place.longitude,
-      primary: place.primary,
-      fullAddress: place.fullAddress,
-    });
-    router.push({
-      pathname: "/location-map",
-      params: {
-        latitude: String(place.latitude),
-        longitude: String(place.longitude),
-        primary: place.primary,
-        fullAddress: place.fullAddress,
-        ...forwardParams,
-      },
-    });
+  const handleSelectSearchResult = async (place: EnrichedPlaceResult) => {
+    if (resolvingSearchPlace) return;
+    setResolvingSearchPlace(true);
+    try {
+      let resolved = await resolveMapboxEnrichedPlace(place, "food-delivery");
+      if (!isValidMapCoordinate(resolved.latitude, resolved.longitude)) {
+        const geocoded = await geocodeAddressToCoord(resolved.fullAddress || resolved.primary);
+        if (geocoded && isValidMapCoordinate(geocoded.latitude, geocoded.longitude)) {
+          resolved = {
+            ...resolved,
+            latitude: geocoded.latitude,
+            longitude: geocoded.longitude,
+            pendingRetrieve: false,
+          };
+        }
+      }
+      if (!isValidMapCoordinate(resolved.latitude, resolved.longitude)) {
+        Alert.alert(
+          "Location unavailable",
+          "Could not load map coordinates for this place. Try another search result."
+        );
+        return;
+      }
+      addRecentLocation({
+        latitude: resolved.latitude,
+        longitude: resolved.longitude,
+        primary: resolved.primary,
+        fullAddress: resolved.fullAddress,
+      });
+      router.push({
+        pathname: "/location-map",
+        params: {
+          latitude: String(resolved.latitude),
+          longitude: String(resolved.longitude),
+          primary: resolved.primary,
+          fullAddress: resolved.fullAddress,
+          ...forwardParams,
+        },
+      });
+    } finally {
+      setResolvingSearchPlace(false);
+    }
   };
 
   const applySavedAddress = async (addr: Address) => {
@@ -689,11 +724,18 @@ export default function SelectLocationScreen() {
         )}
         {showSearchSection && !searchLoading && searchResults.length > 0 && (
           <View style={[styles.searchResultsWrap, styles.sectionBox]}>
+            {resolvingSearchPlace ? (
+              <View style={styles.searchLoadingWrap}>
+                <ActivityIndicator size="small" color={TEAL} />
+                <Text style={styles.searchLoadingText}>Loading map location…</Text>
+              </View>
+            ) : null}
             {searchResults.map((place, index) => (
               <TouchableOpacity
-                key={`${place.latitude}-${place.longitude}-${place.primary}-${index}`}
+                key={`${place.mapboxSuggestion?.mapbox_id ?? place.primary}-${index}`}
                 style={[styles.addressCard, styles.addressCardBorder, SHADOW]}
-                onPress={() => handleSelectSearchResult(place)}
+                onPress={() => void handleSelectSearchResult(place)}
+                disabled={resolvingSearchPlace}
                 activeOpacity={0.85}
               >
                 <View style={styles.addressCardLeft}>

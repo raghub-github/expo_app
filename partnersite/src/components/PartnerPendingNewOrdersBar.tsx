@@ -14,7 +14,7 @@ import {
   usePartnerSelectedStore,
 } from '@/lib/partner-selected-store';
 
-const POLL_MS = 8_000;
+const POLL_MS = 12_000;
 
 function ordersHref(pathname: string, storeId: string): string {
   const q = `filter=NEW_ORDERS&store_id=${encodeURIComponent(storeId)}`;
