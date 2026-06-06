@@ -21,6 +21,18 @@ import {
   type PaymentWebhookRetryJob,
 } from "@gatimitra/queue";
 
+// Startup env validation — fail loud + early instead of crash-looping on
+// `connect ECONNREFUSED` or 401 from the backend internal endpoint.
+function requireEnv(keys: string[]): void {
+  const missing = keys.filter((k) => !process.env[k] || !process.env[k]!.trim());
+  if (missing.length > 0) {
+    console.error(`[pay] missing required env: ${missing.join(", ")}`);
+    console.error("[pay] copy services/payment-worker/.env.example → .env and fill it in");
+    process.exit(2);
+  }
+}
+requireEnv(["REDIS_URL", "BACKEND_INTERNAL_URL", "INTERNAL_API_TOKEN"]);
+
 const log = {
   info: (...args: unknown[]) => console.log("[pay]", ...args),
   warn: (...args: unknown[]) => console.warn("[pay]", ...args),

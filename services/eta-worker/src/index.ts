@@ -21,6 +21,17 @@ import {
 } from "@gatimitra/queue";
 import { incrCounter } from "@gatimitra/logger";
 
+// Startup env validation — fail loud + early.
+function requireEnv(keys: string[]): void {
+  const missing = keys.filter((k) => !process.env[k] || !process.env[k]!.trim());
+  if (missing.length > 0) {
+    console.error(`[eta] missing required env: ${missing.join(", ")}`);
+    console.error("[eta] copy services/eta-worker/.env.example → .env and fill it in");
+    process.exit(2);
+  }
+}
+requireEnv(["REDIS_URL", "BACKEND_INTERNAL_URL", "INTERNAL_API_TOKEN"]);
+
 const log = {
   info: (...args: unknown[]) => console.log("[eta]", ...args),
   warn: (...args: unknown[]) => console.warn("[eta]", ...args),

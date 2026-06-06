@@ -28,6 +28,10 @@ WORKDIR /repo
 
 COPY package.json package-lock.json ./
 COPY partnersite/package.json ./partnersite/package.json
+# @gatimitra/financial-rules is consumed by partnersite via
+#   "main": "./dist/index.js"
+# so it must be present + built before partnersite's Next build runs.
+COPY packages/financial-rules/package.json ./packages/financial-rules/package.json
 
 RUN npm ci --no-audit --no-fund --ignore-scripts
 
@@ -42,9 +46,11 @@ WORKDIR /repo
 # conflicting peer-dep versions).
 COPY --from=deps /repo /repo
 
-# Only partnersite source — explicitly avoid `COPY . .` which would drag
-# dashboard, backend, mobile apps, and their build artefacts into context.
-COPY partnersite ./partnersite
+# Only partnersite source + the one shared package it imports.
+# Explicitly avoid `COPY . .` which would drag dashboard, backend, mobile
+# apps, and their build artefacts into context.
+COPY partnersite              ./partnersite
+COPY packages/financial-rules ./packages/financial-rules
 
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
@@ -60,7 +66,10 @@ ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
 # Targeted workspace build. The `build` script in partnersite/package.json
 # is `next build --webpack` — webpack on Linux Docker correctly finalizes
 # the standalone output (Turbopack standalone-finalize is the buggy combo).
-RUN npm run build --workspace=gmmportal
+# Order matters — shared packages first, then the consuming app.
+RUN npm run build \
+      --workspace=@gatimitra/financial-rules \
+      --workspace=gmmportal
 
 # ────────────────────────────────────────────────────────────────────────
 # Stage 3 — minimal runtime

@@ -32,6 +32,18 @@ import { getRedis, closeRedis } from "@gatimitra/redis";
 import { createLogger, incrCounter } from "@gatimitra/logger";
 import { eventSchema } from "@gatimitra/event-contracts";
 
+// Startup env validation — fail loud + early. KAFKA_BROKERS is intentionally
+// optional (falls back to a Redis stream when unset).
+function requireEnv(keys: string[]): void {
+  const missing = keys.filter((k) => !process.env[k] || !process.env[k]!.trim());
+  if (missing.length > 0) {
+    console.error(`[outbox-relay] missing required env: ${missing.join(", ")}`);
+    console.error("[outbox-relay] copy services/outbox-relay/.env.example → .env and fill it in");
+    process.exit(2);
+  }
+}
+requireEnv(["DATABASE_URL", "REDIS_URL"]);
+
 const log = createLogger({ service: "outbox-relay" });
 const DATABASE_URL = process.env.DATABASE_URL;
 const KAFKA_BROKERS = (process.env.KAFKA_BROKERS ?? "").trim();
