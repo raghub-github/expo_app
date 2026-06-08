@@ -41,6 +41,44 @@ export async function checkBookmark(customerId: number, storeId: number): Promis
 }
 
 /**
+ * Public merchant store_id strings bookmarked by this customer.
+ */
+export async function listBookmarkedStorePublicIds(customerId: number): Promise<string[]> {
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from(TABLE)
+      .select("store_id")
+      .eq("customer_id", customerId);
+    if (error) {
+      if (isTableMissingError(error)) return [];
+      throw error;
+    }
+    const internalIds = (data ?? [])
+      .map((row) => Number((row as { store_id?: number }).store_id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    if (internalIds.length === 0) return [];
+
+    const { data: stores, error: storeErr } = await supabase
+      .from("merchant_stores")
+      .select("store_id")
+      .in("id", internalIds);
+    if (storeErr) {
+      if (isTableMissingError(storeErr)) return [];
+      throw storeErr;
+    }
+    return (stores ?? [])
+      .map((row) => (row as { store_id?: string }).store_id)
+      .filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+  } catch (err) {
+    if (err && typeof err === "object" && isTableMissingError(err as { code?: string; message?: string })) {
+      return [];
+    }
+    throw err;
+  }
+}
+
+/**
  * Set bookmark state: insert if saved, delete if not.
  * Returns { saved: false } if table is missing (run merchant_db migration 0047).
  */

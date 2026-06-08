@@ -256,6 +256,75 @@ export type RecordFoodRiderUnassignInput = {
   occurredAt?: Date;
 };
 
+export type RecordFoodRiderAdminCancelledInput = RecordFoodRiderUnassignInput & {
+  cancelledBy?: string | null;
+};
+
+/** Agent cancelled an assigned food rider — marks assignment cancelled with reason. */
+export async function recordFoodRiderAdminCancelled(
+  tx: DbTx,
+  input: RecordFoodRiderAdminCancelledInput
+): Promise<void> {
+  const now = input.occurredAt ?? new Date();
+  const { orderIdText, riderId, orderCorePk, reasonCode } = input;
+  const reasonText = input.reasonText?.trim() || null;
+  const actorType = input.actorType ?? "admin";
+  const actorId = input.actorId ?? input.removedBy ?? "system";
+
+  await insertAssignmentEvent(tx, {
+    orderIdText,
+    riderId,
+    eventType: "unassigned",
+    idempotencyKey: `food_admin_cancel:${orderIdText}:${riderId}:${now.getTime()}`,
+    actorType,
+    actorId,
+    reasonCode,
+    metadata: {
+      serviceType: "food",
+      orderCorePk,
+      reasonText,
+      removedBy: input.removedBy ?? null,
+      foodStatus: input.foodStatus,
+      adminCancelled: true,
+    },
+    occurredAt: now,
+  });
+
+  await tx.execute(sql`
+    DELETE FROM order_rider_assignments_current WHERE order_id = ${orderIdText}
+  `);
+
+  await tx.execute(sql`
+    UPDATE delivery_assignments
+    SET assignment_status = 'CANCELLED', updated_at = ${now.toISOString()}::timestamptz
+    WHERE order_id = ${orderIdText} AND rider_id = ${riderId}
+  `);
+
+  await recordRiderAssignmentMilestone(tx, {
+    orderCorePk,
+    orderIdText,
+    riderId,
+    eventType: "cancelled",
+    occurredAt: now,
+    statusMessage: reasonText ?? "Rider cancelled by agent",
+  });
+
+  await tx.execute(sql`
+    UPDATE order_rider_assignments
+    SET
+      cancellation_reason = ${reasonText},
+      cancellation_reason_code = ${reasonCode},
+      cancelled_by = ${input.cancelledBy ?? actorId},
+      cancelled_at = COALESCE(cancelled_at, ${now.toISOString()}::timestamptz),
+      assignment_status = 'cancelled'::rider_assignment_status,
+      is_active = FALSE,
+      updated_at = ${now.toISOString()}::timestamptz
+    WHERE order_core_id = ${orderCorePk}
+      AND rider_id = ${riderId}
+      AND is_active = TRUE
+  `);
+}
+
 /** Food rider unassigned — merchant food status is never changed here. */
 export async function recordFoodRiderUnassigned(
   tx: DbTx,

@@ -59,6 +59,7 @@ import NeedHelpBadge from '@/components/NeedHelpBadge';
 import { usePartnerDeviceOrderAlerts } from '@/hooks/usePartnerDeviceOrderAlerts';
 import {
   PARTNER_SELECTED_STORE_CHANGED,
+  isValidPartnerStoreId,
   readPartnerSelectedStoreId,
 } from '@/lib/partner-selected-store';
 import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
@@ -689,7 +690,10 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   }, [resolvedStoreId, fetchPartnerNotifications]);
 
   useEffect(() => {
-    const sync = () => setResolvedStoreId(readPartnerSelectedStoreId(restaurantId));
+    const sync = () => {
+      const id = readPartnerSelectedStoreId(restaurantId);
+      setResolvedStoreId(isValidPartnerStoreId(id) ? id : '');
+    };
     sync();
     const onStore = () => sync();
     const onStorage = (e: StorageEvent) => {

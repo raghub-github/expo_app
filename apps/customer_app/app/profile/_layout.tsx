@@ -23,6 +23,7 @@ export default function ProfileLayout() {
     >
       <Stack.Screen name="referrals" options={{ title: "Rewards & Referrals" }} />
       <Stack.Screen name="addresses" options={{ title: "Saved addresses" }} />
+      <Stack.Screen name="collections" options={{ headerShown: false }} />
       <Stack.Screen name="edit" options={{ title: "Edit profile" }} />
       <Stack.Screen name="language" options={{ title: "Language" }} />
       <Stack.Screen name="verify-email" options={{ headerShown: false }} />

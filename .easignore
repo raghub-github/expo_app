@@ -2,9 +2,13 @@
 # Root .easignore - reduces EAS upload size for ALL app builds
 # ============================================================
 
-# Other apps - not needed for customer_app build
-apps/merchant_app/
-apps/gatimitra-riderApp/
+# IMPORTANT: Never exclude apps/gatimitra-riderApp/ — EAS monorepo builds need
+# apps/gatimitra-riderApp/package.json in the archive (project root on expo.dev).
+# Other apps are excluded per-app via apps/<app>/.easignore when building that app.
+
+# Rider native dirs — EAS must run prebuild (new icons, Mapbox, expo modules).
+apps/gatimitra-riderApp/android/
+apps/gatimitra-riderApp/ios/
 
 # Backend and dashboard - never needed for mobile builds
 backend/

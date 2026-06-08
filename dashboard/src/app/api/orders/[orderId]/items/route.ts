@@ -339,17 +339,9 @@ export async function GET(
 
     const billingSnap = parseBillingSnapshot(core.billing_snapshot);
 
-    const foodTotal =
-      food != null &&
-      typeof food === "object" &&
-      "food_items_total_value" in food
-        ? (food as { food_items_total_value?: string | number | null }).food_items_total_value ??
-          null
-        : null;
     const customerPricingSummary = buildOrderPricingSummary(
       billingSnap,
-      core as Record<string, unknown>,
-      foodTotal
+      core as Record<string, unknown>
     );
 
     const snapshotsByText = await loadSnapshotsByOrderTexts(

@@ -20,9 +20,10 @@ import Animated, {
 } from "react-native-reanimated";
 import { colors } from "@/src/theme";
 
-const TRACK_H = 56;
-const THUMB = 48;
+const TRACK_H = 54;
+const THUMB = 46;
 const PAD = 4;
+const SLIDE_GREEN = "#34A853";
 
 type Props = {
   label: string;
@@ -34,6 +35,10 @@ type Props = {
   /** Geo-fence lock — action unavailable until rider is within configured radius. */
   geoLocked?: boolean;
   geoHint?: string | null;
+  /** Flush to parent bottom — square bottom corners, no outer margin. */
+  flushBottom?: boolean;
+  /** Extends green track through the home-indicator safe area. */
+  safeAreaBottom?: number;
 };
 
 export function FoodSlideToReachStore({
@@ -45,6 +50,8 @@ export function FoodSlideToReachStore({
   completedLabel = "Reached at store ✓",
   geoLocked = false,
   geoHint = null,
+  flushBottom = false,
+  safeAreaBottom = 0,
 }: Props) {
   const actionDisabled = disabled || loading || geoLocked;
   const showHintSlot = geoLocked && Boolean(geoHint);
@@ -120,9 +127,24 @@ export function FoodSlideToReachStore({
     transform: [{ scale: chevronPulse.value }],
   }));
 
+  const trackShape = flushBottom
+    ? [
+        styles.trackFlush,
+        styles.trackFlushNoShadow,
+        safeAreaBottom > 0 ? { paddingBottom: safeAreaBottom, height: 56 + safeAreaBottom } : { height: 56 },
+      ]
+    : undefined;
+  const doneShape = flushBottom
+    ? [
+        styles.trackFlush,
+        styles.trackFlushNoShadow,
+        safeAreaBottom > 0 ? { paddingBottom: safeAreaBottom, height: 56 + safeAreaBottom } : { height: 56 },
+      ]
+    : undefined;
+
   if (completed) {
     return (
-      <View style={styles.doneTrack}>
+      <View style={[styles.doneTrack, doneShape]}>
         <Ionicons name="checkmark-circle" size={22} color="#fff" />
         <Text style={styles.doneText}>{completedLabel}</Text>
       </View>
@@ -130,7 +152,7 @@ export function FoodSlideToReachStore({
   }
 
   return (
-    <View style={styles.wrap}>
+    <View style={[styles.wrap, flushBottom && styles.wrapFlush]}>
       {showHintSlot ? (
         <View style={styles.geoHintSlot}>
           <Text style={styles.geoHint} numberOfLines={3}>
@@ -141,33 +163,48 @@ export function FoodSlideToReachStore({
       <View
         style={[
           styles.track,
-          actionDisabled && styles.trackDisabled,
+          trackShape,
+          actionDisabled && !flushBottom && styles.trackDisabled,
+          actionDisabled && flushBottom && styles.trackFlushDisabled,
           geoLocked && !loading && styles.trackGeoLocked,
         ]}
         onLayout={(e) => {
           trackWidthRef.current = e.nativeEvent.layout.width;
         }}
       >
-        <View {...(actionDisabled ? {} : pan.panHandlers)} style={styles.thumbZone}>
+        <View
+          {...(actionDisabled ? {} : pan.panHandlers)}
+          style={[
+            styles.thumbZone,
+            flushBottom && safeAreaBottom > 0 ? { bottom: safeAreaBottom } : null,
+          ]}
+        >
           <Animated.View style={[styles.thumb, thumbStyle]}>
             {loading ? (
-              <ActivityIndicator color={colors.success[700]} size="small" />
+              <ActivityIndicator color={SLIDE_GREEN} size="small" />
             ) : geoLocked ? (
               <Ionicons name="lock-closed" size={18} color={colors.gray[600]} />
             ) : (
               <Animated.View style={[styles.chevronPair, chevronStyle]}>
-                <Ionicons name="chevron-forward" size={16} color={colors.success[700]} />
+                <Ionicons name="chevron-forward" size={16} color={SLIDE_GREEN} />
                 <Ionicons
                   name="chevron-forward"
                   size={16}
-                  color={colors.success[700]}
+                  color={SLIDE_GREEN}
                   style={styles.chevronSecond}
                 />
               </Animated.View>
             )}
           </Animated.View>
         </View>
-        <Text style={styles.label} pointerEvents="none" numberOfLines={1}>
+        <Text
+          style={[
+            styles.label,
+            flushBottom && safeAreaBottom > 0 ? { marginBottom: safeAreaBottom } : null,
+          ]}
+          pointerEvents="none"
+          numberOfLines={1}
+        >
           {label}
         </Text>
       </View>
@@ -177,8 +214,25 @@ export function FoodSlideToReachStore({
 
 const styles = StyleSheet.create({
   wrap: {
-    gap: 0,
+    width: "100%",
+    marginTop: 2,
   },
+  wrapFlush: {
+    marginTop: 0,
+  },
+  trackFlush: {
+    borderRadius: 0,
+    minHeight: 56,
+  },
+  trackFlushNoShadow: Platform.select({
+    ios: {
+      shadowOpacity: 0,
+      shadowRadius: 0,
+      shadowOffset: { width: 0, height: 0 },
+    },
+    android: { elevation: 0 },
+    default: {},
+  }),
   geoHintSlot: {
     justifyContent: "center",
     marginBottom: 6,
@@ -191,8 +245,8 @@ const styles = StyleSheet.create({
   },
   track: {
     height: TRACK_H,
-    borderRadius: 14,
-    backgroundColor: colors.success[500],
+    borderRadius: TRACK_H / 2,
+    backgroundColor: SLIDE_GREEN,
     flexDirection: "row",
     alignItems: "center",
     overflow: "hidden",
@@ -210,6 +264,10 @@ const styles = StyleSheet.create({
   trackDisabled: {
     opacity: 0.65,
   },
+  trackFlushDisabled: {
+    backgroundColor: "#5F9E6E",
+    opacity: 1,
+  },
   trackGeoLocked: {
     backgroundColor: colors.gray[300],
     opacity: 1,
@@ -226,8 +284,8 @@ const styles = StyleSheet.create({
   thumb: {
     marginLeft: PAD,
     width: THUMB,
-    height: THUMB - 4,
-    borderRadius: 10,
+    height: THUMB,
+    borderRadius: THUMB / 2,
     backgroundColor: "#ffffff",
     alignItems: "center",
     justifyContent: "center",
@@ -242,15 +300,16 @@ const styles = StyleSheet.create({
   label: {
     flex: 1,
     textAlign: "center",
-    fontSize: 17,
-    fontWeight: "800",
+    fontSize: 16,
+    fontWeight: "600",
     color: "#ffffff",
-    paddingHorizontal: THUMB + 16,
+    paddingHorizontal: THUMB + 14,
   },
   doneTrack: {
     height: TRACK_H,
-    borderRadius: 14,
-    backgroundColor: colors.success[600],
+    minHeight: TRACK_H,
+    borderRadius: TRACK_H / 2,
+    backgroundColor: SLIDE_GREEN,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",

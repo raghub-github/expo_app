@@ -2,8 +2,7 @@ import React from "react";
 import { View, Text, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { ActiveManeuverDisplay } from "@/src/lib/navigation-maneuver";
-import { formatDistanceAhead } from "@/src/lib/navigation-maneuver";
-
+import { formatDistanceShort } from "@/src/lib/navigation-maneuver";
 type Props = {
   maneuver: ActiveManeuverDisplay;
 };
@@ -37,7 +36,7 @@ function ManeuverIcon({ icon }: { icon: ActiveManeuverDisplay["icon"] }) {
 }
 
 export function FoodNavigationManeuverBanner({ maneuver }: Props) {
-  const ahead = formatDistanceAhead(maneuver.distanceAheadM);
+  const distance = formatDistanceShort(maneuver.distanceAheadM);
   const wrongWay = maneuver.title === "Wrong way";
   const headline = wrongWay ? maneuver.primary : maneuver.title;
 
@@ -46,14 +45,14 @@ export function FoodNavigationManeuverBanner({ maneuver }: Props) {
       <View style={styles.main}>
         <ManeuverIcon icon={maneuver.icon} />
         <View style={styles.textCol}>
+          {distance ? (
+            <Text style={styles.distance} numberOfLines={1}>
+              {distance}
+            </Text>
+          ) : null}
           <Text style={[styles.title, wrongWay && styles.titleWrongWay]} numberOfLines={wrongWay ? 2 : 1}>
             {headline}
           </Text>
-          {ahead ? (
-            <Text style={styles.ahead} numberOfLines={1}>
-              {ahead}
-            </Text>
-          ) : null}
         </View>
       </View>
       {maneuver.thenLabel ? (
@@ -97,22 +96,27 @@ const styles = StyleSheet.create({
   },
   textCol: {
     flex: 1,
-    gap: 2,
+    gap: 0,
+    minWidth: 0,
+    paddingRight: 8,
   },
-  title: {
-    fontSize: 26,
+  distance: {
+    fontSize: 28,
     fontWeight: "800",
     color: "#ffffff",
-    letterSpacing: -0.3,
+    letterSpacing: -0.4,
+    lineHeight: 32,
   },
-  titleWrongWay: {
+  title: {
     fontSize: 17,
+    fontWeight: "700",
+    color: "rgba(255,255,255,0.95)",
+    letterSpacing: -0.2,
     lineHeight: 22,
   },
-  ahead: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "rgba(255,255,255,0.88)",
+  titleWrongWay: {
+    fontSize: 16,
+    lineHeight: 21,
   },
   thenBar: {
     flexDirection: "row",

@@ -103,6 +103,11 @@ export function RidePickupOtpEntry({
     }
   }, [autoSubmit, onSubmit]);
 
+  const focusInput = useCallback(() => {
+    if (loading || isComplete) return;
+    inputRef.current?.focus();
+  }, [loading, isComplete]);
+
   const activeIndex = Math.min(otp.length, 3);
 
   const verifiedLabel = loading
@@ -135,8 +140,11 @@ export function RidePickupOtpEntry({
               )}
       </Text>
 
-      <Pressable style={styles.digitTapArea} onPress={() => inputRef.current?.focus()}>
-        <Animated.View style={[styles.digitRow, { transform: [{ scale: rowScale }] }]}>
+      <View style={styles.digitTapArea}>
+        <Animated.View
+          style={[styles.digitRow, { transform: [{ scale: rowScale }] }]}
+          pointerEvents="none"
+        >
           {DIGIT_SLOTS.map((slot) => {
             const char = otp[slot] ?? "";
             const isActive = focused && activeIndex === slot && !char && !isComplete;
@@ -199,16 +207,20 @@ export function RidePickupOtpEntry({
           onChangeText={handleChange}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
+          onPressIn={focusInput}
           keyboardType="number-pad"
           maxLength={4}
           editable={!loading && !isComplete}
-          style={styles.hiddenInput}
+          showSoftInputOnFocus
+          blurOnSubmit={false}
+          style={styles.overlayInput}
+          pointerEvents={loading || isComplete ? "none" : "auto"}
           autoComplete="one-time-code"
           textContentType="oneTimeCode"
           caretHidden
           importantForAutofill="yes"
         />
-      </Pressable>
+      </View>
 
       {!autoSubmit ? (
         <Pressable
@@ -307,6 +319,7 @@ const styles = StyleSheet.create({
   digitTapArea: {
     position: "relative",
     marginBottom: 8,
+    minHeight: 72,
   },
   digitRow: {
     flexDirection: "row",
@@ -402,14 +415,12 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: colors.success[800],
   },
-  hiddenInput: {
-    position: "absolute",
-    width: 1,
-    height: 1,
-    left: 0,
-    top: 0,
-    opacity: 0,
+  overlayInput: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0.02,
     color: "transparent",
+    fontSize: 16,
+    zIndex: 2,
   },
   btn: {
     flexDirection: "row",

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -20,10 +20,13 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
-import { createOtpService, retryOtp } from "@/src/services/auth/otp";
+import {
+  isRiderAuthError,
+  riderAuthService,
+} from "@/src/services/auth/auth.service";
+import { resetSessionRevokedFlag } from "@/src/services/sessionEvents";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { useSessionStore } from "@/src/stores/sessionStore";
-import { useCheckMobile, useCreateRider } from "@/src/hooks/useOnboarding";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 
 const riderHero = require("../../assets/images/riderlogin.png");
@@ -140,10 +143,7 @@ export default function LoginScreen() {
   const { height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
 
-  const { service } = useMemo(() => createOtpService(), []);
   const setSession = useSessionStore((s) => s.setSession);
-  const checkMobile = useCheckMobile();
-  const createRider = useCreateRider();
   const setOnboardingData = useOnboardingStore((s) => s.setData);
 
   const [phoneE164, setPhoneE164] = useState("");
@@ -152,7 +152,7 @@ export default function LoginScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(0);
-  const [requestId, setRequestId] = useState<string | null>(null);
+  const [deviceSessionRetry, setDeviceSessionRetry] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
@@ -188,7 +188,7 @@ export default function LoginScreen() {
   }, []);
 
   const startCountdown = () => {
-    setCountdown(30);
+    setCountdown(60);
     const interval = setInterval(() => {
       setCountdown((prev) => {
         if (prev <= 1) {
@@ -217,15 +217,12 @@ export default function LoginScreen() {
       });
 
       const normalizedPhone = phoneDigits.length === 10 ? `+91${phoneDigits}` : phoneE164.trim();
-      const response = (await Promise.race([
-        service.requestOtp(normalizedPhone),
+      await Promise.race([
+        riderAuthService.sendOtp({ phoneE164: normalizedPhone }),
         timeoutPromise,
-      ])) as Awaited<ReturnType<typeof service.requestOtp>>;
+      ]);
 
-      if (response.requestId) {
-        setRequestId(response.requestId);
-      }
-
+      setDeviceSessionRetry(false);
       setStep("otp");
       startCountdown();
     } catch (e) {
@@ -254,33 +251,41 @@ export default function LoginScreen() {
       const normalizedPhone = phoneDigits.length === 10 ? `+91${phoneDigits}` : phoneE164.trim();
       const otpValue = otp.trim();
 
-      const session = await service.verifyOtp({
-        phoneE164: normalizedPhone,
-        otp: otpValue,
-        deviceId,
-        requestId: requestId ?? undefined,
-      });
-      await setSession(session);
-
-      const checkResult = await checkMobile.mutateAsync(normalizedPhone);
-
-      if (checkResult.exists && checkResult.riderId) {
-        await setOnboardingData({ riderId: checkResult.riderId });
-
-        if (checkResult.onboardingStatus === "approved") {
-          router.replace("/(tabs)/orders");
-        } else if (checkResult.onboardingStatus === "pending_approval") {
-          router.replace("/(onboarding)/pending");
-        } else {
-          router.replace("/");
-        }
-      } else {
-        const createResult = await createRider.mutateAsync({
+      let session;
+      try {
+        session = await riderAuthService.verifyOtp({
           phoneE164: normalizedPhone,
+          otp: otpValue,
           deviceId,
         });
+      } catch (verifyError) {
+        if (isRiderAuthError(verifyError) && verifyError.code === "device_session_unavailable") {
+          setDeviceSessionRetry(true);
+          throw verifyError;
+        }
+        throw verifyError;
+      }
 
-        await setOnboardingData({ riderId: createResult.riderId });
+      resetSessionRevokedFlag();
+      await setSession(session);
+
+      const status = await riderAuthService.getRiderStatus(session.accessToken);
+      const riderId =
+        status.riderId ??
+        session.riderId ??
+        session.userId.replace(/^usr_/, "");
+
+      if (riderId) {
+        await setOnboardingData({ riderId });
+      }
+
+      if (status.onboardingStatus === "approved") {
+        router.replace("/(tabs)/orders");
+      } else if (status.onboardingStatus === "pending_approval") {
+        router.replace("/(onboarding)/pending");
+      } else if (status.exists) {
+        router.replace("/");
+      } else {
         router.replace("/(onboarding)/method-selection");
       }
     } catch (e) {
@@ -291,20 +296,39 @@ export default function LoginScreen() {
   };
 
   const onRetryOtp = async () => {
-    if (countdown > 0 || !requestId) return;
+    if (countdown > 0) return;
 
     setBusy(true);
     setError(null);
     try {
-      const result = await retryOtp(requestId, "SMS");
-      if (result.success) {
-        startCountdown();
-        Alert.alert("Success", "OTP has been resent to your phone number.");
-      } else {
-        setError(result.message || "Failed to resend OTP");
-      }
+      const normalizedPhone = phoneDigits.length === 10 ? `+91${phoneDigits}` : phoneE164.trim();
+      await riderAuthService.sendOtp({ phoneE164: normalizedPhone });
+      startCountdown();
+      Alert.alert("Success", "OTP has been resent to your phone number.");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to resend OTP");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onRetryDeviceSession = async () => {
+    if (!otpValid) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const deviceId = await getOrCreateDeviceId();
+      const normalizedPhone = phoneDigits.length === 10 ? `+91${phoneDigits}` : phoneE164.trim();
+      const session = await riderAuthService.exchangeRiderFromCurrentSupabaseSession({
+        phoneE164: normalizedPhone,
+        deviceId,
+      });
+      resetSessionRevokedFlag();
+      await setSession(session);
+      setDeviceSessionRetry(false);
+      router.replace("/");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("login.failedVerify"));
     } finally {
       setBusy(false);
     }
@@ -313,7 +337,7 @@ export default function LoginScreen() {
   const resetToPhone = () => {
     setStep("phone");
     setOtp("");
-    setRequestId(null);
+    setDeviceSessionRetry(false);
     setError(null);
     setCountdown(0);
   };
@@ -412,6 +436,8 @@ export default function LoginScreen() {
         placeholderTextColor="#9ca3af"
         keyboardType="number-pad"
         maxLength={OTP_LENGTH}
+        autoComplete={Platform.OS === "android" ? "sms-otp" : "one-time-code"}
+        textContentType="oneTimeCode"
         autoFocus
         style={[
           styles.otpInput,
@@ -424,6 +450,12 @@ export default function LoginScreen() {
         <View style={styles.errorBox}>
           <Text style={styles.errorText}>{error}</Text>
         </View>
+      ) : null}
+
+      {deviceSessionRetry ? (
+        <Pressable onPress={onRetryDeviceSession} disabled={busy || !otpValid} style={styles.retrySessionBtn}>
+          <Text style={styles.linkText}>Try again without re-entering OTP</Text>
+        </Pressable>
       ) : null}
 
       <ContinueButton
@@ -879,6 +911,10 @@ const styles = StyleSheet.create({
   resendCountdown: {
     fontWeight: "700",
     color: "#374151",
+  },
+  retrySessionBtn: {
+    alignSelf: "center",
+    marginBottom: 10,
   },
   linkText: {
     fontSize: 15,

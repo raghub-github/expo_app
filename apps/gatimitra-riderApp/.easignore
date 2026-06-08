@@ -1,7 +1,21 @@
-# Minimal exclusions - only what's absolutely unnecessary
-node_modules/
+# Other apps in the monorepo (archive is created from git root)
+apps/customer_app/
+apps/merchant_app/
+backend/
+dashboard/
+partnersite/
+merchant_db/
+services/
+packages/**/node_modules/
+
+# Force EAS to run expo prebuild (regenerates icons + native config). Never upload stale native dirs.
+apps/gatimitra-riderApp/android/
+apps/gatimitra-riderApp/ios/
 android/
 ios/
+
+# Minimal exclusions - only what's absolutely unnecessary
+node_modules/
 .expo/
 .expo-shared/
 .gradle/
@@ -30,10 +44,6 @@ Thumbs.db
 # Explicitly exclude deleted documentation files
 MAPBOX_FIX.md
 MAPBOX_TOKEN_FIX.md
-
-# Build artifacts and scripts
-eas-build-pre-install.sh
-eas-hooks.sh
 
 # Environment files
 .env*

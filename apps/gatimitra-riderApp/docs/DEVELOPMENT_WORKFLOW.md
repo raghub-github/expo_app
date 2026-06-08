@@ -8,6 +8,16 @@
 
 You don't need to stop/start it every time you open the app. Here's how it works:
 
+## Maps (Native Mapbox Only)
+
+The rider app uses **native `@rnmapbox/maps` only**. There is no Expo Go or WebView map fallback.
+
+- **First-time / after native config changes:** `npx expo run:android` (or EAS development build)
+- **Daily JS development:** `npx expo start --dev-client` with the dev build installed on device
+- **Expo Go will not show maps** — install the development build APK instead
+
+Required env: `EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN` in `.env.local`. For EAS builds, also set `RNMAPBOX__MAPS_DOWNLOAD_TOKEN` in EAS secrets.
+
 ## Development Workflow
 
 ### 1. Start Metro Bundler (Once Per Session)

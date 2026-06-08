@@ -101,6 +101,7 @@ export const PAYMENT_METHOD_LABELS: Record<string, string> = {
 // ============================================
 // DEMO & CONFIG
 // ============================================
+// Legacy seed/debug id only — never use as runtime fallback when no store is selected.
 export const DEMO_RESTAURANT_ID = 'GMM0001'
 export const ITEMS_PER_PAGE = 10
 export const MAX_ITEMS_PREVIEW = 2

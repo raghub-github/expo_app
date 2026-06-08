@@ -9,6 +9,7 @@ import {
   View,
   Text,
   TouchableOpacity,
+  Pressable,
   StyleSheet,
   Dimensions,
   Platform,
@@ -18,25 +19,31 @@ import Animated, {
   useAnimatedStyle,
   useSharedValue,
   withSpring,
-  withTiming,
-  Easing,
 } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { setStoreBookmark } from "@/services/merchant.service";
-import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
-import { GatiMitraColors } from "@/constants/gatimitra";
+import { useStoreBookmarkMutations } from "@/hooks/useStoreBookmarks";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
-import { StoreBannerCarousel } from "@/components/StoreBannerCarousel";
+import { StoreBannerCarousel, LIST_CARD_CAROUSEL_HOLD_MS, LIST_CARD_CAROUSEL_SLIDE_MS } from "@/components/StoreBannerCarousel";
 import { NearFastDeliveryMeta } from "@/components/NearFastDeliveryMeta";
+import { MerchantRatingBadge } from "@/components/home/MerchantRatingBadge";
+import { MerchantOfferRow } from "@/components/home/MerchantOfferRow";
+import {
+  resolveMerchantCarouselBannerUri,
+  resolveMerchantCarouselGalleryUris,
+} from "@/lib/merchantBanner";
+import { formatMerchantDeliveryTime } from "@/lib/merchantDeliveryTime";
 import {
   buildStoreOpenStatusLabel,
   formatOpenStatusTagText,
 } from "@/lib/storeOpenStatusLabel";
 import { toTimestamp } from "@/lib/storeScheduleUi";
 import { useScheduleTick } from "@/hooks/useScheduleTick";
+
+import { GatiMitraColors } from "@/constants/gatimitra";
 
 const { width } = Dimensions.get("window");
 const PAGE_PAD = 16;
@@ -45,22 +52,10 @@ const IMAGE_HEIGHT = 220;
 const CARD_RADIUS = 20;
 const CARD_GAP = 18;
 
-const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
-
-function formatReviewCount(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}K+`;
-  return `${n}+`;
-}
-
-function isFreeDeliveryOfferText(text: string | null | undefined): boolean {
-  if (!text?.trim()) return true;
-  const t = text.trim().toLowerCase();
-  return /\bfree\s*delivery\b/.test(t) || /\bfree\s*del\b/.test(t);
-}
-
 export type GMRestaurantCardV2Props = {
   merchant: MerchantSummary;
   initialSaved?: boolean;
+  weatherDelayMinutes?: number;
 };
 
 function StoreOpenStatusBadge({
@@ -110,14 +105,17 @@ function StoreOpenStatusBadge({
   );
 }
 
-function GMRestaurantCardV2Inner({ merchant, initialSaved = false }: GMRestaurantCardV2Props) {
+function GMRestaurantCardV2Inner({
+  merchant,
+  initialSaved = false,
+  weatherDelayMinutes = 0,
+}: GMRestaurantCardV2Props) {
   const router = useRouter();
+  const { syncBookmark } = useStoreBookmarkMutations();
   const [saved, setSaved] = useState(initialSaved);
   const [savedLoading, setSavedLoading] = useState(false);
   const scale = useSharedValue(1);
-  const enterOpacity = useSharedValue(0);
-  const enterTranslateY = useSharedValue(12);
-  const didPlayEnter = useRef(false);
+  const blockNavRef = useRef(false);
 
   const liveStatusFromStore = useStoreStatusStore((s) => s.getStatus(merchant.id));
   const rawApi = (merchant.liveStatus ?? "").toString().trim().toUpperCase();
@@ -131,19 +129,22 @@ function GMRestaurantCardV2Inner({ merchant, initialSaved = false }: GMRestauran
     }
   }, [merchant.id, apiStatus]);
 
-  const bannerUri = useMemo(
-    () => toAbsoluteImageUrl(merchant.banner_url ?? merchant.displayImage ?? null),
-    [merchant.banner_url, merchant.displayImage]
-  );
-
-  const galleryUris = useMemo(() => merchant.galleryImages ?? [], [merchant.galleryImages]);
-
   useEffect(() => {
-    if (didPlayEnter.current) return;
-    didPlayEnter.current = true;
-    enterOpacity.value = withTiming(1, { duration: 320, easing: Easing.out(Easing.cubic) });
-    enterTranslateY.value = withSpring(0, { damping: 20, stiffness: 200 });
-  }, [enterOpacity, enterTranslateY]);
+    setSaved(initialSaved);
+  }, [initialSaved, merchant.id]);
+
+  const bannerUri = useMemo(() => resolveMerchantCarouselBannerUri(merchant), [merchant]);
+
+  const galleryUris = useMemo(() => resolveMerchantCarouselGalleryUris(merchant), [merchant]);
+
+  const deliveryTimeLabel = useMemo(
+    () =>
+      formatMerchantDeliveryTime(merchant, {
+        weatherDelayMinutes,
+        unit: "min",
+      }),
+    [merchant, weatherDelayMinutes]
+  );
 
   const toggleBookmark = useCallback(
     async (e: any) => {
@@ -153,25 +154,30 @@ function GMRestaurantCardV2Inner({ merchant, initialSaved = false }: GMRestauran
       try {
         const res = await setStoreBookmark(merchant.id, !saved);
         setSaved(res.saved);
+        syncBookmark(merchant.id, res.saved);
       } catch {
         // keep state
       } finally {
         setSavedLoading(false);
       }
     },
-    [merchant.id, saved, savedLoading]
+    [merchant.id, saved, savedLoading, syncBookmark]
   );
 
   const openMerchant = useCallback(() => {
+    if (blockNavRef.current) {
+      blockNavRef.current = false;
+      return;
+    }
     router.push({ pathname: "/home/merchant/[id]", params: { id: merchant.id } });
   }, [merchant.id, router]);
 
+  const onCarouselSwipe = useCallback(() => {
+    blockNavRef.current = true;
+  }, []);
+
   const animatedCardStyle = useAnimatedStyle(() => ({
-    opacity: enterOpacity.value,
-    transform: [
-      { translateY: enterTranslateY.value },
-      { scale: scale.value },
-    ],
+    transform: [{ scale: scale.value }],
   }));
 
   const onPressIn = () => {
@@ -181,107 +187,90 @@ function GMRestaurantCardV2Inner({ merchant, initialSaved = false }: GMRestauran
     scale.value = withSpring(1, { damping: 18, stiffness: 260 });
   };
 
-  const hasRating = merchant.avgRating != null && merchant.avgRating >= 0;
-  const ratingValue = hasRating ? Number(merchant.avgRating).toFixed(1) : null;
-  const reviewLabel =
-    merchant.totalReviews != null && merchant.totalReviews > 0
-      ? `By ${formatReviewCount(merchant.totalReviews)}`
-      : null;
-  const rawOffer = merchant.offerText?.trim() || null;
-  const primaryOffer =
-    rawOffer && !isFreeDeliveryOfferText(rawOffer) ? rawOffer : null;
-
   return (
-    <AnimatedTouchable
-      onPress={openMerchant}
-      onPressIn={onPressIn}
-      onPressOut={onPressOut}
-      activeOpacity={1}
-      style={[styles.card, animatedCardStyle]}
-    >
-      {/* Edge-to-edge image with gradient overlay */}
-      <View style={styles.imageWrap}>
-        <StoreBannerCarousel
-          bannerUri={bannerUri}
-          galleryUris={galleryUris}
-          width={CARD_WIDTH}
-          height={IMAGE_HEIGHT}
-          borderRadius={CARD_RADIUS}
-          initialBannerHoldMs={3000}
-          slideIntervalMs={5000}
-          slideDurationMs={700}
-          dimmed={!isOpen}
-          showDots
-          hidePlaceholderIcon
-        />
-        <LinearGradient
-          colors={["rgba(0,0,0,0.5)", "transparent", "transparent"]}
-          style={styles.gradientOverlay}
-        />
-        {!isOpen ? <View style={styles.closedOverlay} pointerEvents="none" /> : null}
-        {/* Bookmark floating */}
-        <TouchableOpacity
-          onPress={toggleBookmark}
-          style={styles.bookmarkBtn}
-          hitSlop={12}
-          disabled={savedLoading}
-        >
-          {savedLoading ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Ionicons
-              name={saved ? "bookmark" : "bookmark-outline"}
-              size={24}
-              color={saved ? GatiMitraColors.primaryMint : "#fff"}
-            />
-          )}
-        </TouchableOpacity>
-        {/* Cuisine tag bottom-left */}
-        {merchant.cuisines && merchant.cuisines.length > 0 && (
-          <View style={styles.cuisineTag}>
-            <Text style={styles.cuisineTagText} numberOfLines={1}>
-              {merchant.cuisines[0]}
-            </Text>
-          </View>
-        )}
-        <StoreOpenStatusBadge
-          isOpen={isOpen}
-          nextOpenAt={merchant.nextOpenAt}
-          nextCloseAt={merchant.nextCloseAt}
-        />
-      </View>
-
-      {/* Restaurant info */}
-      <View style={[styles.content, !isOpen && styles.contentClosed]}>
-        <View style={styles.titleRow}>
-          <Text style={styles.name} numberOfLines={1}>
-            {merchant.name}
-          </Text>
-          <View style={styles.ratingCol}>
-            <View style={[styles.ratingCapsule, !hasRating && styles.ratingCapsuleNew]}>
-              {hasRating ? <Ionicons name="star" size={11} color="#fff" /> : null}
-              <Text style={styles.ratingText}>{ratingValue ?? "New"}</Text>
+    <Animated.View style={[styles.card, animatedCardStyle]}>
+      <Pressable
+        onPress={openMerchant}
+        onPressIn={onPressIn}
+        onPressOut={onPressOut}
+        style={styles.cardPress}
+      >
+        <View style={styles.imageWrap} pointerEvents="box-none">
+          <StoreBannerCarousel
+            bannerUri={bannerUri}
+            galleryUris={galleryUris}
+            width={CARD_WIDTH}
+            height={IMAGE_HEIGHT}
+            borderRadius={CARD_RADIUS}
+            holdMs={LIST_CARD_CAROUSEL_HOLD_MS}
+            slideMs={LIST_CARD_CAROUSEL_SLIDE_MS}
+            dimmed={!isOpen}
+            showDots={galleryUris.length > 0}
+            hidePlaceholderIcon
+            enableSwipe
+            deferTapToParent
+            onSwipeGesture={onCarouselSwipe}
+          />
+          <LinearGradient
+            colors={["rgba(0,0,0,0.5)", "transparent", "transparent"]}
+            style={styles.gradientOverlay}
+            pointerEvents="none"
+          />
+          {!isOpen ? <View style={styles.closedOverlay} pointerEvents="none" /> : null}
+          <TouchableOpacity
+            onPress={toggleBookmark}
+            style={styles.bookmarkBtn}
+            hitSlop={12}
+            disabled={savedLoading}
+          >
+            {savedLoading ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons
+                name={saved ? "bookmark" : "bookmark-outline"}
+                size={24}
+                color={saved ? GatiMitraColors.primaryMint : "#fff"}
+              />
+            )}
+          </TouchableOpacity>
+          {merchant.cuisines && merchant.cuisines.length > 0 && (
+            <View style={styles.cuisineTag} pointerEvents="none">
+              <Text style={styles.cuisineTagText} numberOfLines={1}>
+                {merchant.cuisines[0]}
+              </Text>
             </View>
-            {reviewLabel ? <Text style={styles.ratingBy}>{reviewLabel}</Text> : null}
+          )}
+          <View pointerEvents="none">
+            <StoreOpenStatusBadge
+              isOpen={isOpen}
+              nextOpenAt={merchant.nextOpenAt}
+              nextCloseAt={merchant.nextCloseAt}
+            />
           </View>
         </View>
-        <NearFastDeliveryMeta
-          deliveryTime={merchant.deliveryTime}
-          distanceKm={merchant.distanceKm}
-          compact
-        />
-        {primaryOffer ? (
-          <View style={styles.offerRow}>
-            <View style={styles.offerPctCircle}>
-              <Text style={styles.offerPctSymbol}>%</Text>
-            </View>
-            <Text style={styles.offerRowText} numberOfLines={2}>
-              {primaryOffer}
+
+        <View style={[styles.content, !isOpen && styles.contentClosed]} pointerEvents="box-none">
+          <View style={styles.titleRow}>
+            <Text style={styles.name} numberOfLines={1}>
+              {merchant.name}
             </Text>
+            <View style={styles.ratingWrap}>
+              <MerchantRatingBadge
+                rating={merchant.avgRating}
+                totalReviews={merchant.totalReviews}
+                showReviewHint
+              />
+            </View>
           </View>
-        ) : null}
-      </View>
-    </AnimatedTouchable>
+          <NearFastDeliveryMeta
+            deliveryTime={deliveryTimeLabel}
+            distanceKm={merchant.distanceKm}
+            compact
+          />
+          <MerchantOfferRow offerText={merchant.offerText} />
+        </View>
+      </Pressable>
+    </Animated.View>
   );
 }
 
@@ -290,6 +279,7 @@ export const GMRestaurantCardV2 = React.memo(GMRestaurantCardV2Inner, (prev, nex
   const b = next.merchant;
   return (
     prev.initialSaved === next.initialSaved &&
+    prev.weatherDelayMinutes === next.weatherDelayMinutes &&
     a.id === b.id &&
     a.name === b.name &&
     a.liveStatus === b.liveStatus &&
@@ -300,6 +290,9 @@ export const GMRestaurantCardV2 = React.memo(GMRestaurantCardV2Inner, (prev, nex
     a.offerText === b.offerText &&
     a.avgRating === b.avgRating &&
     a.deliveryTime === b.deliveryTime &&
+    a.etaMinMinutes === b.etaMinMinutes &&
+    a.etaMaxMinutes === b.etaMaxMinutes &&
+    a.avgPreparationTimeMinutes === b.avgPreparationTimeMinutes &&
     a.distanceKm === b.distanceKm
   );
 });
@@ -314,6 +307,9 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     ...GatiMitraColors.restaurantCardShadow,
     ...(Platform.OS === "ios" ? {} : { elevation: 6 }),
+  },
+  cardPress: {
+    width: "100%",
   },
   imageWrap: {
     width: "100%",
@@ -399,7 +395,7 @@ const styles = StyleSheet.create({
   },
   closedOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.32)",
+    backgroundColor: "rgba(0,0,0,0.18)",
     borderTopLeftRadius: CARD_RADIUS,
     borderTopRightRadius: CARD_RADIUS,
   },
@@ -427,61 +423,9 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "700",
     color: GatiMitraColors.textPrimaryNew,
+    minWidth: 0,
   },
-  ratingCol: {
-    alignItems: "flex-end",
-    gap: 2,
-  },
-  ratingCapsule: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#24963f",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    gap: 4,
-    minWidth: 46,
-    justifyContent: "center",
-  },
-  ratingBy: {
-    fontSize: 11,
-    color: GatiMitraColors.textSecondary,
-    fontWeight: "500",
-    marginTop: 1,
-  },
-  ratingCapsuleNew: {
-    backgroundColor: GatiMitraColors.deepMintStart,
-  },
-  ratingText: {
-    fontSize: 12,
-    color: "#fff",
-    fontWeight: "600",
-  },
-  offerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginTop: 6,
-  },
-  offerPctCircle: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: "#2563eb",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  offerPctSymbol: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: "#fff",
-    lineHeight: 15,
-  },
-  offerRowText: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#4b5563",
-    lineHeight: 18,
+  ratingWrap: {
+    flexShrink: 0,
   },
 });

@@ -42,6 +42,7 @@ import { insertPlacedOrderCoreWithTimelines } from "../../lib/order-placement-pe
 import { getSql } from "../../db/client.js";
 import { notifyMerchantStoreNewOrder } from "../../lib/merchant-new-order-notify.js";
 import { maybeStartOrderDispatch } from "../../lib/order-dispatch.service.js";
+import { captureOrderWeatherSnapshot } from "../weather/weather.order-snapshot.js";
 
 const EM_DASH = "\u2014";
 
@@ -832,6 +833,20 @@ export async function finalizeOrder(
         razorpayOrderId,
         razorpayPaymentId,
         finalizedAt: new Date(),
+      });
+
+      const dropLatNum = Number(dropLat);
+      const dropLonNum = Number(dropLon);
+      const cityHint =
+        typeof pending.checkoutMetadata === "object" && pending.checkoutMetadata != null
+          ? String((pending.checkoutMetadata as Record<string, unknown>).deliveryCity ?? "").trim() || null
+          : null;
+      await captureOrderWeatherSnapshot(tx, {
+        orderCorePk,
+        orderIdText,
+        dropLat: dropLatNum,
+        dropLon: dropLonNum,
+        cityHint,
       });
 
       const itemInserts = items.map((i) => {

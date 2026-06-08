@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { getRiderAppConfig } from "@/src/config/env";
-import { postJson, getJson, isRiderNotFoundError } from "@/src/services/http";
+import { postJson, getJson, isRiderNotFoundError, isUnauthorizedError } from "@/src/services/http";
 
 const API_BASE = () => getRiderAppConfig().apiBaseUrl;
 
@@ -208,7 +208,7 @@ export function useRiderStatus(riderId: string | undefined) {
     staleTime: 60_000,
     refetchOnWindowFocus: false,
     retry: (failureCount, error) => {
-      if (isRiderNotFoundError(error)) return false;
+      if (isRiderNotFoundError(error) || isUnauthorizedError(error)) return false;
       return failureCount < 2;
     },
   });

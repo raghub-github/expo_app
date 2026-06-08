@@ -3,23 +3,34 @@ import {
   View,
   Text,
   StyleSheet,
-  Pressable,
   Platform,
-  ActivityIndicator,
+  TouchableOpacity,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { colors } from "@/src/theme";
 import { FoodSlideToReachStore } from "@/src/components/orders/FoodSlideToReachStore";
 import { NavBottomSheetChevron } from "@/src/components/orders/NavBottomSheetChevron";
-import { formatActiveOrderEarning } from "@/src/lib/active-order-display";
+import {
+  formatNavSheetDistance,
+  NAV_SHEET_CALL_BLUE,
+  NAV_SHEET_DROP_MAP_BTN_BG,
+  NAV_SHEET_MAP_BTN_BG,
+  NAV_SHEET_PHASE_BADGE_DROP_BG,
+} from "@/src/components/orders/nav-sheet-ui";
 import type { RiderOrderSummary } from "@/src/services/api/riderApi";
 import type { NavigatePickupRouteMeta } from "@/src/components/orders/NavigatePickupBottomSheet";
 import type { MilestoneGeoState } from "@/src/hooks/useMilestoneGeoFence";
 import { resolveMilestoneGeoUi } from "@/src/lib/milestone-geo-hint";
+import { useLiveSecondTicker } from "@/src/hooks/useLiveSecondTicker";
+import {
+  foodPrepCountdownFromOrder,
+  formatPrepDelayedLabel,
+  isFoodPrepDelayed,
+  prepOverdueSeconds,
+} from "@/src/lib/food-prep-delay";
 
-export const FOOD_NAV_SHEET_HEIGHT = 468;
-/** Collapsed: chevron + primary action only (map gets more space). */
+export const FOOD_NAV_SHEET_HEIGHT = 368;
 export const FOOD_NAV_SHEET_COLLAPSED_HEIGHT = 132;
 
 type Props = {
@@ -43,39 +54,68 @@ type Props = {
   onReachCustomer: () => void;
   onDelivered: () => void;
   reachSliderDone?: boolean;
+  /** Hide mark-pickup slider while the pick-order modal is open. */
+  hideMarkPickupWhilePickSheet?: boolean;
+  /** At-store prep/ready banner lives on the pick-order sheet instead. */
+  hidePrepBanner?: boolean;
+  /** Rider dismissed pick-order sheet — show reopen row. */
+  showPickOrderReopen?: boolean;
+  onOpenPickOrderSheet?: () => void;
   onReportIssue: () => void;
   onCallRestaurant: () => void;
+  onCallCustomer?: () => void;
+  onChatCustomer?: () => void;
+  onOpenMaps: () => void;
   callDisabled?: boolean;
+  chatDisabled?: boolean;
   sheetExpanded?: boolean;
   onToggleSheetExpanded?: () => void;
   milestoneGeo?: Partial<Record<string, MilestoneGeoState>>;
+  /** Drop-order full screen owns the deliver slider while open. */
+  suppressDropDeliverSlider?: boolean;
 };
 
-function MetricBox({
+function ActionIconButton({
   icon,
-  value,
   label,
-  loading,
+  onPress,
+  disabled,
+  variant = "outline",
 }: {
-  icon: React.ComponentProps<typeof Ionicons>["name"];
-  value: string;
+  icon: keyof typeof Ionicons.glyphMap;
   label: string;
-  loading?: boolean;
+  onPress: () => void;
+  disabled?: boolean;
+  variant?: "outline" | "filled";
 }) {
+  const filled = variant === "filled";
   return (
-    <View style={styles.metricBox}>
-      <Ionicons name={icon} size={16} color={colors.gray[600]} />
-      {loading ? (
-        <ActivityIndicator size="small" color={colors.gray[500]} style={styles.metricLoader} />
-      ) : (
-        <Text style={styles.metricValue} numberOfLines={1}>
-          {value}
-        </Text>
-      )}
-      <Text style={styles.metricLabel} numberOfLines={1}>
+    <TouchableOpacity
+      activeOpacity={0.75}
+      onPress={onPress}
+      disabled={disabled}
+      style={[
+        styles.actionIconBtn,
+        filled ? styles.actionIconBtnFilled : styles.actionIconBtnOutline,
+        disabled && styles.actionIconBtnDisabled,
+      ]}
+    >
+      <Ionicons
+        name={icon}
+        size={22}
+        color={filled ? "#ffffff" : disabled ? "#9AA0A6" : NAV_SHEET_CALL_BLUE}
+      />
+      <Text
+        style={[
+          styles.actionIconBtnText,
+          filled ? styles.actionIconBtnTextFilled : styles.actionIconBtnTextOutline,
+          disabled && styles.actionIconBtnTextDisabled,
+        ]}
+        numberOfLines={1}
+      >
         {label}
       </Text>
-    </View>
+    </TouchableOpacity>
   );
 }
 
@@ -83,11 +123,9 @@ export function FoodNavigateBottomSheet({
   order,
   orderIdLabel,
   phase,
-  title,
   restaurantName,
   pickupAddress,
   pickupLandmark,
-  routeMeta,
   pickupConfirmed,
   rideStarted,
   atCustomer = false,
@@ -100,38 +138,49 @@ export function FoodNavigateBottomSheet({
   onReachCustomer,
   onDelivered,
   reachSliderDone = false,
-  onReportIssue,
+  hideMarkPickupWhilePickSheet = false,
+  hidePrepBanner = false,
+  showPickOrderReopen = false,
+  onOpenPickOrderSheet,
   onCallRestaurant,
+  onCallCustomer,
+  onChatCustomer,
+  onOpenMaps,
   callDisabled,
-  sheetExpanded = false,
+  chatDisabled,
+  sheetExpanded = true,
   onToggleSheetExpanded,
   milestoneGeo,
+  routeMeta,
+  suppressDropDeliverSlider = false,
 }: Props) {
   const { t } = useTranslation();
-  const earning = formatActiveOrderEarning(order);
+  const nowMs = useLiveSecondTicker(phase === "pickup" && !rideStarted);
   const [deliveryInfoOpen, setDeliveryInfoOpen] = useState(false);
-  const orderValueLabel = earning || "—";
 
   useEffect(() => {
     if (phase !== "drop") setDeliveryInfoOpen(false);
   }, [phase]);
 
-  const phaseBadge =
-    phase === "drop"
-      ? t("orders.activeFood.dropBadge", "DROP")
-      : t("orders.activeFood.pickupBadge", "PICKUP");
+  const distanceLabel = routeMeta.loading
+    ? "…"
+    : formatNavSheetDistance(routeMeta.metersAway);
 
   const merchantReady = order.merchantOrderReady === true;
+  const prepOrder = foodPrepCountdownFromOrder(order);
+  const prepDelayed = isFoodPrepDelayed(prepOrder, nowMs, merchantReady);
+  const overdueSec = prepDelayed ? prepOverdueSeconds(prepOrder, nowMs) : 0;
 
   const showReachStore =
     phase === "pickup" && !pickupConfirmed && !rideStarted && !reachSliderDone;
   const showMarkPickup =
     phase === "pickup" &&
     !rideStarted &&
-    merchantReady &&
+    !hideMarkPickupWhilePickSheet &&
     (pickupConfirmed || reachSliderDone);
   const showReachCustomer = phase === "drop" && rideStarted && !atCustomer && !orderDelivered;
-  const showDelivered = phase === "drop" && atCustomer && !orderDelivered;
+  const showDelivered =
+    phase === "drop" && atCustomer && !orderDelivered && !suppressDropDeliverSlider;
 
   const reachStoreGeo = resolveMilestoneGeoUi(milestoneGeo?.reach_store, "reach_store");
   const markPickupGeo = resolveMilestoneGeoUi(milestoneGeo?.mark_picked_up, "mark_picked_up");
@@ -148,13 +197,45 @@ export function FoodNavigateBottomSheet({
 
   const atStore = pickupConfirmed || reachSliderDone;
   const showPrepBanner =
-    phase === "pickup" && !rideStarted && (atStore || merchantReady);
+    !hidePrepBanner &&
+    phase === "pickup" &&
+    !rideStarted &&
+    !showReachStore &&
+    (atStore || merchantReady);
 
-  const actionButtons = (
+  const dropSliders = (
+    <>
+      {showReachCustomer ? (
+        <FoodSlideToReachStore
+          label={t("orders.activeFood.slideReachedDrop", "Reached drop")}
+          onComplete={onReachCustomer}
+          loading={reachedLoading}
+          completed={atCustomer}
+          completedLabel={t("orders.activeFood.reachedDrop", "Reached drop ✓")}
+          geoLocked={reachCustomerGeo.locked}
+          geoHint={reachCustomerGeo.hintText}
+        />
+      ) : null}
+
+      {showDelivered ? (
+        <FoodSlideToReachStore
+          label={t("orders.activeFood.slideDelivered", "Delivered")}
+          onComplete={onDelivered}
+          loading={deliveryPhotoLoading}
+          completed={orderDelivered}
+          completedLabel={t("orders.activeFood.deliveredDone", "Delivered ✓")}
+          geoLocked={markDeliveredGeo.locked}
+          geoHint={markDeliveredGeo.hintText}
+        />
+      ) : null}
+    </>
+  );
+
+  const pickupActionButtons = (
     <>
       {showReachStore ? (
         <FoodSlideToReachStore
-          label={t("orders.activeFood.slideReachStore", "Reach Store")}
+          label={t("orders.activeFood.slideReachedPickup", "Reached pickup")}
           onComplete={onReachStore}
           disabled={reachSliderDone || pickupConfirmed}
           loading={reachedLoading && !pickupConfirmed}
@@ -187,30 +268,6 @@ export function FoodNavigateBottomSheet({
         </>
       ) : null}
 
-      {showReachCustomer ? (
-        <FoodSlideToReachStore
-          label={t("orders.activeFood.slideReachCustomer", "Reach Customer")}
-          onComplete={onReachCustomer}
-          loading={reachedLoading}
-          completed={atCustomer}
-          completedLabel={t("orders.activeFood.reachedCustomer", "Reached customer ✓")}
-          geoLocked={reachCustomerGeo.locked}
-          geoHint={reachCustomerGeo.hintText}
-        />
-      ) : null}
-
-      {showDelivered ? (
-        <FoodSlideToReachStore
-          label={t("orders.activeFood.slideDelivered", "Delivered")}
-          onComplete={onDelivered}
-          loading={deliveryPhotoLoading}
-          completed={orderDelivered}
-          completedLabel={t("orders.activeFood.deliveredDone", "Delivered ✓")}
-          geoLocked={markDeliveredGeo.locked}
-          geoHint={markDeliveredGeo.hintText}
-        />
-      ) : null}
-
       {orderDelivered ? (
         <View style={styles.deliveredBanner}>
           <Ionicons name="checkmark-circle" size={22} color={colors.success[700]} />
@@ -223,203 +280,243 @@ export function FoodNavigateBottomSheet({
   );
 
   return (
-    <View
-      style={[
-        styles.sheet,
-        { paddingBottom: bottomInset },
-      ]}
-    >
-      <View style={styles.chevronDock}>
+    <View style={[styles.sheet, { paddingBottom: Math.max(bottomInset, 12) }]}>
+      <View style={styles.sheetHandleDock}>
         {onToggleSheetExpanded ? (
           <NavBottomSheetChevron expanded={sheetExpanded} onPress={onToggleSheetExpanded} />
         ) : (
-          <View style={styles.handle} />
+          <View style={styles.chevronDock}>
+            <View style={styles.handle} />
+          </View>
         )}
       </View>
 
       {sheetExpanded ? (
-        <>
-      <View style={styles.headerRow}>
-        <View style={styles.headerLeft}>
-          <View style={styles.pickupBadge}>
-            <Ionicons name="bag-handle" size={12} color={colors.success[700]} />
-            <Text style={styles.pickupBadgeText}>{phaseBadge}</Text>
-          </View>
-          <Text style={styles.orderIdText} numberOfLines={1}>
-            {t("orders.activeFood.orderId", "Order ID")} #{orderIdLabel}
-          </Text>
-        </View>
-        <View style={styles.headerActions}>
+        <View style={styles.sheetBody}>
+        <View style={styles.detailsBody}>
           {phase === "drop" ? (
-            <Pressable
-              onPress={() => setDeliveryInfoOpen((open) => !open)}
-              style={({ pressed }) => [
-                styles.infoBtn,
-                deliveryInfoOpen && styles.infoBtnActive,
-                pressed && styles.infoBtnPressed,
+            <>
+              <View style={styles.dropBadge}>
+                <Text style={styles.dropBadgeText}>
+                  {t("orders.activeFood.dropBadge", "DROP")}
+                </Text>
+              </View>
+
+              <Text style={styles.locationName} numberOfLines={2}>
+                {restaurantName}
+              </Text>
+              <Text
+                style={[styles.locationAddress, styles.locationAddressLast]}
+                numberOfLines={3}
+              >
+                {fullAddress}
+              </Text>
+              <Text style={styles.orderIdLine}>
+                <Text style={styles.orderIdPrefix}>
+                  {t("orders.activeFood.orderPrefix", "Order")}:{" "}
+                </Text>
+                <Text style={styles.orderIdValue}>{orderIdLabel}</Text>
+              </Text>
+
+              <View style={styles.tripleActionRow}>
+                <ActionIconButton
+                  icon="call"
+                  label={t("orders.activeFood.call", "Call")}
+                  onPress={onCallCustomer ?? onCallRestaurant}
+                  disabled={callDisabled}
+                />
+                <ActionIconButton
+                  icon="chatbubble-ellipses"
+                  label={t("orders.activeRide.chat", "Chat")}
+                  onPress={onChatCustomer ?? onReportIssue}
+                  disabled={chatDisabled}
+                />
+                <ActionIconButton
+                  icon="navigate"
+                  label={t("orders.activeFood.map", "Map")}
+                  onPress={onOpenMaps}
+                  variant="filled"
+                />
+              </View>
+
+              <View style={styles.dropSliderDock}>{dropSliders}</View>
+            </>
+          ) : (
+            <>
+              <View style={styles.metaTopRow}>
+                <Text style={styles.distanceLabel}>{distanceLabel}</Text>
+              </View>
+
+              <Text style={styles.locationName} numberOfLines={2}>
+                {restaurantName}
+              </Text>
+              <Text style={styles.locationAddress} numberOfLines={3}>
+                {fullAddress}
+              </Text>
+
+              <View style={styles.callMapRow}>
+                <TouchableOpacity
+                  activeOpacity={0.75}
+                  onPress={onCallRestaurant}
+                  disabled={callDisabled}
+                  style={[styles.callBtn, callDisabled && styles.callBtnDisabled]}
+                >
+                  <Ionicons
+                    name="call"
+                    size={20}
+                    color={callDisabled ? "#9AA0A6" : NAV_SHEET_CALL_BLUE}
+                  />
+                  <Text
+                    style={[styles.callBtnText, callDisabled && styles.callBtnTextDisabled]}
+                  >
+                    {t("orders.activeFood.call", "Call")}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.75}
+                  onPress={onOpenMaps}
+                  style={styles.mapBtn}
+                >
+                  <Ionicons name="navigate" size={18} color="#ffffff" />
+                  <Text style={styles.mapBtnText} numberOfLines={1} adjustsFontSizeToFit>
+                    {t("orders.activeFood.goToMap", "Go to Map")}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
+
+          {phase === "pickup" && prepDelayed ? (
+            <View style={styles.delayBanner}>
+              <Ionicons name="hourglass-outline" size={14} color="#ffffff" />
+              <Text style={styles.delayBannerText}>{formatPrepDelayedLabel(overdueSec)}</Text>
+            </View>
+          ) : null}
+
+          {phase === "pickup" && showPickOrderReopen && onOpenPickOrderSheet ? (
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={onOpenPickOrderSheet}
+              style={[
+                styles.pickOrderReopen,
+                merchantReady ? styles.pickOrderReopenReady : styles.pickOrderReopenPreparing,
               ]}
-              hitSlop={6}
-              accessibilityRole="button"
-              accessibilityLabel={t(
-                "orders.activeFood.deliveryPenaltyInfo",
-                "Delivery penalty information"
-              )}
             >
               <Ionicons
-                name="information-circle"
-                size={22}
-                color={deliveryInfoOpen ? colors.primary[700] : colors.gray[600]}
+                name={merchantReady ? "checkmark-circle-outline" : "restaurant-outline"}
+                size={20}
+                color={merchantReady ? colors.success[700] : colors.warning[700]}
               />
-            </Pressable>
+              <View style={styles.pickOrderReopenTextCol}>
+                <Text style={styles.pickOrderReopenTitle}>
+                  {t("orders.activeFood.pickOrderTitle", "Pick order now!")}
+                </Text>
+                <Text style={styles.pickOrderReopenSub} numberOfLines={1}>
+                  {prepDelayed
+                    ? formatPrepDelayedLabel(overdueSec)
+                    : merchantReady
+                      ? t("orders.activeFood.tapToPickOrder", "Tap to verify and pick up the order")
+                      : t("orders.activeFood.underPreparation", "Order is under preparation")}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="#5F6368" />
+            </TouchableOpacity>
           ) : null}
-          <Pressable
-            onPress={onReportIssue}
-            style={({ pressed }) => [styles.reportBtn, pressed && styles.reportBtnPressed]}
-            hitSlop={6}
-          >
-            <View style={styles.reportBtnInner}>
-              <Ionicons name="warning" size={14} color={colors.error[600]} />
-              <Text style={styles.reportText} numberOfLines={1}>
-                {t("orders.activeFood.reportIssue", "Report Issue")}
+
+          {phase === "pickup" && showPrepBanner ? (
+            <View
+              style={[
+                styles.prepBanner,
+                prepDelayed
+                  ? styles.prepBannerDelayed
+                  : merchantReady
+                    ? styles.prepBannerReady
+                    : styles.prepBannerPreparing,
+              ]}
+            >
+              <Ionicons
+                name={
+                  prepDelayed
+                    ? "hourglass-outline"
+                    : merchantReady
+                      ? "checkmark-circle"
+                      : "restaurant-outline"
+                }
+                size={16}
+                color={
+                  prepDelayed ? "#ffffff" : merchantReady ? colors.success[700] : colors.warning[700]
+                }
+              />
+              <Text
+                style={[
+                  styles.prepBannerText,
+                  prepDelayed
+                    ? styles.prepBannerTextDelayed
+                    : merchantReady
+                      ? styles.prepBannerTextReady
+                      : styles.prepBannerTextPreparing,
+                ]}
+              >
+                {prepDelayed
+                  ? formatPrepDelayedLabel(overdueSec)
+                  : merchantReady
+                    ? t("orders.activeFood.orderIsReady", "Order is ready")
+                    : t(
+                        "orders.activeFood.underPreparation",
+                        "Order is under preparation"
+                      )}
               </Text>
             </View>
-          </Pressable>
-        </View>
-      </View>
+          ) : null}
 
-      {phase === "drop" && deliveryInfoOpen ? (
-        <View style={styles.deliveryInfoCard}>
-          <Ionicons name="alert-circle" size={20} color={colors.warning[700]} />
-          <Text style={styles.deliveryInfoText}>
-            {t(
-              "orders.activeFood.deliveryPenaltyBody",
-              "If you miss or cancel this delivery without valid approval, you may be fined up to the full order value ({{amount}}). Deliver only to the customer address shown on the map.",
-              { amount: orderValueLabel }
-            )}
-          </Text>
-        </View>
-      ) : null}
-
-      <Text style={styles.title}>{title}</Text>
-
-      {showPrepBanner ? (
-        <View
-          style={[
-            styles.prepBanner,
-            merchantReady ? styles.prepBannerReady : styles.prepBannerPreparing,
-          ]}
-        >
-          <Ionicons
-            name={merchantReady ? "checkmark-circle" : "restaurant-outline"}
-            size={18}
-            color={merchantReady ? colors.success[700] : colors.warning[700]}
-          />
-          <Text
-            style={[
-              styles.prepBannerText,
-              merchantReady ? styles.prepBannerTextReady : styles.prepBannerTextPreparing,
-            ]}
-          >
-            {merchantReady
-              ? t("orders.activeFood.orderIsReady", "Order is ready")
-              : t(
-                  "orders.activeFood.underPreparation",
-                  "Order is under preparation"
+          {phase === "drop" && deliveryInfoOpen ? (
+            <View style={styles.deliveryInfoCard}>
+              <Ionicons name="alert-circle" size={18} color={colors.warning[700]} />
+              <Text style={styles.deliveryInfoText}>
+                {t(
+                  "orders.activeFood.deliveryPenaltyBody",
+                  "If you miss or cancel this delivery without valid approval, you may be fined up to the full order value. Deliver only to the customer address shown on the map."
                 )}
+              </Text>
+            </View>
+          ) : null}
+
+        </View>
+        </View>
+      ) : (
+        <View style={styles.sheetBody}>
+        <View style={styles.collapsedHeader}>
+          <Text style={styles.collapsedTitle} numberOfLines={1}>
+            {restaurantName}
           </Text>
+          <Text style={styles.collapsedDistance}>{distanceLabel}</Text>
+        </View>
+        </View>
+      )}
+
+      {phase === "drop" && !sheetExpanded ? (
+        <View style={styles.sheetBody}>
+          <View style={styles.actionsDock}>{dropSliders}</View>
         </View>
       ) : null}
 
-      {routeMeta.error ? (
-        <Pressable onPress={routeMeta.onRetryRoute} style={styles.routeError}>
-          <Ionicons name="refresh-outline" size={14} color={colors.error[600]} />
-          <Text style={styles.routeErrorText}>
-            {t("orders.activeRide.routeFailed", "Route unavailable — retry")}
-          </Text>
-        </Pressable>
-      ) : (
-        <View style={styles.metricsRow}>
-          <MetricBox
-            icon="time-outline"
-            value={
-              routeMeta.etaMinutes != null
-                ? `${routeMeta.etaMinutes} min`
-                : "—"
-            }
-            label={t("orders.activeRide.statEta", "ETA")}
-            loading={routeMeta.loading}
-          />
-          <MetricBox
-            icon="navigate-outline"
-            value={
-              routeMeta.distanceKm != null
-                ? `${routeMeta.distanceKm >= 1 ? routeMeta.distanceKm.toFixed(1) : (routeMeta.distanceKm * 1000).toFixed(0)} ${routeMeta.distanceKm >= 1 ? "km" : "m"}`
-                : "—"
-            }
-            label={t("orders.activeRide.statDistance", "Distance")}
-            loading={routeMeta.loading}
-          />
-          <MetricBox
-            icon="storefront-outline"
-            value={restaurantName.length > 12 ? `${restaurantName.slice(0, 11)}…` : restaurantName}
-            label={t("orders.activeFood.restaurant", "Restaurant")}
-          />
-          <MetricBox
-            icon="wallet-outline"
-            value={earning || "—"}
-            label={t("orders.activeRide.statEarnings", "Est. earnings")}
-          />
+      {phase === "pickup" ? (
+        <View style={styles.sheetBody}>
+          <View style={styles.actionsDock}>{pickupActionButtons}</View>
         </View>
-      )}
+      ) : null}
 
-      <View style={styles.pickupSection}>
-        <View style={styles.pickupLeft}>
-          <View style={styles.pickupIconWrap}>
-            <Ionicons name="location" size={18} color={colors.success[600]} />
-          </View>
-          <View style={styles.pickupTextCol}>
-            <Text style={styles.pickupLabel}>
-              {phase === "drop"
-                ? t("orders.activeFood.dropLocation", "DROP LOCATION")
-                : t("orders.activeFood.pickupLocationLabel", "PICKUP LOCATION")}
-            </Text>
-            <Text style={styles.pickupName} numberOfLines={1}>
-              {restaurantName}
-            </Text>
-            <Text style={styles.pickupAddress} numberOfLines={3}>
-              {fullAddress}
+      {phase === "drop" && orderDelivered ? (
+        <View style={styles.sheetBody}>
+          <View style={styles.deliveredBanner}>
+            <Ionicons name="checkmark-circle" size={22} color={colors.success[700]} />
+            <Text style={styles.deliveredBannerText}>
+              {t("orders.activeFood.orderDelivered", "Order delivered successfully")}
             </Text>
           </View>
         </View>
-        <View style={styles.pickupActions}>
-          <Pressable
-            onPress={onCallRestaurant}
-            disabled={callDisabled}
-            style={({ pressed }) => [
-              styles.callBtn,
-              callDisabled && styles.callBtnDisabled,
-              pressed && !callDisabled && styles.callBtnPressed,
-            ]}
-          >
-            <Ionicons name="call" size={20} color="#ffffff" />
-          </Pressable>
-          <Ionicons name="chevron-forward" size={18} color={colors.gray[400]} />
-        </View>
-      </View>
-        </>
-      ) : (
-        <View style={styles.collapsedHeader}>
-          <View style={styles.pickupBadge}>
-            <Ionicons name="bag-handle" size={12} color={colors.success[700]} />
-            <Text style={styles.pickupBadgeText}>{phaseBadge}</Text>
-          </View>
-          <Text style={styles.collapsedTitle} numberOfLines={1}>
-            {title}
-          </Text>
-        </View>
-      )}
-
-      <View style={styles.actionsDock}>{actionButtons}</View>
+      ) : null}
     </View>
   );
 }
@@ -437,154 +534,280 @@ const sheetShadow = Platform.select({
 
 const styles = StyleSheet.create({
   sheet: {
+    width: "100%",
+    alignSelf: "stretch",
+    alignItems: "stretch",
     backgroundColor: "#ffffff",
-    borderTopWidth: 1,
-    borderTopColor: colors.gray[200],
-    paddingHorizontal: 16,
-    paddingTop: 4,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingTop: 0,
+    zIndex: 50,
+    elevation: 32,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#E8EAED",
     ...sheetShadow,
+  },
+  sheetHandleDock: {
+    width: "100%",
+    alignSelf: "stretch",
+    alignItems: "center",
+  },
+  sheetBody: {
+    width: "100%",
+    paddingHorizontal: 16,
+    marginTop: -6,
+  },
+  metaTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    marginBottom: 8,
+  },
+  distanceLabel: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#202124",
+    letterSpacing: -0.2,
+  },
+  callMapRow: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 14,
+  },
+  callBtn: {
+    flex: 1,
+    height: 48,
+    marginRight: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#DADCE0",
+    borderRadius: 8,
+  },
+  callBtnDisabled: {
+    opacity: 0.55,
+  },
+  callBtnText: {
+    marginLeft: 8,
+    fontSize: 16,
+    fontWeight: "600",
+    color: NAV_SHEET_CALL_BLUE,
+  },
+  callBtnTextDisabled: {
+    color: "#9AA0A6",
+  },
+  mapBtn: {
+    flex: 1,
+    height: 48,
+    marginLeft: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: NAV_SHEET_MAP_BTN_BG,
+    borderRadius: 8,
+    paddingHorizontal: 6,
+  },
+  mapBtnText: {
+    marginLeft: 6,
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#ffffff",
+    flexShrink: 1,
   },
   chevronDock: {
     width: "100%",
     alignItems: "center",
     justifyContent: "center",
-    paddingTop: 4,
-    paddingBottom: 6,
-  },
-  actionsDock: {
-    paddingTop: 2,
+    paddingTop: 10,
+    paddingBottom: 8,
   },
   handle: {
-    width: 44,
+    width: 40,
     height: 4,
     borderRadius: 999,
-    backgroundColor: colors.gray[300],
+    backgroundColor: "#D1D5DB",
+  },
+  detailsBody: {
+    width: "100%",
+    paddingBottom: 2,
+  },
+  locationName: {
+    fontSize: 19,
+    fontWeight: "700",
+    color: "#202124",
+    marginBottom: 3,
+    letterSpacing: -0.2,
+    lineHeight: 25,
+  },
+  locationAddress: {
+    fontSize: 14,
+    fontWeight: "400",
+    color: "#5F6368",
+    lineHeight: 20,
+    marginBottom: 4,
+  },
+  locationAddressSecondary: {
+    fontSize: 14,
+    fontWeight: "400",
+    color: "#5F6368",
+    lineHeight: 20,
+    marginBottom: 10,
+  },
+  locationAddressLast: {
+    marginBottom: 8,
+  },
+  dropBadge: {
+    alignSelf: "flex-start",
+    backgroundColor: NAV_SHEET_PHASE_BADGE_DROP_BG,
+    borderRadius: 3,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    marginBottom: 8,
+  },
+  dropBadgeText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#ffffff",
+    letterSpacing: 0.8,
+  },
+  orderIdLine: {
+    marginBottom: 12,
+  },
+  orderIdPrefix: {
+    fontSize: 14,
+    fontWeight: "400",
+    color: "#5F6368",
+  },
+  orderIdValue: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#202124",
+  },
+  tripleActionRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 8,
+    marginBottom: 0,
+  },
+  dropSliderDock: {
+    width: "100%",
+    marginTop: 12,
+    paddingBottom: 2,
+  },
+  actionIconBtn: {
+    flex: 1,
+    minHeight: 52,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+    paddingVertical: 9,
+  },
+  actionIconBtnOutline: {
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: NAV_SHEET_CALL_BLUE,
+  },
+  actionIconBtnFilled: {
+    backgroundColor: NAV_SHEET_DROP_MAP_BTN_BG,
+    borderWidth: 0,
+  },
+  actionIconBtnDisabled: {
+    opacity: 0.55,
+  },
+  actionIconBtnText: {
+    marginTop: 3,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  actionIconBtnTextOutline: {
+    color: NAV_SHEET_CALL_BLUE,
+  },
+  actionIconBtnTextFilled: {
+    color: "#ffffff",
+  },
+  actionIconBtnTextDisabled: {
+    color: "#9AA0A6",
   },
   collapsedHeader: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    marginBottom: 4,
+    marginBottom: 8,
   },
   collapsedTitle: {
     flex: 1,
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: "700",
     color: colors.gray[900],
+    marginHorizontal: 8,
   },
-  headerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 8,
-    gap: 8,
-  },
-  headerLeft: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  headerActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
+  collapsedDistance: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#202124",
     flexShrink: 0,
   },
-  infoBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+  delayBanner: {
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: colors.gray[100],
-    borderWidth: 1,
-    borderColor: colors.gray[200],
-  },
-  infoBtnActive: {
-    backgroundColor: colors.primary[50],
-    borderColor: colors.primary[200],
-  },
-  infoBtnPressed: {
-    opacity: 0.85,
-  },
-  deliveryInfoCard: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
+    gap: 6,
+    backgroundColor: "#8B0000",
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     marginBottom: 10,
+  },
+  delayBannerText: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
+  },
+  pickOrderReopen: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderRadius: 10,
     paddingVertical: 12,
     paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: colors.warning[50],
+    marginBottom: 12,
     borderWidth: 1,
+  },
+  pickOrderReopenPreparing: {
+    backgroundColor: colors.warning[50],
     borderColor: colors.warning[200],
   },
-  deliveryInfoText: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: "600",
-    color: colors.warning[900],
-    lineHeight: 19,
-  },
-  pickupBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
+  pickOrderReopenReady: {
     backgroundColor: colors.success[50],
-    borderWidth: 1,
     borderColor: colors.success[200],
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
   },
-  pickupBadgeText: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: colors.success[700],
-    letterSpacing: 0.6,
-  },
-  orderIdText: {
+  pickOrderReopenTextCol: {
     flex: 1,
     minWidth: 0,
-    fontSize: 12,
-    fontWeight: "700",
-    color: colors.gray[600],
   },
-  reportBtn: {
-    flexShrink: 0,
-    maxWidth: "42%",
-  },
-  reportBtnInner: {
-    flexDirection: "row",
-    alignItems: "center",
-    flexWrap: "nowrap",
-    gap: 4,
-  },
-  reportBtnPressed: {
-    opacity: 0.75,
-  },
-  reportText: {
-    fontSize: 11,
+  pickOrderReopenTitle: {
+    fontSize: 15,
     fontWeight: "800",
-    color: colors.error[600],
-    flexShrink: 0,
+    color: "#202124",
   },
-  title: {
-    fontSize: 20,
-    fontWeight: "800",
-    color: colors.gray[900],
-    marginBottom: 14,
-    letterSpacing: -0.2,
+  pickOrderReopenSub: {
+    marginTop: 2,
+    fontSize: 13,
+    fontWeight: "500",
+    color: "#5F6368",
   },
   prepBanner: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
     marginBottom: 12,
     borderWidth: 1,
   },
@@ -592,38 +815,52 @@ const styles = StyleSheet.create({
     backgroundColor: colors.warning[50],
     borderColor: colors.warning[200],
   },
+  prepBannerDelayed: {
+    backgroundColor: "#8B0000",
+    borderColor: "#8B0000",
+  },
   prepBannerReady: {
     backgroundColor: colors.success[50],
     borderColor: colors.success[200],
   },
   prepBannerText: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "700",
   },
   prepBannerTextPreparing: {
     color: colors.warning[800],
   },
+  prepBannerTextDelayed: {
+    color: "#ffffff",
+    fontVariant: ["tabular-nums"],
+  },
   prepBannerTextReady: {
     color: colors.success[800],
   },
-  otpEntryBtn: {
+  deliveryInfoCard: {
     flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
+    alignItems: "flex-start",
     gap: 8,
-    backgroundColor: colors.primary[600],
-    borderRadius: 12,
-    paddingVertical: 14,
-    marginBottom: 10,
+    marginBottom: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: colors.warning[50],
+    borderWidth: 1,
+    borderColor: colors.warning[200],
   },
-  otpEntryBtnPressed: {
-    opacity: 0.9,
+  deliveryInfoText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: "600",
+    color: colors.warning[900],
+    lineHeight: 17,
   },
-  otpEntryBtnText: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: "#ffffff",
+  actionsDock: {
+    width: "100%",
+    paddingTop: 0,
+    paddingBottom: 4,
   },
   waitReadyHint: {
     fontSize: 13,
@@ -647,116 +884,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     color: colors.success[800],
-  },
-  metricsRow: {
-    flexDirection: "row",
-    gap: 8,
-    marginBottom: 14,
-  },
-  metricBox: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: colors.gray[200],
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 4,
-    alignItems: "center",
-    gap: 4,
-    minHeight: 72,
-    justifyContent: "center",
-  },
-  metricLoader: {
-    marginVertical: 4,
-  },
-  metricValue: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: colors.gray[900],
-    textAlign: "center",
-  },
-  metricLabel: {
-    fontSize: 10,
-    fontWeight: "600",
-    color: colors.gray[500],
-    textAlign: "center",
-  },
-  routeError: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginBottom: 14,
-  },
-  routeErrorText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: colors.error[600],
-  },
-  pickupSection: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: colors.gray[200],
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 14,
-    gap: 8,
-  },
-  pickupLeft: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-    minWidth: 0,
-  },
-  pickupIconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: colors.success[50],
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  pickupTextCol: {
-    flex: 1,
-    minWidth: 0,
-  },
-  pickupLabel: {
-    fontSize: 9,
-    fontWeight: "800",
-    color: colors.gray[500],
-    letterSpacing: 0.5,
-    marginBottom: 2,
-  },
-  pickupName: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: colors.gray[900],
-    marginBottom: 2,
-  },
-  pickupAddress: {
-    fontSize: 12,
-    fontWeight: "500",
-    color: colors.gray[600],
-    lineHeight: 17,
-  },
-  pickupActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    flexShrink: 0,
-  },
-  callBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.success[500],
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  callBtnDisabled: {
-    backgroundColor: colors.gray[300],
-  },
-  callBtnPressed: {
-    opacity: 0.9,
   },
 });

@@ -8,8 +8,12 @@ import type { OrderTimelineEntry } from '@/app/api/food-orders/[id]/timeline/rou
 import {
   fetchOrderTimelineCached,
   getCachedOrderTimeline,
-  prefetchOrderTimeline,
 } from '@/lib/orderTimelineCache';
+import {
+  fetchMerchantTimelineEnrichmentCached,
+  getCachedMerchantTimelineEnrichment,
+  prefetchMerchantOrderTimelineBundle,
+} from '@/lib/merchantTimelineEnrichmentCache';
 import {
   buildMerchantVisibleTimeline,
   findActionForStep,
@@ -92,15 +96,46 @@ export function OrderTimelineModal({
   const resolvedTimelineUrl =
     timelineUrl ?? (orderFoodId > 0 ? `/api/food-orders/${orderFoodId}/timeline` : '');
 
+  const cachedTimelineEntries = useMemo(() => {
+    if (!open || orderFoodId <= 0) return [];
+    const cached = getCachedOrderTimeline(orderFoodId);
+    return (
+      cached?.map((e) => ({
+        status: e.status,
+        occurred_at: e.occurred_at,
+        status_message: e.status_message,
+      })) ?? []
+    );
+  }, [open, orderFoodId]);
+
+  const cachedEnrichment = useMemo(() => {
+    if (!open || orderFoodId <= 0) return null;
+    return getCachedMerchantTimelineEnrichment(orderFoodId) ?? null;
+  }, [open, orderFoodId]);
+
+  const effectiveTimelineEntries =
+    timelineEntries.length > 0 ? timelineEntries : cachedTimelineEntries;
+
+  const effectiveRiderReachedAt = riderReachedAt ?? cachedEnrichment?.riderReachedAt ?? null;
+  const effectiveRiderAssignedAt = riderAssignedAt ?? cachedEnrichment?.riderAssignedAt ?? null;
+  const effectiveActions = actions.length > 0 ? actions : (cachedEnrichment?.actions ?? []);
+
   const merchantSteps = useMemo(() => {
     if (!order || !isMerchant) return [];
     return buildMerchantVisibleTimeline(order, {
-      riderReachedAt,
-      riderAssignedAt,
-      actions,
-      timelineEntries,
+      riderReachedAt: effectiveRiderReachedAt,
+      riderAssignedAt: effectiveRiderAssignedAt,
+      actions: effectiveActions,
+      timelineEntries: effectiveTimelineEntries,
     });
-  }, [order, isMerchant, riderReachedAt, riderAssignedAt, actions, timelineEntries]);
+  }, [
+    order,
+    isMerchant,
+    effectiveRiderReachedAt,
+    effectiveRiderAssignedAt,
+    effectiveActions,
+    effectiveTimelineEntries,
+  ]);
 
   useEffect(() => {
     if (!open) return;
@@ -113,19 +148,30 @@ export function OrderTimelineModal({
 
   useEffect(() => {
     if (orderFoodId > 0 && resolvedTimelineUrl) {
-      prefetchOrderTimeline(orderFoodId, resolvedTimelineUrl);
+      prefetchMerchantOrderTimelineBundle(orderFoodId, storeId, resolvedTimelineUrl);
     }
-  }, [orderFoodId, resolvedTimelineUrl]);
+  }, [orderFoodId, resolvedTimelineUrl, storeId]);
 
-  /** Merchant strip must read order_timelines (e.g. GatiMitra "Dispatched" from dashboard). */
+  /** Merchant strip — show cached rows instantly, refresh in background. */
   useEffect(() => {
     if (!open || !isMerchant || orderFoodId <= 0 || !resolvedTimelineUrl) {
       if (!open) setTimelineEntries([]);
       return;
     }
 
+    const cached = getCachedOrderTimeline(orderFoodId);
+    if (cached) {
+      setTimelineEntries(
+        cached.map((e) => ({
+          status: e.status,
+          occurred_at: e.occurred_at,
+          status_message: e.status_message,
+        }))
+      );
+    }
+
     let cancelled = false;
-    void fetchOrderTimelineCached(orderFoodId, resolvedTimelineUrl, { force: true }).then((list) => {
+    void fetchOrderTimelineCached(orderFoodId, resolvedTimelineUrl).then((list) => {
       if (cancelled) return;
       setTimelineEntries(
         list.map((e) => ({
@@ -149,53 +195,25 @@ export function OrderTimelineModal({
       return;
     }
 
-    let cancelled = false;
-
-    void fetch(`/api/food-orders/${orderFoodId}/riders-log`)
-      .then((r) => (r.ok ? r.json() : { riders: [] }))
-      .then(
-        (data: {
-          riders?: Array<{
-            reached_merchant_at?: string | null;
-            accepted_at?: string | null;
-            assigned_at?: string | null;
-          }>;
-        }) => {
-        if (cancelled) return;
-        const riders = data.riders ?? [];
-        const reached =
-          riders.find((r) => r.reached_merchant_at)?.reached_merchant_at ?? null;
-        const assigned =
-          riders.find((r) => r.accepted_at)?.accepted_at ??
-          riders.find((r) => r.assigned_at)?.assigned_at ??
-          null;
-        setRiderReachedAt(reached);
-        setRiderAssignedAt(assigned);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setRiderReachedAt(null);
-          setRiderAssignedAt(null);
-        }
-      });
-
-    if (storeId) {
-      void fetch(
-        `/api/food-orders/${orderFoodId}/activity?store_id=${encodeURIComponent(storeId)}`
-      )
-        .then((r) => (r.ok ? r.json() : { actions: [] }))
-        .then((data: { actions?: MerchantOrderActionForTimeline[] }) => {
-          if (!cancelled) setActions(data.actions ?? []);
-        })
-        .catch(() => {
-          if (!cancelled) setActions([]);
-        });
+    const cached = getCachedMerchantTimelineEnrichment(orderFoodId);
+    if (cached) {
+      setRiderReachedAt(cached.riderReachedAt);
+      setRiderAssignedAt(cached.riderAssignedAt);
+      setActions(cached.actions);
     }
+
+    let cancelled = false;
+    void fetchMerchantTimelineEnrichmentCached(orderFoodId, storeId).then((enrichment) => {
+      if (cancelled) return;
+      setRiderReachedAt(enrichment.riderReachedAt);
+      setRiderAssignedAt(enrichment.riderAssignedAt);
+      setActions(enrichment.actions);
+    });
 
     return () => {
       cancelled = true;
     };
-  }, [open, isMerchant, orderFoodId, storeId, resolvedTimelineUrl]);
+  }, [open, isMerchant, orderFoodId, storeId]);
 
   useEffect(() => {
     if (isMerchant || !open || orderFoodId <= 0) {
@@ -232,13 +250,13 @@ export function OrderTimelineModal({
   const handleView = (action: 'accepted' | 'ready' | 'cancelled') => {
     if (!order) return;
     if (action === 'accepted') {
-      const act = findActionForStep(actions, ['ACCEPTED']);
+      const act = findActionForStep(effectiveActions, ['ACCEPTED']);
       setActorDetail(parseActorDetailFromAction(act, order.accepted_by_label));
     } else if (action === 'ready') {
-      const act = findActionForStep(actions, ['READY_FOR_PICKUP', 'READY', 'PREPARED']);
+      const act = findActionForStep(effectiveActions, ['READY_FOR_PICKUP', 'READY', 'PREPARED']);
       setActorDetail(parseActorDetailFromAction(act));
     } else {
-      const act = findActionForStep(actions, ['CANCELLED']);
+      const act = findActionForStep(effectiveActions, ['CANCELLED']);
       setActorDetail(parseActorDetailFromAction(act, order.cancelled_by_label ?? order.rejected_reason));
     }
     setActorOpen(true);

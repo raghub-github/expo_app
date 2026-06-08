@@ -1,7 +1,6 @@
 import React from "react";
-import { Pressable, StyleSheet, Platform } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { colors } from "@/src/theme";
 
 type Props = {
   /** When true, sheet is expanded — tap to collapse. */
@@ -9,47 +8,55 @@ type Props = {
   onPress: () => void;
 };
 
+/** Reference-style sheet toggle: centered grab bar + chevron at top. */
 export function NavBottomSheetChevron({ expanded, onPress }: Props) {
   return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [styles.pill, pressed && styles.pillPressed]}
-      hitSlop={12}
-      accessibilityRole="button"
-      accessibilityLabel={expanded ? "Collapse order details" : "Expand order details"}
-    >
-      <Ionicons
-        name={expanded ? "chevron-down" : "chevron-up"}
-        size={20}
-        color={colors.gray[700]}
-      />
-    </Pressable>
+    <View style={styles.container}>
+      <Pressable
+        onPress={onPress}
+        style={({ pressed }) => [styles.pressable, pressed && styles.pressablePressed]}
+        hitSlop={{ top: 8, bottom: 8, left: 24, right: 24 }}
+        accessibilityRole="button"
+        accessibilityLabel={expanded ? "Collapse order details" : "Expand order details"}
+      >
+        <View style={styles.handle} />
+        <Ionicons
+          name={expanded ? "chevron-down" : "chevron-up"}
+          size={22}
+          color="#6B7280"
+          style={styles.chevronIcon}
+        />
+      </Pressable>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  pill: {
-    width: 44,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: colors.gray[100],
-    borderWidth: 1,
-    borderColor: colors.gray[200],
+  container: {
+    width: "100%",
+    alignSelf: "stretch",
+    alignItems: "center",
+  },
+  pressable: {
+    width: "100%",
+    alignSelf: "stretch",
     alignItems: "center",
     justifyContent: "center",
-    ...Platform.select({
-      ios: {
-        shadowColor: "#0f172a",
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.06,
-        shadowRadius: 3,
-      },
-      android: { elevation: 2 },
-      default: {},
-    }),
+    paddingTop: 8,
+    paddingBottom: 6,
   },
-  pillPressed: {
+  pressablePressed: {
     opacity: 0.72,
-    transform: [{ scale: 0.96 }],
+  },
+  handle: {
+    width: 44,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: "#CBD5E1",
+    alignSelf: "center",
+    marginBottom: 2,
+  },
+  chevronIcon: {
+    alignSelf: "center",
   },
 });

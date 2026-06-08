@@ -15,6 +15,10 @@ import {
   sql,
   type SQL,
 } from "drizzle-orm";
+import {
+  normalizePersonRideSearchType,
+  type PersonRideSearchType,
+} from "@/lib/orders/person-ride-search";
 
 export type PersonRideOrderRow = {
   id: number;
@@ -44,6 +48,7 @@ export type ListPersonRideOrdersFilters = {
   dateFrom?: string;
   dateTo?: string;
   search?: string;
+  searchType?: PersonRideSearchType | string;
 };
 
 const PERSON_RIDE_STATUSES = [
@@ -55,6 +60,76 @@ const PERSON_RIDE_STATUSES = [
   "delivered",
   "cancelled",
 ] as const;
+
+export { PERSON_RIDE_STATUSES };
+
+function buildPersonRideSearchCondition(
+  search: string,
+  searchTypeInput?: PersonRideSearchType | string
+): SQL | undefined {
+  const trimmed = search.trim();
+  if (!trimmed) return undefined;
+
+  const searchType = normalizePersonRideSearchType(
+    typeof searchTypeInput === "string" ? searchTypeInput : undefined
+  );
+  const like = `%${trimmed}%`;
+
+  switch (searchType) {
+    case "Order Id": {
+      const gmpMatch = /^GMP\d+$/i.exec(trimmed);
+      if (gmpMatch) {
+        return ilike(ordersCore.formattedOrderId, trimmed.toUpperCase());
+      }
+      return or(
+        ilike(ordersCore.formattedOrderId, like),
+        ilike(ordersCore.orderId, like),
+        ilike(ordersCore.externalRef, like)
+      );
+    }
+    case "Internal Order Id": {
+      const orderIdNum = parseInt(trimmed, 10);
+      if (!Number.isNaN(orderIdNum) && orderIdNum > 0) {
+        return eq(ordersCore.id, orderIdNum);
+      }
+      return sql`${ordersCore.id}::text ILIKE ${like}`;
+    }
+    case "Passenger Name":
+      return or(
+        ilike(ordersRide.passengerName, like),
+        ilike(customers.fullName, like)
+      );
+    case "Passenger Mobile":
+      return or(
+        ilike(ordersRide.passengerPhone, like),
+        ilike(customers.primaryMobile, like)
+      );
+    case "Customer Mobile":
+      return ilike(customers.primaryMobile, like);
+    case "Rider Name":
+      return ilike(riders.name, like);
+    case "Rider Mobile":
+      return ilike(riders.mobile, like);
+    case "Rider Id": {
+      const riderNum = parseInt(trimmed.replace(/^GMR/i, ""), 10);
+      if (!Number.isNaN(riderNum) && riderNum > 0) {
+        return eq(ordersCore.riderId, riderNum);
+      }
+      return sql`${ordersCore.riderId}::text ILIKE ${like}`;
+    }
+    default:
+      return or(
+        ilike(ordersCore.formattedOrderId, like),
+        ilike(ordersRide.passengerName, like),
+        ilike(ordersRide.passengerPhone, like),
+        ilike(customers.fullName, like),
+        ilike(customers.primaryMobile, like),
+        ilike(riders.name, like),
+        ilike(riders.mobile, like),
+        sql`${ordersCore.id}::text ILIKE ${like}`
+      );
+  }
+}
 
 export function isValidPersonRideStatus(value: string): boolean {
   return (PERSON_RIDE_STATUSES as readonly string[]).includes(value);
@@ -95,19 +170,10 @@ export async function listPersonRideOrders(
 
   const search = filters.search?.trim();
   if (search) {
-    const term = `%${search}%`;
-    conditions.push(
-      or(
-        ilike(ordersCore.formattedOrderId, term),
-        ilike(ordersRide.passengerName, term),
-        ilike(ordersRide.passengerPhone, term),
-        ilike(customers.fullName, term),
-        ilike(customers.primaryMobile, term),
-        ilike(riders.name, term),
-        ilike(riders.mobile, term),
-        sql`${ordersCore.id}::text ILIKE ${term}`
-      )!
-    );
+    const searchCondition = buildPersonRideSearchCondition(search, filters.searchType);
+    if (searchCondition) {
+      conditions.push(searchCondition);
+    }
   }
 
   const whereClause = and(...conditions);

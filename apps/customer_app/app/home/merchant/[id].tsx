@@ -37,7 +37,7 @@ import Animated, {
   Extrapolation,
   createAnimatedComponent,
 } from "react-native-reanimated";
-import { merchantService, type MenuItem, type MerchantSummary } from "@/services/merchant.service";
+import { merchantService, type MenuItem, type MerchantSummary, setMenuItemBookmark } from "@/services/merchant.service";
 import { previewEtaRange, formatEtaRange } from "@/lib/etaPreview";
 import {
   buildStoreOpenStatusLabel,
@@ -49,13 +49,14 @@ import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { StoreBannerCarousel } from "@/components/StoreBannerCarousel";
 import { getRoute } from "@/services/distance.service";
 import { useStoreDeliveryQuote } from "@/hooks/useStoreDeliveryQuote";
+import { useMenuItemBookmarks, useMenuItemBookmarkMutations } from "@/hooks/useMenuItemBookmarks";
 import { addressService } from "@/services/address.service";
 import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
 import { useCartStore } from "@/store/cartStore";
 import { useLocationStore } from "@/store/locationStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useMerchantScrollStore } from "@/store/merchantScrollStore";
-import { MerchantHeaderSkeleton, MenuListSkeleton } from "@/components/ShimmerSkeleton";
+import { MerchantDetailSkeleton } from "@/components/ShimmerSkeleton";
 import { GroupOrderStartSheet } from "@/components/GroupOrderStartSheet";
 import { ItemCustomizationSheet } from "@/components/ItemCustomizationSheet";
 import {
@@ -210,12 +211,6 @@ function findSectionIndexForScrollTarget(
   }
 }
 
-function formatReviewCount(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M+`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}K+`;
-  return `${n}`;
-}
-
 /** Animated SectionList refs may not expose scrollToOffset — use scroll responder fallback. */
 function scrollSectionListToOffset(
   ref: React.RefObject<SectionList<MenuListRow> | null>,
@@ -284,7 +279,6 @@ export default function MerchantDetailScreen() {
   const startingAtAnchorRef = useRef<RNView>(null);
   const [filter, setFilter] = useState<StoreFilterId>("all");
   const [advancedFilters, setAdvancedFilters] = useState<StoreMenuFilterState>(DEFAULT_STORE_MENU_FILTERS);
-  const [savedMenuItemIds, setSavedMenuItemIds] = useState<Record<string, boolean>>({});
   const [filtersSheetVisible, setFiltersSheetVisible] = useState(false);
   const [menuSheetVisible, setMenuSheetVisible] = useState(false);
   const [menuSearchQuery, setMenuSearchQuery] = useState("");
@@ -322,6 +316,8 @@ export default function MerchantDetailScreen() {
   const scrollY = useSharedValue(0);
 
   const queryClient = useQueryClient();
+  const { bookmarkMenuItemIdSet } = useMenuItemBookmarks(merchantId);
+  const { syncMenuItemBookmark } = useMenuItemBookmarkMutations();
   const { data: merchant, isLoading, isError, refetch } = useQuery({
     queryKey: ["merchant", merchantId],
     queryFn: () => merchantService.getMerchantById(merchantId),
@@ -740,24 +736,58 @@ export default function MerchantDetailScreen() {
     [handleAddItem]
   );
 
+  const resolveMenuItemPk = useCallback((item: MenuItem): number | null => {
+    if (item.menuItemId != null && Number.isFinite(item.menuItemId)) return item.menuItemId;
+    const parsed = Number(item.id);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }, []);
+
   const handleShareMenuItem = useCallback(
-    async (item: MenuItem) => {
-      try {
-        await Share.share({
-          message: `${item.name} – ₹${Math.round(item.price)} at ${merchant?.name ?? "Restaurant"}`,
-          title: item.name,
-        });
-      } catch (_) {}
+    (item: MenuItem) => {
+      const storeName = merchant?.name ?? "Restaurant";
+      const message = `${item.name} – ₹${Math.round(item.price)} at ${storeName}\nOrder on GatiMitra`;
+      void Share.share({
+        message,
+        title: item.name,
+      }).catch(() => {
+        Alert.alert("Share dish", message);
+      });
     },
     [merchant?.name]
   );
 
-  const handleBookmarkMenuItem = useCallback((item: MenuItem) => {
-    setSavedMenuItemIds((prev) => ({
-      ...prev,
-      [item.id]: !prev[item.id],
-    }));
-  }, []);
+  const handleBookmarkMenuItem = useCallback(
+    (item: MenuItem) => {
+      const menuItemPk = resolveMenuItemPk(item);
+      if (!merchantId || menuItemPk == null) return;
+
+      const nextSaved = !bookmarkMenuItemIdSet.has(menuItemPk);
+      const payload = {
+        storeId: merchantId,
+        menuItemId: menuItemPk,
+        itemId: item.id,
+        name: item.name,
+        imageUrl: item.imageUrl ?? null,
+        price: item.price,
+        isVeg: item.isVeg,
+        storeName: merchant?.name ?? "Restaurant",
+      };
+
+      syncMenuItemBookmark(payload, nextSaved);
+      void (async () => {
+        try {
+          const result = await setMenuItemBookmark(merchantId, menuItemPk, nextSaved);
+          if (result.saved !== nextSaved) {
+            syncMenuItemBookmark(payload, !nextSaved);
+          }
+        } catch {
+          syncMenuItemBookmark(payload, !nextSaved);
+          Alert.alert("Could not save", "Please try again.");
+        }
+      })();
+    },
+    [bookmarkMenuItemIdSet, merchant?.name, merchantId, resolveMenuItemPk, syncMenuItemBookmark]
+  );
 
   const handleCustomizationAdd = useCallback(
     (params: {
@@ -1272,6 +1302,7 @@ export default function MerchantDetailScreen() {
     }) => {
       const sectionData = section.data;
       const isLast = index === sectionData.length - 1;
+      const menuItemPk = resolveMenuItemPk(item);
       return (
         <StoreMenuItemRow
           item={item}
@@ -1283,7 +1314,7 @@ export default function MerchantDetailScreen() {
           isStoreClosed={isStoreClosedForStatus}
           showDivider={!isLast}
           isHighlyReordered={highlyReorderedIds.has(item.id)}
-          isBookmarked={!!savedMenuItemIds[item.id]}
+          isBookmarked={menuItemPk != null && bookmarkMenuItemIdSet.has(menuItemPk)}
           highlighted={
             highlightedMenuItemKey != null &&
             (item.id === highlightedMenuItemKey ||
@@ -1301,36 +1332,36 @@ export default function MerchantDetailScreen() {
       handleDecrement,
       isStoreClosedForStatus,
       highlyReorderedIds,
-      savedMenuItemIds,
+      bookmarkMenuItemIdSet,
       highlightedMenuItemKey,
       handleBookmarkMenuItem,
       handleShareMenuItem,
       goesWithNameByItemId,
+      resolveMenuItemPk,
     ]
   );
 
   const distanceKm = routeResult?.distanceKm ?? listCachedDistanceKm ?? null;
   const storeEtaLabel = useMemo(() => {
-    if (!merchant) return formatEtaRange(previewEtaRange({ distanceKm: null, prepMinutes: null }));
-    return formatEtaRange(
-      previewEtaRange({
-        distanceKm,
-        prepMinutes: merchant.avgPreparationTimeMinutes ?? null,
-      })
-    );
-  }, [merchant, distanceKm]);
-
-  const ratingDisplay = useMemo(() => {
-    if (merchant?.avgRating == null || Number(merchant.avgRating) < 0) return null;
-    return Number(merchant.avgRating).toFixed(1);
-  }, [merchant?.avgRating]);
-
-  const reviewCountLabelForHeader = useMemo(() => {
-    if (merchant?.totalReviews != null && merchant.totalReviews > 0) {
-      return formatReviewCount(merchant.totalReviews);
+    if (storeQuote?.duration_min != null && Number.isFinite(storeQuote.duration_min)) {
+      const mins = Math.round(storeQuote.duration_min);
+      const impact = storeQuote.weather_show_impact ? " · Weather Impact" : "";
+      return `${mins} mins${impact}`;
     }
-    return null;
-  }, [merchant?.totalReviews]);
+    if (!merchant) return formatEtaRange(previewEtaRange({ distanceKm: null, prepMinutes: null }));
+    const range = previewEtaRange({
+      distanceKm,
+      prepMinutes: merchant.avgPreparationTimeMinutes ?? null,
+    });
+    const delay = storeQuote?.weather_delay_minutes ?? 0;
+    if (delay > 0) {
+      return formatEtaRange({
+        etaMinMinutes: range.etaMinMinutes + delay,
+        etaMaxMinutes: range.etaMaxMinutes + delay,
+      });
+    }
+    return formatEtaRange(range);
+  }, [merchant, distanceKm, storeQuote]);
 
   const closedBannerMessage = useMemo(() => {
     if (!merchant || !isStoreClosedForStatus) return null;
@@ -1390,8 +1421,8 @@ export default function MerchantDetailScreen() {
         <StoreInfoCard
           name={merchant.name}
           logoUrl={merchantLogoUri}
-          rating={ratingDisplay}
-          reviewCountLabel={reviewCountLabelForHeader ?? undefined}
+          avgRating={merchant.avgRating}
+          totalReviews={merchant.totalReviews}
           distanceKm={distanceKm}
           areaLabel={merchant.city ?? merchant.address ?? undefined}
           etaLabel={storeEtaLabel}
@@ -1458,8 +1489,6 @@ export default function MerchantDetailScreen() {
     merchantBannerHeroUri,
     merchantGalleryBannerUris,
     merchantLogoUri,
-    ratingDisplay,
-    reviewCountLabelForHeader,
     distanceKm,
     storeEtaLabel,
     scheduledSlotLabel,
@@ -1499,10 +1528,7 @@ export default function MerchantDetailScreen() {
   if (isLoading && !merchant) {
     return (
       <View style={styles.container}>
-        <MerchantHeaderSkeleton />
-        <View style={{ paddingTop: 16, paddingBottom: 24 }}>
-          <MenuListSkeleton count={6} />
-        </View>
+        <MerchantDetailSkeleton menuRowCount={5} />
       </View>
     );
   }
@@ -1531,10 +1557,7 @@ export default function MerchantDetailScreen() {
   if (!merchant) {
     return (
       <View style={styles.container}>
-        <MerchantHeaderSkeleton />
-        <View style={{ paddingTop: 16, paddingBottom: 24 }}>
-          <MenuListSkeleton count={6} />
-        </View>
+        <MerchantDetailSkeleton menuRowCount={5} />
       </View>
     );
   }
@@ -1630,6 +1653,7 @@ export default function MerchantDetailScreen() {
         onScroll={scrollHandler}
         scrollEventThrottle={16}
         scrollEnabled
+        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator
         {...(Platform.OS === "android" ? { overScrollMode: "never" as const } : {})}
         onScrollToIndexFailed={(info) => {

@@ -1,20 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useRef, useImperativeHandle, forwardRef, useState } from "react";
-import { View, StyleSheet, ActivityIndicator } from "react-native";
+import { View, StyleSheet } from "react-native";
 import { getMapboxModule } from "@/src/services/maps/mapbox";
+import { NavArrivedAtStoreMarker } from "@/src/components/orders/NavArrivedAtStoreMarker";
 import { NavigateRideRiderMarker } from "@/src/components/orders/NavigateRideRiderMarker";
+import { NavStoreGreenPinMarker } from "@/src/components/orders/NavStoreGreenPinMarker";
+import {
+  resolveRoadRouteCoordinates,
+  shouldHideNavigationRoute,
+} from "@/src/lib/navigation-route-visibility";
 import { NavigationRouteAltLabel } from "@/src/components/orders/NavigationRouteAltLabel";
-import { PremiumPickupMarker } from "@/src/components/orders/PremiumPickupMarker";
-import { FoodRestaurantMapMarker } from "@/src/components/orders/FoodRestaurantMapMarker";
-import { NAVIGATE_PICKUP_SHEET_HEIGHT } from "@/src/components/orders/NavigatePickupBottomSheet";
 import {
   buildNavigationFitPoints,
   boundsFromPoints,
   navigationEdgePadding,
 } from "@/src/lib/navigation-camera-fit";
 import { MapboxUnavailablePanel } from "@/src/components/maps/MapboxUnavailablePanel";
-import { MapboxWebNavigationMap } from "@/src/components/maps/MapboxWebNavigationMap";
-import { canUseMapboxWeb, shouldUseMapboxWebFallback } from "@/src/lib/mapbox-runtime";
-import { colors } from "@/src/theme";
+import { resolveMapboxPublicToken } from "@/src/lib/mapbox-env";
 import {
   lineStringGeoJson,
   routeMidpoint,
@@ -51,6 +52,8 @@ import {
   NAV_ROUTE_BLUE,
   NAV_ROUTE_CASING,
   NAV_ROUTE_CASING_WIDTH,
+  NAV_ROUTE_GLOW,
+  NAV_ROUTE_GLOW_WIDTH,
   NAV_ROUTE_TRAVELED,
   NAV_ROUTE_WIDTH,
 } from "@/src/lib/navigation-map-style";
@@ -87,6 +90,8 @@ type Props = {
   destinationLabel?: string;
   /** Food orders: restaurant pin with name label. */
   foodRestaurantName?: string;
+  /** Optional storefront thumbnail for destination callout. */
+  destinationImageUrl?: string | null;
   remainingCoordinates: LatLng[];
   /** Lighter alternate paths (Google Maps style). */
   alternativeRoutes?: NavigationAlternativeRoute[];
@@ -105,6 +110,9 @@ type Props = {
   navigationFollowMode?: boolean;
   mapViewMode?: NavMapViewMode;
   onUserMapGesture?: () => void;
+  /** Rider reached store / destination — hide route and show arrival markers. */
+  arrivedAtDestination?: boolean;
+  remainingDistanceM?: number | null;
   style?: object;
 };
 
@@ -125,10 +133,10 @@ function navigationBearingDeg(
 
 function defaultMapEdge(): MapEdgeInsets {
   return {
-    top: 150,
-    bottom: NAVIGATE_PICKUP_SHEET_HEIGHT + 80,
-    left: 100,
-    right: 100,
+    top: 112,
+    bottom: 96,
+    left: 44,
+    right: 60,
   };
 }
 
@@ -148,16 +156,19 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
       mapEdgeInsets,
       fitCameraTrigger = 0,
       navigationFollowMode = false,
-      mapViewMode = "navigation",
+      mapViewMode = "street",
       onUserMapGesture,
       destinationLabel = "Pickup",
       foodRestaurantName,
+      destinationImageUrl,
+      arrivedAtDestination = false,
+      remainingDistanceM = null,
       style,
     },
     ref
   ) {
+    const hideRouteLine = shouldHideNavigationRoute(arrivedAtDestination, remainingDistanceM);
     const cameraRef = useRef<{ setCamera: (opts: object) => void } | null>(null);
-    const webMapRef = useRef<{ recenter: () => void } | null>(null);
     const edge = navigationEdgePadding(mapEdgeInsets ?? defaultMapEdge());
     const [mapReady, setMapReady] = useState(false);
     const mapStyleUrl = mapStyleForNavViewMode(mapViewMode);
@@ -169,18 +180,14 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
       bearing: number;
       atMs: number;
     } | null>(null);
-    const useWebMap = shouldUseMapboxWebFallback();
-
     const Mapbox = useMemo(() => {
-      if (useWebMap) return null;
       try {
         return getMapboxModule();
       } catch {
         return null;
       }
-    }, [useWebMap]);
+    }, []);
 
-    const showRemaining = remainingCoordinates.length >= 2;
     const showTraveled = traveledCoordinates.length >= 2;
 
     const pickupCoord = useMemo(
@@ -196,6 +203,13 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
       [riderLocation?.lat, riderLocation?.lng]
     );
 
+    const routeLineCoordinates = useMemo(
+      () => resolveRoadRouteCoordinates(remainingCoordinates, fullRouteCoordinates),
+      [remainingCoordinates, fullRouteCoordinates]
+    );
+
+    const showRemaining = !hideRouteLine && routeLineCoordinates.length >= 2;
+
     const altFitCoords = useMemo(
       () => alternativeRoutes.flatMap((a) => a.coordinates),
       [alternativeRoutes]
@@ -206,10 +220,10 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
         buildNavigationFitPoints(
           pickupCoord,
           riderCoord,
-          remainingCoordinates.length >= 2 ? remainingCoordinates : traveledCoordinates,
+          routeLineCoordinates.length >= 2 ? routeLineCoordinates : traveledCoordinates,
           altFitCoords
         ),
-      [pickupCoord, riderCoord, remainingCoordinates, traveledCoordinates, altFitCoords]
+      [pickupCoord, riderCoord, routeLineCoordinates, traveledCoordinates, altFitCoords]
     );
 
     const overviewFitPoints = useMemo(() => {
@@ -258,14 +272,14 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
 
     const followNavigationCamera = useCallback(
       (opts?: { force?: boolean; animate?: boolean }) => {
-        if (!mapReady || !cameraRef.current || !riderCoord || remainingCoordinates.length < 2) {
+        if (!mapReady || !cameraRef.current || !riderCoord || routeLineCoordinates.length < 2) {
           return;
         }
 
         const bearing = normalizeBearing(
-          navigationBearingDeg(riderLocation, remainingCoordinates)
+          navigationBearingDeg(riderLocation, routeLineCoordinates)
         );
-        const anchor = riderCoord ?? remainingCoordinates[0]!;
+        const anchor = riderCoord ?? routeLineCoordinates[0]!;
         const center = offsetPoint(anchor, bearing, NAV_LOOK_AHEAD_M);
 
         if (
@@ -303,7 +317,7 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
           // ignore
         }
       },
-      [mapReady, riderCoord, riderLocation, remainingCoordinates, edge]
+      [mapReady, riderCoord, riderLocation, routeLineCoordinates, edge]
     );
 
     const applyBoundsCamera = useCallback(
@@ -372,10 +386,6 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
       ref,
       () => ({
         recenter: (followNavigation = true) => {
-          if (useWebMap) {
-            webMapRef.current?.recenter(followNavigation);
-            return;
-          }
           if (followNavigation && riderCoord && showRemaining) {
             manualZoomRef.current = NAV_FOLLOW_ZOOM;
             followNavigationCamera({ force: true, animate: true });
@@ -386,20 +396,12 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
           }
         },
         showRouteOverview: () => {
-          if (useWebMap) {
-            webMapRef.current?.showRouteOverview();
-            return;
-          }
           showRouteOverviewCamera();
         },
         zoomIn: () => {
           followEngagedRef.current = false;
           lastFollowCameraRef.current = null;
           manualZoomRef.current = Math.min(21, manualZoomRef.current + 1);
-          if (useWebMap) {
-            webMapRef.current?.zoomIn();
-            return;
-          }
           if (!cameraRef.current) return;
           try {
             cameraRef.current.setCamera({
@@ -415,10 +417,6 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
           followEngagedRef.current = false;
           lastFollowCameraRef.current = null;
           manualZoomRef.current = Math.max(8, manualZoomRef.current - 1);
-          if (useWebMap) {
-            webMapRef.current?.zoomOut();
-            return;
-          }
           if (!cameraRef.current) return;
           try {
             cameraRef.current.setCamera({
@@ -432,14 +430,7 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
           }
         },
       }),
-      [
-        useWebMap,
-        fitCamera,
-        showRouteOverviewCamera,
-        followNavigationCamera,
-        riderCoord,
-        showRemaining,
-      ]
+      [fitCamera, showRouteOverviewCamera, followNavigationCamera, riderCoord, showRemaining]
     );
 
     useEffect(() => {
@@ -450,8 +441,30 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
       return () => clearTimeout(t);
     }, [mapReady, fitCameraTrigger, fitCamera, navigationFollowMode]);
 
+    useEffect(() => {
+      if (!mapReady || !hideRouteLine || !cameraRef.current) return;
+      try {
+        cameraRef.current.setCamera({
+          centerCoordinate: [pickup.lng, pickup.lat],
+          zoomLevel: 17,
+          pitch: 48,
+          heading: 0,
+          padding: {
+            paddingTop: edge.top,
+            paddingBottom: edge.bottom,
+            paddingLeft: edge.left,
+            paddingRight: edge.right,
+          },
+          animationDuration: 450,
+          animationMode: "easeTo",
+        });
+      } catch {
+        // ignore
+      }
+    }, [mapReady, hideRouteLine, pickup.lng, pickup.lat, edge]);
+
     const riderFollowKey = riderCoord
-      ? `${riderCoord.latitude.toFixed(5)},${riderCoord.longitude.toFixed(5)},${riderLocation?.headingDeg ?? ""}`
+      ? `${riderCoord.latitude.toFixed(6)},${riderCoord.longitude.toFixed(6)},${Math.round(riderLocation?.headingDeg ?? 0)}`
       : "";
 
     useEffect(() => {
@@ -460,8 +473,8 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
     }, [mapReady, navigationFollowMode, showRemaining, riderFollowKey, followNavigationCamera, riderCoord]);
 
     const maneuverArrowsGeoJson = useMemo(
-      () => buildManeuverArrowCollection(remainingCoordinates),
-      [remainingCoordinates]
+      () => buildManeuverArrowCollection(routeLineCoordinates),
+      [routeLineCoordinates]
     );
 
     const remainingGeoJson = useMemo(
@@ -469,11 +482,11 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
         type: "Feature" as const,
         geometry: {
           type: "LineString" as const,
-          coordinates: remainingCoordinates.map((c) => [c.longitude, c.latitude]),
+          coordinates: routeLineCoordinates.map((c) => [c.longitude, c.latitude]),
         },
         properties: {},
       }),
-      [remainingCoordinates]
+      [routeLineCoordinates]
     );
 
     const traveledGeoJson = useMemo(
@@ -489,8 +502,8 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
     );
 
     const pickupConnectorGeoJson = useMemo(
-      () => buildPickupConnectorGeoJson(remainingCoordinates, pickup),
-      [remainingCoordinates, pickup.lat, pickup.lng]
+      () => buildPickupConnectorGeoJson(routeLineCoordinates, pickup),
+      [routeLineCoordinates, pickup.lat, pickup.lng]
     );
 
     const routeJoinGeoJson = useMemo(() => {
@@ -528,7 +541,7 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
           .join(";")
       : "";
 
-    if (!canUseMapboxWeb()) {
+    if (!resolveMapboxPublicToken()) {
       return (
         <View style={[styles.container, style]}>
           <MapboxUnavailablePanel context="navigation" missingToken />
@@ -536,39 +549,10 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
       );
     }
 
-    if (useWebMap && riderLocation) {
-      return (
-        <View style={[styles.container, style]}>
-          <MapboxWebNavigationMap
-            ref={webMapRef}
-            rider={{
-              lat: riderLocation.lat,
-              lng: riderLocation.lng,
-              headingDeg: riderLocation.headingDeg,
-            }}
-            pickup={{ lat: pickup.lat, lng: pickup.lng }}
-            remainingCoordinates={remainingCoordinates}
-            fullRouteCoordinates={fullRouteCoordinates}
-            previousPickup={previousPickup}
-            alternativeRoutes={alternativeRoutes}
-            offRouteConnectorGeoJson={effectiveConnectorGeoJson}
-            routeJoinPoint={routeJoinPoint}
-            routeDeviationWrongWay={routeDeviationWrongWay}
-            navigationFollowMode={navigationFollowMode}
-            mapViewMode={mapViewMode}
-            maneuverArrowsGeoJson={maneuverArrowsGeoJson}
-            onUserMapGesture={onUserMapGesture}
-            destinationLabel={destinationLabel}
-            style={styles.map}
-          />
-        </View>
-      );
-    }
-
     if (!Mapbox) {
       return (
         <View style={[styles.container, style]}>
-          <MapboxUnavailablePanel context="navigation" />
+          <MapboxUnavailablePanel context="navigation" needsDevBuild />
         </View>
       );
     }
@@ -597,12 +581,6 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
 
     return (
       <View style={[styles.container, style]}>
-        {!mapReady ? (
-          <View style={styles.loadingOverlay} pointerEvents="none">
-            <ActivityIndicator size="large" color={colors.primary[500]} />
-          </View>
-        ) : null}
-
         <Mapbox.MapView
           style={styles.map}
           styleURL={mapStyleUrl}
@@ -625,7 +603,8 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
         >
           <Mapbox.Camera ref={cameraRef} animationMode="none" animationDuration={0} />
 
-          {altRouteLayers.map((alt) => (
+          {!hideRouteLine &&
+            altRouteLayers.map((alt) => (
             <Mapbox.ShapeSource key={alt.id} id={alt.id} shape={alt.geoJson}>
               <Mapbox.LineLayer
                 id={`${alt.id}-line`}
@@ -657,6 +636,17 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
           {showRemaining ? (
             <Mapbox.ShapeSource id="nav-route-remaining" shape={remainingGeoJson}>
               <Mapbox.LineLayer
+                id="nav-route-glow"
+                style={{
+                  lineColor: NAV_ROUTE_GLOW,
+                  lineWidth: NAV_ROUTE_GLOW_WIDTH,
+                  lineOpacity: 0.65,
+                  lineCap: "round",
+                  lineJoin: "round",
+                  lineBlur: 2,
+                }}
+              />
+              <Mapbox.LineLayer
                 id="nav-route-casing"
                 style={{
                   lineColor: NAV_ROUTE_CASING,
@@ -674,27 +664,10 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
                   lineJoin: "round",
                 }}
               />
-              <Mapbox.SymbolLayer
-                id="nav-route-arrows"
-                style={{
-                  symbolPlacement: "line",
-                  symbolSpacing: 56,
-                  textField: "▶",
-                  textSize: 15,
-                  textColor: "#ffffff",
-                  textHaloColor: "#1A73E8",
-                  textHaloWidth: 1.5,
-                  textKeepUpright: false,
-                  textRotationAlignment: "map",
-                  textPitchAlignment: "map",
-                  textAllowOverlap: true,
-                  iconAllowOverlap: true,
-                }}
-              />
             </Mapbox.ShapeSource>
           ) : null}
 
-          {maneuverArrowsGeoJson.features.length > 0 ? (
+          {showRemaining && maneuverArrowsGeoJson.features.length > 0 ? (
             <Mapbox.ShapeSource id="nav-maneuver-arrows" shape={maneuverArrowsGeoJson}>
               <Mapbox.SymbolLayer
                 id="nav-maneuver-arrows-layer"
@@ -713,7 +686,7 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
             </Mapbox.ShapeSource>
           ) : null}
 
-          {routeJoinGeoJson ? (
+          {routeJoinGeoJson && showRemaining ? (
             <Mapbox.ShapeSource id="nav-route-join" shape={routeJoinGeoJson}>
               <Mapbox.CircleLayer
                 id="nav-route-join-dot"
@@ -728,7 +701,7 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
             </Mapbox.ShapeSource>
           ) : null}
 
-          {effectiveConnectorGeoJson ? (
+          {effectiveConnectorGeoJson && showRemaining ? (
             <Mapbox.ShapeSource
               id="nav-rider-route-connector"
               shape={effectiveConnectorGeoJson}
@@ -759,7 +732,7 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
             </Mapbox.ShapeSource>
           ) : null}
 
-          {pickupConnectorGeoJson ? (
+          {pickupConnectorGeoJson && showRemaining ? (
             <Mapbox.ShapeSource id="nav-pickup-connector" shape={pickupConnectorGeoJson}>
               <Mapbox.LineLayer
                 id="nav-pickup-connector-line"
@@ -784,32 +757,36 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
               )
             : null}
 
-          {renderMarker(
-            "nav-destination-pin",
-            [pickup.lng, pickup.lat],
-            PICKUP_ANCHOR,
-            destinationLabel === "Drop" ? (
-              <PremiumPickupMarker label="Drop" variant="drop" />
-            ) : foodRestaurantName ? (
-              <FoodRestaurantMapMarker name={foodRestaurantName} />
-            ) : (
-              <PremiumPickupMarker label={destinationLabel} variant="pickup" />
+          {hideRouteLine && riderLocation ? (
+            renderMarker(
+              "nav-arrived-store",
+              [pickup.lng, pickup.lat],
+              PICKUP_ANCHOR,
+              <NavArrivedAtStoreMarker headingDeg={riderLocation.headingDeg} />
+            )
+          ) : (
+            renderMarker(
+              "nav-destination-pin",
+              [pickup.lng, pickup.lat],
+              PICKUP_ANCHOR,
+              <NavStoreGreenPinMarker />
             )
           )}
 
-          {altRouteLayers.map(
-            (alt) =>
-              alt.midpoint
-                ? renderMarker(
-                    `${alt.id}-label`,
-                    [alt.midpoint.longitude, alt.midpoint.latitude],
-                    { x: 0.5, y: 0.5 },
-                    <NavigationRouteAltLabel label={alt.label} />
-                  )
-                : null
-          )}
+          {!hideRouteLine &&
+            altRouteLayers.map(
+              (alt) =>
+                alt.midpoint
+                  ? renderMarker(
+                      `${alt.id}-label`,
+                      [alt.midpoint.longitude, alt.midpoint.latitude],
+                      { x: 0.5, y: 0.5 },
+                      <NavigationRouteAltLabel label={alt.label} />
+                    )
+                  : null
+            )}
 
-          {riderLocation
+          {riderLocation && !hideRouteLine
             ? renderMarker(
                 "nav-rider-bike",
                 [riderLocation.lng, riderLocation.lat],
@@ -827,23 +804,20 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#E2E8F0",
+    overflow: "hidden",
+    zIndex: 1,
+    elevation: 0,
   },
   map: {
     flex: 1,
-  },
-  loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 5,
-    backgroundColor: "rgba(232, 244, 241, 0.85)",
+    overflow: "hidden",
   },
   ghostRing: {
     width: 36,
     height: 36,
     borderRadius: 18,
     borderWidth: 2,
-    borderColor: colors.primary[400],
+    borderColor: "#2dd4bf",
     borderStyle: "dashed",
     backgroundColor: "rgba(20, 184, 166, 0.12)",
   },

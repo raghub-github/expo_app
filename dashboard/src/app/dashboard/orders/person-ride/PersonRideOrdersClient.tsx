@@ -1,9 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
-import { RefreshCw } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { CheckCircle2, RefreshCw, Filter, User, Car } from "lucide-react";
+import { normalizePersonRideSearchType } from "@/lib/orders/person-ride-search";
+import { PersonRideTableRowsSkeleton } from "@/components/skeletons/PersonRideOrdersPageSkeleton";
+import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
+
+const PAGE_BG = "#F4F6F9";
+const CONTENT_BG = "#FFFFFF";
+const MINT_GREEN = "#4EE5C1";
+const INACTIVE_BG = "#F0F2F5";
+const INACTIVE_TEXT = "#1E3A8A";
+const BORDER_COLOR = "#D5DBDE";
+const DARK_TEXT = "#000000";
+const TABLE_TEXT = "#000000";
+const ORDER_TAG_BG = "#E8F0FE";
+const ORDER_TAG_TEXT = "#1E40AF";
 
 type PersonRideOrder = {
   id: number;
@@ -32,16 +47,31 @@ type ApiResponse = {
   error?: string;
 };
 
-const STATUS_OPTIONS = [
-  { value: "", label: "All Status" },
-  { value: "assigned", label: "Assigned / Searching" },
-  { value: "accepted", label: "Accepted" },
-  { value: "reached_store", label: "Reached Pickup" },
-  { value: "picked_up", label: "Picked Up" },
-  { value: "in_transit", label: "In Transit" },
-  { value: "delivered", label: "Delivered" },
-  { value: "cancelled", label: "Cancelled" },
+type StatusTab = {
+  value: string;
+  label: string;
+};
+
+const STATUS_TABS: StatusTab[] = [
+  { value: "", label: "ALL" },
+  { value: "assigned", label: "ASSIGNED" },
+  { value: "accepted", label: "ACCEPTED" },
+  { value: "reached_store", label: "REACHED PICKUP" },
+  { value: "picked_up", label: "PICKED UP" },
+  { value: "in_transit", label: "IN TRANSIT" },
+  { value: "delivered", label: "DELIVERED" },
+  { value: "cancelled", label: "CANCELLED" },
 ];
+
+const STATUS_BADGE: Record<string, { bg: string; text: string }> = {
+  assigned: { bg: "#FEF3C7", text: "#92400E" },
+  accepted: { bg: "#DBEAFE", text: "#1E40AF" },
+  reached_store: { bg: "#EDE9FE", text: "#5B21B6" },
+  picked_up: { bg: "#E0E7FF", text: "#3730A3" },
+  in_transit: { bg: "#CFFAFE", text: "#0E7490" },
+  delivered: { bg: "#D1FAE5", text: "#065F46" },
+  cancelled: { bg: "#FEE2E2", text: "#991B1B" },
+};
 
 function formatStatus(order: PersonRideOrder): string {
   const raw = order.currentStatus?.trim() || order.status?.trim() || "—";
@@ -53,15 +83,16 @@ function formatVehicleType(order: PersonRideOrder): string {
   return raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function formatPassenger(order: PersonRideOrder): string {
-  if (order.passengerName?.trim()) return order.passengerName.trim();
-  if (order.customerName?.trim()) return order.customerName.trim();
-  if (order.passengerPhone?.trim()) return order.passengerPhone.trim();
-  if (order.customerMobile?.trim()) return order.customerMobile.trim();
-  return "—";
+function formatPassenger(order: PersonRideOrder): { name: string; phone: string | null } {
+  const name =
+    order.passengerName?.trim() ||
+    order.customerName?.trim() ||
+    "—";
+  const phone = order.passengerPhone?.trim() || order.customerMobile?.trim() || null;
+  return { name, phone };
 }
 
-function truncate(text: string | null, max = 42): string {
+function truncate(text: string | null, max = 36): string {
   if (!text?.trim()) return "—";
   const t = text.trim();
   return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
@@ -72,14 +103,26 @@ function formatFare(fare: number | null): string {
   return `₹${Math.round(fare).toLocaleString("en-IN")}`;
 }
 
-async function fetchPersonRideOrders(params: {
+function displayOrderId(order: PersonRideOrder): string {
+  const formatted = order.formattedOrderId?.trim();
+  if (formatted) return formatted.replace(/^#/, "");
+  return `GMP${String(order.id).padStart(6, "0")}`;
+}
+
+export type PersonRideOrdersFilters = {
   page: number;
   limit: number;
   status: string;
   dateFrom: string;
   dateTo: string;
   search: string;
-}): Promise<{ orders: PersonRideOrder[]; total: number; page: number; limit: number; totalPages: number }> {
+  searchType: string;
+};
+
+export async function fetchPersonRideOrders(
+  params: PersonRideOrdersFilters,
+  signal?: AbortSignal
+): Promise<{ orders: PersonRideOrder[]; total: number; page: number; limit: number; totalPages: number }> {
   const qs = new URLSearchParams();
   qs.set("page", String(params.page));
   qs.set("limit", String(params.limit));
@@ -87,8 +130,12 @@ async function fetchPersonRideOrders(params: {
   if (params.dateFrom) qs.set("dateFrom", params.dateFrom);
   if (params.dateTo) qs.set("dateTo", params.dateTo);
   if (params.search) qs.set("search", params.search);
+  if (params.searchType) qs.set("searchType", params.searchType);
 
-  const res = await fetch(`/api/orders/person-ride?${qs.toString()}`, { credentials: "include" });
+  const res = await fetch(`/api/orders/person-ride?${qs.toString()}`, {
+    credentials: "include",
+    signal,
+  });
   const body: ApiResponse = await res.json().catch(() => ({ success: false }));
 
   if (!res.ok || !body.success || !Array.isArray(body.data)) {
@@ -104,247 +151,415 @@ async function fetchPersonRideOrders(params: {
   };
 }
 
+function getButtonStyles(isActive: boolean) {
+  if (isActive) {
+    return { backgroundColor: MINT_GREEN, color: DARK_TEXT, borderColor: BORDER_COLOR };
+  }
+  return { backgroundColor: INACTIVE_BG, color: INACTIVE_TEXT, borderColor: BORDER_COLOR };
+}
+
 export default function PersonRideOrdersClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const queryClient = useQueryClient();
+  const [hasMounted, setHasMounted] = useState(false);
 
-  const [status, setStatus] = useState(searchParams.get("status") ?? "");
-  const [dateFrom, setDateFrom] = useState(searchParams.get("dateFrom") ?? "");
-  const [dateTo, setDateTo] = useState(searchParams.get("dateTo") ?? "");
-  const [search, setSearch] = useState(searchParams.get("search") ?? "");
-  const [searchInput, setSearchInput] = useState(searchParams.get("search") ?? "");
-  const [page, setPage] = useState(Math.max(1, parseInt(searchParams.get("page") || "1", 10)));
+  useEffect(() => setHasMounted(true), []);
+
+  const urlStatus = searchParams.get("status") ?? "";
+  const urlSearch = searchParams.get("search") ?? "";
+  const urlSearchType = normalizePersonRideSearchType(searchParams.get("searchType"));
+  const urlDateFrom = searchParams.get("dateFrom") ?? "";
+  const urlDateTo = searchParams.get("dateTo") ?? "";
+  const urlPage = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
+
+  const [dateFrom, setDateFrom] = useState(urlDateFrom);
+  const [dateTo, setDateTo] = useState(urlDateTo);
+
+  useEffect(() => {
+    setDateFrom(urlDateFrom);
+    setDateTo(urlDateTo);
+  }, [urlDateFrom, urlDateTo]);
 
   const limit = 20;
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setSearch(searchInput.trim());
-      setPage(1);
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [searchInput]);
-
-  const syncUrl = useCallback(
-    (next: { status: string; dateFrom: string; dateTo: string; search: string; page: number }) => {
-      const qs = new URLSearchParams();
-      if (next.status) qs.set("status", next.status);
-      if (next.dateFrom) qs.set("dateFrom", next.dateFrom);
-      if (next.dateTo) qs.set("dateTo", next.dateTo);
-      if (next.search) qs.set("search", next.search);
-      if (next.page > 1) qs.set("page", String(next.page));
-      const q = qs.toString();
-      router.replace(q ? `/dashboard/orders/person-ride?${q}` : "/dashboard/orders/person-ride", {
-        scroll: false,
-      });
-    },
-    [router]
+  const filtersForQuery: PersonRideOrdersFilters = useMemo(
+    () => ({
+      page: urlPage,
+      limit,
+      status: urlStatus,
+      dateFrom: urlDateFrom,
+      dateTo: urlDateTo,
+      search: urlSearch.trim(),
+      searchType: urlSearchType,
+    }),
+    [urlPage, limit, urlStatus, urlDateFrom, urlDateTo, urlSearch, urlSearchType]
   );
-
-  useEffect(() => {
-    syncUrl({ status, dateFrom, dateTo, search, page });
-  }, [status, dateFrom, dateTo, search, page, syncUrl]);
 
   const queryKey = useMemo(
-    () => ["person-ride-orders", { status, dateFrom, dateTo, search, page, limit }],
-    [status, dateFrom, dateTo, search, page]
+    () => ["person-ride-orders", filtersForQuery] as const,
+    [filtersForQuery]
   );
+
+  const SNAPSHOT_TTL_MS = 5 * 60 * 1000;
+  const snapshotKey = useMemo(
+    () => `dashboard_snapshot:person_ride_orders:/dashboard/orders/person-ride:${JSON.stringify(filtersForQuery)}`,
+    [filtersForQuery]
+  );
+
+  const cachedListData = useMemo(() => {
+    if (!hasMounted) return null;
+    return queryClient.getQueryData<Awaited<ReturnType<typeof fetchPersonRideOrders>>>(queryKey) ?? null;
+  }, [hasMounted, queryClient, queryKey]);
+
+  const initialSnapshot = useMemo(() => {
+    if (!hasMounted) return null;
+    return loadClientSnapshot<Awaited<ReturnType<typeof fetchPersonRideOrders>>>(snapshotKey, SNAPSHOT_TTL_MS);
+  }, [hasMounted, snapshotKey]);
+
+  const initialListData = cachedListData ?? initialSnapshot ?? undefined;
 
   const { data, isLoading, isError, error, isFetching, refetch } = useQuery({
     queryKey,
-    queryFn: () => fetchPersonRideOrders({ page, limit, status, dateFrom, dateTo, search }),
+    queryFn: ({ signal }) => fetchPersonRideOrders(filtersForQuery, signal),
+    enabled: hasMounted,
+    ...(initialListData != null ? { initialData: initialListData } : {}),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
+    refetchOnMount: true,
+    placeholderData: (previousData) => previousData,
   });
 
-  const orders = data?.orders ?? [];
-  const total = data?.total ?? 0;
-  const totalPages = data?.totalPages ?? 1;
+  useEffect(() => {
+    if (!snapshotKey || data == null) return;
+    saveClientSnapshot(snapshotKey, data);
+  }, [snapshotKey, data]);
+
+  const orders = data?.orders ?? cachedListData?.orders ?? initialSnapshot?.orders ?? [];
+  const total = data?.total ?? cachedListData?.total ?? initialSnapshot?.total ?? 0;
+  const totalPages = data?.totalPages ?? cachedListData?.totalPages ?? initialSnapshot?.totalPages ?? 1;
+  const showTableLoading = hasMounted && isLoading && orders.length === 0;
+  const isRefreshing = hasMounted && isFetching && orders.length > 0;
+
+  const replaceParams = useCallback(
+    (patch: Record<string, string | null>) => {
+      const params = new URLSearchParams(searchParams.toString());
+      for (const [key, value] of Object.entries(patch)) {
+        if (value == null || value === "") params.delete(key);
+        else params.set(key, value);
+      }
+      const qs = params.toString();
+      router.replace(qs ? `/dashboard/orders/person-ride?${qs}` : "/dashboard/orders/person-ride", {
+        scroll: false,
+      });
+    },
+    [router, searchParams]
+  );
+
+  const setStatusFilter = useCallback(
+    (status: string) => {
+      replaceParams({ status: status || null, page: null });
+    },
+    [replaceParams]
+  );
+
+  const applyDateFilters = useCallback(() => {
+    replaceParams({
+      dateFrom: dateFrom || null,
+      dateTo: dateTo || null,
+      page: null,
+    });
+  }, [replaceParams, dateFrom, dateTo]);
+
+  const clearDateFilters = useCallback(() => {
+    setDateFrom("");
+    setDateTo("");
+    replaceParams({ dateFrom: null, dateTo: null, page: null });
+  }, [replaceParams]);
+
+  const activeTab = STATUS_TABS.find((t) => t.value === urlStatus) ?? STATUS_TABS[0];
+  const hasActiveSearch = Boolean(urlSearch.trim());
+  const hasDateFilter = Boolean(urlDateFrom || urlDateTo);
 
   return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-      <div className="rounded-lg border border-gray-200 bg-white p-6">
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-              <select
-                value={status}
-                onChange={(e) => {
-                  setStatus(e.target.value);
-                  setPage(1);
-                }}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              >
-                {STATUS_OPTIONS.map((opt) => (
-                  <option key={opt.value || "all"} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Date From</label>
-              <input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => {
-                  setDateFrom(e.target.value);
-                  setPage(1);
-                }}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Date To</label>
-              <input
-                type="date"
-                value={dateTo}
-                onChange={(e) => {
-                  setDateTo(e.target.value);
-                  setPage(1);
-                }}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Search</label>
-              <input
-                type="text"
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-                placeholder="Order ID, Passenger, Rider..."
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
+    <div className="space-y-2 w-full max-w-full overflow-x-hidden" style={{ backgroundColor: PAGE_BG }}>
+      {/* Date filters */}
+      <div className="p-2" style={{ backgroundColor: CONTENT_BG }}>
+        <div className="flex flex-wrap items-end gap-2">
+          <div>
+            <label className="block text-[10px] font-medium text-gray-500 mb-0.5">Date from</label>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="h-7 px-2 text-xs border rounded-md"
+              style={{ borderColor: BORDER_COLOR }}
+            />
           </div>
-
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm text-gray-600">
-              {isLoading ? "Loading…" : `${total.toLocaleString("en-IN")} order${total === 1 ? "" : "s"}`}
-            </p>
+          <div>
+            <label className="block text-[10px] font-medium text-gray-500 mb-0.5">Date to</label>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="h-7 px-2 text-xs border rounded-md"
+              style={{ borderColor: BORDER_COLOR }}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={applyDateFilters}
+            className="h-7 px-3 rounded-md text-xs font-semibold border cursor-pointer"
+            style={{ backgroundColor: MINT_GREEN, color: DARK_TEXT, borderColor: BORDER_COLOR }}
+          >
+            Apply
+          </button>
+          {hasDateFilter ? (
             <button
               type="button"
-              onClick={() => void refetch()}
-              disabled={isFetching}
-              className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-60"
+              onClick={clearDateFilters}
+              className="h-7 px-3 rounded-md text-xs font-medium border cursor-pointer"
+              style={{ backgroundColor: CONTENT_BG, borderColor: BORDER_COLOR, color: INACTIVE_TEXT }}
             >
-              <RefreshCw className={`h-4 w-4 ${isFetching ? "animate-spin" : ""}`} />
-              Refresh
+              Clear dates
             </button>
-          </div>
-
-          <div className="mt-2 overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  {[
-                    "Order ID",
-                    "Passenger",
-                    "Vehicle Type",
-                    "Pickup",
-                    "Drop",
-                    "Rider",
-                    "Status",
-                    "Fare",
-                    "Created",
-                  ].map((label) => (
-                    <th
-                      key={label}
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"
-                    >
-                      {label}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {isLoading ? (
-                  <tr>
-                    <td colSpan={9} className="px-6 py-8 text-center text-gray-500">
-                      Loading person ride orders…
-                    </td>
-                  </tr>
-                ) : isError ? (
-                  <tr>
-                    <td colSpan={9} className="px-6 py-8 text-center text-red-600">
-                      {(error as Error)?.message || "Failed to load orders"}
-                    </td>
-                  </tr>
-                ) : orders.length === 0 ? (
-                  <tr>
-                    <td colSpan={9} className="px-6 py-8 text-center text-gray-500">
-                      No person ride orders found.
-                    </td>
-                  </tr>
-                ) : (
-                  orders.map((order) => (
-                    <tr key={order.id} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
-                        {order.formattedOrderId?.trim() || `#${order.id}`}
-                      </td>
-                      <td className="px-6 py-4 text-sm text-gray-800">{formatPassenger(order)}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                        {formatVehicleType(order)}
-                      </td>
-                      <td className="px-6 py-4 text-sm text-gray-700 max-w-[220px]">
-                        {truncate(order.pickupAddress)}
-                      </td>
-                      <td className="px-6 py-4 text-sm text-gray-700 max-w-[220px]">
-                        {truncate(order.dropAddress)}
-                      </td>
-                      <td className="px-6 py-4 text-sm text-gray-700 whitespace-nowrap">
-                        {order.riderName?.trim() ||
-                          (order.riderId != null ? `Rider #${order.riderId}` : "—")}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
-                          {formatStatus(order)}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                        {formatFare(order.fare)}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {new Date(order.createdAt).toLocaleString("en-IN", {
-                          day: "2-digit",
-                          month: "short",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {totalPages > 1 ? (
-            <div className="flex items-center justify-between pt-2">
-              <button
-                type="button"
-                disabled={page <= 1 || isFetching}
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:opacity-50 hover:bg-gray-50"
-              >
-                Previous
-              </button>
-              <span className="text-sm text-gray-600">
-                Page {page} of {totalPages}
-              </span>
-              <button
-                type="button"
-                disabled={page >= totalPages || isFetching}
-                onClick={() => setPage((p) => p + 1)}
-                className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:opacity-50 hover:bg-gray-50"
-              >
-                Next
-              </button>
-            </div>
           ) : null}
+          {hasActiveSearch ? (
+            <span className="ml-auto text-[11px] text-gray-600">
+              Search: <strong>{urlSearchType}</strong> = &quot;{urlSearch}&quot;
+            </span>
+          ) : (
+            <span className="ml-auto text-[11px] text-gray-500">
+              Use header search — Order Id, Passenger, Rider…
+            </span>
+          )}
         </div>
       </div>
+
+      {/* Status tabs */}
+      <div className="p-2 mt-1" style={{ backgroundColor: CONTENT_BG }}>
+        <div className="flex items-center gap-1.5 w-full overflow-x-auto">
+          {STATUS_TABS.map((tab) => {
+            const isActive = tab.value === urlStatus;
+            return (
+              <button
+                key={tab.value || "all"}
+                type="button"
+                onClick={() => setStatusFilter(tab.value)}
+                className={`shrink-0 px-2.5 py-1.5 rounded-md text-[11px] transition-colors border cursor-pointer ${
+                  isActive ? "font-bold" : "font-medium"
+                }`}
+                style={getButtonStyles(isActive)}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Summary bar */}
+      <div className="flex items-center justify-between p-2" style={{ backgroundColor: CONTENT_BG }}>
+        <div className="flex items-center gap-1.5">
+          <CheckCircle2 className="h-4 w-4 text-blue-600" />
+          <span className="text-xs font-medium" style={{ color: DARK_TEXT }}>
+            {activeTab.label} — {total.toLocaleString("en-IN")} ride{total === 1 ? "" : "s"}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void refetch()}
+            disabled={isFetching && orders.length === 0}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border cursor-pointer disabled:opacity-60"
+            style={{ backgroundColor: MINT_GREEN, color: DARK_TEXT, borderColor: BORDER_COLOR }}
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+          {(hasDateFilter || hasActiveSearch) && (
+            <button
+              type="button"
+              onClick={() => {
+                setDateFrom("");
+                setDateTo("");
+                replaceParams({
+                  dateFrom: null,
+                  dateTo: null,
+                  search: null,
+                  searchType: null,
+                  page: null,
+                });
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border cursor-pointer"
+              style={{ backgroundColor: CONTENT_BG, borderColor: BORDER_COLOR, color: INACTIVE_TEXT }}
+            >
+              <Filter className="h-3.5 w-3.5" />
+              Clear filters
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Table */}
+      <div
+        className="overflow-x-auto"
+        style={{ backgroundColor: CONTENT_BG, maxHeight: 420, overflowY: "auto" }}
+      >
+        <table className="min-w-full divide-y divide-gray-200 text-[11px]">
+          <thead className="bg-gray-100 sticky top-0 z-10">
+            <tr>
+              {[
+                "Order",
+                "Passenger",
+                "Vehicle",
+                "Pickup",
+                "Drop",
+                "Rider",
+                "Status",
+                "Fare",
+                "Created",
+              ].map((label) => (
+                <th
+                  key={label}
+                  className="px-2 py-1.5 text-left font-medium whitespace-nowrap"
+                  style={{ color: DARK_TEXT }}
+                >
+                  {label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200" style={{ backgroundColor: CONTENT_BG }}>
+            {showTableLoading ? (
+              <PersonRideTableRowsSkeleton rows={8} />
+            ) : isError ? (
+              <tr>
+                <td colSpan={9} className="px-2 py-4 text-center text-xs text-red-600">
+                  {(error as Error)?.message || "Failed to load orders"}
+                </td>
+              </tr>
+            ) : orders.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="px-2 py-6 text-center text-xs" style={{ color: TABLE_TEXT }}>
+                  {hasActiveSearch
+                    ? `No rides found for ${urlSearchType}: "${urlSearch}"`
+                    : "No person ride orders found."}
+                </td>
+              </tr>
+            ) : (
+              orders.map((order) => {
+                const publicId = displayOrderId(order);
+                const passenger = formatPassenger(order);
+                const statusKey = (order.status || "").toLowerCase();
+                const badge = STATUS_BADGE[statusKey] ?? { bg: "#F3F4F6", text: "#374151" };
+
+                return (
+                  <tr key={order.id} className="hover:bg-gray-50">
+                    <td className="px-2 py-1.5 whitespace-nowrap">
+                      <Link
+                        href={`/order/${encodeURIComponent(publicId)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        prefetch={false}
+                        className="inline-flex items-center px-2 py-0.5 rounded font-semibold cursor-pointer hover:underline text-[11px]"
+                        style={{ backgroundColor: ORDER_TAG_BG, color: ORDER_TAG_TEXT }}
+                      >
+                        #{publicId}
+                      </Link>
+                    </td>
+                    <td className="px-2 py-1.5" style={{ color: TABLE_TEXT }}>
+                      <div className="flex items-center gap-1.5">
+                        <User className="h-3 w-3 shrink-0 text-gray-400" />
+                        <div>
+                          <div className="font-medium">{passenger.name}</div>
+                          {passenger.phone ? (
+                            <div className="text-[10px] text-gray-500">{passenger.phone}</div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
+                      <span className="inline-flex items-center gap-1">
+                        <Car className="h-3 w-3 text-gray-400" />
+                        {formatVehicleType(order)}
+                      </span>
+                    </td>
+                    <td className="px-2 py-1.5 max-w-[160px] truncate" style={{ color: TABLE_TEXT }} title={order.pickupAddress ?? undefined}>
+                      {truncate(order.pickupAddress)}
+                    </td>
+                    <td className="px-2 py-1.5 max-w-[160px] truncate" style={{ color: TABLE_TEXT }} title={order.dropAddress ?? undefined}>
+                      {truncate(order.dropAddress)}
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
+                      {order.riderName?.trim() ? (
+                        <div>
+                          <div>{order.riderName.trim()}</div>
+                          {order.riderMobile ? (
+                            <div className="text-[10px] text-gray-500">{order.riderMobile}</div>
+                          ) : order.riderId != null ? (
+                            <div className="text-[10px] text-gray-500">GMR{order.riderId}</div>
+                          ) : null}
+                        </div>
+                      ) : order.riderId != null ? (
+                        `GMR${order.riderId}`
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap">
+                      <span
+                        className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-medium"
+                        style={{ backgroundColor: badge.bg, color: badge.text }}
+                      >
+                        {formatStatus(order)}
+                      </span>
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap font-semibold" style={{ color: TABLE_TEXT }}>
+                      {formatFare(order.fare)}
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap text-[10px] text-gray-600">
+                      {new Date(order.createdAt).toLocaleString("en-IN", {
+                        day: "2-digit",
+                        month: "short",
+                        year: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {totalPages > 1 ? (
+        <div className="flex items-center justify-between p-2" style={{ backgroundColor: CONTENT_BG }}>
+          <button
+            type="button"
+            disabled={urlPage <= 1 || isFetching}
+            onClick={() => replaceParams({ page: urlPage <= 2 ? null : String(urlPage - 1) })}
+            className="px-3 py-1.5 text-xs border rounded-md disabled:opacity-50 hover:bg-gray-50 cursor-pointer"
+            style={{ borderColor: BORDER_COLOR }}
+          >
+            Previous
+          </button>
+          <span className="text-xs text-gray-600">
+            Page {urlPage} of {totalPages}
+          </span>
+          <button
+            type="button"
+            disabled={urlPage >= totalPages || isFetching}
+            onClick={() => replaceParams({ page: String(urlPage + 1) })}
+            className="px-3 py-1.5 text-xs border rounded-md disabled:opacity-50 hover:bg-gray-50 cursor-pointer"
+            style={{ borderColor: BORDER_COLOR }}
+          >
+            Next
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -44,6 +44,126 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
     }
   });
 
+  const riderCancelBody = z.object({
+    orders_core_id: z.number().int().min(1),
+    rider_id: z.number().int().min(1),
+    reason_code: z.string().min(1).max(120),
+    reason_text: z.string().max(500).optional(),
+    actor_email: z.string().email().optional(),
+    actor_id: z.string().max(120).optional(),
+  });
+
+  app.post("/orders/rider-cancel-only", async (req, reply) => {
+    const parsed = riderCancelBody.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, error: "validation_failed" });
+    }
+    const body = parsed.data;
+    try {
+      const sql = getSql();
+      const rows = (await sql`
+        SELECT oc.id, oc.order_id AS "orderIdText"
+        FROM orders_core oc
+        WHERE oc.id = ${body.orders_core_id}
+        LIMIT 1
+      `) as Array<{ id: number; orderIdText: string }>;
+      const row = rows[0];
+      if (!row?.orderIdText) {
+        return reply.code(404).send({ ok: false, error: "order_not_found" });
+      }
+
+      const { adminCancelFoodRiderFromOrder } = await import(
+        "../../lib/food-rider-unassign.service.js"
+      );
+      await adminCancelFoodRiderFromOrder({
+        orderCorePk: body.orders_core_id,
+        orderIdText: String(row.orderIdText),
+        riderId: body.rider_id,
+        reasonCode: body.reason_code,
+        reasonText: body.reason_text ?? null,
+        removedBy: body.actor_email ?? body.actor_id ?? null,
+        actorType: "admin",
+        actorId: body.actor_id ?? body.actor_email ?? null,
+        mode: "hold",
+      });
+      return reply.send({ ok: true });
+    } catch (err) {
+      req.log.warn({ err, body }, "rider-cancel-only failed");
+      return reply.code(400).send({
+        ok: false,
+        error: err instanceof Error ? err.message : "rider_cancel_failed",
+      });
+    }
+  });
+
+  app.post("/orders/rider-cancel-reassign", async (req, reply) => {
+    const parsed = riderCancelBody.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, error: "validation_failed" });
+    }
+    const body = parsed.data;
+    try {
+      const sql = getSql();
+      const rows = (await sql`
+        SELECT oc.id, oc.order_id AS "orderIdText"
+        FROM orders_core oc
+        WHERE oc.id = ${body.orders_core_id}
+        LIMIT 1
+      `) as Array<{ id: number; orderIdText: string }>;
+      const row = rows[0];
+      if (!row?.orderIdText) {
+        return reply.code(404).send({ ok: false, error: "order_not_found" });
+      }
+
+      const { adminCancelFoodRiderFromOrder } = await import(
+        "../../lib/food-rider-unassign.service.js"
+      );
+      await adminCancelFoodRiderFromOrder({
+        orderCorePk: body.orders_core_id,
+        orderIdText: String(row.orderIdText),
+        riderId: body.rider_id,
+        reasonCode: body.reason_code,
+        reasonText: body.reason_text ?? null,
+        removedBy: body.actor_email ?? body.actor_id ?? null,
+        actorType: "admin",
+        actorId: body.actor_id ?? body.actor_email ?? null,
+        mode: "reassign",
+      });
+      return reply.send({ ok: true });
+    } catch (err) {
+      req.log.warn({ err, body }, "rider-cancel-reassign failed");
+      return reply.code(400).send({
+        ok: false,
+        error: err instanceof Error ? err.message : "rider_reassign_failed",
+      });
+    }
+  });
+
+  app.post("/orders/rider-manual-assign", async (req, reply) => {
+    const parsed = z
+      .object({
+        orders_core_id: z.number().int().min(1),
+        actor_email: z.string().email().optional(),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, error: "validation_failed" });
+    }
+    try {
+      const { manualAssignRiderForFoodOrder } = await import(
+        "../../lib/food-rider-unassign.service.js"
+      );
+      const result = await manualAssignRiderForFoodOrder(parsed.data.orders_core_id);
+      return reply.send({ ok: true, ...result });
+    } catch (err) {
+      req.log.warn({ err, body: parsed.data }, "rider-manual-assign failed");
+      return reply.code(400).send({
+        ok: false,
+        error: err instanceof Error ? err.message : "manual_assign_failed",
+      });
+    }
+  });
+
   app.post("/orders/prep-delay-notify", async (req, reply) => {
     const parsed = prepDelayNotifyBody.safeParse(req.body);
     if (!parsed.success) {

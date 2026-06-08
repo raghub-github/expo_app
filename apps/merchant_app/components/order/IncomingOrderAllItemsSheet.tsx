@@ -3,6 +3,7 @@ import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheet
 import { OrderCardItemRow } from "@/components/order/OrderCardItemRow";
 import type { LineItem } from "@/hooks/useOrders";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
+import { formatMerchantRs } from "@/lib/merchant-line-total";
 
 type Props = {
   visible: boolean;
@@ -54,7 +55,7 @@ export function IncomingOrderAllItemsSheet({
 
         <View style={styles.totalRow}>
           <Text style={styles.totalLabel}>Order total</Text>
-          <Text style={styles.totalAmount}>₹{Math.round(total).toLocaleString("en-IN")}</Text>
+          <Text style={styles.totalAmount}>{formatMerchantRs(total)}</Text>
         </View>
       </ScrollView>
 

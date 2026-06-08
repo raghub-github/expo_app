@@ -36,6 +36,12 @@ import { BrandingFooter } from "@/components/BrandingFooter";
 import { RestaurantListSkeleton } from "@/components/ShimmerSkeleton";
 import { EmptyRestaurantsNearby } from "@/components/EmptyRestaurantsNearby";
 import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
+import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
+import {
+  prefetchUserAppCategoryImages,
+  USER_APP_CATEGORIES_QUERY_OPTIONS,
+  userAppCategoriesQueryKey,
+} from "@/lib/userAppCategoryCache";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { filterAndSortMerchants } from "@/lib/merchantListing";
@@ -137,24 +143,19 @@ function CuisinesSheetTileImage({
   remoteUri,
   localSource,
   style,
+  cacheKey,
 }: {
   remoteUri: string | null;
   localSource: ImageSourcePropType | null;
   style: ImageStyle;
+  cacheKey?: string;
 }) {
-  const [remoteFailed, setRemoteFailed] = useState(false);
-  const absolute = remoteUri ? (toAbsoluteImageUrl(remoteUri) ?? remoteUri) : null;
-
-  useEffect(() => {
-    setRemoteFailed(false);
-  }, [remoteUri]);
-  if (absolute && !remoteFailed) {
+  if (remoteUri?.trim()) {
     return (
-      <Image
-        source={{ uri: absolute }}
+      <UserAppCategoryImage
+        imageUrl={remoteUri}
         style={style}
-        resizeMode="contain"
-        onError={() => setRemoteFailed(true)}
+        cacheKey={cacheKey}
       />
     );
   }
@@ -290,11 +291,17 @@ export default function CategoryBrowseScreen() {
 
   const { data: apiSheetCategories = [], isSuccess: sheetCategoriesReady, isFetching: sheetCategoriesFetching } =
     useQuery({
-      queryKey: ["userAppCategories", SHEET_STORE_TYPE],
+      queryKey: userAppCategoriesQueryKey(SHEET_STORE_TYPE),
       queryFn: () => fetchUserAppCategories({ storeType: SHEET_STORE_TYPE }),
-      staleTime: 10 * 60 * 1000,
-      retry: 1,
+      ...USER_APP_CATEGORIES_QUERY_OPTIONS,
+      placeholderData: (previousData) => previousData,
     });
+
+  useEffect(() => {
+    if (apiSheetCategories.length > 0) {
+      prefetchUserAppCategoryImages(apiSheetCategories);
+    }
+  }, [apiSheetCategories]);
 
   const cuisinesSheetRows = useMemo(() => {
     if (!sheetCategoriesReady) return [];
@@ -509,6 +516,7 @@ export default function CategoryBrowseScreen() {
                       <CuisinesSheetTileImage
                         remoteUri={item.remoteUri}
                         localSource={null}
+                        cacheKey={`category-${item.key}`}
                         style={{
                           width: sheetImgSz,
                           height: sheetImgSz,
@@ -662,6 +670,7 @@ export default function CategoryBrowseScreen() {
                   <CuisinesSheetTileImage
                     remoteUri={c.remoteUri}
                     localSource={null}
+                    cacheKey={c.kind === "item" ? `category-${c.id}` : undefined}
                     style={{
                       width: imgSide,
                       height: imgSide,

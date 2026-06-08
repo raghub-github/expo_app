@@ -9,8 +9,36 @@ import { getDb } from "../../db/client.js";
 import { customerAddresses, customerActiveLocation } from "../../db/schema.js";
 import { eq, and, desc, isNull, sql } from "drizzle-orm";
 import { forwardGeocodeAddress, reverseGeocodeCoords } from "../../services/mapbox/geocoding.js";
+import { attachmentsProxyUrlFromKeyForApi } from "../../utils/attachments-proxy-url.js";
 
 /** Treat em-dash, dashes, and "no value" tokens as missing so they're not persisted as state/city/pincode. */
+
+/** Only stable proxy paths are stored — never raw image bytes or data: URLs. */
+export function isAllowedDoorImageStoredUrl(url: string | null | undefined): boolean {
+  if (url == null) return false;
+  const t = String(url).trim();
+  if (!t || t.startsWith("data:") || t.startsWith("blob:")) return false;
+  return (
+    t.startsWith("/v1/attachments/proxy") ||
+    t.startsWith("/api/attachments/proxy") ||
+    /^https?:\/\//i.test(t)
+  );
+}
+
+export function normalizeDoorImageStoredUrl(url: string | null | undefined): string | null {
+  if (url == null) return null;
+  const t = String(url).trim();
+  if (!t || t.startsWith("data:") || t.startsWith("blob:")) return null;
+  if (t.startsWith("/api/attachments/proxy")) {
+    return `/v1/attachments/proxy${t.slice("/api/attachments/proxy".length)}`;
+  }
+  if (t.startsWith("/v1/attachments/proxy") || /^https?:\/\//i.test(t)) return t;
+  return null;
+}
+
+export function doorImageProxyUrlFromR2Key(r2Key: string): string {
+  return attachmentsProxyUrlFromKeyForApi(r2Key);
+}
 function isPlaceholder(v: string | null | undefined): boolean {
   if (v == null) return true;
   const t = String(v).trim();
@@ -35,6 +63,8 @@ export type AddressRow = {
   longitude: string;
   contactName: string | null;
   contactMobile: string | null;
+  deliveryDoorImageUrl: string | null;
+  deliveryInstructionsList: string[];
   isDefault: boolean | null;
   isLastUsed: boolean | null;
   createdAt: Date | null;
@@ -50,6 +80,13 @@ export type ActiveLocationRow = {
   orderId: number | null;
   updatedAt: Date | null;
 };
+
+function parseInstructionsList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((v) => String(v ?? "").trim())
+    .filter((s) => s.length > 0);
+}
 
 function rowToAddressRow(r: typeof customerAddresses.$inferSelect): AddressRow {
   const fullAddress = [r.addressLine1, r.addressLine2].filter(Boolean).join(", ") || r.addressLine1;
@@ -68,6 +105,8 @@ function rowToAddressRow(r: typeof customerAddresses.$inferSelect): AddressRow {
     longitude: r.longitude ?? "",
     contactName: r.contactName ?? null,
     contactMobile: r.contactMobile ?? null,
+    deliveryDoorImageUrl: normalizeDoorImageStoredUrl(r.deliveryDoorImageUrl),
+    deliveryInstructionsList: parseInstructionsList(r.deliveryInstructionsList),
     isDefault: r.isDefault ?? false,
     isLastUsed: r.isLastUsed ?? false,
     createdAt: r.createdAt,
@@ -247,6 +286,7 @@ export async function addAddress(
       longitude: longitude != null ? String(longitude) : null,
       contactName: data.contactName ?? null,
       contactMobile: data.contactMobile ?? null,
+      deliveryDoorImageUrl: null,
       isDefault: data.isDefault ?? false,
       isLastUsed: false,
     })
@@ -268,6 +308,10 @@ export async function updateAddress(
     latitude: number;
     longitude: number;
     isDefault: boolean;
+    contactName: string | null;
+    contactMobile: string | null;
+    deliveryDoorImageUrl: string | null;
+    deliveryInstructionsList: string[];
   }>
 ): Promise<AddressRow | null> {
   const db = getDb();
@@ -300,6 +344,24 @@ export async function updateAddress(
   if (data.latitude != null) set.latitude = String(data.latitude);
   if (data.longitude != null) set.longitude = String(data.longitude);
   if (data.isDefault !== undefined) set.isDefault = data.isDefault;
+  if (data.contactName !== undefined) set.contactName = data.contactName;
+  if (data.contactMobile !== undefined) set.contactMobile = data.contactMobile;
+  if (data.deliveryDoorImageUrl !== undefined) {
+    const normalized = normalizeDoorImageStoredUrl(data.deliveryDoorImageUrl);
+    if (data.deliveryDoorImageUrl != null && data.deliveryDoorImageUrl !== "" && normalized == null) {
+      throw new Error("Invalid door image URL. Upload the image via POST /addresses/:id/door-image.");
+    }
+    set.deliveryDoorImageUrl = normalized;
+  }
+  if (data.deliveryInstructionsList !== undefined) {
+    const cleaned = [
+      ...new Set(
+        data.deliveryInstructionsList.map((s) => String(s ?? "").trim()).filter((s) => s.length > 0)
+      ),
+    ];
+    set.deliveryInstructionsList = cleaned;
+    set.deliveryInstructions = cleaned.length > 0 ? cleaned.join(" | ") : null;
+  }
   set.updatedAt = new Date();
   const keys = Object.keys(set).filter((k) => k !== "updatedAt");
   if (keys.length === 0) return (await listAddresses(customerId)).find((a) => a.id === addressId) ?? null;

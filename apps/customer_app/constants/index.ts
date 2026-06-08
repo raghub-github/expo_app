@@ -18,6 +18,8 @@ export const STORAGE_KEYS = {
   LANGUAGE: "gm_customer_language",
   /** Dev-only: offline profile when backend is unreachable */
   PROFILE_OFFLINE: "gm_customer_profile_offline",
+  /** Last fetched profile JSON for instant profile tab paint */
+  PROFILE_CACHE: "gm_customer_profile_cache_v1",
 } as const;
 
 export const API_TIMEOUT_MS = 30000;

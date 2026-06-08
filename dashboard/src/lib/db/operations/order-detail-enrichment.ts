@@ -23,6 +23,14 @@ import { resolveMerchantCancellationFields } from "@/lib/orders/merchant-cancell
 import { getOrderOtpsForDashboard } from "./order-otps";
 import { getOrderCustomerFeedback } from "./order-customer-feedback";
 import type { OrderCustomerFeedback } from "@/lib/orders/order-customer-feedback";
+import {
+  isPrepPipelineStatus,
+  prepOverdueSeconds,
+  resolvePreparedLateMinutes,
+} from "@/lib/order-prep-time";
+import type { OrdersFoodRow } from "@/lib/types/food-orders";
+import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
+import { listR2KeysByPrefix } from "@/lib/services/r2";
 
 export type OrderDetailEnrichment = {
   orderTimeIso: string | null;
@@ -51,6 +59,22 @@ export type OrderDetailEnrichment = {
   firstEtaAtIso: string | null;
   cancellationInfo: OrderCancellationInfo | null;
   customerFeedback: OrderCustomerFeedback | null;
+  /** Seconds merchant was late marking ready (after prep_ready_by_at). Null if not applicable. */
+  storePrepDelaySeconds: number | null;
+  /** True while order is still preparing past the committed ready-by time. */
+  storePrepDelayLive: boolean;
+  /** ISO anchor for live store prep duration (accepted_at). */
+  storePrepDelayAnchorAt: string | null;
+  /** True when merchant marked ready after prep_ready_by_at. */
+  storePrepDelayWasLate: boolean;
+  /** Seconds rider waited at restaurant until merchant marked ready. */
+  riderRestaurantWaitSeconds: number | null;
+  /** True while rider is at store waiting for merchant ready. */
+  riderRestaurantWaitLive: boolean;
+  /** ISO anchor for live rider wait (rider_reached_pickup_at). */
+  riderRestaurantWaitAnchorAt: string | null;
+  /** Latest rider delivery proof image for this order (proxy URL when possible). */
+  deliveryProofImageUrl: string | null;
 };
 
 function asNum(v: unknown): number | null {
@@ -113,6 +137,407 @@ async function fetchCoreExtras(
     }
   }
   return {};
+}
+
+type FoodTimingMeta = {
+  orderStatus: string | null;
+  acceptedAt: string | null;
+  preparingAt: string | null;
+  preparedAt: string | null;
+  prepReadyByAt: string | null;
+  preparedLateMinutes: number | null;
+  preparationTimeMinutes: number | null;
+  prepDelayMinutes: number | null;
+  pickupWaitSeconds: number | null;
+  riderReachedPickupAt: string | null;
+};
+
+function toIso(v: unknown): string | null {
+  if (v == null) return null;
+  if (v instanceof Date) return v.toISOString();
+  const s = String(v).trim();
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? s : d.toISOString();
+}
+
+async function fetchFoodTimingMeta(orderId: number): Promise<FoodTimingMeta> {
+  const empty: FoodTimingMeta = {
+    orderStatus: null,
+    acceptedAt: null,
+    preparingAt: null,
+    preparedAt: null,
+    prepReadyByAt: null,
+    preparedLateMinutes: null,
+    preparationTimeMinutes: null,
+    prepDelayMinutes: null,
+    pickupWaitSeconds: null,
+    riderReachedPickupAt: null,
+  };
+  const db = getDb();
+  const queries = [
+    sql`
+      SELECT
+        order_status,
+        accepted_at,
+        preparing_at,
+        prepared_at,
+        prep_ready_by_at,
+        prepared_late_minutes,
+        preparation_time_minutes,
+        prep_delay_minutes,
+        pickup_wait_seconds,
+        rider_reached_pickup_at
+      FROM orders_food
+      WHERE order_id = ${orderId}
+      LIMIT 1
+    `,
+    sql`
+      SELECT
+        order_status,
+        accepted_at,
+        preparing_at,
+        prepared_at,
+        prep_ready_by_at,
+        prepared_late_minutes,
+        preparation_time_minutes,
+        prep_delay_minutes
+      FROM orders_food
+      WHERE order_id = ${orderId}
+      LIMIT 1
+    `,
+  ];
+
+  for (const query of queries) {
+    try {
+      const rows = await db.execute(query);
+      const row = (rows as unknown as Record<string, unknown>[])[0];
+      if (!row) return empty;
+      return {
+        orderStatus: row.order_status != null ? String(row.order_status) : null,
+        acceptedAt: toIso(row.accepted_at),
+        preparingAt: toIso(row.preparing_at),
+        preparedAt: toIso(row.prepared_at),
+        prepReadyByAt: toIso(row.prep_ready_by_at),
+        preparedLateMinutes: asNum(row.prepared_late_minutes),
+        preparationTimeMinutes: asNum(row.preparation_time_minutes),
+        prepDelayMinutes: asNum(row.prep_delay_minutes),
+        pickupWaitSeconds: asNum(row.pickup_wait_seconds),
+        riderReachedPickupAt: toIso(row.rider_reached_pickup_at),
+      };
+    } catch {
+      // slimmer SELECT when pickup columns are missing
+    }
+  }
+  return empty;
+}
+
+function resolveStorePrepDelay(meta: FoodTimingMeta): {
+  seconds: number | null;
+  live: boolean;
+  anchorAt: string | null;
+  wasLate: boolean;
+} {
+  if (meta.preparedAt) {
+    const lateMins = resolvePreparedLateMinutes({
+      prepared_late_minutes: meta.preparedLateMinutes,
+      prepared_at: meta.preparedAt,
+      prep_ready_by_at: meta.prepReadyByAt,
+    });
+    if (lateMins == null || lateMins <= 0) {
+      return { seconds: null, live: false, anchorAt: null, wasLate: false };
+    }
+    return {
+      seconds: Math.max(0, Math.floor(lateMins * 60)),
+      live: false,
+      anchorAt: null,
+      wasLate: true,
+    };
+  }
+
+  if (isPrepPipelineStatus(meta.orderStatus) && meta.prepReadyByAt) {
+    const overdue = prepOverdueSeconds(
+      {
+        prep_ready_by_at: meta.prepReadyByAt,
+        accepted_at: meta.acceptedAt,
+        preparing_at: meta.preparingAt,
+        preparation_time_minutes: meta.preparationTimeMinutes,
+        prep_delay_minutes: meta.prepDelayMinutes,
+      } as OrdersFoodRow,
+      Date.now()
+    );
+    if (overdue <= 0) {
+      return { seconds: null, live: false, anchorAt: null, wasLate: false };
+    }
+    return {
+      seconds: overdue,
+      live: true,
+      anchorAt: meta.prepReadyByAt,
+      wasLate: true,
+    };
+  }
+
+  return { seconds: null, live: false, anchorAt: null, wasLate: false };
+}
+
+function resolveRiderRestaurantWait(meta: FoodTimingMeta): {
+  seconds: number | null;
+  live: boolean;
+  anchorAt: string | null;
+} {
+  if (meta.pickupWaitSeconds != null) {
+    return {
+      seconds: Math.max(0, Math.floor(meta.pickupWaitSeconds)),
+      live: false,
+      anchorAt: null,
+    };
+  }
+
+  if (meta.riderReachedPickupAt && meta.preparedAt) {
+    const reachedMs = new Date(meta.riderReachedPickupAt).getTime();
+    const preparedMs = new Date(meta.preparedAt).getTime();
+    if (Number.isFinite(reachedMs) && Number.isFinite(preparedMs)) {
+      return {
+        seconds: Math.max(0, Math.floor((preparedMs - reachedMs) / 1000)),
+        live: false,
+        anchorAt: null,
+      };
+    }
+  }
+
+  if (meta.riderReachedPickupAt && !meta.preparedAt) {
+    const reachedMs = new Date(meta.riderReachedPickupAt).getTime();
+    if (Number.isFinite(reachedMs)) {
+      const elapsed = Math.max(0, Math.floor((Date.now() - reachedMs) / 1000));
+      return { seconds: elapsed, live: true, anchorAt: meta.riderReachedPickupAt };
+    }
+  }
+
+  return { seconds: null, live: false, anchorAt: null };
+}
+
+async function fetchAssignmentReachedMerchantAt(orderId: number): Promise<string | null> {
+  const db = getDb();
+  try {
+    const rows = await db.execute(sql`
+      SELECT reached_merchant_at
+      FROM order_rider_assignments
+      WHERE order_core_id = ${orderId}
+        AND reached_merchant_at IS NOT NULL
+      ORDER BY reached_merchant_at ASC
+      LIMIT 1
+    `);
+    const row = (rows as unknown as Record<string, unknown>[])[0];
+    return toIso(row?.reached_merchant_at);
+  } catch {
+    return null;
+  }
+}
+
+function resolveDeliveryImageUrl(
+  imageUrl: unknown,
+  legacyUrl: unknown,
+  r2Key: unknown
+): string | null {
+  const modern = typeof imageUrl === "string" ? imageUrl.trim() : "";
+  const legacy = typeof legacyUrl === "string" ? legacyUrl.trim() : "";
+  const key = typeof r2Key === "string" ? r2Key.trim() : "";
+  const raw = modern || legacy || key;
+  if (!raw) return null;
+  const resolved = resolveAttachmentProxyUrl(raw);
+  return resolved.trim() || null;
+}
+
+function readDeliveryImageFromMetadata(raw: unknown): string | null {
+  const meta = readRecord(raw);
+  if (!meta) return null;
+  const candidates = [
+    meta.delivery_image_url,
+    meta.deliveryImageUrl,
+    meta.delivery_proof_url,
+    meta.deliveryProofUrl,
+    meta.delivery_photo_url,
+    meta.deliveryPhotoUrl,
+  ];
+  for (const candidate of candidates) {
+    const resolved = resolveDeliveryImageUrl(candidate, null, null);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+function sanitizeOrderRefForR2(ref: string): string {
+  return ref.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80) || "order";
+}
+
+async function fetchOrderRefsForDeliveryProof(orderId: number): Promise<string[]> {
+  const db = getDb();
+  const rows = await db.execute(sql`
+    SELECT order_id, formatted_order_id
+    FROM orders_core
+    WHERE id = ${orderId}
+    LIMIT 1
+  `);
+  const row = (rows as unknown as Record<string, unknown>[])[0];
+  const refs = new Set<string>();
+  for (const key of ["order_id", "formatted_order_id"] as const) {
+    const val = row?.[key];
+    if (typeof val === "string" && val.trim()) refs.add(val.trim());
+  }
+  return [...refs];
+}
+
+async function backfillDeliveryProofRow(
+  orderId: number,
+  imageUrl: string,
+  r2Key: string | null
+): Promise<void> {
+  const db = getDb();
+  try {
+    const existing = await db.execute(sql`
+      SELECT id
+      FROM order_delivery_images
+      WHERE order_id = ${orderId}
+      LIMIT 1
+    `);
+    if ((existing as unknown as unknown[]).length > 0) return;
+
+    await db.execute(sql`
+      INSERT INTO order_delivery_images (
+        order_id,
+        image_type,
+        image_url,
+        r2_key,
+        uploaded_by,
+        taken_at,
+        created_at
+      )
+      VALUES (
+        ${orderId},
+        'delivery',
+        ${imageUrl},
+        ${r2Key},
+        'rider',
+        NOW(),
+        NOW()
+      )
+    `);
+  } catch {
+    // optional backfill — R2 fallback still works
+  }
+}
+
+async function fetchDeliveryProofFromR2(orderId: number): Promise<string | null> {
+  try {
+    const refs = await fetchOrderRefsForDeliveryProof(orderId);
+    if (refs.length === 0) return null;
+
+    const prefixes = new Set<string>();
+    for (const ref of refs) {
+      prefixes.add(`orders/${ref}/delivery-proof/`);
+      prefixes.add(`orders/${sanitizeOrderRefForR2(ref)}/delivery-proof/`);
+    }
+
+    let bestKey: string | null = null;
+    for (const prefix of prefixes) {
+      const keys = await listR2KeysByPrefix(prefix, 20);
+      for (const key of keys) {
+        if (!/\.(jpg|jpeg|png|webp)$/i.test(key)) continue;
+        if (!bestKey || key.localeCompare(bestKey) > 0) bestKey = key;
+      }
+    }
+
+    if (!bestKey) return null;
+    return `/api/attachments/proxy?key=${encodeURIComponent(bestKey)}`;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchOrderDeliveryProofImageUrl(orderId: number): Promise<string | null> {
+  const db = getDb();
+
+  const imageQueries = [
+    sql`
+      SELECT image_url, url, r2_key
+      FROM order_delivery_images
+      WHERE order_id = ${orderId}
+        AND image_type IN ('delivery_proof', 'delivery')
+      ORDER BY taken_at DESC NULLS LAST, id DESC
+      LIMIT 1
+    `,
+    sql`
+      SELECT image_url, url, r2_key
+      FROM order_delivery_images
+      WHERE order_id = ${orderId}
+      ORDER BY taken_at DESC NULLS LAST, id DESC
+      LIMIT 1
+    `,
+    sql`
+      SELECT url
+      FROM order_delivery_images
+      WHERE order_id = ${orderId}
+        AND image_type IN ('delivery_proof', 'delivery')
+      ORDER BY taken_at DESC, id DESC
+      LIMIT 1
+    `,
+  ];
+
+  for (const query of imageQueries) {
+    try {
+      const rows = await db.execute(query);
+      const row = (rows as unknown as Record<string, unknown>[])[0];
+      if (!row) continue;
+      const resolved = resolveDeliveryImageUrl(row.image_url, row.url, row.r2_key);
+      if (resolved) return resolved;
+    } catch {
+      // column mismatch — try next query shape
+    }
+  }
+
+  try {
+    const rows = await db.execute(sql`
+      SELECT delivery_proof_url
+      FROM orders_food
+      WHERE order_id = ${orderId}
+      LIMIT 1
+    `);
+    const row = (rows as unknown as Record<string, unknown>[])[0];
+    const resolved = resolveDeliveryImageUrl(row?.delivery_proof_url, null, null);
+    if (resolved) return resolved;
+  } catch {
+    // optional column
+  }
+
+  try {
+    const rows = await db.execute(sql`
+      SELECT assignment_metadata
+      FROM order_rider_assignments
+      WHERE order_core_id = ${orderId}
+        AND assignment_metadata IS NOT NULL
+      ORDER BY
+        CASE WHEN delivered_at IS NOT NULL THEN 0 ELSE 1 END,
+        delivered_at DESC NULLS LAST,
+        id DESC
+      LIMIT 3
+    `);
+    for (const row of rows as unknown as Record<string, unknown>[]) {
+      const resolved = readDeliveryImageFromMetadata(row.assignment_metadata);
+      if (resolved) return resolved;
+    }
+  } catch {
+    // optional metadata column
+  }
+
+  const r2Url = await fetchDeliveryProofFromR2(orderId);
+  if (r2Url) {
+    const keyMatch = r2Url.match(/[?&]key=([^&]+)/);
+    const r2Key = keyMatch ? decodeURIComponent(keyMatch[1]) : null;
+    void backfillDeliveryProofRow(orderId, r2Url, r2Key);
+    return r2Url;
+  }
+
+  return null;
 }
 
 async function fetchFoodPrepMeta(orderId: number): Promise<{
@@ -658,6 +1083,17 @@ export async function getOrderDetailEnrichment(
         ? merchantExtraPrepRaw
         : null;
 
+    const foodTimingMeta = await fetchFoodTimingMeta(orderId);
+    if (!foodTimingMeta.riderReachedPickupAt) {
+      const reachedMerchantAt = await fetchAssignmentReachedMerchantAt(orderId);
+      if (reachedMerchantAt) {
+        foodTimingMeta.riderReachedPickupAt = reachedMerchantAt;
+      }
+    }
+    const storePrepDelay = resolveStorePrepDelay(foodTimingMeta);
+    const riderRestaurantWait = resolveRiderRestaurantWait(foodTimingMeta);
+    const deliveryProofImageUrl = await fetchOrderDeliveryProofImageUrl(orderId);
+
     return {
       orderTimeIso: orderTime?.toISOString() ?? null,
       orderTimeSource:
@@ -689,6 +1125,14 @@ export async function getOrderDetailEnrichment(
       rtoOtp: orderOtps.rtoOtp,
       deliveryOtp: orderOtps.deliveryOtp,
       customerFeedback,
+      storePrepDelaySeconds: storePrepDelay.seconds,
+      storePrepDelayLive: storePrepDelay.live,
+      storePrepDelayAnchorAt: storePrepDelay.anchorAt,
+      storePrepDelayWasLate: storePrepDelay.wasLate,
+      riderRestaurantWaitSeconds: riderRestaurantWait.seconds,
+      riderRestaurantWaitLive: riderRestaurantWait.live,
+      riderRestaurantWaitAnchorAt: riderRestaurantWait.anchorAt,
+      deliveryProofImageUrl,
     };
   } catch (err) {
     console.error("[getOrderDetailEnrichment] failed for order", orderId, err);

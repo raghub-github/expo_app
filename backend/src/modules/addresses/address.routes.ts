@@ -5,6 +5,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
+import multipart from "@fastify/multipart";
 import { z } from "zod";
 import { getDb } from "../../db/client.js";
 import { customers } from "../../db/schema.js";
@@ -18,6 +19,7 @@ import {
   setAddressDefault,
   getActiveLocation,
   setActiveLocation,
+  doorImageProxyUrlFromR2Key,
 } from "./address.service.js";
 
 async function resolveCustomerPk(db: ReturnType<typeof getDb>, sub: string, role: string): Promise<number | null> {
@@ -39,6 +41,7 @@ const addressBodySchema = z.object({
   isDefault: z.boolean().optional(),
   contactName: z.string().max(80).optional().nullable(),
   contactMobile: z.string().max(20).optional().nullable(),
+  deliveryInstructionsList: z.array(z.string().max(500)).max(25).optional(),
 });
 
 const activeLocationBodySchema = z.object({
@@ -49,6 +52,7 @@ const activeLocationBodySchema = z.object({
 
 export async function addressRoutes(app: FastifyInstance) {
   await app.register(auth, { required: true });
+  await app.register(multipart, { limits: { fileSize: 8 * 1024 * 1024 } });
 
   app.get(
     "/addresses",
@@ -69,6 +73,8 @@ export async function addressRoutes(app: FastifyInstance) {
               longitude: z.number(),
               contactName: z.string().nullable().optional(),
               contactMobile: z.string().nullable().optional(),
+              deliveryDoorImageUrl: z.string().nullable().optional(),
+              deliveryInstructionsList: z.array(z.string()).optional(),
               isDefault: z.boolean(),
               isLastUsed: z.boolean(),
             })
@@ -95,8 +101,10 @@ export async function addressRoutes(app: FastifyInstance) {
             country: r.country,
             latitude: Number(r.latitude) || 0,
             longitude: Number(r.longitude) || 0,
-              contactName: (r as any).contactName ?? null,
-              contactMobile: (r as any).contactMobile ?? null,
+              contactName: r.contactName ?? null,
+              contactMobile: r.contactMobile ?? null,
+              deliveryDoorImageUrl: r.deliveryDoorImageUrl ?? null,
+              deliveryInstructionsList: r.deliveryInstructionsList ?? [],
             isDefault: r.isDefault ?? false,
             isLastUsed: r.isLastUsed ?? false,
           }))
@@ -199,6 +207,66 @@ export async function addressRoutes(app: FastifyInstance) {
       const ok = await deleteAddress(customerPk, id);
       if (!ok) return reply.status(404).send({ error: "Address not found" });
       return reply.send({ ok: true });
+    }
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/addresses/:id/door-image",
+    {
+      schema: {
+        params: z.object({ id: z.string() }),
+        response: {
+          201: z.object({
+            ok: z.boolean(),
+            deliveryDoorImageUrl: z.string(),
+          }),
+          400: z.object({ error: z.string(), message: z.string().optional() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          500: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const db = getDb();
+      const customerPk = await resolveCustomerPk(db, request.auth!.sub!, request.auth!.role!);
+      if (customerPk === null) return reply.status(403).send({ error: "Customer only" });
+      const id = parseInt(request.params.id, 10);
+      if (Number.isNaN(id)) return reply.status(400).send({ error: "Invalid id" });
+
+      const filePart = await (request as unknown as { file?: () => Promise<{
+        filename?: string;
+        mimetype?: string;
+        toBuffer: () => Promise<Buffer>;
+      } | undefined> }).file?.();
+      if (!filePart) return reply.status(400).send({ error: "no_file" });
+      const buffer = await filePart.toBuffer();
+      if (!buffer || buffer.length === 0) return reply.status(400).send({ error: "empty_file" });
+      if (buffer.length > 8 * 1024 * 1024) {
+        return reply.status(400).send({ error: "file_too_large", message: "Max 8 MB." });
+      }
+
+      const originalName = String(filePart.filename || "door-image.jpg");
+      const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "door-image.jpg";
+      const mime = String(filePart.mimetype || "image/jpeg");
+      if (!/^image\/(jpeg|png|gif|webp)$/i.test(mime)) {
+        return reply.status(400).send({ error: "unsupported_mime_type", message: "Only images allowed." });
+      }
+
+      const { randomUUID } = await import("crypto");
+      const r2Key = `customer-addresses/${customerPk}/${id}/${randomUUID()}-${safeName}`;
+
+      try {
+        const { uploadToR2 } = await import("../../services/r2/r2Service.js");
+        const uploaded = await uploadToR2(buffer, r2Key, mime);
+        const imageUrl = doorImageProxyUrlFromR2Key(uploaded.key);
+        const updated = await updateAddress(customerPk, id, { deliveryDoorImageUrl: imageUrl });
+        if (!updated) return reply.status(404).send({ error: "Address not found" });
+        return reply.status(201).send({ ok: true, deliveryDoorImageUrl: imageUrl });
+      } catch (err: unknown) {
+        request.log.error({ err }, "address door image upload failed");
+        return reply.status(500).send({ error: "upload_failed" });
+      }
     }
   );
 

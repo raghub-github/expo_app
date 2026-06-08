@@ -7,9 +7,9 @@ import { useFoodOrdersListActive } from "@/hooks/useFoodOrdersListActive";
 import Link from "next/link";
 import { X, RefreshCw, Filter, CheckCircle2, ChevronDown } from "lucide-react";
 import { type CSSProperties } from "react";
-import { useAuthOptional } from "@/providers/AuthProvider";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 import { queryKeys } from "@/lib/queryKeys";
+import { FoodOrdersTableRowsSkeleton } from "@/components/skeletons/FoodOrdersPageSkeleton";
 import {
   fetchOrderCorePayload,
   orderDetailQueryKey,
@@ -192,18 +192,18 @@ function useFoodOrdersQuery(
   filters: OrdersFilters,
   enabled: boolean,
   snapshotKey: string | null,
-  initialSnapshot: Awaited<ReturnType<typeof fetchFoodOrders>> | null
+  initialData: Awaited<ReturnType<typeof fetchFoodOrders>> | null | undefined
 ) {
   const query = useQuery({
     queryKey: queryKeys.ordersCore.foodList(filters as unknown as Record<string, unknown>),
     queryFn: ({ signal }) => fetchFoodOrders(filters, signal),
     enabled,
-    ...(initialSnapshot != null ? { initialData: initialSnapshot } : {}),
+    ...(initialData != null ? { initialData } : {}),
     staleTime: 2 * 60 * 1000,
     gcTime: 10 * 60 * 1000,
     refetchOnWindowFocus: false,
-    refetchOnMount: false,
-    placeholderData: undefined,
+    refetchOnMount: true,
+    placeholderData: (previousData) => previousData,
   });
 
   useEffect(() => {
@@ -220,14 +220,8 @@ export default function FoodOrdersClient() {
 
   const isFoodOrdersListActive = useFoodOrdersListActive();
   const queryClient = useQueryClient();
-  const auth = useAuthOptional();
-  const authReady = auth?.authReady ?? false;
-  const sessionUser = auth?.user;
-  const permissions = auth?.permissions;
-  const shouldFetch =
-    hasMounted &&
-    isFoodOrdersListActive &&
-    Boolean(authReady && sessionUser && permissions);
+  // Server page already enforced ORDER_FOOD access; list API validates session via cookies.
+  const shouldFetch = hasMounted && isFoodOrdersListActive;
 
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -320,22 +314,34 @@ export default function FoodOrdersClient() {
   );
 
   const SNAPSHOT_TTL_MS = 5 * 60 * 1000;
+  const listQueryKey = useMemo(
+    () => queryKeys.ordersCore.foodList(filtersForQuery as unknown as Record<string, unknown>),
+    [filtersForQuery]
+  );
+
   const snapshotKey = useMemo(() => {
-    if (!shouldFetch) return null;
+    if (!isFoodOrdersListActive) return null;
     return `dashboard_snapshot:orders_food_v2:/dashboard/orders/food:${JSON.stringify(filtersForQuery)}`;
-  }, [shouldFetch, filtersForQuery]);
+  }, [isFoodOrdersListActive, filtersForQuery]);
+
+  const cachedListData = useMemo(() => {
+    if (!hasMounted) return null;
+    return queryClient.getQueryData<Awaited<ReturnType<typeof fetchFoodOrders>>>(listQueryKey) ?? null;
+  }, [hasMounted, listQueryKey, queryClient]);
 
   const initialSnapshot = useMemo(() => {
     if (!hasMounted || !snapshotKey) return null;
     return loadClientSnapshot<Awaited<ReturnType<typeof fetchFoodOrders>>>(snapshotKey, SNAPSHOT_TTL_MS);
   }, [hasMounted, snapshotKey]);
 
+  const initialListData = cachedListData ?? initialSnapshot ?? undefined;
+
   const {
     data: ordersData,
     isFetching,
     isPending,
     refetch: refetchOrders,
-  } = useFoodOrdersQuery(filtersForQuery, shouldFetch, snapshotKey, initialSnapshot);
+  } = useFoodOrdersQuery(filtersForQuery, shouldFetch, snapshotKey, initialListData);
 
   // Prefetch other status tabs in the background so tab switches feel instant.
   useEffect(() => {
@@ -353,8 +359,8 @@ export default function FoodOrdersClient() {
     }
   }, [shouldFetch, filtersForQuery, selectedStatus, queryClient]);
 
-  const orders = hasMounted ? (ordersData?.orders ?? []) : [];
-  const total = hasMounted ? (ordersData?.total ?? 0) : 0;
+  const orders = ordersData?.orders ?? cachedListData?.orders ?? initialSnapshot?.orders ?? [];
+  const total = ordersData?.total ?? cachedListData?.total ?? initialSnapshot?.total ?? 0;
   const showTableLoading = hasMounted && isPending && orders.length === 0;
   const isRefreshing = hasMounted && isFetching && orders.length > 0;
   const hasActiveSearch = Boolean(debouncedSearch.trim());
@@ -887,11 +893,7 @@ export default function FoodOrdersClient() {
           </thead>
           <tbody className="divide-y divide-gray-200" style={{ backgroundColor: CONTENT_BG }}>
             {showTableLoading ? (
-              <tr>
-                <td colSpan={9} className="px-2 py-4 text-center" style={{ color: TABLE_TEXT }}>
-                  Loading…
-                </td>
-              </tr>
+              <FoodOrdersTableRowsSkeleton rows={8} />
             ) : orders.length === 0 ? (
               <tr>
                 <td colSpan={9} className="px-2 py-4 text-center text-xs" style={{ color: TABLE_TEXT }}>

@@ -62,7 +62,7 @@ export function formatMerchantOfferLockReason(
     const gap = Math.max(0, minOrder - base);
     if (gap > 0.005) {
       const rounded = Math.ceil(gap);
-      return `Add eligible items worth ₹${rounded} more to unlock`;
+      return `Add ₹${rounded} more to unlock this offer`;
     }
     return `Minimum order value ₹${Math.round(minOrder)} required`;
   }

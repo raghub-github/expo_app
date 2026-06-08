@@ -25,10 +25,15 @@ import { GlobalPrepDelayMarquee } from "@/components/GlobalPrepDelayMarquee";
 import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
 import { setOnSessionRevoked } from "@/services/api";
 import { PushNotificationBootstrap } from "@/components/PushNotificationBootstrap";
+import { AddressesPrefetch } from "@/components/AddressesPrefetch";
+import { FeaturedOffersPrefetch } from "@/components/FeaturedOffersPrefetch";
+import { UserAppCategoriesPrefetch } from "@/components/UserAppCategoriesPrefetch";
+import { ProfilePrefetch } from "@/components/ProfilePrefetch";
 import { profileService } from "@/services/profile.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { colors } from "@/theme";
 import { DEFAULT_STATUS_BAR_HEIGHT } from "@/constants/layout";
+import { useScreenChromeStore } from "@/store/screenChromeStore";
 import "@/lib/i18n";
 import { setAppLanguage } from "@/lib/i18n";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -144,6 +149,10 @@ export default function RootLayout() {
               <GlobalPrepDelayMarquee />
               <LocationModalWrapper />
               <PushNotificationBootstrap />
+              <AddressesPrefetch />
+              <FeaturedOffersPrefetch />
+              <UserAppCategoriesPrefetch />
+              <ProfilePrefetch />
             </>
           ) : null}
           {!splashExited ? (
@@ -263,18 +272,23 @@ function LocationModalWrapper() {
   );
 }
 
-const STATUS_BAR_BG = "#FFFFFF";
-
 function RootStack({ onLayoutRootView }: { onLayoutRootView: () => void }) {
   const insets = useSafeAreaInsets();
   const segments = useSegments();
   const inProfileStack = segments[0] === "profile";
   const statusBarHeight = inProfileStack ? 0 : (insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT);
+  const statusBarBackground = useScreenChromeStore((s) => s.statusBarBackground);
 
   return (
     <>
-      <StatusBar style="dark" backgroundColor={STATUS_BAR_BG} />
-      <View style={{ height: statusBarHeight, backgroundColor: STATUS_BAR_BG, width: "100%" }} />
+      <StatusBar style="dark" backgroundColor={statusBarBackground} />
+      <View
+        style={{
+          height: statusBarHeight,
+          backgroundColor: statusBarBackground,
+          width: "100%",
+        }}
+      />
       <View style={{ flex: 1 }} onLayout={onLayoutRootView}>
         <Stack
           screenOptions={{

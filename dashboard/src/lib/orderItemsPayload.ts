@@ -94,11 +94,13 @@ function packagingTaxFromBilling(snap: Record<string, unknown> | null): number {
   return sum;
 }
 
-/** Build pricing summary from billing_snapshot so footer math matches final_amount. */
+/**
+ * Customer (CTC) bill from billing_snapshot + orders_core.
+ * CTC uses grand_total (customer order value); never orders_food.food_items_total_value — that field is frozen CTM.
+ */
 export function buildOrderPricingSummary(
   billingSnap: Record<string, unknown> | null,
-  core: Record<string, unknown>,
-  foodTotal: string | number | null | undefined
+  core: Record<string, unknown>
 ): OrderItemsPricing {
   const snap = billingSnap ?? {};
   const lines: OrderPricingLine[] = [];
@@ -162,11 +164,12 @@ export function buildOrderPricingSummary(
     }
   }
 
-  const foodNum = foodTotal != null && foodTotal !== "" ? Number(foodTotal) : NaN;
   const totalOrderAmount = round2(
-    Number.isFinite(foodNum)
-      ? foodNum
-      : asNum(snap.final_amount) || asNum(core.grand_total) || 0
+    asNum(core.grand_total) ||
+      asNum(snap.grand_total) ||
+      asNum(snap.final_amount) ||
+      asNum(snap.final_payable) ||
+      0
   );
 
   const linesSum = round2(
@@ -208,7 +211,7 @@ export function buildOrderPricingSummary(
 function parsePricingSummary(pr: Record<string, unknown>): OrderPricingSummary {
   const lines = Array.isArray(pr.lines)
     ? (pr.lines as OrderPricingLine[])
-    : buildOrderPricingSummary(null, {}, null).lines;
+    : buildOrderPricingSummary(null, {}).lines;
 
   return {
     lines,
@@ -289,7 +292,7 @@ export function parseOrderItemsApiResponse(data: unknown): OrderItemsPayload | n
   if (!p || typeof p !== "object") {
     return {
       items: rows as OrderItemApiRow[],
-      pricing: buildOrderPricingSummary(null, {}, null),
+      pricing: buildOrderPricingSummary(null, {}),
     };
   }
 

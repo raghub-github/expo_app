@@ -16,7 +16,7 @@ export type GatiMitraPrintStoreInfo = {
 };
 
 function formatMoney(n: number) {
-  return `₹${Math.round(n).toLocaleString('en-IN')}`;
+  return `₹${Math.round(Number(n))}`;
 }
 
 function formatOrderPlacedAt(iso: string) {

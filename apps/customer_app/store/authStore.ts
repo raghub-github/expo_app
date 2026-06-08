@@ -8,6 +8,7 @@ import type { Session } from "@gatimitra/contracts";
 import { authService } from "@/services/auth.service";
 import { getItem, setItem, removeItem } from "@/utils/storage";
 import { STORAGE_KEYS } from "@/constants";
+import { clearCachedProfile } from "@/lib/profileCache";
 
 type AuthState = {
   hydrated: boolean;
@@ -25,6 +26,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   setSession: async (s) => {
     if (!s) {
       await authService.clearSession();
+      await clearCachedProfile();
       set({ session: null });
       return;
     }
@@ -45,6 +47,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   logout: async () => {
     await authService.clearSession();
+    await clearCachedProfile();
     set({ session: null });
   },
 
@@ -55,6 +58,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // Continue to clear local session even if API fails
     }
     await authService.clearSession();
+    await clearCachedProfile();
     set({ session: null });
   },
 }));

@@ -16,10 +16,23 @@
     "settings": "Settings",
     "rewardsAndReferrals": "Rewards & Referrals",
     "savedAddresses": "Saved addresses",
+    "yourCollections": "Your Collections",
     "helpAndSupport": "Help & Support",
     "referEarnTitle": "Refer & Earn GatiMitra Credit",
     "referEarnSub": "Share with friends and get rewards.",
     "referNow": "Refer now"
+  },
+  "collections": {
+    "dishes": "Dishes",
+    "restaurants": "Restaurants",
+    "dishesEmptyHint": "Add dishes to this Collection by tapping on the bookmark icon",
+    "restaurantsEmptyHint": "Add restaurants to this Collection by tapping on the bookmark icon",
+    "startExploring": "Start exploring",
+    "dishesEmptyTitle": "No saved dishes yet",
+    "dishesEmptySub": "Bookmark dishes from a restaurant menu — tap the bookmark icon on any item.",
+    "restaurantsEmptyTitle": "No saved restaurants",
+    "restaurantsEmptySub": "Tap the bookmark icon on any restaurant to save it here.",
+    "browseRestaurants": "Browse restaurants"
   },
   "settings": {
     "account": "Account",

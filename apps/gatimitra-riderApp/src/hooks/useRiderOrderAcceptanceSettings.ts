@@ -3,6 +3,7 @@ import {
   fetchRiderOrderAcceptanceSettings,
   type RiderOrderAcceptanceSettings,
 } from "@/src/services/orderAcceptanceApi";
+import { isUnauthorizedError } from "@/src/services/http";
 import { useSessionStore } from "@/src/stores/sessionStore";
 
 const DEFAULTS: RiderOrderAcceptanceSettings = {
@@ -23,7 +24,10 @@ export function useRiderOrderAcceptanceSettings() {
     queryFn: fetchRiderOrderAcceptanceSettings,
     enabled: hasSession,
     staleTime: 5 * 60_000,
-    retry: 1,
+    retry: (failureCount, error) => {
+      if (isUnauthorizedError(error)) return false;
+      return failureCount < 1;
+    },
     placeholderData: DEFAULTS,
   });
 }

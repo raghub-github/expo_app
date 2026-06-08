@@ -37,6 +37,11 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/** Whole-rupee menu price as merchants set in menu (₹150, not ₹149.60). */
+export function merchantMenuRupee(n: number): number {
+  return Math.round(Number.isFinite(n) ? n : 0);
+}
+
 function normName(s: string): string {
   return s.trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -175,18 +180,18 @@ export async function applyMerchantBaseToOrderItems(
     let newBaseLine = oldBase > 0.005 ? oldBase : round2(oldLineTotal - oldCust);
     if (snap) {
       usedSnapIds.add(snap.orderItemId);
-      newBaseLine = round2(snap.merchantBasePerUnit * qty);
+      newBaseLine = merchantMenuRupee(snap.merchantBasePerUnit) * qty;
     } else if (pct != null && Number.isFinite(pct) && pct >= 0 && pct < 100) {
       const unitCustomer = (oldBase > 0.005 ? oldBase : oldLineTotal) / qty;
-      newBaseLine = round2(((unitCustomer * (100 - pct)) / 100) * qty);
+      newBaseLine = merchantMenuRupee((unitCustomer * (100 - pct)) / 100) * qty;
     }
 
     let newCust = oldCust;
     if (oldCust > 0.005 && oldBase > 0.005 && newBaseLine > 0) {
-      newCust = round2(oldCust * (newBaseLine / oldBase));
+      newCust = merchantMenuRupee(oldCust * (newBaseLine / oldBase));
     }
 
-    const lineTotal = round2(newBaseLine + newCust);
+    const lineTotal = merchantMenuRupee(newBaseLine + newCust);
     subtotal += lineTotal;
     out.push({ ...item, qty, name, price: lineTotal });
   }
@@ -194,12 +199,12 @@ export async function applyMerchantBaseToOrderItems(
   if (snapshots.length > 0 && usedSnapIds.size < snapshots.length) {
     for (const s of snapshots) {
       if (usedSnapIds.has(s.orderItemId)) continue;
-      const line = round2(s.merchantBasePerUnit * Math.max(1, s.quantity));
+      const line = merchantMenuRupee(s.merchantBasePerUnit) * Math.max(1, s.quantity);
       subtotal += line;
     }
   }
 
-  return { items: out, merchantSubtotal: round2(subtotal) };
+  return { items: out, merchantSubtotal: merchantMenuRupee(subtotal) };
 }
 
 /**
@@ -210,7 +215,7 @@ export function scaleMerchantOrderItemBreakdown(
   item: MerchantOrderItemLike,
   merchantLineTotal: number
 ): MerchantOrderItemLike {
-  const lineTotal = round2(merchantLineTotal);
+  const lineTotal = merchantMenuRupee(merchantLineTotal);
   const oldBase =
     num(item.base_amount) > 0.005
       ? num(item.base_amount)
@@ -222,9 +227,9 @@ export function scaleMerchantOrderItemBreakdown(
   const oldLine =
     oldBase + oldCust > 0.005 ? round2(oldBase + oldCust) : num(item.price) || lineTotal;
   const factor = oldLine > 0.005 ? lineTotal / oldLine : 1;
-  const newBase = round2(oldBase * factor);
-  const newCust = round2(oldCust * factor);
-  const recomposed = round2(newBase + newCust);
+  const newBase = merchantMenuRupee(oldBase * factor);
+  const newCust = merchantMenuRupee(oldCust * factor);
+  const recomposed = merchantMenuRupee(newBase + newCust);
   const finalLine = recomposed > 0.005 ? recomposed : lineTotal;
 
   return {
@@ -234,15 +239,15 @@ export function scaleMerchantOrderItemBreakdown(
     customizations_total: newCust > 0.005 ? newCust : item.customizations_total,
     captured_base_amount:
       item.captured_base_amount != null
-        ? round2(num(item.captured_base_amount) * factor)
+        ? merchantMenuRupee(num(item.captured_base_amount) * factor)
         : undefined,
     captured_addon_amount:
       item.captured_addon_amount != null
-        ? round2(num(item.captured_addon_amount) * factor)
+        ? merchantMenuRupee(num(item.captured_addon_amount) * factor)
         : undefined,
     customization_lines: item.customization_lines?.map((l) => ({
       ...l,
-      amount: round2(num(l.amount) * factor),
+      amount: merchantMenuRupee(num(l.amount) * factor),
     })),
   };
 }

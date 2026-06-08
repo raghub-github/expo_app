@@ -9,16 +9,15 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
-import { profileService } from "@/services/profile.service";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { shareReferralCode } from "@/lib/referralShare";
+import { buildEmailAvatarCandidates } from "@/lib/emailAvatar";
+import { useProfile } from "@/hooks/useProfile";
 
 import { GatiMitraColors } from "@/constants/gatimitra";
 
-const PLUS_BLUE = "#1D4ED8";
 const GMITRA_PLUS_NAME = "GMitra Plus";
 const GREEN = GatiMitraColors.primaryMint;
 const GREEN_DARK = "#15803D";
@@ -26,8 +25,8 @@ const TEXT = "#111827";
 const MUTED = "#6B7280";
 const BORDER = "#E5E7EB";
 const PAGE_BG = "#F3F4F6";
-const GOLD = "#FBBF24";
-const GOLD_TEXT = "#FDE68A";
+const GOLD = "#F59E0B";
+const GOLD_SOFT = "#FEF3C7";
 
 function getInitials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -48,27 +47,39 @@ export default function ProfileScreen() {
   const { t } = useTranslation();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { data: profile } = useQuery({
-    queryKey: ["me", "profile"],
-    queryFn: () => profileService.getProfile(),
-    retry: false,
-  });
+  const { data: profile } = useProfile();
 
   const displayName = profile?.full_name?.trim() || t("common.customer");
   const initials = useMemo(() => getInitials(displayName), [displayName]);
   const email = profile?.email?.trim() || null;
-  const lifetimeSavings = "2,167";
+  const lifetimeSavingsDisplay = useMemo(() => {
+    const amount = profile?.lifetime_savings_inr ?? 0;
+    const rounded = Math.round(Math.max(0, amount));
+    return rounded.toLocaleString("en-IN");
+  }, [profile?.lifetime_savings_inr]);
   const referralCode = profile?.referral_code ?? null;
   const customerId = profile?.customer_id ?? profile?.user_id ?? null;
   const isEmailVerified = profile?.is_email_verified ?? false;
   const profileImageUrl = profile?.profile_image_url?.trim() || null;
-  const showEmailAvatar = isEmailVerified && !!profileImageUrl;
-  const [avatarFailed, setAvatarFailed] = useState(false);
+  const showEmailAvatar = isEmailVerified && !!email;
+  const avatarCandidates = useMemo(() => {
+    if (!showEmailAvatar || !email) return [];
+    return buildEmailAvatarCandidates(email, profileImageUrl);
+  }, [showEmailAvatar, email, profileImageUrl]);
+  const [avatarIndex, setAvatarIndex] = useState(0);
+  const avatarUri = avatarCandidates[avatarIndex] ?? null;
   const subscriptionActive = profile?.gmitra_plus_active ?? false;
 
   useEffect(() => {
-    setAvatarFailed(false);
-  }, [profileImageUrl]);
+    setAvatarIndex(0);
+  }, [avatarCandidates]);
+
+  const handleAvatarError = useCallback(() => {
+    setAvatarIndex((current) => {
+      if (current + 1 < avatarCandidates.length) return current + 1;
+      return current;
+    });
+  }, [avatarCandidates.length]);
 
   const copyToClipboard = useCallback(async (text: string, label: string) => {
     if (!text) return;
@@ -116,6 +127,7 @@ export default function ProfileScreen() {
     { id: "support", label: t("profile.support"), icon: "chatbubble-ellipses-outline", path: "/support" },
     { id: "rewards", label: t("profile.rewardsAndReferrals"), icon: "gift-outline", path: "/profile/referrals", badge: "New" },
     { id: "addresses", label: t("profile.savedAddresses"), icon: "location-outline", path: "/profile/addresses" },
+    { id: "collections", label: t("profile.yourCollections"), icon: "bookmark-outline", path: "/profile/collections" },
     { id: "settings", label: t("profile.settings"), icon: "settings-outline", path: "/profile/settings" },
     ...( !isEmailVerified && profile?.email
       ? [{ id: "verify", label: t("profile.verifyEmail"), icon: "mail-outline" as const, path: "/profile/verify-email", badge: "!" }]
@@ -135,13 +147,14 @@ export default function ProfileScreen() {
           <View style={styles.profileCardBody}>
             <View style={styles.identityRow}>
               <View style={styles.avatar}>
-                {showEmailAvatar && !avatarFailed ? (
+                {showEmailAvatar && avatarUri ? (
                   <Image
-                    source={{ uri: profileImageUrl }}
+                    source={{ uri: avatarUri }}
                     style={styles.avatarImage}
                     contentFit="cover"
                     transition={200}
-                    onError={() => setAvatarFailed(true)}
+                    cachePolicy="memory-disk"
+                    onError={handleAvatarError}
                   />
                 ) : (
                   <Text style={styles.avatarText}>{initials}</Text>
@@ -186,29 +199,22 @@ export default function ProfileScreen() {
             <Text style={styles.plusStripText}>
               {subscriptionActive ? `${GMITRA_PLUS_NAME} Active` : `Join ${GMITRA_PLUS_NAME}`}
             </Text>
-            <Ionicons name="chevron-forward" size={18} color={GOLD_TEXT} />
+            <Ionicons name="chevron-forward" size={18} color={MUTED} />
           </TouchableOpacity>
         </View>
 
-        {/* Savings + coupons */}
-        <View style={styles.statsRow}>
-          <View style={styles.statCard}>
-            <View style={styles.statTopRow}>
-              <View style={styles.statIconWrap}>
-                <Ionicons name="sparkles-outline" size={18} color={GREEN_DARK} />
-              </View>
-              <Text style={styles.statLabel} numberOfLines={2}>{t("profile.lifetimeSavings")}</Text>
+        {/* Lifetime savings */}
+        <View style={styles.savingsCard}>
+          <View style={styles.savingsRow}>
+            <View style={styles.savingsIconWrap}>
+              <Ionicons name="sparkles-outline" size={18} color={GREEN_DARK} />
             </View>
-            <Text style={styles.statValue}>₹{lifetimeSavings}</Text>
-          </View>
-          <View style={styles.statCard}>
-            <View style={styles.statTopRow}>
-              <View style={styles.statIconWrap}>
-                <Ionicons name="pricetag-outline" size={18} color={GREEN_DARK} />
-              </View>
-              <Text style={styles.statLabel} numberOfLines={2}>Your coupons</Text>
-            </View>
-            <Text style={styles.statValue}>0</Text>
+            <Text style={styles.savingsLabel} numberOfLines={1}>
+              {t("profile.lifetimeSavings")}
+            </Text>
+            <Text style={styles.savingsValue} numberOfLines={1}>
+              ₹{lifetimeSavingsDisplay}
+            </Text>
           </View>
         </View>
 
@@ -349,7 +355,9 @@ const styles = StyleSheet.create({
   plusStrip: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: PLUS_BLUE,
+    backgroundColor: PAGE_BG,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: BORDER,
     paddingHorizontal: 14,
     paddingVertical: 12,
     gap: 10,
@@ -358,37 +366,55 @@ const styles = StyleSheet.create({
     width: 30,
     height: 30,
     borderRadius: 15,
-    backgroundColor: "rgba(255, 255, 255, 0.18)",
+    backgroundColor: GOLD_SOFT,
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#FDE68A",
   },
   plusStripText: {
     flex: 1,
     fontSize: 14,
     fontWeight: "700",
-    color: GOLD_TEXT,
+    color: GREEN_DARK,
     letterSpacing: 0.1,
   },
-  statsRow: { flexDirection: "row", gap: 10, marginTop: 12 },
-  statCard: {
-    flex: 1,
+  savingsCard: {
+    marginTop: 12,
     backgroundColor: "#fff",
     borderRadius: 14,
-    padding: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
     borderWidth: 1,
     borderColor: BORDER,
   },
-  statTopRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  statIconWrap: {
+  savingsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  savingsIconWrap: {
     width: 32,
     height: 32,
     borderRadius: 16,
     backgroundColor: "#ECFDF5",
     alignItems: "center",
     justifyContent: "center",
+    flexShrink: 0,
   },
-  statLabel: { flex: 1, fontSize: 12, color: MUTED, fontWeight: "600", lineHeight: 16 },
-  statValue: { fontSize: 20, fontWeight: "800", color: GREEN_DARK, marginTop: 10 },
+  savingsLabel: {
+    flex: 1,
+    fontSize: 13,
+    color: MUTED,
+    fontWeight: "600",
+  },
+  savingsValue: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: GREEN_DARK,
+    flexShrink: 0,
+    marginLeft: 8,
+  },
   idCard: {
     backgroundColor: "#fff",
     borderRadius: 14,

@@ -1,10 +1,18 @@
 /**
- * Store hero carousel: static banner when no gallery.
- * With gallery: horizontal slide — current exits left, next enters from right; seamless loop.
+ * Store hero carousel: banner first → gallery → loop.
+ * Fixed hold + linear slide. Swipe left/right on image. Auto-advance when gallery exists.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { View, Image, StyleSheet, type StyleProp, type ViewStyle } from "react-native";
+import {
+  View,
+  StyleSheet,
+  PanResponder,
+  TouchableOpacity,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
+import { Image } from "expo-image";
 import Animated, {
   Easing,
   runOnJS,
@@ -22,19 +30,53 @@ export type StoreBannerCarouselProps = {
   width: number;
   height: number;
   borderRadius?: number;
+  holdMs?: number;
+  slideMs?: number;
   initialBannerHoldMs?: number;
   slideIntervalMs?: number;
   slideDurationMs?: number;
   style?: StyleProp<ViewStyle>;
   dimmed?: boolean;
   showDots?: boolean;
-  /** Never show cutlery icon — gradient only (cards). */
   hidePlaceholderIcon?: boolean;
+  enableSwipe?: boolean;
+  onPress?: () => void;
+  onPressIn?: () => void;
+  onPressOut?: () => void;
+  /** When true, carousel never fires onPress — parent card handles taps. */
+  deferTapToParent?: boolean;
+  /** Fired when user swipes horizontally (parent should skip navigation). */
+  onSwipeGesture?: () => void;
 };
 
-const DEFAULT_HOLD = 3200;
-const DEFAULT_INTERVAL = 5000;
-const DEFAULT_SLIDE = 720;
+export const LIST_CARD_CAROUSEL_HOLD_MS = 3200;
+export const LIST_CARD_CAROUSEL_SLIDE_MS = 460;
+
+const DEFAULT_HOLD = LIST_CARD_CAROUSEL_HOLD_MS;
+const DEFAULT_SLIDE = LIST_CARD_CAROUSEL_SLIDE_MS;
+const SWIPE_THRESHOLD = 36;
+
+function BannerImage({
+  uri,
+  width,
+  height,
+}: {
+  uri: string;
+  width: number;
+  height: number;
+}) {
+  return (
+    <Image
+      source={{ uri }}
+      style={{ width, height, backgroundColor: GatiMitraColors.mintSoft }}
+      contentFit="cover"
+      cachePolicy="memory-disk"
+      transition={0}
+      recyclingKey={uri}
+      priority="high"
+    />
+  );
+}
 
 function buildSlides(banner: string | null | undefined, gallery: string[]) {
   const seen = new Set<string>();
@@ -89,20 +131,42 @@ export function StoreBannerCarousel({
   width,
   height,
   borderRadius = 0,
-  initialBannerHoldMs = DEFAULT_HOLD,
-  slideIntervalMs = DEFAULT_INTERVAL,
-  slideDurationMs = DEFAULT_SLIDE,
+  holdMs,
+  slideMs,
+  initialBannerHoldMs,
+  slideIntervalMs,
+  slideDurationMs,
   style,
   dimmed = false,
   showDots = true,
   hidePlaceholderIcon = false,
+  enableSwipe = false,
+  onPress,
+  onPressIn,
+  onPressOut,
+  deferTapToParent = false,
+  onSwipeGesture,
 }: StoreBannerCarouselProps) {
+  const resolvedHoldMs = holdMs ?? slideIntervalMs ?? initialBannerHoldMs ?? DEFAULT_HOLD;
+  const resolvedSlideMs = slideMs ?? slideDurationMs ?? DEFAULT_SLIDE;
+
   const [activeIndex, setActiveIndex] = useState(0);
-  const [canAdvance, setCanAdvance] = useState(false);
+  const [incomingIndex, setIncomingIndex] = useState(0);
+
   const activeIndexRef = useRef(0);
+  const slidesRef = useRef<string[]>([]);
   const isAnimatingRef = useRef(false);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showCarouselRef = useRef(false);
+  const holdMsRef = useRef(resolvedHoldMs);
+  const slideMsRef = useRef(resolvedSlideMs);
+  const didSwipeRef = useRef(false);
+
   const slideProgress = useSharedValue(0);
+  const slideDir = useSharedValue(1);
+
+  holdMsRef.current = resolvedHoldMs;
+  slideMsRef.current = resolvedSlideMs;
 
   const bannerAbs = useMemo(
     () => toAbsoluteImageUrl(bannerUri) ?? (typeof bannerUri === "string" ? bannerUri.trim() : ""),
@@ -121,31 +185,44 @@ export function StoreBannerCarousel({
   const hasGallery = galleryOnly.length > 0;
 
   const slides = useMemo(() => {
-    if (!hasGallery) return bannerAbs ? [bannerAbs] : [];
-    return buildSlides(bannerAbs, galleryOnly);
+    if (!hasGallery) {
+      const single = bannerAbs || galleryOnly[0] || "";
+      return single ? [single] : [];
+    }
+    if (bannerAbs) return buildSlides(bannerAbs, galleryOnly);
+    return galleryOnly;
   }, [bannerAbs, galleryOnly, hasGallery]);
 
+  slidesRef.current = slides;
   const dataKey = slides.join("|");
-  const showCarousel = hasGallery && slides.length > 1;
+  const showCarousel = slides.length > 1;
+  showCarouselRef.current = showCarousel;
+
+  useEffect(() => {
+    for (const uri of slides) {
+      void Image.prefetch(uri);
+    }
+  }, [dataKey, slides]);
 
   useEffect(() => {
     setActiveIndex(0);
+    setIncomingIndex(slides.length > 1 ? 1 : 0);
     activeIndexRef.current = 0;
     slideProgress.value = 0;
+    slideDir.value = 1;
     isAnimatingRef.current = false;
-    setCanAdvance(!hasGallery);
-  }, [dataKey, hasGallery, slideProgress]);
-
-  useEffect(() => {
-    if (!hasGallery) return;
-    const t = setTimeout(() => setCanAdvance(true), initialBannerHoldMs);
-    return () => clearTimeout(t);
-  }, [hasGallery, initialBannerHoldMs, dataKey]);
+  }, [dataKey, slideProgress, slideDir, slides.length]);
 
   activeIndexRef.current = activeIndex;
-  const nextIndex = slides.length > 0 ? (activeIndex + 1) % slides.length : 0;
 
-  const commitNextIndex = useCallback(
+  const clearHoldTimer = useCallback(() => {
+    if (holdTimerRef.current) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+  }, []);
+
+  const commitIndex = useCallback(
     (next: number) => {
       activeIndexRef.current = next;
       setActiveIndex(next);
@@ -155,43 +232,109 @@ export function StoreBannerCarousel({
     [slideProgress]
   );
 
-  const runSlideToNext = useCallback(() => {
-    if (slides.length <= 1 || isAnimatingRef.current) return;
-    isAnimatingRef.current = true;
-    const next = (activeIndexRef.current + 1) % slides.length;
-    slideProgress.value = 0;
-    slideProgress.value = withTiming(
-      1,
-      { duration: slideDurationMs, easing: Easing.inOut(Easing.cubic) },
-      (finished) => {
-        if (finished) {
-          runOnJS(commitNextIndex)(next);
-        } else {
-          runOnJS(() => {
-            isAnimatingRef.current = false;
-          })();
-        }
+  const runSlide = useCallback(
+    (direction: 1 | -1, onComplete?: () => void) => {
+      const len = slidesRef.current.length;
+      if (len <= 1 || isAnimatingRef.current) {
+        onComplete?.();
+        return;
       }
-    );
-  }, [slides.length, slideDurationMs, slideProgress, commitNextIndex]);
+
+      isAnimatingRef.current = true;
+      slideDir.value = direction;
+      const next = (activeIndexRef.current + direction + len) % len;
+      setIncomingIndex(next);
+      slideProgress.value = 0;
+      slideProgress.value = withTiming(
+        1,
+        { duration: slideMsRef.current, easing: Easing.linear },
+        (finished) => {
+          if (finished) {
+            runOnJS(commitIndex)(next);
+            if (onComplete) runOnJS(onComplete)();
+          } else {
+            runOnJS(() => {
+              isAnimatingRef.current = false;
+            })();
+          }
+        }
+      );
+    },
+    [commitIndex, slideDir, slideProgress]
+  );
+
+  const startAutoLoop = useCallback(() => {
+    clearHoldTimer();
+    if (!showCarouselRef.current || slidesRef.current.length <= 1) return;
+    holdTimerRef.current = setTimeout(() => {
+      runSlide(1, startAutoLoop);
+    }, holdMsRef.current);
+  }, [clearHoldTimer, runSlide]);
 
   useEffect(() => {
-    if (!showCarousel || !canAdvance || slides.length <= 1) return;
-    timerRef.current = setInterval(runSlideToNext, slideIntervalMs);
-    return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-  }, [showCarousel, canAdvance, slides.length, runSlideToNext, slideIntervalMs]);
+    if (!showCarousel) {
+      clearHoldTimer();
+      return;
+    }
+    startAutoLoop();
+    return clearHoldTimer;
+  }, [showCarousel, dataKey, clearHoldTimer, startAutoLoop]);
+
+  const resetAutoAfterGesture = useCallback(() => {
+    if (showCarouselRef.current) startAutoLoop();
+  }, [startAutoLoop]);
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => false,
+        onMoveShouldSetPanResponder: (_, g) =>
+          enableSwipe &&
+          showCarouselRef.current &&
+          Math.abs(g.dx) > 8 &&
+          Math.abs(g.dx) > Math.abs(g.dy) * 1.2,
+        onPanResponderGrant: () => {
+          didSwipeRef.current = false;
+          clearHoldTimer();
+        },
+        onPanResponderMove: (_, g) => {
+          if (Math.abs(g.dx) > 10) {
+            if (!didSwipeRef.current) onSwipeGesture?.();
+            didSwipeRef.current = true;
+          }
+        },
+        onPanResponderRelease: (_, g) => {
+          const absDx = Math.abs(g.dx);
+          const absDy = Math.abs(g.dy);
+          if ((didSwipeRef.current || absDx > SWIPE_THRESHOLD) && absDx > absDy) {
+            didSwipeRef.current = true;
+            onSwipeGesture?.();
+            if (g.dx < 0) {
+              runSlide(1, resetAutoAfterGesture);
+            } else {
+              runSlide(-1, resetAutoAfterGesture);
+            }
+            return;
+          }
+          if (!deferTapToParent && absDx < 10 && absDy < 10 && !didSwipeRef.current) {
+            onPress?.();
+            onPressOut?.();
+          }
+          resetAutoAfterGesture();
+        },
+        onPanResponderTerminate: () => {
+          resetAutoAfterGesture();
+        },
+      }),
+    [enableSwipe, clearHoldTimer, deferTapToParent, onPress, onPressOut, onSwipeGesture, runSlide, resetAutoAfterGesture]
+  );
 
   const outgoingStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: -slideProgress.value * width }],
+    transform: [{ translateX: -slideDir.value * slideProgress.value * width }],
   }));
 
   const incomingStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: width - slideProgress.value * width }],
+    transform: [{ translateX: slideDir.value * (width - slideProgress.value * width) }],
   }));
 
   const radiusStyle = {
@@ -199,8 +342,6 @@ export function StoreBannerCarousel({
     borderTopRightRadius: borderRadius,
     overflow: "hidden" as const,
   };
-
-  const imageStyle = [styles.image, { width, height }];
 
   if (slides.length === 0) {
     return (
@@ -216,27 +357,51 @@ export function StoreBannerCarousel({
   }
 
   if (!showCarousel) {
+    const inner = (
+      <>
+        <BannerImage uri={slides[0]} width={width} height={height} />
+        {dimmed ? <View style={[styles.dim, { borderRadius }]} pointerEvents="none" /> : null}
+      </>
+    );
+
     return (
       <View style={[{ width, height }, radiusStyle, style]}>
-        <Image source={{ uri: slides[0] }} style={imageStyle} resizeMode="cover" />
-        {dimmed ? <View style={[styles.dim, { borderRadius }]} pointerEvents="none" /> : null}
+        {onPress && !deferTapToParent ? (
+          <TouchableOpacity
+            style={styles.clip}
+            activeOpacity={0.92}
+            onPress={onPress}
+            onPressIn={onPressIn}
+            onPressOut={onPressOut}
+          >
+            {inner}
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.clip}>{inner}</View>
+        )}
       </View>
     );
   }
 
   const currentUri = slides[activeIndex];
-  const incomingUri = slides[nextIndex];
+  const incomingUri = slides[incomingIndex] ?? slides[0];
 
   return (
     <View style={[{ width, height }, radiusStyle, style]}>
-      <View style={styles.clip}>
+      <View style={styles.clip} {...(enableSwipe ? panResponder.panHandlers : {})}>
         <Animated.View style={[styles.slideLayer, outgoingStyle]}>
-          <Image source={{ uri: currentUri }} style={imageStyle} resizeMode="cover" />
+          <BannerImage uri={currentUri} width={width} height={height} />
         </Animated.View>
         <Animated.View style={[styles.slideLayer, incomingStyle]}>
-          <Image source={{ uri: incomingUri }} style={imageStyle} resizeMode="cover" />
+          <BannerImage uri={incomingUri} width={width} height={height} />
         </Animated.View>
-        <Image source={{ uri: incomingUri }} style={styles.preload} resizeMode="cover" />
+        <Image
+          source={{ uri: incomingUri }}
+          style={styles.preload}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          transition={0}
+        />
       </View>
       {dimmed ? <View style={[styles.dim, { borderRadius }]} pointerEvents="none" /> : null}
       {showDots ? (
@@ -258,10 +423,6 @@ const styles = StyleSheet.create({
   slideLayer: {
     ...StyleSheet.absoluteFillObject,
   },
-  image: {
-    width: "100%",
-    height: "100%",
-  },
   preload: {
     position: "absolute",
     width: 1,
@@ -270,7 +431,7 @@ const styles = StyleSheet.create({
   },
   dim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.28)",
+    backgroundColor: "rgba(0,0,0,0.16)",
   },
   dots: {
     position: "absolute",

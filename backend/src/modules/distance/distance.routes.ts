@@ -92,6 +92,13 @@ const StoreQuoteResponseSchema = z.object({
   pricing_engine: z.enum(["slab_geo", "fallback_per_km", "no_slab_configured", "no_geo_match"]),
   applied_geo_level: z.string().nullable().optional(),
   slab_quote: z.any().optional().nullable(),
+  base_duration_min: z.number().optional(),
+  weather_delay_minutes: z.number().optional(),
+  weather_adjusted_duration_min: z.number().optional(),
+  weather_impact_label: z.string().nullable().optional(),
+  weather_severity: z.string().nullable().optional(),
+  weather_chip_label: z.string().nullable().optional(),
+  weather_show_impact: z.boolean().optional(),
 });
 
 export async function distanceRoutes(app: any) {

@@ -38,6 +38,8 @@ export type MerchantSummary = {
   avgRating?: number | null;
   /** Total review count for "9.9K+" style display. */
   totalReviews?: number | null;
+  /** Store avg prep used for ETA — menu items average when available. */
+  avgPreparationTimeMinutes?: number | null;
   /** Next closing time (ISO string or ms) for "Closes in X" countdown. */
   nextCloseAt?: string | number | null;
   /** Next opening time (ISO string or ms) for "Opens in X" when closed. */
@@ -256,6 +258,36 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
       const n = Number(raw ?? 0);
       return Number.isFinite(n) ? n : 0;
     })(),
+    avgPreparationTimeMinutes: (() => {
+      const raw =
+        item.avgPreparationTimeMinutes ??
+        (item as Record<string, unknown>).avg_preparation_time_minutes;
+      if (raw == null || raw === "") return null;
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    })(),
+    etaMinMinutes: (() => {
+      const raw = item.etaMinMinutes ?? (item as Record<string, unknown>).eta_min_minutes;
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : item.etaMinMinutes;
+    })(),
+    etaMaxMinutes: (() => {
+      const raw = item.etaMaxMinutes ?? (item as Record<string, unknown>).eta_max_minutes;
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : item.etaMaxMinutes;
+    })(),
+    avgRating: (() => {
+      const raw = item.avgRating ?? (item as Record<string, unknown>).avg_rating;
+      if (raw == null || raw === "") return null;
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    })(),
+    totalReviews: (() => {
+      const raw = item.totalReviews ?? (item as Record<string, unknown>).total_reviews;
+      if (raw == null || raw === "") return null;
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    })(),
   };
 }
 
@@ -336,9 +368,56 @@ export async function checkStoreBookmark(storeId: string): Promise<boolean> {
   }
 }
 
+/** All bookmarked store public ids for the logged-in customer. */
+export async function getStoreBookmarks(): Promise<string[]> {
+  try {
+    const { data } = await api.get<{ storeIds: string[] }>("/v1/bookmarks");
+    return Array.isArray(data?.storeIds) ? data.storeIds : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Toggle store bookmark. Requires auth. */
 export async function setStoreBookmark(storeId: string, saved: boolean): Promise<{ saved: boolean }> {
   const { data } = await api.post<{ saved: boolean }>("/v1/bookmarks", { storeId, saved });
+  return data ?? { saved: false };
+}
+
+export type BookmarkedMenuItem = {
+  storeId: string;
+  menuItemId: number;
+  itemId: string;
+  name: string;
+  imageUrl: string | null;
+  price: number;
+  isVeg: boolean;
+  storeName: string;
+};
+
+/** All bookmarked menu items for the logged-in customer. */
+export async function getMenuItemBookmarks(storeId?: string): Promise<BookmarkedMenuItem[]> {
+  try {
+    const { data } = await api.get<{ items: BookmarkedMenuItem[] }>("/v1/bookmarks/menu-items", {
+      params: storeId ? { storeId } : undefined,
+    });
+    return Array.isArray(data?.items) ? data.items : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Toggle menu item bookmark. Requires auth. */
+export async function setMenuItemBookmark(
+  storeId: string,
+  menuItemId: number,
+  saved: boolean
+): Promise<{ saved: boolean }> {
+  const { data } = await api.post<{ saved: boolean }>("/v1/bookmarks/menu-items", {
+    storeId,
+    menuItemId,
+    saved,
+  });
   return data ?? { saved: false };
 }
 

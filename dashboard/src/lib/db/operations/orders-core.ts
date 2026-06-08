@@ -286,8 +286,21 @@ export async function listOrdersCore(
   if (search) {
     const term = `%${search}%`;
     const exact = search.replace(/%/g, "");
+    const exactUpper = exact.toUpperCase();
     switch (searchType) {
       case "Order Id":
+        if (/^GMP\d+$/.test(exactUpper) && orderType === "person_ride") {
+          conditions.push(eq(ordersCore.formattedOrderId, exactUpper));
+          break;
+        }
+        if (/^GMF\d+$/.test(exactUpper) && orderType === "food") {
+          conditions.push(eq(ordersCore.formattedOrderId, exactUpper));
+          break;
+        }
+        if (/^GMC\d+$/.test(exactUpper) && orderType === "parcel") {
+          conditions.push(eq(ordersCore.formattedOrderId, exactUpper));
+          break;
+        }
         conditions.push(
           or(
             ilike(ordersCore.formattedOrderId, term),

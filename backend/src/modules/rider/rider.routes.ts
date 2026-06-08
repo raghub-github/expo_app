@@ -1557,10 +1557,39 @@ export async function riderRoutes(app: FastifyInstance) {
     atCustomer: z.boolean().optional(),
     foodOrderStatus: z.string().nullable().optional(),
     merchantOrderReady: z.boolean().optional(),
+    pickupWaitStartedAt: z.string().nullable().optional(),
+    pickupWaitSeconds: z.number().nullable().optional(),
+    pickupWaitFinalized: z.boolean().optional(),
+    preparedAt: z.string().nullable().optional(),
+    pickupTimerStartedAt: z.string().nullable().optional(),
+    pickupTimerBudgetSeconds: z.number().nullable().optional(),
+    pickupDurationSeconds: z.number().nullable().optional(),
+    prepReadyByAt: z.string().nullable().optional(),
+    acceptedAt: z.string().nullable().optional(),
+    preparingAt: z.string().nullable().optional(),
+    preparationTimeMinutes: z.number().nullable().optional(),
+    prepDelayMinutes: z.number().nullable().optional(),
     customerName: z.string().nullable().optional(),
     customerPhone: z.string().nullable().optional(),
     pickupAddressGeocoded: z.string().optional(),
     dropAddressGeocoded: z.string().optional(),
+    foodItems: z
+      .array(
+        z.object({
+          name: z.string(),
+          quantity: z.number(),
+          variantName: z.string().nullable().optional(),
+          customization: z.string().nullable().optional(),
+        })
+      )
+      .optional(),
+    deliveryInstructions: z.string().nullable().optional(),
+    requiresUtensils: z.boolean().optional(),
+    restaurantPhone: z.string().nullable().optional(),
+    merchantFeedbackSubmitted: z.boolean().optional(),
+    customerFeedbackSubmitted: z.boolean().optional(),
+    paymentMethod: z.string().nullable().optional(),
+    paymentStatus: z.string().nullable().optional(),
   });
 
   app.get(
@@ -1598,6 +1627,32 @@ export async function riderRoutes(app: FastifyInstance) {
       const sql = getSql();
       const settings = await loadPlatformOrderAcceptanceSettingsForCategory(sql, "RIDER");
       return { settings };
+    }
+  );
+
+  app.get(
+    "/food-pickup-verification-settings",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            barcodeEnabled: z.boolean(),
+            otpEnabled: z.boolean(),
+            verificationRequired: z.boolean(),
+          }),
+          403: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const { loadFoodPickupVerificationSettings } = await import(
+        "../../lib/food-pickup-verification-settings.js"
+      );
+      return await loadFoodPickupVerificationSettings();
     }
   );
 
@@ -1791,11 +1846,13 @@ export async function riderRoutes(app: FastifyInstance) {
     }
   );
 
-  const riderGpsBodySchema = z
-    .object({
-      lat: z.number().finite().optional(),
-      lng: z.number().finite().optional(),
-    })
+  const riderGpsFieldsSchema = z.object({
+    lat: z.number().finite().optional(),
+    lng: z.number().finite().optional(),
+  });
+  const riderGpsBodySchema = riderGpsFieldsSchema.optional();
+  const riderGpsWithTimestampBodySchema = riderGpsFieldsSchema
+    .extend({ deviceTimestamp: z.string().optional() })
     .optional();
 
   app.get(
@@ -1846,6 +1903,90 @@ export async function riderRoutes(app: FastifyInstance) {
   );
 
   app.post(
+    "/orders/:id/merchant-pickup-feedback",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: z.object({
+          rating: z.number().int().min(1).max(5).optional(),
+          tags: z.array(z.string().min(1).max(64)).max(12).optional(),
+          skipped: z.boolean().optional(),
+        }),
+        response: {
+          200: RiderOrderSummarySchema,
+          400: z.object({ error: z.string() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      const body = (req.body ?? {}) as {
+        rating?: number;
+        tags?: string[];
+        skipped?: boolean;
+      };
+      try {
+        const { submitRiderMerchantPickupFeedback } = await import("./rider.orders.service.js");
+        return await submitRiderMerchantPickupFeedback(riderId, id, body);
+      } catch (e) {
+        const err = e as Error & { statusCode?: number };
+        const status = err.statusCode ?? 500;
+        return reply.status(status as 409).send({ error: err.message || "Update failed" });
+      }
+    }
+  );
+
+  app.post(
+    "/orders/:id/customer-delivery-feedback",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: z.object({
+          rating: z.number().int().min(1).max(5).optional(),
+          tags: z.array(z.string().min(1).max(64)).max(12).optional(),
+          comment: z.string().max(2000).optional(),
+          skipped: z.boolean().optional(),
+        }),
+        response: {
+          200: RiderOrderSummarySchema,
+          400: z.object({ error: z.string() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      const body = (req.body ?? {}) as {
+        rating?: number;
+        tags?: string[];
+        comment?: string;
+        skipped?: boolean;
+      };
+      try {
+        const { submitRiderCustomerDeliveryFeedback } = await import("./rider.orders.service.js");
+        return await submitRiderCustomerDeliveryFeedback(riderId, id, body);
+      } catch (e) {
+        const err = e as Error & { statusCode?: number };
+        const status = err.statusCode ?? 500;
+        return reply.status(status as 409).send({ error: err.message || "Update failed" });
+      }
+    }
+  );
+
+  app.post(
     "/orders/:id/reached-pickup",
     {
       schema: {
@@ -1885,6 +2026,7 @@ export async function riderRoutes(app: FastifyInstance) {
           otp: z.string().min(4).max(8),
           lat: z.number().finite().optional(),
           lng: z.number().finite().optional(),
+          deviceTimestamp: z.string().optional(),
         }),
         response: {
           200: RiderOrderSummarySchema,
@@ -1900,15 +2042,116 @@ export async function riderRoutes(app: FastifyInstance) {
         return reply.status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
-      const body = req.body as { otp: string; lat?: number; lng?: number };
+      const body = req.body as {
+        otp: string;
+        lat?: number;
+        lng?: number;
+        deviceTimestamp?: string;
+      };
       try {
         const { verifyPickupOtpForRider } = await import("./rider.orders.service.js");
         return await verifyPickupOtpForRider(riderId, id, body.otp, body);
       } catch (e) {
         const err = e as Error & { statusCode?: number };
         const status = err.statusCode ?? 500;
+        if (status >= 500) {
+          req.log.error({ err, orderId: id, riderId }, "verify-pickup-otp failed");
+        }
         if (status === 403) {
           return reply.status(403).send({ error: err.message || "Incorrect OTP" });
+        }
+        return reply.status(status as 409).send({ error: err.message || "Verification failed" });
+      }
+    }
+  );
+
+  app.post(
+    "/orders/:id/mark-food-pickup",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: riderGpsWithTimestampBodySchema,
+        response: {
+          200: RiderOrderSummarySchema,
+          403: z.object({ error: z.string() }),
+          409: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      const body = (req.body ?? {}) as {
+        lat?: number;
+        lng?: number;
+        deviceTimestamp?: string;
+      };
+      try {
+        const { markFoodPickupWithoutVerificationForRider } = await import(
+          "./rider.orders.service.js"
+        );
+        return await markFoodPickupWithoutVerificationForRider(
+          riderId,
+          id,
+          body,
+          body.deviceTimestamp
+        );
+      } catch (e) {
+        const err = e as Error & { statusCode?: number };
+        const status = err.statusCode ?? 500;
+        return reply.status(status as 409).send({ error: err.message || "Update failed" });
+      }
+    }
+  );
+
+  app.post(
+    "/orders/:id/verify-pickup-barcode",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: z.object({
+          barcode: z.string().min(1).max(256),
+          lat: z.number().finite().optional(),
+          lng: z.number().finite().optional(),
+          deviceTimestamp: z.string().optional(),
+        }),
+        response: {
+          200: RiderOrderSummarySchema,
+          400: z.object({ error: z.string() }),
+          403: z.object({ error: z.string() }),
+          409: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      const body = req.body as {
+        barcode: string;
+        lat?: number;
+        lng?: number;
+        deviceTimestamp?: string;
+      };
+      try {
+        const { verifyFoodPickupBarcodeForRider } = await import("./rider.orders.service.js");
+        return await verifyFoodPickupBarcodeForRider(
+          riderId,
+          id,
+          body.barcode,
+          body,
+          body.deviceTimestamp
+        );
+      } catch (e) {
+        const err = e as Error & { statusCode?: number };
+        const status = err.statusCode ?? 500;
+        if (status === 403) {
+          return reply.status(403).send({ error: err.message || "Invalid barcode" });
         }
         return reply.status(status as 409).send({ error: err.message || "Verification failed" });
       }

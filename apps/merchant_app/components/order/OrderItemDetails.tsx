@@ -10,16 +10,12 @@ import { OrderItemDetailsSheet } from "@/components/order/OrderItemDetailsSheet"
 import { ItemVegMark } from "@/components/order/ItemVegMark";
 import type { LineItem } from "@/hooks/useOrders";
 import { GatiMitraMerchant, CARD_PADDING, CARD_RADIUS, FONT_LABEL } from "@/constants/theme";
-import { merchantLineTotalForFoodItem } from "@/lib/merchant-line-total";
+import { merchantLineTotalForFoodItem, formatMerchantRs } from "@/lib/merchant-line-total";
 import {
   foodOrderAddonRows,
   foodOrderHasCustomizations,
   foodOrderVariantLabel,
 } from "@/lib/merchant-order-food-item-display";
-
-function formatRs(amount: number): string {
-  return `₹${Math.round(Number(amount) || 0)}`;
-}
 
 type Props = {
   order: ApiFoodOrder;
@@ -107,13 +103,13 @@ export function OrderItemDetails({ order }: Props) {
                       accessibilityLabel={`View price breakdown for ${item.name}`}
                     >
                       <Text style={styles.itemPriceClickable}>
-                        {formatRs(merchantLineTotalForFoodItem(item))}
+                        {formatMerchantRs(merchantLineTotalForFoodItem(item))}
                       </Text>
                       <Ionicons name="chevron-down" size={14} color="#2563EB" />
                     </Pressable>
                   ) : (
                     <Text style={styles.itemPrice}>
-                      {formatRs(merchantLineTotalForFoodItem(item))}
+                      {formatMerchantRs(merchantLineTotalForFoodItem(item))}
                     </Text>
                   )}
                 </Pressable>
@@ -128,7 +124,7 @@ export function OrderItemDetails({ order }: Props) {
                           {row.label}
                         </Text>
                         {row.amount != null ? (
-                          <Text style={styles.custAmount}>{formatRs(row.amount)}</Text>
+                          <Text style={styles.custAmount}>{formatMerchantRs(row.amount)}</Text>
                         ) : (
                           <Text style={styles.custDash}>—</Text>
                         )}

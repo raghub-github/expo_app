@@ -182,7 +182,6 @@ export const billingService = {
     merchantId: string;
     addressId: string;
     cartSubtotal: number;
-    qualifyingCartTotal?: number;
     serviceType?: "FOOD" | "PARCEL" | "RIDE" | "ALL";
     userSegment?: "NEW" | "EXISTING" | "ALL";
     /** Live location from the location store — preferred over saved address fields. */
@@ -195,9 +194,6 @@ export const billingService = {
         merchantId: params.merchantId,
         addressId: params.addressId,
         cartSubtotal: params.cartSubtotal,
-        ...(params.qualifyingCartTotal != null && params.qualifyingCartTotal > 0
-          ? { qualifyingCartTotal: params.qualifyingCartTotal }
-          : {}),
         ...(params.serviceType != null ? { serviceType: params.serviceType } : {}),
         ...(params.userSegment != null ? { userSegment: params.userSegment } : {}),
         ...(params.pincode ? { pincode: params.pincode } : {}),

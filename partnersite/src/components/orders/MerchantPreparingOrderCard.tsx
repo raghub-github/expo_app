@@ -18,6 +18,7 @@ import {
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
 import { resolveMerchantCtm } from '@/lib/merchant-order-ctm';
+import { formatOrderRs } from '@/lib/merchant-order-item-display';
 import {
   isPrepCountdownExpired,
   prepReadyCountdownLabel,
@@ -370,7 +371,7 @@ export function MerchantPreparingOrderCard({
         >
           <Receipt size={18} className="shrink-0 text-[#444444]" strokeWidth={2} />
           <span className="flex-1 text-sm font-semibold text-[#1A1A1A]">Total bill</span>
-          <span className="text-sm font-bold text-[#1A1A1A]">₹{Math.round(Number(total))}</span>
+          <span className="text-sm font-bold text-[#1A1A1A]">{formatOrderRs(Number(total))}</span>
           {billOpen ? (
             <ChevronUp size={18} className="text-[#666666]" />
           ) : (
@@ -381,24 +382,24 @@ export function MerchantPreparingOrderCard({
           <div className="space-y-1 px-4 pb-3 text-xs text-[#666666]">
             <div className="flex justify-between">
               <span>Subtotal</span>
-              <span>₹{Number(order.pricing.subtotal).toFixed(0)}</span>
+              <span>{formatOrderRs(Number(order.pricing.subtotal))}</span>
             </div>
             {order.pricing.packaging > 0 ? (
               <div className="flex justify-between">
                 <span>Packaging</span>
-                <span>₹{Number(order.pricing.packaging).toFixed(0)}</span>
+                <span>{formatOrderRs(Number(order.pricing.packaging))}</span>
               </div>
             ) : null}
             {order.pricing.taxes > 0 ? (
               <div className="flex justify-between">
                 <span>Taxes</span>
-                <span>₹{Number(order.pricing.taxes).toFixed(0)}</span>
+                <span>{formatOrderRs(Number(order.pricing.taxes))}</span>
               </div>
             ) : null}
             {order.pricing.discount > 0 ? (
               <div className="flex justify-between text-green-700">
                 <span>Discount</span>
-                <span>-₹{Number(order.pricing.discount).toFixed(0)}</span>
+                <span>-{formatOrderRs(Number(order.pricing.discount))}</span>
               </div>
             ) : null}
           </div>
