@@ -329,6 +329,12 @@ export async function GET(
       taxPerQuantity: number;
       chargesPerQuantity: number;
       totalPerQuantity: number;
+      customer?: {
+        amountPerQuantity: number;
+        taxPerQuantity: number;
+        chargesPerQuantity: number;
+        totalPerQuantity: number;
+      };
       lineTotal: number;
       hasImage: boolean;
       imageUrl: string | null;

@@ -354,7 +354,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
             .where(
               and(
                 eq(riderDocuments.riderId, riderIdInt),
-                eq(riderDocuments.docType, "onboarding_vehicle_selection")
+                eq(riderDocuments.docType, "onboarding_vehicle_selection" as never)
               )
             )
             .limit(1);
@@ -367,7 +367,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
           } else {
             await db.insert(riderDocuments).values({
               riderId: riderIdInt,
-              docType: "onboarding_vehicle_selection",
+              docType: "onboarding_vehicle_selection" as never,
               fileUrl: "n/a",
               metadata: selectionMeta,
             });
@@ -457,7 +457,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
           .from(riderDocuments)
           .where(and(
             eq(riderDocuments.riderId, riderIdInt),
-            eq(riderDocuments.docType, docCode)
+            eq(riderDocuments.docType, docCode as never)
           ))
           .limit(1);
 
@@ -485,7 +485,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
           } else {
             await db.insert(riderDocuments).values({
               riderId: riderIdInt,
-              docType: docCode,
+              docType: docCode as never,
               fileUrl: signedUrl,
               metadata: metadata,
             });

@@ -18,6 +18,7 @@ import {
 import type { OrdersFoodRow } from '@/lib/types/food-orders';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
 import { resolveMerchantCtm } from '@/lib/merchant-order-ctm';
+import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import {
   isPrepCountdownExpired,
   prepReadyCountdownLabel,

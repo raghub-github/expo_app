@@ -90,7 +90,7 @@ export async function riderRoutes(app: FastifyInstance) {
 
       const body = RiderLogoutBodySchema.parse(req.body);
       if (body.reasonCode === "OTHER" && !body.reasonText?.trim()) {
-        return reply.status(400).send({ error: "reason_text_required" });
+        return (reply as any).status(400).send({ error: "reason_text_required" });
       }
 
       const db = getDb();
@@ -392,7 +392,7 @@ export async function riderRoutes(app: FastifyInstance) {
                   : null,
               removedBy: body.actor_id ?? null,
               actorType: body.actor_type ?? "system",
-              actorId: body.actor_id ?? null,
+              actorId: body.actor_id ?? undefined,
             });
           } catch (e) {
             return reply.status(400).send({
@@ -518,7 +518,7 @@ export async function riderRoutes(app: FastifyInstance) {
       const userId = req.auth!.sub;
       const riderId = parseRiderIdFromAuth(userId);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
 
       const db = getDb();
@@ -529,7 +529,7 @@ export async function riderRoutes(app: FastifyInstance) {
       );
       const resolved = await resolveRiderOnboardingStatusForApp(riderId);
       if (!resolved) {
-        return reply.status(404).send({ error: "Rider not found" });
+        return (reply as any).status(404).send({ error: "Rider not found" });
       }
 
       const { rider, onboardingStatus, approvalStatus } = resolved;
@@ -617,7 +617,7 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
 
       const { getRiderKycDocumentsForApp } = await import("../../lib/rider-documents-kyc-catalog.js");
@@ -806,13 +806,13 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { upsertRiderVehicleForApp, parseVehicleDbError } = await import(
         "../../lib/rider-vehicle-app.js"
       );
       try {
-        return await upsertRiderVehicleForApp(riderId, req.body);
+        return await upsertRiderVehicleForApp(riderId, req.body as Parameters<typeof upsertRiderVehicleForApp>[1]);
       } catch (e) {
         const message = e instanceof Error ? e.message : parseVehicleDbError(e);
         return reply.status(400).send({ error: message });
@@ -1092,7 +1092,7 @@ export async function riderRoutes(app: FastifyInstance) {
 
       const parsedId = parseInt(riderId, 10);
       if (!Number.isFinite(parsedId) || parsedId <= 0) {
-        return reply.code(400).send({ error: "Invalid rider ID" });
+        return (reply as any).code(400).send({ error: "Invalid rider ID" });
       }
 
       const { resolveRiderOnboardingStatusForApp } = await import(
@@ -1227,7 +1227,7 @@ export async function riderRoutes(app: FastifyInstance) {
         const existing = await db
           .select()
           .from(riderDocuments)
-          .where(and(eq(riderDocuments.riderId, riderId), eq(riderDocuments.docType, docType)))
+          .where(and(eq(riderDocuments.riderId, riderId), eq(riderDocuments.docType, docType as never)))
           .limit(1);
 
         let documentId: number;
@@ -1355,7 +1355,7 @@ export async function riderRoutes(app: FastifyInstance) {
             .insert(riderDocuments)
             .values({
               riderId,
-              docType,
+              docType: docType as never,
               fileUrl: storedFileUrl,
               r2Key: primaryKey || null,
               extractedName: extractedName || null,
@@ -1753,7 +1753,7 @@ export async function riderRoutes(app: FastifyInstance) {
         const err = e as Error & { statusCode?: number };
         const code = err.statusCode ?? 500;
         if (code >= 400 && code < 500) {
-          return reply.status(code).send({ error: err.message || "Reject failed" });
+          return (reply as any).status(code).send({ error: err.message || "Reject failed" });
         }
         throw e;
       }
@@ -2059,7 +2059,7 @@ export async function riderRoutes(app: FastifyInstance) {
         if (status === 400 || status === 409) {
           return reply.status(status).send({ error: safeMessage });
         }
-        return reply.status(500).send({ error: safeMessage });
+        return (reply as any).status(500).send({ error: safeMessage });
       }
     }
   );

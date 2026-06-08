@@ -25,6 +25,7 @@ export type MerchantOrderItemLike = {
   captured_base_amount?: number;
   captured_addon_amount?: number;
   customization_lines?: Array<{ amount?: number; kind?: string; name?: string }>;
+  has_customizations?: boolean;
 };
 
 function num(v: unknown): number {

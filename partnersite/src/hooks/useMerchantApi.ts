@@ -21,6 +21,12 @@ export interface WalletSummary {
   total_withdrawn: number;
   pending_withdrawal_total: number;
   in_process_withdrawal_total: number;
+  /** Sum of refund-window-held earnings; UI shows separately from available. */
+  locked_settlement_total?: number;
+  /** Total of available + pending + locked + hold; falls back when not present. */
+  total_balance?: number;
+  /** True when admin has paused payouts for the merchant. */
+  settlement_paused?: boolean;
 }
 
 export type WalletAnalyticsPeriod = 'week' | 'month' | 'quarter';

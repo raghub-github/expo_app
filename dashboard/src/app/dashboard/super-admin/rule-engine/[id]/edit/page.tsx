@@ -34,6 +34,6 @@ export default async function EditGmRulePage({ params }: PageProps) {
   const initialForm = snapshotToForm(row as Record<string, unknown>);
 
   return (
-    <GmRuleEditForm ruleId={ruleId} catalogs={catalogs} initialForm={initialForm} />
+    <GmRuleEditForm ruleId={ruleId} catalogs={catalogs as unknown as Parameters<typeof GmRuleEditForm>[0]["catalogs"]} initialForm={initialForm} />
   );
 }

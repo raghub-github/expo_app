@@ -425,7 +425,9 @@ export async function merchantRoutes(app: FastifyInstance) {
                 source: z.enum(["co_purchase", "popular_fallback"]),
               })
             ),
+            // zod v4 requires explicit key + value schemas.
             byAnchorItemId: z.record(
+              z.string(),
               z.array(
                 z.object({
                   id: z.string(),

@@ -201,15 +201,16 @@ export function resolveMerchantCtm(order: {
   pricing?: { total?: number | null; packaging?: number; discount?: number } | null;
   total_ctm?: number | string | null;
   food_items_total_value?: number | string | null;
-  items?: NormalizedOrderLineItem[] | null;
+  items?: unknown[] | null;
 }): number {
+  const itemsTyped = (order.items ?? []) as NormalizedOrderLineItem[];
   const fromPricing = Number(order.pricing?.total);
   if (Number.isFinite(fromPricing) && fromPricing > 0) return round2(fromPricing);
 
   const fromFrozen = Number(order.total_ctm);
   if (Number.isFinite(fromFrozen) && fromFrozen > 0) return round2(fromFrozen);
 
-  const items = order.items ?? [];
+  const items = itemsTyped;
   if (items.length > 0) {
     const bill = merchantBillPartsFromItems(items, {
       subtotal: 0,

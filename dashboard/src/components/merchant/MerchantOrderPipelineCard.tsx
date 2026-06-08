@@ -17,6 +17,7 @@ import { FormattedOrderId, formatTimeAgo } from '@/components/merchant/merchant-
 import { MerchantOrderItemsList } from '@/components/orders/MerchantOrderItemsList';
 import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
+import { resolveMerchantCtm } from '@/lib/merchant-order-item-display';
 import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
 import { MerchantPreparingOrderCard } from '@/components/merchant/MerchantPreparingOrderCard';
 import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';

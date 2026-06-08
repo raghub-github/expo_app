@@ -14,7 +14,7 @@ export type PaymentConfigBundle = {
 
 export async function getPaymentConfigBundle(): Promise<PaymentConfigBundle> {
   const sql = getSql();
-  const safe = async (q: () => Promise<unknown[]>) => {
+  const safe = async (q: () => unknown) => {
     try {
       return (await q()) as Record<string, unknown>[];
     } catch {

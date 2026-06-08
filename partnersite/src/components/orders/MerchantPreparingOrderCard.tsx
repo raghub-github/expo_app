@@ -23,6 +23,7 @@ import {
   prepReadyCountdownLabel,
   canUseNeedMoreTime,
 } from '@/lib/order-prep-time';
+import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
 
 function ordinalSuffix(n: number): string {

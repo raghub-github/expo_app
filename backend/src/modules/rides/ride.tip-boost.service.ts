@@ -87,7 +87,7 @@ export async function markRideSearchWindowEnded(
     })
     .where(eq(ordersRide.orderId, row.coreId));
 
-  return { orderId: row.orderId, awaitingTipBoost: true };
+  return { orderId: row.orderId ?? "", awaitingTipBoost: true };
 }
 
 export async function extendRideSearch(
@@ -185,7 +185,7 @@ export async function extendRideSearch(
   void restartOrderDispatch(row.coreId);
 
   return {
-    orderId: row.orderId,
+    orderId: row.orderId ?? "",
     searchExpiresAt: searchExpiresAt.toISOString(),
     searchExtendedUntil: searchExpiresAt.toISOString(),
     dispatchRetryCount: retryCount + 1,

@@ -8,6 +8,11 @@ export interface WalletSummary {
   total_earned: number;
   total_withdrawn: number;
   pending_withdrawal_total: number;
+  locked_settlement_total?: number;
+  locked_balance?: number;
+  total_balance?: number;
+  withdrawable_balance?: number;
+  settlement_paused?: boolean;
 }
 
 export interface LedgerFilters {

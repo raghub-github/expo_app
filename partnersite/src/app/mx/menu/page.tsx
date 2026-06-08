@@ -30,6 +30,7 @@ interface MenuItem {
   in_stock?: boolean;
   out_of_stock_manual?: boolean;
   out_of_stock_until?: string | null;
+  out_of_stock_updated_at?: string | null;
   has_customizations?: boolean;
   has_addons?: boolean;
   has_variants?: boolean;

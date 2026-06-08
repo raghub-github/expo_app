@@ -129,6 +129,8 @@ export interface OrdersFoodRow {
   rto_otp?: string | null;
   /** True when this order has been returned to merchant (RTO). */
   is_rto?: boolean | null;
+  /** GATIMITRA_RIDER | SELF_DELIVERY | SELF_PICKUP — drives merchant-complete UI. */
+  delivery_type?: string | null;
   created_at: string;
   updated_at: string;
   /** True when this pipeline row is backed only by orders_core (e.g. parcel / before kitchen row exists). */

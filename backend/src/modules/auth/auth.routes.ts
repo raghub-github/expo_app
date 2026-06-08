@@ -1361,7 +1361,7 @@ export async function authRoutes(app: FastifyInstance) {
           });
         } catch (sessErr: unknown) {
           req.log?.error?.({ err: sessErr }, "Rider MSG91 login: device session persist failed");
-          return reply.code(503).send({
+          return (reply as any).code(503).send({
             error: "device_session_unavailable",
             message: "Could not start your session on this device. Please try again.",
           });

@@ -87,6 +87,6 @@ export function registerRiderSubscriptionRoutes(app: FastifyInstance) {
     if (!result.ok) {
       return reply.code(result.status).send({ success: false, error: result.error });
     }
-    return reply.send({ success: true, ...result });
+    return reply.send({ ...result, success: true });
   });
 }

@@ -529,7 +529,7 @@ export async function getUserDashboardAccess(systemUserId: number): Promise<Dash
         WHERE system_user_id = ${systemUserId}
           AND is_active = true
       `;
-      return mapRows(rows as Parameters<typeof mapRows>[0]);
+      return mapRows(rows as unknown as Parameters<typeof mapRows>[0]);
     } catch (fallbackError) {
       console.error("Error fetching dashboard access:", error, fallbackError);
       return [];

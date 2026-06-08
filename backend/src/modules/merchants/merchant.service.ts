@@ -950,7 +950,7 @@ async function resolveMenuItemPk(
         WHERE store_id = ${storePk} AND id = ${asNum}
         LIMIT 1
       `);
-      const pkRow = ((byPk.rows ?? byPk) as Array<{ id: number | string }>)[0];
+      const pkRow = ((byPk as unknown) as Array<{ id: number | string }>)[0];
       if (pkRow?.id != null) return Number(pkRow.id);
     }
     const byItemId = await db.execute(sql`
@@ -958,7 +958,7 @@ async function resolveMenuItemPk(
       WHERE store_id = ${storePk} AND item_id = ${ref}
       LIMIT 1
     `);
-    const idRow = ((byItemId.rows ?? byItemId) as Array<{ id: number | string }>)[0];
+    const idRow = ((byItemId as unknown) as Array<{ id: number | string }>)[0];
     return idRow?.id != null ? Number(idRow.id) : null;
   } catch {
     return null;
@@ -1055,7 +1055,7 @@ async function queryCoPurchasePairsFromStats(
       LIMIT ${limit}
     `);
     return mapCoPurchaseRows(
-      (result.rows ?? result) as Array<{
+      (result as unknown) as Array<{
         item1_pk: number | string;
         item2_pk: number | string;
         order_count: number | string;
@@ -1113,7 +1113,7 @@ async function queryCoPurchasePairsFromStats(
     LIMIT ${limit}
   `);
   return mapCoPurchaseRows(
-    (result.rows ?? result) as Array<{
+    (result as unknown) as Array<{
       item1_pk: number | string;
       item2_pk: number | string;
       order_count: number | string;
@@ -1192,7 +1192,7 @@ async function queryPopularPairFallback(
       INNER JOIN merchant_menu_items anchor_item ON anchor_item.id = a.id
     `);
     return mapCoPurchaseRows(
-      (result.rows ?? result) as Array<{
+      (result as unknown) as Array<{
         item1_pk: number | string;
         item2_pk: number | string;
         order_count: number | string;
@@ -1251,7 +1251,7 @@ async function queryPopularPairFallback(
     ORDER BY order_count DESC, item1_pk ASC
   `);
   return mapCoPurchaseRows(
-    (result.rows ?? result) as Array<{
+    (result as unknown) as Array<{
       item1_pk: number | string;
       item2_pk: number | string;
       order_count: number | string;
@@ -1270,7 +1270,7 @@ async function ensureCoPurchaseStats(storePk: number): Promise<void> {
       WHERE merchant_store_id = ${storePk}
       LIMIT 1
     `);
-    const rows = (existing.rows ?? existing) as unknown[];
+    const rows = (existing as unknown) as unknown[];
     if (rows.length > 0) return;
     await db.execute(sql`SELECT refresh_merchant_co_purchase_stats(${storePk})`);
   } catch {
@@ -1393,7 +1393,7 @@ export async function getOrderedTogetherRecommendations(
     `);
 
     const rows = mapCoPurchaseRows(
-      (result.rows ?? result) as Array<{
+      (result as unknown) as Array<{
         item1_pk: number | string;
         item2_pk: number | string;
         order_count: number | string;

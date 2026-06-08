@@ -111,6 +111,9 @@ export type OrdersFoodRow = {
   merchant_store_id?: number | null;
   pickup_otp?: string | null;
   rto_otp?: string | null;
+  delivery_type?: string | null;
+  prep_delay_use_count?: number | null;
+  is_bulk_order?: boolean | null;
 };
 
 export interface FoodOrderStats {

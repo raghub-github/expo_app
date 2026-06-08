@@ -20,8 +20,16 @@ export class ApiClient {
     async request(path, init = {}) {
         const url = `${this.baseUrl}${path.startsWith("/") ? "" : "/"}${path}`;
         const token = await this.getAccessToken?.();
+        const method = (init.method ?? "GET").toUpperCase();
+        let body = init.body;
+        const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
+        const sendsJson = method === "POST" || method === "PUT" || method === "PATCH";
+        // Fastify rejects application/json requests with an empty body (FST_ERR_CTP_EMPTY_JSON_BODY).
+        if (sendsJson && !isFormData && (body == null || body === "")) {
+            body = "{}";
+        }
         const headers = {
-            "content-type": "application/json",
+            ...(sendsJson && !isFormData ? { "content-type": "application/json" } : {}),
             ...(this.appVersion ? { "x-app-version": this.appVersion } : {}),
             ...(init.idempotencyKey ? { "x-idempotency-key": init.idempotencyKey } : {}),
         };
@@ -29,6 +37,8 @@ export class ApiClient {
             headers.authorization = `Bearer ${token}`;
         const res = await fetch(url, {
             ...init,
+            method,
+            body,
             headers: {
                 ...headers,
                 ...init.headers,

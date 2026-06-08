@@ -131,7 +131,7 @@ export async function PATCH(
     const { data: existing, error: fetchErr } = await db
       .from("orders_food")
       .select(
-        "id, order_id, order_status, merchant_store_id, food_items_total_value, preparation_time_minutes, prep_ready_by_at, preparing_at"
+        "id, order_id, order_status, merchant_store_id, food_items_total_value, preparation_time_minutes, prep_ready_by_at, preparing_at, accepted_at"
       )
       .eq("id", foodRowId)
       .single();

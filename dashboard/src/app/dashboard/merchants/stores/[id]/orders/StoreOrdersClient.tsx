@@ -2998,6 +2998,7 @@ function StatBadge({
   label: string;
   value: string;
   accent?: boolean;
+  title?: string;
 }) {
   return (
     <div

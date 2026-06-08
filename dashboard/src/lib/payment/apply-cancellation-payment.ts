@@ -1,4 +1,4 @@
-import { executeOrderCancellationFinancials } from "./financial-rule-executor";
+import { executeOrderCancellationFinancials } from "@/lib/financial-rule-executor";
 import { getSql } from "@/lib/db/client";
 
 export type ApplyCancellationPaymentInput = {
@@ -44,6 +44,6 @@ export {
   executePartialRefundFinancials,
   lookupOrderContext,
   isFinancialRuleEngineAvailable,
-} from "./financial-rule-executor";
+} from "@/lib/financial-rule-executor";
 
 export { refundFieldsFromEngineResult } from "@gatimitra/financial-rules";

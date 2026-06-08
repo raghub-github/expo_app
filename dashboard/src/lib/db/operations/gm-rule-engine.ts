@@ -1,9 +1,9 @@
 import { getSql, sqlJsonbParam } from "../client";
 
 /** Empty strings fail Postgres enum CHECK constraints — store NULL instead. */
-function emptyToNull(v: unknown): unknown {
-  if (v === "" || v === undefined) return null;
-  return v;
+function emptyToNull(v: unknown): string | number | null {
+  if (v === "" || v === undefined || v === null) return null;
+  return v as string | number;
 }
 
 type OrderStageRow = {
@@ -62,7 +62,7 @@ export async function getGmRuleEngineCatalogs() {
   ]);
   return {
     serviceTypes,
-    orderStages: dedupeOrderStages(orderStages as OrderStageRow[]),
+    orderStages: dedupeOrderStages(orderStages as unknown as OrderStageRow[]),
     triggeredBy,
     cancellationReasons,
     scenarioTypes: [
@@ -379,7 +379,7 @@ async function upsertChild(
        ON CONFLICT (rule_id) DO UPDATE SET ${keys
          .map((c) => `${c} = EXCLUDED.${c}`)
          .join(", ")}`,
-      vals
+      vals as never[]
     );
   };
 
@@ -685,8 +685,9 @@ export async function updateGmRule(
   payload: Partial<GmRuleUpsertPayload>,
   actorId?: number | null
 ) {
-  const existing = await getGmRuleById(id, { includeSnapshot: false });
-  if (!existing) throw new Error("Rule not found");
+  const existingRaw = await getGmRuleById(id, { includeSnapshot: false });
+  if (!existingRaw) throw new Error("Rule not found");
+  const existing = existingRaw as Record<string, never>;
 
   const sql = getSql();
   await sql`

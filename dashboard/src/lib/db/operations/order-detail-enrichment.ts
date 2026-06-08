@@ -51,6 +51,12 @@ export type OrderDetailEnrichment = {
   firstEtaAtIso: string | null;
   cancellationInfo: OrderCancellationInfo | null;
   customerFeedback: OrderCustomerFeedback | null;
+  /** OTP for handover at pickup; null when not yet generated or already redeemed. */
+  pickupOtp?: string | null;
+  /** OTP shown to rider/customer at delivery. */
+  deliveryOtp?: string | null;
+  /** OTP for return-to-origin flow. */
+  rtoOtp?: string | null;
 };
 
 function asNum(v: unknown): number | null {

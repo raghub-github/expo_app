@@ -7,8 +7,10 @@ export const runtime = "nodejs";
 
 const SERVICE_TYPES = ["food", "parcel", "person_ride"] as const;
 
-/** Max milestone radius (100 km) — wide enough for testing; still bounded in DB. */
-export const RIDER_STATUS_GEO_FENCE_MAX_RADIUS_METERS = 100_000;
+/** Max milestone radius (100 km) — wide enough for testing; still bounded in DB.
+ * NOT exported — Next.js App Router rejects arbitrary exports from route files
+ * (only the HTTP method handlers + a handful of reserved names are allowed). */
+const RIDER_STATUS_GEO_FENCE_MAX_RADIUS_METERS = 100_000;
 
 const upsertSchema = z.object({
   service_type: z.enum(SERVICE_TYPES),

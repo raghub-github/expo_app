@@ -76,7 +76,7 @@ export async function listPersonRideOrders(
   const conditions: SQL[] = [eq(ordersCore.orderType, "person_ride")];
 
   if (filters.status?.trim() && isValidPersonRideStatus(filters.status.trim())) {
-    conditions.push(eq(ordersCore.status, filters.status.trim()));
+    conditions.push(eq(ordersCore.status, filters.status.trim() as never));
   }
 
   if (filters.dateFrom) {
