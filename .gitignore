@@ -40,4 +40,4 @@
 /env.test.local
 /env.development.example
 /env.production.example
-/env.test.example
+/env.test.example.env.prod
