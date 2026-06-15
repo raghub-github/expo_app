@@ -52,7 +52,7 @@ export function MerchantOrderBillSummary({
               : 'text-2xl font-extrabold tabular-nums text-emerald-600'
           }
         >
-          {formatOrderRs(bill.total, 0)}
+          {formatOrderRs(bill.total)}
         </span>
       </div>
       {!compact ? (
@@ -75,7 +75,7 @@ export function MerchantOrderBillSummary({
       >
         {bill.discount > 0 ? (
           <p className="mb-2 text-xs text-emerald-700">
-            Restaurant discount −{formatOrderRs(bill.discount, 2)} applied in total
+            Restaurant discount −{formatOrderRs(bill.discount)} applied in total
           </p>
         ) : null}
         {onTotalClick ? (

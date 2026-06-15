@@ -18,6 +18,7 @@ import {
 } from "@/services/ordersApi";
 import { prefetchMenuItemsForOrders } from "@/lib/menuItemCache";
 import { prefetchOrderTimeline } from "@/lib/orderTimelineCache";
+import { prefetchMerchantTimelineEnrichment } from "@/lib/merchantTimelineEnrichmentCache";
 import { getStoreSettings } from "@/services/storeSettingsApi";
 import {
   acceptSecondsLeft,
@@ -129,7 +130,13 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         for (const row of mapped) {
           if (row.id.startsWith("core-")) continue;
           const foodId = parseInt(row.id, 10);
-          if (Number.isFinite(foodId)) prefetchOrderTimeline(storeId, foodId, token);
+          if (Number.isFinite(foodId)) {
+            prefetchOrderTimeline(storeId, foodId, token);
+            const stage = apiStatusToStage(row.order_status);
+            if (stage !== "delivered" && stage !== "cancelled" && stage !== "rto") {
+              prefetchMerchantTimelineEnrichment(storeId, foodId, token);
+            }
+          }
         }
 
         if (storeSettings?.auto_accept_orders) {

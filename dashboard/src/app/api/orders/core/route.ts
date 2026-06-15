@@ -20,9 +20,12 @@ import {
   type OrdersCoreRow,
 } from "@/lib/db/operations/orders-core";
 import { getOrderDetailEnrichment } from "@/lib/db/operations/order-detail-enrichment";
+import { getPersonRideOrderDetail } from "@/lib/db/operations/person-ride-order-detail";
 import {
   getRiderAssignmentTimeline,
+  getOrderRiderActivityLogPayload,
   type RiderAssignmentTimelineData,
+  type RiderActivityLogPayload,
 } from "@/lib/db/operations/order-rider-assignments";
 import {
   getOrderRiderTracking,
@@ -79,8 +82,14 @@ async function enrichOrdersListWithStoreMeta(
     };
   });
 }
-import { getOrderRemarksCount } from "@/lib/db/operations/order-remarks";
-import { getOrderReconsCount } from "@/lib/db/operations/order-recons";
+import { listOrderRemarks } from "@/lib/db/operations/order-remarks";
+import { listOrderRiderReconsWithRoles } from "@/lib/db/operations/order-recons";
+import { listOrderCxNotifications } from "@/lib/db/operations/order-cx-notifications";
+import {
+  serializeNotificationForApi,
+  serializeReconForApi,
+  serializeRemarkForApi,
+} from "@/lib/orders/order-sidebar-activity";
 import { getRedisClient } from "@/lib/redis";
 import { getCached, setCached } from "@/lib/server-cache";
 
@@ -107,11 +116,16 @@ type SingleOrderEnrichment = {
   merchantSummary: Awaited<ReturnType<typeof getMerchantStoreSummaryByStoreId>> | null;
   remarksCount?: number;
   reconsCount?: number;
+  notificationsCount?: number;
+  remarks?: ReturnType<typeof serializeRemarkForApi>[];
+  recons?: ReturnType<typeof serializeReconForApi>[];
+  notifications?: ReturnType<typeof serializeNotificationForApi>[];
   statusHistory?: Awaited<ReturnType<typeof getOrderManualStatusHistory>>;
   paymentDetail: Awaited<ReturnType<typeof fetchOrderPaymentDetail>> | null;
   timeline: ReturnType<typeof serializeTimelineEntries>;
   riderTimeline: RiderAssignmentTimelineData | null;
   riderTracking: OrderRiderTrackingPayload | null;
+  riderActivityLog: RiderActivityLogPayload | null;
 };
 
 /** Detail-page enrichments (timeline, payment, merchant summary) for a single-order fetch. */
@@ -131,11 +145,16 @@ async function enrichSingleOrderDetail(
   let merchantSummary: Awaited<ReturnType<typeof getMerchantStoreSummaryByStoreId>> = null;
   let remarksCount: number | undefined;
   let reconsCount: number | undefined;
+  let notificationsCount: number | undefined;
+  let remarksList: ReturnType<typeof serializeRemarkForApi>[] | undefined;
+  let reconsList: ReturnType<typeof serializeReconForApi>[] | undefined;
+  let notificationsList: ReturnType<typeof serializeNotificationForApi>[] | undefined;
   let statusHistory: Awaited<ReturnType<typeof getOrderManualStatusHistory>> | undefined;
   let paymentDetail: Awaited<ReturnType<typeof fetchOrderPaymentDetail>> | null = null;
   let timeline: ReturnType<typeof serializeTimelineEntries> = [];
   let riderTimeline: RiderAssignmentTimelineData | null = null;
   let riderTracking: OrderRiderTrackingPayload | null = null;
+  let riderActivityLog: RiderActivityLogPayload | null = null;
 
   if (orderId != null && Number.isFinite(orderId)) {
     const firstRow = first as {
@@ -168,8 +187,9 @@ async function enrichSingleOrderDetail(
 
     const [
       summary,
-      remarks,
-      recons,
+      remarksRows,
+      reconsRows,
+      notificationsRows,
       history,
       deliveryInstructions,
       detailExtra,
@@ -177,11 +197,13 @@ async function enrichSingleOrderDetail(
       timelineEntries,
       riderTimelineResult,
       riderTrackingResult,
+      riderActivityLogResult,
       foodOrderStatusResult,
     ] = await Promise.all([
       storeIdNum != null ? getMerchantStoreSummaryByStoreId(storeIdNum) : Promise.resolve(null),
-      getOrderRemarksCount(orderId),
-      getOrderReconsCount(orderId),
+      listOrderRemarks(orderId),
+      listOrderRiderReconsWithRoles(orderId),
+      listOrderCxNotifications(orderId),
       getOrderManualStatusHistory(orderId),
       first?.orderType === "food"
         ? getFoodDeliveryInstructions(orderId)
@@ -225,6 +247,10 @@ async function enrichSingleOrderDetail(
         console.error("[GET /api/orders/core] rider tracking fetch failed", err);
         return null;
       }),
+      getOrderRiderActivityLogPayload(orderId).catch((err) => {
+        console.error("[GET /api/orders/core] rider activity log fetch failed", err);
+        return null;
+      }),
       first?.orderType === "food"
         ? getFoodOrderStatus(orderId).catch((err) => {
             console.error("[GET /api/orders/core] food order status failed", err);
@@ -234,13 +260,30 @@ async function enrichSingleOrderDetail(
     ]);
 
     merchantSummary = summary;
-    remarksCount = remarks;
-    reconsCount = recons;
+    remarksList = remarksRows.map(serializeRemarkForApi);
+    reconsList = reconsRows.map((r) =>
+      serializeReconForApi({
+        id: r.id,
+        providerName: r.providerName,
+        riderName: r.riderName,
+        riderMobile: r.riderMobile,
+        reconReason: r.reconReason,
+        reconReasonCategory: r.reconReasonCategory,
+        reconAt: r.reconAt,
+        actorEmail: r.actorEmail,
+        actorRole: r.actorRole,
+      })
+    );
+    notificationsList = notificationsRows.map(serializeNotificationForApi);
+    remarksCount = remarksList.length;
+    reconsCount = reconsList.length;
+    notificationsCount = notificationsList.length;
     statusHistory = history;
     paymentDetail = paymentDetailResult;
     timeline = serializeTimelineEntries(timelineEntries);
     riderTimeline = riderTimelineResult;
     riderTracking = riderTrackingResult;
+    riderActivityLog = riderActivityLogResult;
 
     let enrichedData = data;
     if (deliveryInstructions !== undefined) {
@@ -293,6 +336,14 @@ async function enrichSingleOrderDetail(
           rtoOtp: detailExtra.rtoOtp,
           deliveryOtp: detailExtra.deliveryOtp,
           customerFeedback: detailExtra.customerFeedback,
+          storePrepDelaySeconds: detailExtra.storePrepDelaySeconds,
+          storePrepDelayLive: detailExtra.storePrepDelayLive,
+          storePrepDelayAnchorAt: detailExtra.storePrepDelayAnchorAt,
+          storePrepDelayWasLate: detailExtra.storePrepDelayWasLate,
+          riderRestaurantWaitSeconds: detailExtra.riderRestaurantWaitSeconds,
+          riderRestaurantWaitLive: detailExtra.riderRestaurantWaitLive,
+          riderRestaurantWaitAnchorAt: detailExtra.riderRestaurantWaitAnchorAt,
+          deliveryProofImageUrl: detailExtra.deliveryProofImageUrl,
         },
       ] as unknown as typeof enrichedData;
     }
@@ -304,6 +355,18 @@ async function enrichSingleOrderDetail(
         },
       ] as unknown as typeof enrichedData;
     }
+    if (first?.orderType === "person_ride" && orderId != null) {
+      const rideDetail = await getPersonRideOrderDetail(orderId);
+      if (rideDetail) {
+        enrichedData = [
+          {
+            ...(enrichedData[0] as Record<string, unknown>),
+            rideDetail,
+            pickupOtp: rideDetail.pickupOtp ?? (enrichedData[0] as { pickupOtp?: string | null }).pickupOtp,
+          },
+        ] as unknown as typeof enrichedData;
+      }
+    }
     data = enrichedData;
   } else if (storeId != null && Number.isFinite(storeId)) {
     merchantSummary = await getMerchantStoreSummaryByStoreId(storeId);
@@ -314,11 +377,16 @@ async function enrichSingleOrderDetail(
     merchantSummary,
     remarksCount,
     reconsCount,
+    notificationsCount,
+    remarks: remarksList,
+    recons: reconsList,
+    notifications: notificationsList,
     statusHistory,
     paymentDetail,
     timeline,
     riderTimeline,
     riderTracking,
+    riderActivityLog,
   };
 }
 
@@ -330,11 +398,18 @@ function buildSingleOrderResponseExtras(
     ...(enrichment.merchantSummary != null && { merchantSummary: enrichment.merchantSummary }),
     ...(enrichment.remarksCount !== undefined && { remarksCount: enrichment.remarksCount }),
     ...(enrichment.reconsCount !== undefined && { reconsCount: enrichment.reconsCount }),
+    ...(enrichment.notificationsCount !== undefined && {
+      notificationsCount: enrichment.notificationsCount,
+    }),
+    ...(enrichment.remarks !== undefined && { remarks: enrichment.remarks }),
+    ...(enrichment.recons !== undefined && { recons: enrichment.recons }),
+    ...(enrichment.notifications !== undefined && { notifications: enrichment.notifications }),
     ...(enrichment.statusHistory !== undefined && { statusHistory: enrichment.statusHistory }),
     ...(enrichment.paymentDetail != null && { paymentDetail: enrichment.paymentDetail }),
     timeline: enrichment.timeline,
     riderTimeline: enrichment.riderTimeline,
     riderTracking: enrichment.riderTracking,
+    riderActivityLog: enrichment.riderActivityLog,
   };
 }
 

@@ -83,16 +83,40 @@ export function isPrepCountdownExpired(
   return prepReadyCountdownLabel(order, nowMs, opts).secondsLeft <= 0;
 }
 
-/** Whole minutes past prep deadline (KPT + need-more-time); updates with nowMs each tick. */
-export function prepOverdueMinutes(order: PrepCountdownOrder, nowMs: number): number {
+/** Seconds past prep deadline (KPT + need-more-time); updates with nowMs each tick. */
+export function prepOverdueSeconds(order: PrepCountdownOrder, nowMs: number): number {
   const deadline = prepReadyDeadlineMs(order);
   if (!Number.isFinite(deadline) || nowMs <= deadline) return 0;
-  return Math.max(1, Math.floor((nowMs - deadline) / 60_000));
+  return Math.floor((nowMs - deadline) / 1000);
 }
 
-export function formatPrepDelayedBannerLabel(overdueMinutes: number): string {
-  const mins = Math.max(1, overdueMinutes);
-  return `${mins} min delayed`;
+/** Whole minutes past prep deadline — legacy helpers / analytics. */
+export function prepOverdueMinutes(order: PrepCountdownOrder, nowMs: number): number {
+  const secs = prepOverdueSeconds(order, nowMs);
+  if (secs <= 0) return 0;
+  return Math.max(1, Math.floor(secs / 60));
+}
+
+export function formatDurationHhMmSs(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${sec
+    .toString()
+    .padStart(2, "0")}`;
+}
+
+/** Live / frozen delay banner — `Delayed - 02:42:00`. */
+export function formatPrepDelayedBannerLabel(overdueSeconds: number): string {
+  const secs = Math.max(1, Math.floor(overdueSeconds));
+  return `Delayed - ${formatDurationHhMmSs(secs)}`;
+}
+
+/** Convert stored late minutes (e.g. prepared_late_minutes) to banner label. */
+export function formatPrepDelayedBannerLabelFromMinutes(lateMinutes: number): string {
+  const mins = Math.max(1, Math.floor(lateMinutes));
+  return formatPrepDelayedBannerLabel(mins * 60);
 }
 
 /** Minutes food was marked ready after prep_ready_by_at (0 if on time). */
@@ -110,7 +134,7 @@ export function computePreparedLateMinutes(
 export function formatPreparedLateLabel(lateMinutes: number | null | undefined): string | null {
   const mins = Number(lateMinutes);
   if (!Number.isFinite(mins) || mins <= 0) return null;
-  return `Ready after ${mins} min delay`;
+  return `Ready after ${formatDurationHhMmSs(Math.max(1, Math.floor(mins)) * 60)} delay`;
 }
 
 export type PreparedLateOrder = {

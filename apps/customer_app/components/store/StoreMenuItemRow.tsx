@@ -73,6 +73,18 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
     onAdd(item);
   }, [item, onAdd, addScale, isStoreClosed]);
 
+  const handleBookmarkPress = useCallback(() => {
+    if (!onBookmark) return;
+    if (Platform.OS === "android") Vibration.vibrate(10);
+    onBookmark(item);
+  }, [item, onBookmark]);
+
+  const handleSharePress = useCallback(() => {
+    if (!onShare) return;
+    if (Platform.OS === "android") Vibration.vibrate(10);
+    onShare(item);
+  }, [item, onShare]);
+
   const addStyle = useAnimatedStyle(() => ({ transform: [{ scale: addScale.value }] }));
 
   const sellingPrice = getSellingPrice(item);
@@ -130,27 +142,35 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
             <Text style={styles.couponNote}>NOT ELIGIBLE FOR COUPONS</Text>
           ) : null}
 
-          <View style={styles.actionIcons}>
-            <TouchableOpacity
-              style={styles.circleBtn}
-              hitSlop={6}
-              onPress={() => onBookmark?.(item)}
-              activeOpacity={0.75}
+          <View style={styles.actionIcons} collapsable={false}>
+            <Pressable
+              style={({ pressed }) => [styles.circleBtn, pressed && styles.circleBtnPressed]}
+              hitSlop={12}
+              onPress={handleBookmarkPress}
+              disabled={!onBookmark}
+              accessibilityRole="button"
+              accessibilityLabel={isBookmarked ? "Remove bookmark" : "Bookmark dish"}
             >
               <Ionicons
                 name={isBookmarked ? "bookmark" : "bookmark-outline"}
                 size={16}
                 color={isBookmarked ? StoreTheme.accentMint : StoreTheme.textSecondary}
               />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.circleBtn}
-              hitSlop={6}
-              onPress={() => onShare?.(item)}
-              activeOpacity={0.75}
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.circleBtn, pressed && styles.circleBtnPressed]}
+              hitSlop={12}
+              onPress={handleSharePress}
+              disabled={!onShare}
+              accessibilityRole="button"
+              accessibilityLabel="Share dish"
             >
-              <Ionicons name="share-social-outline" size={16} color={StoreTheme.textSecondary} />
-            </TouchableOpacity>
+              <Ionicons
+                name="share-social-outline"
+                size={16}
+                color={StoreTheme.accentMint}
+              />
+            </Pressable>
           </View>
         </View>
 
@@ -323,15 +343,23 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
     marginTop: 10,
+    zIndex: 4,
+    elevation: 4,
+    alignSelf: "flex-start",
   },
   circleBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: StoreTheme.border,
+    backgroundColor: "#fff",
     alignItems: "center",
     justifyContent: "center",
+  },
+  circleBtnPressed: {
+    borderColor: StoreTheme.accentMint,
+    backgroundColor: StoreTheme.accentMintSoft,
   },
   rightCol: {
     width: IMAGE_SIZE,

@@ -399,7 +399,7 @@ export async function authRoutes(app: FastifyInstance) {
       // In production, derive from DB and map Firebase uid -> userId.
       const userId = `usr_${ulid()}`;
 
-      const expiresInSec = 60 * 60 * 6; // 6 hours (rotate/refresh later)
+      const expiresInSec = 60 * 60 * 24 * 7; // 7 days — aligned with merchant/rider app session TTL
       const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
 
       const accessToken = await issueSupabaseCompatibleJwt({
@@ -468,7 +468,6 @@ export async function authRoutes(app: FastifyInstance) {
       return {
         requestId,
         expiresInSec,
-        otp: env.NODE_ENV === "production" ? undefined : otp,
       };
     },
   );
@@ -506,7 +505,7 @@ export async function authRoutes(app: FastifyInstance) {
         return reply.code(429).send({ error: "too_many_attempts" });
       }
 
-      if (entry.otp !== otp && !(env.NODE_ENV !== "production" && otp === "123456")) {
+      if (entry.otp !== otp) {
         return reply.code(400).send({ error: "invalid_otp" });
       }
       otpStore.delete(requestId);
@@ -853,7 +852,7 @@ export async function authRoutes(app: FastifyInstance) {
         });
       }
 
-      const expiresInSec = 60 * 60 * 6; // 6 hours (rotate/refresh later)
+      const expiresInSec = 60 * 60 * 24 * 7; // 7 days — aligned with merchant app session TTL
       const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
 
       const accessToken = await issueSupabaseCompatibleJwt({
@@ -867,6 +866,117 @@ export async function authRoutes(app: FastifyInstance) {
 
       return {
         accessToken,
+        expiresAt,
+        role: "rider",
+        userId,
+        riderId: riderId.toString(),
+      };
+    },
+  );
+
+  /**
+   * Exchange a Supabase access token (from Supabase Auth phone OTP) for a backend rider session.
+   * Same production pattern as customer/merchant: Supabase OTP → Send SMS hook → MSG91 → exchange.
+   */
+  app.post(
+    "/supabase/exchange-rider",
+    {
+      schema: {
+        body: z.object({
+          accessToken: z.string().min(10),
+          phoneE164: z.string().min(10),
+          deviceId: z.string().min(1),
+        }),
+        response: {
+          200: SessionSchema,
+          400: z.object({ error: z.string() }),
+          401: z.object({ error: z.string() }),
+          503: z.object({ error: z.string(), message: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const { accessToken, phoneE164, deviceId } = req.body as {
+        accessToken: string;
+        phoneE164: string;
+        deviceId: string;
+      };
+
+      const { getSupabase } = await import("../../lib/supabase.js");
+      const supabase = getSupabase();
+      const { data: userData, error: userError } = await supabase.auth.getUser(accessToken);
+      if (userError || !userData?.user) {
+        return reply.code(401).send({ error: "Invalid or expired Supabase token" });
+      }
+
+      const sbPhone = userData.user.phone ?? "";
+      const normalizePhone = (p: string) => p.replace(/[\s+\-]/g, "");
+      if (normalizePhone(sbPhone) !== normalizePhone(phoneE164)) {
+        return reply.code(400).send({ error: "Phone mismatch between Supabase user and request" });
+      }
+
+      const db = getDb();
+      const sql = getSql();
+
+      let userId: string;
+      let riderId: number;
+
+      const existingRider = await db.select().from(riders).where(eq(riders.mobile, phoneE164)).limit(1);
+      if (existingRider.length > 0) {
+        riderId = existingRider[0]!.id;
+        userId = `usr_${riderId}`;
+      } else {
+        const newRider = await db
+          .insert(riders)
+          .values({
+            mobile: phoneE164,
+            countryCode: "+91",
+            defaultLanguage: "en",
+            onboardingStage: "MOBILE_VERIFIED",
+            kycStatus: "PENDING",
+            status: "INACTIVE",
+          })
+          .returning({ id: riders.id });
+        riderId = newRider[0]!.id;
+        userId = `usr_${riderId}`;
+      }
+
+      const ip =
+        (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? (req.ip ?? null);
+      const city = (req.headers["x-vercel-ip-city"] as string) ?? null;
+      const country = (req.headers["x-vercel-ip-country"] as string) ?? null;
+      const location = city && country ? `${city}, ${country}` : city ?? country ?? null;
+
+      try {
+        await persistRiderDeviceSession(sql, {
+          userId,
+          deviceId,
+          loginMethod: "phone",
+          ip,
+          location,
+        });
+      } catch (sessErr: unknown) {
+        req.log?.error?.({ err: sessErr }, "Rider Supabase exchange: device session persist failed");
+        return reply.code(503).send({
+          error: "device_session_unavailable",
+          message: "Could not start your session on this device. Please try again.",
+        });
+      }
+
+      const expiresInSec = 60 * 60 * 24 * 7;
+      const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
+      const jwtToken = await issueSupabaseCompatibleJwt({
+        jwtSecret: env.SUPABASE_JWT_SECRET,
+        sub: userId,
+        role: "rider",
+        phoneE164,
+        deviceId,
+        exp: expiresAt,
+      });
+
+      req.log?.info?.({ userId, phoneE164 }, "Rider signed in via Supabase OTP exchange");
+      return {
+        accessToken: jwtToken,
         expiresAt,
         role: "rider",
         userId,
@@ -1367,7 +1477,7 @@ export async function authRoutes(app: FastifyInstance) {
           });
         }
 
-        const expiresInSec = 60 * 60 * 6; // 6 hours
+        const expiresInSec = 60 * 60 * 24 * 7; // 7 days
         const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
 
         const accessToken = await issueSupabaseCompatibleJwt({

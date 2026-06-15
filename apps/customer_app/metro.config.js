@@ -37,6 +37,25 @@ const WEB_MOCKS = {
   "@react-native-async-storage/async-storage": "mocks/async-storage.web.js",
 };
 
+function resolveAliasModule(moduleName) {
+  if (!moduleName.startsWith("@/")) return null;
+  const rel = moduleName.slice(2);
+  const base = path.resolve(projectRoot, rel);
+  const candidates = [
+    base,
+    `${base}.tsx`,
+    `${base}.ts`,
+    path.join(base, "index.tsx"),
+    path.join(base, "index.ts"),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+      return { filePath: candidate, type: "sourceFile" };
+    }
+  }
+  return null;
+}
+
 const originalResolveRequest = config.resolver.resolveRequest;
 config.resolver.resolveRequest = (context, moduleName, platform) => {
   if (platform === "web" && WEB_MOCKS[moduleName]) {
@@ -45,6 +64,8 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
       type: "sourceFile",
     };
   }
+  const aliasHit = resolveAliasModule(moduleName);
+  if (aliasHit) return aliasHit;
   if (originalResolveRequest) {
     return originalResolveRequest(context, moduleName, platform);
   }

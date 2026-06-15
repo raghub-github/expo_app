@@ -11,12 +11,7 @@ import {
   foodOrderVariantLabel,
 } from "@/lib/merchant-order-food-item-display";
 import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
-
-function formatRs(amount: number, decimals = 2): string {
-  const n = Number.isFinite(amount) ? amount : 0;
-  if (decimals === 0) return `₹${Math.round(n)}`;
-  return `₹${n.toFixed(decimals)}`;
-}
+import { formatMerchantRs } from "@/lib/merchant-line-total";
 
 function itemHasBreakdown(item: ApiFoodOrderItem): boolean {
   return Boolean(
@@ -69,7 +64,7 @@ export function OrderItemPriceBreakdownModal({ visible, item, onClose }: Props) 
 
         <View style={styles.row}>
           <Text style={styles.rowLabel}>Base item price</Text>
-          <Text style={styles.rowAmount}>{formatRs(baseAmount, 2)}</Text>
+          <Text style={styles.rowAmount}>{formatMerchantRs(baseAmount)}</Text>
         </View>
 
         {addonRows.length > 0 ? (
@@ -79,7 +74,7 @@ export function OrderItemPriceBreakdownModal({ visible, item, onClose }: Props) 
               <View key={i} style={styles.row}>
                 <Text style={styles.rowLabel}>{row.label}</Text>
                 <Text style={styles.rowAmount}>
-                  {row.amount != null && row.amount > 0 ? formatRs(row.amount, 2) : "—"}
+                  {row.amount != null && row.amount > 0 ? formatMerchantRs(row.amount) : "—"}
                 </Text>
               </View>
             ))}
@@ -89,7 +84,7 @@ export function OrderItemPriceBreakdownModal({ visible, item, onClose }: Props) 
         {custTotal > 0 ? (
           <View style={[styles.row, styles.custTotalRow]}>
             <Text style={styles.custTotalLabel}>Customizations total</Text>
-            <Text style={styles.custTotalAmount}>{formatRs(custTotal, 2)}</Text>
+            <Text style={styles.custTotalAmount}>{formatMerchantRs(custTotal)}</Text>
           </View>
         ) : null}
 
@@ -98,7 +93,7 @@ export function OrderItemPriceBreakdownModal({ visible, item, onClose }: Props) 
           <Text style={styles.grandLabel}>
             Line total ({qty} item{qty > 1 ? "s" : ""})
           </Text>
-          <Text style={styles.grandAmount}>{formatRs(lineTotal, 2)}</Text>
+          <Text style={styles.grandAmount}>{formatMerchantRs(lineTotal)}</Text>
         </View>
 
         <Text style={styles.note}>

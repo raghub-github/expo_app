@@ -11,6 +11,7 @@ import { useDutyStore } from "../stores/dutyStore";
 import { useOnboardingStore } from "../stores/onboardingStore";
 import { useLanguageStore } from "../stores/languageStore";
 import { colors } from "../theme";
+import { SessionRevokedGate } from "@/src/components/SessionRevokedGate";
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
   const i18n = useMemo(() => initI18n(), []);
@@ -61,7 +62,10 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
     <SafeAreaProvider>
       <RiderSystemChrome />
       <I18nextProvider i18n={i18n}>
-        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        <QueryClientProvider client={queryClient}>
+          <SessionRevokedGate />
+          {children}
+        </QueryClientProvider>
       </I18nextProvider>
     </SafeAreaProvider>
   );

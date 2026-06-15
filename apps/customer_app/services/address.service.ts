@@ -18,6 +18,8 @@ export type Address = {
   longitude: number;
   contactName?: string | null;
   contactMobile?: string | null;
+  deliveryDoorImageUrl?: string | null;
+  deliveryInstructionsList?: string[];
   isDefault: boolean;
   isLastUsed: boolean;
 };
@@ -72,9 +74,30 @@ export const addressService = {
       isDefault: boolean;
       contactName: string | null;
       contactMobile: string | null;
+      deliveryInstructionsList?: string[];
     }>
   ): Promise<void> {
     await api.patch(`/v1/me/addresses/${id}`, body);
+  },
+
+  async uploadDoorImage(
+    addressId: number,
+    file: { uri: string; name: string; mimeType: string }
+  ): Promise<string> {
+    const form = new FormData();
+    form.append(
+      "file",
+      { uri: file.uri, name: file.name, type: file.mimeType } as unknown as Blob
+    );
+    const { data } = await api.post<{ ok: boolean; deliveryDoorImageUrl: string }>(
+      `/v1/me/addresses/${addressId}/door-image`,
+      form,
+      {
+        headers: { "Content-Type": "multipart/form-data" },
+        transformRequest: (d) => d,
+      }
+    );
+    return data.deliveryDoorImageUrl;
   },
 
   async deleteAddress(id: number): Promise<void> {

@@ -73,7 +73,7 @@ export async function recordOrderDeliveryProofImageTx(
       VALUES (
         ${input.orderCorePk},
         ${assignmentId},
-        'delivery_proof',
+        'delivery',
         ${imageUrl},
         ${r2Key},
         'rider',
@@ -96,7 +96,7 @@ export async function recordOrderDeliveryProofImageTx(
         )
         VALUES (
           ${input.orderCorePk},
-          'delivery_proof',
+          'delivery',
           ${imageUrl},
           ${ts}::timestamptz,
           ${ts}::timestamptz

@@ -60,6 +60,10 @@ import {
   resolveMerchantsPortal,
   writeStoredMerchantsPortal,
 } from "@/lib/merchants/portal-preference";
+import {
+  PERSON_RIDE_SEARCH_TYPES,
+  normalizePersonRideSearchType,
+} from "@/lib/orders/person-ride-search";
 
 const HEADER_IDENTITY_CACHE_KEY = "dashboard_header_identity_v1";
 const ORDER_HUB_MINT = "#4EE5C1";
@@ -184,8 +188,14 @@ function OrderSearchBar() {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
+  const cleanPath = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
+  const isPersonRideOrders = cleanPath.startsWith("/dashboard/orders/person-ride");
+
+  const defaultSearchType = isPersonRideOrders ? "Order Id" : "Order Id";
   const urlSearch = searchParams.get("search") ?? "";
-  const urlSearchType = searchParams.get("searchType") ?? "Order Id";
+  const urlSearchType = isPersonRideOrders
+    ? normalizePersonRideSearchType(searchParams.get("searchType"))
+    : searchParams.get("searchType") ?? defaultSearchType;
 
   const [searchType, setSearchType] = useState(urlSearchType);
   const [searchValue, setSearchValue] = useState(urlSearch);
@@ -195,10 +205,14 @@ function OrderSearchBar() {
 
   useEffect(() => {
     setSearchValue(searchParams.get("search") ?? "");
-    setSearchType(searchParams.get("searchType") ?? "Order Id");
-  }, [searchParams.get("search"), searchParams.get("searchType")]);
+    if (isPersonRideOrders) {
+      setSearchType(normalizePersonRideSearchType(searchParams.get("searchType")));
+    } else {
+      setSearchType(searchParams.get("searchType") ?? "Order Id");
+    }
+  }, [searchParams, isPersonRideOrders]);
 
-  const searchItems = [
+  const foodSearchItems = [
     "Order Id",
     "Merchant Id",
     "Customer Mobile",
@@ -211,6 +225,8 @@ function OrderSearchBar() {
     "Tracking Order Id",
     "Client Name",
   ];
+
+  const searchItems = isPersonRideOrders ? [...PERSON_RIDE_SEARCH_TYPES] : foodSearchItems;
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -284,7 +300,7 @@ function OrderSearchBar() {
         type="text"
         value={searchValue}
         onChange={(e) => setSearchValue(e.target.value)}
-        placeholder="Search here..."
+        placeholder={isPersonRideOrders ? "GMP10006, passenger, rider…" : "Search here..."}
         className="min-w-0 flex-1 border-r border-gray-300 bg-white px-3 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none"
         onKeyDown={(e) => {
           if (e.key === "Enter") handleSearch();

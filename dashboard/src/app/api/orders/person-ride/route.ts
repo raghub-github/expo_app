@@ -39,6 +39,7 @@ export async function GET(request: NextRequest) {
     const dateFrom = searchParams.get("dateFrom")?.trim() || undefined;
     const dateTo = searchParams.get("dateTo")?.trim() || undefined;
     const search = searchParams.get("search")?.trim() || undefined;
+    const searchType = searchParams.get("searchType")?.trim() || undefined;
 
     const result = await listPersonRideOrders({
       page,
@@ -47,6 +48,7 @@ export async function GET(request: NextRequest) {
       dateFrom,
       dateTo,
       search,
+      searchType,
     });
 
     return NextResponse.json({

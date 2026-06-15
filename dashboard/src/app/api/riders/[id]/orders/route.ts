@@ -1,43 +1,84 @@
 /**
  * GET /api/riders/[id]/orders – rider orders with filters (orderType, status, date range)
- * Optional ?source=core to query orders_core (hybrid schema) with compat shape.
+ * Primary source: orders_core + order_rider_assignments (legacy `orders` table optional fallback).
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
-import { riders, orders, ordersCore } from "@/lib/db/schema";
+import { riders, orders } from "@/lib/db/schema";
 import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
+import { listRiderOrdersPaginated } from "@/lib/riders/rider-orders-query";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 
 export const runtime = "nodejs";
 
-/** Map orders_core row to legacy-order shape for UI compatibility */
-function ordersCoreToLegacyShape(row: typeof ordersCore.$inferSelect) {
+type RiderOrderUiRow = {
+  id: number;
+  orderType: string;
+  status: string;
+  fareAmount: string | null;
+  riderEarning: string | null;
+  createdAt: string;
+  externalRef: string | null;
+};
+
+function mapLegacyOrderRow(row: typeof orders.$inferSelect): RiderOrderUiRow {
   return {
     id: row.id,
     orderType: row.orderType,
-    riderId: row.riderId,
-    customerId: row.customerId,
-    merchantId: row.merchantStoreId,
-    pickup_address: row.pickupAddressRaw,
-    drop_address: row.dropAddressRaw,
-    pickup_lat: row.pickupLat,
-    pickup_lon: row.pickupLon,
-    drop_lat: row.dropLat,
-    drop_lon: row.dropLon,
-    distance_km: row.distanceKm,
-    eta_seconds: row.etaSeconds,
-    fare_amount: row.fareAmount,
-    commission_amount: row.commissionAmount,
-    rider_earning: row.riderEarning,
     status: row.status,
-    created_at: row.createdAt,
-    updated_at: row.updatedAt,
-    external_ref: row.externalRef,
-    order_uuid: row.orderUuid,
-    order_source: row.orderSource,
+    fareAmount: row.fareAmount != null ? String(row.fareAmount) : null,
+    riderEarning: row.riderEarning != null ? String(row.riderEarning) : null,
+    createdAt:
+      row.createdAt instanceof Date
+        ? row.createdAt.toISOString()
+        : String(row.createdAt ?? new Date().toISOString()),
+    externalRef: row.externalRef != null ? String(row.externalRef) : String(row.id),
   };
+}
+
+function mapCoreOrderRow(row: {
+  id: number;
+  orderType: string;
+  status: string;
+  fareAmount: string | number | null;
+  riderEarning: string | number | null;
+  createdAt: Date | string;
+  formattedOrderId?: string | null;
+  orderId?: string | null;
+  externalRef?: string | null;
+}): RiderOrderUiRow {
+  const externalRef =
+    (row.formattedOrderId?.trim() || null) ||
+    (row.orderId?.trim() || null) ||
+    (row.externalRef?.trim() || null) ||
+    String(row.id);
+
+  return {
+    id: row.id,
+    orderType: row.orderType,
+    status: row.status,
+    fareAmount: row.fareAmount != null ? String(row.fareAmount) : null,
+    riderEarning: row.riderEarning != null ? String(row.riderEarning) : null,
+    createdAt:
+      row.createdAt instanceof Date
+        ? row.createdAt.toISOString()
+        : String(row.createdAt ?? new Date().toISOString()),
+    externalRef,
+  };
+}
+
+function parseFromBound(from: string): string {
+  return `${from}T00:00:00.000Z`;
+}
+
+function parseToBound(to: string): string {
+  return `${to}T23:59:59.999Z`;
+}
+
+function shouldUseLegacyOrders(sourceParam: string | null): boolean {
+  return sourceParam === "legacy";
 }
 
 export async function GET(
@@ -46,7 +87,10 @@ export async function GET(
 ) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
     if (userError || !user) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
@@ -58,8 +102,8 @@ export async function GET(
     }
 
     const { id } = await params;
-    const riderId = parseInt(id);
-    if (isNaN(riderId)) {
+    const riderId = parseInt(id, 10);
+    if (Number.isNaN(riderId)) {
       return NextResponse.json({ success: false, error: "Invalid rider ID" }, { status: 400 });
     }
 
@@ -76,54 +120,56 @@ export async function GET(
     const to = searchParams.get("to");
     const orderType = searchParams.get("orderType");
     const status = searchParams.get("status");
-    const sourceCore = searchParams.get("source") === "core";
+    const sourceParam = searchParams.get("source");
     const orderIdParam = (searchParams.get("orderId") || searchParams.get("q") || "").trim();
 
-    if (sourceCore) {
-      const conditions: any[] = [eq(ordersCore.riderId, riderId)];
-      if (orderType && orderType !== "all") {
-        conditions.push(eq(ordersCore.orderType, orderType as "food" | "parcel" | "person_ride"));
-      }
-      if (status && status !== "all") {
-        conditions.push(eq(ordersCore.status, status as any));
-      }
-      if (from) conditions.push(gte(ordersCore.createdAt, new Date(from)));
-      if (to) conditions.push(lte(ordersCore.createdAt, new Date(to)));
-      const orderIdNum = orderIdParam ? parseInt(orderIdParam, 10) : NaN;
-      if (!Number.isNaN(orderIdNum) && orderIdNum > 0) {
-        conditions.push(eq(ordersCore.id, orderIdNum));
-      }
-      const whereClause = conditions.length > 1 ? and(...conditions) : conditions[0];
-      const [{ count: total }] = await db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(ordersCore)
-        .where(whereClause);
-      const list = await db
-        .select()
-        .from(ordersCore)
-        .where(whereClause)
-        .orderBy(desc(ordersCore.createdAt))
-        .limit(Number.isNaN(limit) ? 30 : limit)
-        .offset(offset);
-      const mapped = list.map(ordersCoreToLegacyShape);
-      return NextResponse.json({ success: true, data: { orders: mapped, total: Number(total) ?? 0 }, source: "core" });
+    if (!shouldUseLegacyOrders(sourceParam)) {
+      const result = await listRiderOrdersPaginated(db, riderId, {
+        limit,
+        offset,
+        orderType,
+        status,
+        from,
+        to,
+        orderId: orderIdParam,
+      });
+      return NextResponse.json({
+        success: true,
+        data: {
+          orders: result.orders.map((row) =>
+            mapCoreOrderRow({
+              id: row.id,
+              orderType: row.orderType,
+              status: row.status,
+              fareAmount: row.fareAmount,
+              riderEarning: row.riderEarning,
+              createdAt: row.createdAt,
+              formattedOrderId: row.formattedOrderId,
+              orderId: row.orderId,
+              externalRef: row.externalRef,
+            })
+          ),
+          total: result.total,
+        },
+        source: result.source,
+      });
     }
 
-    const conditions: any[] = [eq(orders.riderId, riderId)];
+    const conditions: Parameters<typeof and>[0][] = [eq(orders.riderId, riderId)];
     if (orderType && orderType !== "all") {
       conditions.push(eq(orders.orderType, orderType as "food" | "parcel" | "person_ride"));
     }
     if (status && status !== "all") {
-      conditions.push(eq(orders.status, status as any));
+      conditions.push(eq(orders.status, status as (typeof orders.$inferSelect)["status"]));
     }
-    if (from) conditions.push(gte(orders.createdAt, new Date(from)));
-    if (to) conditions.push(lte(orders.createdAt, new Date(to)));
+    if (from) conditions.push(gte(orders.createdAt, new Date(parseFromBound(from))));
+    if (to) conditions.push(lte(orders.createdAt, new Date(parseToBound(to))));
     const orderIdNum = orderIdParam ? parseInt(orderIdParam, 10) : NaN;
     if (!Number.isNaN(orderIdNum) && orderIdNum > 0) {
       conditions.push(eq(orders.id, orderIdNum));
     }
 
-    const whereClause = conditions.length > 1 ? and(...conditions) : conditions[0];
+    const whereClause = and(...conditions);
     const [{ count: total }] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(orders)
@@ -133,10 +179,14 @@ export async function GET(
       .from(orders)
       .where(whereClause)
       .orderBy(desc(orders.createdAt))
-      .limit(Number.isNaN(limit) ? 30 : limit)
+      .limit(limit)
       .offset(offset);
 
-    return NextResponse.json({ success: true, data: { orders: list, total: Number(total) ?? 0 } });
+    return NextResponse.json({
+      success: true,
+      data: { orders: list.map(mapLegacyOrderRow), total: Number(total) ?? 0 },
+      source: "legacy",
+    });
   } catch (error) {
     console.error("[GET /api/riders/[id]/orders] Error:", error);
     return NextResponse.json(

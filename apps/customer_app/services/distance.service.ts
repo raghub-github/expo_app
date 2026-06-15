@@ -75,6 +75,13 @@ export type StoreDeliveryQuote = {
   /** Geo level at which slabs were resolved (pincode/post_office/district/region/state). */
   applied_geo_level?: string | null;
   slab_quote?: unknown;
+  base_duration_min?: number;
+  weather_delay_minutes?: number;
+  weather_adjusted_duration_min?: number;
+  weather_impact_label?: string | null;
+  weather_severity?: string | null;
+  weather_chip_label?: string | null;
+  weather_show_impact?: boolean;
 };
 
 export async function getStoreDeliveryQuote(params: {

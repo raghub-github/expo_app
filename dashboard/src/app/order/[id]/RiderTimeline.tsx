@@ -224,8 +224,9 @@ export default function RiderTimeline({
     return `${hours}:${minutes} ${ampm}`;
   };
 
-  if (!riderId) return null;
-  if (loading) return null;
+  if (riderId && loading) return null;
+
+  const hasRider = riderId != null && Number.isFinite(Number(riderId)) && Number(riderId) > 0;
 
   return (
     <div
@@ -235,16 +236,23 @@ export default function RiderTimeline({
     >
       <ol className="flex flex-col py-0.5">
         {RIDER_STEPS.map((step, index) => {
-          const ts = data ? step.at(data) : null;
-          const done = currentStepIdx >= index;
-          const isActive = index === currentStepIdx && !ts;
+          const ts = hasRider && data ? step.at(data) : null;
+          const done = hasRider && currentStepIdx >= index;
+          const isActive = hasRider && index === currentStepIdx && !ts;
           const isComplete = Boolean(ts);
-          const dist = eventDistances(data, step.key);
+          const dist = hasRider ? eventDistances(data, step.key) : { mx: null, cx: null };
           const isLast = index === RIDER_STEPS.length - 1;
-          const segmentDone = currentStepIdx > index;
+          const segmentDone = hasRider && currentStepIdx > index;
           const dotColor = done || isActive ? "bg-emerald-500 ring-emerald-100" : "bg-slate-300 ring-slate-100";
           const labelColor = done || isActive ? "text-emerald-800" : "text-slate-500";
           const timeColor = isComplete ? "text-emerald-600" : "text-slate-400";
+          const timeText = ts
+            ? formatTimeShort(ts)
+            : !hasRider
+              ? "Pending"
+              : done || isActive
+                ? "—"
+                : "Pending";
 
           return (
             <li key={step.key} className="flex gap-2" role="listitem">
@@ -270,13 +278,13 @@ export default function RiderTimeline({
                     labelColor={labelColor}
                     timeColor={timeColor}
                     label={step.label}
-                    timeText={ts ? formatTimeShort(ts) : done || isActive ? "—" : "Pending"}
+                    timeText={timeText}
                   />
                 ) : (
                   <>
                     <p className={`text-[11px] font-semibold leading-tight ${labelColor}`}>{step.label}</p>
                     <p className={`mt-0.5 text-[10px] font-medium leading-tight ${timeColor}`}>
-                      {ts ? formatTimeShort(ts) : done || isActive ? "—" : "Pending"}
+                      {timeText}
                     </p>
                   </>
                 )}

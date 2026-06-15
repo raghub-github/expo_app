@@ -1,5 +1,6 @@
 import type { MerchantNotification } from "@/context/NotificationContext";
 import type { OrderRecord } from "@/hooks/useOrders";
+import { formatMerchantRs } from "@/lib/merchant-line-total";
 
 /** Matches "GMF100022 · ₹1,378 — tap to accept" */
 const NEW_ORDER_BODY_RE =
@@ -52,15 +53,15 @@ export function merchantNotificationDisplayBody(
     order.formattedOrderId?.trim() ||
     order.orderNumber?.trim() ||
     `Order #${order.ordersCoreId}`;
-  const amount = Math.round(order.total).toLocaleString("en-IN");
+  const amount = formatMerchantRs(order.total);
 
   if (NEW_ORDER_BODY_RE.test(n.body)) {
-    return `${displayId} · ₹${amount} — tap to accept`;
+    return `${displayId} · ${amount} — tap to accept`;
   }
 
   if (/₹[\d,.\s]+/.test(n.body)) {
-    return n.body.replace(/₹[\d,.\s]+/, `₹${amount}`);
+    return n.body.replace(/₹[\d,.\s]+/, amount);
   }
 
-  return `${displayId} · ₹${amount} — tap to accept`;
+  return `${displayId} · ${amount} — tap to accept`;
 }

@@ -77,22 +77,29 @@ export function DismissibleBottomSheetShell({
   }, [keyboardAware, visible]);
 
   const ratioMaxH = Math.round(winH * maxHeightRatio);
-  const maxH =
-    keyboardAware && keyboardHeight > 0
-      ? Platform.OS === "android"
-        ? Math.max(220, ratioMaxH)
-        : Math.max(220, winH - keyboardHeight - insets.top - 8)
-      : ratioMaxH;
+  const keyboardOpen = keyboardAware && keyboardHeight > 0;
+  const maxH = keyboardOpen
+    ? Math.max(240, winH - keyboardHeight - insets.top - 12)
+    : ratioMaxH;
   const minH = minHeightRatio != null ? Math.round(winH * minHeightRatio) : undefined;
   const innerPad =
     sheetBottomPadding ?? (bottomOffset > 0 ? bottomOffset : systemBottom);
+  const keyboardLift =
+    keyboardOpen && Platform.OS === "android" ? keyboardHeight : 0;
 
   const sheetNode = (
     <View style={styles.root}>
       <Pressable style={styles.backdrop} onPress={onDismiss} accessibilityLabel="Close" />
-      <View style={[styles.anchor, { maxHeight: maxH, minHeight: minH }]}>
+      <View
+        style={[
+          styles.anchor,
+          { maxHeight: maxH, minHeight: minH, marginBottom: keyboardLift },
+        ]}
+      >
         {showOuterHandle ? <View style={styles.handle} /> : null}
-        <View style={[styles.sheet, { paddingBottom: innerPad }, sheetStyle]}>{children}</View>
+        <View style={[styles.sheet, { maxHeight: maxH, paddingBottom: innerPad }, sheetStyle]}>
+          {children}
+        </View>
       </View>
     </View>
   );
@@ -151,7 +158,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#ffffff",
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    overflow: "hidden",
     ...(Platform.OS === "android"
       ? { elevation: 16 }
       : {

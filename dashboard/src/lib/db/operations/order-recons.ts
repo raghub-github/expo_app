@@ -1,4 +1,8 @@
 import { getSql } from "../client";
+import {
+  getPrimaryRolesByEmails,
+  getPrimaryRolesBySystemUserIds,
+} from "./users";
 
 export interface OrderRiderReconRecord {
   id: number;
@@ -62,6 +66,43 @@ export async function listOrderRiderRecons(
 }
 
 /** Lightweight count for sidebar (no extra API call when included in order payload). */
+function resolveReconActorRole(
+  recon: OrderRiderReconRecord,
+  roleByUserId: Map<number, string>,
+  roleByEmail: Map<string, string>
+): string | null {
+  if (recon.actorSystemUserId != null) {
+    const byId = roleByUserId.get(recon.actorSystemUserId);
+    if (byId) return byId;
+  }
+  const email = recon.actorEmail?.trim().toLowerCase();
+  if (email) {
+    return roleByEmail.get(email) ?? null;
+  }
+  return null;
+}
+
+export type OrderRiderReconWithRole = OrderRiderReconRecord & {
+  actorRole: string | null;
+};
+
+export async function listOrderRiderReconsWithRoles(
+  orderId: number
+): Promise<OrderRiderReconWithRole[]> {
+  const recons = await listOrderRiderRecons(orderId);
+  const [roleByUserId, roleByEmail] = await Promise.all([
+    getPrimaryRolesBySystemUserIds(
+      recons.map((r) => r.actorSystemUserId).filter((id): id is number => id != null)
+    ),
+    getPrimaryRolesByEmails(recons.map((r) => r.actorEmail ?? "").filter(Boolean)),
+  ]);
+
+  return recons.map((r) => ({
+    ...r,
+    actorRole: resolveReconActorRole(r, roleByUserId, roleByEmail),
+  }));
+}
+
 export async function getOrderReconsCount(orderId: number): Promise<number> {
   const sql = getSql();
   const result = await sql`

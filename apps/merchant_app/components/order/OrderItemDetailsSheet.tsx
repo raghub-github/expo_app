@@ -23,7 +23,7 @@ import {
   type OutOfStockMode,
 } from "@/services/menuApi";
 import { resolveImageUrl } from "@/services/outletApi";
-import { merchantBasePriceForLineItem } from "@/lib/merchant-line-total";
+import { merchantBasePriceForLineItem, formatMerchantRs } from "@/lib/merchant-line-total";
 import { getCachedMenuItem, setCachedMenuItem } from "@/lib/menuItemCache";
 import type { LineItem } from "@/hooks/useOrders";
 import { GatiMitraMerchant, CARD_RADIUS } from "@/constants/theme";
@@ -258,7 +258,7 @@ export function OrderItemDetailsSheet({ visible, lineItem, onClose }: Props) {
                   {displayName}
                 </Text>
               </View>
-              <Text style={styles.itemPrice}>₹{displayPrice}</Text>
+              <Text style={styles.itemPrice}>{formatMerchantRs(displayPrice)}</Text>
             </View>
 
             <Text style={[styles.description, !description && styles.descriptionEmpty]}>

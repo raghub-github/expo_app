@@ -1,45 +1,102 @@
 import React from "react";
 import { View, Text, Pressable, StyleSheet, Platform } from "react-native";
 import { BottomTabBarProps } from "@react-navigation/bottom-tabs";
-import { Ionicons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 const TAB_ACTIVE = GatiMitraColors.splashMint;
 const TAB_INACTIVE = "#94A3B8";
-const TAB_GRADIENT = ["#0D9488", "#14B8A6", "#2DD4BF"] as const;
-const ICON_SIZE = 20;
-const ORB_SIZE = 38;
+const ICON_SIZE = 23;
+
+type IconFamily = "ionicons" | "material";
 
 type TabConfig = {
   routeName: string;
   label: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  iconFocused: keyof typeof Ionicons.glyphMap;
+  family: IconFamily;
+  icon: string;
+  iconFocused: string;
 };
 
+/** Icons aligned with reference mockup (cloche, receipt, tag-%, profile). */
 const TABS: TabConfig[] = [
-  { routeName: "index", label: "Home", icon: "home-outline", iconFocused: "home" },
-  { routeName: "orders", label: "Orders", icon: "receipt-outline", iconFocused: "receipt" },
-  { routeName: "profile", label: "Profile", icon: "person-outline", iconFocused: "person" },
+  {
+    routeName: "index",
+    label: "Home",
+    family: "ionicons",
+    icon: "home-outline",
+    iconFocused: "home",
+  },
+  {
+    routeName: "food",
+    label: "Food",
+    family: "material",
+    icon: "room-service-outline",
+    iconFocused: "room-service",
+  },
+  {
+    routeName: "orders",
+    label: "Orders",
+    family: "material",
+    icon: "clipboard-text-outline",
+    iconFocused: "clipboard-text",
+  },
+  {
+    routeName: "profile",
+    label: "Profile",
+    family: "material",
+    icon: "account-outline",
+    iconFocused: "account",
+  },
 ];
 
 function getTabConfig(routeName: string): TabConfig {
   return TABS.find((t) => t.routeName === routeName) ?? TABS[0];
 }
 
+function TabIcon({ tab, focused }: { tab: TabConfig; focused: boolean }) {
+  const name = focused ? tab.iconFocused : tab.icon;
+  const color = focused ? TAB_ACTIVE : TAB_INACTIVE;
+
+  if (tab.family === "material") {
+    return (
+      <MaterialCommunityIcons
+        name={name as keyof typeof MaterialCommunityIcons.glyphMap}
+        size={ICON_SIZE}
+        color={color}
+      />
+    );
+  }
+
+  return (
+    <Ionicons
+      name={name as keyof typeof Ionicons.glyphMap}
+      size={ICON_SIZE}
+      color={color}
+    />
+  );
+}
+
 export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
-  const bottomPad = Math.max(insets.bottom, Platform.OS === "android" ? 6 : 4);
+  const router = useRouter();
+  const bottomPad = Math.max(insets.bottom, Platform.OS === "android" ? 0 : 0);
 
   return (
     <View style={[styles.wrapper, { paddingBottom: bottomPad }]}>
       <View style={styles.bar}>
-        {state.routes.map((route, index) => {
-          const focused = state.index === index;
+        {state.routes
+          .filter((route) => route.name !== "offers")
+          .map((route) => {
+          const focused = state.routes[state.index]?.name === route.name;
           const tab = getTabConfig(route.name);
           const onPress = () => {
+            if (route.name === "food") {
+              router.push("/home" as never);
+              return;
+            }
             const event = navigation.emit({
               type: "tabPress",
               target: route.key,
@@ -63,21 +120,9 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
               onLongPress={onLongPress}
               style={styles.tab}
             >
-              {focused ? (
-                <LinearGradient
-                  colors={TAB_GRADIENT}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.activeOrb}
-                >
-                  <Ionicons name={tab.iconFocused} size={ICON_SIZE} color="#FFFFFF" />
-                </LinearGradient>
-              ) : (
-                <View style={styles.inactiveIconWrap}>
-                  <Ionicons name={tab.icon} size={ICON_SIZE} color={TAB_INACTIVE} />
-                </View>
-              )}
+              <TabIcon tab={tab} focused={focused} />
               <Text style={[styles.label, focused && styles.labelActive]}>{tab.label}</Text>
+              {focused ? <View style={styles.activeUnderline} /> : <View style={styles.underlineSpacer} />}
             </Pressable>
           );
         })}
@@ -88,62 +133,25 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
 
 const styles = StyleSheet.create({
   wrapper: {
-    backgroundColor: "transparent",
-    paddingHorizontal: 10,
-    paddingTop: 2,
+    backgroundColor: "#FFFFFF",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#E5E7EB",
   },
   bar: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-end",
     backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    paddingVertical: 6,
-    paddingHorizontal: 6,
-    borderWidth: 1,
-    borderColor: "rgba(20, 184, 166, 0.1)",
-    ...Platform.select({
-      ios: {
-        shadowColor: "#0D9488",
-        shadowOffset: { width: 0, height: -2 },
-        shadowOpacity: 0.08,
-        shadowRadius: 8,
-      },
-      android: { elevation: 6 },
-      default: {},
-    }),
+    paddingTop: 8,
+    paddingBottom: 4,
+    paddingHorizontal: 4,
   },
   tab: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    minHeight: 52,
+    minHeight: 48,
     paddingHorizontal: 2,
-    gap: 2,
-  },
-  activeOrb: {
-    width: ORB_SIZE,
-    height: ORB_SIZE,
-    borderRadius: ORB_SIZE / 2,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2,
-    borderColor: "#FFFFFF",
-    ...Platform.select({
-      ios: {
-        shadowColor: TAB_ACTIVE,
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.28,
-        shadowRadius: 4,
-      },
-      android: { elevation: 4 },
-      default: {},
-    }),
-  },
-  inactiveIconWrap: {
-    width: ORB_SIZE,
-    height: ORB_SIZE,
-    alignItems: "center",
-    justifyContent: "center",
+    gap: 3,
   },
   label: {
     fontSize: 10,
@@ -154,5 +162,15 @@ const styles = StyleSheet.create({
   labelActive: {
     color: TAB_ACTIVE,
     fontWeight: "700",
+  },
+  activeUnderline: {
+    width: 20,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: TAB_ACTIVE,
+    marginTop: 1,
+  },
+  underlineSpacer: {
+    height: 4,
   },
 });

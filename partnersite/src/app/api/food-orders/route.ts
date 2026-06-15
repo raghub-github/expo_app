@@ -12,6 +12,7 @@ import { merchantFundedDiscountFromBilling } from '@/lib/merchant-billing-discou
 import {
   applyMerchantBaseToOrderItems,
   loadSnapshotsByOrderTexts,
+  merchantMenuRupee,
 } from '@/lib/merchant-visible-pricing';
 import { merchantBillPartsFromItems } from '@/lib/merchant-order-item-display';
 import { parseMerchantInstructionsList } from '@/lib/merchant-order-instructions';
@@ -384,25 +385,24 @@ export async function GET(req: NextRequest) {
           const oldLine =
             oldBase + oldCust > 0.005 ? oldBase + oldCust : Number(it.total) || lineTotal;
           const factor = oldLine > 0.005 ? lineTotal / oldLine : 1;
-          const newBase = Math.round(oldBase * factor * 100) / 100;
-          const newCust = Math.round(oldCust * factor * 100) / 100;
-          const finalLine =
-            Math.round((newBase + newCust) * 100) / 100 || lineTotal;
+          const newBase = merchantMenuRupee(oldBase * factor);
+          const newCust = merchantMenuRupee(oldCust * factor);
+          const finalLine = merchantMenuRupee(newBase + newCust) || lineTotal;
           return {
             ...it,
             baseAmount: newBase > 0.005 ? newBase : it.baseAmount,
             customizationsTotal: newCust > 0.005 ? newCust : it.customizationsTotal,
             capturedBaseAmount:
               it.capturedBaseAmount != null
-                ? Math.round(Number(it.capturedBaseAmount) * factor * 100) / 100
+                ? merchantMenuRupee(Number(it.capturedBaseAmount) * factor)
                 : undefined,
             capturedAddonAmount:
               it.capturedAddonAmount != null
-                ? Math.round(Number(it.capturedAddonAmount) * factor * 100) / 100
+                ? merchantMenuRupee(Number(it.capturedAddonAmount) * factor)
                 : undefined,
             customizationLines: it.customizationLines?.map((l) => ({
               ...l,
-              amount: Math.round((Number(l.amount) || 0) * factor * 100) / 100,
+              amount: merchantMenuRupee((Number(l.amount) || 0) * factor),
             })),
             total: finalLine,
             price: finalLine / qty,

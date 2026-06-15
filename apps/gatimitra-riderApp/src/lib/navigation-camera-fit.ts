@@ -62,11 +62,38 @@ export function boundsFromPoints(points: LatLng[]): {
   };
 }
 
+/**
+ * Pass through screen-computed insets so the camera matches the real layout.
+ * Legacy hard floors (e.g. bottom: 450) shrank the visible map to a blank strip.
+ */
 export function navigationEdgePadding(edge: MapEdgeInsets): MapEdgeInsets {
   return {
-    top: Math.max(edge.top, 150),
-    left: Math.max(edge.left, 100),
-    right: Math.max(edge.right, 100),
-    bottom: Math.max(edge.bottom, 450),
+    top: Math.max(0, Math.round(edge.top)),
+    left: Math.max(0, Math.round(edge.left)),
+    right: Math.max(0, Math.round(edge.right)),
+    bottom: Math.max(0, Math.round(edge.bottom)),
+  };
+}
+
+type BuildNavMapEdgeInsetsInput = {
+  safeTop: number;
+  headerHeight?: number;
+  /** Bottom sheet height when it overlays the map. */
+  sheetOverlayHeight?: number;
+  controlsReserve?: number;
+};
+
+/** Edge padding for header + overlay sheet + floating map controls. */
+export function buildNavMapEdgeInsets({
+  safeTop,
+  headerHeight = 48,
+  sheetOverlayHeight = 0,
+  controlsReserve = 12,
+}: BuildNavMapEdgeInsetsInput): MapEdgeInsets {
+  return {
+    top: safeTop + headerHeight + 8,
+    bottom: sheetOverlayHeight + controlsReserve,
+    left: 44,
+    right: 60,
   };
 }

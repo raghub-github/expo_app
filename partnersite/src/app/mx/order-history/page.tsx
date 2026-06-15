@@ -18,7 +18,7 @@ import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
 import { PageSkeletonOrders } from '@/components/PageSkeleton';
 import { fetchStoreById } from '@/lib/database';
 import { MerchantStore } from '@/lib/merchantStore';
-import { DEMO_RESTAURANT_ID } from '@/lib/constants';
+import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import { toast } from 'sonner';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
@@ -27,7 +27,7 @@ import { FormattedOrderId } from '@/components/FormattedOrderId';
 import { OrderPanel } from '@/components/orders/OrderPanel';
 import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
 import { GatiMitraOrderPrintBill } from '@/components/orders/GatiMitraOrderPrintBill';
-import { prefetchOrderTimeline } from '@/lib/orderTimelineCache';
+import { prefetchMerchantOrderTimelineBundle } from '@/lib/merchantTimelineEnrichmentCache';
 import { OrderCustomerSidesheet } from '@/components/orders/OrderCustomerSidesheet';
 import { OrderTimelineModal } from '@/components/orders/OrderTimelineModal';
 import { OrderRiderTrackingModal } from '@/components/orders/OrderRiderTrackingModal';
@@ -245,8 +245,8 @@ function OrderHistoryInner() {
   useEffect(() => {
     let id = searchParams?.get('storeId') || searchParams?.get('store_id');
     if (!id && typeof window !== 'undefined') id = localStorage.getItem('selectedStoreId');
-    if (!id) id = DEMO_RESTAURANT_ID;
-    setStoreId(id);
+    const trimmed = (id || '').trim();
+    setStoreId(isValidPartnerStoreId(trimmed) ? trimmed : null);
   }, [searchParams]);
 
   useEffect(() => {
@@ -377,8 +377,8 @@ function OrderHistoryInner() {
   }, [selected]);
 
   useEffect(() => {
-    if (selected?.id) prefetchOrderTimeline(selected.id);
-  }, [selected?.id]);
+    if (selected?.id) prefetchMerchantOrderTimelineBundle(selected.id, storeId);
+  }, [selected?.id, storeId]);
 
   useEffect(() => {
     setBillSheetOpen(false);

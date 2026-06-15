@@ -1,4 +1,5 @@
 import { ApiError } from "@gatimitra/sdk";
+import { notifySessionRevoked } from "@/src/services/sessionEvents";
 
 export class HttpError extends Error {
   readonly status: number;
@@ -19,6 +20,10 @@ export function isRiderNotFoundError(error: unknown): boolean {
   return /rider not found/i.test(haystack);
 }
 
+export function isUnauthorizedError(error: unknown): boolean {
+  return error instanceof HttpError && error.status === 401;
+}
+
 /** Prefer `{ error }` from API JSON over raw HTTP / SQL dump in UI. */
 export function extractApiErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiError) {
@@ -29,7 +34,7 @@ export function extractApiErrorMessage(error: unknown, fallback: string): string
       if (apiError && !apiError.includes("Failed query:")) return apiError;
     }
     if (error.status >= 500) {
-      return "Server error while confirming delivery. Retry in a moment.";
+      return "Server error. Please retry in a moment.";
     }
   }
 
@@ -61,6 +66,21 @@ export function isVehicleNotVerifiedError(error: unknown): boolean {
   if (error.status !== 403) return false;
   const haystack = `${error.message}\n${error.body ?? ""}`;
   return /VEHICLE_NOT_VERIFIED/i.test(haystack);
+}
+
+function maybeNotifySessionRevoked(status: number, body?: string) {
+  if (status !== 401 || !body) return;
+  try {
+    const parsed = JSON.parse(body) as { error?: string };
+    const err = parsed.error?.trim();
+    if (err === "session_revoked" || err === "invalid_token" || err === "user_deleted") {
+      notifySessionRevoked({
+        reason: err === "invalid_token" ? "invalid_token" : "revoked",
+      });
+    }
+  } catch {
+    // ignore non-JSON bodies
+  }
 }
 
 function createTimeoutPromise(ms: number): Promise<never> {
@@ -105,6 +125,7 @@ export async function postJson<TResponse>(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
+    maybeNotifySessionRevoked(res.status, text);
     throw new HttpError(
       `HTTP ${res.status} ${res.statusText}${text ? `: ${text}` : ""}`,
       res.status,
@@ -137,6 +158,7 @@ export async function putJson<TResponse>(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
+    maybeNotifySessionRevoked(res.status, text);
     throw new HttpError(
       `HTTP ${res.status} ${res.statusText}${text ? `: ${text}` : ""}`,
       res.status,
@@ -166,6 +188,7 @@ export async function getJson<TResponse>(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
+    maybeNotifySessionRevoked(res.status, text);
     throw new HttpError(
       `HTTP ${res.status} ${res.statusText}${text ? `: ${text}` : ""}`,
       res.status,

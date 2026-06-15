@@ -15,10 +15,23 @@
     "settings": "सेटिंग्स",
     "rewardsAndReferrals": "रिवॉर्ड्स और रेफ़रल",
     "savedAddresses": "सहेजे गए पते",
+    "yourCollections": "आपके कलेक्शन",
     "helpAndSupport": "सहायता और समर्थन",
     "referEarnTitle": "रेफ़र करें और GatiMitra क्रेडिट कमाएं",
     "referEarnSub": "दोस्तों के साथ शेयर करें और रिवॉर्ड्स पाएं।",
     "referNow": "अभी रेफ़र करें"
+  },
+  "collections": {
+    "dishes": "डिश",
+    "restaurants": "रेस्टोरेंट",
+    "dishesEmptyHint": "बुकमार्क आइकन टैप करके इस कलेक्शन में डिश जोड़ें",
+    "restaurantsEmptyHint": "बुकमार्क आइकन टैप करके इस कलेक्शन में रेस्टोरेंट जोड़ें",
+    "startExploring": "एक्सप्लोर करें",
+    "dishesEmptyTitle": "अभी कोई डिश सेव नहीं",
+    "dishesEmptySub": "रेस्टोरेंट मेनू में किसी भी आइटम पर बुकमार्क आइकन टैप करके यहाँ सेव करें।",
+    "restaurantsEmptyTitle": "कोई सेव रेस्टोरेंट नहीं",
+    "restaurantsEmptySub": "किसी भी रेस्टोरेंट पर बुकमार्क आइकन टैप करके यहाँ सेव करें।",
+    "browseRestaurants": "रेस्टोरेंट देखें"
   },
   "settings": {
     "account": "खाता",

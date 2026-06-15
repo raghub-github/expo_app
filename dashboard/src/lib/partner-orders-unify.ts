@@ -14,6 +14,25 @@ export type CoreOrderStatus =
   | 'cancelled'
   | 'failed';
 
+/** Rider at merchant (GPS milestone) — kitchen stage comes from orders_food, not core. */
+const RIDER_AT_MERCHANT_CURRENT = new Set(['RIDER_AT_PICKUP', 'REACHED_STORE', 'REACHED_MERCHANT']);
+
+function isRiderAtMerchantCore(coreStatus: string | null | undefined): boolean {
+  return String(coreStatus || '').toLowerCase() === 'reached_store';
+}
+
+function isRiderAtMerchantCurrent(currentStatus: string | null | undefined): boolean {
+  const u = String(currentStatus ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_');
+  return RIDER_AT_MERCHANT_CURRENT.has(u);
+}
+
+function isMerchantMarkedFoodReady(foodOrderStatus: string | null | undefined): boolean {
+  return mapStateMachineStatusToPartnerUi(foodOrderStatus) === 'READY_FOR_PICKUP';
+}
+
 /** Coarse DB enum → partner UI when current_status is missing */
 export function mapCoreStatusToPartnerUi(coreStatus: string | null | undefined): string {
   const s = String(coreStatus || 'assigned').toLowerCase() as CoreOrderStatus;
@@ -23,7 +42,8 @@ export function mapCoreStatusToPartnerUi(coreStatus: string | null | undefined):
     case 'accepted':
       return 'ACCEPTED';
     case 'reached_store':
-      return 'READY_FOR_PICKUP';
+      /* Rider reached pickup — not the same as merchant marking order ready. */
+      return 'ACCEPTED';
     case 'picked_up':
     case 'in_transit':
       return 'OUT_FOR_DELIVERY';
@@ -57,6 +77,7 @@ export function mapStateMachineStatusToPartnerUi(raw: string | null | undefined)
   if (['PLACED', 'CREATED', 'ORDER_RECEIVED', 'ORDER_PLACED', 'NEW'].includes(u)) return 'CREATED';
   if (u === 'ACCEPTED') return 'ACCEPTED';
   if (u === 'PREPARING') return 'PREPARING';
+  if (RIDER_AT_MERCHANT_CURRENT.has(u)) return null;
   if (['READY_FOR_PICKUP', 'READY', 'DISPATCH_READY', 'DISPATCHREADY', 'DISPATCH_READY_FOR_PICKUP'].includes(u)) {
     return 'READY_FOR_PICKUP';
   }
@@ -125,6 +146,19 @@ export function resolvePartnerPipeline(
     if (!s) continue;
     if (pipelineRank(s) > pipelineRank(best)) best = s;
   }
+
+  const riderAtMerchant =
+    isRiderAtMerchantCore(coreStatus) || isRiderAtMerchantCurrent(currentStatus);
+  if (
+    riderAtMerchant &&
+    !isMerchantMarkedFoodReady(foodOrderStatus) &&
+    pipelineRank(best) >= pipelineRank('READY_FOR_PICKUP')
+  ) {
+    if (fromFood && pipelineRank(fromFood) >= 0) return fromFood;
+    if (cur && pipelineRank(cur) >= 0 && cur !== 'READY_FOR_PICKUP') return cur;
+    return 'PREPARING';
+  }
+
   return best || 'CREATED';
 }
 

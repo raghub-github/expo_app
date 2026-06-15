@@ -2,6 +2,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
+import { resolveOrderTypeFromPublicId } from "@/lib/orders/resolve-order-type-from-public-id";
 
 export interface OrderCoreFetchParams {
   orderPublicId: string;
@@ -12,8 +13,9 @@ export async function fetchOrderCorePayload(
   params: OrderCoreFetchParams,
   signal?: AbortSignal
 ): Promise<unknown> {
+  const orderType = resolveOrderTypeFromPublicId(params.orderPublicId);
   const search = new URLSearchParams({
-    orderType: "food",
+    orderType,
     searchType: "Order Id",
     search: params.orderPublicId,
     limit: "1",

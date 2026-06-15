@@ -5,20 +5,34 @@ import { colors } from "@/src/theme";
 type Props = {
   context?: "home" | "navigation";
   missingToken?: boolean;
+  /** Native @rnmapbox/maps module unavailable (Expo Go or missing dev build). */
+  needsDevBuild?: boolean;
 };
 
-export function MapboxUnavailablePanel({ context = "home", missingToken = false }: Props) {
+export function MapboxUnavailablePanel({
+  context = "home",
+  missingToken = false,
+  needsDevBuild = false,
+}: Props) {
   const isNav = context === "navigation";
+  const title = missingToken
+    ? "Mapbox token missing"
+    : needsDevBuild
+      ? "Development build required"
+      : "Mapbox unavailable";
+
+  const body = missingToken
+    ? "Add EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN to apps/gatimitra-riderApp/.env.local and restart Metro with npx expo start -c."
+    : needsDevBuild
+      ? "Maps use native @rnmapbox/maps only. Install a development build: npx expo run:android (or EAS build). Expo Go does not support maps."
+      : isNav
+        ? "Active ride navigation requires native Mapbox. Rebuild with npx expo run:android or use an EAS development build."
+        : "Native Mapbox maps require a development build. Run npx expo run:android or install an EAS build on your device.";
+
   return (
     <View style={styles.wrap}>
-      <Text style={styles.title}>{missingToken ? "Mapbox token missing" : "Mapbox required"}</Text>
-      <Text style={styles.body}>
-        {missingToken
-          ? "Add EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN to apps/gatimitra-riderApp/.env.local and restart Metro with npx expo start -c."
-          : isNav
-            ? "Active ride navigation uses Mapbox. Rebuild with npx expo run:android for native maps, or use Expo Go with the Mapbox web map (token required)."
-            : "Mapbox token is set but native maps need a development build. In Expo Go, the Mapbox web map should load automatically after reload."}
-      </Text>
+      <Text style={styles.title}>{title}</Text>
+      <Text style={styles.body}>{body}</Text>
     </View>
   );
 }

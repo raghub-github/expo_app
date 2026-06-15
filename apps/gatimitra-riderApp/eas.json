@@ -1,15 +1,22 @@
 {
   "cli": {
     "version": ">= 16.28.0",
-    "appVersionSource": "remote"
+    "appVersionSource": "remote",
+    "requireCommit": false
   },
   "build": {
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "prebuildCommand": "npx expo prebuild --clean --platform android",
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleDebug"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://api.gatimitra.com",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://mjfnzmepmeqemcoakjkw.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qZm56bWVwbWVxZW1jb2Framt3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYwMjcwMjEsImV4cCI6MjA4MTYwMzAyMX0.jmxOdeGaM4ss20DZZuwV9LtyfddveCJooVZnJo9knkM"
       }
     },
     "preview": {
@@ -17,6 +24,11 @@
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleRelease"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://api.gatimitra.com",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://mjfnzmepmeqemcoakjkw.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qZm56bWVwbWVxZW1jb2Framt3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYwMjcwMjEsImV4cCI6MjA4MTYwMzAyMX0.jmxOdeGaM4ss20DZZuwV9LtyfddveCJooVZnJo9knkM"
       }
     },
     "production": {
@@ -26,7 +38,9 @@
         "gradleCommand": ":app:bundleRelease"
       },
       "env": {
-        "EXPO_PUBLIC_API_BASE_URL": "https://api.gatimitra.com"
+        "EXPO_PUBLIC_API_BASE_URL": "https://api.gatimitra.com",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://mjfnzmepmeqemcoakjkw.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qZm56bWVwbWVxZW1jb2Framt3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYwMjcwMjEsImV4cCI6MjA4MTYwMzAyMX0.jmxOdeGaM4ss20DZZuwV9LtyfddveCJooVZnJo9knkM"
       }
     }
   },

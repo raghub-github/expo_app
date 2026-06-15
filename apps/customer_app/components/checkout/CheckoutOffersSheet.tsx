@@ -27,6 +27,8 @@ export type CheckoutOffersSheetProps = {
   loading: boolean;
   error: boolean;
   data: CheckoutOffersResponse | undefined;
+  /** Item + add-on subtotal (reserved for future min-order UI). */
+  cartSubtotal?: number;
   couponInput: string;
   onCouponInputChange: (v: string) => void;
   couponError: string | null;

@@ -3,13 +3,18 @@
  * This file allows dynamic configuration using environment variables
  */
 
+// Launcher icons: logo-only mark, 65% safe zone — see scripts/generate-app-icons.mjs
+const APP_ICON = "./assets/icon.png";
+const APP_ADAPTIVE_FOREGROUND = "./assets/adaptive-icon.png";
+const APP_ICON_BG = "#14532D";
+
 module.exports = {
   expo: {
     name: "GatiMitra Rider",
     slug: "gatimitra-riderapp",
     version: "1.0.0",
     orientation: "portrait",
-    icon: "./assets/images/onlylogo.png",
+    icon: APP_ICON,
     scheme: "gatimitra-rider",
     userInterfaceStyle: "automatic",
     newArchEnabled: true,
@@ -20,23 +25,29 @@ module.exports = {
     },
     ios: {
       supportsTablet: true,
-      icon: "./assets/images/onlylogo.png",
+      icon: APP_ICON,
+      // iOS uses the full icon asset (logo on brand background).
       infoPlist: {
         NSLocationWhenInUseUsageDescription: "GatiMitra needs your location to show nearby orders, enable navigation, and verify deliveries. Location is mandatory for receiving orders.",
         NSLocationAlwaysAndWhenInUseUsageDescription: "GatiMitra needs your location in the background during active duties for safety and accurate order tracking.",
         NSPhotoLibraryUsageDescription: "GatiMitra needs access to your photos to upload KYC documents and profile pictures.",
         NSCameraUsageDescription: "GatiMitra needs camera access to scan KYC documents like Aadhaar, PAN, and Driving License for faster verification.",
-        NSFaceIDUsageDescription: "We use Face ID to authenticate you securely."
+        NSFaceIDUsageDescription: "We use Face ID to authenticate you securely.",
+        LSApplicationQueriesSchemes: [
+          "comgooglemaps",
+          "googlemaps",
+          "maps"
+        ]
       }
     },
     android: {
       softwareKeyboardLayoutMode: "resize",
       package: "com.raghubhunia.gatimitrariderapp",
       adaptiveIcon: {
-        foregroundImage: "./assets/images/onlylogo.png",
-        backgroundColor: "#FFFFFF"
+        foregroundImage: APP_ADAPTIVE_FOREGROUND,
+        backgroundColor: APP_ICON_BG
       },
-      icon: "./assets/images/onlylogo.png",
+      icon: APP_ICON,
       // false = system nav bar stays visible; insets work reliably on 3-button nav devices
       edgeToEdgeEnabled: false,
       predictiveBackGestureEnabled: false,
@@ -50,6 +61,10 @@ module.exports = {
         "READ_MEDIA_IMAGES",
         "READ_MEDIA_VIDEO"
       ],
+      queries: {
+        schemes: ["google.navigation", "geo", "comgooglemaps", "https"],
+        packages: ["com.google.android.apps.maps"]
+      },
       // Bundle size optimization
       enableProguardInReleaseBuilds: true,
       enableShrinkResourcesInReleaseBuilds: true,
@@ -65,6 +80,7 @@ module.exports = {
     },
     plugins: [
       "expo-router",
+      "expo-asset",
       // Mapbox — runtime token via resolveMapboxPublicToken(); download token for native builds
       "@rnmapbox/maps",
       [
@@ -92,10 +108,17 @@ module.exports = {
       "@react-native-community/datetimepicker"
     ],
     experiments: {
-      typedRoutes: true
+      typedRoutes: true,
+      autolinkingModuleResolution: true
     },
     extra: {
       router: {},
+      API_BASE_URL: process.env.EXPO_PUBLIC_API_BASE_URL || null,
+      /** Phone OTP via Supabase Auth → Send SMS hook → MSG91 (same as customer/merchant). */
+      EXPO_PUBLIC_SUPABASE_URL: process.env.EXPO_PUBLIC_SUPABASE_URL || null,
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || null,
+      /** Set "true" only if Supabase SMS hook is unavailable; uses backend MSG91 instead. */
+      EXPO_PUBLIC_PHONE_OTP_USE_BACKEND: process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND || null,
       eas: {
         projectId: "48aaf6a2-8617-458c-9e5a-cfa9418fbde3"
       },

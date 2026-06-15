@@ -20,7 +20,9 @@ import {
   Pressable,
   Animated,
   Easing,
+  Image,
 } from "react-native";
+import * as ImagePicker from "expo-image-picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -43,8 +45,11 @@ import { profileService } from "@/services/profile.service";
 import { useLocationStore } from "@/store/locationStore";
 import { parseMapCoordParam, resolveMapCenter } from "@/lib/map-coordinates";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
+import { GatiMitraColors } from "@/constants/gatimitra";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 const NEARBY_RADIUS_METERS = 500;
+const BRAND = GatiMitraColors.splashMint;
 
 /** Best-effort split of saved `fullAddress` into flat/area lines using structured fields. */
 function splitSavedAddressLines(addr: Address): { line1: string; line2: string } {
@@ -216,6 +221,9 @@ export default function LocationAddressScreen() {
     kind: "road" | "straight";
   } | null>(null);
   const [pinDistanceLoading, setPinDistanceLoading] = useState(false);
+  const [doorImageLocalUri, setDoorImageLocalUri] = useState<string | null>(null);
+  const [doorImageRemoteUrl, setDoorImageRemoteUrl] = useState<string | null>(null);
+  const [doorImageUploading, setDoorImageUploading] = useState(false);
   const selectedLat = mapCenter.latitude;
   const selectedLon = mapCenter.longitude;
   const shimmer = useRef(new Animated.Value(0.45)).current;
@@ -337,6 +345,7 @@ export default function LocationAddressScreen() {
     setLandmark(addr.landmark ?? "");
     if (addr.contactName) setContactName(addr.contactName);
     if (addr.contactMobile) setContactMobile(addr.contactMobile);
+    if (addr.deliveryDoorImageUrl) setDoorImageRemoteUrl(addr.deliveryDoorImageUrl);
     const lb = (addr.label ?? "").trim();
     if (lb.toLowerCase() === "home") setLabel("Home");
     else if (lb.toLowerCase() === "work") setLabel("Work");
@@ -636,6 +645,43 @@ export default function LocationAddressScreen() {
     await doSave(finalLabel, fullAddress, cityVal, stateVal, pincodeVal);
   };
 
+  const pickDoorImage = async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert("Permission required", "Allow photo access to add a door/building image.");
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.85,
+        allowsMultipleSelection: false,
+      });
+      if (res.canceled || !res.assets?.[0]) return;
+      setDoorImageLocalUri(res.assets[0].uri);
+    } catch {
+      Alert.alert("Could not open gallery", "Try again or choose another image.");
+    }
+  };
+
+  const uploadPendingDoorImage = async (addressId: number) => {
+    if (!doorImageLocalUri) return;
+    const filename =
+      doorImageLocalUri.split("/").pop() || `door-${Date.now()}.jpg`;
+    setDoorImageUploading(true);
+    try {
+      const url = await addressService.uploadDoorImage(addressId, {
+        uri: doorImageLocalUri,
+        name: filename,
+        mimeType: "image/jpeg",
+      });
+      setDoorImageRemoteUrl(url);
+      setDoorImageLocalUri(null);
+    } finally {
+      setDoorImageUploading(false);
+    }
+  };
+
   const doSave = async (
     finalLabel: string,
     fullAddress: string,
@@ -662,13 +708,14 @@ export default function LocationAddressScreen() {
           contactName: contactName.trim() || null,
           contactMobile: contactMobile.trim() || null,
         });
+        await uploadPendingDoorImage(editAddressId);
         queryClient.invalidateQueries({ queryKey: ["addresses"] });
         queryClient.invalidateQueries({ queryKey: ["active-location"] });
         router.back();
         return;
       }
 
-      await addressService.addAddress({
+      const created = await addressService.addAddress({
         label: finalLabel,
         fullAddress,
         landmark: landmark.trim() || null,
@@ -686,6 +733,7 @@ export default function LocationAddressScreen() {
         contactName: contactName.trim() || null,
         contactMobile: contactMobile.trim() || null,
       });
+      await uploadPendingDoorImage(created.id);
       await addressService.setActiveLocation({
         latitude: selectedLat,
         longitude: selectedLon,
@@ -1085,6 +1133,34 @@ export default function LocationAddressScreen() {
                 </View>
               </View>
 
+
+              <Text style={styles.doorImageLabel}>Door/building image (optional)</Text>
+              <Pressable style={styles.doorImageDashed} onPress={pickDoorImage} disabled={submitting || doorImageUploading}>
+                {doorImageLocalUri || doorImageRemoteUrl ? (
+                  <Image
+                    source={{
+                      uri:
+                        doorImageLocalUri ??
+                        toAbsoluteImageUrl(doorImageRemoteUrl) ??
+                        undefined,
+                    }}
+                    style={styles.doorImagePreview}
+                  />
+                ) : (
+                  <>
+                    <Ionicons name="camera-outline" size={22} color={BRAND} />
+                    <Text style={styles.doorImageCta}>Add an image</Text>
+                  </>
+                )}
+                {doorImageUploading ? (
+                  <View style={styles.doorImageUploading}>
+                    <ActivityIndicator size="small" color={BRAND} />
+                  </View>
+                ) : null}
+              </Pressable>
+              <Text style={styles.doorImageHelp}>
+                This helps our delivery partners find your exact location faster
+              </Text>
 
               <Text style={styles.label}>Save as</Text>
               <View style={styles.chipRow}>
@@ -1503,6 +1579,50 @@ const styles = StyleSheet.create({
   },
   primaryBtnDisabled: { opacity: 0.7 },
   primaryBtnText: { color: "#FFF", fontSize: 16, fontWeight: "700" },
+  doorImageLabel: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: TITLE_DARK,
+    marginTop: 14,
+    marginBottom: 8,
+  },
+  doorImageDashed: {
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: BORDER,
+    borderRadius: 12,
+    minHeight: 96,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 16,
+    paddingHorizontal: 12,
+    backgroundColor: "#FAFAFA",
+    overflow: "hidden",
+  },
+  doorImageCta: {
+    marginTop: 6,
+    fontSize: 14,
+    fontWeight: "700",
+    color: BRAND,
+  },
+  doorImageHelp: {
+    fontSize: 12,
+    color: TEXT_GRAY,
+    marginTop: 8,
+    lineHeight: 17,
+  },
+  doorImagePreview: {
+    width: "100%",
+    height: 120,
+    borderRadius: 8,
+    resizeMode: "cover",
+  },
+  doorImageUploading: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(255,255,255,0.65)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   stickyCtaWrap: {
     position: "absolute",
     left: 0,

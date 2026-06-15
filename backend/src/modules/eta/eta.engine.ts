@@ -186,9 +186,10 @@ function confidenceScore(args: {
   if (!args.riderAssigned) c -= 0.05;
   if (args.activeOrders > 15) c -= 0.05;
   if (args.activeOrders > 30) c -= 0.05;
-  if (args.weather === "LIGHT_RAIN") c -= 0.03;
+  if (args.weather === "LIGHT_RAIN") c -= 0.02;
+  if (args.weather === "MODERATE_RAIN") c -= 0.05;
   if (args.weather === "HEAVY_RAIN") c -= 0.07;
-  if (args.weather === "STORM") c -= 0.12;
+  if (args.weather === "EXTREME_WEATHER") c -= 0.12;
   if (args.peakWindow === "LUNCH_RUSH") c -= 0.04;
   if (args.peakWindow === "DINNER_RUSH") c -= 0.07;
   if (args.peakWindow === "FESTIVAL_PEAK") c -= 0.1;

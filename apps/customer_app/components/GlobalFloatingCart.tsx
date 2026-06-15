@@ -131,6 +131,7 @@ export function GlobalFloatingCart() {
   const hasCart = totalCount > 0;
   const [allCartsSheetVisible, setAllCartsSheetVisible] = useState(false);
   const [floatThumbLoadFailed, setFloatThumbLoadFailed] = useState(false);
+  const [cartRemoveExpanded, setCartRemoveExpanded] = useState(false);
 
   const hasOtherStashedCarts = useMemo(
     () => Object.values(stashedCarts).some((c) => c.items.length > 0),
@@ -232,6 +233,14 @@ export function GlobalFloatingCart() {
     setFloatThumbLoadFailed(false);
   }, [resolvedThumbUri]);
 
+  useEffect(() => {
+    if (!hasCart) setCartRemoveExpanded(false);
+  }, [hasCart]);
+
+  useEffect(() => {
+    setCartRemoveExpanded(false);
+  }, [merchantId]);
+
   const pulse = useSharedValue(1);
 
   useEffect(() => {
@@ -270,14 +279,16 @@ export function GlobalFloatingCart() {
   };
 
   const handleDismissCartPress = () => {
-    Alert.alert("Remove cart?", "This will remove all items from your cart for this restaurant.", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Remove",
-        style: "destructive",
-        onPress: () => clearCart(),
-      },
-    ]);
+    setCartRemoveExpanded(true);
+  };
+
+  const handleConfirmRemoveCart = () => {
+    clearCart();
+    setCartRemoveExpanded(false);
+  };
+
+  const handleCancelRemoveCart = () => {
+    setCartRemoveExpanded(false);
   };
 
   const visible =
@@ -507,15 +518,28 @@ export function GlobalFloatingCart() {
               </LinearGradient>
             </TouchableOpacity>
 
-            <Pressable
-              style={[styles.zomatoCloseBtn, compact && styles.zomatoCloseBtnCompact]}
-              onPress={handleDismissCartPress}
-              hitSlop={10}
-              accessibilityRole="button"
-              accessibilityLabel="Clear cart"
-            >
-              <Ionicons name="close" size={compact ? 18 : 20} color={GatiMitraColors.textSecondary} />
-            </Pressable>
+            <View style={[styles.zomatoRightActions, cartRemoveExpanded && styles.zomatoRightActionsExpanded]}>
+              <Pressable
+                style={[styles.zomatoCloseBtn, compact && styles.zomatoCloseBtnCompact]}
+                onPress={cartRemoveExpanded ? handleCancelRemoveCart : handleDismissCartPress}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel={cartRemoveExpanded ? "Cancel remove cart" : "Remove cart"}
+              >
+                <Ionicons name="close" size={compact ? 18 : 20} color={GatiMitraColors.textSecondary} />
+              </Pressable>
+              {cartRemoveExpanded ? (
+                <Pressable
+                  style={[styles.zomatoRemovePanel, compact && styles.zomatoRemovePanelCompact]}
+                  onPress={handleConfirmRemoveCart}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="Confirm remove cart"
+                >
+                  <Text style={[styles.zomatoRemoveText, compact && styles.zomatoRemoveTextCompact]}>Remove</Text>
+                </Pressable>
+              ) : null}
+            </View>
           </View>
         </View>
       </Animated.View>
@@ -541,7 +565,7 @@ export function GlobalFloatingCart() {
         }}
         onRemoveCart={() => {
           setAllCartsSheetVisible(false);
-          handleDismissCartPress();
+          clearCart();
         }}
       />
     </>
@@ -609,9 +633,11 @@ function AllCartsSheetModal({
 }) {
   const insets = useSafeAreaInsets();
   const [thumbLoadFailed, setThumbLoadFailed] = useState(false);
+  const [rowRemoveExpanded, setRowRemoveExpanded] = useState(false);
 
   useEffect(() => {
     setThumbLoadFailed(false);
+    if (!visible) setRowRemoveExpanded(false);
   }, [thumbUri, visible]);
 
   const onCheckoutAllPress = () => {
@@ -679,37 +705,54 @@ function AllCartsSheetModal({
                       <Ionicons name="chevron-forward" size={14} color={SHEET_BRAND_RED} />
                     </Pressable>
                   </View>
-                  <View style={styles.sheetCartActions}>
-                    <TouchableOpacity
-                      activeOpacity={isStoreClosed ? 1 : 0.92}
-                      onPress={onViewCart}
-                      disabled={isStoreClosed}
-                      style={[styles.sheetViewCartBtn, isStoreClosed && styles.zomatoViewCartCtaClosed]}
-                    >
-                      <LinearGradient
-                        colors={
-                          isStoreClosed
-                            ? cartOpenSoon
-                              ? (GatiMitraColors.mintGradient as unknown as [string, string])
-                              : (["#9CA3AF", "#6B7280"] as [string, string])
-                            : (GatiMitraColors.checkoutGradient as unknown as [string, string])
-                        }
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.sheetViewCartGradient}
+                    <View style={[styles.sheetCartActions, rowRemoveExpanded && styles.sheetCartActionsExpanded]}>
+                      <TouchableOpacity
+                        activeOpacity={isStoreClosed ? 1 : 0.92}
+                        onPress={onViewCart}
+                        disabled={isStoreClosed}
+                        style={[styles.sheetViewCartBtn, isStoreClosed && styles.zomatoViewCartCtaClosed]}
                       >
-                        <Text style={styles.sheetViewCartBtnTitle}>
-                          {isStoreClosed ? closedCta.title : "View Cart"}
-                        </Text>
-                        <Text style={styles.sheetViewCartBtnSub}>
-                          {isStoreClosed ? closedCta.sub : itemLabel}
-                        </Text>
-                      </LinearGradient>
-                    </TouchableOpacity>
-                    <Pressable style={styles.sheetRowClose} onPress={onRemoveCart} hitSlop={8}>
-                      <Ionicons name="close" size={18} color={GatiMitraColors.textSecondary} />
-                    </Pressable>
-                  </View>
+                        <LinearGradient
+                          colors={
+                            isStoreClosed
+                              ? cartOpenSoon
+                                ? (GatiMitraColors.mintGradient as unknown as [string, string])
+                                : (["#9CA3AF", "#6B7280"] as [string, string])
+                              : (GatiMitraColors.checkoutGradient as unknown as [string, string])
+                          }
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                          style={styles.sheetViewCartGradient}
+                        >
+                          <Text style={styles.sheetViewCartBtnTitle}>
+                            {isStoreClosed ? closedCta.title : "View Cart"}
+                          </Text>
+                          <Text style={styles.sheetViewCartBtnSub}>
+                            {isStoreClosed ? closedCta.sub : itemLabel}
+                          </Text>
+                        </LinearGradient>
+                      </TouchableOpacity>
+                      <Pressable
+                        style={styles.sheetRowClose}
+                        onPress={
+                          rowRemoveExpanded
+                            ? () => setRowRemoveExpanded(false)
+                            : () => setRowRemoveExpanded(true)
+                        }
+                        hitSlop={8}
+                      >
+                        <Ionicons name="close" size={18} color={GatiMitraColors.textSecondary} />
+                      </Pressable>
+                      {rowRemoveExpanded ? (
+                        <Pressable
+                          style={styles.sheetRemovePanel}
+                          onPress={onRemoveCart}
+                          hitSlop={6}
+                        >
+                          <Text style={styles.sheetRemoveText}>Remove</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
                 </View>
               ) : (
                 <Text style={styles.sheetEmpty}>No active cart.</Text>
@@ -906,6 +949,38 @@ const styles = StyleSheet.create({
     height: 34,
     borderRadius: 17,
   },
+  zomatoRightActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 0,
+    flexShrink: 0,
+  },
+  zomatoRightActionsExpanded: {
+    backgroundColor: "#FFF1F2",
+    borderRadius: 22,
+    paddingRight: 4,
+    overflow: "hidden",
+  },
+  zomatoRemovePanel: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    justifyContent: "center",
+    minHeight: 38,
+  },
+  zomatoRemovePanelCompact: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    minHeight: 34,
+  },
+  zomatoRemoveText: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: SHEET_BRAND_RED,
+    letterSpacing: 0.2,
+  },
+  zomatoRemoveTextCompact: {
+    fontSize: 13,
+  },
   sheetDim: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.45)",
@@ -1061,6 +1136,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
+  sheetCartActionsExpanded: {
+    backgroundColor: "#FFF1F2",
+    borderRadius: 22,
+    paddingRight: 4,
+    gap: 0,
+  },
   sheetViewCartBtn: {
     borderRadius: 999,
     overflow: "hidden",
@@ -1091,6 +1172,16 @@ const styles = StyleSheet.create({
     backgroundColor: "#F3F4F6",
     alignItems: "center",
     justifyContent: "center",
+  },
+  sheetRemovePanel: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    justifyContent: "center",
+  },
+  sheetRemoveText: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: SHEET_BRAND_RED,
   },
   sheetEmpty: {
     fontSize: 14,

@@ -71,7 +71,7 @@ import { OrderTimelineModal } from '@/components/orders/OrderTimelineModal';
 import { OrderRiderTrackingModal } from '@/components/orders/OrderRiderTrackingModal';
 import type { OrderPricingBreakdown } from '@/lib/orderLineItems';
 import { resolveOrderOtps, type CachedOrderOtps } from '@/lib/orderOtps';
-import { prefetchOrderTimeline } from '@/lib/orderTimelineCache';
+import { prefetchMerchantOrderTimelineBundle } from '@/lib/merchantTimelineEnrichmentCache';
 import { merchantFoodRowId, merchantOrderApiId, merchantOrderTimelineUrl } from '@/lib/merchantOrderApiId';
 import {
   useInvalidateMerchantStoreQueries,
@@ -725,8 +725,21 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     setSelectedOrder(order);
     setRightPanelOpen(true);
     updateUrlParams({ orderId: String(order.order_id || order.id) });
-    prefetchOrderTimeline(merchantOrderTimelineUrl(storeId, order));
+    prefetchMerchantOrderTimelineBundle(
+      storeId,
+      merchantOrderApiId(order),
+      merchantOrderTimelineUrl(storeId, order)
+    );
   }, [updateUrlParams, storeId]);
+
+  useEffect(() => {
+    if (!selectedOrder) return;
+    prefetchMerchantOrderTimelineBundle(
+      storeId,
+      merchantOrderApiId(selectedOrder),
+      merchantOrderTimelineUrl(storeId, selectedOrder)
+    );
+  }, [selectedOrder?.id, selectedOrder?.order_id, storeId]);
 
   const closeOrderPanel = useCallback(() => {
     setRightPanelOpen(false);
@@ -2334,7 +2347,16 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                       setBillSheetAllItemsOnly(true);
                       setBillSheetOpen(true);
                     }}
-                    onOpenTimeline={() => setTimelineModalOpen(true)}
+                    onOpenTimeline={() => {
+                      if (selectedOrder) {
+                        prefetchMerchantOrderTimelineBundle(
+                          storeId,
+                          merchantOrderApiId(selectedOrder),
+                          merchantOrderTimelineUrl(storeId, selectedOrder)
+                        );
+                      }
+                      setTimelineModalOpen(true);
+                    }}
                     onPrintBill={() => setPrintBillOpen(true)}
                     onViewPastRiders={() => {
                       setRidersLogModalOrderId(merchantOrderApiId(selectedOrder));
@@ -2439,7 +2461,16 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                         setBillSheetAllItemsOnly(true);
                         setBillSheetOpen(true);
                       }}
-                      onOpenTimeline={() => setTimelineModalOpen(true)}
+                      onOpenTimeline={() => {
+                      if (selectedOrder) {
+                        prefetchMerchantOrderTimelineBundle(
+                          storeId,
+                          merchantOrderApiId(selectedOrder),
+                          merchantOrderTimelineUrl(storeId, selectedOrder)
+                        );
+                      }
+                      setTimelineModalOpen(true);
+                    }}
                       onPrintBill={() => setPrintBillOpen(true)}
                       onTrackRider={() => setRiderTrackingOpen(true)}
                       onUniformFeedback={(inUniform) =>

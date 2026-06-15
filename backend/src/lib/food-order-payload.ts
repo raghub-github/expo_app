@@ -131,6 +131,13 @@ export function buildDeliveryInstructionsArray(
   checkoutMetadata: Record<string, unknown> | null | undefined
 ): string[] {
   if (!checkoutMetadata || typeof checkoutMetadata !== "object") return [];
+  const rawList = checkoutMetadata.deliveryInstructionsList;
+  if (Array.isArray(rawList) && rawList.length > 0) {
+    const fromList = rawList
+      .map((v) => String(v ?? "").trim())
+      .filter((s) => s.length > 0);
+    if (fromList.length > 0) return [...new Set(fromList)];
+  }
   const out: string[] = [];
   const freeText = checkoutMetadata.deliveryInstructions;
   if (typeof freeText === "string" && freeText.trim()) {

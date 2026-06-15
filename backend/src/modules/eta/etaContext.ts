@@ -9,7 +9,12 @@
  * no engine changes.
  */
 
-export type WeatherState = "CLEAR" | "LIGHT_RAIN" | "HEAVY_RAIN" | "STORM";
+export type WeatherState =
+  | "CLEAR"
+  | "LIGHT_RAIN"
+  | "MODERATE_RAIN"
+  | "HEAVY_RAIN"
+  | "EXTREME_WEATHER";
 export type PeakWindow = "NORMAL" | "LUNCH_RUSH" | "DINNER_RUSH" | "FESTIVAL_PEAK";
 export type DropContext = "HOUSE" | "APARTMENT" | "OFFICE" | "MALL" | "GATED";
 
@@ -17,24 +22,33 @@ export type DropContext = "HOUSE" | "APARTMENT" | "OFFICE" | "MALL" | "GATED";
 
 export function weatherMultiplier(state: WeatherState): number {
   switch (state) {
-    case "CLEAR": return 1.0;
-    case "LIGHT_RAIN": return 1.1;
-    case "HEAVY_RAIN": return 1.25;
-    case "STORM": return 1.5;
+    case "CLEAR":
+      return 1.0;
+    case "LIGHT_RAIN":
+      return 1.08;
+    case "MODERATE_RAIN":
+      return 1.15;
+    case "HEAVY_RAIN":
+      return 1.25;
+    case "EXTREME_WEATHER":
+      return 1.5;
   }
 }
 
-/**
- * Stubbed weather fetch — returns CLEAR until a provider (OpenWeather /
- * AccuWeather / Mausam) is plugged in. The lat/lng args document the
- * intended signature so swapping in a real fetcher is mechanical.
- */
+/** Resolves weather via centralized OpenWeather-backed zone cache. */
 export async function resolveWeatherState(
-  _lat: number,
-  _lng: number,
+  lat: number,
+  lng: number,
   _now?: Date,
 ): Promise<WeatherState> {
-  return "CLEAR";
+  try {
+    const { toEtaEngineWeatherState } = await import("../weather/weather.classify.js");
+    const { getWeatherSeverityForCoords } = await import("../weather/weather.service.js");
+    const severity = await getWeatherSeverityForCoords(lat, lng);
+    return toEtaEngineWeatherState(severity);
+  } catch {
+    return "CLEAR";
+  }
 }
 
 /* ─── Peak hour (IST clock based) ───────────────────────────────── */

@@ -7,8 +7,11 @@ export const NAV_ROUTE_TRAVELED = "rgba(154, 160, 166, 0.45)";
 export const NAV_OFF_ROUTE_CONNECTOR = "#64748B";
 export const NAV_WRONG_WAY_ORANGE = "#EA580C";
 export const NAV_ROUTE_WIDTH = 12;
-export const NAV_ROUTE_CASING_WIDTH = 16;
+export const NAV_ROUTE_GLOW = "rgba(26, 115, 232, 0.28)";
+export const NAV_ROUTE_GLOW_WIDTH = 22;
+export const NAV_ROUTE_CASING_WIDTH = 17;
 export const NAV_ALT_ROUTE_WIDTH = 7;
-export const NAV_FOLLOW_PITCH = 52;
-export const NAV_FOLLOW_ZOOM = 18;
-export const NAV_LOOK_AHEAD_M = 80;
+/** Lower pitch keeps roads/labels visible while still feeling like navigation. */
+export const NAV_FOLLOW_PITCH = 38;
+export const NAV_FOLLOW_ZOOM = 16.2;
+export const NAV_LOOK_AHEAD_M = 60;

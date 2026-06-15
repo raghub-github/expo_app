@@ -26,6 +26,76 @@ import {
 } from "../billing/geoRefFromPincode.js";
 import { resolveGeoLocation } from "../billing/geoLocationResolver.js";
 import { getStoreByStoreId, getStoreByIdForOrder } from "../merchants/merchant.service.js";
+import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
+
+/** Merchant upload is stored in merchant_offers.offer_image_url (R2 proxy path or https URL). */
+function resolveMerchantOfferImageUrl(
+  offerImageUrl: string | null | undefined,
+  offerMetadata: unknown
+): string | null {
+  const direct = typeof offerImageUrl === "string" ? offerImageUrl.trim() : "";
+  if (direct) return toAbsoluteClientMediaUrl(direct);
+
+  if (offerMetadata && typeof offerMetadata === "object") {
+    const meta = offerMetadata as Record<string, unknown>;
+    const legacy =
+      (typeof meta.image_url === "string" ? meta.image_url.trim() : "") ||
+      (typeof meta.offer_image_url === "string" ? meta.offer_image_url.trim() : "");
+    if (legacy) return toAbsoluteClientMediaUrl(legacy);
+  }
+  return null;
+}
+
+type MerchantBannerRow = {
+  id: number;
+  storeId: number;
+  offerTitle: string | null;
+  offerType: string | null;
+  couponCode: string | null;
+  discountValue: unknown;
+  discountPercentage: unknown;
+  maxDiscountAmount: unknown;
+  minOrderAmount: unknown;
+  firstOrderOnly: boolean | null;
+  newUserOnly: boolean | null;
+  displayPriority: number | null;
+  offerImageUrl: string | null;
+  offerMetadata: unknown;
+  validTill: Date | null;
+};
+
+/** One carousel card per store — prefer the offer that has a custom banner image. */
+function pickBestMerchantOfferPerStore(rows: MerchantBannerRow[]): MerchantBannerRow[] {
+  const byStore = new Map<number, MerchantBannerRow>();
+  for (const row of rows) {
+    const storeId = Number(row.storeId);
+    const current = byStore.get(storeId);
+    const rowHasImage = !!resolveMerchantOfferImageUrl(row.offerImageUrl, row.offerMetadata);
+    const currentHasImage = current
+      ? !!resolveMerchantOfferImageUrl(current.offerImageUrl, current.offerMetadata)
+      : false;
+    const rowPriority = Number(row.displayPriority ?? 0);
+    const currentPriority = current ? Number(current.displayPriority ?? 0) : -1;
+
+    if (
+      !current ||
+      (rowHasImage && !currentHasImage) ||
+      (rowHasImage === currentHasImage && rowPriority > currentPriority) ||
+      (rowHasImage === currentHasImage &&
+        rowPriority === currentPriority &&
+        Number(row.id) > Number(current.id))
+    ) {
+      byStore.set(storeId, row);
+    }
+  }
+
+  return Array.from(byStore.values()).sort((a, b) => {
+    const aImg = resolveMerchantOfferImageUrl(a.offerImageUrl, a.offerMetadata) ? 1 : 0;
+    const bImg = resolveMerchantOfferImageUrl(b.offerImageUrl, b.offerMetadata) ? 1 : 0;
+    if (bImg !== aImg) return bImg - aImg;
+    return Number(b.displayPriority ?? 0) - Number(a.displayPriority ?? 0);
+  });
+}
 
 function n(v: unknown): number | null {
   if (v == null) return null;
@@ -74,6 +144,31 @@ function buildPlatformLabel(offerKind: string, discountType: string | null, valu
   }
   if (maxDiscount != null && maxDiscount > 0) return `Up to ₹${Math.round(maxDiscount)} OFF`;
   return "Platform Offer";
+}
+
+function buildPlatformBannerTitle(
+  name: string | null,
+  offerKind: string,
+  discountType: string | null,
+  value: number | null,
+  maxDiscount: number | null,
+): string {
+  const trimmedName = name?.trim();
+  if (trimmedName) return trimmedName;
+  return buildPlatformLabel(offerKind, discountType, value, maxDiscount);
+}
+
+function buildPlatformBannerSub(
+  minOrder: number | null,
+  maxDiscount: number | null,
+  customerSegment: string | null,
+): string {
+  const parts: string[] = [];
+  const seg = String(customerSegment ?? "ALL").toUpperCase();
+  if (seg === "NEW") parts.push("on your first order");
+  if (minOrder != null && minOrder > 0) parts.push(`on orders above ₹${Math.round(minOrder)}`);
+  if (maxDiscount != null && maxDiscount > 0) parts.push(`save up to ₹${Math.round(maxDiscount)}`);
+  return parts.join(" · ") || "Great deals across GatiMitra";
 }
 
 async function resolveStoreInternalId(storeId: string): Promise<number | null> {
@@ -186,7 +281,7 @@ async function fetchPlatformOffers(
       priority:           billingPlatformOffers.priority,
     })
     .from(billingPlatformOffers)
-    .where(eq(billingPlatformOffers.isActive, true))
+    .where(and(eq(billingPlatformOffers.isActive, true), eq(billingPlatformOffers.isHidden, false)))
     .orderBy(asc(billingPlatformOffers.priority));
 
   const result: Array<{
@@ -252,6 +347,9 @@ export type HomeBannerOffer = {
   max_discount_amount?: number | null;
   discount_percentage?: number | null;
   discount_value?: number | null;
+  offer_image_url?: string | null;
+  /** ISO timestamp — offer expires at this time. */
+  valid_till?: string | null;
 };
 
 type NearbyStoreRef = {
@@ -304,6 +402,9 @@ async function fetchMerchantBannerOffers(nearby: NearbyStoreRef[]): Promise<Home
       firstOrderOnly: merchantOffers.firstOrderOnly,
       newUserOnly: merchantOffers.newUserOnly,
       displayPriority: merchantOffers.displayPriority,
+      offerImageUrl: merchantOffers.offerImageUrl,
+      offerMetadata: merchantOffers.offerMetadata,
+      validTill: merchantOffers.validTill,
     })
     .from(merchantOffers)
     .where(
@@ -316,8 +417,9 @@ async function fetchMerchantBannerOffers(nearby: NearbyStoreRef[]): Promise<Home
     )
     .orderBy(sql`${merchantOffers.displayPriority} DESC NULLS LAST`, asc(merchantOffers.id));
 
+  const pickedRows = pickBestMerchantOfferPerStore(rows as MerchantBannerRow[]);
   const banners: HomeBannerOffer[] = [];
-  for (const r of rows) {
+  for (const r of pickedRows) {
     const store = meta.get(Number(r.storeId));
     if (!store) continue;
     const discPct = n(r.discountPercentage);
@@ -342,6 +444,8 @@ async function fetchMerchantBannerOffers(nearby: NearbyStoreRef[]): Promise<Home
       max_discount_amount: maxDisc,
       discount_percentage: discPct,
       discount_value: discVal,
+      offer_image_url: resolveMerchantOfferImageUrl(r.offerImageUrl, r.offerMetadata),
+      valid_till: r.validTill ? new Date(r.validTill).toISOString() : null,
     });
   }
   return banners;
@@ -383,13 +487,14 @@ async function fetchPlatformBannerOffers(
       minOrderAmount: billingPlatformOffers.minOrderAmount,
       targetScope: billingPlatformOffers.targetScope,
       offerAudience: billingPlatformOffers.offerAudience,
+      customerSegment: billingPlatformOffers.customerSegment,
       merchantIds: billingPlatformOffers.merchantIds,
       startsAt: billingPlatformOffers.startsAt,
       endsAt: billingPlatformOffers.endsAt,
       priority: billingPlatformOffers.priority,
     })
     .from(billingPlatformOffers)
-    .where(eq(billingPlatformOffers.isActive, true))
+    .where(and(eq(billingPlatformOffers.isActive, true), eq(billingPlatformOffers.isHidden, false)))
     .orderBy(asc(billingPlatformOffers.priority));
 
   const banners: HomeBannerOffer[] = [];
@@ -406,8 +511,29 @@ async function fetchPlatformBannerOffers(
       if (!geoBoundIds.has(o.id)) continue;
     } else if (scope === "MERCHANT") {
       // Shown only when tied to a nearby store below.
+    } else if (scope === "GLOBAL") {
+      const kind = String(o.offerKind ?? "DISCOUNT").toUpperCase();
+      const value = n(o.valueNumeric);
+      const maxDisc = n(o.maxDiscountAmount);
+      const minOrder = n(o.minOrderAmount);
+      banners.push({
+        id: `platform-global-${o.id}`,
+        store_id: "",
+        store_name: null,
+        title: buildPlatformBannerTitle(o.name, kind, o.discountType, value, maxDisc),
+        sub: buildPlatformBannerSub(minOrder, maxDisc, o.customerSegment),
+        kind: "platform",
+        source_offer_id: o.id,
+        offer_type: kind,
+        coupon_code: null,
+        min_order_amount: minOrder,
+        max_discount_amount: maxDisc,
+        discount_percentage: o.discountType === "PERCENTAGE" ? value : null,
+        discount_value: o.discountType !== "PERCENTAGE" ? value : null,
+        valid_till: o.endsAt ? new Date(o.endsAt).toISOString() : null,
+      });
+      continue;
     } else {
-      // GLOBAL — location-wide platform offer; no single store page.
       continue;
     }
 
@@ -428,16 +554,18 @@ async function fetchPlatformBannerOffers(
     const value = n(o.valueNumeric);
     const maxDisc = n(o.maxDiscountAmount);
     const minOrder = n(o.minOrderAmount);
+    const bannerSub =
+      buildPlatformBannerSub(minOrder, maxDisc, o.customerSegment) ||
+      (store && minOrder != null && minOrder > 0
+        ? `on orders above ₹${Math.round(minOrder)} · ${store.name}`
+        : store?.name ?? "Tap to explore deals");
 
     banners.push({
-      id: `platform-${o.id}-${store!.storeId}`,
-      store_id: store!.storeId,
-      store_name: store!.name,
-      title: buildPlatformLabel(kind, o.discountType, value, maxDisc),
-      sub:
-        minOrder != null && minOrder > 0
-          ? `on orders above ₹${Math.round(minOrder)} · ${store!.name}`
-          : store!.name,
+      id: store ? `platform-${o.id}-${store.storeId}` : `platform-geo-${o.id}`,
+      store_id: store?.storeId ?? "",
+      store_name: store?.name ?? null,
+      title: buildPlatformBannerTitle(o.name, kind, o.discountType, value, maxDisc),
+      sub: bannerSub,
       kind: "platform",
       source_offer_id: o.id,
       offer_type: kind,
@@ -446,6 +574,7 @@ async function fetchPlatformBannerOffers(
       max_discount_amount: maxDisc,
       discount_percentage: o.discountType === "PERCENTAGE" ? value : null,
       discount_value: o.discountType !== "PERCENTAGE" ? value : null,
+      valid_till: o.endsAt ? new Date(o.endsAt).toISOString() : null,
     });
   }
 
@@ -478,14 +607,18 @@ async function fetchHomeFeaturedOffers(params: {
   const seen = new Set<string>();
   const merged: HomeBannerOffer[] = [];
   const push = (b: HomeBannerOffer) => {
-    const key = `${b.store_id}::${b.title.toLowerCase()}`;
+    const key = `${b.kind}::${b.source_offer_id}::${b.store_id}`;
     if (seen.has(key)) return;
     seen.add(key);
     merged.push(b);
   };
 
+  const globalPlatform = platformBanners.filter((b) => b.id.startsWith("platform-global-"));
+  const scopedPlatform = platformBanners.filter((b) => !b.id.startsWith("platform-global-"));
+
+  for (const b of globalPlatform) push(b);
+  for (const b of scopedPlatform) push(b);
   for (const b of merchantBanners) push(b);
-  for (const b of platformBanners) push(b);
 
   return merged.slice(0, params.limit);
 }
@@ -591,6 +724,8 @@ export async function offersRoutes(app: FastifyInstance) {
               max_discount_amount:   z.number().nullable().optional(),
               discount_percentage:   z.number().nullable().optional(),
               discount_value:        z.number().nullable().optional(),
+              offer_image_url:       z.string().nullable().optional(),
+              valid_till:            z.string().nullable().optional(),
             })),
           }),
         },

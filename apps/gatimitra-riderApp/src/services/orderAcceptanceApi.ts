@@ -1,5 +1,7 @@
 import { getRiderAppConfig } from "@/src/config/env";
 import { normalizeAlertSoundSlots, resolveAlertSoundUrl } from "@/src/lib/resolveAlertSoundUrl";
+import { HttpError } from "@/src/services/http";
+import { notifySessionRevoked } from "@/src/services/sessionEvents";
 import { useSessionStore } from "@/src/stores/sessionStore";
 
 export type RiderOrderAcceptanceSettings = {
@@ -33,10 +35,20 @@ export async function fetchRiderOrderAcceptanceSettings(): Promise<RiderOrderAcc
   const res = await fetch(`${base}/v1/rider/order-acceptance-settings`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  const data = (await res.json().catch(() => ({}))) as {
-    settings?: RiderOrderAcceptanceSettings;
-    error?: string;
-  };
+  const raw = await res.text().catch(() => "");
+  let data: { settings?: RiderOrderAcceptanceSettings; error?: string } = {};
+  try {
+    data = raw ? (JSON.parse(raw) as typeof data) : {};
+  } catch {
+    data = {};
+  }
+  if (res.status === 401) {
+    const err = data.error?.trim();
+    notifySessionRevoked({
+      reason: err === "invalid_token" ? "invalid_token" : "revoked",
+    });
+    throw new HttpError(data.error || "Session expired. Please sign in again.", 401, raw);
+  }
   if (!res.ok || !data.settings) {
     throw new Error(data.error || "Failed to load alert settings");
   }

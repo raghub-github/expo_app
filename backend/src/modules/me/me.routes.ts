@@ -8,7 +8,8 @@ import {
   sendCustomerEmailVerificationOtp,
   verifyCustomerEmailVerificationOtp,
 } from "../../services/email/emailVerificationOtp.js";
-import { resolveEmailAvatarUrl } from "../../lib/email-avatar.js";
+import { resolveEmailAvatarUrl, isGenericProfileImageUrl } from "../../lib/email-avatar.js";
+import { getCustomerLifetimeSavingsInr } from "./customer-lifetime-savings.js";
 
 /** Random words for referral code suffix (1 or 2 words) */
 const REFERRAL_WORDS = [
@@ -94,6 +95,7 @@ const profileResponseSchema = z.object({
   updated_at: z.string().optional(),
   gmitra_plus_active: z.boolean().optional(),
   profile_image_url: z.string().nullable().optional(),
+  lifetime_savings_inr: z.number().optional(),
 });
 
 const patchBodySchema = z.object({
@@ -171,16 +173,33 @@ function toResponseFromCustomer(row: typeof customers.$inferSelect) {
   };
 }
 
+async function customerProfileResponse(
+  db: ReturnType<typeof getDb>,
+  row: typeof customers.$inferSelect,
+) {
+  const lifetimeSavingsInr = await getCustomerLifetimeSavingsInr(db, row.id);
+  // Avatar lookup can take several seconds — refresh in background, don't block profile load.
+  void ensureEmailAvatarForCustomer(db, row).catch(() => {});
+  return {
+    ...toResponseFromCustomer(row),
+    lifetime_savings_inr: lifetimeSavingsInr,
+  };
+}
+
 async function ensureEmailAvatarForCustomer(
   db: ReturnType<typeof getDb>,
   row: typeof customers.$inferSelect,
 ): Promise<typeof customers.$inferSelect> {
-  if (!row.isEmailVerified || row.profileImageUrl?.trim()) return row;
+  if (!row.isEmailVerified) return row;
   const email = row.email?.trim().toLowerCase();
   if (!email) return row;
 
+  const stored = row.profileImageUrl?.trim() || null;
+  if (stored && !isGenericProfileImageUrl(stored)) return row;
+
   try {
     const avatarUrl = await resolveEmailAvatarUrl(email);
+    if (isGenericProfileImageUrl(avatarUrl)) return row;
     const [updated] = await db
       .update(customers)
       .set({ profileImageUrl: avatarUrl, updatedAt: new Date() })
@@ -234,7 +253,7 @@ export async function meRoutes(app: FastifyInstance) {
             message: "Your account is no longer available. Please sign in again.",
           });
         }
-        return toResponseFromCustomer(await ensureEmailAvatarForCustomer(db, rows[0]!));
+        return customerProfileResponse(db, rows[0]!);
       }
 
       if (sub.startsWith("usr_")) {
@@ -255,7 +274,7 @@ export async function meRoutes(app: FastifyInstance) {
           message: "Your account is no longer available. Please sign in again.",
         });
       }
-      return toResponseFromUserProfile(rows[0]!);
+      return { ...toResponseFromUserProfile(rows[0]!), lifetime_savings_inr: 0 };
     }
   );
 
@@ -380,7 +399,7 @@ export async function meRoutes(app: FastifyInstance) {
           if (!updated) {
             return reply.code(500).send({ message: "Could not save. Try again." } as any);
           }
-          return toResponseFromCustomer(updated);
+          return customerProfileResponse(db, updated);
         }
 
         if (sub.startsWith("usr_")) {
@@ -433,7 +452,7 @@ export async function meRoutes(app: FastifyInstance) {
           if (!inserted) {
             return reply.code(500).send({ message: "Could not create profile" } as any);
           }
-          return toResponseFromUserProfile(inserted);
+          return { ...toResponseFromUserProfile(inserted), lifetime_savings_inr: 0 };
         }
         const existing = rows[0]!;
         const [updated] = await db
@@ -454,7 +473,7 @@ export async function meRoutes(app: FastifyInstance) {
         if (!updated) {
           return reply.code(500).send({ message: "Could not save. Try again." } as any);
         }
-        return toResponseFromUserProfile(updated);
+        return { ...toResponseFromUserProfile(updated), lifetime_savings_inr: 0 };
       } catch (err: any) {
         req.log?.error?.({ err }, "PATCH /profile failed");
         const message = err?.message || err?.code || "Could not save. Try again.";
@@ -562,7 +581,7 @@ export async function meRoutes(app: FastifyInstance) {
 
       const now = new Date();
       let profileImageUrl = row.profileImageUrl?.trim() || null;
-      if (!profileImageUrl) {
+      if (!profileImageUrl || isGenericProfileImageUrl(profileImageUrl)) {
         try {
           profileImageUrl = await resolveEmailAvatarUrl(email);
         } catch (err) {

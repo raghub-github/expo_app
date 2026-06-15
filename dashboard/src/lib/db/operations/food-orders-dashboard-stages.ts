@@ -61,10 +61,13 @@ const DISPATCHED_CORE = sql`('dispatched', 'in_transit')`;
 
 const DISPATCH_READY_CUR = sql`(
   'READY_FOR_PICKUP', 'READY', 'DISPATCH_READY', 'DISPATCHREADY',
-  'DISPATCH_READY_FOR_PICKUP', 'REACHED_STORE'
+  'DISPATCH_READY_FOR_PICKUP'
 )`;
 
-const DISPATCH_READY_CORE = sql`('dispatch_ready', 'reached_store')`;
+const DISPATCH_READY_CORE = sql`('dispatch_ready')`;
+
+/** Rider GPS at store — food may still be ACCEPTED / PREPARING until merchant marks ready. */
+const RIDER_AT_MERCHANT_CUR = sql`('RIDER_AT_PICKUP', 'REACHED_STORE', 'REACHED_MERCHANT')`;
 
 const ACCEPTED_CUR = sql`('ACCEPTED', 'PREPARING')`;
 
@@ -98,13 +101,19 @@ function sqlIsDispatchReadyStage(): SQL {
   const food = sqlLinkedFoodStatusKey();
   const core = sqlCoreStatusKey();
   return sql`(
-    ${cur} ILIKE 'DISPATCH%READY%'
-    OR ${cur} IN ${DISPATCH_READY_CUR}
-    OR ${food} IN ${DISPATCH_READY_CUR}
-    OR ${core} IN ${DISPATCH_READY_CORE}
-    OR (
-      ${core} = 'picked_up'
-      AND (${cur} ILIKE 'DISPATCH%READY%' OR ${cur} IN ${DISPATCH_READY_CUR})
+    (
+      ${cur} ILIKE 'DISPATCH%READY%'
+      OR ${cur} IN ${DISPATCH_READY_CUR}
+      OR ${food} IN ${DISPATCH_READY_CUR}
+      OR ${core} IN ${DISPATCH_READY_CORE}
+      OR (
+        ${core} = 'picked_up'
+        AND (${cur} ILIKE 'DISPATCH%READY%' OR ${cur} IN ${DISPATCH_READY_CUR})
+      )
+    )
+    AND NOT (
+      (${core} = 'reached_store' OR ${cur} IN ${RIDER_AT_MERCHANT_CUR})
+      AND ${food} NOT IN ${DISPATCH_READY_CUR}
     )
   )`;
 }
@@ -117,6 +126,10 @@ function sqlIsAcceptedStage(): SQL {
     ${cur} IN ${ACCEPTED_CUR}
     OR ${food} IN ${ACCEPTED_CUR}
     OR ${core} = 'accepted'
+    OR (
+      (${core} = 'reached_store' OR ${cur} IN ${RIDER_AT_MERCHANT_CUR})
+      AND ${food} NOT IN ${DISPATCH_READY_CUR}
+    )
   )`;
 }
 

@@ -62,6 +62,39 @@ export async function requireSuperAdminAccess(
 }
 
 /**
+ * Resolve the default orders sub-dashboard in one auth round-trip (food → parcel → ride).
+ * Redirects to login when the session is missing or invalid.
+ */
+export async function getDefaultOrdersDashboardHref(): Promise<string | null> {
+  const { user, error } = await getAuthenticatedUser();
+
+  if (error || !user?.email) {
+    redirect("/login");
+  }
+
+  const userPerms = await getUserPermissions(user.id, user.email);
+  if (!userPerms) {
+    redirect("/login");
+  }
+
+  if (userPerms.isSuperAdmin) {
+    return "/dashboard/orders/food";
+  }
+
+  const [hasFood, hasParcel, hasRide] = await Promise.all([
+    hasDashboardAccess(userPerms.systemUserId, "ORDER_FOOD"),
+    hasDashboardAccess(userPerms.systemUserId, "ORDER_PARCEL"),
+    hasDashboardAccess(userPerms.systemUserId, "ORDER_PERSON_RIDE"),
+  ]);
+
+  if (hasFood) return "/dashboard/orders/food";
+  if (hasParcel) return "/dashboard/orders/parcel";
+  if (hasRide) return "/dashboard/orders/person-ride";
+
+  return null;
+}
+
+/**
  * Check if user has access to a dashboard page and redirect if not
  * Use this in server components to protect dashboard pages
  */

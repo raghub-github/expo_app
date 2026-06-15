@@ -42,6 +42,8 @@ import { useEnsureStoreLiveStatus } from "@/hooks/useEnsureStoreLiveStatus";
 import { orderService } from "@/services/order.service";
 import { billingService, type CalculateBillResponse } from "@/services/billing.service";
 import { previewEtaRange, formatEtaRange } from "@/lib/etaPreview";
+import { useLocationWeather } from "@/hooks/useLocationWeather";
+import { applyWeatherToEtaRange } from "@/services/weather.service";
 import { paymentService } from "@/services/payment.service";
 import { addressService, type Address } from "@/services/address.service";
 import { profileService } from "@/services/profile.service";
@@ -53,6 +55,10 @@ import { HEADER_PADDING_TOP } from "@/constants/layout";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import { haversineKm, SERVICE_RADIUS_KM } from "@/lib/billSummary";
 import { matchSavedAddressIdNearCoords } from "@/lib/deliveryDropResolution";
+import {
+  buildDeliveryInstructionsList,
+  parseDeliveryInstructionsList,
+} from "@/lib/delivery-instructions";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { reverseGeocode } from "@/services/location.service";
 import { getRoute } from "@/services/distance.service";
@@ -67,6 +73,7 @@ import {
   prefetchMenuItemFullConfigsForMenu,
   resolveFullConfigItemId,
 } from "@/lib/menu-item-config-query";
+import { useScreenChromeStore } from "@/store/screenChromeStore";
 
 /** Wait before POST /billing/calculate after tip/donation slider moves. */
 const BILLING_INPUT_DEBOUNCE_MS = 400;
@@ -144,6 +151,9 @@ const CX = {
   mintGradient: ["#3EC9A8", "#2DB5A0"] as const,
   textSecondary: "#666666",
 } as const;
+
+/** Matches checkout header strip — synced with root status bar via screenChromeStore. */
+const CHECKOUT_HEADER_BG = "#F8F8F8";
 
 const GMITRA_PLUS_NAME = "GMitra plus";
 
@@ -421,6 +431,7 @@ export default function CheckoutScreen() {
   const [scheduleSlotDraft, setScheduleSlotDraft] = useState<string | null>(null);
   const [scheduledDeliverySummary, setScheduledDeliverySummary] = useState<string | null>(null);
   const [instructionSheetVisible, setInstructionSheetVisible] = useState(false);
+  const [instructionSaveBusy, setInstructionSaveBusy] = useState(false);
   const [addressSheetVisible, setAddressSheetVisible] = useState(false);
   const [addressSheetBusyId, setAddressSheetBusyId] = useState<number | null>(null);
   const [receiverSheetVisible, setReceiverSheetVisible] = useState(false);
@@ -463,6 +474,7 @@ export default function CheckoutScreen() {
    */
   const idempotencyKeyRef = useRef<string | null>(null);
   const tipSliderTrackWRef = useRef(0);
+  const instructionsHydratedForAddressRef = useRef<number | null>(null);
 
   const { data: addresses = [], isLoading: addressesLoading } = useQuery({
     queryKey: ["addresses"],
@@ -494,6 +506,16 @@ export default function CheckoutScreen() {
     }, [queryClient])
   );
 
+  const setStatusBarBackground = useScreenChromeStore((s) => s.setStatusBarBackground);
+  const resetStatusBarBackground = useScreenChromeStore((s) => s.resetStatusBarBackground);
+
+  useFocusEffect(
+    useCallback(() => {
+      setStatusBarBackground(CHECKOUT_HEADER_BG);
+      return () => resetStatusBarBackground();
+    }, [setStatusBarBackground, resetStatusBarBackground])
+  );
+
   useEffect(() => {
     if (!scheduleSheetVisible) return;
     setScheduleSlotDraft(SCHEDULE_SLOT_OPTIONS[0]);
@@ -522,6 +544,59 @@ export default function CheckoutScreen() {
     selectedAddress?.contactMobile,
     userProfile?.full_name,
     userProfile?.mobile_number,
+  ]);
+
+  /** Load saved rider instructions from the selected address (JSON array on customer_addresses). */
+  useEffect(() => {
+    if (!selectedAddress) return;
+    if (instructionsHydratedForAddressRef.current === selectedAddress.id) return;
+    instructionsHydratedForAddressRef.current = selectedAddress.id;
+    if (!selectedAddress.deliveryInstructionsList?.length) return;
+    const parsed = parseDeliveryInstructionsList(selectedAddress.deliveryInstructionsList);
+    setDeliveryPartnerNote(parsed.note);
+    setLeaveAtDoor(parsed.leaveAtDoor);
+    setInstrLeaveWithGuard(parsed.leaveWithGuard);
+    setInstrAvoidCalling(parsed.avoidCalling);
+    setInstrDontRingBell(parsed.dontRingBell);
+    setInstrPetAtHome(parsed.petAtHome);
+  }, [selectedAddress?.id, selectedAddress?.deliveryInstructionsList]);
+
+  const saveDeliveryPartnerInstructions = useCallback(async () => {
+    const list = buildDeliveryInstructionsList({
+      note: deliveryPartnerNote,
+      leaveAtDoor,
+      leaveWithGuard: instrLeaveWithGuard,
+      avoidCalling: instrAvoidCalling,
+      dontRingBell: instrDontRingBell,
+      petAtHome: instrPetAtHome,
+    });
+    if (!selectedAddress) {
+      setInstructionSheetVisible(false);
+      return;
+    }
+    setInstructionSaveBusy(true);
+    try {
+      await addressService.updateAddress(selectedAddress.id, { deliveryInstructionsList: list });
+      await queryClient.invalidateQueries({ queryKey: ["addresses"] });
+      instructionsHydratedForAddressRef.current = selectedAddress.id;
+      setInstructionSheetVisible(false);
+    } catch (err) {
+      Alert.alert(
+        "Could not save instructions",
+        err instanceof Error ? err.message : "Please try again."
+      );
+    } finally {
+      setInstructionSaveBusy(false);
+    }
+  }, [
+    deliveryPartnerNote,
+    leaveAtDoor,
+    instrLeaveWithGuard,
+    instrAvoidCalling,
+    instrDontRingBell,
+    instrPetAtHome,
+    selectedAddress,
+    queryClient,
   ]);
 
   // Keep "active location" and global location pin in sync with the checkout delivery address.
@@ -1193,33 +1268,12 @@ export default function CheckoutScreen() {
 
   const serverBill = billingQuery.data ?? null;
 
-  /** Pre-discount payable cart — same basis as server min-order checks (items + addons + fees). */
-  const qualifyingCartForOffers = useMemo(() => {
-    if (!serverBill) return undefined;
-    const deliveryPart =
-      deliveryType === "self_pickup"
-        ? 0
-        : Math.max(0, serverBill.deliveryFeeQuotedInr ?? serverBill.deliveryFee ?? 0);
-    return (
-      serverBill.itemTotal +
-      serverBill.addonTotal +
-      deliveryPart +
-      serverBill.packagingFee +
-      serverBill.platformFee +
-      serverBill.surgeFee +
-      serverBill.smallOrderFee +
-      serverBill.convenienceFee +
-      serverBill.miscFee
-    );
-  }, [serverBill, deliveryType]);
-
   const checkoutOffersQuery = useQuery({
     queryKey: [
       "billing-checkout-offers",
       merchantId,
       selectedAddress?.id,
       cartSubtotalForOffers,
-      qualifyingCartForOffers,
       livePincode,
       liveState,
     ],
@@ -1228,7 +1282,6 @@ export default function CheckoutScreen() {
         merchantId: merchantId!,
         addressId: String(selectedAddress!.id),
         cartSubtotal: cartSubtotalForOffers,
-        qualifyingCartTotal: qualifyingCartForOffers,
         serviceType: "FOOD",
         pincode: livePincode,
         state: liveState,
@@ -1257,36 +1310,18 @@ export default function CheckoutScreen() {
     [serverBill?.discounts]
   );
 
-  const autoVisibleDiscounts = useMemo(
-    () =>
-      visibleDiscounts.filter(
-        (d) => !discountMatchesCoupon(d.label, appliedCouponCode, appliedCouponLabel)
-      ),
-    [visibleDiscounts, appliedCouponCode, appliedCouponLabel]
-  );
+  const primaryCheckoutDiscount = useMemo(() => {
+    if (visibleDiscounts.length === 0) return null;
+    return [...visibleDiscounts].sort((a, b) => b.amount - a.amount)[0];
+  }, [visibleDiscounts]);
 
   const couponDiscountAmount = useMemo(() => {
-    if (!appliedCouponCode) return 0;
-    const match = visibleDiscounts.find((d) =>
-      discountMatchesCoupon(d.label, appliedCouponCode, appliedCouponLabel)
-    );
-    return match?.amount ?? 0;
-  }, [visibleDiscounts, appliedCouponCode, appliedCouponLabel]);
-
-  const topAutoDiscount = useMemo(() => {
-    if (autoVisibleDiscounts.length === 0) return null;
-    return [...autoVisibleDiscounts].sort((a, b) => b.amount - a.amount)[0];
-  }, [autoVisibleDiscounts]);
-
-  /** Extra auto-offer rows above the coupon row (avoid duplicating the primary line). */
-  const autoDiscountsForList = useMemo(() => {
-    if (appliedCouponCode) return autoVisibleDiscounts;
-    if (!topAutoDiscount) return [];
-    if (autoVisibleDiscounts.length <= 1) return [];
-    return autoVisibleDiscounts.filter(
-      (d) => d.ruleId !== topAutoDiscount.ruleId || d.label !== topAutoDiscount.label
-    );
-  }, [autoVisibleDiscounts, appliedCouponCode, topAutoDiscount]);
+    if (!appliedCouponCode || !primaryCheckoutDiscount) return 0;
+    if (!discountMatchesCoupon(primaryCheckoutDiscount.label, appliedCouponCode, appliedCouponLabel)) {
+      return 0;
+    }
+    return primaryCheckoutDiscount.amount;
+  }, [primaryCheckoutDiscount, appliedCouponCode, appliedCouponLabel]);
 
   const checkoutSavingsTotal =
     serverBill && serverBill.discountTotal > 0.005 ? serverBill.discountTotal : 0;
@@ -1301,20 +1336,20 @@ export default function CheckoutScreen() {
       const id = d.meta?.platformOfferId;
       if (typeof id === "number" && id > 0) return id;
     }
-    return selectedPlatformOfferId;
-  }, [visibleDiscounts, selectedPlatformOfferId]);
+    return billingQuery.isFetching ? selectedPlatformOfferId : null;
+  }, [visibleDiscounts, billingQuery.isFetching, selectedPlatformOfferId]);
 
   const appliedMerchantOfferId = useMemo(() => {
     for (const d of visibleDiscounts) {
       const id = d.meta?.merchantOfferId;
       if (typeof id === "number" && id > 0) return id;
     }
-    return selectedMerchantOfferId;
-  }, [visibleDiscounts, selectedMerchantOfferId]);
+    return billingQuery.isFetching ? selectedMerchantOfferId : null;
+  }, [visibleDiscounts, billingQuery.isFetching, selectedMerchantOfferId]);
 
   const appliedDiscountRows = useMemo(
     () =>
-      visibleDiscounts.map((d) => ({
+      (primaryCheckoutDiscount ? [primaryCheckoutDiscount] : []).map((d) => ({
         label: d.label,
         amount: d.amount,
         platformOfferId:
@@ -1322,8 +1357,73 @@ export default function CheckoutScreen() {
         merchantOfferId:
           typeof d.meta?.merchantOfferId === "number" ? (d.meta.merchantOfferId as number) : null,
       })),
-    [visibleDiscounts]
+    [primaryCheckoutDiscount]
   );
+
+  /** Align coupon/offer picker with server bill — one promo on the order at a time. */
+  useEffect(() => {
+    if (!serverBill || billingQuery.isFetching) return;
+
+    const discounts = (serverBill.discounts ?? []).filter((c) => !c.hidden);
+    if (discounts.length === 0) {
+      if (selectedPlatformOfferId != null) setSelectedPlatformOfferId(null);
+      if (selectedMerchantOfferId != null) setSelectedMerchantOfferId(null);
+      if (appliedCouponCode) {
+        setAppliedCouponCode(null);
+        setAppliedCouponLabel(null);
+      }
+      return;
+    }
+
+    const primary = [...discounts].sort((a, b) => b.amount - a.amount)[0];
+    const platformId =
+      typeof primary.meta?.platformOfferId === "number" ? (primary.meta.platformOfferId as number) : null;
+    const merchantId =
+      typeof primary.meta?.merchantOfferId === "number" ? (primary.meta.merchantOfferId as number) : null;
+    const couponCode =
+      typeof primary.meta?.code === "string"
+        ? String(primary.meta.code).trim()
+        : primary.label.replace(/^coupon\s+/i, "").trim();
+
+    if (platformId != null) {
+      if (selectedPlatformOfferId !== platformId) setSelectedPlatformOfferId(platformId);
+      if (selectedMerchantOfferId != null) setSelectedMerchantOfferId(null);
+      if (appliedCouponCode) {
+        setAppliedCouponCode(null);
+        setAppliedCouponLabel(null);
+      }
+      setForceNoAutoOffer(false);
+      return;
+    }
+
+    if (merchantId != null) {
+      if (selectedMerchantOfferId !== merchantId) setSelectedMerchantOfferId(merchantId);
+      if (selectedPlatformOfferId != null) setSelectedPlatformOfferId(null);
+      if (appliedCouponCode) {
+        setAppliedCouponCode(null);
+        setAppliedCouponLabel(null);
+      }
+      setForceNoAutoOffer(false);
+      return;
+    }
+
+    if (couponCode) {
+      if (appliedCouponCode?.toUpperCase() !== couponCode.toUpperCase()) {
+        setAppliedCouponCode(couponCode);
+        setAppliedCouponLabel(couponCode);
+      }
+      if (selectedPlatformOfferId != null) setSelectedPlatformOfferId(null);
+      if (selectedMerchantOfferId != null) setSelectedMerchantOfferId(null);
+      setForceNoAutoOffer(false);
+    }
+  }, [
+    serverBill,
+    billingQuery.isFetching,
+    billingQuery.dataUpdatedAt,
+    selectedPlatformOfferId,
+    selectedMerchantOfferId,
+    appliedCouponCode,
+  ]);
 
   const applyCouponCode = useCallback((code: string, label?: string) => {
     const trimmed = code.trim();
@@ -1391,10 +1491,7 @@ export default function CheckoutScreen() {
     if (!appliedCouponCode && !selectedPlatformOfferId) setForceNoAutoOffer(true);
   }, [appliedCouponCode, selectedPlatformOfferId]);
 
-  const showItemTotalStrike = useMemo(() => {
-    if (!serverBill || serverBill.discountTotal <= 0.005) return false;
-    return serverBill.itemTotal > serverBill.itemsNetAfterDiscounts + 0.005;
-  }, [serverBill]);
+  const showItemTotalStrike = false;
 
   const deliveryFeeLabel = useMemo(() => {
     if (!serverBill || serverBill.deliveryFee <= 0) return "Delivery fee";
@@ -1410,6 +1507,37 @@ export default function CheckoutScreen() {
     const km = uiDistanceKm;
     return km != null ? `${base} (${km.toFixed(1)} km)` : base;
   }, [serverBill, uiDistanceKm]);
+
+  /** Estimated delivery-fee savings with GMitra Plus — shown on attached promo row. */
+  const gmitraPlusDeliverySave = useMemo(() => {
+    if (!serverBill || deliveryType !== "delivery") return null;
+    const fee = Math.max(0, serverBill.deliveryFeeQuotedInr ?? serverBill.deliveryFee ?? 0);
+    return fee > 0.005 ? Math.round(fee) : null;
+  }, [serverBill, deliveryType]);
+
+  const showGmitraPlusAttachRow = deliveryType === "delivery";
+
+  const gmitraPlusPromoCopy = useMemo(
+    () => ({
+      offersTitle: subscriptionOptIn
+        ? `${GMITRA_PLUS_NAME} savings on this order`
+        : gmitraPlusDeliverySave != null
+          ? `Save ₹${gmitraPlusDeliverySave} with free delivery`
+          : "Save extra with free delivery & offers",
+      offersSub: subscriptionOptIn
+        ? `${GMITRA_PLUS_NAME} benefits are applied to your bill.`
+        : `Add ${GMITRA_PLUS_NAME} at ₹1 for 3 months`,
+      attachTitle: subscriptionOptIn
+        ? `${GMITRA_PLUS_NAME} applied on this order`
+        : gmitraPlusDeliverySave != null
+          ? `Save ₹${gmitraPlusDeliverySave} with free delivery`
+          : "Save with free delivery & offers",
+      attachSub: subscriptionOptIn
+        ? "Member benefits are included in your bill."
+        : `Add ${GMITRA_PLUS_NAME} at ₹1 for 3 months`,
+    }),
+    [subscriptionOptIn, gmitraPlusDeliverySave]
+  );
 
   const gstAndOtherBreakdown = useMemo(() => {
     if (!serverBill) return null;
@@ -1530,6 +1658,14 @@ export default function CheckoutScreen() {
       ...(subscriptionOptIn && { subscriptionOptIn: true }),
       checkoutMetadata: {
         leaveAtDoor,
+        deliveryInstructionsList: buildDeliveryInstructionsList({
+          note: deliveryPartnerNote,
+          leaveAtDoor,
+          leaveWithGuard: instrLeaveWithGuard,
+          avoidCalling: instrAvoidCalling,
+          dontRingBell: instrDontRingBell,
+          petAtHome: instrPetAtHome,
+        }),
         ...(deliveryPartnerNote.trim() ? { deliveryInstructions: deliveryPartnerNote.trim() } : {}),
         ...(instrLeaveWithGuard ? { leaveWithGuard: true } : {}),
         ...(instrAvoidCalling ? { avoidCalling: true } : {}),
@@ -1939,14 +2075,39 @@ export default function CheckoutScreen() {
   // Canonical delivery range — uses the SAME formula as the restaurant list
   // and merchant detail header so the customer sees the same number on every
   // screen for a given store + address.
+  const checkoutWeatherCoords = useMemo(() => {
+    if (selectedAddress?.latitude != null && selectedAddress?.longitude != null) {
+      return { lat: selectedAddress.latitude, lng: selectedAddress.longitude };
+    }
+    if (sessionCoords?.latitude != null && sessionCoords?.longitude != null) {
+      return { lat: sessionCoords.latitude, lng: sessionCoords.longitude };
+    }
+    return null;
+  }, [selectedAddress?.latitude, selectedAddress?.longitude, sessionCoords?.latitude, sessionCoords?.longitude]);
+  const { data: checkoutWeather } = useLocationWeather({
+    lat: checkoutWeatherCoords?.lat,
+    lng: checkoutWeatherCoords?.lng,
+    area: selectedAddress?.label ?? undefined,
+    city: selectedAddress?.city ?? undefined,
+  });
   const deliveryEta = useMemo(() => {
-    return formatEtaRange(
-      previewEtaRange({
-        distanceKm: serverBill?.distanceKm ?? merchant?.distanceKm ?? null,
-        prepMinutes: merchant?.avgPreparationTimeMinutes ?? null,
-      }),
+    const base = previewEtaRange({
+      distanceKm: serverBill?.distanceKm ?? merchant?.distanceKm ?? null,
+      prepMinutes: merchant?.avgPreparationTimeMinutes ?? null,
+    });
+    const adjusted = applyWeatherToEtaRange(
+      base.etaMinMinutes,
+      base.etaMaxMinutes,
+      checkoutWeather?.etaDelayMinutes ?? 0
     );
-  }, [merchant?.avgPreparationTimeMinutes, merchant?.distanceKm, serverBill?.distanceKm]);
+    return formatEtaRange(adjusted);
+  }, [
+    merchant?.avgPreparationTimeMinutes,
+    merchant?.distanceKm,
+    serverBill?.distanceKm,
+    checkoutWeather?.etaDelayMinutes,
+  ]);
+  const deliveryEtaImpactLabel = checkoutWeather?.etaImpactLabel ?? null;
 
   const scheduleDayTabs = useMemo(() => {
     const out: { id: string; line1: string; line2: string }[] = [];
@@ -2188,7 +2349,7 @@ export default function CheckoutScreen() {
   return (
     <View style={styles.container}>
       {/* Zomato-style header: back · merchant name (top, small) + eta + address (with chevron) · share icon */}
-      <View style={[styles.header, { paddingTop: HEADER_PADDING_TOP }]}>
+      <View style={[styles.header, { paddingTop: HEADER_PADDING_TOP + 4 }]}>
         <View style={styles.headerRow}>
           <TouchableOpacity onPress={() => router.back()} style={styles.headerBack} hitSlop={12}>
             <Ionicons name="chevron-back" size={22} color="#1A1A1A" />
@@ -2479,15 +2640,9 @@ export default function CheckoutScreen() {
             <View style={styles.offersBodyRow}>
               <MaterialCommunityIcons name="crown-outline" size={22} color="#CA8A04" style={styles.offersSubIcon} />
               <View style={styles.offersBodyTextCol}>
-                <Text style={styles.offersSubLineBold}>
-                  {subscriptionOptIn
-                    ? `${GMITRA_PLUS_NAME} savings on this order`
-                    : "Save extra with free delivery & offers"}
-                </Text>
+                <Text style={styles.offersSubLineBold}>{gmitraPlusPromoCopy.offersTitle}</Text>
                 <Text style={styles.offersSubLineMuted} numberOfLines={2}>
-                  {subscriptionOptIn
-                    ? `${GMITRA_PLUS_NAME} benefits are applied to your bill.`
-                    : `Add ${GMITRA_PLUS_NAME} at ₹1 for 3 months`}
+                  {gmitraPlusPromoCopy.offersSub}
                 </Text>
                 <TouchableOpacity
                   activeOpacity={0.7}
@@ -2508,37 +2663,10 @@ export default function CheckoutScreen() {
               </TouchableOpacity>
             </View>
 
-            {autoDiscountsForList.length > 0 ? (
-              <>
-                <View style={styles.offersDottedSep} />
-                {autoDiscountsForList.map((d, idx) => (
-                  <Fragment key={`applied-disc-${d.ruleId ?? idx}`}>
-                    {idx > 0 ? <View style={styles.offersDottedSep} /> : null}
-                    <View style={styles.offersAppliedRow}>
-                      <View style={styles.offersGreenTick}>
-                        <Ionicons name="checkmark" size={14} color="#fff" />
-                      </View>
-                      <View style={styles.offersBodyTextCol}>
-                        <Text style={styles.offersAppliedHeadline} numberOfLines={2}>
-                          You saved ₹{d.amount.toFixed(0)} with {d.label}
-                        </Text>
-                        <TouchableOpacity onPress={() => setCouponSheetVisible(true)} activeOpacity={0.7} hitSlop={6}>
-                          <Text style={styles.offersLearnMore}>View all coupons ›</Text>
-                        </TouchableOpacity>
-                      </View>
-                      <TouchableOpacity onPress={removeAllCheckoutOffers} hitSlop={8} activeOpacity={0.7}>
-                        <Text style={styles.offersRemoveRed}>Remove</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </Fragment>
-                ))}
-              </>
-            ) : null}
-
             <View style={styles.offersDottedSep} />
 
             <View style={styles.offersAppliedRow}>
-              {appliedCouponCode || topAutoDiscount ? (
+              {primaryCheckoutDiscount || appliedCouponCode ? (
                 <View style={styles.offersGreenTick}>
                   <Ionicons name="checkmark" size={14} color="#fff" />
                 </View>
@@ -2549,14 +2677,12 @@ export default function CheckoutScreen() {
               )}
               <View style={styles.offersBodyTextCol}>
                 <Text style={styles.offersAppliedHeadline} numberOfLines={2}>
-                  {appliedCouponCode
-                    ? couponDiscountAmount > 0.005
-                      ? `You saved ₹${couponDiscountAmount.toFixed(0)} with '${appliedCouponCode}'`
-                      : `${appliedCouponLabel ?? appliedCouponCode} applied`
-                    : topAutoDiscount
-                      ? topAutoDiscount.amount > 0.005
-                        ? `You saved ₹${topAutoDiscount.amount.toFixed(0)} with ${topAutoDiscount.label}`
-                        : `${topAutoDiscount.label} applied!`
+                  {primaryCheckoutDiscount
+                    ? primaryCheckoutDiscount.amount > 0.005
+                      ? `You saved ₹${primaryCheckoutDiscount.amount.toFixed(0)} with ${primaryCheckoutDiscount.label}`
+                      : `${primaryCheckoutDiscount.label} applied!`
+                    : appliedCouponCode
+                      ? `${appliedCouponLabel ?? appliedCouponCode} applied`
                       : featuredCoupon
                         ? featuredCoupon.description ||
                           `Save more with '${featuredCoupon.code}'`
@@ -2566,7 +2692,7 @@ export default function CheckoutScreen() {
                   <Text style={styles.offersLearnMore}>View all coupons ›</Text>
                 </TouchableOpacity>
               </View>
-              {appliedCouponCode || topAutoDiscount || appliedPlatformOfferId ? (
+              {primaryCheckoutDiscount || appliedCouponCode || appliedPlatformOfferId || appliedMerchantOfferId ? (
                 <TouchableOpacity onPress={removeAllCheckoutOffers} hitSlop={8} activeOpacity={0.7}>
                   <Text style={styles.offersRemoveRed}>Remove</Text>
                 </TouchableOpacity>
@@ -2596,6 +2722,9 @@ export default function CheckoutScreen() {
                   <Text style={styles.zomatoEtaLine}>
                     Delivery in <Text style={styles.zomatoEtaBold}>{deliveryEta}</Text>
                   </Text>
+                  {deliveryEtaImpactLabel ? (
+                    <Text style={styles.weatherEtaImpact}>{deliveryEtaImpactLabel}</Text>
+                  ) : null}
                   {scheduledDeliverySummary ? (
                     <Text style={styles.scheduledSummaryLine} numberOfLines={2}>
                       {scheduledDeliverySummary}
@@ -2703,7 +2832,7 @@ export default function CheckoutScreen() {
             <View style={styles.zomatoCardDash} />
 
             <TouchableOpacity
-              style={styles.zomatoBillHeader}
+              style={[styles.zomatoBillHeader, showGmitraPlusAttachRow && styles.zomatoBillHeaderWithAttach]}
               onPress={() => setBillSummarySheetVisible(true)}
               activeOpacity={0.8}
             >
@@ -2740,49 +2869,41 @@ export default function CheckoutScreen() {
               </View>
             ) : null}
 
-            <View style={styles.zomatoCardDash} />
-
-            <View style={styles.zomatoGoldWrap}>
-              <View style={styles.zomatoGoldPointer} />
-              <View style={styles.zomatoGoldBubble}>
+            {showGmitraPlusAttachRow ? (
+              <View style={styles.zomatoGoldAttach}>
+                <View style={styles.zomatoGoldPointerShell}>
+                  <View style={styles.zomatoGoldPointerBorder} />
+                  <View style={styles.zomatoGoldPointerFill} />
+                </View>
                 <View style={styles.zomatoGoldCrownRing}>
-                  <MaterialCommunityIcons name="crown" size={18} color="#FDE68A" />
+                  <MaterialCommunityIcons name="crown" size={16} color="#FFFFFF" />
                 </View>
                 <View style={styles.zomatoGoldTextCol}>
-                  <Text style={styles.zomatoGoldTitle}>
-                    {subscriptionOptIn
-                      ? `${GMITRA_PLUS_NAME} on this order`
-                      : "Save extra with free delivery & offers"}
-                  </Text>
+                  <Text style={styles.zomatoGoldTitle}>{gmitraPlusPromoCopy.attachTitle}</Text>
                   <Text style={styles.zomatoGoldSub} numberOfLines={2}>
-                    {subscriptionOptIn
-                      ? "Member benefits are applied to your bill."
-                      : `Add ${GMITRA_PLUS_NAME} at ₹1 for 3 months`}
+                    {gmitraPlusPromoCopy.attachSub}
                   </Text>
-                  <TouchableOpacity
-                    activeOpacity={0.7}
-                    hitSlop={8}
-                    onPress={() => setGmitraPlusSheetVisible(true)}
-                  >
-                    <Text style={styles.offersLearnMore}>Learn more {'>'}</Text>
-                  </TouchableOpacity>
                 </View>
                 <TouchableOpacity
-                  style={[styles.zomatoGoldAddBtn, subscriptionOptIn && styles.offersApplyFilled]}
+                  style={[
+                    styles.zomatoGoldAddBtn,
+                    subscriptionOptIn && styles.zomatoGoldAddBtnApplied,
+                  ]}
                   onPress={() => setSubscriptionOptIn(!subscriptionOptIn)}
+                  onLongPress={() => setGmitraPlusSheetVisible(true)}
                   activeOpacity={0.85}
                 >
                   <Text
                     style={[
                       styles.zomatoGoldAddBtnText,
-                      subscriptionOptIn && styles.offersApplyFilledText,
+                      subscriptionOptIn && styles.zomatoGoldAddBtnTextApplied,
                     ]}
                   >
-                    {subscriptionOptIn ? "Added" : `Add ${GMITRA_PLUS_NAME}`}
+                    {subscriptionOptIn ? "Added" : "Add Plus"}
                   </Text>
                 </TouchableOpacity>
               </View>
-            </View>
+            ) : null}
           </View>
         </Animated.View>
 
@@ -3033,6 +3154,7 @@ export default function CheckoutScreen() {
         loading={checkoutOffersQuery.isLoading}
         error={checkoutOffersQuery.isError}
         data={checkoutOffersQuery.data}
+        cartSubtotal={cartSubtotalForOffers}
         couponInput={couponCodeInput}
         onCouponInputChange={(t) => {
           setCouponCodeInput(t);
@@ -3422,16 +3544,19 @@ export default function CheckoutScreen() {
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
-              <View style={styles.instructionVoiceRow}>
-                <Ionicons name="mic-outline" size={20} color={GatiMitraColors.textSecondary} />
-                <Text style={styles.instructionVoiceHint}>Tap and hold to record instruction</Text>
+              <View style={[styles.instructionVoiceRow, styles.instructionDisabledBlock]} pointerEvents="none">
+                <Ionicons name="mic-outline" size={20} color="#9CA3AF" />
+                <Text style={styles.instructionVoiceHintDisabled}>Tap and hold to record instruction</Text>
+                <Text style={styles.instructionComingSoon}>Soon</Text>
               </View>
-              <Text style={styles.instructionImageLabel}>Door/building image (optional)</Text>
-              <Pressable style={styles.instructionImageDashed} onPress={() => undefined}>
-                <Ionicons name="camera-outline" size={22} color={CX.mint} />
-                <Text style={styles.instructionImageCta}>Add an image</Text>
-              </Pressable>
-              <Text style={styles.instructionImageHelp}>
+              <Text style={[styles.instructionImageLabel, styles.instructionDisabledLabel]}>
+                Door/building image (optional)
+              </Text>
+              <View style={[styles.instructionImageDashed, styles.instructionDisabledBlock]} pointerEvents="none">
+                <Ionicons name="camera-outline" size={22} color="#9CA3AF" />
+                <Text style={styles.instructionImageCtaDisabled}>Add an image</Text>
+              </View>
+              <Text style={[styles.instructionImageHelp, styles.instructionDisabledLabel]}>
                 This helps our delivery partners find your exact location faster
               </Text>
 
@@ -3513,11 +3638,16 @@ export default function CheckoutScreen() {
             </ScrollView>
 
             <TouchableOpacity
-              style={styles.instructionSaveBtnFull}
-              onPress={() => setInstructionSheetVisible(false)}
+              style={[styles.instructionSaveBtnFull, instructionSaveBusy && { opacity: 0.7 }]}
+              onPress={() => void saveDeliveryPartnerInstructions()}
               activeOpacity={0.9}
+              disabled={instructionSaveBusy}
             >
-              <Text style={styles.instructionSaveBtnFullText}>Save</Text>
+              {instructionSaveBusy ? (
+                <ActivityIndicator color="#FFFFFF" size="small" />
+              ) : (
+                <Text style={styles.instructionSaveBtnFullText}>Save</Text>
+              )}
             </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
@@ -4103,9 +4233,14 @@ export default function CheckoutScreen() {
                     />
                   )}
 
-                  {visibleDiscounts.map((c, idx) => (
-                    <BillRow key={`sheet-dsc-${idx}`} label={c.label} value={`-₹${c.amount.toFixed(2)}`} green />
-                  ))}
+                  {primaryCheckoutDiscount ? (
+                    <BillRow
+                      key="sheet-primary-discount"
+                      label={primaryCheckoutDiscount.label}
+                      value={`-₹${primaryCheckoutDiscount.amount.toFixed(2)}`}
+                      green
+                    />
+                  ) : null}
 
                   {serverBill.components.delivery.taxable_value > 0.005 && (
                     <BillRow
@@ -4397,10 +4532,10 @@ const styles = StyleSheet.create({
   ctaSecondary: { marginTop: SPACING, paddingVertical: 12, paddingHorizontal: 24 },
   ctaSecondaryText: { fontSize: 16, fontWeight: "600", color: CX.mint },
   header: {
-    backgroundColor: "#F8F8F8",
+    backgroundColor: CHECKOUT_HEADER_BG,
     zIndex: 20,
     paddingHorizontal: 12,
-    paddingBottom: 4,
+    paddingBottom: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E8E8E8",
     ...GatiMitraColors.elevationShadow,
@@ -4408,6 +4543,7 @@ const styles = StyleSheet.create({
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
+    paddingVertical: 4,
   },
   headerBack: {
     alignSelf: "center",
@@ -4421,7 +4557,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "500",
     color: "#4B5563",
-    marginBottom: 2,
+    marginBottom: 4,
     lineHeight: 16,
     paddingBottom: 0,
     ...Platform.select({ android: { includeFontPadding: false } }),
@@ -4430,7 +4566,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     minWidth: 0,
-    marginTop: -1,
+    marginTop: 0,
   },
   headerEtaText: {
     flex: 1,
@@ -5226,6 +5362,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
+  zomatoBillHeaderWithAttach: {
+    paddingBottom: 8,
+    borderBottomWidth: 0,
+  },
   zomatoBillHeaderMid: { flex: 1, minWidth: 0 },
   zomatoBillTitle: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary },
   zomatoBillSub: { fontSize: 11, color: GatiMitraColors.textSecondary, marginTop: 2 },
@@ -5252,61 +5392,85 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   zomatoSavedPillText: { fontSize: 10, fontWeight: "700", color: "#1D4ED8" },
-  zomatoGoldWrap: {
-    paddingHorizontal: 14,
-    paddingBottom: 14,
-    paddingTop: 2,
-  },
-  zomatoGoldPointer: {
-    width: 0,
-    height: 0,
-    marginLeft: 28,
-    borderLeftWidth: 7,
-    borderRightWidth: 7,
-    borderBottomWidth: 8,
-    borderLeftColor: "transparent",
-    borderRightColor: "transparent",
-    borderBottomColor: "#FAF0D7",
-    marginBottom: -0.5,
-  },
-  zomatoGoldBubble: {
+  zomatoGoldAttach: {
+    position: "relative",
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    backgroundColor: "#FEF9E8",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#E8D48B",
-    paddingVertical: 12,
-    paddingHorizontal: 12,
+    backgroundColor: CX.mintSoft,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 12,
+  },
+  zomatoGoldPointerShell: {
+    position: "absolute",
+    top: -9,
+    left: 16,
+    width: 18,
+    height: 10,
+  },
+  zomatoGoldPointerBorder: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 9,
+    borderRightWidth: 9,
+    borderBottomWidth: 10,
+    borderLeftColor: "transparent",
+    borderRightColor: "transparent",
+    borderBottomColor: CX.mintBorder,
+  },
+  zomatoGoldPointerFill: {
+    position: "absolute",
+    top: 1,
+    left: 1,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 8,
+    borderRightWidth: 8,
+    borderBottomWidth: 9,
+    borderLeftColor: "transparent",
+    borderRightColor: "transparent",
+    borderBottomColor: CX.mintSoft,
   },
   zomatoGoldCrownRing: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: "#92400E",
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: CX.mintDark,
     alignItems: "center",
     justifyContent: "center",
   },
   zomatoGoldTextCol: { flex: 1, minWidth: 0 },
-  zomatoGoldTitle: { fontSize: 13, fontWeight: "800", color: "#713F12" },
-  zomatoGoldSub: { fontSize: 11, color: "#854D0E", marginTop: 3, lineHeight: 15 },
+  zomatoGoldTitle: { fontSize: 13, fontWeight: "800", color: CX.mintDark, lineHeight: 17 },
+  zomatoGoldSub: { fontSize: 11, color: GatiMitraColors.textSecondary, marginTop: 2, lineHeight: 15 },
   zomatoGoldAddBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: CX.mint,
     backgroundColor: "#FFFFFF",
-    maxWidth: 118,
+    minWidth: 72,
+    alignItems: "center",
+  },
+  zomatoGoldAddBtnApplied: {
+    borderColor: CX.mint,
+    backgroundColor: CX.mint,
   },
   zomatoGoldAddBtnText: {
-    fontSize: 10,
-    fontWeight: "700",
+    fontSize: 11,
+    fontWeight: "800",
     color: CX.mint,
     textAlign: "center",
   },
+  zomatoGoldAddBtnTextApplied: {
+    color: "#FFFFFF",
+  },
   deliveryEtaRow: { flexDirection: "row", alignItems: "flex-start", gap: 6, marginBottom: 8 },
+  weatherEtaImpact: { fontSize: 11, color: GatiMitraColors.splashMint, fontWeight: "600", marginTop: 2 },
   deliveryEtaText: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.emerald },
   scheduleRow: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
   scheduleText: { flex: 1, fontSize: 12, color: GatiMitraColors.textSecondary },
@@ -6189,6 +6353,23 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#6B7280",
   },
+  instructionVoiceHintDisabled: {
+    flex: 1,
+    fontSize: 13,
+    color: "#9CA3AF",
+  },
+  instructionComingSoon: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#9CA3AF",
+    backgroundColor: "#F3F4F6",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    overflow: "hidden",
+  },
+  instructionDisabledBlock: { opacity: 0.42 },
+  instructionDisabledLabel: { opacity: 0.55 },
   instructionImageLabel: { fontSize: 11, color: "#9CA3AF", marginBottom: 6 },
   instructionImageDashed: {
     borderWidth: 1,
@@ -6202,6 +6383,7 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   instructionImageCta: { fontSize: 14, fontWeight: "700", color: CX.mint },
+  instructionImageCtaDisabled: { fontSize: 14, fontWeight: "700", color: "#9CA3AF" },
   instructionImageHelp: { fontSize: 11, color: "#9CA3AF", marginBottom: 4, lineHeight: 15 },
   instrCheckLine: {
     flexDirection: "row",

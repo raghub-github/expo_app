@@ -19,6 +19,8 @@ import {
   UserCheck,
   UtensilsCrossed,
   Zap,
+  ScanLine,
+  KeyRound,
 } from "lucide-react";
 import {
   RiderDispatchSettingsPanel,
@@ -43,7 +45,12 @@ type GlobalAssignmentSettings = {
   person_ride_exclusive_mode: boolean;
 };
 
-type MainPanel = "assignment" | "geo" | "dispatch";
+type MainPanel = "assignment" | "geo" | "dispatch" | "pickup";
+
+type PickupVerificationSettings = {
+  barcode_verification_enabled: boolean;
+  otp_verification_enabled: boolean;
+};
 
 type GeoRuleRow = {
   id: number;
@@ -216,14 +223,20 @@ export default function RiderAssignmentControlsPage() {
   const [dispatchDirty, setDispatchDirty] = useState(false);
   const [savingDispatch, setSavingDispatch] = useState(false);
 
+  const [pickupSettings, setPickupSettings] = useState<PickupVerificationSettings | null>(null);
+  const [savedPickupSettings, setSavedPickupSettings] = useState<PickupVerificationSettings | null>(
+    null
+  );
+
   const [savingAssignment, setSavingAssignment] = useState(false);
+  const [savingPickup, setSavingPickup] = useState(false);
   const [savingGeoKey, setSavingGeoKey] = useState<string | null>(null);
   const [savingAllGeo, setSavingAllGeo] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
     const panel = searchParams.get("panel");
-    if (panel === "assignment" || panel === "geo" || panel === "dispatch") {
+    if (panel === "assignment" || panel === "geo" || panel === "dispatch" || panel === "pickup") {
       setMainPanel(panel);
     }
   }, [searchParams]);
@@ -246,6 +259,19 @@ export default function RiderAssignmentControlsPage() {
     setSavedLimits(cloneLimits(limitRows));
     setGlobalSettings(normalizedGlobal);
     setSavedGlobalSettings(cloneGlobal(normalizedGlobal));
+  }, []);
+
+  const loadPickupVerification = useCallback(async () => {
+    const res = await fetch("/api/super-admin/food-pickup-verification-settings");
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ?? "Load failed");
+    const s = data.settings as Record<string, unknown>;
+    const normalized: PickupVerificationSettings = {
+      barcode_verification_enabled: Boolean(s.barcode_verification_enabled),
+      otp_verification_enabled: Boolean(s.otp_verification_enabled),
+    };
+    setPickupSettings(normalized);
+    setSavedPickupSettings({ ...normalized });
   }, []);
 
   const loadGeo = useCallback(async () => {
@@ -271,6 +297,7 @@ export default function RiderAssignmentControlsPage() {
       const results = await Promise.allSettled([
         loadAssignment(),
         loadGeo(),
+        loadPickupVerification(),
         fetchDispatchWaveSettings(),
       ]);
       if (results[0].status === "rejected") {
@@ -285,8 +312,15 @@ export default function RiderAssignmentControlsPage() {
           results[1].reason instanceof Error ? results[1].reason.message : "Geo rules load failed"
         );
       }
-      if (results[2].status === "fulfilled") {
-        const dispatchResult = results[2].value;
+      if (results[2].status === "rejected") {
+        errors.push(
+          results[2].reason instanceof Error
+            ? results[2].reason.message
+            : "Pickup verification settings load failed"
+        );
+      }
+      if (results[3].status === "fulfilled") {
+        const dispatchResult = results[3].value;
         if (!dispatchResult.ok) {
           errors.push(dispatchResult.error ?? "Dispatch settings load failed");
         } else {
@@ -297,8 +331,8 @@ export default function RiderAssignmentControlsPage() {
         }
       } else {
         errors.push(
-          results[2].reason instanceof Error
-            ? results[2].reason.message
+          results[3].reason instanceof Error
+            ? results[3].reason.message
             : "Dispatch settings load failed"
         );
       }
@@ -308,11 +342,20 @@ export default function RiderAssignmentControlsPage() {
     } finally {
       setPageReady(true);
     }
-  }, [loadAssignment, loadGeo]);
+  }, [loadAssignment, loadGeo, loadPickupVerification]);
 
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
+
+  const pickupIsDirty = useMemo(() => {
+    if (!pickupSettings || !savedPickupSettings) return false;
+    return (
+      pickupSettings.barcode_verification_enabled !==
+        savedPickupSettings.barcode_verification_enabled ||
+      pickupSettings.otp_verification_enabled !== savedPickupSettings.otp_verification_enabled
+    );
+  }, [pickupSettings, savedPickupSettings]);
 
   const assignmentIsDirty = useMemo(
     () => assignmentBundleDirty(limits, savedLimits, globalSettings, savedGlobalSettings),
@@ -389,6 +432,27 @@ export default function RiderAssignmentControlsPage() {
     }
     return counts;
   }, [geoRows]);
+
+  const savePickupVerification = async () => {
+    if (!pickupSettings || !pickupIsDirty) return;
+    setSavingPickup(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/super-admin/food-pickup-verification-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(pickupSettings),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Save failed");
+      setMessage("Food pickup verification settings saved.");
+      await loadPickupVerification();
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSavingPickup(false);
+    }
+  };
 
   const saveAssignment = async () => {
     if (!globalSettings || !assignmentIsDirty) return;
@@ -498,6 +562,13 @@ export default function RiderAssignmentControlsPage() {
     setMessage(null);
   };
 
+  const resetPickupToSaved = () => {
+    if (savedPickupSettings) {
+      setPickupSettings({ ...savedPickupSettings });
+    }
+    setMessage(null);
+  };
+
   const saveDispatch = async () => {
     if (!dispatchRef.current?.hasDirty) return;
     setSavingDispatch(true);
@@ -517,6 +588,7 @@ export default function RiderAssignmentControlsPage() {
   const footerReset = () => {
     if (mainPanel === "assignment") resetAssignmentToDefaults();
     else if (mainPanel === "geo") resetGeoToDefaults();
+    else if (mainPanel === "pickup") resetPickupToSaved();
     else resetDispatchToSaved();
   };
 
@@ -525,18 +597,23 @@ export default function RiderAssignmentControlsPage() {
       ? assignmentIsDirty
       : mainPanel === "geo"
         ? geoHasDirty
-        : dispatchDirty;
+        : mainPanel === "pickup"
+          ? pickupIsDirty
+          : dispatchDirty;
 
   const footerSaving =
     mainPanel === "assignment"
       ? savingAssignment
       : mainPanel === "geo"
         ? savingAllGeo
-        : savingDispatch;
+        : mainPanel === "pickup"
+          ? savingPickup
+          : savingDispatch;
 
   const footerSave = () => {
     if (mainPanel === "assignment") void saveAssignment();
     else if (mainPanel === "geo") void saveAllGeo();
+    else if (mainPanel === "pickup") void savePickupVerification();
     else void saveDispatch();
   };
 
@@ -553,7 +630,9 @@ export default function RiderAssignmentControlsPage() {
       ? "Configure service-based assignment limits and global assignment rules for rider dispatch"
       : mainPanel === "geo"
         ? "Configure geo-fenced radius controls for rider status updates across all services"
-        : "Pickup radius and dispatch wave expansion per service (food / parcel / ride)";
+        : mainPanel === "pickup"
+          ? "Control food pickup verification methods shown to riders (barcode scan and OTP)"
+          : "Pickup radius and dispatch wave expansion per service (food / parcel / ride)";
 
   return (
     <div className="-m-3 sm:-m-4 min-h-full bg-[#f4f5f7] p-3 sm:p-4 pb-10 min-w-0 w-full space-y-3">
@@ -590,6 +669,15 @@ export default function RiderAssignmentControlsPage() {
             activeClass="bg-sky-50 text-sky-700 ring-1 ring-sky-200"
             iconActiveClass="text-sky-600"
             showDot={dispatchDirty}
+          />
+          <ViewToggleButton
+            active={mainPanel === "pickup"}
+            onClick={() => setMainPanel("pickup")}
+            label="Pickup verify"
+            icon={ScanLine}
+            activeClass="bg-amber-50 text-amber-800 ring-1 ring-amber-200"
+            iconActiveClass="text-amber-700"
+            showDot={pickupIsDirty}
           />
         </div>
       </div>
@@ -981,7 +1069,7 @@ export default function RiderAssignmentControlsPage() {
             </div>
           </aside>
         </div>
-      ) : (
+      ) : mainPanel === "dispatch" ? (
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
           <div className="xl:col-span-2">
             <RiderDispatchSettingsPanel
@@ -1017,6 +1105,95 @@ export default function RiderAssignmentControlsPage() {
             </div>
           </aside>
         </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+          <div className="xl:col-span-2">
+            <section className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+              <div className="border-b border-gray-100 px-4 py-2">
+                <h2 className="text-sm font-semibold text-gray-900">Food pickup verification</h2>
+                <p className="text-xs text-gray-500">
+                  Control which verification methods riders see when marking a food order picked up
+                </p>
+              </div>
+              {pickupSettings ? (
+                <div className="divide-y divide-gray-100 px-4">
+                  <RuleToggleRow
+                    icon={ScanLine}
+                    iconBg="bg-emerald-50"
+                    iconColor="text-emerald-600"
+                    label="Barcode / QR scan"
+                    hint="Rider scans the code on the restaurant bill, invoice, or merchant screen"
+                    checked={pickupSettings.barcode_verification_enabled}
+                    onChange={(v) =>
+                      setPickupSettings((prev) =>
+                        prev ? { ...prev, barcode_verification_enabled: v } : prev
+                      )
+                    }
+                    accent="emerald"
+                  />
+                  <RuleToggleRow
+                    icon={KeyRound}
+                    iconBg="bg-amber-50"
+                    iconColor="text-amber-700"
+                    label="Pickup OTP"
+                    hint="Rider enters the OTP shown to the merchant for this order"
+                    checked={pickupSettings.otp_verification_enabled}
+                    onChange={(v) =>
+                      setPickupSettings((prev) =>
+                        prev ? { ...prev, otp_verification_enabled: v } : prev
+                      )
+                    }
+                    accent="emerald"
+                  />
+                </div>
+              ) : (
+                <div className="px-4 py-8 text-center text-xs text-gray-500">
+                  Pickup verification settings could not be loaded.
+                </div>
+              )}
+              {pickupSettings &&
+              !pickupSettings.barcode_verification_enabled &&
+              !pickupSettings.otp_verification_enabled ? (
+                <div className="border-t border-amber-100 bg-amber-50/80 px-4 py-2.5">
+                  <p className="text-[11px] text-amber-950 leading-snug">
+                    <span className="font-semibold">Direct pickup:</span> With both methods off,
+                    sliding &quot;Picked order&quot; marks the order picked up immediately — no
+                    verification step.
+                  </p>
+                </div>
+              ) : null}
+            </section>
+          </div>
+          <aside className="space-y-3">
+            <SidebarCard title="How pickup verification works">
+              <ul className="space-y-1.5 text-xs text-gray-600">
+                <HowItWorksItem
+                  text="Both enabled: rider chooses barcode scan or OTP on the Verify Pickup screen"
+                  accent="emerald"
+                />
+                <HowItWorksItem
+                  text="Barcode only: scanner opens directly when rider slides to pick up"
+                  accent="emerald"
+                />
+                <HowItWorksItem
+                  text="OTP only: OTP entry opens directly when rider slides to pick up"
+                  accent="emerald"
+                />
+                <HowItWorksItem
+                  text="Both disabled: pickup is marked immediately on slide — no verification"
+                  accent="emerald"
+                />
+              </ul>
+            </SidebarCard>
+            <div className="flex items-start gap-2 rounded-lg border border-emerald-100 bg-emerald-50/80 px-3 py-2">
+              <Info className="h-3.5 w-3.5 shrink-0 text-emerald-600 mt-0.5" />
+              <p className="text-[11px] text-emerald-950 leading-snug">
+                Changes apply to new pickup attempts immediately. Riders refresh settings when they
+                open an active food order.
+              </p>
+            </div>
+          </aside>
+        </div>
       )}
 
       {pageReady ? (
@@ -1038,7 +1215,9 @@ export default function RiderAssignmentControlsPage() {
                 ? "bg-emerald-600 hover:bg-emerald-700"
                 : mainPanel === "dispatch"
                   ? "bg-sky-600 hover:bg-sky-700"
-                  : "bg-violet-600 hover:bg-violet-700"
+                  : mainPanel === "pickup"
+                    ? "bg-amber-600 hover:bg-amber-700"
+                    : "bg-violet-600 hover:bg-violet-700"
             }`}
           >
             {footerSaving ? (

@@ -17,6 +17,8 @@ export type OrderRiderTrackingTrailPoint = {
 
 export type OrderRiderTrackingPayload = {
   rider: {
+    /** orders_core.rider_id — current assignee only. */
+    id: number | null;
     name: string | null;
     mobile: string | null;
     selfie_url: string | null;
@@ -43,7 +45,7 @@ export async function getOrderRiderTracking(
   orderCoreId: number
 ): Promise<OrderRiderTrackingPayload> {
   const empty: OrderRiderTrackingPayload = {
-    rider: { name: null, mobile: null, selfie_url: null, assignment_status: null },
+    rider: { id: null, name: null, mobile: null, selfie_url: null, assignment_status: null },
     location: null,
     trail: [],
   };
@@ -66,23 +68,11 @@ export async function getOrderRiderTracking(
 
   if (!orderRow) return empty;
 
-  let riderId =
+  /** Only the rider currently on orders_core — never a cancelled / historical assignment. */
+  const riderId =
     orderRow.rider_id != null && Number.isFinite(Number(orderRow.rider_id))
       ? Number(orderRow.rider_id)
       : null;
-
-  if (!riderId) {
-    const [fallbackAssignment] = await sql`
-      SELECT rider_id
-      FROM order_rider_assignments
-      WHERE order_core_id = ${orderCoreId} OR order_id = ${orderCoreId}
-      ORDER BY is_active DESC NULLS LAST, assignment_sequence DESC NULLS LAST, created_at DESC
-      LIMIT 1
-    `;
-    if (fallbackAssignment?.rider_id != null) {
-      riderId = Number(fallbackAssignment.rider_id);
-    }
-  }
 
   const [assignment] = riderId
     ? await sql`
@@ -187,6 +177,7 @@ export async function getOrderRiderTracking(
 
   return {
     rider: {
+      id: riderId,
       name: riderName,
       mobile: riderMobile,
       selfie_url: selfieUrl,

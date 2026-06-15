@@ -291,3 +291,21 @@ export function formatFirstEtaAt(iso: string | null | undefined): string {
 export function formatScheduledOrderLabel(isScheduled: boolean): string {
   return isScheduled ? "True" : "False";
 }
+
+/** HH:MM:SS for order-detail delay / wait fields. */
+export function formatDurationSecondsLabel(
+  totalSeconds: number | null | undefined,
+  opts?: { live?: boolean; onTimeLabel?: string }
+): string {
+  const onTime = opts?.onTimeLabel ?? "On time";
+  if (totalSeconds == null || !Number.isFinite(totalSeconds)) return "—";
+  const secs = Math.max(0, Math.floor(totalSeconds));
+  if (secs <= 0) return onTime;
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  const clock = `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s
+    .toString()
+    .padStart(2, "0")}`;
+  return opts?.live ? `${clock} (live)` : clock;
+}

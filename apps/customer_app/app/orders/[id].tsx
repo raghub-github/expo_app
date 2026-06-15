@@ -25,6 +25,8 @@ import { MapboxWebDeliveryMap } from "@/components/maps/MapboxWebDeliveryMap";
 import type { DeliveryMapPayload } from "@/components/maps/mapbox-web-delivery-html";
 import { orderService } from "@/services/order.service";
 import { etaService } from "@/services/eta.service";
+import { useLocationWeather } from "@/hooks/useLocationWeather";
+import { WeatherStatusChip } from "@/components/weather";
 import { resolveLiveEtaMinutes } from "@/lib/order-eta-display";
 import { PrepDelayMarqueeBanner } from "@/components/orders/PrepDelayMarqueeBanner";
 import { getRouteCoordinates } from "@/services/directions.service";
@@ -303,6 +305,11 @@ export default function OrderDetailsScreen() {
   );
 
   const liveEtaMins = resolveLiveEtaMinutes(etaData);
+  const { data: trackingWeather } = useLocationWeather({
+    lat: order?.deliveryLat,
+    lng: order?.deliveryLng,
+    enabled: !!order && isInProgress && !isPersonRideOrder(order),
+  });
 
   const handleOpenHelp = () => {
     router.push({
@@ -438,6 +445,23 @@ export default function OrderDetailsScreen() {
         >
           {showOrderPrepDelayMarquee ? (
             <PrepDelayMarqueeBanner message={prepDelayBanner!.message} />
+          ) : null}
+
+          {isInProgress && !isRideOrder && trackingWeather?.showBanner ? (
+            <View style={styles.weatherTrackingCard}>
+              <Text style={styles.weatherTrackingTitle}>
+                {trackingWeather.bannerTitle ?? trackingWeather.chipLabel}
+              </Text>
+              {trackingWeather.bannerSubtitle || trackingWeather.trackingMessage ? (
+                <Text style={styles.weatherTrackingSub}>
+                  {trackingWeather.bannerSubtitle || trackingWeather.trackingMessage}
+                </Text>
+              ) : null}
+            </View>
+          ) : isInProgress && !isRideOrder && trackingWeather?.showChip ? (
+            <View style={styles.weatherTrackingInline}>
+              <WeatherStatusChip weather={trackingWeather} variant="inline" />
+            </View>
           ) : null}
 
           <View style={styles.card}>
@@ -829,6 +853,17 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: PAGE_BG },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
   mutedText: { marginTop: 12, fontSize: 15, color: MUTED },
+  weatherTrackingCard: {
+    backgroundColor: "#EFF6FF",
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#BFDBFE",
+  },
+  weatherTrackingTitle: { fontSize: 14, fontWeight: "700", color: "#1D4ED8" },
+  weatherTrackingSub: { fontSize: 12, color: "#374151", marginTop: 4, lineHeight: 17 },
+  weatherTrackingInline: { marginBottom: 10, alignItems: "flex-start" },
   header: {
     flexDirection: "row",
     alignItems: "center",

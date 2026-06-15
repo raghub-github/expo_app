@@ -729,6 +729,11 @@ export const customerAddresses = pgTable(
     contactName: text("contact_name"),
     contactMobile: text("contact_mobile"),
     deliveryInstructions: text("delivery_instructions"),
+    deliveryInstructionsList: jsonb("delivery_instructions_list")
+      .notNull()
+      .$type<string[]>()
+      .default([]),
+    deliveryDoorImageUrl: text("delivery_door_image_url"),
     accessCode: text("access_code"),
     floorNumber: text("floor_number"),
     isDefault: boolean("is_default").default(false),
@@ -745,6 +750,64 @@ export const customerAddresses = pgTable(
     index("customer_addresses_customer_id_idx").on(table.customerId),
     index("customer_addresses_address_id_idx").on(table.addressId),
     index("idx_customer_address_location").on(table.latitude, table.longitude),
+  ]
+);
+
+/** Cached OpenWeather snapshot per serviceable zone (~1.1 km grid). */
+/** Frozen weather at order placement — never updated after insert. */
+export const orderWeatherSnapshots = pgTable(
+  "order_weather_snapshots",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderCoreId: bigint("order_core_id", { mode: "number" }).notNull().unique(),
+    orderId: text("order_id").notNull(),
+    weatherCondition: text("weather_condition").notNull(),
+    weatherSeverity: text("weather_severity").notNull(),
+    rainDetected: boolean("rain_detected").notNull().default(false),
+    rainIntensityMm: numeric("rain_intensity_mm", { precision: 8, scale: 3 }).notNull().default("0"),
+    temperatureC: numeric("temperature_c", { precision: 5, scale: 2 }),
+    weatherDelayMinutes: integer("weather_delay_minutes").notNull().default(0),
+    zoneName: text("zone_name"),
+    zoneKey: text("zone_key"),
+    city: text("city"),
+    dispatchPriorityBoost: integer("dispatch_priority_boost").notNull().default(0),
+    surgeEligible: boolean("surge_eligible").notNull().default(false),
+    weatherPriorityBoost: boolean("weather_priority_boost").notNull().default(false),
+    weatherDispatchWeight: integer("weather_dispatch_weight").notNull().default(0),
+    snapshotTimestamp: timestamp("snapshot_timestamp", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("order_weather_snapshots_order_id_idx").on(table.orderId),
+    index("order_weather_snapshots_zone_key_idx").on(table.zoneKey),
+    index("order_weather_snapshots_snapshot_ts_idx").on(table.snapshotTimestamp),
+  ]
+);
+
+export const zoneWeatherSnapshots = pgTable(
+  "zone_weather_snapshots",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    zoneKey: text("zone_key").notNull().unique(),
+    city: text("city").notNull(),
+    zone: text("zone").notNull(),
+    latitude: numeric("latitude", { precision: 10, scale: 6 }).notNull(),
+    longitude: numeric("longitude", { precision: 11, scale: 6 }).notNull(),
+    weatherCondition: text("weather_condition").notNull().default("Clear"),
+    rainDetected: boolean("rain_detected").notNull().default(false),
+    rainIntensityMm: numeric("rain_intensity_mm", { precision: 8, scale: 3 }).notNull().default("0"),
+    temperatureC: numeric("temperature_c", { precision: 5, scale: 2 }),
+    humidityPct: numeric("humidity_pct", { precision: 5, scale: 2 }),
+    windSpeedKmh: numeric("wind_speed_kmh", { precision: 6, scale: 2 }),
+    weatherSeverity: text("weather_severity").notNull().default("CLEAR"),
+    providerPayload: jsonb("provider_payload"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("zone_weather_snapshots_city_idx").on(table.city),
+    index("zone_weather_snapshots_updated_at_idx").on(table.updatedAt),
+    index("zone_weather_snapshots_severity_idx").on(table.weatherSeverity),
   ]
 );
 
@@ -2305,6 +2368,9 @@ export const ordersFood = pgTable(
     restaurantName: text("restaurant_name"),
     restaurantPhone: text("restaurant_phone"),
     preparationTimeMinutes: integer("preparation_time_minutes"),
+    preparingAt: timestamp("preparing_at", { withTimezone: true }),
+    prepReadyByAt: timestamp("prep_ready_by_at", { withTimezone: true }),
+    prepDelayMinutes: integer("prep_delay_minutes").default(0),
     foodItemsCount: integer("food_items_count"),
     foodItemsTotalValue: numeric("food_items_total_value", {
       precision: 12,
@@ -2330,6 +2396,10 @@ export const ordersFood = pgTable(
     orderStatus: text("order_status"),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
     preparedAt: timestamp("prepared_at", { withTimezone: true }),
+    riderReachedPickupAt: timestamp("rider_reached_pickup_at", { withTimezone: true }),
+    pickupWaitSeconds: integer("pickup_wait_seconds"),
+    pickupTimerStartedAt: timestamp("pickup_timer_started_at", { withTimezone: true }),
+    pickupDurationSeconds: integer("pickup_duration_seconds"),
     dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),

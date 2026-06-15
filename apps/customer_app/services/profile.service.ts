@@ -39,6 +39,8 @@ export type UserProfile = {
   gmitra_plus_active?: boolean;
   /** Profile photo from verified email (Gravatar / Google). */
   profile_image_url?: string | null;
+  /** Total discount saved across all completed orders (INR). */
+  lifetime_savings_inr?: number;
 };
 
 export type UpdateProfilePayload = {

@@ -1,6 +1,71 @@
 /** Valid map pins from rider order pickup/delivery (orders_core). */
 
+import { distanceMeters } from "@/src/lib/geo-distance";
+
 export type MapPin = { lat: number; lng: number; address?: string };
+
+/** India service bbox — used to detect swapped lat/lng from orders_core. */
+const INDIA_LAT_MIN = 6;
+const INDIA_LAT_MAX = 37;
+const INDIA_LNG_MIN = 68;
+const INDIA_LNG_MAX = 98;
+
+function inIndiaBbox(lat: number, lng: number): boolean {
+  return (
+    lat >= INDIA_LAT_MIN &&
+    lat <= INDIA_LAT_MAX &&
+    lng >= INDIA_LNG_MIN &&
+    lng <= INDIA_LNG_MAX
+  );
+}
+
+/** Fix common lat/lng swap mistakes before rendering navigation map pins. */
+export function normalizeMapPin(
+  lat: number,
+  lng: number,
+  addressHint?: string | null
+): { lat: number; lng: number } {
+  if (!isValidMapPin(lat, lng)) return { lat, lng };
+
+  // Typical India swap: lat holds longitude (~68–98) and lng holds latitude (~6–37).
+  if (
+    lat >= INDIA_LNG_MIN &&
+    lat <= INDIA_LNG_MAX &&
+    lng >= INDIA_LAT_MIN &&
+    lng <= INDIA_LAT_MAX
+  ) {
+    return { lat: lng, lng: lat };
+  }
+
+  const hint = addressHint?.trim() ?? "";
+  if (hint && /\bindia\b/i.test(hint)) {
+    if (!inIndiaBbox(lat, lng) && inIndiaBbox(lng, lat)) {
+      return { lat: lng, lng: lat };
+    }
+  }
+
+  return { lat, lng };
+}
+
+function pinFromCoords(
+  lat: unknown,
+  lng: unknown,
+  address?: string,
+  geocoded?: string | null
+): MapPin | null {
+  const latN = finiteCoord(lat);
+  const lngN = finiteCoord(lng);
+  if (latN != null && lngN != null && isValidMapPin(latN, lngN)) {
+    const normalized = normalizeMapPin(latN, lngN, address);
+    return { lat: normalized.lat, lng: normalized.lng, address };
+  }
+  const geo = parseGeocodedLatLng(geocoded);
+  if (geo) {
+    const normalized = normalizeMapPin(geo.lat, geo.lng, address);
+    return { lat: normalized.lat, lng: normalized.lng, address };
+  }
+  return null;
+}
 
 function finiteCoord(value: unknown): number | null {
   if (value == null || value === "") return null;
@@ -49,42 +114,42 @@ type OrderCoordsSource = {
 /** Person ride / parcel: rider pickup stop (passenger pickup). */
 export function resolveRidePickupPin(order: OrderCoordsSource | null | undefined): MapPin | null {
   if (!order?.pickup) return null;
-  const lat = order.pickup.lat;
-  const lng = order.pickup.lng;
-  if (isValidMapPin(lat, lng)) {
-    return { lat: lat!, lng: lng!, address: order.pickup.address };
-  }
-  const geo = parseGeocodedLatLng(order.pickupAddressGeocoded);
-  if (geo) {
-    return { lat: geo.lat, lng: geo.lng, address: order.pickup.address };
-  }
-  return null;
+  return pinFromCoords(
+    order.pickup.lat,
+    order.pickup.lng,
+    order.pickup.address,
+    order.pickupAddressGeocoded
+  );
 }
 
 export function resolveRestaurantPickupPin(order: OrderCoordsSource | null | undefined): MapPin | null {
   if (!order?.pickup) return null;
-  const lat = order.pickup.lat;
-  const lng = order.pickup.lng;
-  if (isValidMapPin(lat, lng)) {
-    return { lat: lat!, lng: lng!, address: order.pickup.address };
-  }
-  const geo = parseGeocodedLatLng(order.pickupAddressGeocoded);
-  if (geo) {
-    return { lat: geo.lat, lng: geo.lng, address: order.pickup.address };
-  }
-  return null;
+  return pinFromCoords(
+    order.pickup.lat,
+    order.pickup.lng,
+    order.pickup.address,
+    order.pickupAddressGeocoded
+  );
 }
 
 export function resolveCustomerDropPin(order: OrderCoordsSource | null | undefined): MapPin | null {
   if (!order?.delivery) return null;
-  const lat = order.delivery.lat;
-  const lng = order.delivery.lng;
-  if (isValidMapPin(lat, lng)) {
-    return { lat: lat!, lng: lng!, address: order.delivery.address };
+  return pinFromCoords(
+    order.delivery.lat,
+    order.delivery.lng,
+    order.delivery.address,
+    order.dropAddressGeocoded
+  );
+}
+
+/** Skip implausible rider GPS when it is far from the active navigation destination. */
+export function isRiderGpsPlausibleForDestination(
+  rider: { lat: number; lng: number },
+  destination: { lat: number; lng: number },
+  maxKm = 80
+): boolean {
+  if (!isValidMapPin(rider.lat, rider.lng) || !isValidMapPin(destination.lat, destination.lng)) {
+    return false;
   }
-  const geo = parseGeocodedLatLng(order.dropAddressGeocoded);
-  if (geo) {
-    return { lat: geo.lat, lng: geo.lng, address: order.delivery.address };
-  }
-  return null;
+  return distanceMeters(rider.lat, rider.lng, destination.lat, destination.lng) <= maxKm * 1000;
 }

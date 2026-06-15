@@ -333,6 +333,8 @@ await app.register(billingModule, { prefix: "/v1/billing" });
 await app.register(orderRoutes, { prefix: "/v1/orders" });
 await app.register(rideRoutes, { prefix: "/v1/rides" });
 await app.register(distanceModule, { prefix: "/v1/distance" });
+const { weatherRoutes } = await import("./modules/weather/weather.routes.js");
+await app.register(weatherRoutes, { prefix: "/v1/weather" });
 // distanceRoutes kept exported for other test harnesses; register is via distanceModule above.
 void distanceRoutes;
 await app.register((await import("./modules/rider-payout/riderPayout.routes.js")).riderPayoutRoutes, { prefix: "/v1/rider-payout" });
@@ -351,6 +353,8 @@ const { financialRulesInternalRoutes } = await import(
 await app.register(financialRulesInternalRoutes, { prefix: "/v1/internal" });
 const { ordersInternalRoutes } = await import("./modules/orders/orders.internal.routes.js");
 await app.register(ordersInternalRoutes, { prefix: "/v1/internal" });
+const { weatherInternalRoutes } = await import("./modules/weather/weather.routes.js");
+await app.register(weatherInternalRoutes, { prefix: "/v1/internal" });
 
 app.post<{ Params: { riderId: string } }>(
   "/v1/internal/riders/:riderId/vehicle-verified-notify",
@@ -408,6 +412,7 @@ let orderAcceptanceTimeoutInterval: ReturnType<typeof setInterval> | null = null
 let rideSearchTimeoutInterval: ReturnType<typeof setInterval> | null = null;
 let orderDispatchWaveInterval: ReturnType<typeof setInterval> | null = null;
 let competitorSnapshotsInterval: ReturnType<typeof setInterval> | null = null;
+let weatherRefreshInterval: ReturnType<typeof setInterval> | null = null;
 let shuttingDown = false;
 let inFlightRequests = 0;
 
@@ -449,6 +454,7 @@ const gracefulShutdown = async (signal: string) => {
   if (rideSearchTimeoutInterval) { clearInterval(rideSearchTimeoutInterval); rideSearchTimeoutInterval = null; }
   if (orderDispatchWaveInterval) { clearInterval(orderDispatchWaveInterval); orderDispatchWaveInterval = null; }
   if (competitorSnapshotsInterval) { clearInterval(competitorSnapshotsInterval); competitorSnapshotsInterval = null; }
+  if (weatherRefreshInterval) { clearInterval(weatherRefreshInterval); weatherRefreshInterval = null; }
 
   const drainStart = Date.now();
   while (inFlightRequests > 0 && Date.now() - drainStart < SHUTDOWN_DRAIN_TIMEOUT_MS) {
@@ -617,6 +623,27 @@ try {
       { intervalHours: 24 },
       "merchant competitor snapshots tick started (city + locality, all stores)"
     );
+
+    // Weather zone refresh — every 12 min; lock TTL 14 min.
+    const weatherRefreshIntervalMs = 12 * 60 * 1000;
+    const weatherRefreshLockMs = 14 * 60 * 1000;
+    const { runWeatherRefreshTick } = await import("./modules/weather/weather.service.js");
+    const runWeatherTickLocked = () =>
+      withLock("tick:weather-refresh", weatherRefreshLockMs, () => runWeatherRefreshTick(app.log))
+        .then((result) => {
+          incrCounter(
+            "tick_runs_total",
+            "Polling tick outcomes by lock state",
+            1,
+            { tick: "weather_refresh", outcome: result === null ? "skipped" : "ran" }
+          );
+        })
+        .catch((err) => app.log.error({ err }, "weather_refresh_tick"));
+    void runWeatherTickLocked();
+    weatherRefreshInterval = setInterval(() => {
+      void runWeatherTickLocked();
+    }, weatherRefreshIntervalMs);
+    app.log.info({ intervalMinutes: 12 }, "weather zone refresh tick started");
   }
 } catch (error) {
   app.log.error({ error }, "Failed to start server");

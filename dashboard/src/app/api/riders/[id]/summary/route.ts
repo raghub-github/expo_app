@@ -7,7 +7,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
 import { fetchRiderUnifiedTickets } from "@/lib/riders/rider-unified-tickets";
-import { riders, orders, ordersCore, withdrawalRequests, blacklistHistory, dutyLogs, riderVehicles, riderPenalties, riderWallet, riderWalletFreezeHistory, riderNegativeWalletBlocks, systemUsers, onboardingPayments } from "@/lib/db/schema";
+import { fetchRiderRecentOrders, formatRiderOrderDisplayId } from "@/lib/riders/rider-orders-query";
+import { riders, withdrawalRequests, blacklistHistory, dutyLogs, riderVehicles, riderPenalties, riderWallet, riderWalletFreezeHistory, riderNegativeWalletBlocks, systemUsers, onboardingPayments } from "@/lib/db/schema";
 import { eq, and, or, desc, gte, lte, isNull, sql } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -19,9 +20,6 @@ import { getRiderSelfieViewUrl } from "@/lib/rider-selfie-url";
 
 export const runtime = 'nodejs';
 
-/** Query params are strings; Drizzle enum columns need the schema literal union */
-type OrdersCoreRow = InferSelectModel<typeof ordersCore>;
-type OrdersLegacyRow = InferSelectModel<typeof orders>;
 type RiderPenaltyRow = InferSelectModel<typeof riderPenalties>;
 
 interface SummaryQueryParams {
@@ -123,7 +121,7 @@ export async function GET(
 
     // Per‑rider summary cache (30s) – keyed by rider + filters to avoid
     // recalculating heavy aggregates on quick tab switches.
-    const cacheKey = riderId ? `rider_summary:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
+    const cacheKey = riderId ? `rider_summary_v2:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
     const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
 
     if (cacheKey) {
@@ -160,132 +158,16 @@ export async function GET(
       );
     }
 
-    // Get recent orders (from orders table; use orders_core only when env USE_ORDERS_CORE=true)
-    const useOrdersCore = process.env.USE_ORDERS_CORE === "true";
-    let recentOrders: Array<Record<string, unknown>>;
-    if (useOrdersCore) {
-      try {
-        const ordersConditions: any[] = [eq(ordersCore.riderId, riderId)];
-        if (params_obj.ordersFrom) {
-          ordersConditions.push(gte(ordersCore.createdAt, new Date(params_obj.ordersFrom)));
-        }
-        if (params_obj.ordersTo) {
-          ordersConditions.push(lte(ordersCore.createdAt, new Date(params_obj.ordersTo)));
-        }
-        if (params_obj.ordersOrderType && params_obj.ordersOrderType !== "all") {
-          ordersConditions.push(
-            eq(ordersCore.orderType, params_obj.ordersOrderType as OrdersCoreRow["orderType"])
-          );
-        }
-        if (params_obj.ordersStatus && params_obj.ordersStatus !== "all") {
-          ordersConditions.push(
-            eq(ordersCore.status, params_obj.ordersStatus as (typeof ordersCore.$inferSelect)["status"])          );
-        }
-        if (params_obj.ordersOrderId && params_obj.ordersOrderId.trim() !== "") {
-          const orderIdNum = parseInt(params_obj.ordersOrderId.trim(), 10);
-          if (!Number.isNaN(orderIdNum)) {
-            ordersConditions.push(eq(ordersCore.id, orderIdNum));
-          }
-        }
-        const rows = await db
-          .select()
-          .from(ordersCore)
-          .where(ordersConditions.length > 1 ? and(...ordersConditions) : ordersConditions[0])
-          .orderBy(desc(ordersCore.createdAt))
-          .limit(params_obj.ordersLimit || 10);
-        recentOrders = rows.map((row) => {
-          const r = row as unknown as {
-            pickupAddressRaw?: string;
-            dropAddressRaw?: string;
-            pickupLat?: number;
-            pickupLon?: number;
-            dropLat?: number;
-            dropLon?: number;
-            distanceKm?: number;
-            updatedAt?: Date;
-          };
-          return {
-            id: row.id,
-            orderType: row.orderType,
-            riderId: row.riderId,
-            customerId: row.customerId,
-            pickupAddress: r.pickupAddressRaw,
-            dropAddress: r.dropAddressRaw,
-            pickupLat: r.pickupLat,
-            pickupLon: r.pickupLon,
-            dropLat: r.dropLat,
-            dropLon: r.dropLon,
-            distanceKm: r.distanceKm,
-            fareAmount: row.fareAmount,
-            riderEarning: row.riderEarning,
-            status: row.status,
-            createdAt: row.createdAt,
-            updatedAt: r.updatedAt,
-          };
-        });      } catch {
-        // Fallback to orders table if orders_core fails (e.g. table missing)
-        const ordersConditions: any[] = [eq(orders.riderId, riderId)];
-        if (params_obj.ordersFrom) {
-          ordersConditions.push(gte(orders.createdAt, new Date(params_obj.ordersFrom)));
-        }
-        if (params_obj.ordersTo) {
-          ordersConditions.push(lte(orders.createdAt, new Date(params_obj.ordersTo)));
-        }
-        if (params_obj.ordersOrderType && params_obj.ordersOrderType !== "all") {
-          ordersConditions.push(
-            eq(orders.orderType, params_obj.ordersOrderType as OrdersLegacyRow["orderType"])
-          );
-        }
-        if (params_obj.ordersStatus && params_obj.ordersStatus !== "all") {
-          ordersConditions.push(
-            eq(orders.status, params_obj.ordersStatus as (typeof orders.$inferSelect)["status"])          );
-        }
-        if (params_obj.ordersOrderId && params_obj.ordersOrderId.trim() !== "") {
-          const orderIdNum = parseInt(params_obj.ordersOrderId.trim(), 10);
-          if (!Number.isNaN(orderIdNum)) {
-            ordersConditions.push(eq(orders.id, orderIdNum));
-          }
-        }
-        recentOrders = await db
-          .select()
-          .from(orders)
-          .where(ordersConditions.length > 1 ? and(...ordersConditions) : ordersConditions[0])
-          .orderBy(desc(orders.createdAt))
-          .limit(params_obj.ordersLimit || 10);
-      }
-    } else {
-      const ordersConditions: any[] = [eq(orders.riderId, riderId)];
-      if (params_obj.ordersFrom) {
-        ordersConditions.push(gte(orders.createdAt, new Date(params_obj.ordersFrom)));
-      }
-      if (params_obj.ordersTo) {
-        ordersConditions.push(lte(orders.createdAt, new Date(params_obj.ordersTo)));
-      }
-      if (params_obj.ordersOrderType && params_obj.ordersOrderType !== "all") {
-        ordersConditions.push(
-          eq(orders.orderType, params_obj.ordersOrderType as OrdersLegacyRow["orderType"])
-        );
-      }
-      if (params_obj.ordersStatus && params_obj.ordersStatus !== "all") {
-        ordersConditions.push(
-          eq(orders.status, params_obj.ordersStatus as (typeof orders.$inferSelect)["status"])        );
-      }
-      if (params_obj.ordersOrderId && params_obj.ordersOrderId.trim() !== "") {
-        const orderIdNum = parseInt(params_obj.ordersOrderId.trim(), 10);
-        if (!Number.isNaN(orderIdNum)) {
-          ordersConditions.push(eq(orders.id, orderIdNum));
-        }
-      }
-      recentOrders = await db
-        .select()
-        .from(orders)
-        .where(ordersConditions.length > 1 ? and(...ordersConditions) : ordersConditions[0])
-        .orderBy(desc(orders.createdAt))
-        .limit(params_obj.ordersLimit || 10);
-    }
+    const orderFilters = {
+      limit: params_obj.ordersLimit || 10,
+      from: params_obj.ordersFrom,
+      to: params_obj.ordersTo,
+      orderType: params_obj.ordersOrderType,
+      status: params_obj.ordersStatus,
+      orderId: params_obj.ordersOrderId,
+    };
 
-    // Get recent withdrawals
-    const withdrawalsConditions: any[] = [eq(withdrawalRequests.riderId, riderId)];
+    const withdrawalsConditions: Parameters<typeof and>[0][] = [eq(withdrawalRequests.riderId, riderId)];
     if (params_obj.withdrawalsFrom) {
       withdrawalsConditions.push(gte(withdrawalRequests.createdAt, new Date(params_obj.withdrawalsFrom)));
     }
@@ -293,51 +175,196 @@ export async function GET(
       withdrawalsConditions.push(lte(withdrawalRequests.createdAt, new Date(params_obj.withdrawalsTo)));
     }
 
-    const recentWithdrawals = await db
-      .select()
-      .from(withdrawalRequests)
-      .where(withdrawalsConditions.length > 1 ? and(...withdrawalsConditions) : withdrawalsConditions[0])
-      .orderBy(desc(withdrawalRequests.createdAt))
-      .limit(params_obj.withdrawalsLimit || 10);
+    const penaltiesConditions: Parameters<typeof and>[0][] = [eq(riderPenalties.riderId, riderId)];
+    if (params_obj.penaltiesFrom) {
+      penaltiesConditions.push(gte(riderPenalties.imposedAt, new Date(params_obj.penaltiesFrom)));
+    }
+    if (params_obj.penaltiesTo) {
+      penaltiesConditions.push(lte(riderPenalties.imposedAt, new Date(params_obj.penaltiesTo)));
+    }
+    if (params_obj.penaltiesStatus === "reverted") {
+      penaltiesConditions.push(eq(riderPenalties.status, "reversed"));
+    } else if (params_obj.penaltiesStatus === "not") {
+      penaltiesConditions.push(or(eq(riderPenalties.status, "active"), eq(riderPenalties.status, "paid")));
+    }
+    if (params_obj.penaltiesServiceType && params_obj.penaltiesServiceType !== "all") {
+      if (params_obj.penaltiesServiceType === "unspecified" || params_obj.penaltiesServiceType === "null") {
+        penaltiesConditions.push(
+          or(
+            isNull(riderPenalties.serviceType),
+            sql`coalesce((${riderPenalties.metadata}->>'serviceUnspecified')::boolean, false) = true`
+          ) as Parameters<typeof and>[0]
+        );
+      } else {
+        penaltiesConditions.push(
+          eq(
+            riderPenalties.serviceType,
+            params_obj.penaltiesServiceType as NonNullable<RiderPenaltyRow["serviceType"]>
+          )
+        );
+      }
+    }
+    if (params_obj.penaltiesOrderId && params_obj.penaltiesOrderId.trim() !== "") {
+      const orderIdNum = parseInt(params_obj.penaltiesOrderId.trim(), 10);
+      if (!Number.isNaN(orderIdNum)) {
+        penaltiesConditions.push(eq(riderPenalties.orderId, orderIdNum));
+      }
+    }
 
-    const { tickets: recentTickets } = await fetchRiderUnifiedTickets(riderId, {
-      limit: params_obj.ticketsLimit || 10,
-      from: params_obj.ticketsFrom,
-      to: params_obj.ticketsTo,
-      status: params_obj.ticketsStatus,
-      category: params_obj.ticketsCategory,
-      priority: params_obj.ticketsPriority,
-    });
+    const imposedByUser = alias(systemUsers, "imposed_by_user");
+    const reversedByUser = alias(systemUsers, "reversed_by_user");
 
-    // Get vehicle information (active vehicle)
-    const [activeVehicle] = await db
-      .select()
-      .from(riderVehicles)
-      .where(and(eq(riderVehicles.riderId, riderId), eq(riderVehicles.isActive, true)))
-      .limit(1);
+    const [
+      recentOrders,
+      recentWithdrawals,
+      { tickets: recentTickets },
+      activeVehicle,
+      blacklistRows,
+      penaltyRowsResult,
+      selfieUrl,
+      negativeWalletBlockRows,
+      onboardingRows,
+      walletRow,
+      latestFreezeRow,
+      latestDutyLog,
+      logoutSession,
+    ] = await Promise.all([
+      fetchRiderRecentOrders(db, riderId, orderFilters),
+      db
+        .select()
+        .from(withdrawalRequests)
+        .where(and(...withdrawalsConditions))
+        .orderBy(desc(withdrawalRequests.createdAt))
+        .limit(params_obj.withdrawalsLimit || 10),
+      fetchRiderUnifiedTickets(riderId, {
+        limit: params_obj.ticketsLimit || 10,
+        from: params_obj.ticketsFrom,
+        to: params_obj.ticketsTo,
+        status: params_obj.ticketsStatus,
+        category: params_obj.ticketsCategory,
+        priority: params_obj.ticketsPriority,
+      }),
+      db
+        .select()
+        .from(riderVehicles)
+        .where(and(eq(riderVehicles.riderId, riderId), eq(riderVehicles.isActive, true)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          id: blacklistHistory.id,
+          riderId: blacklistHistory.riderId,
+          serviceType: blacklistHistory.serviceType,
+          reason: blacklistHistory.reason,
+          banned: blacklistHistory.banned,
+          isPermanent: blacklistHistory.isPermanent,
+          expiresAt: blacklistHistory.expiresAt,
+          adminUserId: blacklistHistory.adminUserId,
+          source: blacklistHistory.source,
+          createdAt: blacklistHistory.createdAt,
+          agentEmailFromJoin: systemUsers.email,
+          actorName: systemUsers.fullName,
+        })
+        .from(blacklistHistory)
+        .leftJoin(systemUsers, eq(blacklistHistory.adminUserId, systemUsers.id))
+        .where(eq(blacklistHistory.riderId, riderId))
+        .orderBy(desc(blacklistHistory.createdAt)),
+      db
+        .select({
+          penalty: riderPenalties,
+          imposedByEmail: imposedByUser.email,
+          imposedByName: imposedByUser.fullName,
+          reversedByEmail: reversedByUser.email,
+          reversedByName: reversedByUser.fullName,
+        })
+        .from(riderPenalties)
+        .leftJoin(imposedByUser, eq(riderPenalties.imposedBy, imposedByUser.id))
+        .leftJoin(reversedByUser, eq(riderPenalties.reversedBy, reversedByUser.id))
+        .where(and(...penaltiesConditions))
+        .orderBy(desc(riderPenalties.imposedAt))
+        .limit(params_obj.penaltiesLimit ?? 10)
+        .catch(() => []),
+      getRiderSelfieViewUrl(riderId),
+      db
+        .select()
+        .from(riderNegativeWalletBlocks)
+        .where(eq(riderNegativeWalletBlocks.riderId, riderId)),
+      db
+        .select()
+        .from(onboardingPayments)
+        .where(eq(onboardingPayments.riderId, riderId))
+        .orderBy(desc(onboardingPayments.createdAt))
+        .limit(50)
+        .catch(() => []),
+      db
+        .select()
+        .from(riderWallet)
+        .where(eq(riderWallet.riderId, riderId))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          action: riderWalletFreezeHistory.action,
+          reason: riderWalletFreezeHistory.reason,
+          createdAt: riderWalletFreezeHistory.createdAt,
+          performedByEmail: systemUsers.email,
+          performedByName: systemUsers.fullName,
+        })
+        .from(riderWalletFreezeHistory)
+        .leftJoin(systemUsers, eq(riderWalletFreezeHistory.performedBySystemUserId, systemUsers.id))
+        .where(eq(riderWalletFreezeHistory.riderId, riderId))
+        .orderBy(desc(riderWalletFreezeHistory.createdAt))
+        .limit(1)
+        .then((rows) => rows[0])
+        .catch(() => undefined),
+      db
+        .select()
+        .from(dutyLogs)
+        .where(eq(dutyLogs.riderId, riderId))
+        .orderBy(desc(dutyLogs.timestamp))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      getRiderLogoutSessionSnapshot(riderId),
+    ]);
 
-    // Get all blacklist history for rider with agent email/name (ordered by created_at DESC)
-    // Note: Do not select blacklistHistory.actorEmail here — column may not exist until migration 0070 is run.
-    // Agent email comes from the join (system_users.email) when admin_user_id is set.
-    const blacklistRows = await db
-      .select({
-        id: blacklistHistory.id,
-        riderId: blacklistHistory.riderId,
-        serviceType: blacklistHistory.serviceType,
-        reason: blacklistHistory.reason,
-        banned: blacklistHistory.banned,
-        isPermanent: blacklistHistory.isPermanent,
-        expiresAt: blacklistHistory.expiresAt,
-        adminUserId: blacklistHistory.adminUserId,
-        source: blacklistHistory.source,
-        createdAt: blacklistHistory.createdAt,
-        agentEmailFromJoin: systemUsers.email,
-        actorName: systemUsers.fullName,
-      })
-      .from(blacklistHistory)
-      .leftJoin(systemUsers, eq(blacklistHistory.adminUserId, systemUsers.id))
-      .where(eq(blacklistHistory.riderId, riderId))
-      .orderBy(desc(blacklistHistory.createdAt));
+    let recentPenalties: Array<Record<string, unknown>> = [];
+    try {
+      recentPenalties = (penaltyRowsResult as Array<{
+        penalty: typeof riderPenalties.$inferSelect;
+        imposedByEmail: string | null;
+        imposedByName: string | null;
+        reversedByEmail: string | null;
+        reversedByName: string | null;
+      }>).map((row) => ({
+        ...row.penalty,
+        imposedByEmail: row.imposedByEmail,
+        imposedByName: row.imposedByName,
+        reversedByEmail: row.reversedByEmail,
+        reversedByName: row.reversedByName,
+      }));
+    } catch {
+      console.warn("[Summary API] Penalties table not found, skipping penalties data");
+    }
+
+    let onboardingFees: { totalPaid: string; transactions: { id: number; amount: string; provider: string; refId: string; status: string; createdAt: string }[] } = { totalPaid: "0", transactions: [] };
+    try {
+      const completed = onboardingRows.filter((r) => r.status === "completed");
+      const totalPaid = completed.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+      onboardingFees = {
+        totalPaid: totalPaid.toFixed(2),
+        transactions: onboardingRows.map((r) => ({
+          id: r.id,
+          amount: String(r.amount),
+          provider: r.provider,
+          refId: r.refId,
+          status: r.status,
+          createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+        })),
+      };
+    } catch {
+      // Table may not exist in some envs
+    }
+
     const blacklistEntries = blacklistRows.map((r) => ({
       ...r,
       adminUserId: r.adminUserId,
@@ -448,127 +475,6 @@ export async function GET(
       actorName: r.actorName ?? null,
     }));
 
-    // Get recent penalties (if table exists) with imposed/reverted by agent
-    let recentPenalties: any[] = [];
-    try {
-      const penaltiesConditions: any[] = [eq(riderPenalties.riderId, riderId)];
-      if (params_obj.penaltiesFrom) {
-        penaltiesConditions.push(gte(riderPenalties.imposedAt, new Date(params_obj.penaltiesFrom)));
-      }
-      if (params_obj.penaltiesTo) {
-        penaltiesConditions.push(lte(riderPenalties.imposedAt, new Date(params_obj.penaltiesTo)));
-      }
-      if (params_obj.penaltiesStatus === "reverted") {
-        penaltiesConditions.push(eq(riderPenalties.status, "reversed"));
-      } else if (params_obj.penaltiesStatus === "not") {
-        penaltiesConditions.push(or(eq(riderPenalties.status, "active"), eq(riderPenalties.status, "paid")));
-      }
-      if (params_obj.penaltiesServiceType && params_obj.penaltiesServiceType !== "all") {
-        if (params_obj.penaltiesServiceType === "unspecified" || params_obj.penaltiesServiceType === "null") {
-          penaltiesConditions.push(
-            or(
-              isNull(riderPenalties.serviceType),
-              sql`coalesce((${riderPenalties.metadata}->>'serviceUnspecified')::boolean, false) = true`
-            ) as any
-          );
-        } else {
-          penaltiesConditions.push(
-            eq(
-              riderPenalties.serviceType,
-              params_obj.penaltiesServiceType as NonNullable<RiderPenaltyRow["serviceType"]>
-            )
-          );
-        }
-      }
-      if (params_obj.penaltiesOrderId && params_obj.penaltiesOrderId.trim() !== "") {
-        const orderIdNum = parseInt(params_obj.penaltiesOrderId.trim(), 10);
-        if (!Number.isNaN(orderIdNum)) {
-          penaltiesConditions.push(eq(riderPenalties.orderId, orderIdNum));
-        }
-      }
-      const imposedByUser = alias(systemUsers, "imposed_by_user");
-      const reversedByUser = alias(systemUsers, "reversed_by_user");
-      const penaltyRows = await db
-        .select({
-          penalty: riderPenalties,
-          imposedByEmail: imposedByUser.email,
-          imposedByName: imposedByUser.fullName,
-          reversedByEmail: reversedByUser.email,
-          reversedByName: reversedByUser.fullName,
-        })
-        .from(riderPenalties)
-        .leftJoin(imposedByUser, eq(riderPenalties.imposedBy, imposedByUser.id))
-        .leftJoin(reversedByUser, eq(riderPenalties.reversedBy, reversedByUser.id))
-        .where(penaltiesConditions.length > 1 ? and(...penaltiesConditions) : penaltiesConditions[0])
-        .orderBy(desc(riderPenalties.imposedAt))
-        .limit(params_obj.penaltiesLimit ?? 10);
-      recentPenalties = penaltyRows.map((row) => ({ ...row.penalty, imposedByEmail: row.imposedByEmail, imposedByName: row.imposedByName, reversedByEmail: row.reversedByEmail, reversedByName: row.reversedByName }));
-    } catch (error) {
-      // Table might not exist yet - ignore error
-      console.warn("[Summary API] Penalties table not found, skipping penalties data");
-    }
-
-    const selfieUrl = await getRiderSelfieViewUrl(riderId);
-
-    // Negative wallet blocks (temporary per-service block when balance <= -50)
-    const negativeWalletBlockRows = await db
-      .select()
-      .from(riderNegativeWalletBlocks)
-      .where(eq(riderNegativeWalletBlocks.riderId, riderId));
-
-    // Onboarding payments (registration fees) – for display when rider not yet verified (home) and in wallet/full details
-    let onboardingFees: { totalPaid: string; transactions: { id: number; amount: string; provider: string; refId: string; status: string; createdAt: string }[] } = { totalPaid: "0", transactions: [] };
-    try {
-      const onboardingRows = await db
-        .select()
-        .from(onboardingPayments)
-        .where(eq(onboardingPayments.riderId, riderId))
-        .orderBy(desc(onboardingPayments.createdAt))
-        .limit(50);
-      const completed = onboardingRows.filter((r) => r.status === "completed");
-      const totalPaid = completed.reduce((sum, r) => sum + Number(r.amount || 0), 0);
-      onboardingFees = {
-        totalPaid: totalPaid.toFixed(2),
-        transactions: onboardingRows.map((r) => ({
-          id: r.id,
-          amount: String(r.amount),
-          provider: r.provider,
-          refId: r.refId,
-          status: r.status,
-          createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
-        })),
-      };
-    } catch {
-      // Table may not exist in some envs
-    }
-
-    // Wallet (rider_wallet) – total balance, earnings, penalties, total_withdrawn
-    const [walletRow] = await db
-      .select()
-      .from(riderWallet)
-      .where(eq(riderWallet.riderId, riderId))
-      .limit(1);
-
-    // Latest wallet freeze/unfreeze action (for display) – optional table
-    let latestFreezeRow: { action: string; reason: string | null; createdAt: Date; performedByEmail: string | null; performedByName: string | null } | undefined;
-    try {
-      [latestFreezeRow] = await db
-        .select({
-          action: riderWalletFreezeHistory.action,
-          reason: riderWalletFreezeHistory.reason,
-          createdAt: riderWalletFreezeHistory.createdAt,
-          performedByEmail: systemUsers.email,
-          performedByName: systemUsers.fullName,
-        })
-        .from(riderWalletFreezeHistory)
-        .leftJoin(systemUsers, eq(riderWalletFreezeHistory.performedBySystemUserId, systemUsers.id))
-        .where(eq(riderWalletFreezeHistory.riderId, riderId))
-        .orderBy(desc(riderWalletFreezeHistory.createdAt))
-        .limit(1);
-    } catch {
-      latestFreezeRow = undefined;
-    }
-
     // Get online/offline status (most recent duty log)
     // IMPORTANT BUSINESS RULE:
     // Rider can be considered online ONLY if:
@@ -576,13 +482,6 @@ export async function GET(
     // - KYC status is APPROVED
     // - Onboarding stage is ACTIVE
     // AND the latest duty log status is 'ON'.
-    const [latestDutyLog] = await db
-      .select()
-      .from(dutyLogs)
-      .where(eq(dutyLogs.riderId, riderId))
-      .orderBy(desc(dutyLogs.timestamp))
-      .limit(1);
-
     const isFullyOnboarded =
       rider.status === "ACTIVE" &&
       rider.kycStatus === "APPROVED" &&
@@ -592,8 +491,6 @@ export async function GET(
     // Only consider online if fully onboarded AND there's a duty log with status 'ON'.
     const isOnline =
       isFullyOnboarded && latestDutyLog ? latestDutyLog.status === "ON" : false;
-
-    const logoutSession = await getRiderLogoutSessionSnapshot(riderId);
 
     // Calculate order metrics per service type
     // Note: This uses orders table - for detailed assignment tracking, use order_rider_assignments if available
@@ -650,13 +547,22 @@ export async function GET(
             return [];
           })(),
         },
-        recentOrders: recentOrders.map(order => ({
+        recentOrders: recentOrders.map((order) => ({
           id: order.id,
           orderType: order.orderType,
           status: order.status,
           fareAmount: order.fareAmount,
           riderEarning: order.riderEarning,
-          createdAt: order.createdAt,
+          createdAt:
+            order.createdAt instanceof Date
+              ? order.createdAt.toISOString()
+              : String(order.createdAt),
+          formattedOrderId: order.formattedOrderId ?? null,
+          orderId: order.orderId ?? null,
+          externalRef: order.externalRef ?? null,
+          displayOrderId:
+            order.displayOrderId?.trim() ||
+            formatRiderOrderDisplayId(order),
         })),
         recentWithdrawals: recentWithdrawals.map(withdrawal => ({
           id: withdrawal.id,

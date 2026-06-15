@@ -7,6 +7,7 @@ import {
   applyPlatformDeliveryOffers,
   applyPlatformFeeBucketOffers,
 } from "./platformOffersApply.js";
+import { applyExclusiveCheckoutOffer } from "./checkoutExclusiveOffer.js";
 import type {
   AppliedLine,
   BillContext,
@@ -482,16 +483,20 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
 
   syncStateFeesFromRem(state, rem);
 
-  applyMerchantStoreOffers(ctx, dataset, state, itemPlusAddon, rem);
-  applyPlatformCartOffers(ctx, dataset, state, itemPlusAddon, rem);
-  syncStateFeesFromRem(state, rem);
-  applyPlatformDeliveryOffers(ctx, dataset, state, itemPlusAddon, rem);
-  syncStateFeesFromRem(state, rem);
-  applyPlatformFeeBucketOffers(ctx, dataset, state, itemPlusAddon, rem);
-  syncStateFeesFromRem(state, rem);
-
-  if (dataset.coupon) {
-    applyCouponDiscount(ctx, dataset.coupon, itemPlusAddon, state, rem);
+  const isCustomerCheckout = String(ctx.checkoutAudience ?? "CUSTOMER").toUpperCase() === "CUSTOMER";
+  if (isCustomerCheckout) {
+    applyExclusiveCheckoutOffer(ctx, dataset, state, itemPlusAddon, rem, applyCouponDiscount);
+  } else {
+    applyMerchantStoreOffers(ctx, dataset, state, itemPlusAddon, rem);
+    applyPlatformCartOffers(ctx, dataset, state, itemPlusAddon, rem);
+    syncStateFeesFromRem(state, rem);
+    applyPlatformDeliveryOffers(ctx, dataset, state, itemPlusAddon, rem);
+    syncStateFeesFromRem(state, rem);
+    applyPlatformFeeBucketOffers(ctx, dataset, state, itemPlusAddon, rem);
+    syncStateFeesFromRem(state, rem);
+    if (dataset.coupon) {
+      applyCouponDiscount(ctx, dataset.coupon, itemPlusAddon, state, rem);
+    }
   }
   syncStateFeesFromRem(state, rem);
 

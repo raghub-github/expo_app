@@ -10,13 +10,14 @@ import { usePermissionsQuery } from '@/hooks/queries/usePermissionsQuery';
 import { useRiderDashboard } from '@/context/RiderDashboardContext';
 import { queryKeys } from '@/lib/queryKeys';
 import { invalidateRiderSummary } from '@/lib/cache-invalidation';
-import { useRiderSummaryQuery } from '@/hooks/queries/useRiderSummaryQuery';
+import { useRiderSummaryQuery, fetchRiderSummary } from '@/hooks/queries/useRiderSummaryQuery';
 import { useRiderAccessQuery } from '@/hooks/queries/useRiderAccessQuery';
 import type { RiderListEntry, RiderSummary } from '@/types/rider-dashboard';
 import { ONBOARDING_STAGE_LABELS } from '@/types/rider-dashboard';
+import { formatRiderOrderDisplayId } from '@/lib/riders/format-rider-order-display-id';
 import type { RiderSummaryParams } from '@/lib/queryKeys';
 import Link from 'next/link';
-import { CheckCircle, Circle, Filter, ChevronDown, ChevronUp, ShieldCheck, ShieldOff, Clock, User, Wallet, Lock, Unlock, History, Plus, RotateCcw, RefreshCw, MoreVertical, Banknote, Trash2, Check, X } from 'lucide-react';
+import { CheckCircle, Circle, Filter, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, ShieldCheck, ShieldOff, Clock, User, Wallet, Lock, Unlock, History, Plus, RotateCcw, RefreshCw, MoreVertical, Banknote, Trash2, Check, X, ClipboardList, Search, Download, ShoppingBag, Package } from 'lucide-react';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { TablePagination } from '@/components/riders/TablePagination';
 import { AddAmountModal } from '@/components/riders/AddAmountModal';
@@ -104,10 +105,10 @@ export default function RidersPage() {
   const [ordersFrom, setOrdersFrom] = useState('');
   const [ordersTo, setOrdersTo] = useState('');
   const [showOrdersFilters, setShowOrdersFilters] = useState(false);
-  const [showOrdersMoreFilters, setShowOrdersMoreFilters] = useState(false);
   const [ordersOrderType, setOrdersOrderType] = useState<string>('all');
   const [ordersStatus, setOrdersStatus] = useState<string>('all');
   const [ordersOrderIdSearch, setOrdersOrderIdSearch] = useState('');
+  const [ordersQuickSearch, setOrdersQuickSearch] = useState('');
   const [withdrawalsLimit, setWithdrawalsLimit] = useState(10);
   const [withdrawalsFrom, setWithdrawalsFrom] = useState('');
   const [withdrawalsTo, setWithdrawalsTo] = useState('');
@@ -141,7 +142,7 @@ export default function RidersPage() {
   const [withdrawalsPage, setWithdrawalsPage] = useState(1);
   const [withdrawalsPageSize, setWithdrawalsPageSize] = useState(10);
 
-  useEffect(() => { setOrdersPage(1); }, [ordersPageSize, ordersFrom, ordersTo, ordersOrderType, ordersStatus, ordersOrderIdSearch]);
+  useEffect(() => { setOrdersPage(1); }, [ordersPageSize, ordersFrom, ordersTo, ordersOrderType, ordersStatus, ordersOrderIdSearch, ordersQuickSearch]);
   useEffect(() => { setTicketsPage(1); }, [ticketsPageSize, ticketsFrom, ticketsTo, ticketsStatus, ticketsCategory, ticketsPriority, ticketsSearch]);
   useEffect(() => { setPenaltiesPage(1); }, [penaltiesPageSize, penaltiesFrom, penaltiesTo, penaltiesStatus, penaltiesServiceType, penaltiesOrderIdSearch]);
   useEffect(() => { setWithdrawalsPage(1); }, [withdrawalsPageSize, withdrawalsFrom, withdrawalsTo]);
@@ -641,7 +642,10 @@ export default function RidersPage() {
         setCurrentRiderFromSearch(list, null);
         setError(null);
         router.replace(`/dashboard/riders?search=GMR${list[0].id}`, { scroll: false });
-        // Summary is fetched by useRiderSummaryQuery when riderId is set
+        void queryClient.prefetchQuery({
+          queryKey: queryKeys.rider.summary(list[0].id, summaryParams),
+          queryFn: ({ signal }) => fetchRiderSummary(list[0].id, summaryParams, signal),
+        });
       } else {
         riderSearchCache.set(searchValue, []);
         setRiders([]);
@@ -660,7 +664,7 @@ export default function RidersPage() {
       if (spinnerTimeout) clearTimeout(spinnerTimeout);
       setLoading(false);
     }
-  }, [router, setShowDefault, setHasSearched, setError, setRiders, setRiderSummary, setLoading, clearRider, setCurrentRiderFromSearch]);
+  }, [router, queryClient, summaryParams, setShowDefault, setHasSearched, setError, setRiders, setRiderSummary, setLoading, clearRider, setCurrentRiderFromSearch]);
 
   // Track the last search we actually ran to avoid re-running when effect re-fires.
   const lastRanSearchRef = useRef<string | null>(null);
@@ -729,6 +733,7 @@ export default function RidersPage() {
     setOrdersOrderType('all');
     setOrdersStatus('all');
     setOrdersOrderIdSearch('');
+    setOrdersQuickSearch('');
   }, []);
   const clearTicketsFilters = useCallback(() => {
     setTicketsPage(1);
@@ -1072,10 +1077,25 @@ export default function RidersPage() {
             </div>
 
           {/* Recent Data Sections: Orders, Tickets, Penalties = full width; Withdrawals and rest = two per row. Use displaySummary (query cache ?? context) for smooth back-navigation. */}
-          {displaySummary && (() => {
+          {!displaySummary && effectiveSummaryLoading ? (
+            <RiderSummarySectionsSkeleton />
+          ) : displaySummary && (() => {
             type SectionId = 'orders' | 'withdrawals' | 'tickets' | 'penalties' | 'blacklist' | 'metrics' | 'walletFreeze';
             const summary = displaySummary;
-            const ordersList = summary.recentOrders ?? [];
+            const ordersList = (() => {
+              let list = summary.recentOrders ?? [];
+              const q = ordersQuickSearch.trim().toLowerCase();
+              if (!q) return list;
+              return list.filter((o: { id: number; orderType: string; status: string; formattedOrderId?: string | null; orderId?: string | null; externalRef?: string | null; displayOrderId?: string | null }) => {
+                const displayId = formatRiderOrderDisplayId(o).toLowerCase();
+                return (
+                  displayId.includes(q) ||
+                  o.orderType.toLowerCase().includes(q) ||
+                  o.status.toLowerCase().replace(/_/g, ' ').includes(q) ||
+                  formatOrderTypeLabel(o.orderType).toLowerCase().includes(q)
+                );
+              });
+            })();
             const totalOrders = ordersList.length;
             const displayedOrders = ordersList.slice((ordersPage - 1) * ordersPageSize, ordersPage * ordersPageSize);
             const ticketsList = (() => {
@@ -1091,173 +1111,255 @@ export default function RidersPage() {
             const withdrawalsList = summary.recentWithdrawals ?? [];
             const totalWithdrawals = withdrawalsList.length;
             const displayedWithdrawals = withdrawalsList.slice((withdrawalsPage - 1) * withdrawalsPageSize, withdrawalsPage * withdrawalsPageSize);
+            const ordersTotalPages = Math.max(1, Math.ceil(totalOrders / ordersPageSize));
+            const ordersPageStart = totalOrders === 0 ? 0 : (ordersPage - 1) * ordersPageSize + 1;
+            const ordersPageEnd = Math.min(ordersPage * ordersPageSize, totalOrders);
             const ordersSection = (
-              <div className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm hover:shadow-md transition-shadow h-full min-h-0 flex flex-col ring-1 ring-gray-900/5">
-                <div className="flex flex-wrap items-center gap-2 mb-2 shrink-0">
-                  <h3 className="text-md font-semibold text-gray-800 shrink-0">Recent Orders</h3>
-                  <button type="button" onClick={() => handleRefreshSection('orders')} disabled={summaryQueryFetching} className="p-1.5 rounded border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50 cursor-pointer" title="Refresh orders"><RefreshCw className={`h-3.5 w-3.5 ${summaryQueryFetching ? 'animate-spin' : ''}`} /></button>
-                  {showOrdersFilters && (
+              <div className="rounded-2xl border border-gray-200 bg-white shadow-sm h-full min-h-0 flex flex-col overflow-hidden">
+                {/* Header */}
+                <div className="flex flex-wrap items-center justify-between gap-2 px-3 sm:px-4 pt-3 pb-2 border-b border-gray-100">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-600 ring-1 ring-blue-100">
+                      <ClipboardList className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="text-sm font-bold text-gray-900 leading-tight">Recent Orders</h3>
+                      <p className="text-[11px] text-gray-500 leading-tight">View and manage all recent orders</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => exportOrdersCsv(displayedOrders, approvedExtraByOrderId)}
+                    disabled={displayedOrders.length === 0}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed shrink-0 cursor-pointer"
+                  >
+                    <Download className="h-3 w-3" />
+                    Export
+                  </button>
+                </div>
+
+                {/* Toolbar */}
+                <div className="flex flex-wrap items-center gap-1.5 px-3 sm:px-4 py-2 border-b border-gray-100 bg-gray-50/40">
+                  <button
+                    type="button"
+                    onClick={() => handleRefreshSection('orders')}
+                    disabled={summaryQueryFetching}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 hover:text-gray-900 disabled:opacity-50 cursor-pointer shrink-0"
+                    title="Refresh orders"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${summaryQueryFetching ? 'animate-spin' : ''}`} />
+                  </button>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <span className="text-[11px] text-gray-500 whitespace-nowrap">Rows per page</span>
+                    <select
+                      value={ordersPageSize}
+                      onChange={(e) => { setOrdersPageSize(Number(e.target.value)); setOrdersPage(1); }}
+                      className="h-7 rounded-md border border-gray-200 bg-white px-1.5 text-[11px] text-gray-900 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 cursor-pointer"
+                      aria-label="Rows per page"
+                    >
+                      <option value={5}>5</option>
+                      <option value={10}>10</option>
+                      <option value={20}>20</option>
+                      <option value={50}>50</option>
+                    </select>
+                  </div>
+                  {totalOrders > 0 && (
                     <>
+                      <span className="text-[11px] text-gray-500 whitespace-nowrap hidden sm:inline">
+                        Showing <span className="font-medium text-gray-800">{ordersPageStart}–{ordersPageEnd}</span> of{' '}
+                        <span className="font-medium text-gray-800">{totalOrders}</span> orders
+                      </span>
+                      <div className="flex items-center gap-0.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setOrdersPage((p) => Math.max(1, p - 1))}
+                          disabled={summaryQueryFetching || ordersPage <= 1}
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-40 cursor-pointer"
+                          aria-label="Previous page"
+                        >
+                          <ChevronLeft className="h-3.5 w-3.5" />
+                        </button>
+                        <span className="inline-flex h-7 min-w-[1.75rem] items-center justify-center rounded-md border border-blue-200 bg-blue-50 px-1.5 text-[11px] font-semibold text-blue-700">
+                          {ordersPage}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setOrdersPage((p) => Math.min(ordersTotalPages, p + 1))}
+                          disabled={summaryQueryFetching || ordersPage >= ordersTotalPages}
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-40 cursor-pointer"
+                          aria-label="Next page"
+                        >
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </>
+                  )}
+                  <div className="relative flex-1 min-w-[120px] sm:min-w-[180px]">
+                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-gray-400 pointer-events-none" />
+                    <input
+                      type="search"
+                      value={ordersQuickSearch}
+                      onChange={(e) => setOrdersQuickSearch(e.target.value)}
+                      placeholder="Search by Order ID, type…"
+                      className="w-full h-7 pl-7 pr-2 text-[11px] border border-gray-200 rounded-md bg-white text-gray-900 placeholder:text-gray-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setShowOrdersFilters((v) => !v); if (!showOrdersFilters) setLoadingSection('orders'); }}
+                    className={`inline-flex items-center gap-1 h-7 px-2.5 text-[11px] font-medium rounded-md border shrink-0 cursor-pointer ${showOrdersFilters ? 'border-blue-300 bg-blue-50 text-blue-700' : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'}`}
+                  >
+                    <Filter className="h-3 w-3" />
+                    Filters
+                  </button>
+                </div>
+
+                {showOrdersFilters && (
+                  <div className="px-3 sm:px-4 py-2 border-b border-gray-100 bg-white shrink-0">
+                    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                       <input
                         type="date"
                         value={ordersFrom}
                         onChange={(e) => { setLoadingSection('orders'); handleOrdersFromChange(e.target.value); }}
-                        className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 w-[7.5rem] max-w-[110px]"
+                        className="h-7 px-2 text-[11px] border border-gray-200 rounded-md focus:ring-1 focus:ring-blue-500 bg-white text-gray-900"
                         title="From date"
                       />
                       <input
                         type="date"
                         value={ordersTo}
                         onChange={(e) => { setLoadingSection('orders'); handleOrdersToChange(e.target.value); }}
-                        className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 w-[7.5rem] max-w-[110px]"
+                        className="h-7 px-2 text-[11px] border border-gray-200 rounded-md focus:ring-1 focus:ring-blue-500 bg-white text-gray-900"
                         title="To date"
                       />
-                      <button
-                        type="button"
-                        onClick={() => setShowOrdersMoreFilters((v) => !v)}
-                        className={`flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border transition-colors cursor-pointer ${showOrdersMoreFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-800"}`}
-                        title={showOrdersMoreFilters ? "Hide more filters" : "Show more filters"}
+                      <select
+                        value={ordersOrderType}
+                        onChange={(e) => { setLoadingSection('orders'); setOrdersOrderType(e.target.value); }}
+                        className="h-7 px-2 text-[11px] border border-gray-200 rounded-md bg-white text-gray-900 cursor-pointer"
                       >
-                        More filters
-                        {showOrdersMoreFilters ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                      </button>
-                      <button type="button" onClick={clearOrdersFilters} className="w-full sm:w-auto shrink-0 px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors cursor-pointer" title="Clear all filters">Clear filters</button>
-                    </>
-                  )}
-                  {(summary.recentOrders?.length ?? 0) > 0 && (
-                    <>
-                      <span className="text-[10px] sm:text-xs text-gray-600 whitespace-nowrap">Rows</span>
-                      <select value={ordersPageSize} onChange={(e) => { setOrdersPageSize(Number(e.target.value)); setOrdersPage(1); }} className="h-6 sm:h-7 min-w-0 w-10 sm:w-12 rounded border border-gray-300 bg-white px-1 text-[10px] sm:text-xs text-gray-900 focus:ring-1 focus:ring-blue-500 cursor-pointer" aria-label="Rows per page">
-                        <option value={5}>5</option>
-                        <option value={10}>10</option>
-                        <option value={20}>20</option>
-                        <option value={50}>50</option>
+                        <option value="all">All types</option>
+                        <option value="food">Food</option>
+                        <option value="parcel">Parcel</option>
+                        <option value="person_ride">Person ride</option>
                       </select>
-                      <TablePagination page={ordersPage} pageSize={ordersPageSize} total={totalOrders} onPageChange={setOrdersPage} disabled={summaryQueryFetching} ariaLabel="Orders" compact />
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => { setShowOrdersFilters((v) => !v); if (!showOrdersFilters) setLoadingSection('orders'); }}
-                    className={`flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded border transition-colors ml-auto sm:ml-0 cursor-pointer ${showOrdersFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-800"}`}
-                  >
-                    <Filter className="h-3.5 w-3.5 shrink-0" />
-                    Filters
-                  </button>
-                </div>
-                {showOrdersFilters && showOrdersMoreFilters && (
-                  <div className="flex flex-wrap items-center gap-3 mb-4 p-3 rounded-lg border border-gray-200 bg-gray-50/80 shrink-0">
-                    <span className="text-xs font-medium text-gray-600">Type:</span>
-                    <select
-                      value={ordersOrderType}
-                      onChange={(e) => { setLoadingSection('orders'); setOrdersOrderType(e.target.value); }}
-                      className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 cursor-pointer"
-                      title="Order type"
-                    >
-                      <option value="all">All</option>
-                      <option value="food">Food</option>
-                      <option value="parcel">Parcel</option>
-                      <option value="person_ride">Person ride</option>
-                    </select>
-                    <span className="text-xs font-medium text-gray-600">Status:</span>
-                    <select
-                      value={ordersStatus}
-                      onChange={(e) => { setLoadingSection('orders'); setOrdersStatus(e.target.value); }}
-                      className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 cursor-pointer"
-                      title="Order status"
-                    >
-                      <option value="all">All</option>
-                      <option value="assigned">Assigned</option>
-                      <option value="accepted">Accepted</option>
-                      <option value="reached_store">Reached store</option>
-                      <option value="picked_up">Picked up</option>
-                      <option value="in_transit">In transit</option>
-                      <option value="delivered">Delivered</option>
-                      <option value="cancelled">Cancelled</option>
-                      <option value="failed">Failed</option>
-                    </select>
-                    <span className="text-xs font-medium text-gray-600">Order ID:</span>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      placeholder="Search by order ID"
-                      value={ordersOrderIdSearch}
-                      onChange={(e) => { setLoadingSection('orders'); setOrdersOrderIdSearch(e.target.value.replace(/\D/g, '').slice(0, 12)); }}
-                      className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 w-28 placeholder:text-gray-400"
-                      title="Search order by ID"
-                    />
+                      <select
+                        value={ordersStatus}
+                        onChange={(e) => { setLoadingSection('orders'); setOrdersStatus(e.target.value); }}
+                        className="h-7 px-2 text-[11px] border border-gray-200 rounded-md bg-white text-gray-900 cursor-pointer"
+                      >
+                        <option value="all">All statuses</option>
+                        <option value="assigned">Assigned</option>
+                        <option value="accepted">Accepted</option>
+                        <option value="reached_store">Reached store</option>
+                        <option value="picked_up">Picked up</option>
+                        <option value="in_transit">In transit</option>
+                        <option value="delivered">Delivered</option>
+                        <option value="cancelled">Cancelled</option>
+                        <option value="failed">Failed</option>
+                      </select>
+                      <button type="button" onClick={clearOrdersFilters} className="h-7 px-2.5 text-[11px] font-medium rounded-md border border-gray-200 text-gray-700 bg-white hover:bg-gray-50 cursor-pointer">
+                        Clear filters
+                      </button>
+                    </div>
                   </div>
                 )}
-                <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+
+                {/* Table */}
+                <div className="flex-1 min-h-0 overflow-hidden flex flex-col px-3 sm:px-4 pb-3 pt-2">
                   {loadingSection === 'orders' && summaryQueryFetching ? (
                     <div className="flex justify-center py-8">
-                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500" />
+                      <div className="animate-spin rounded-full h-6 w-6 border-2 border-blue-500 border-t-transparent" />
                     </div>
-                  ) : (summary.recentOrders?.length ?? 0) > 0 ? (
-                    <>
-                    <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-                      {displayedOrders.map((order: { id: number; orderType: string; status: string; riderEarning?: number; createdAt: string }) => (
-                        <div key={order.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100/80 transition-colors group">
-                          <div className="min-w-0 flex-1">
-                            <p className="font-medium text-gray-900">Order #{order.id}</p>
-                            <p className="text-sm text-gray-500">{order.orderType} • {order.status}</p>
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            <div className="flex flex-col items-end leading-tight">
-                              <p className="font-semibold text-gray-900">₹{Number(order.riderEarning || 0).toFixed(2)}</p>
-                              {(() => {
-                                const extra = approvedExtraByOrderId.get(order.id) ?? 0;
-                                if (!(extra > 0)) return null;
-                                return (
-                                  <span
-                                    className="mt-1 inline-flex items-center rounded-md bg-green-50 px-2 py-0.5 text-[11px] font-semibold text-green-700 border border-green-200"
-                                    title="Approved extra amount (add amount) for this order"
+                  ) : totalOrders > 0 ? (
+                    <div className="overflow-x-auto overflow-y-auto max-h-[18rem] rounded-lg border border-gray-200">
+                      <table className="min-w-full text-sm border-collapse">
+                        <thead className="bg-gray-50/90 sticky top-0 z-10 border-b border-gray-200">
+                          <tr>
+                            <th className="px-3 py-1.5 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">
+                              <span className="inline-flex items-center gap-0.5">Order ID <ChevronDown className="h-2.5 w-2.5 text-gray-400" /></span>
+                            </th>
+                            <th className="px-3 py-1.5 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Order Status</th>
+                            <th className="px-3 py-1.5 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Amount</th>
+                            <th className="px-3 py-1.5 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Credit / Debit</th>
+                            <th className="px-3 py-1.5 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Time</th>
+                            <th className="px-3 py-1.5 text-right text-[10px] font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="bg-white divide-y divide-gray-100">
+                          {displayedOrders.map((order: { id: number; orderType: string; status: string; riderEarning?: number; createdAt: string; formattedOrderId?: string | null; orderId?: string | null; externalRef?: string | null; displayOrderId?: string | null }) => {
+                            const extra = approvedExtraByOrderId.get(order.id) ?? 0;
+                            const earning = Number(order.riderEarning || 0);
+                            const totalAmount = earning + extra;
+                            const walletEntry = orderWalletEntryType(order, extra);
+                            return (
+                              <tr key={order.id} className="hover:bg-gray-50/60 transition-colors">
+                                <td className="px-3 py-1.5">
+                                  <div className="flex items-center gap-2 min-w-[140px]">
+                                    <OrderTypeIcon orderType={order.orderType} />
+                                    <div className="min-w-0 leading-tight">
+                                      <p className="text-xs font-semibold text-gray-900 truncate">{formatRiderOrderDisplayId(order)}</p>
+                                      <p className="text-[10px] text-gray-500 truncate">{formatOrderTypeLabel(order.orderType)}</p>
+                                    </div>
+                                  </div>
+                                </td>
+                                <td className="px-3 py-1.5">
+                                  <OrderStatusBadge status={order.status} />
+                                </td>
+                                <td className="px-3 py-1.5 whitespace-nowrap leading-tight">
+                                  <span className="text-xs font-bold text-gray-900 tabular-nums">₹{totalAmount.toFixed(2)}</span>
+                                  {extra > 0 && (
+                                    <p className="text-[9px] text-emerald-600 font-medium">+₹{extra.toFixed(2)}</p>
+                                  )}
+                                </td>
+                                <td className="px-3 py-1.5 whitespace-nowrap">
+                                  <WalletEntryBadge entry={walletEntry} />
+                                </td>
+                                <td className="px-3 py-1.5 text-[11px] text-gray-600 whitespace-nowrap tabular-nums leading-tight">
+                                  {new Date(order.createdAt).toLocaleString()}
+                                </td>
+                                <td className="px-3 py-1.5 text-right whitespace-nowrap">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      if (openOrderMenuId === order.id) {
+                                        setOpenOrderMenuId(null);
+                                        setOrderMenuPosition(null);
+                                        return;
+                                      }
+                                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                      const menuWidth = 176;
+                                      const menuHeight = 120;
+                                      const spaceBelow = window.innerHeight - rect.bottom;
+                                      if (spaceBelow >= menuHeight + 8) {
+                                        setOrderMenuPosition({
+                                          top: rect.bottom + 4,
+                                          left: Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8),
+                                        });
+                                      } else {
+                                        setOrderMenuPosition({
+                                          top: rect.top - menuHeight - 4,
+                                          left: Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8),
+                                        });
+                                      }
+                                      setOpenOrderMenuId(order.id);
+                                    }}
+                                    className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-500 hover:bg-gray-100 hover:text-gray-800 transition-colors cursor-pointer"
+                                    aria-label="Order actions"
                                   >
-                                    Extra +₹{extra.toFixed(2)}
-                                  </span>
-                                );
-                              })()}
-                            </div>
-                            <p className="text-xs text-gray-500">{new Date(order.createdAt).toLocaleDateString()}</p>
-                            <div className="relative">
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  if (openOrderMenuId === order.id) {
-                                    setOpenOrderMenuId(null);
-                                    setOrderMenuPosition(null);
-                                    return;
-                                  }
-                                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                                  const menuWidth = 176;
-                                  const menuHeight = 120;
-                                  const spaceBelow = window.innerHeight - rect.bottom;
-                                  if (spaceBelow >= menuHeight + 8) {
-                                    setOrderMenuPosition({
-                                      top: rect.bottom + 4,
-                                      left: Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8),
-                                    });
-                                  } else {
-                                    setOrderMenuPosition({
-                                      top: rect.top - menuHeight - 4,
-                                      left: Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8),
-                                    });
-                                  }
-                                  setOpenOrderMenuId(order.id);
-                                }}
-                                className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-200 hover:text-gray-800 transition-colors cursor-pointer"
-                                aria-label="Order actions"
-                              >
-                                <MoreVertical className="h-4 w-4" />
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
+                                    <MoreVertical className="h-3.5 w-3.5" />
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
                     </div>
-                    </>
                   ) : (
-                    <p className="text-gray-500 text-sm text-center py-4">No orders found</p>
+                    <div className="flex flex-col items-center justify-center py-8 text-center rounded-lg border border-dashed border-gray-200 bg-gray-50/50">
+                      <ClipboardList className="h-6 w-6 text-gray-300 mb-1.5" />
+                      <p className="text-xs font-medium text-gray-600">No orders found</p>
+                      <p className="text-[10px] text-gray-400">Try adjusting your search or filters</p>
+                    </div>
                   )}
                 </div>
                 {typeof document !== "undefined" &&
@@ -2501,6 +2603,38 @@ export default function RidersPage() {
   );
 }
 
+function RiderSummarySectionsSkeleton() {
+  const block = (key: string, tall = false) => (
+    <div
+      key={key}
+      className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm ring-1 ring-gray-900/5 animate-pulse"
+    >
+      <div className="flex items-center gap-2 mb-4">
+        <div className="h-5 w-36 bg-gray-200 rounded" />
+        <div className="h-7 w-7 bg-gray-100 rounded border border-gray-200" />
+      </div>
+      <div className={`space-y-2 ${tall ? "min-h-[12rem]" : "min-h-[8rem]"}`}>
+        {[1, 2, 3].map((i) => (
+          <div key={i} className="h-10 bg-gray-100 rounded-lg" />
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col gap-4 sm:gap-5 lg:gap-6 w-full min-w-0">
+      {block("orders", true)}
+      {block("tickets", true)}
+      {block("penalties", true)}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-5 lg:gap-6">
+        {block("withdrawals")}
+        {block("blacklist")}
+        <div className="sm:col-span-2">{block("metrics", true)}</div>
+      </div>
+    </div>
+  );
+}
+
 // Recent Data Section Component
 interface RecentDataSectionProps {
   title: string;
@@ -2631,6 +2765,172 @@ function RecentDataSection({
   );
 }
 
+function formatOrderTypeLabel(orderType: string): string {
+  if (orderType === "person_ride") return "Person Ride";
+  if (!orderType) return "—";
+  return orderType.charAt(0).toUpperCase() + orderType.slice(1);
+}
+
+function OrderTypeIcon({ orderType }: { orderType: string }) {
+  const t = orderType.toLowerCase();
+  if (t === "food") {
+    return (
+      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 ring-1 ring-emerald-200/60">
+        <ShoppingBag className="h-3.5 w-3.5" strokeWidth={2} />
+      </div>
+    );
+  }
+  if (t === "person_ride") {
+    return (
+      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600 ring-1 ring-blue-200/60">
+        <User className="h-3.5 w-3.5" strokeWidth={2} />
+      </div>
+    );
+  }
+  return (
+    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-orange-100 text-orange-600 ring-1 ring-orange-200/60">
+      <Package className="h-3.5 w-3.5" strokeWidth={2} />
+    </div>
+  );
+}
+
+function OrderStatusBadge({ status }: { status: string }) {
+  const key = (status || "").toLowerCase();
+  const label = status ? status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : "—";
+
+  type StatusCfg = { bg: string; text: string; border: string; icon: React.ReactNode };
+  const configs: Record<string, StatusCfg> = {
+    delivered: {
+      bg: "bg-emerald-50",
+      text: "text-emerald-700",
+      border: "border-emerald-200",
+      icon: <CheckCircle className="h-3 w-3 shrink-0" strokeWidth={2.5} />,
+    },
+    reached_store: {
+      bg: "bg-purple-50",
+      text: "text-purple-700",
+      border: "border-purple-200",
+      icon: <span className="h-1.5 w-1.5 rounded-full bg-purple-600 shrink-0" />,
+    },
+    picked_up: {
+      bg: "bg-cyan-50",
+      text: "text-cyan-700",
+      border: "border-cyan-200",
+      icon: <span className="h-1.5 w-1.5 rounded-full bg-cyan-600 shrink-0" />,
+    },
+    in_transit: {
+      bg: "bg-sky-50",
+      text: "text-sky-700",
+      border: "border-sky-200",
+      icon: <span className="h-1.5 w-1.5 rounded-full bg-sky-600 shrink-0" />,
+    },
+    accepted: {
+      bg: "bg-indigo-50",
+      text: "text-indigo-700",
+      border: "border-indigo-200",
+      icon: <span className="h-1.5 w-1.5 rounded-full bg-indigo-600 shrink-0" />,
+    },
+    assigned: {
+      bg: "bg-blue-50",
+      text: "text-blue-700",
+      border: "border-blue-200",
+      icon: <span className="h-1.5 w-1.5 rounded-full bg-blue-600 shrink-0" />,
+    },
+    cancelled: {
+      bg: "bg-red-50",
+      text: "text-red-700",
+      border: "border-red-200",
+      icon: <X className="h-3 w-3 shrink-0" strokeWidth={2.5} />,
+    },
+    failed: {
+      bg: "bg-red-50",
+      text: "text-red-700",
+      border: "border-red-200",
+      icon: <X className="h-3 w-3 shrink-0" strokeWidth={2.5} />,
+    },
+  };
+
+  const cfg = configs[key] ?? {
+    bg: "bg-gray-50",
+    text: "text-gray-700",
+    border: "border-gray-200",
+    icon: <span className="h-1.5 w-1.5 rounded-full bg-gray-500 shrink-0" />,
+  };
+
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border whitespace-nowrap leading-tight ${cfg.bg} ${cfg.text} ${cfg.border}`}>
+      {cfg.icon}
+      {label}
+    </span>
+  );
+}
+
+function exportOrdersCsv(
+  orders: Array<{ id: number; orderType: string; status: string; riderEarning?: number; createdAt: string; formattedOrderId?: string | null; orderId?: string | null; externalRef?: string | null; displayOrderId?: string | null }>,
+  extraByOrderId: Map<number, number>
+) {
+  const header = ["Order ID", "Type", "Status", "Amount", "Credit/Debit", "Time"];
+  const rows = orders.map((o) => {
+    const extra = extraByOrderId.get(o.id) ?? 0;
+    const amount = Number(o.riderEarning || 0) + extra;
+    return [
+      formatRiderOrderDisplayId(o),
+      formatOrderTypeLabel(o.orderType),
+      o.status,
+      amount.toFixed(2),
+      orderWalletEntryType(o, extra),
+      new Date(o.createdAt).toLocaleString(),
+    ];
+  });
+  const csv = [header, ...rows].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `rider-orders-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function orderWalletEntryType(
+  order: { status: string; riderEarning?: number | string | null },
+  extra = 0
+): "Credit" | "Debit" | "Pending" | "—" {
+  const earning = Number(order.riderEarning || 0);
+  const total = earning + extra;
+  if (total > 0) return "Credit";
+  const status = String(order.status || "").toLowerCase();
+  if (status === "cancelled" || status === "failed") return "—";
+  return "Pending";
+}
+
+function WalletEntryBadge({ entry }: { entry: "Credit" | "Debit" | "Pending" | "—" }) {
+  if (entry === "—") return <span className="text-gray-400 text-sm">—</span>;
+
+  if (entry === "Credit") {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-emerald-50 text-emerald-700 border-emerald-200 whitespace-nowrap leading-tight">
+        <CheckCircle className="h-2.5 w-2.5 shrink-0" strokeWidth={2.5} />
+        Credit
+      </span>
+    );
+  }
+  if (entry === "Debit") {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-red-50 text-red-700 border-red-200 whitespace-nowrap leading-tight">
+        <X className="h-2.5 w-2.5 shrink-0" strokeWidth={2.5} />
+        Debit
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-amber-50 text-amber-700 border-amber-200 whitespace-nowrap leading-tight">
+      <Clock className="h-2.5 w-2.5 shrink-0" strokeWidth={2.5} />
+      Pending
+    </span>
+  );
+}
+
 function StatusBadge({ status }: { status: string }) {
   const statusColors: Record<string, string> = {
     pending: 'bg-yellow-100 text-yellow-800',
@@ -2643,13 +2943,22 @@ function StatusBadge({ status }: { status: string }) {
     paid: 'bg-green-100 text-green-800',
     active: 'bg-amber-100 text-amber-800',
     reversed: 'bg-gray-100 text-gray-700',
+    delivered: 'bg-green-100 text-green-800',
+    cancelled: 'bg-red-100 text-red-800',
+    failed: 'bg-red-100 text-red-800',
+    assigned: 'bg-blue-100 text-blue-800',
+    accepted: 'bg-indigo-100 text-indigo-800',
+    reached_store: 'bg-purple-100 text-purple-800',
+    picked_up: 'bg-cyan-100 text-cyan-800',
+    in_transit: 'bg-sky-100 text-sky-800',
   };
 
   const colorClass = statusColors[status.toLowerCase()] || 'bg-gray-100 text-gray-800';
+  const label = status ? status.replace(/_/g, ' ') : '—';
 
   return (
-    <span className={`px-2 py-1 text-xs font-medium rounded-full ${colorClass}`}>
-      {status}
+    <span className={`px-2 py-0.5 text-[11px] font-medium rounded-full capitalize ${colorClass}`}>
+      {label}
     </span>
   );
 }

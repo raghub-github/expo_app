@@ -53,6 +53,9 @@ export type HomeBannerOffer = {
   max_discount_amount?: number | null;
   discount_percentage?: number | null;
   discount_value?: number | null;
+  offer_image_url?: string | null;
+  /** ISO timestamp — offer expires at this time. */
+  valid_till?: string | null;
 };
 
 export type FeaturedOffersResponse = {

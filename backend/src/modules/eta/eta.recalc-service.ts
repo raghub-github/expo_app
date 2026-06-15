@@ -82,11 +82,15 @@ export async function recalcOrderEta(orderIdText: string, input: RecalcOrderEtaI
     riderAssigned: noAssignment ? true : false,
     riderAssignmentDelayMinutes: noAssignment ? 0 : undefined,
     weather:
-      (input.extraWeatherMinutes ?? 0) >= 8
-        ? "HEAVY_RAIN"
-        : (input.extraWeatherMinutes ?? 0) >= 3
-          ? "LIGHT_RAIN"
-          : "CLEAR",
+      (input.extraWeatherMinutes ?? 0) >= 12
+        ? "EXTREME_WEATHER"
+        : (input.extraWeatherMinutes ?? 0) >= 8
+          ? "HEAVY_RAIN"
+          : (input.extraWeatherMinutes ?? 0) >= 5
+            ? "MODERATE_RAIN"
+            : (input.extraWeatherMinutes ?? 0) >= 3
+              ? "LIGHT_RAIN"
+              : "CLEAR",
   });
 
   await appendEtaRecalc({

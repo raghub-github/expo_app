@@ -3,14 +3,8 @@ import { View, Text, StyleSheet, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { ApiFoodOrder } from "@/services/ordersApi";
 import { GatiMitraMerchant, CARD_PADDING, CARD_RADIUS } from "@/constants/theme";
-import { merchantOrderBillTotal } from "@/lib/merchant-line-total";
+import { merchantOrderBillTotal, formatMerchantRs } from "@/lib/merchant-line-total";
 import { OrderMerchantBillModal } from "@/components/order/OrderMerchantBillModal";
-
-function formatRs(amount: number, decimals = 2): string {
-  const n = Number.isFinite(amount) ? amount : 0;
-  if (decimals === 0) return `₹${Math.round(n)}`;
-  return `₹${n.toFixed(decimals)}`;
-}
 
 function isPaidOrder(order: ApiFoodOrder): boolean {
   const st = (order.payment_status ?? "").trim().toUpperCase();
@@ -44,7 +38,7 @@ export function OrderBillDetails({ order }: Props) {
       >
         {discount > 0 ? (
           <Text style={styles.discountNote}>
-            Restaurant discount −{formatRs(discount)} included in total
+            Restaurant discount −{formatMerchantRs(discount)} included in total
           </Text>
         ) : null}
         <View style={styles.totalRow}>
@@ -56,7 +50,7 @@ export function OrderBillDetails({ order }: Props) {
               </View>
             ) : null}
           </View>
-          <Text style={styles.totalAmount}>{formatRs(total, 0)}</Text>
+          <Text style={styles.totalAmount}>{formatMerchantRs(total)}</Text>
         </View>
         <Text style={styles.hint}>
           All items (with customizations) + packaging − restaurant discount · Tap for breakdown

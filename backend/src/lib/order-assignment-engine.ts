@@ -502,9 +502,12 @@ export async function listEligibleRidersForDispatchOrder(
   target: DispatchOrderTarget
 ): Promise<EligibleDispatchRider[]> {
   const candidateIds = await loadOnDutyRiderIds();
+  const { fetchExcludedRiderIdsForOrder } = await import("./rider-dispatch-order-exclusion.js");
+  const excludedRiderIds = await fetchExcludedRiderIdsForOrder(target.orderCoreId);
   const eligible: EligibleDispatchRider[] = [];
 
   for (const riderId of candidateIds) {
+    if (excludedRiderIds.has(riderId)) continue;
     const row = await evaluateRiderDispatchEligibility(riderId, target);
     if (row) eligible.push(row);
   }

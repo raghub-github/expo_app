@@ -17,13 +17,26 @@ import {
   type MapEdgeInsets,
 } from "@/src/components/orders/ActiveRideNavigationMap";
 import { PersonRideNavigateBottomSheet } from "@/src/components/orders/PersonRideNavigateBottomSheet";
-import {
-  getActiveManeuverDisplay,
-  getWrongWayManeuverDisplay,
-} from "@/src/lib/navigation-maneuver";
 import type { NavMapViewMode } from "@/src/lib/map-assets";
-import { FoodNavigateBottomSheet } from "@/src/components/orders/FoodNavigateBottomSheet";
+import {
+  FoodNavigateBottomSheet,
+  FOOD_NAV_SHEET_COLLAPSED_HEIGHT,
+  FOOD_NAV_SHEET_HEIGHT,
+} from "@/src/components/orders/FoodNavigateBottomSheet";
+import {
+  PERSON_RIDE_NAV_SHEET_COLLAPSED_HEIGHT,
+  PERSON_RIDE_NAV_SHEET_HEIGHT,
+} from "@/src/components/orders/PersonRideNavigateBottomSheet";
+import { buildNavMapEdgeInsets } from "@/src/lib/navigation-camera-fit";
+import { openGoogleMapsNavigation } from "@/src/lib/open-google-maps-navigation";
 import { FoodNavigationMapChrome } from "@/src/components/orders/FoodNavigationMapChrome";
+import { FoodPickOrderSheet } from "@/src/components/orders/FoodPickOrderSheet";
+import { FoodPickOrderDetailScreen } from "@/src/components/orders/FoodPickOrderDetailScreen";
+import { FoodDropOrderScreen } from "@/src/components/orders/FoodDropOrderScreen";
+import { RestaurantFeedbackBottomSheet } from "@/src/components/orders/RestaurantFeedbackBottomSheet";
+import { CustomerFeedbackBottomSheet } from "@/src/components/orders/CustomerFeedbackBottomSheet";
+import { FoodPickupVerificationScreen } from "@/src/components/orders/FoodPickupVerificationScreen";
+import { FoodBarcodeScannerScreen } from "@/src/components/orders/FoodBarcodeScannerScreen";
 import { Button } from "@/src/components/ui/Button";
 import { colors } from "@/src/theme";
 import { createForegroundLocationTracker, type LocationTrackerState } from "@/src/services/location/locationTracker";
@@ -35,15 +48,22 @@ import {
 } from "@/src/services/maps/directions.service";
 import {
   useRideOrder,
+  syncRiderOrderDetailCache,
   useReachedPickup,
+  useSubmitMerchantPickupFeedback,
+  useSubmitCustomerDeliveryFeedback,
   useReachedCustomer,
   useCancelAssignedRide,
   useVerifyPickupOtp,
+  useVerifyPickupBarcode,
+  useFoodPickupVerificationSettings,
+  useMarkFoodPickup,
   useStartRide,
   useCompleteRide,
   useVerifyDeliveryOtp,
   RIDER_ACTIVE_ORDERS_QUERY_KEY,
 } from "@/src/hooks/useOrders";
+import type { RiderOrderSummary } from "@/src/services/api/riderApi";
 import { useQueryClient } from "@tanstack/react-query";
 import { buildFoodDeliverySuccessParams } from "@/src/lib/food-delivery-success-nav";
 import { buildRideDeliverySuccessParams } from "@/src/lib/ride-delivery-success-nav";
@@ -120,7 +140,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   );
   const [cameraFitTrigger, setCameraFitTrigger] = useState(0);
   const [mapFollowEnabled, setMapFollowEnabled] = useState(true);
-  const [mapViewMode, setMapViewMode] = useState<NavMapViewMode>("navigation");
+  const [mapViewMode, setMapViewMode] = useState<NavMapViewMode>("street");
   const initialNavCamDoneRef = useRef(false);
   const userControllingMapRef = useRef(false);
   const autoFollowResumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -129,9 +149,14 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     refetchInterval: isFoodOrder ? 5000 : 8000,
   });
   const reachedPickup = useReachedPickup();
+  const submitMerchantFeedback = useSubmitMerchantPickupFeedback();
+  const submitCustomerFeedback = useSubmitCustomerDeliveryFeedback();
   const reachedCustomer = useReachedCustomer();
   const cancelAssigned = useCancelAssignedRide();
   const verifyPickupOtp = useVerifyPickupOtp();
+  const verifyPickupBarcode = useVerifyPickupBarcode();
+  const markFoodPickup = useMarkFoodPickup();
+  const { data: pickupVerificationSettings } = useFoodPickupVerificationSettings();
   const startRide = useStartRide();
   const completeRide = useCompleteRide();
   const verifyDeliveryOtp = useVerifyDeliveryOtp();
@@ -146,7 +171,19 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const [otpError, setOtpError] = useState<string | null>(null);
   const [otpResetKey, setOtpResetKey] = useState(0);
   const [reachSliderDone, setReachSliderDone] = useState(false);
-  const [navSheetExpanded, setNavSheetExpanded] = useState(false);
+  const [pickOrderSheetDismissed, setPickOrderSheetDismissed] = useState(false);
+  const [pickOrderDetailOpen, setPickOrderDetailOpen] = useState(false);
+  const [restaurantFeedbackOpen, setRestaurantFeedbackOpen] = useState(false);
+  const [pickupVerificationOpen, setPickupVerificationOpen] = useState(false);
+  const [barcodeScannerOpen, setBarcodeScannerOpen] = useState(false);
+  const [barcodeError, setBarcodeError] = useState<string | null>(null);
+  const foodPickupOtpFromVerificationRef = useRef(false);
+  const prevFoodPickupMarkedRef = useRef<boolean | null>(null);
+  const prevReachSliderDoneRef = useRef(false);
+  const [navSheetExpanded, setNavSheetExpanded] = useState(true);
+  const [dropOrderScreenOpen, setDropOrderScreenOpen] = useState(false);
+  const [customerFeedbackOpen, setCustomerFeedbackOpen] = useState(false);
+  const deliveredOrderForSuccessRef = useRef<RiderOrderSummary | null>(null);
   const sheetBottomInset = useNavScreenBottomInset();
   const riderFix = trackerState.status === "tracking" ? trackerState.lastFix : undefined;
   const smoothDurationMs = useMemo(() => {
@@ -206,11 +243,77 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   /** Food: rider confirmed Mark Pickup (OTP) — not merchant Dispatch Ready alone. */
   const foodPickupMarked =
     isFoodOrder &&
-    (coreOrderStatus === "in_transit" || coreOrderStatus === "delivered");
+    (coreOrderStatus === "in_transit" ||
+      coreOrderStatus === "picked_up" ||
+      coreOrderStatus === "delivered");
   const showDropOnMap = isFoodOrder ? foodPickupMarked : rideStarted;
   const foodDeliveryActive = isFoodOrder ? foodPickupMarked : rideStarted;
   const atCustomer = !!order?.atCustomer;
   const orderDelivered = order?.status === "delivered";
+
+  const showRestaurantFeedbackSheet =
+    isFoodOrder &&
+    restaurantFeedbackOpen &&
+    order?.merchantFeedbackSubmitted !== true &&
+    !orderDelivered;
+
+  const showFoodPickOrderSheet =
+    isFoodOrder &&
+    reachSliderDone &&
+    !pickOrderSheetDismissed &&
+    !pickOrderDetailOpen &&
+    !foodDeliveryActive &&
+    !orderDelivered &&
+    !otpSheetOpen &&
+    !showRestaurantFeedbackSheet &&
+    !pickupVerificationOpen &&
+    !barcodeScannerOpen;
+
+  useEffect(() => {
+    if (!isFoodOrder || foodDeliveryActive || orderDelivered) {
+      prevReachSliderDoneRef.current = reachSliderDone;
+      return;
+    }
+    if (reachSliderDone && !prevReachSliderDoneRef.current) {
+      setPickOrderSheetDismissed(false);
+      setNavSheetExpanded(false);
+    }
+    prevReachSliderDoneRef.current = reachSliderDone;
+  }, [isFoodOrder, reachSliderDone, foodDeliveryActive, orderDelivered]);
+
+  useEffect(() => {
+    if (foodDeliveryActive || otpSheetOpen) {
+      setPickOrderDetailOpen(false);
+    }
+  }, [foodDeliveryActive, otpSheetOpen]);
+
+  useEffect(() => {
+    if (!isFoodOrder) return;
+    if (atCustomer && !orderDelivered) {
+      setDropOrderScreenOpen(true);
+      setNavSheetExpanded(false);
+    }
+    if (orderDelivered) {
+      setDropOrderScreenOpen(false);
+    }
+  }, [isFoodOrder, atCustomer, orderDelivered]);
+
+  useEffect(() => {
+    if (!isFoodOrder || !order || orderDelivered) return;
+    const nowPickedUp = foodPickupMarked;
+    const prev = prevFoodPickupMarkedRef.current;
+    prevFoodPickupMarkedRef.current = nowPickedUp;
+    if (prev === null) return;
+    if (!prev && nowPickedUp && order.merchantFeedbackSubmitted !== true) {
+      setRestaurantFeedbackOpen(true);
+    }
+  }, [isFoodOrder, order, foodPickupMarked, orderDelivered]);
+
+  useEffect(() => {
+    if (isFoodOrder && reachSliderDone && order?.merchantOrderReady) {
+      setPickOrderSheetDismissed(false);
+    }
+  }, [isFoodOrder, reachSliderDone, order?.merchantOrderReady]);
 
   const riderGps = useCallback(() => {
     const fix = trackerState.status === "tracking" ? trackerState.lastFix : undefined;
@@ -466,33 +569,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     return Math.round(routeProgress.remainingDistanceM);
   }, [riderLocation, navDestination, routeProgress.remainingDistanceM]);
 
-  const activeManeuver = useMemo(() => {
-    if (routeDeviation?.wrongWay) {
-      return getWrongWayManeuverDisplay(
-        routeDeviation.offRouteM,
-        routeDeviation.routeBearingDeg
-      );
-    }
-    return getActiveManeuverDisplay(
-      route,
-      routeProgress.remaining,
-      routeProgress.remainingDistanceM,
-      riderLocation
-        ? {
-            latitude: riderLocation.lat,
-            longitude: riderLocation.lng,
-            headingDeg: riderLocation.headingDeg,
-          }
-        : undefined
-    );
-  }, [
-    route,
-    routeProgress.remaining,
-    routeProgress.remainingDistanceM,
-    riderLocation,
-    routeDeviation,
-  ]);
-
   const mapRiderLocation = useMemo(() => {
     if (riderLocation) return riderLocation;
     if (!riderForRoute) return undefined;
@@ -547,7 +623,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   useEffect(() => {
     if (!navigationFollowMode || !riderLocation) return;
     const speedMps = riderFix?.speedMps;
-    if (speedMps == null || speedMps < 0.8) return;
+    if (speedMps == null || speedMps < 0.35) return;
 
     if (!userControllingMapRef.current) {
       setMapFollowEnabled(true);
@@ -557,7 +633,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     if (autoFollowResumeTimerRef.current) clearTimeout(autoFollowResumeTimerRef.current);
     autoFollowResumeTimerRef.current = setTimeout(() => {
       const latestSpeed = trackerState.status === "tracking" ? trackerState.lastFix?.speedMps : null;
-      if (latestSpeed != null && latestSpeed >= 0.8) {
+      if (latestSpeed != null && latestSpeed >= 0.35) {
         userControllingMapRef.current = false;
         setMapFollowEnabled(true);
         mapRef.current?.recenter(true);
@@ -575,21 +651,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     trackerState.status,
     trackerState.lastFix?.speedMps,
   ]);
-
-  const maneuverForBanner = useMemo(
-    () =>
-      activeManeuver ??
-      (navigationFollowMode
-        ? {
-            primary: "Continue on route",
-            title: "Continue on route",
-            icon: "straight" as const,
-          }
-        : null),
-    [activeManeuver, navigationFollowMode]
-  );
-
-  const showTurnByTurn = navigationFollowMode && !!maneuverForBanner;
 
   const sheetTitle = useMemo(() => {
     if (isFoodOrder) {
@@ -634,8 +695,17 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     rideStarted,
     atCustomer,
     orderDelivered,
+    pickupConfirmed,
     t,
   ]);
+
+  const navHeaderTitle = useMemo(() => {
+    const onDropLeg = isFoodOrder ? foodDeliveryActive : rideStarted;
+    if (onDropLeg) {
+      return t("orders.activeNav.reachDrop", "Reach drop");
+    }
+    return t("orders.activeNav.reachPickup", "Reach pickup");
+  }, [isFoodOrder, foodDeliveryActive, rideStarted, t]);
 
   const handleCallCustomer = useCallback(() => {
     const phone = order?.customerPhone?.trim();
@@ -653,6 +723,16 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       );
     });
   }, [order?.customerPhone, t]);
+
+  const handleChatCustomer = useCallback(() => {
+    Alert.alert(
+      t("orders.activeRide.chatSoonTitle", "Chat coming soon"),
+      t(
+        "orders.activeRide.chatSoonMessage",
+        "In-app chat with customers will be available in a future update."
+      )
+    );
+  }, [t]);
 
   const handleReachedPickup = useCallback(() => {
     const gps = riderGps();
@@ -695,6 +775,8 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       {
         onSuccess: () => {
           setReachSliderDone(true);
+          setPickOrderSheetDismissed(false);
+          setNavSheetExpanded(false);
         },
         onError: (err) => {
           setReachSliderDone(false);
@@ -710,18 +792,256 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     );
   }, [orderId, reachedPickup, riderGps, t]);
 
-  const handleMarkPickup = useCallback(() => {
+  const closeRestaurantFeedback = useCallback(() => {
+    setRestaurantFeedbackOpen(false);
+  }, []);
+
+  const navigateToFoodDeliverySuccess = useCallback(
+    (deliveredOrder: RiderOrderSummary) => {
+      void tracker.stop();
+      void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
+      queryClient.setQueryData(["rider", "orders", "detail", orderId], deliveredOrder);
+      router.replace({
+        pathname: "/food-delivery-success",
+        params: buildFoodDeliverySuccessParams(deliveredOrder),
+      });
+    },
+    [orderId, queryClient, tracker]
+  );
+
+  const finishCustomerFeedbackAndShowSuccess = useCallback(() => {
+    const deliveredOrder = deliveredOrderForSuccessRef.current;
+    setCustomerFeedbackOpen(false);
+    deliveredOrderForSuccessRef.current = null;
+    if (deliveredOrder) {
+      navigateToFoodDeliverySuccess(deliveredOrder);
+    } else {
+      router.replace("/(tabs)/orders");
+    }
+  }, [navigateToFoodDeliverySuccess]);
+
+  const closeCustomerFeedback = useCallback(() => {
+    setCustomerFeedbackOpen(false);
+    finishCustomerFeedbackAndShowSuccess();
+  }, [finishCustomerFeedbackAndShowSuccess]);
+
+  const handleRestaurantFeedbackSkip = useCallback(() => {
+    submitMerchantFeedback.mutate(
+      { orderId, skipped: true },
+      {
+        onSuccess: closeRestaurantFeedback,
+        onError: (err) => {
+          Alert.alert(
+            t("orders.activeRide.updateFailedTitle", "Update failed"),
+            extractApiErrorMessage(
+              err,
+              t("orders.activeFood.feedbackFailed", "Could not save feedback. Try again.")
+            )
+          );
+        },
+      }
+    );
+  }, [orderId, submitMerchantFeedback, closeRestaurantFeedback, t]);
+
+  const handleRestaurantFeedbackSubmit = useCallback(
+    (payload: { rating: number; tags: string[] }) => {
+      submitMerchantFeedback.mutate(
+        { orderId, rating: payload.rating, tags: payload.tags },
+        {
+          onSuccess: closeRestaurantFeedback,
+          onError: (err) => {
+            Alert.alert(
+              t("orders.activeRide.updateFailedTitle", "Update failed"),
+              extractApiErrorMessage(
+                err,
+                t("orders.activeFood.feedbackFailed", "Could not save feedback. Try again.")
+              )
+            );
+          },
+        }
+      );
+    },
+    [orderId, submitMerchantFeedback, closeRestaurantFeedback, t]
+  );
+
+  const handleCustomerFeedbackSkip = useCallback(() => {
+    submitCustomerFeedback.mutate(
+      { orderId, skipped: true },
+      {
+        onSuccess: closeCustomerFeedback,
+        onError: (err) => {
+          Alert.alert(
+            t("orders.activeRide.updateFailedTitle", "Update failed"),
+            extractApiErrorMessage(
+              err,
+              t("orders.activeFood.feedbackFailed", "Could not save feedback. Try again.")
+            )
+          );
+        },
+      }
+    );
+  }, [orderId, submitCustomerFeedback, closeCustomerFeedback, t]);
+
+  const handleCustomerFeedbackSubmit = useCallback(
+    (payload: { rating: number; tags: string[]; comment?: string }) => {
+      submitCustomerFeedback.mutate(
+        {
+          orderId,
+          rating: payload.rating,
+          tags: payload.tags,
+          comment: payload.comment,
+        },
+        {
+          onSuccess: closeCustomerFeedback,
+          onError: (err) => {
+            Alert.alert(
+              t("orders.activeRide.updateFailedTitle", "Update failed"),
+              extractApiErrorMessage(
+                err,
+                t("orders.activeFood.feedbackFailed", "Could not save feedback. Try again.")
+              )
+            );
+          },
+        }
+      );
+    },
+    [orderId, submitCustomerFeedback, closeCustomerFeedback, t]
+  );
+
+  const handlePickOrderConfirm = useCallback(() => {
     if (!order?.merchantOrderReady) return;
-    setOtpError(null);
-    setOtpResetKey((k) => k + 1);
-    setOtpSheetOpen(true);
+    setPickOrderSheetDismissed(true);
+    setPickOrderDetailOpen(true);
   }, [order?.merchantOrderReady]);
+
+  const barcodeVerificationEnabled = pickupVerificationSettings?.barcodeEnabled !== false;
+  const otpVerificationEnabled = pickupVerificationSettings?.otpEnabled !== false;
+  const pickupVerificationRequired = pickupVerificationSettings?.verificationRequired !== false;
+
+  const handleFoodPickupVerificationSuccess = useCallback(
+    (data?: { merchantFeedbackSubmitted?: boolean }) => {
+      setPickupVerificationOpen(false);
+      setBarcodeScannerOpen(false);
+      setBarcodeError(null);
+      setOtpSheetOpen(false);
+      foodPickupOtpFromVerificationRef.current = false;
+      setPickOrderDetailOpen(false);
+      setPickOrderSheetDismissed(true);
+      setPickupBannerMessage(
+        t(
+          "orders.activeFood.pickupMarkedSuccess",
+          "Order picked up — navigate to customer"
+        )
+      );
+      setPickupBannerVisible(true);
+      setCameraFitTrigger((n) => n + 1);
+      if (data?.merchantFeedbackSubmitted !== true) {
+        setRestaurantFeedbackOpen(true);
+      }
+    },
+    [t]
+  );
+
+  const completeFoodPickupVerification = useCallback(
+    (data: RiderOrderSummary) => {
+      syncRiderOrderDetailCache(queryClient, orderId, data);
+      handleFoodPickupVerificationSuccess(data);
+    },
+    [queryClient, orderId, handleFoodPickupVerificationSuccess]
+  );
+
+  const beginPickupFlow = useCallback(() => {
+    if (!order?.merchantOrderReady) return;
+    setPickOrderDetailOpen(false);
+    setBarcodeError(null);
+
+    if (!pickupVerificationRequired) {
+      const gps = riderGps();
+      void markFoodPickup
+        .mutateAsync({ orderId, ...gps, deviceTimestamp: new Date().toISOString() })
+        .then((data) => completeFoodPickupVerification(data))
+        .catch((err) => {
+          Alert.alert(
+            t("orders.activeRide.updateFailedTitle", "Update failed"),
+            extractApiErrorMessage(
+              err,
+              t("orders.activeFood.pickupMarkFailed", "Could not mark order picked up. Try again.")
+            )
+          );
+        });
+      return;
+    }
+
+    if (barcodeVerificationEnabled && !otpVerificationEnabled) {
+      setBarcodeScannerOpen(true);
+      return;
+    }
+
+    if (!barcodeVerificationEnabled && otpVerificationEnabled) {
+      foodPickupOtpFromVerificationRef.current = true;
+      setOtpError(null);
+      setOtpResetKey((k) => k + 1);
+      setOtpSheetOpen(true);
+      return;
+    }
+
+    setPickupVerificationOpen(true);
+  }, [
+    order?.merchantOrderReady,
+    pickupVerificationRequired,
+    barcodeVerificationEnabled,
+    otpVerificationEnabled,
+    riderGps,
+    markFoodPickup,
+    orderId,
+    completeFoodPickupVerification,
+    t,
+  ]);
+
+  const handlePickedOrderSlide = useCallback(() => {
+    beginPickupFlow();
+  }, [beginPickupFlow]);
+
+  const handleMarkPickup = useCallback(() => {
+    beginPickupFlow();
+  }, [beginPickupFlow]);
+
+  const handleBarcodeScanned = useCallback(
+    (barcode: string) => {
+      setBarcodeError(null);
+      const gps = riderGps();
+      void verifyPickupBarcode
+        .mutateAsync({
+          orderId,
+          barcode,
+          ...gps,
+          deviceTimestamp: new Date().toISOString(),
+        })
+        .then((data) => completeFoodPickupVerification(data))
+        .catch((err) => {
+          setBarcodeError(
+            extractApiErrorMessage(
+              err,
+              t(
+                "orders.activeFood.barcodeVerifyFailed",
+                "Barcode does not match this order. Try again or use OTP."
+              )
+            )
+          );
+        });
+    },
+    [orderId, riderGps, verifyPickupBarcode, completeFoodPickupVerification, t]
+  );
 
   const handleReachCustomer = useCallback(() => {
     const gps = riderGps();
     reachedCustomer.mutate(
       { orderId, ...gps },
       {
+        onSuccess: () => {
+          setDropOrderScreenOpen(true);
+          setNavSheetExpanded(false);
+        },
         onError: (err) => {
           Alert.alert(
             t("orders.activeRide.updateFailedTitle", "Update failed"),
@@ -840,6 +1160,11 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const handleDismissOtpSheet = useCallback(() => {
     if (verifyPickupOtp.isPending) return;
     setOtpSheetOpen(false);
+    if (isFoodOrder && foodPickupOtpFromVerificationRef.current) {
+      foodPickupOtpFromVerificationRef.current = false;
+      setPickupVerificationOpen(true);
+      return;
+    }
     if (!isFoodOrder && !pickupOtpVerified) {
       setReachSliderDone(false);
       return;
@@ -900,52 +1225,56 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     (otp: string) => {
       setOtpError(null);
       const gps = riderGps();
-      verifyPickupOtp.mutate(
-        { orderId, otp, ...gps },
-        {
-          onSuccess: () => {
-            setOtpSheetOpen(false);
-            setReachSliderDone(true);
-            if (isFoodOrder) {
-              setPickupBannerMessage(
-                t(
-                  "orders.activeFood.pickupMarkedSuccess",
-                  "Order picked up — navigate to customer"
-                )
-              );
-              setPickupBannerVisible(true);
-              setCameraFitTrigger((n) => n + 1);
-            } else {
-              setPickupBannerMessage(
-                t(
-                  "orders.activeRide.pickupOtpVerifiedBanner",
-                  "OTP verified — slide to start ride"
-                )
-              );
-              setPickupBannerVisible(true);
-            }
-          },
-          onError: (err) => {
-            setOtpError(
-              extractApiErrorMessage(
-                err,
-                isFoodOrder
-                  ? t(
-                      "orders.activeFood.pickupOtpFailed",
-                      "Incorrect pickup OTP. Check with the restaurant and try again."
-                    )
-                  : t(
-                      "orders.activeRide.pickupOtpFailed",
-                      "Incorrect pickup OTP. Ask the passenger for the code in their app."
-                    )
-              )
-            );
-            setOtpResetKey((k) => k + 1);
-          },
-        }
-      );
+      void verifyPickupOtp
+        .mutateAsync({
+          orderId,
+          otp,
+          ...gps,
+          ...(isFoodOrder ? { deviceTimestamp: new Date().toISOString() } : {}),
+        })
+        .then((data) => {
+          if (isFoodOrder) {
+            completeFoodPickupVerification(data);
+            return;
+          }
+          syncRiderOrderDetailCache(queryClient, orderId, data);
+          setOtpSheetOpen(false);
+          setReachSliderDone(true);
+          setPickupBannerMessage(
+            t(
+              "orders.activeRide.pickupOtpVerifiedBanner",
+              "OTP verified — slide to start ride"
+            )
+          );
+          setPickupBannerVisible(true);
+        })
+        .catch((err) => {
+          setOtpError(
+            extractApiErrorMessage(
+              err,
+              isFoodOrder
+                ? t(
+                    "orders.activeFood.pickupOtpFailed",
+                    "Incorrect pickup OTP. Check with the restaurant and try again."
+                  )
+                : t(
+                    "orders.activeRide.pickupOtpFailed",
+                    "Incorrect pickup OTP. Ask the passenger for the code in their app."
+                  )
+            )
+          );
+          setOtpResetKey((k) => k + 1);
+        });
     },
-    [verifyPickupOtp, orderId, riderGps, isFoodOrder, t]
+    [
+      verifyPickupOtp,
+      orderId,
+      riderGps,
+      isFoodOrder,
+      t,
+      completeFoodPickupVerification,
+      queryClient,
+    ]
   );
 
   const handleVerifyDeliveryOtp = useCallback(
@@ -983,13 +1312,14 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
             onSuccess: (deliveredOrder) => {
               setDeliveryOtpSheetOpen(false);
               setDeliveryProof(null);
-              void tracker.stop();
-              void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
+              setDropOrderScreenOpen(false);
+              deliveredOrderForSuccessRef.current = deliveredOrder;
               queryClient.setQueryData(["rider", "orders", "detail", orderId], deliveredOrder);
-              router.replace({
-                pathname: "/food-delivery-success",
-                params: buildFoodDeliverySuccessParams(deliveredOrder),
-              });
+              if (deliveredOrder.customerFeedbackSubmitted === true) {
+                navigateToFoodDeliverySuccess(deliveredOrder);
+              } else {
+                setCustomerFeedbackOpen(true);
+              }
             },
             onError: (err) => {
               setOtpError(
@@ -1029,7 +1359,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       orderId,
       verifyDeliveryOtp,
       riderGps,
-      tracker,
+      navigateToFoodDeliverySuccess,
       queryClient,
       t,
     ]
@@ -1053,14 +1383,25 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     return mps * 3.6;
   }, [riderFix?.speedMps]);
 
+  const navSheetHeight = useMemo(() => {
+    if (isFoodOrder) {
+      return navSheetExpanded ? FOOD_NAV_SHEET_HEIGHT : FOOD_NAV_SHEET_COLLAPSED_HEIGHT;
+    }
+    return navSheetExpanded
+      ? PERSON_RIDE_NAV_SHEET_HEIGHT
+      : PERSON_RIDE_NAV_SHEET_COLLAPSED_HEIGHT;
+  }, [isFoodOrder, navSheetExpanded]);
+
+  const mapControlsBottom = navSheetHeight + Math.max(sheetBottomInset, 12) + 16;
+
   const mapEdgeInsets = useMemo<MapEdgeInsets>(
-    () => ({
-      top: insets.top + 188,
-      bottom: navSheetExpanded ? 96 : 72,
-      left: 56,
-      right: 56,
-    }),
-    [insets.top, navSheetExpanded]
+    () =>
+      buildNavMapEdgeInsets({
+        safeTop: insets.top,
+        sheetOverlayHeight: navSheetHeight + Math.max(sheetBottomInset, 12),
+        controlsReserve: 12,
+      }),
+    [insets.top, navSheetHeight, sheetBottomInset]
   );
 
   useEffect(() => {
@@ -1069,23 +1410,37 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, [navSheetExpanded, mapNavigationFollowMode]);
 
   useEffect(() => {
-    setNavSheetExpanded(false);
+    if (mapNavigationFollowMode || userControllingMapRef.current) return;
+    setCameraFitTrigger((t) => t + 1);
+  }, [route?.coordinates?.length, mapNavigationFollowMode]);
+
+  useEffect(() => {
+    setNavSheetExpanded(true);
     initialNavCamDoneRef.current = false;
     userControllingMapRef.current = false;
+    setMapFollowEnabled(true);
   }, [navDestination?.lat, navDestination?.lng]);
 
   useEffect(() => {
-    if ((route?.coordinates?.length ?? 0) < 2 || !mapRiderLocation) return;
+    if (!mapRiderLocation || !navDestination) return;
     if (userControllingMapRef.current) return;
     if (!initialNavCamDoneRef.current) {
       initialNavCamDoneRef.current = true;
       const t = setTimeout(() => {
-        setMapFollowEnabled(true);
-        mapRef.current?.recenter(true);
+        mapRef.current?.showRouteOverview();
+        if (!userControllingMapRef.current) {
+          setMapFollowEnabled(true);
+        }
       }, 500);
       return () => clearTimeout(t);
     }
-  }, [route?.coordinates?.length, navDestination?.lat, navDestination?.lng, mapRiderLocation]);
+  }, [
+    mapRiderLocation?.lat,
+    mapRiderLocation?.lng,
+    navDestination?.lat,
+    navDestination?.lng,
+    route?.coordinates?.length,
+  ]);
 
   const restaurantDisplayName =
     order?.merchantName?.trim() ||
@@ -1100,7 +1455,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, [orderId]);
 
   const handleCallRestaurant = useCallback(() => {
-    const phone = order?.customerPhone?.trim();
+    const phone = (order?.restaurantPhone ?? order?.customerPhone)?.trim();
     if (!phone) {
       Alert.alert(
         t("orders.activeFood.noPhoneTitle", "Phone unavailable"),
@@ -1109,7 +1464,37 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       return;
     }
     void Linking.openURL(`tel:${phone}`);
-  }, [order?.customerPhone, t]);
+  }, [order?.restaurantPhone, order?.customerPhone, t]);
+
+  const handleOpenMaps = useCallback(() => {
+    if (!navDestination) return;
+    const rider = riderLocation ?? riderForRoute;
+    void openGoogleMapsNavigation({
+      destination: {
+        lat: navDestination.lat,
+        lng: navDestination.lng,
+      },
+      origin: rider ? { lat: rider.lat, lng: rider.lng } : undefined,
+      destinationLabel: navDestination.address,
+    });
+  }, [navDestination, riderLocation, riderForRoute]);
+
+  const handleEmergencyPress = useCallback(() => {
+    Alert.alert(
+      isFoodOrder
+        ? t("orders.activeFood.emergencyTitle", "Emergency")
+        : t("orders.activeRide.safetyTitle", "Safety"),
+      isFoodOrder
+        ? t(
+            "orders.activeFood.emergencyMessage",
+            "Emergency support is coming soon. Call local emergency services if you are in danger."
+          )
+        : t(
+            "orders.activeRide.safetyMessage",
+            "Emergency and safety tools are coming soon."
+          )
+    );
+  }, [isFoodOrder, t]);
 
   if (isLoading) {
     return (
@@ -1176,6 +1561,11 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           navigationFollowMode={mapNavigationFollowMode}
           mapViewMode={mapViewMode}
           onUserMapGesture={handleUserMapGesture}
+          arrivedAtDestination={
+            pickupConfirmed ||
+            (metersToPickup != null && metersToPickup <= 40)
+          }
+          remainingDistanceM={metersToPickup}
           style={styles.mapFill}
         />
 
@@ -1191,30 +1581,13 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
         <View style={styles.mapChromeLayer} pointerEvents="box-none">
           <FoodNavigationMapChrome
-            maneuver={showTurnByTurn ? maneuverForBanner : null}
-            speedKmh={speedKmh}
-            mapControlsBottom={20}
-            maneuverTop={insets.top + 56}
-            onMenuPress={() => router.back()}
-            onSafetyPress={() =>
-              Alert.alert(
-                isFoodOrder
-                  ? t("orders.activeFood.safetyTitle", "Safety")
-                  : t("orders.activeRide.safetyTitle", "Safety"),
-                isFoodOrder
-                  ? t(
-                      "orders.activeFood.safetyMessage",
-                      "Emergency and safety tools are coming soon."
-                    )
-                  : t(
-                      "orders.activeRide.safetyMessage",
-                      "Emergency and safety tools are coming soon."
-                    )
-              )
-            }
-            mapViewMode={mapViewMode}
+            headerTitle={navHeaderTitle}
+            mapControlsBottom={mapControlsBottom}
+            onBackPress={() => router.back()}
+            onEmergencyPress={handleEmergencyPress}
+            onDirectionsPress={handleOpenMaps}
+            onHelpPress={handleReportIssue}
             onRecenter={handleMapRecenter}
-            onToggleMapView={handleToggleMapView}
             onRouteOverviewLongPress={handleMapRouteOverview}
             onZoomIn={handleMapZoomIn}
             onZoomOut={handleMapZoomOut}
@@ -1224,10 +1597,10 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
       <View
         style={[
-          styles.sheetDock,
-          (otpSheetOpen || deliveryOtpSheetOpen) && styles.sheetDockBehindOtp,
+          styles.sheetOverlay,
+          (otpSheetOpen || deliveryOtpSheetOpen) && styles.sheetOverlayBehindOtp,
         ]}
-        pointerEvents={otpSheetOpen || deliveryOtpSheetOpen ? "none" : "auto"}
+        pointerEvents={otpSheetOpen || deliveryOtpSheetOpen ? "none" : "box-none"}
       >
       {isFoodOrder ? (
         <FoodNavigateBottomSheet
@@ -1262,12 +1635,30 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           onReachCustomer={handleReachCustomer}
           onDelivered={handleDelivered}
           reachSliderDone={reachSliderDone}
+          hideMarkPickupWhilePickSheet={
+            showFoodPickOrderSheet ||
+            pickOrderDetailOpen ||
+            showRestaurantFeedbackSheet ||
+            pickupVerificationOpen ||
+            barcodeScannerOpen
+          }
+          hidePrepBanner={reachSliderDone}
+          showPickOrderReopen={reachSliderDone && pickOrderSheetDismissed && !pickOrderDetailOpen}
+          onOpenPickOrderSheet={() => setPickOrderSheetDismissed(false)}
           onReportIssue={handleReportIssue}
           onCallRestaurant={handleCallRestaurant}
-          callDisabled={!order.customerPhone?.trim()}
+          onCallCustomer={handleCallCustomer}
+          onChatCustomer={handleChatCustomer}
+          onOpenMaps={handleOpenMaps}
+          callDisabled={
+            foodPhase === "drop"
+              ? !order.customerPhone?.trim()
+              : !(order.restaurantPhone?.trim() || order.customerPhone?.trim())
+          }
           sheetExpanded={navSheetExpanded}
           onToggleSheetExpanded={toggleNavSheetExpanded}
           milestoneGeo={milestoneGeo}
+          suppressDropDeliverSlider={dropOrderScreenOpen}
         />
       ) : (
         <PersonRideNavigateBottomSheet
@@ -1309,6 +1700,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           reachSliderDone={reachSliderDone}
           onCancel={() => setCancelSheetOpen(true)}
           onCallCustomer={handleCallCustomer}
+          onOpenMaps={handleOpenMaps}
           callDisabled={!order.customerPhone?.trim()}
           sheetExpanded={navSheetExpanded}
           onToggleSheetExpanded={toggleNavSheetExpanded}
@@ -1317,6 +1709,75 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       )}
       </View>
       </View>
+
+      {isFoodOrder && order ? (
+        <FoodPickOrderDetailScreen
+          visible={pickOrderDetailOpen && !foodDeliveryActive && !orderDelivered && !otpSheetOpen}
+          order={order}
+          orderIdLabel={displayId}
+          restaurantName={restaurantDisplayName}
+          restaurantAddress={pickupAddressParts.line1}
+          merchantReady={order.merchantOrderReady === true}
+          onBack={() => setPickOrderDetailOpen(false)}
+          onCall={handleCallRestaurant}
+          onCallCustomer={handleCallCustomer}
+          onHelp={handleReportIssue}
+          onPickedOrder={handlePickedOrderSlide}
+          pickUpLoading={
+            markFoodPickup.isPending || verifyPickupBarcode.isPending || verifyPickupOtp.isPending
+          }
+        />
+      ) : null}
+
+      {isFoodOrder && order ? (
+        <FoodPickupVerificationScreen
+          visible={pickupVerificationOpen && !foodDeliveryActive && !orderDelivered}
+          barcodeEnabled={barcodeVerificationEnabled}
+          otpEnabled={otpVerificationEnabled}
+          onBack={() => setPickupVerificationOpen(false)}
+          onScanBarcode={() => {
+            setBarcodeError(null);
+            setPickupVerificationOpen(false);
+            setBarcodeScannerOpen(true);
+          }}
+          onEnterOtp={() => {
+            setPickupVerificationOpen(false);
+            foodPickupOtpFromVerificationRef.current = true;
+            setOtpError(null);
+            setOtpResetKey((k) => k + 1);
+            setOtpSheetOpen(true);
+          }}
+        />
+      ) : null}
+
+      {isFoodOrder && order ? (
+        <FoodBarcodeScannerScreen
+          visible={barcodeScannerOpen && !foodDeliveryActive && !orderDelivered}
+          loading={verifyPickupBarcode.isPending}
+          error={barcodeError}
+          onClose={() => {
+            if (verifyPickupBarcode.isPending) return;
+            setBarcodeScannerOpen(false);
+            setBarcodeError(null);
+            if (barcodeVerificationEnabled && otpVerificationEnabled) {
+              setPickupVerificationOpen(true);
+            }
+          }}
+          onScanned={handleBarcodeScanned}
+        />
+      ) : null}
+
+      {isFoodOrder && order ? (
+        <FoodPickOrderSheet
+          visible={showFoodPickOrderSheet}
+          merchantReady={order.merchantOrderReady === true}
+          order={order}
+          orderIdLabel={displayId}
+          customerName={order.customerName}
+          onDismiss={() => setPickOrderSheetDismissed(true)}
+          onConfirmPickup={handlePickOrderConfirm}
+        />
+      ) : null}
 
       <PickupOtpBottomSheet
         visible={otpSheetOpen && !(isFoodOrder && foodDeliveryActive) && !deliveryOtpSheetOpen}
@@ -1330,6 +1791,51 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         onDismiss={handleDismissOtpSheet}
         onSubmit={handleVerifyOtp}
       />
+
+      {isFoodOrder && order ? (
+        <FoodDropOrderScreen
+          visible={dropOrderScreenOpen && atCustomer && !orderDelivered}
+          order={order}
+          orderIdLabel={displayId}
+          deliveryAddress={[pickupAddressParts.line1, pickupAddressParts.landmark]
+            .filter(Boolean)
+            .join(", ")}
+          restaurantName={restaurantDisplayName}
+          onBack={() => setDropOrderScreenOpen(false)}
+          onEmergencyPress={handleEmergencyPress}
+          onDirectionsPress={handleOpenMaps}
+          onHelpPress={handleReportIssue}
+          onCallCustomer={handleCallCustomer}
+          onChatCustomer={handleChatCustomer}
+          onOpenMaps={handleOpenMaps}
+          onDelivered={handleDelivered}
+          deliverLoading={deliveryPhotoUploading}
+        />
+      ) : null}
+
+      {isFoodOrder && order ? (
+        <CustomerFeedbackBottomSheet
+          visible={customerFeedbackOpen}
+          loading={submitCustomerFeedback.isPending}
+          orderIdLabel={displayId}
+          customerName={
+            order.customerName?.trim() || t("orders.activeFood.customerFallback", "Customer")
+          }
+          onSkip={handleCustomerFeedbackSkip}
+          onSubmit={handleCustomerFeedbackSubmit}
+        />
+      ) : null}
+
+      {isFoodOrder && order ? (
+        <RestaurantFeedbackBottomSheet
+          visible={showRestaurantFeedbackSheet}
+          loading={submitMerchantFeedback.isPending}
+          restaurantName={restaurantDisplayName}
+          restaurantAddress={pickup.address}
+          onSkip={handleRestaurantFeedbackSkip}
+          onSubmit={handleRestaurantFeedbackSubmit}
+        />
+      ) : null}
 
       {deliveryProof ? (
         <FoodDeliveryConfirmBottomSheet
@@ -1378,7 +1884,7 @@ const styles = StyleSheet.create({
   },
   mainColumn: {
     flex: 1,
-    flexDirection: "column",
+    position: "relative",
     minHeight: 0,
   },
   mapStage: {
@@ -1389,30 +1895,33 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   mapStageFlex: {
-    width: "100%",
-    flex: 1,
-    minHeight: 160,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: "#E2E8F0",
     overflow: "hidden",
+    zIndex: 1,
   },
   mapChromeLayer: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 20,
+    pointerEvents: "box-none",
   },
   mapFill: {
     flex: 1,
     width: "100%",
     height: "100%",
   },
-  sheetDock: {
-    width: "100%",
-    flexGrow: 0,
-    flexShrink: 0,
-    backgroundColor: "#ffffff",
-    marginBottom: 0,
+  sheetOverlay: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 50,
+    elevation: 32,
+    backgroundColor: "transparent",
   },
-  sheetDockBehindOtp: {
+  sheetOverlayBehindOtp: {
     opacity: 0,
+    pointerEvents: "none",
   },
   centered: {
     flex: 1,

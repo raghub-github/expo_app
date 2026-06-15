@@ -24,3 +24,6 @@ export const HEADER_VERTICAL_PADDING = 12;
  * Reference: Home Page (tabs/index) uses no extra top padding; header starts immediately below the strip.
  */
 export const HEADER_PADDING_TOP = 0;
+
+/** Gap below root status-bar strip before screen header content (root already reserves insets.top). */
+export const STATUS_BAR_TO_HEADER_GAP = 2;

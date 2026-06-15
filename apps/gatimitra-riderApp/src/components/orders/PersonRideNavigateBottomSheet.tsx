@@ -6,13 +6,18 @@ import {
   Pressable,
   Platform,
   ActivityIndicator,
+  TouchableOpacity,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { colors } from "@/src/theme";
 import { FoodSlideToReachStore } from "@/src/components/orders/FoodSlideToReachStore";
 import { NavBottomSheetChevron } from "@/src/components/orders/NavBottomSheetChevron";
-import { formatActiveOrderEarning } from "@/src/lib/active-order-display";
+import {
+  formatNavSheetDistance,
+  NAV_SHEET_CALL_BLUE,
+  NAV_SHEET_MAP_BTN_BG,
+} from "@/src/components/orders/nav-sheet-ui";
 import type { RiderOrderSummary } from "@/src/services/api/riderApi";
 import type { NavigatePickupRouteMeta } from "@/src/components/orders/NavigatePickupBottomSheet";
 import type { MilestoneGeoState } from "@/src/hooks/useMilestoneGeoFence";
@@ -22,7 +27,7 @@ import {
   type PersonRideFlowStep,
 } from "@/src/components/orders/PersonRideFlowSteps";
 
-export const PERSON_RIDE_NAV_SHEET_HEIGHT = 448;
+export const PERSON_RIDE_NAV_SHEET_HEIGHT = 368;
 export const PERSON_RIDE_NAV_SHEET_COLLAPSED_HEIGHT = 132;
 
 type Props = {
@@ -53,39 +58,12 @@ type Props = {
   reachSliderDone?: boolean;
   onCancel: () => void;
   onCallCustomer: () => void;
+  onOpenMaps: () => void;
   callDisabled?: boolean;
   sheetExpanded?: boolean;
   onToggleSheetExpanded?: () => void;
   milestoneGeo?: Partial<Record<string, MilestoneGeoState>>;
 };
-
-function MetricBox({
-  icon,
-  value,
-  label,
-  loading,
-}: {
-  icon: React.ComponentProps<typeof Ionicons>["name"];
-  value: string;
-  label: string;
-  loading?: boolean;
-}) {
-  return (
-    <View style={styles.metricBox}>
-      <Ionicons name={icon} size={16} color={colors.gray[600]} />
-      {loading ? (
-        <ActivityIndicator size="small" color={colors.gray[500]} style={styles.metricLoader} />
-      ) : (
-        <Text style={styles.metricValue} numberOfLines={1}>
-          {value}
-        </Text>
-      )}
-      <Text style={styles.metricLabel} numberOfLines={1}>
-        {label}
-      </Text>
-    </View>
-  );
-}
 
 export function PersonRideNavigateBottomSheet({
   order,
@@ -115,17 +93,16 @@ export function PersonRideNavigateBottomSheet({
   reachSliderDone = false,
   onCancel,
   onCallCustomer,
+  onOpenMaps,
   callDisabled,
-  sheetExpanded = false,
+  sheetExpanded = true,
   onToggleSheetExpanded,
   milestoneGeo,
 }: Props) {
   const { t } = useTranslation();
-  const earning = formatActiveOrderEarning(order);
-  const phaseBadge =
-    phase === "drop"
-      ? t("orders.activeRide.dropBadge", "DROP")
-      : t("orders.activeRide.pickupBadge", "PICKUP");
+  const distanceLabel = routeMeta.loading
+    ? "…"
+    : formatNavSheetDistance(routeMeta.metersAway);
   const fullAddress = [locationAddress, locationLandmark].filter(Boolean).join(", ");
 
   const showReachPickup =
@@ -248,148 +225,97 @@ export function PersonRideNavigateBottomSheet({
   );
 
   return (
-    <View
-      style={[
-        styles.sheet,
-        { paddingBottom: bottomInset },
-      ]}
-    >
-      <View style={styles.chevronDock}>
+    <View style={[styles.sheet, { paddingBottom: Math.max(bottomInset, 12) }]}>
+      <View style={styles.sheetHandleDock}>
         {onToggleSheetExpanded ? (
           <NavBottomSheetChevron expanded={sheetExpanded} onPress={onToggleSheetExpanded} />
         ) : (
-          <View style={styles.handle} />
+          <View style={styles.chevronDock}>
+            <View style={styles.handle} />
+          </View>
         )}
       </View>
 
       {sheetExpanded ? (
-        <>
-          <View style={styles.headerRow}>
-            <View style={styles.headerLeft}>
-              <View style={styles.phaseBadge}>
-                <Ionicons
-                  name={phase === "drop" ? "flag" : "person"}
-                  size={12}
-                  color={phase === "drop" ? colors.primary[700] : colors.success[700]}
-                />
-                <Text style={styles.phaseBadgeText}>{phaseBadge}</Text>
-              </View>
-              <Text style={styles.tripIdText} numberOfLines={1}>
-                {t("orders.activeRide.tripIdLabel", "Trip")} #{tripId}
-              </Text>
-            </View>
-            {phase === "pickup" && !rideStarted ? (
-              <Pressable
-                onPress={onCancel}
-                disabled={cancelLoading}
-                style={({ pressed }) => [styles.cancelBtn, pressed && styles.cancelBtnPressed]}
-                hitSlop={6}
-              >
-                {cancelLoading ? (
-                  <ActivityIndicator size="small" color={colors.error[600]} />
-                ) : (
-                  <Text style={styles.cancelBtnText}>
-                    {t("orders.activeRide.cancelShort", "Cancel")}
-                  </Text>
-                )}
-              </Pressable>
-            ) : null}
+        <View style={styles.sheetBody}>
+        <View style={styles.detailsBody}>
+          <View style={styles.metaTopRow}>
+            <Text style={styles.distanceLabel}>{distanceLabel}</Text>
           </View>
 
-          <Text style={styles.title}>{title}</Text>
+          <Text style={styles.locationName} numberOfLines={2}>
+            {locationName}
+          </Text>
+          <Text style={styles.locationAddress} numberOfLines={3}>
+            {fullAddress}
+          </Text>
+
+          <View style={styles.callMapRow}>
+            <TouchableOpacity
+              activeOpacity={0.75}
+              onPress={onCallCustomer}
+              disabled={callDisabled}
+              style={[styles.callBtn, callDisabled && styles.callBtnDisabled]}
+            >
+              <Ionicons
+                name="call"
+                size={20}
+                color={callDisabled ? "#9AA0A6" : NAV_SHEET_CALL_BLUE}
+              />
+              <Text
+                style={[styles.callBtnText, callDisabled && styles.callBtnTextDisabled]}
+              >
+                {t("orders.activeFood.call", "Call")}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              activeOpacity={0.75}
+              onPress={onOpenMaps}
+              style={styles.mapBtn}
+            >
+              <Ionicons name="navigate" size={18} color="#ffffff" />
+              <Text style={styles.mapBtnText} numberOfLines={1} adjustsFontSizeToFit>
+                {t("orders.activeFood.goToMap", "Go to Map")}
+              </Text>
+            </TouchableOpacity>
+          </View>
 
           <PersonRideFlowSteps activeStep={flowStep} orderDelivered={orderDelivered} />
 
-          {routeMeta.error ? (
-            <Pressable onPress={routeMeta.onRetryRoute} style={styles.routeError}>
-              <Ionicons name="refresh-outline" size={14} color={colors.error[600]} />
-              <Text style={styles.routeErrorText}>
-                {t("orders.activeRide.routeFailed", "Route unavailable — retry")}
-              </Text>
-            </Pressable>
-          ) : (
-            <View style={styles.metricsRow}>
-              <MetricBox
-                icon="time-outline"
-                value={routeMeta.etaMinutes != null ? `${routeMeta.etaMinutes} min` : "—"}
-                label={t("orders.activeRide.statEta", "ETA")}
-                loading={routeMeta.loading}
-              />
-              <MetricBox
-                icon="navigate-outline"
-                value={
-                  routeMeta.distanceKm != null
-                    ? `${routeMeta.distanceKm.toFixed(1)} km`
-                    : "—"
-                }
-                label={t("orders.activeRide.statDistance", "Distance")}
-                loading={routeMeta.loading}
-              />
-              <MetricBox
-                icon="person-outline"
-                value={
-                  locationName.length > 10
-                    ? `${locationName.slice(0, 9)}…`
-                    : locationName
-                }
-                label={
-                  phase === "drop"
-                    ? t("orders.activeRide.dropPassenger", "Passenger")
-                    : t("orders.activeRide.pickupPassenger", "Pickup")
-                }
-              />
-              <MetricBox
-                icon="wallet-outline"
-                value={earning || "—"}
-                label={t("orders.activeRide.statEarnings", "Est. earnings")}
-              />
-            </View>
-          )}
-
-          <View style={styles.locationSection}>
-            <View style={styles.locationLeft}>
-              <View style={styles.locationIconWrap}>
-                <Ionicons
-                  name={phase === "drop" ? "flag" : "location"}
-                  size={18}
-                  color={phase === "drop" ? colors.primary[600] : colors.success[600]}
-                />
-              </View>
-              <View style={styles.locationTextCol}>
-                <Text style={styles.locationLabel}>{locationLabel}</Text>
-                <Text style={styles.locationName} numberOfLines={1}>
-                  {locationName}
-                </Text>
-                <Text style={styles.locationAddress} numberOfLines={3}>
-                  {fullAddress}
-                </Text>
-              </View>
-            </View>
+          {phase === "pickup" && !rideStarted ? (
             <Pressable
-              onPress={onCallCustomer}
-              disabled={callDisabled}
-              style={({ pressed }) => [
-                styles.callBtn,
-                callDisabled && styles.callBtnDisabled,
-                pressed && !callDisabled && styles.callBtnPressed,
-              ]}
+              onPress={onCancel}
+              disabled={cancelLoading}
+              style={({ pressed }) => [styles.cancelBtn, pressed && styles.cancelBtnPressed]}
+              hitSlop={6}
             >
-              <Ionicons name="call" size={20} color="#ffffff" />
+              {cancelLoading ? (
+                <ActivityIndicator size="small" color={colors.error[600]} />
+              ) : (
+                <Text style={styles.cancelBtnText}>
+                  {t("orders.activeRide.cancelShort", "Cancel")}
+                </Text>
+              )}
             </Pressable>
-          </View>
-        </>
+          ) : null}
+
+        </View>
+        </View>
       ) : (
+        <View style={styles.sheetBody}>
         <View style={styles.collapsedHeader}>
-          <View style={styles.phaseBadge}>
-            <Text style={styles.phaseBadgeText}>{phaseBadge}</Text>
-          </View>
           <Text style={styles.collapsedTitle} numberOfLines={1}>
-            {title}
+            {locationName}
           </Text>
+          <Text style={styles.collapsedDistance}>{distanceLabel}</Text>
+        </View>
         </View>
       )}
 
-      <View style={styles.actionsDock}>{actionButtons}</View>
+      <View style={styles.sheetBody}>
+        <View style={styles.actionsDock}>{actionButtons}</View>
+      </View>
     </View>
   );
 }
@@ -407,25 +333,105 @@ const sheetShadow = Platform.select({
 
 const styles = StyleSheet.create({
   sheet: {
+    width: "100%",
+    alignSelf: "stretch",
+    alignItems: "stretch",
     backgroundColor: "#ffffff",
-    borderTopWidth: 1,
-    borderTopColor: colors.gray[200],
-    paddingHorizontal: 16,
-    paddingTop: 4,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingTop: 0,
+    zIndex: 50,
+    elevation: 32,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#E8EAED",
     ...sheetShadow,
+  },
+  sheetHandleDock: {
+    width: "100%",
+    alignSelf: "stretch",
+    alignItems: "center",
+  },
+  sheetBody: {
+    width: "100%",
+    paddingHorizontal: 16,
+    marginTop: -6,
+  },
+  metaTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    marginBottom: 8,
+  },
+  distanceLabel: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#202124",
+    letterSpacing: -0.2,
+  },
+  callMapRow: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 14,
+  },
+  callBtn: {
+    flex: 1,
+    height: 48,
+    marginRight: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#DADCE0",
+    borderRadius: 8,
+  },
+  callBtnDisabled: {
+    opacity: 0.55,
+  },
+  callBtnText: {
+    marginLeft: 8,
+    fontSize: 16,
+    fontWeight: "600",
+    color: NAV_SHEET_CALL_BLUE,
+  },
+  callBtnTextDisabled: {
+    color: "#9AA0A6",
+  },
+  mapBtn: {
+    flex: 1,
+    height: 48,
+    marginLeft: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: NAV_SHEET_MAP_BTN_BG,
+    borderRadius: 8,
+    paddingHorizontal: 6,
+  },
+  mapBtnText: {
+    marginLeft: 6,
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#ffffff",
+    flexShrink: 1,
+  },
+  detailsBody: {
+    width: "100%",
+    paddingBottom: 2,
   },
   chevronDock: {
     width: "100%",
     alignItems: "center",
     justifyContent: "center",
-    paddingTop: 6,
-    paddingBottom: 10,
+    paddingTop: 10,
+    paddingBottom: 8,
   },
   handle: {
-    width: 44,
+    width: 40,
     height: 4,
     borderRadius: 999,
-    backgroundColor: colors.gray[300],
+    backgroundColor: "#D1D5DB",
   },
   collapsedHeader: {
     flexDirection: "row",
@@ -438,6 +444,13 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
     color: colors.gray[900],
+    marginHorizontal: 8,
+  },
+  collapsedDistance: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#202124",
+    flexShrink: 0,
   },
   headerRow: {
     flexDirection: "row",
@@ -447,23 +460,6 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   headerLeft: { flex: 1, minWidth: 0 },
-  phaseBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    alignSelf: "flex-start",
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-    backgroundColor: colors.success[50],
-    marginBottom: 4,
-  },
-  phaseBadgeText: {
-    fontSize: 11,
-    fontWeight: "800",
-    color: colors.success[800],
-    letterSpacing: 0.4,
-  },
   tripIdText: { fontSize: 12, fontWeight: "600", color: colors.gray[500] },
   cancelBtn: {
     borderRadius: 10,
@@ -538,18 +534,21 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     marginBottom: 2,
   },
-  locationName: { fontSize: 15, fontWeight: "700", color: colors.gray[900] },
-  locationAddress: { fontSize: 13, color: colors.gray[600], marginTop: 2 },
-  callBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.primary[600],
-    alignItems: "center",
-    justifyContent: "center",
+  locationName: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#202124",
+    marginBottom: 4,
+    letterSpacing: -0.3,
+    lineHeight: 26,
   },
-  callBtnDisabled: { backgroundColor: colors.gray[300] },
-  callBtnPressed: { opacity: 0.9 },
+  locationAddress: {
+    fontSize: 14,
+    fontWeight: "400",
+    color: "#5F6368",
+    lineHeight: 20,
+    marginBottom: 14,
+  },
   doneBanner: {
     flexDirection: "row",
     alignItems: "center",
@@ -573,7 +572,8 @@ const styles = StyleSheet.create({
   startOtpBtnDisabled: { opacity: 0.5 },
   startOtpBtnText: { fontSize: 15, fontWeight: "800", color: "#ffffff" },
   actionsDock: {
-    paddingTop: 2,
+    width: "100%",
+    paddingTop: 4,
   },
   geoHintSlot: {
     minHeight: 40,

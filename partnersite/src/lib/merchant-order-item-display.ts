@@ -83,6 +83,10 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+function menuRupee(n: number): number {
+  return Math.round(Number.isFinite(n) ? n : 0);
+}
+
 function customizationTotalForItem(item: NormalizedOrderLineItem): number {
   const fromField = Number(item.customizationsTotal) || 0;
   if (fromField > 0.005) return fromField;
@@ -126,10 +130,10 @@ function baseAmountForItem(item: NormalizedOrderLineItem): number {
 export function merchantLineTotalForItem(item: NormalizedOrderLineItem): number {
   const base = baseAmountForItem(item);
   const cust = customizationTotalForItem(item);
-  if (base > 0.005 || cust > 0.005) return round2(base + cust);
+  if (base > 0.005 || cust > 0.005) return menuRupee(base + cust);
 
   const qty = Math.max(1, item.quantity || 1);
-  return round2(Number(item.total) || Number(item.price) * qty);
+  return menuRupee(Number(item.total) || Number(item.price) * qty);
 }
 
 export function orderItemsTotals(items: NormalizedOrderLineItem[]) {
@@ -155,8 +159,8 @@ export function computeMerchantBillTotal(parts: {
 }
 
 export function merchantItemLineParts(item: NormalizedOrderLineItem) {
-  const base = round2(baseAmountForItem(item));
-  const customizations = round2(customizationTotalForItem(item));
+  const base = menuRupee(baseAmountForItem(item));
+  const customizations = menuRupee(customizationTotalForItem(item));
   const total = merchantLineTotalForItem(item);
   return {
     base,
@@ -175,14 +179,14 @@ export function merchantBillPartsFromItems(
   const { itemsLineTotal, baseSubtotal, customizationsTotal } = orderItemsTotals(items);
   const packaging = pricing.packaging ?? 0;
   const discount = pricing.discount ?? 0;
-  const computed = round2(Math.max(0, itemsLineTotal + packaging - discount));
+  const computed = menuRupee(Math.max(0, itemsLineTotal + packaging - discount));
   const frozen = Number(pricing.total);
   const total =
-    Number.isFinite(frozen) && frozen > 0 ? round2(frozen) : computed;
+    Number.isFinite(frozen) && frozen > 0 ? menuRupee(frozen) : computed;
   return {
-    itemsSubtotal: itemsLineTotal,
-    itemBaseTotal: round2(baseSubtotal),
-    customizationsTotal: round2(customizationsTotal),
+    itemsSubtotal: menuRupee(itemsLineTotal),
+    itemBaseTotal: menuRupee(baseSubtotal),
+    customizationsTotal: menuRupee(customizationsTotal),
     showCustomizations: customizationsTotal > 0.005,
     packaging,
     discount,

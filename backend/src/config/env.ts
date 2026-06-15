@@ -167,6 +167,9 @@ const EnvSchema = z.object({
   MAPBOX_ACCESS_TOKEN: z.preprocess(emptyToUndefined, z.string().min(20).optional()),
   REDIS_URL: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
 
+  /** OpenWeather — backend-only. Mobile apps must use /v1/weather/* endpoints. */
+  OPENWEATHER_API_KEY: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
+
   /**
    * Legacy flag; billing always runs for checkout. Kept for dashboards/scripts that read env.
    */

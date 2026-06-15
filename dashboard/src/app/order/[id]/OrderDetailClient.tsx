@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import OrderTimeline, { type OrderTimelineEntry } from "./OrderTimeline";
+import OrderActionBanner from "./OrderActionBanner";
 import OrderRightSidebar from "./OrderRightSidebar";
 import {
   parseOrderItemsApiResponse,
@@ -34,11 +35,29 @@ import {
   MANUAL_STATUS_LABELS,
   type ManualStatusValue,
 } from "@/lib/orders/order-dispatch-status";
+import { resolveOrderActionBannerMessage } from "@/lib/orders/order-action-banner";
 import {
   parseGeocodedLatLon,
   resolveMapCoordinatePair,
 } from "@/lib/orders/parse-order-map-coords";
 import { isHardPageReload } from "@/lib/navigation/is-hard-page-reload";
+import { formatDeliveredByLabel } from "@/lib/orders/order-detail-display";
+import {
+  prefetchRiderActivityLog,
+  seedRiderActivityLogCache,
+  type RiderActivityLogCacheEntry,
+} from "@/lib/riderActivityLogCache";
+import {
+  mapNotificationsFromApi,
+  mapReconsFromApi,
+  mapRemarksFromApi,
+  type SidebarCxNotification,
+  type SidebarRecon,
+  type SidebarRemark,
+} from "@/lib/orders/order-sidebar-activity";
+import { resolveOrderTypeFromPublicId } from "@/lib/orders/resolve-order-type-from-public-id";
+import type { PersonRideOrderDetail } from "@/lib/db/operations/person-ride-order-detail";
+import PersonRideOrderSections from "./PersonRideOrderSections";
 
 /** Status options for "Update order status" modal (value = DB enum) */
 const STATUS_OPTIONS = [
@@ -188,6 +207,15 @@ interface OrderDetail {
   rtoOtp?: string | null;
   deliveryOtp?: string | null;
   customerFeedback?: OrderCustomerFeedback | null;
+  storePrepDelaySeconds?: number | null;
+  storePrepDelayLive?: boolean;
+  storePrepDelayAnchorAt?: string | null;
+  storePrepDelayWasLate?: boolean;
+  riderRestaurantWaitSeconds?: number | null;
+  riderRestaurantWaitLive?: boolean;
+  riderRestaurantWaitAnchorAt?: string | null;
+  deliveryProofImageUrl?: string | null;
+  rideDetail?: PersonRideOrderDetail | null;
 }
 
 /** Merchant summary from order API for MX card (show immediately on load) */
@@ -356,6 +384,12 @@ export default function OrderDetailClient({
   const [merchantSummary, setMerchantSummary] = useState<MerchantSummaryFromApi | null>(null);
   const [initialRemarksCount, setInitialRemarksCount] = useState<number>(0);
   const [initialReconsCount, setInitialReconsCount] = useState<number>(0);
+  const [initialNotificationsCount, setInitialNotificationsCount] = useState<number>(0);
+  const [embeddedRemarks, setEmbeddedRemarks] = useState<SidebarRemark[] | null>(null);
+  const [embeddedNotifications, setEmbeddedNotifications] = useState<SidebarCxNotification[] | null>(
+    null
+  );
+  const [embeddedRecons, setEmbeddedRecons] = useState<SidebarRecon[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refetchTrigger, setRefetchTrigger] = useState(0);
@@ -490,8 +524,9 @@ export default function OrderDetailClient({
     }
     setError(null);
 
+    const resolvedOrderType = resolveOrderTypeFromPublicId(normalizedPublicId);
     const params = new URLSearchParams({
-      orderType: "food",
+      orderType: resolvedOrderType,
       searchType: "Order Id",
       search: normalizedPublicId,
       limit: "1",
@@ -541,8 +576,13 @@ export default function OrderDetailClient({
             merchantSummary?: unknown;
             remarksCount?: number;
             reconsCount?: number;
+            notificationsCount?: number;
+            remarks?: unknown[];
+            recons?: unknown[];
+            notifications?: unknown[];
             statusHistory?: unknown[];
             paymentDetail?: OrderPaymentDetail;
+            riderActivityLog?: RiderActivityLogCacheEntry | null;
           };
         } catch {
           throw new Error("Invalid order response");
@@ -586,12 +626,38 @@ export default function OrderDetailClient({
           } else {
             setMerchantSummary(null);
           }
+          const userEmail = auth?.user?.email ?? null;
           setInitialRemarksCount(
             typeof body.remarksCount === "number" && body.remarksCount >= 0 ? body.remarksCount : 0
           );
           setInitialReconsCount(
             typeof body.reconsCount === "number" && body.reconsCount >= 0 ? body.reconsCount : 0
           );
+          setInitialNotificationsCount(
+            typeof body.notificationsCount === "number" && body.notificationsCount >= 0
+              ? body.notificationsCount
+              : 0
+          );
+          if (Array.isArray(body.remarks)) {
+            setEmbeddedRemarks(
+              mapRemarksFromApi(
+                body.remarks as Parameters<typeof mapRemarksFromApi>[0],
+                userEmail
+              )
+            );
+          }
+          if (Array.isArray(body.recons)) {
+            setEmbeddedRecons(
+              mapReconsFromApi(body.recons as Parameters<typeof mapReconsFromApi>[0])
+            );
+          }
+          if (Array.isArray(body.notifications)) {
+            setEmbeddedNotifications(
+              mapNotificationsFromApi(
+                body.notifications as Parameters<typeof mapNotificationsFromApi>[0]
+              )
+            );
+          }
           if (Array.isArray(body.statusHistory)) {
             setStatusHistory(
               body.statusHistory
@@ -630,6 +696,26 @@ export default function OrderDetailClient({
           }
           if (coreOrderId != null && !hasEmbeddedTimeline) {
             loadTimelineInBackground(coreOrderId);
+          }
+          if (coreOrderId != null) {
+            const embeddedRiderActivityLog = body.riderActivityLog;
+            if (
+              embeddedRiderActivityLog &&
+              Array.isArray(embeddedRiderActivityLog.logs)
+            ) {
+              seedRiderActivityLogCache(coreOrderId, {
+                logs: embeddedRiderActivityLog.logs,
+                summary: embeddedRiderActivityLog.summary ?? {
+                  total: embeddedRiderActivityLog.logs.length,
+                  cancelled: 0,
+                  delivered: 0,
+                  distinctRiders: 0,
+                },
+                trackingOrderId: embeddedRiderActivityLog.trackingOrderId ?? null,
+              });
+            } else {
+              prefetchRiderActivityLog(coreOrderId);
+            }
           }
           setOrder({
             id: row.id,
@@ -755,6 +841,25 @@ export default function OrderDetailClient({
             customerFeedback:
               row.customerFeedback && typeof row.customerFeedback === "object"
                 ? (row.customerFeedback as OrderCustomerFeedback)
+                : null,
+            storePrepDelaySeconds: toNumberOrNull(row.storePrepDelaySeconds),
+            storePrepDelayLive: Boolean(row.storePrepDelayLive),
+            storePrepDelayAnchorAt:
+              row.storePrepDelayAnchorAt != null
+                ? String(row.storePrepDelayAnchorAt)
+                : null,
+            storePrepDelayWasLate: Boolean(row.storePrepDelayWasLate),
+            riderRestaurantWaitSeconds: toNumberOrNull(row.riderRestaurantWaitSeconds),
+            riderRestaurantWaitLive: Boolean(row.riderRestaurantWaitLive),
+            riderRestaurantWaitAnchorAt:
+              row.riderRestaurantWaitAnchorAt != null
+                ? String(row.riderRestaurantWaitAnchorAt)
+                : null,
+            deliveryProofImageUrl:
+              row.deliveryProofImageUrl != null ? String(row.deliveryProofImageUrl) : null,
+            rideDetail:
+              row.rideDetail && typeof row.rideDetail === "object"
+                ? (row.rideDetail as PersonRideOrderDetail)
                 : null,
           });
 
@@ -927,7 +1032,19 @@ export default function OrderDetailClient({
     };
   }, [order?.id, displayId]);
 
-  const riderSelfieUrl = riderTrackingInitial?.rider?.selfie_url ?? null;
+  const assignedRiderId =
+    order?.riderId != null &&
+    Number.isFinite(Number(order.riderId)) &&
+    Number(order.riderId) > 0
+      ? Number(order.riderId)
+      : null;
+  const trackingRiderId = riderTrackingInitial?.rider?.id ?? null;
+  const riderSelfieUrl =
+    assignedRiderId != null &&
+    trackingRiderId != null &&
+    trackingRiderId === assignedRiderId
+      ? (riderTrackingInitial?.rider?.selfie_url ?? null)
+      : null;
 
   useEffect(() => {
     const url = riderSelfieUrl?.trim();
@@ -1062,6 +1179,13 @@ export default function OrderDetailClient({
 
   const hasAssignedRider =
     order.riderId != null && Number.isFinite(Number(order.riderId)) && Number(order.riderId) > 0;
+
+  const actionBannerMessage = resolveOrderActionBannerMessage({
+    status: order.status,
+    currentStatus: order.currentStatus,
+    foodOrderStatus: order.foodOrderStatus,
+    hasRider: hasAssignedRider,
+  });
 
   const mapDrop = resolveMapCoordinatePair(
     order.dropLat,
@@ -1322,8 +1446,8 @@ export default function OrderDetailClient({
           </div>
         </section>
 
-        {/* Order progress timeline (event-driven from order_timelines, loaded with order = no spinner) */}
-        <div className="mt-2 mb-1">
+        {/* Order progress timeline + ops action banner (separate rows) */}
+        <div className="mt-2 mb-4 space-y-2">
           <OrderTimeline
             orderId={order.id}
             initialEntries={timelineEntries}
@@ -1345,11 +1469,27 @@ export default function OrderDetailClient({
               return undefined;
             })()}
           />
+          {actionBannerMessage ? (
+            <OrderActionBanner message={actionBannerMessage} />
+          ) : null}
         </div>
 
         {/* Main info sections */}
         <div className="mt-3 space-y-3">
-          {/* Main grid of sections */}
+          {order.orderType === "person_ride" ? (
+            <PersonRideOrderSections
+              order={order}
+              rideDetail={order.rideDetail ?? null}
+              displayId={displayId}
+              createdLabel={createdLabel}
+              paymentDetail={paymentDetail}
+              orderRefunds={orderRefunds}
+              onCopy={handleCopy}
+              onPhoneClick={handleCustomerPhoneClick}
+            />
+          ) : (
+          <>
+          {/* Main grid of sections — food / parcel */}
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {/* Customer card */}
             <CustomerDetails
@@ -1400,15 +1540,14 @@ export default function OrderDetailClient({
               orderItemsPricing={orderItemsPayload?.pricing ?? null}
             />
           </div>
+          </>
+          )}
 
-          {/* Rider details + map — map only while a rider is assigned */}
-          <div
-            className={`mt-3 grid gap-3 md:items-stretch ${
-              hasAssignedRider ? "md:grid-cols-2" : "grid-cols-1"
-            }`}
-          >
+          {/* Rider + map — all order types */}
+          <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-stretch">
+            <div className="w-full md:w-1/2 md:min-w-0 md:shrink-0">
             <RiderDetails
-              className={hasAssignedRider ? "h-full flex flex-col" : ""}
+              className="h-full flex flex-col"
               initialRiderTimeline={riderTimelineInitial}
               riderSelfieUrl={riderSelfieUrl}
               order={{
@@ -1416,35 +1555,60 @@ export default function OrderDetailClient({
                 riderId: order.riderId ?? null,
                 riderName: order.riderName,
                 riderMobile: order.riderMobile,
-                riderProvider: order.orderSource,
-                trackingOrderId: displayId,
+                riderProvider: hasAssignedRider
+                  ? formatDeliveredByLabel(order.deliveredBy, order.riderId)
+                  : null,
+                trackingOrderId: hasAssignedRider ? displayId : null,
                 trackingUrl: null,
                 deliveryOtp: order.deliveryOtp ?? null,
+                deliveryType: order.deliveryType ?? null,
                 status: order.status,
                 currentStatus: order.currentStatus,
                 createdAt: order.createdAt,
                 distanceKm: order.distanceKm ?? null,
+                riderRestaurantWaitSeconds: order.riderRestaurantWaitSeconds ?? null,
+                riderRestaurantWaitLive: order.riderRestaurantWaitLive ?? false,
+                riderRestaurantWaitAnchorAt: order.riderRestaurantWaitAnchorAt ?? null,
               }}
+              deliveryProofImageUrl={order.deliveryProofImageUrl ?? null}
               customerFeedback={order.customerFeedback ?? null}
               tipAmount={order.tipAmount}
               onOpenFeedback={() => setFeedbackSheetTarget("rider")}
               onCopy={handleCopy}
               onPhoneClick={handleCustomerPhoneClick}
+              onRiderManagementComplete={() => {
+                if (order.id != null) prefetchRiderActivityLog(order.id);
+                handleRefreshOrder();
+              }}
             />
+            </div>
             {hasAssignedRider ? (
+              <div className="w-full md:w-1/2 md:min-w-0">
               <RiderRouteMap
                 key={`rider-map-${order.riderId}`}
                 className="h-full flex flex-col"
                 orderId={order.id}
                 riderId={order.riderId ?? null}
                 riderName={order.riderName}
-                storeName={merchantSummary?.storeName ?? null}
+                storeName={
+                  order.orderType === "person_ride"
+                    ? "Pickup"
+                    : merchantSummary?.storeName ?? null
+                }
                 customerName={order.customerName}
                 dropAddressFallback={
                   order.dropAddressNormalized ?? order.dropAddressRaw ?? null
                 }
-                merchantStoreLat={merchantSummary?.latitude ?? null}
-                merchantStoreLon={merchantSummary?.longitude ?? null}
+                merchantStoreLat={
+                  order.orderType === "person_ride"
+                    ? order.pickupLat ?? null
+                    : merchantSummary?.latitude ?? null
+                }
+                merchantStoreLon={
+                  order.orderType === "person_ride"
+                    ? order.pickupLon ?? null
+                    : merchantSummary?.longitude ?? null
+                }
                 pickupAddressGeocoded={order.pickupAddressGeocoded ?? null}
                 orderStatus={order.currentStatus ?? order.status}
                 pickedUpAt={riderTimelineInitial?.picked_up_at ?? null}
@@ -1454,6 +1618,7 @@ export default function OrderDetailClient({
                 dropLon={mapDropLon}
                 initialTracking={riderTrackingInitial ?? null}
               />
+              </div>
             ) : null}
           </div>
         </div>
@@ -1475,6 +1640,11 @@ export default function OrderDetailClient({
           }
           initialRemarksCount={initialRemarksCount}
           initialReconsCount={initialReconsCount}
+          initialNotificationsCount={initialNotificationsCount}
+          initialRemarks={embeddedRemarks ?? undefined}
+          initialNotifications={embeddedNotifications ?? undefined}
+          initialRecons={embeddedRecons ?? undefined}
+          activityRefreshKey={refetchTrigger}
           onRoutedToChange={(email) =>
             setOrder((prev) => (prev ? { ...prev, routedToEmail: email } : prev))
           }

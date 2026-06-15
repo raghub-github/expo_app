@@ -8,11 +8,11 @@ type RiderAppConfig = {
   wsBaseUrl: string;
   /** Live dispatch offers on duty (requires ws-gateway, not the REST API on :3000). */
   wsEnabled: boolean;
-  /**
-   * OTP provider is backend-owned. Rider app must not integrate OTP providers directly.
-   * Kept as a flag for future debugging, but only "msg91" is supported.
-   */
-  otpProvider: "msg91";
+  /** Same Supabase project as customer/merchant (Phone Auth + Send SMS hook → MSG91). */
+  supabaseUrl: string | null;
+  supabaseAnonKey: string | null;
+  /** Force backend /otp/request + /otp/verify even when Supabase keys are set. */
+  phoneOtpUseBackendOnly: boolean;
   mapboxToken?: string;
 };
 
@@ -22,15 +22,29 @@ type RiderAppConfig = {
  * - No secrets must ever be placed in Expo public env.
  */
 export function getRiderAppConfig(): RiderAppConfig {
-  const fromEnv = process.env.EXPO_PUBLIC_API_BASE_URL;
-  // Force backend-driven OTP (MSG91 is called by backend, not by the app).
-  // Ignore any EXPO_PUBLIC_OTP_PROVIDER to prevent accidental Firebase OTP wiring.
-  const otpProvider: "msg91" = "msg91";
+  const extra =
+    (Constants.expoConfig?.extra as Record<string, unknown> | undefined) ??
+    (Constants.manifest2?.extra as Record<string, unknown> | undefined) ??
+    {};
 
-  // Allow overriding via app config extra if needed.
-  const fromExtra =
-    (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.API_BASE_URL ??
-    (Constants.manifest2?.extra as Record<string, unknown> | undefined)?.API_BASE_URL;
+  const fromEnv = process.env.EXPO_PUBLIC_API_BASE_URL;
+  const supabaseUrl =
+    asNonEmptyString(process.env.EXPO_PUBLIC_SUPABASE_URL) ??
+    asNonEmptyString(extra.EXPO_PUBLIC_SUPABASE_URL);
+  const supabaseAnonKey =
+    asNonEmptyString(process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY) ??
+    asNonEmptyString(extra.EXPO_PUBLIC_SUPABASE_ANON_KEY);
+  const phoneOtpFlag = (
+    process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND ??
+    asNonEmptyString(extra.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND) ??
+    ""
+  )
+    .trim()
+    .toLowerCase();
+  const phoneOtpUseBackendOnly =
+    phoneOtpFlag === "true" || phoneOtpFlag === "1" || phoneOtpFlag === "yes";
+
+  const fromExtra = asNonEmptyString(extra.API_BASE_URL);
 
   // Production safety net — see merchant_app/config/env.ts for rationale.
   const fallback = __DEV__ ? "http://localhost:3000" : "https://api.gatimitra.com";
@@ -44,7 +58,15 @@ export function getRiderAppConfig(): RiderAppConfig {
   const wsBaseUrl = resolveWsBaseUrl(apiBaseUrl);
   const wsEnabled = isRiderWsEnabled();
 
-  return { apiBaseUrl, wsBaseUrl, wsEnabled, otpProvider, mapboxToken };
+  return {
+    apiBaseUrl,
+    wsBaseUrl,
+    wsEnabled,
+    supabaseUrl,
+    supabaseAnonKey,
+    phoneOtpUseBackendOnly,
+    mapboxToken,
+  };
 }
 
 /**
