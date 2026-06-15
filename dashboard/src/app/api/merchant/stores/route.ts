@@ -53,7 +53,7 @@ export async function GET(request: NextRequest) {
     const cursor = searchParams.get("cursor") ?? undefined;
     const rawSearch = searchParams.get("search");
     const search = rawSearch != null ? rawSearch.trim() || undefined : undefined;
-    const category = searchParams.get("category") as "verified" | "pending" | "rejected" | "new" | "drafted" | null;
+    const category = searchParams.get("category") as "verified" | "pending" | "rejected" | "new" | "drafted" | "resubmitted" | null;
     const fromDate = searchParams.get("fromDate")?.trim() || undefined;
     const toDate = searchParams.get("toDate")?.trim() || undefined;
     const storeType = searchParams.get("storeType")?.trim() || undefined;
@@ -121,11 +121,13 @@ export async function GET(request: NextRequest) {
     let approval_status: string | undefined;
     let newOnly = false;
     let draftedOnly = false;
+    let resubmittedOnly = false;
     if (category === "verified") approval_status = "APPROVED";
     else if (category === "pending") approval_status = "SUBMITTED";
     else if (category === "rejected") approval_status = "REJECTED";
     else if (category === "new") newOnly = true;
     else if (category === "drafted") draftedOnly = true;
+    else if (category === "resubmitted") resubmittedOnly = true;
 
     // Child search: return only matching child store(s); limit 1 for "single child" result when search is set
     const { items, nextCursor } = await listMerchantStores({
@@ -137,6 +139,7 @@ export async function GET(request: NextRequest) {
       approval_status,
       newOnly,
       draftedOnly,
+      resubmittedOnly,
       storeType,
       createdFrom: fromDate,
       createdTo: toDate,

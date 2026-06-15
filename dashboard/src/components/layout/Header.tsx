@@ -39,7 +39,6 @@ const AgentStatusToggle = dynamic(
 import { ProfileStatusCard } from "@/components/profile/ProfileStatusCard";
 import { useLeftSidebarMobile } from "@/context/LeftSidebarMobileContext";
 import { useRightSidebar } from "@/context/RightSidebarContext";
-import { useCurrentRoute } from "@/context/CurrentRouteContext";
 import { useAuth } from "@/providers/AuthProvider";
 import { usePermissions } from "@/hooks/usePermissions";
 import { usePermission } from "@/hooks/usePermission";
@@ -56,9 +55,9 @@ import {
 } from "@/lib/tickets/ticket-path-utils";
 import {
   parsePortalParam,
-  readStoredMerchantsPortal,
-  resolveMerchantsPortal,
   writeStoredMerchantsPortal,
+  resolveMerchantsPortal,
+  type MerchantsPortal,
 } from "@/lib/merchants/portal-preference";
 import {
   PERSON_RIDE_SEARCH_TYPES,
@@ -338,7 +337,10 @@ const ROUTE_TITLES: Record<string, string> = {
   "/dashboard/super-admin/rider-assignment-controls": "Rider Assignment Controls",
   "/dashboard/super-admin/rule-engine": "Financial Rule Engine",
   "/dashboard/super-admin/rule-engine/new": "Create rule",
+  "/dashboard/super-admin/geo": "Geo & coverage",
 };
+
+const SUPER_ADMIN_HUB_PATH = "/dashboard/super-admin";
 
 const STORE_ONBOARDING_FEE_PATH = "/dashboard/super-admin/store-onboarding-fee";
 const TICKET_SETTINGS_PATH = "/dashboard/super-admin/ticket-settings";
@@ -346,17 +348,19 @@ const ORDER_ACCEPTANCE_SETTINGS_PATH = "/dashboard/super-admin/order-acceptance"
 const RIDER_ASSIGNMENT_CONTROLS_PATH = "/dashboard/super-admin/rider-assignment-controls";
 const RULE_ENGINE_PATH = "/dashboard/super-admin/rule-engine";
 const PAYMENTS_PATH = "/dashboard/payments";
+const OFFERS_SUPER_ADMIN_PATH = "/dashboard/offers";
+const OFFERS_MERCHANTS_PATH = "/dashboard/merchants/offers";
 
 function HeaderComponent() {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const currentRouteCtx = useCurrentRoute();
-  const effectivePathname = useMemo(() => {
-    const optimistic = currentRouteCtx?.currentRoute;
-    if (!optimistic) return pathname;
-    return optimistic;
-  }, [currentRouteCtx?.currentRoute, pathname]);
+  const pathnameClean = useMemo(
+    () => pathname.split("?")[0].split("#")[0],
+    [pathname]
+  );
+  /** Actual URL for header chrome — spinner covers header during navigation so no optimistic title swap. */
+  const effectivePathname = pathname;
 
   const pageName = useMemo(() => {
     const clean = effectivePathname.split("?")[0].split("#")[0];
@@ -370,7 +374,9 @@ function HeaderComponent() {
     if (/^\/dashboard\/super-admin\/rule-engine\/\d+\/edit$/.test(clean)) return "Edit rule";
     return getCurrentPageName(clean);
   }, [effectivePathname, searchParams]);
-  const isMerchantsArea = effectivePathname.startsWith("/dashboard/merchants");
+  const isMerchantsAreaForDisplay = effectivePathname.startsWith("/dashboard/merchants");
+  /** Actual URL only — portal sync must not run while pathname is still on Orders/etc. */
+  const isMerchantsArea = pathnameClean.startsWith("/dashboard/merchants");
   const [showDropdown, setShowDropdown] = useState(false);
   const [showNewDropdown, setShowNewDropdown] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
@@ -394,6 +400,13 @@ function HeaderComponent() {
   const leftSidebarMobile = useLeftSidebarMobile();
   const rightSidebar = useRightSidebar();
   const cleanPathname = useMemo(() => effectivePathname.split("?")[0].split("#")[0], [effectivePathname]);
+  const isSuperAdminSubRoute = useMemo(
+    () =>
+      cleanPathname.startsWith(`${SUPER_ADMIN_HUB_PATH}/`) &&
+      cleanPathname !== SUPER_ADMIN_HUB_PATH &&
+      !cleanPathname.startsWith(`${RULE_ENGINE_PATH}/`),
+    [cleanPathname]
+  );
   const isTicketsQueueWorkspace = useMemo(
     () => isTicketsQueueLayoutExperience(cleanPathname, searchParams),
     [cleanPathname, searchParams.toString()]
@@ -411,8 +424,10 @@ function HeaderComponent() {
   const { data: dashboardAccessData } = useDashboardAccessQuery();
   /** Avoid SSR/client mismatch when React Query restores cached permissions before hydration. */
   const [queueLinkMounted, setQueueLinkMounted] = useState(false);
+  const [portalToggleMounted, setPortalToggleMounted] = useState(false);
   useEffect(() => {
     setQueueLinkMounted(true);
+    setPortalToggleMounted(true);
   }, []);
   const canOpenQueueFromTickets = useMemo(() => {
     if (isSuperAdmin) return true;
@@ -430,13 +445,18 @@ function HeaderComponent() {
 
   const portalParam = searchParams.get("portal");
   const portalFromUrl = parsePortalParam(portalParam);
-  const storedPortalFallback =
-    typeof window !== "undefined" && canTogglePortal ? readStoredMerchantsPortal() : null;
-  const portal = resolveMerchantsPortal({
-    portalFromUrl,
-    canTogglePortal,
-    storedPortal: storedPortalFallback,
-  });
+  const [pendingPortal, setPendingPortal] = useState<MerchantsPortal | null>(null);
+  const portal = pendingPortal
+    ?? resolveMerchantsPortal({
+      portalFromUrl,
+      canTogglePortal,
+    });
+
+  useEffect(() => {
+    if (pendingPortal != null && portalFromUrl === pendingPortal) {
+      setPendingPortal(null);
+    }
+  }, [portalFromUrl, pendingPortal]);
 
   // Keep ?portal= in sync on Merchants sub-routes when the list omits it (e.g. old verification links).
   useEffect(() => {
@@ -445,7 +465,7 @@ function HeaderComponent() {
       writeStoredMerchantsPortal(portalFromUrl);
       return;
     }
-    const target = readStoredMerchantsPortal() ?? "admin";
+    const target: MerchantsPortal = "admin";
     writeStoredMerchantsPortal(target);
     const next = new URLSearchParams(searchParams.toString());
     if (next.get("portal") === target) return;
@@ -454,26 +474,25 @@ function HeaderComponent() {
     router.replace(qs ? `${pathname}?${qs}` : `${pathname}?portal=${target}`);
   }, [isMerchantsArea, canTogglePortal, portalFromUrl, pathname, router, searchParams]);
 
-  const setPortal = (value: "admin" | "merchant") => {
+  const setPortal = (value: MerchantsPortal) => {
+    setPendingPortal(value);
     writeStoredMerchantsPortal(value);
-    if (effectivePathname.startsWith("/dashboard/merchants/stores/")) {
-      if (value === "admin") router.push("/dashboard/merchants?portal=admin");
-      else {
-        const next = new URLSearchParams(searchParams.toString());
-        next.set("portal", "merchant");
-        const qs = next.toString();
-        router.replace(qs ? `${pathname}?${qs}` : pathname);
+    if (pathnameClean.startsWith("/dashboard/merchants/stores/")) {
+      if (value === "admin") {
+        router.replace("/dashboard/merchants?portal=admin");
+        return;
       }
-    } else {
-      if (value === "merchant") {
-        // Merchant portal: clear search/category so result list hides and tagline shows
-        router.push("/dashboard/merchants?portal=merchant");
-      } else {
-        const next = new URLSearchParams(searchParams.toString());
-        next.set("portal", value);
-        router.push(`/dashboard/merchants?${next.toString()}`);
-      }
+      const next = new URLSearchParams(searchParams.toString());
+      next.set("portal", "merchant");
+      const qs = next.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname);
+      return;
     }
+    router.replace(
+      value === "admin"
+        ? "/dashboard/merchants?portal=admin"
+        : "/dashboard/merchants?portal=merchant"
+    );
   };
 
   // Force merchant portal unless explicit portal toggle access is granted.
@@ -671,7 +690,7 @@ function HeaderComponent() {
   };
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b bg-white px-4 sm:px-6 z-50 relative gap-2 sm:gap-4">
+    <header className="flex h-14 shrink-0 items-center justify-between bg-white px-4 sm:px-6 z-50 relative gap-2 sm:gap-4">
       {/* Mobile: Hamburger (left) + Logo + Page name. Desktop: no hamburger. */}
       <div className="flex items-center space-x-3 sm:space-x-4 min-w-0">
         {/* Hamburger - only on tablet/mobile (<1024px) */}
@@ -767,6 +786,30 @@ function HeaderComponent() {
             </Link>
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
+        ) : cleanPathname === OFFERS_SUPER_ADMIN_PATH ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <Link
+              href="/dashboard/super-admin"
+              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back to Super Admin"
+              title="Back to Super Admin"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
+          </div>
+        ) : cleanPathname === OFFERS_MERCHANTS_PATH ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <Link
+              href="/dashboard/merchants"
+              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back to Merchants"
+              title="Back to Merchants"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
+          </div>
         ) : cleanPathname.startsWith(`${RULE_ENGINE_PATH}/`) ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
             <Link
@@ -780,6 +823,18 @@ function HeaderComponent() {
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
         ) : cleanPathname === RULE_ENGINE_PATH ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <Link
+              href="/dashboard/super-admin"
+              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back to Super Admin"
+              title="Back to Super Admin"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
+          </div>
+        ) : isSuperAdminSubRoute ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
             <Link
               href="/dashboard/super-admin"
@@ -837,7 +892,7 @@ function HeaderComponent() {
 
       <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0 min-w-0">
         {/* Admin | Merchant portal toggle: shown only for explicit portal-toggle access */}
-        {isMerchantsArea && canTogglePortal && (
+        {isMerchantsAreaForDisplay && portalToggleMounted && canTogglePortal && (
           <div className="flex rounded-md border border-gray-200 bg-white p-0.5 shadow-sm" role="tablist" aria-label="Admin or Merchant portal">
             <button
               type="button"

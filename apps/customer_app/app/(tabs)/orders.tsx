@@ -36,6 +36,7 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import { populateCartFromOrder, resolveOrderItemDiet } from "@/lib/reorderFromOrder";
 import {
   getActiveOrderBadge,
+  getCustomerOrderCancellationDisplayLabel,
   getHistoryOrderStatusLabel,
   isActiveOrderStatus,
   isTerminalOrderStatus,
@@ -243,6 +244,11 @@ function HistoryOrderCard({
     statusNorm === "CANCELLED" || statusNorm === "PAYMENT_FAILED" || statusNorm === "FAILED";
   const delivered = statusNorm === "DELIVERED";
   const showActionRow = delivered || paymentFailed;
+  const cancellationDisplayLabel = getCustomerOrderCancellationDisplayLabel({
+    status: order.status,
+    cancellationReason: order.cancellationReason,
+    cancelledByLabel: order.cancelledByLabel,
+  });
   const hasRating = order.storeRatingSubmitted === true && order.storeRating != null;
 
   const { data: storeQuote } = useStoreDeliveryQuote({
@@ -367,7 +373,11 @@ function HistoryOrderCard({
           </TouchableOpacity>
           <DashedDivider />
           <TouchableOpacity style={styles.statusPriceRow} onPress={onPress} activeOpacity={0.85}>
-            <Text style={styles.deliveredText}>{getHistoryOrderStatusLabel(order.status)}</Text>
+            <Text style={styles.deliveredText}>
+              {getHistoryOrderStatusLabel(order.status, {
+                orderType: isPersonRideOrderSummary(order) ? "person_ride" : order.orderType,
+              })}
+            </Text>
             <View style={styles.priceRow}>
               {order.totalAmount != null && (
                 <Text style={styles.orderPrice}>₹{order.totalAmount.toFixed(2)}</Text>
@@ -396,7 +406,9 @@ function HistoryOrderCard({
               {paymentFailed ? (
                 <View style={styles.actionLeftRow}>
                   <Ionicons name="alert-circle" size={16} color={ERROR} />
-                  <Text style={styles.paymentFailedText}>Payment failed</Text>
+                  <Text style={styles.paymentFailedText} numberOfLines={2}>
+                    {cancellationDisplayLabel}
+                  </Text>
                 </View>
               ) : hasRating ? (
                 <View style={styles.ratingBlock}>
@@ -555,17 +567,19 @@ export default function OrdersScreen() {
     if (storeId) router.push(`/home/merchant/${storeId}`);
   };
 
-  const openOrderDetails = (orderId: string, opts?: { rate?: boolean }) => {
+  const openOrderDetails = (
+    orderId: string,
+    opts?: { rate?: boolean; history?: boolean }
+  ) => {
     void queryClient.prefetchQuery({
       queryKey: ["order", orderId],
       queryFn: () => orderService.getOrder(orderId),
       staleTime: 30_000,
     });
-    if (opts?.rate) {
-      router.push({ pathname: "/orders/[id]", params: { id: orderId, rate: "1" } });
-      return;
-    }
-    router.push(`/orders/${orderId}`);
+    const params: { id: string; rate?: string; view?: string } = { id: orderId };
+    if (opts?.rate) params.rate = "1";
+    if (opts?.history) params.view = "history";
+    router.push({ pathname: "/orders/[id]", params });
   };
 
   const handleReorder = useCallback(
@@ -610,7 +624,10 @@ export default function OrdersScreen() {
           {rideGroup.map((order, index) => (
             <View key={order.orderId}>
               {index > 0 ? <View style={styles.rideHistoryDivider} /> : null}
-              <RideHistoryRow order={order} onPress={() => openOrderDetails(order.orderId)} />
+              <RideHistoryRow
+                order={order}
+                onPress={() => openOrderDetails(order.orderId, { history: true })}
+              />
             </View>
           ))}
         </View>
@@ -628,11 +645,11 @@ export default function OrdersScreen() {
         <HistoryOrderCard
           key={order.orderId}
           order={order}
-          onPress={() => openOrderDetails(order.orderId)}
+          onPress={() => openOrderDetails(order.orderId, { history: true })}
           onViewMenu={() => navigateToStore(order)}
           onReorder={() => handleReorder(order)}
-          onShareFeedback={() => openOrderDetails(order.orderId, { rate: true })}
-          onViewFeedback={() => openOrderDetails(order.orderId)}
+          onShareFeedback={() => openOrderDetails(order.orderId, { rate: true, history: true })}
+          onViewFeedback={() => openOrderDetails(order.orderId, { history: true })}
           isMenuOpen={openMenuOrderId === order.orderId}
           onToggleMenu={() =>
             setOpenMenuOrderId((prev) => (prev === order.orderId ? null : order.orderId))
@@ -640,7 +657,7 @@ export default function OrdersScreen() {
           onShareRestaurant={() => handleShareRestaurant(order)}
           onOrderDetails={() => {
             setOpenMenuOrderId(null);
-            openOrderDetails(order.orderId);
+            openOrderDetails(order.orderId, { history: true });
           }}
           onDeleteOrder={() => handleDeleteOrder(order.orderId)}
           deliveryAddressId={resolvedDeliveryAddress?.id ?? null}
@@ -1107,6 +1124,8 @@ const styles = StyleSheet.create({
     color: GREEN,
   },
   paymentFailedText: {
+    flex: 1,
+    flexShrink: 1,
     fontSize: 14,
     lineHeight: 18,
     fontWeight: "600",

@@ -1,6 +1,6 @@
 # GatiMitra Customer App
 
-Production-ready customer mobile app for GatiMitra (Swiggy/Zomato-style food delivery).
+Production-ready customer mobile app for GatiMitra (GatiMitra-style food delivery).
 
 ## Tech stack
 

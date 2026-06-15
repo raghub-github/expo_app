@@ -25,6 +25,11 @@ const OrderSummarySchema = z.object({
   estimatedEarning: z.number(),
   baseEarning: z.number().optional(),
   customerTipAmount: z.number().optional(),
+  waitingEarning: z.number().optional(),
+  surgeEarning: z.number().optional(),
+  appliedSurges: z
+    .array(z.object({ name: z.string(), amount: z.number() }))
+    .optional(),
   totalEarning: z.number().optional(),
   higherDispatchPriority: z.boolean().optional(),
   merchantName: z.string().nullable().optional(),
@@ -46,6 +51,7 @@ const OrderSummarySchema = z.object({
   pickupTimerStartedAt: z.string().nullable().optional(),
   pickupTimerBudgetSeconds: z.number().nullable().optional(),
   pickupDurationSeconds: z.number().nullable().optional(),
+  ridePickupWaitFreeMinutes: z.number().nullable().optional(),
   prepReadyByAt: z.string().nullable().optional(),
   acceptedAt: z.string().nullable().optional(),
   preparingAt: z.string().nullable().optional(),
@@ -53,6 +59,10 @@ const OrderSummarySchema = z.object({
   prepDelayMinutes: z.number().nullable().optional(),
   customerName: z.string().nullable().optional(),
   customerPhone: z.string().nullable().optional(),
+  customerPrimaryName: z.string().nullable().optional(),
+  customerPrimaryPhone: z.string().nullable().optional(),
+  customerAlternateName: z.string().nullable().optional(),
+  customerAlternatePhone: z.string().nullable().optional(),
   pickupAddressGeocoded: z.string().optional(),
   dropAddressGeocoded: z.string().optional(),
   foodItems: z
@@ -72,14 +82,34 @@ const OrderSummarySchema = z.object({
   customerFeedbackSubmitted: z.boolean().optional(),
   paymentMethod: z.string().nullable().optional(),
   paymentStatus: z.string().nullable().optional(),
+  adminRiderPaymentClearedAt: z.string().nullable().optional(),
+  walletCreditPending: z.boolean().optional(),
+  customerRating: z.number().nullable().optional(),
+  passengerRating: z.number().nullable().optional(),
 });
+
+const RiderBankPaymentMethodSchema = z.object({
+  id: z.number(),
+  methodType: z.literal("bank"),
+  accountHolderName: z.string(),
+  bankName: z.string().nullable(),
+  ifsc: z.string().nullable(),
+  branch: z.string().nullable(),
+  accountNumberMasked: z.string(),
+  verificationStatus: z.enum(["pending", "verified", "rejected"]),
+  createdAt: z.string(),
+});
+
+export type RiderBankPaymentMethod = z.infer<typeof RiderBankPaymentMethodSchema>;
 
 const EarningsSummarySchema = z.object({
   totalBalance: z.number(),
   withdrawable: z.number(),
   locked: z.number(),
+  subscriptionDebited: z.number(),
   thisWeek: z.number(),
   thisMonth: z.number(),
+  hasBankAccount: z.boolean(),
   breakdown: z.object({
     food: z.number(),
     parcel: z.number(),
@@ -89,6 +119,8 @@ const EarningsSummarySchema = z.object({
 
 const DutyStatusSchema = z.object({
   isOnDuty: z.boolean(),
+  allowedServiceTypes: z.array(z.string()).optional(),
+  blockedServiceTypes: z.array(z.string()).optional(),
   lastUpdated: z.string(),
 });
 
@@ -102,11 +134,20 @@ const RiderLedgerSegmentSchema = z.enum([
   "parcel",
   "ride",
   "incentives",
+  "subscriptions",
   "adjustments",
   "penalties",
+  "withdrawals",
 ]);
 
 const RiderLedgerPeriodSchema = z.enum(["this_month", "last_month", "all"]);
+
+const RiderLedgerSummarySchema = z.object({
+  totalEarnings: z.number(),
+  totalWithdrawals: z.number(),
+  pendingSettlement: z.number(),
+  monthLabel: z.string(),
+});
 
 const RiderLedgerEntrySchema = z.object({
   id: z.number(),
@@ -127,11 +168,13 @@ const RiderLedgerResponseSchema = z.object({
   total: z.number(),
   hasMore: z.boolean(),
   periodLabel: z.string(),
+  summary: RiderLedgerSummarySchema,
 });
 
 export type RiderLedgerSegment = z.infer<typeof RiderLedgerSegmentSchema>;
 export type RiderLedgerPeriod = z.infer<typeof RiderLedgerPeriodSchema>;
 export type RiderLedgerEntry = z.infer<typeof RiderLedgerEntrySchema>;
+export type RiderLedgerSummary = z.infer<typeof RiderLedgerSummarySchema>;
 
 export type RiderLedgerFilters = {
   segment?: RiderLedgerSegment;
@@ -141,6 +184,21 @@ export type RiderLedgerFilters = {
 };
 
 export type RiderOrderSummary = z.infer<typeof OrderSummarySchema>;
+
+const EmergencyContactSchema = z.object({
+  label: z.string(),
+  phone: z.string(),
+});
+
+export type RiderEmergencyContact = z.infer<typeof EmergencyContactSchema>;
+
+const EmergencyContactsResponseSchema = z.object({
+  contacts: z.array(EmergencyContactSchema),
+  defaults: z.object({
+    police: z.string(),
+    ambulance: z.string(),
+  }),
+});
 
 // Create API client instance
 function createApiClient(): ApiClient {
@@ -182,6 +240,30 @@ export const riderApi = {
         responseSchema: z.array(OrderSummarySchema),
       }
     );
+  },
+
+  async getRidePaymentHolds() {
+    const client = createApiClient();
+    return client.request<
+      Array<{
+        orderId: string;
+        formattedOrderId: string | null;
+        totalEarning: number;
+        passengerFare: number;
+        completedAt: string;
+      }>
+    >("/v1/rider/orders/ride-payment-holds", {
+      method: "GET",
+      responseSchema: z.array(
+        z.object({
+          orderId: z.string(),
+          formattedOrderId: z.string().nullable(),
+          totalEarning: z.number(),
+          passengerFare: z.number(),
+          completedAt: z.string(),
+        })
+      ),
+    });
   },
 
   async getOrderHistory(opts?: {
@@ -246,6 +328,33 @@ export const riderApi = {
     );
   },
 
+  /** Offer timer expired — rider did not accept in time. */
+  async missOrderOffer(orderId: string, reason?: string) {
+    const client = createApiClient();
+    return client.request<{ ok: true; recorded: boolean }>(
+      `/v1/rider/orders/${orderId}/offer-missed`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(reason ? { reason } : {}),
+      }
+    );
+  },
+
+  async getDispatchOfferStats() {
+    const client = createApiClient();
+    return client.request<{
+      riderId: number;
+      offersTotal: number;
+      offersAccepted: number;
+      offersRejected: number;
+      offersMissed: number;
+      acceptRate: number | null;
+      lastOfferAt: string | null;
+      lastAcceptedAt: string | null;
+    }>(`/v1/rider/dispatch-offer-stats`, { method: "GET" });
+  },
+
   async getRideOrder(orderId: string) {
     const client = createApiClient();
     return client.request<RiderOrderSummary>(`/v1/rider/orders/${orderId}`, {
@@ -305,7 +414,7 @@ export const riderApi = {
 
   async submitMerchantPickupFeedback(
     orderId: string,
-    payload: { rating?: number; tags?: string[]; skipped?: boolean }
+    payload: { rating?: number; tags?: string[]; messages?: string[]; skipped?: boolean }
   ) {
     const client = createApiClient();
     return client.request<RiderOrderSummary>(
@@ -321,7 +430,13 @@ export const riderApi = {
 
   async submitCustomerDeliveryFeedback(
     orderId: string,
-    payload: { rating?: number; tags?: string[]; comment?: string; skipped?: boolean }
+    payload: {
+      rating?: number;
+      tags?: string[];
+      messages?: string[];
+      comment?: string;
+      skipped?: boolean;
+    }
   ) {
     const client = createApiClient();
     return client.request<RiderOrderSummary>(
@@ -461,6 +576,40 @@ export const riderApi = {
     );
   },
 
+  async getBankPaymentMethod() {
+    const client = createApiClient();
+    return client.request<{ paymentMethod: RiderBankPaymentMethod | null }>(
+      "/v1/rider/payment-methods/bank",
+      {
+        method: "GET",
+        responseSchema: z.object({
+          paymentMethod: RiderBankPaymentMethodSchema.nullable(),
+        }),
+      },
+    );
+  },
+
+  async createBankPaymentMethod(payload: {
+    accountHolderName: string;
+    bankName: string;
+    ifsc: string;
+    branch?: string;
+    accountNumber: string;
+  }) {
+    const client = createApiClient();
+    return client.request<{ paymentMethod: RiderBankPaymentMethod }>(
+      "/v1/rider/payment-methods/bank",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+        responseSchema: z.object({
+          paymentMethod: RiderBankPaymentMethodSchema,
+        }),
+      },
+    );
+  },
+
   async getLedger(filters: RiderLedgerFilters = {}) {
     const client = createApiClient();
     const params = new URLSearchParams();
@@ -473,6 +622,17 @@ export const riderApi = {
     return client.request<z.infer<typeof RiderLedgerResponseSchema>>(path, {
       method: "GET",
       responseSchema: RiderLedgerResponseSchema,
+    });
+  },
+
+  /**
+   * Read duty status from server (dispatch eligibility source of truth).
+   */
+  async getDutyStatus() {
+    const client = createApiClient();
+    return client.request<z.infer<typeof DutyStatusSchema>>("/v1/rider/duty", {
+      method: "GET",
+      responseSchema: DutyStatusSchema,
     });
   },
 
@@ -506,6 +666,30 @@ export const riderApi = {
       body: JSON.stringify(payload),
       responseSchema: LogoutResponseSchema,
     });
+  },
+
+  async getEmergencyContacts() {
+    const client = createApiClient();
+    return client.request<z.infer<typeof EmergencyContactsResponseSchema>>(
+      "/v1/rider/me/emergency-contacts",
+      {
+        method: "GET",
+        responseSchema: EmergencyContactsResponseSchema,
+      }
+    );
+  },
+
+  async saveEmergencyContacts(contacts: RiderEmergencyContact[]) {
+    const client = createApiClient();
+    return client.request<z.infer<typeof EmergencyContactsResponseSchema>>(
+      "/v1/rider/me/emergency-contacts",
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ contacts }),
+        responseSchema: EmergencyContactsResponseSchema,
+      }
+    );
   },
 };
 

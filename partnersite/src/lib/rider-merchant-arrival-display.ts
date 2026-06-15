@@ -1,21 +1,18 @@
 /** Merchant panel: rider heading to store vs reached store (Reach Store on rider app). */
 
-export type RiderMerchantArrivalOrder = {
-  core_status?: string | null;
-  current_status?: string | null;
-  reached_merchant_at?: string | null;
-};
+import {
+  hasRiderReachedMerchant as hasRiderReachedMerchantCore,
+  resolveRiderDisplayVariant,
+  riderEnRouteToMerchant,
+  type RiderMerchantDisplayInput,
+} from '@/lib/rider-merchant-display-state';
+
+export type RiderMerchantArrivalOrder = RiderMerchantDisplayInput;
+
+export { resolveRiderDisplayVariant, riderEnRouteToMerchant };
 
 export function hasRiderReachedMerchant(order: RiderMerchantArrivalOrder): boolean {
-  if (order.reached_merchant_at) return true;
-  const core = String(order.core_status ?? '').trim().toLowerCase();
-  if (core === 'reached_store') return true;
-  const cur = String(order.current_status ?? '')
-    .trim()
-    .toUpperCase()
-    .replace(/[\s-]+/g, '_');
-  if (cur === 'RIDER_AT_PICKUP') return true;
-  return false;
+  return hasRiderReachedMerchantCore(order);
 }
 
 function haversineKm(

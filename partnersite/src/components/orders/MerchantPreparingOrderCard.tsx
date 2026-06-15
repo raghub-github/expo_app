@@ -25,6 +25,7 @@ import {
   canUseNeedMoreTime,
 } from '@/lib/order-prep-time';
 import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
+import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 
 function ordinalSuffix(n: number): string {
   const v = n % 100;

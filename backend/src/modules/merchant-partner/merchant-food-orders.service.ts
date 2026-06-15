@@ -9,6 +9,7 @@ import {
 } from "../../lib/merchant-visible-pricing.js";
 import { resolveStoreCommission } from "../commission/commission.resolver.js";
 import { resolvePartnerPipeline } from "../../lib/partner-orders-unify.js";
+import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import {
   labelsForStatusUpdate,
   normalizeActionMode,
@@ -27,12 +28,22 @@ import {
 import { refundFieldsFromEngineResult } from "../../lib/order-cancellation-refund.js";
 import { recordOrderCancellation } from "../../lib/record-order-cancellation.js";
 import { creditMerchantOrderEarningOnDelivered } from "../../lib/credit-merchant-order-on-delivered.js";
+import {
+  clearMerchantStoreOrderNotifications,
+  shouldClearOrderNotifications,
+} from "../../lib/clear-merchant-order-notifications.js";
 import { recordReadyTimeline } from "../../lib/order-food-status-timeline.js";
 import { maybeStartOrderDispatch } from "../../lib/order-dispatch.service.js";
 import { fetchFoodRiderAcceptFlow } from "../../lib/food-rider-accept-flow.js";
 import { loadMerchantOrderLineItemsByTextIds } from "../../lib/load-merchant-order-line-items.js";
 import { resolveMerchantCancellationFields } from "../../lib/merchant-cancellation-fields.js";
 import { recordRiderAssignmentDeliveredIfActive } from "../../lib/order-rider-assignment-history.js";
+import {
+  resolveReachedMerchantAt,
+  resolveRiderDisplayVariant,
+  resolveRiderStoreWaitState,
+  type RiderDisplayVariant,
+} from "../../lib/rider-merchant-display-state.js";
 
 export type MerchantFoodOrderItem = {
   qty: number;
@@ -74,7 +85,22 @@ export type MerchantFoodOrderDto = {
   created_at: string;
   delivery_type: string;
   rider_id: number | null;
+  rider_name: string | null;
+  rider_mobile: string | null;
+  rider_selfie_url: string | null;
+  rider_assignment_status: string | null;
+  rider_reached_at: string | null;
+  /** Canonical rider phase for merchant UI — computed server-side. */
+  rider_display_variant: RiderDisplayVariant;
+  core_status: string | null;
+  current_status: string | null;
+  reached_merchant_at: string | null;
+  rider_reached_pickup_at: string | null;
+  pickup_wait_seconds: number | null;
+  rider_store_wait_live: boolean;
+  rider_store_wait_anchor_at: string | null;
   grand_total: number;
+  food_items_total_value?: number | null;
   pricing: MerchantOrderPricing;
   /** Full checkout breakdown (orders_core.billing_snapshot). */
   billing_snapshot: Record<string, unknown> | null;
@@ -111,8 +137,10 @@ export type MerchantFoodOrderDto = {
   scheduled_delivery_summary?: string | null;
   preparation_time_minutes: number | null;
   prep_ready_by_at: string | null;
+  expected_ready_at: string | null;
   prep_delay_minutes: number | null;
   prep_delay_use_count: number | null;
+  last_prep_delay_minutes_added: number | null;
   prepared_late_minutes: number | null;
 };
 
@@ -384,6 +412,8 @@ type FoodRow = {
   prepared_at: string | null;
   handed_over_to_rider_at: string | null;
   rider_picked_up_at: string | null;
+  rider_reached_pickup_at: string | null;
+  pickup_wait_seconds: number | null;
   dispatched_at: string | null;
   delivered_at: string | null;
   cancelled_at: string | null;
@@ -398,8 +428,10 @@ type FoodRow = {
   merchant_instructions_list: unknown;
   preparation_time_minutes: number | null;
   prep_ready_by_at: string | null;
+  expected_ready_at: string | null;
   prep_delay_minutes: number | null;
   prep_delay_use_count: number | null;
+  last_prep_delay_minutes_added: number | null;
   prepared_late_minutes: number | null;
 };
 
@@ -589,6 +621,8 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.prepared_at,
         of.handed_over_to_rider_at,
         of.rider_picked_up_at,
+        of.rider_reached_pickup_at,
+        of.pickup_wait_seconds,
         of.dispatched_at,
         of.delivered_at,
         of.cancelled_at,
@@ -603,8 +637,10 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.merchant_instructions_list,
         of.preparation_time_minutes,
         of.prep_ready_by_at,
+        of.expected_ready_at,
         of.prep_delay_minutes,
         of.prep_delay_use_count,
+        of.last_prep_delay_minutes_added,
         of.prepared_late_minutes
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
@@ -630,6 +666,8 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.prepared_at,
         of.handed_over_to_rider_at,
         of.rider_picked_up_at,
+        of.rider_reached_pickup_at,
+        of.pickup_wait_seconds,
         of.dispatched_at,
         of.delivered_at,
         of.cancelled_at,
@@ -644,8 +682,10 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.merchant_instructions_list,
         of.preparation_time_minutes,
         of.prep_ready_by_at,
+        of.expected_ready_at,
         of.prep_delay_minutes,
         of.prep_delay_use_count,
+        of.last_prep_delay_minutes_added,
         of.prepared_late_minutes
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
@@ -671,6 +711,8 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.prepared_at,
         of.handed_over_to_rider_at,
         of.rider_picked_up_at,
+        of.rider_reached_pickup_at,
+        of.pickup_wait_seconds,
         of.dispatched_at,
         of.delivered_at,
         of.cancelled_at,
@@ -685,8 +727,10 @@ async function loadFoodRowsForCores(sql: Sql, storeId: number, cores: CoreRow[])
         of.merchant_instructions_list,
         of.preparation_time_minutes,
         of.prep_ready_by_at,
+        of.expected_ready_at,
         of.prep_delay_minutes,
         of.prep_delay_use_count,
+        of.last_prep_delay_minutes_added,
         of.prepared_late_minutes
       FROM orders_food of
       WHERE of.merchant_store_id = ${storeId}
@@ -719,6 +763,92 @@ function resolveCancelledAt(food: FoodRow | null, core: CoreRow): string | null 
   return null;
 }
 
+type ActiveRiderSnapshot = {
+  rider_id: number;
+  rider_name: string | null;
+  rider_mobile: string | null;
+  rider_selfie_url: string | null;
+  rider_assignment_status: string | null;
+  rider_reached_at: string | null;
+};
+
+async function loadActiveRidersByCoreIds(
+  sql: Sql,
+  coreIds: number[]
+): Promise<Map<number, ActiveRiderSnapshot>> {
+  const result = new Map<number, ActiveRiderSnapshot>();
+  if (coreIds.length === 0) return result;
+
+  const assignments = await sql<
+    Array<{
+      core_id: number;
+      rider_id: number;
+      rider_name: string | null;
+      rider_mobile: string | null;
+      assignment_status: string | null;
+      is_active: boolean | null;
+      assignment_sequence: number | null;
+      assigned_at: string | null;
+      reached_merchant_at: string | null;
+      cancelled_at: string | null;
+      unassigned_at: string | null;
+    }>
+  >`
+    SELECT
+      COALESCE(ora.order_core_id, ora.order_id) AS core_id,
+      ora.rider_id,
+      ora.rider_name,
+      ora.rider_mobile,
+      ora.assignment_status,
+      ora.is_active,
+      ora.assignment_sequence,
+      ora.assigned_at,
+      ora.reached_merchant_at,
+      ora.cancelled_at,
+      ora.unassigned_at
+    FROM order_rider_assignments ora
+    WHERE (ora.order_core_id IN ${sql(coreIds)} OR ora.order_id IN ${sql(coreIds)})
+      AND ora.cancelled_at IS NULL
+      AND ora.unassigned_at IS NULL
+      AND UPPER(COALESCE(ora.assignment_status::text, '')) NOT IN ('CANCELLED', 'REJECTED', 'UNASSIGNED')
+    ORDER BY
+      COALESCE(ora.order_core_id, ora.order_id),
+      CASE WHEN ora.is_active THEN 0 ELSE 1 END,
+      ora.assignment_sequence DESC NULLS LAST,
+      ora.assigned_at DESC NULLS LAST
+  `;
+
+  const byCore = new Map<number, (typeof assignments)[number]>();
+  for (const row of assignments) {
+    const coreId = Number(row.core_id);
+    if (!Number.isFinite(coreId) || byCore.has(coreId)) continue;
+    byCore.set(coreId, row);
+  }
+  if (byCore.size === 0) return result;
+
+  const riderIds = [...new Set([...byCore.values()].map((a) => a.rider_id))];
+  const riders = await sql<
+    Array<{ id: number; name: string | null; mobile: string | null; selfie_url: string | null }>
+  >`
+    SELECT id, name, mobile, selfie_url FROM riders WHERE id IN ${sql(riderIds)}
+  `;
+  const riderMap = new Map(riders.map((r) => [Number(r.id), r]));
+
+  for (const [coreId, assignment] of byCore) {
+    const rider = riderMap.get(assignment.rider_id);
+    result.set(coreId, {
+      rider_id: assignment.rider_id,
+      rider_name: rider?.name?.trim() || assignment.rider_name?.trim() || null,
+      rider_mobile: assignment.rider_mobile ?? rider?.mobile ?? null,
+      rider_selfie_url: toAbsoluteClientMediaUrl(rider?.selfie_url ?? null),
+      rider_assignment_status: assignment.assignment_status ?? null,
+      rider_reached_at: assignment.reached_merchant_at ?? null,
+    });
+  }
+
+  return result;
+}
+
 async function buildOrderDto(
   core: CoreRow,
   food: FoodRow | null,
@@ -734,6 +864,7 @@ async function buildOrderDto(
     timelineSnapByCoreId: Map<number, TimelineMilestoneSnapshot>;
     itemsByOrderTextId: Map<string, MerchantFoodOrderItem[]>;
     otpByCoreId: Map<number, { pickup: string | null; rto: string | null }>;
+    activeRiderByCoreId: Map<number, ActiveRiderSnapshot>;
   }
 ): Promise<MerchantFoodOrderDto> {
   const pipeline = resolvePartnerPipeline(
@@ -775,11 +906,19 @@ async function buildOrderDto(
   const packaging = num(billingSnap?.packaging_fee ?? 0);
   const merchantDiscount = merchantFundedDiscountFromBilling(billingSnap);
   const itemsSubtotal = round2(items.reduce((s, it) => s + num(it.price), 0));
-  const merchantTotal = merchantOrderTotalFromBilling(
+  const computedTotal = merchantOrderTotalFromBilling(
     itemsSubtotal > 0.005 ? itemsSubtotal : merchantSubtotal,
     billingSnap,
     packaging
   );
+  const foodFrozen = num(food?.food_items_total_value);
+  /** Partnersite parity: recompute from line items when available; frozen value is fallback only. */
+  const hasItemLines = items.length > 0 && (itemsSubtotal > 0.005 || merchantSubtotal > 0.005);
+  const merchantTotal = hasItemLines
+    ? computedTotal
+    : foodFrozen > 0 && toIsoOrNull(food?.accepted_at)
+      ? round2(foodFrozen)
+      : computedTotal;
   const pricing: MerchantOrderPricing = {
     subtotal: itemsSubtotal > 0.005 ? itemsSubtotal : merchantSubtotal,
     packaging,
@@ -792,6 +931,30 @@ async function buildOrderDto(
   const coreOnly = food == null;
   const tl = opts.timelineSnapByCoreId?.get(core.id);
   const scheduledMeta = resolveScheduledMeta(core);
+  const activeRider = opts.activeRiderByCoreId.get(core.id);
+  const resolvedRiderId =
+    core.rider_id != null && Number.isFinite(Number(core.rider_id))
+      ? Number(core.rider_id)
+      : activeRider?.rider_id ?? null;
+
+  const riderPickedUpAt = toIsoOrNull(food?.rider_picked_up_at) ?? tl?.rider_picked_up_at ?? null;
+  const riderReachedPickupAt = toIsoOrNull(food?.rider_reached_pickup_at);
+  const riderDisplayInput = {
+    order_status: pipeline,
+    core_status: core.status != null ? String(core.status) : null,
+    current_status: core.current_status ?? null,
+    reached_merchant_at: activeRider?.rider_reached_at ?? null,
+    rider_reached_pickup_at: riderReachedPickupAt,
+    rider_picked_up_at: riderPickedUpAt,
+    pickup_wait_seconds:
+      food?.pickup_wait_seconds != null && Number.isFinite(Number(food.pickup_wait_seconds))
+        ? Math.max(0, Math.floor(Number(food.pickup_wait_seconds)))
+        : null,
+    rider_assignment_status: activeRider?.rider_assignment_status ?? null,
+  };
+  const reachedMerchantAt = resolveReachedMerchantAt(riderDisplayInput);
+  const riderDisplayVariant = resolveRiderDisplayVariant(riderDisplayInput);
+  const storeWait = resolveRiderStoreWaitState(riderDisplayInput);
 
   return {
     orders_food_id: food != null ? Number(food.id) : core.id,
@@ -804,9 +967,27 @@ async function buildOrderDto(
       food?.customer_phone ?? cust?.primary_mobile ?? core.customer_primary_mobile ?? null,
     customer_email: food?.customer_email ?? null,
     created_at: new Date(core.created_at).toISOString(),
-    delivery_type: mapDeliveryType(core.delivery_type, core.rider_id, opts.selfDeliveryEnabled),
-    rider_id: core.rider_id,
+    delivery_type: mapDeliveryType(
+      core.delivery_type,
+      resolvedRiderId,
+      opts.selfDeliveryEnabled
+    ),
+    rider_id: resolvedRiderId,
+    rider_name: activeRider?.rider_name ?? null,
+    rider_mobile: activeRider?.rider_mobile ?? null,
+    rider_selfie_url: activeRider?.rider_selfie_url ?? null,
+    rider_assignment_status: activeRider?.rider_assignment_status ?? null,
+    rider_reached_at: reachedMerchantAt,
+    rider_display_variant: riderDisplayVariant,
+    core_status: riderDisplayInput.core_status,
+    current_status: riderDisplayInput.current_status,
+    reached_merchant_at: reachedMerchantAt,
+    rider_reached_pickup_at: riderReachedPickupAt,
+    pickup_wait_seconds: riderDisplayInput.pickup_wait_seconds,
+    rider_store_wait_live: storeWait.live,
+    rider_store_wait_anchor_at: storeWait.anchorAt,
     grand_total: merchantTotal,
+    food_items_total_value: merchantTotal,
     pricing,
     billing_snapshot: billingSnap,
     payment_status: core.payment_status ?? null,
@@ -819,7 +1000,7 @@ async function buildOrderDto(
     prepared_at: toIsoOrNull(food?.prepared_at) ?? tl?.prepared_at ?? null,
     handed_over_to_rider_at:
       toIsoOrNull(food?.handed_over_to_rider_at) ?? tl?.handed_over_to_rider_at ?? null,
-    rider_picked_up_at: toIsoOrNull(food?.rider_picked_up_at) ?? tl?.rider_picked_up_at ?? null,
+    rider_picked_up_at: riderPickedUpAt,
     dispatched_at: toIsoOrNull(food?.dispatched_at) ?? tl?.dispatched_at ?? null,
     delivered_at: toIsoOrNull(food?.delivered_at) ?? tl?.delivered_at ?? null,
     cancelled_at: resolveCancelledAt(food, core) ?? tl?.cancelled_at ?? null,
@@ -856,29 +1037,21 @@ async function buildOrderDto(
     preparation_time_minutes:
       food?.preparation_time_minutes != null ? Number(food.preparation_time_minutes) : null,
     prep_ready_by_at: toIsoOrNull(food?.prep_ready_by_at),
+    expected_ready_at: toIsoOrNull(food?.expected_ready_at),
     prep_delay_minutes:
       food?.prep_delay_minutes != null ? Number(food.prep_delay_minutes) : null,
     prep_delay_use_count:
       food?.prep_delay_use_count != null ? Number(food.prep_delay_use_count) : null,
+    last_prep_delay_minutes_added:
+      food?.last_prep_delay_minutes_added != null
+        ? Number(food.last_prep_delay_minutes_added)
+        : null,
     prepared_late_minutes:
       food?.prepared_late_minutes != null ? Number(food.prepared_late_minutes) : null,
   };
 }
 
 const PREP_DELAY_OPTIONS = [5, 10, 15] as const;
-
-function extendPrepReadyByAtIso(
-  currentPrepReadyByAt: string | null | undefined,
-  additionalMinutes: number,
-  nowIso = new Date().toISOString()
-): string {
-  const add = Math.max(5, Math.min(180, Math.round(additionalMinutes)));
-  const nowMs = new Date(nowIso).getTime();
-  const baseMs = currentPrepReadyByAt
-    ? Math.max(nowMs, new Date(currentPrepReadyByAt).getTime())
-    : nowMs;
-  return new Date(baseMs + add * 60_000).toISOString();
-}
 
 export async function patchMerchantFoodOrderPrepDelay(
   sql: Sql,
@@ -937,17 +1110,15 @@ export async function patchMerchantFoodOrderPrepDelay(
   const prevDelay = Number(existing.prep_delay_minutes) || 0;
   const newDelayTotal = prevDelay + additionalMinutes;
   const newUseCount = prevUseCount + 1;
-  const newPrepReadyByAt = extendPrepReadyByAtIso(
-    existing.prep_ready_by_at,
-    additionalMinutes,
-    now
-  );
+  const { computeExpectedReadyAtFromNow } = await import("../../lib/order-prep-time.js");
+  const newExpectedReadyAt = computeExpectedReadyAtFromNow(additionalMinutes, now);
 
   await sql`
     UPDATE orders_food
-    SET prep_ready_by_at = ${newPrepReadyByAt}::timestamptz,
+    SET expected_ready_at = ${newExpectedReadyAt}::timestamptz,
         prep_delay_minutes = ${newDelayTotal},
         prep_delay_use_count = ${newUseCount},
+        last_prep_delay_minutes_added = ${additionalMinutes},
         updated_at = ${now}::timestamptz
     WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
   `;
@@ -956,7 +1127,7 @@ export async function patchMerchantFoodOrderPrepDelay(
     try {
       await sql`
         UPDATE orders_core
-        SET prep_ready_by_at = ${newPrepReadyByAt}::timestamptz,
+        SET expected_ready_at = ${newExpectedReadyAt}::timestamptz,
             prep_delay_minutes = ${newDelayTotal},
             prep_delay_use_count = ${newUseCount},
             updated_at = ${now}::timestamptz
@@ -985,7 +1156,8 @@ export async function patchMerchantFoodOrderPrepDelay(
         ${JSON.stringify({
           prep_delay_minutes_added: additionalMinutes,
           prep_delay_minutes_total: newDelayTotal,
-          prep_ready_by_at: newPrepReadyByAt,
+          expected_ready_at: newExpectedReadyAt,
+          prep_ready_by_at: existing.prep_ready_by_at,
         })}
       )
     `;
@@ -1001,6 +1173,7 @@ export async function patchMerchantFoodOrderPrepDelay(
       await applyPrepDelayCustomerEffects(sql, {
         ordersCoreId: Number(existing.order_id),
         additionalMinutes,
+        expectedReadyAt: newExpectedReadyAt,
       });
     } catch {
       /* non-fatal — prep delay DB update already committed */
@@ -1064,9 +1237,9 @@ export async function loadMerchantFoodOrderRidersLog(
     const r = riderMap.get(a.rider_id);
     return {
       rider_id: a.rider_id,
-      rider_name: a.rider_name ?? r?.name ?? null,
+      rider_name: r?.name?.trim() || a.rider_name?.trim() || null,
       rider_mobile: a.rider_mobile ?? r?.mobile ?? null,
-      selfie_url: r?.selfie_url ?? null,
+      selfie_url: toAbsoluteClientMediaUrl(r?.selfie_url ?? null),
       assignment_status: a.assignment_status ?? "pending",
       assigned_at: a.assigned_at,
       accepted_at: a.accepted_at,
@@ -1330,6 +1503,13 @@ export async function loadMerchantFoodOrders(
     commissionPercent = undefined;
   }
 
+  let activeRiderByCoreId = new Map<number, ActiveRiderSnapshot>();
+  try {
+    activeRiderByCoreId = await loadActiveRidersByCoreIds(sql, coreIds);
+  } catch {
+    /* optional enrichment — orders list must still load */
+  }
+
   const buildOpts = {
     storeId,
     commissionPercent,
@@ -1342,6 +1522,7 @@ export async function loadMerchantFoodOrders(
     timelineSnapByCoreId,
     itemsByOrderTextId,
     otpByCoreId,
+    activeRiderByCoreId,
   };
 
   type CancelCatalogRow = {
@@ -1488,6 +1669,7 @@ export async function patchMerchantFoodOrderStatus(
   opts?: {
     actionSource?: MerchantOrderActionSource;
     actionMode?: MerchantOrderActionMode;
+    preparationTimeMinutes?: number | null;
   }
 ): Promise<MerchantFoodOrderDto> {
   const status = String(newStatus || "").toUpperCase();
@@ -1542,12 +1724,42 @@ export async function patchMerchantFoodOrderStatus(
   });
 
   if (status === "ACCEPTED") {
+    const storeRows = await sql<{ avg_preparation_time_minutes: number | null }[]>`
+      SELECT avg_preparation_time_minutes FROM merchant_stores WHERE id = ${storeId} LIMIT 1
+    `;
+    const { resolveAcceptPrepCommitment, resolveStoreDefaultPrepMinutes } = await import(
+      "../../lib/order-prep-time.js"
+    );
+    const prep = resolveAcceptPrepCommitment({
+      acceptedAtIso: now,
+      storeDefaultMinutes: resolveStoreDefaultPrepMinutes(storeRows[0]?.avg_preparation_time_minutes),
+      bodyPrepMinutes: opts?.preparationTimeMinutes,
+    });
+
     await sql`
       UPDATE orders_food
       SET order_status = ${status}, updated_at = ${now}::timestamptz, accepted_at = ${now}::timestamptz,
-          accepted_by_label = ${actionLabels.accepted_by_label ?? null}
+          accepted_by_label = ${actionLabels.accepted_by_label ?? null},
+          preparation_time_minutes = ${prep.prepMinutes},
+          prep_ready_by_at = ${prep.prepReadyByAt}::timestamptz,
+          expected_ready_at = ${prep.prepReadyByAt}::timestamptz,
+          prep_time_source = ${prep.prepTimeSource}
       WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
     `;
+    try {
+      await sql`
+        UPDATE orders_core
+        SET
+          prep_ready_by_at = ${prep.prepReadyByAt}::timestamptz,
+          prep_time_minutes = ${prep.prepMinutes},
+          expected_ready_at = ${prep.prepReadyByAt}::timestamptz,
+          current_status = 'ACCEPTED',
+          updated_at = ${now}::timestamptz
+        WHERE id = ${corePk}
+      `;
+    } catch {
+      /* non-fatal */
+    }
     try {
       await recordAcceptanceTimeline(sql, {
         orderCorePk: corePk,
@@ -1572,11 +1784,6 @@ export async function patchMerchantFoodOrderStatus(
           SET food_items_total_value = ${ctm}, updated_at = ${now}::timestamptz
           WHERE id = ${ordersFoodId} AND merchant_store_id = ${storeId}
         `;
-        await sql`
-          UPDATE orders_core
-          SET total_ctm = ${ctm}, updated_at = ${now}::timestamptz
-          WHERE id = ${corePk}
-        `;
       }
     } catch {
       /* non-fatal */
@@ -1585,6 +1792,19 @@ export async function patchMerchantFoodOrderStatus(
       const flow = await fetchFoodRiderAcceptFlow();
       if (flow === "after_merchant_accept") {
         void maybeStartOrderDispatch(corePk);
+      }
+    } catch {
+      /* non-fatal */
+    }
+    try {
+      const idRows = await sql<{ order_id: string | null }[]>`
+        SELECT order_id FROM orders_core WHERE id = ${corePk} LIMIT 1
+      `;
+      const orderIdText = idRows[0]?.order_id?.trim();
+      if (orderIdText) {
+        void import("../eta/eta.live-engine.js")
+          .then(({ runLiveEtaForOrder }) => runLiveEtaForOrder(orderIdText, "STATUS_CHANGE"))
+          .catch(() => undefined);
       }
     } catch {
       /* non-fatal */
@@ -1658,6 +1878,43 @@ export async function patchMerchantFoodOrderStatus(
       /* non-fatal — rider may still dispatch via pool after ready */
     }
     void maybeStartOrderDispatch(corePk);
+
+    try {
+      const idRows = await sql<{ order_id: string | null; prep_time_minutes: number | null; preparing_at: string | null }[]>`
+        SELECT oc.order_id, oc.prep_time_minutes, of.preparing_at::text
+        FROM orders_core oc
+        JOIN orders_food of ON of.order_id = oc.id
+        WHERE oc.id = ${corePk}
+        LIMIT 1
+      `;
+      const orderIdText = idRows[0]?.order_id?.trim();
+      if (orderIdText) {
+        void import("../eta/eta.live-engine.js")
+          .then(({ runLiveEtaForOrder }) => runLiveEtaForOrder(orderIdText, "STATUS_CHANGE"))
+          .catch(() => undefined);
+
+        const expectedPrep = Number(idRows[0]?.prep_time_minutes) || 15;
+        const preparingAt = idRows[0]?.preparing_at ? new Date(idRows[0].preparing_at) : null;
+        const actualPrep =
+          preparingAt && Number.isFinite(preparingAt.getTime())
+            ? Math.max(1, Math.round((now.getTime() - preparingAt.getTime()) / 60_000))
+            : expectedPrep;
+
+        void import("../eta/eta.merchant-prep-stats.js")
+          .then(({ recordMerchantPrepCompletion }) =>
+            recordMerchantPrepCompletion({
+              merchantStoreId: storeId,
+              expectedPrepMinutes: expectedPrep,
+              actualPrepMinutes: actualPrep,
+              wasLate: (lateMins ?? 0) > 0,
+              lateMinutes: lateMins ?? 0,
+            })
+          )
+          .catch(() => undefined);
+      }
+    } catch {
+      /* non-fatal */
+    }
   } else if (status === "OUT_FOR_DELIVERY") {
     await sql`
       UPDATE orders_food
@@ -1834,21 +2091,10 @@ export async function patchMerchantFoodOrderStatus(
   const order = loaded[0];
   if (!order) throw new Error("order_not_found_after_update");
 
-  let merchantGross = 0;
-  try {
-    const ctmRows = await sql<{ total_ctm: unknown }[]>`
-      SELECT total_ctm FROM orders_core WHERE id = ${corePk} LIMIT 1
-    `;
-    merchantGross = num(ctmRows[0]?.total_ctm);
-  } catch {
-    /* total_ctm column optional on older DBs */
-  }
-  if (merchantGross <= 0) {
-    merchantGross =
-      num(order.pricing?.total) > 0
-        ? num(order.pricing?.total)
-        : num(existing.food_items_total_value);
-  }
+  const merchantGross =
+    num(order.pricing?.total) > 0
+      ? num(order.pricing?.total)
+      : num(existing.food_items_total_value);
 
   await creditMerchantOrderEarningOnDelivered({
     merchantStoreId: storeId,
@@ -1858,6 +2104,22 @@ export async function patchMerchantFoodOrderStatus(
     newStatus: status,
     previousStatus: currentStatus,
   });
+
+  if (shouldClearOrderNotifications(status)) {
+    try {
+      await clearMerchantStoreOrderNotifications(sql, {
+        merchantStoreId: storeId,
+        ordersFoodId,
+        orderCoreId: corePk,
+        formattedOrderId:
+          (order as { formatted_order_id?: string | null }).formatted_order_id ??
+          existing.core_order_id ??
+          null,
+      });
+    } catch {
+      /* non-fatal */
+    }
+  }
 
   return order;
 }

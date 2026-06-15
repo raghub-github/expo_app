@@ -40,6 +40,19 @@ export function prefetchDashboardSection(queryClient: QueryClient, href: string)
 
   const path = href.split("?")[0];
 
+  if (path.startsWith("/dashboard/merchants")) {
+    void queryClient.prefetchQuery({
+      queryKey: queryKeys.merchantStores.stats(undefined, undefined, undefined),
+      queryFn: async () => {
+        const res = await fetch("/api/merchant/stores/stats", { credentials: "include" });
+        if (!res.ok) throw new Error("Failed to prefetch merchant stats");
+        return res.json();
+      },
+      staleTime: 60_000,
+    });
+    return;
+  }
+
   if (path === "/dashboard/customers" || path.startsWith("/dashboard/customers")) {
     queryClient.prefetchQuery({
       queryKey: queryKeys.customers.list({}),

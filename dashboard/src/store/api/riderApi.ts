@@ -183,6 +183,12 @@ export interface RiderDetailsResponse {
   onboardingPayments: RiderOnboardingPaymentEntry[];
 }
 
+export interface RiderWalletSummaryResponse {
+  rider: { id: number; name: string | null; mobile: string };
+  wallet: RiderWalletInfo | null;
+  onboardingPayments: RiderOnboardingPaymentEntry[];
+}
+
 export interface RiderLedgerFilters {
   limit?: number;
   offset?: number;
@@ -268,6 +274,14 @@ export const riderApi = baseApi.injectEndpoints({
               { type: "Payment" as const, id: `rider-wallet-${riderId}` },
             ]
           : [{ type: "Rider" as const, id: riderId }],
+    }),
+
+    getRiderWallet: build.query<RiderWalletSummaryResponse, number>({
+      query: (riderId) => `/riders/${riderId}/wallet`,
+      transformResponse: (response: unknown) => unwrapApiData<RiderWalletSummaryResponse>(response),
+      providesTags: (result, error, riderId) => [
+        { type: "Payment" as const, id: `rider-wallet-${riderId}` },
+      ],
     }),
 
     getRiderLedger: build.query<RiderLedgerResponse, { riderId: number; filters?: RiderLedgerFilters }>({
@@ -383,6 +397,7 @@ export const riderApi = baseApi.injectEndpoints({
 
 export const {
   useGetRiderDetailsQuery,
+  useGetRiderWalletQuery,
   useGetRiderLedgerQuery,
   useGetRiderPenaltiesQuery,
   useAddRiderPenaltyMutation,

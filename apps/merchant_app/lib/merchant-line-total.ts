@@ -96,25 +96,6 @@ export function merchantBillPartsFromFoodItems(
   };
 }
 
-/** Prefer API pricing.total (same as partnersite); fallback sum of line prices. */
-export function merchantOrderBillTotal(
-  order: {
-    items?: ApiFoodOrderItem[];
-    pricing?: { packaging?: number; discount?: number; total?: number } | null;
-    grand_total?: number;
-  }
-): number {
-  const pTotal = Number(order.pricing?.total);
-  if (Number.isFinite(pTotal) && pTotal > 0) return menuRupee(pTotal);
-  const grand = Number(order.grand_total);
-  if (Number.isFinite(grand) && grand > 0) return menuRupee(grand);
-  const items = order.items ?? [];
-  return merchantBillPartsFromFoodItems(items, {
-    packaging: order.pricing?.packaging ?? 0,
-    discount: order.pricing?.discount ?? 0,
-  }).total;
-}
-
 export function merchantOrderTotalFromItems(
   items: ApiFoodOrderItem[],
   packaging: number,
@@ -151,3 +132,6 @@ export function merchantBasePriceForLineItem(item: {
   if (stored > cust + 0.005) return menuRupee(stored - cust);
   return stored > 0.005 ? menuRupee(stored) : 0;
 }
+
+export { merchantOrderBillTotal } from "@/lib/resolveMerchantOrderTotal";
+export type { MerchantOrderTotalInput } from "@/lib/resolveMerchantOrderTotal";

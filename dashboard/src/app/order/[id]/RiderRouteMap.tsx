@@ -17,6 +17,13 @@ import {
   resolveStoreMapLngLat,
   toMapLngLat,
 } from "@/lib/orders/parse-order-map-coords";
+import {
+  FOOD_DELIVERY_GEOFENCE_RADIUS_M,
+  circlePolygonGeoJson,
+  isFoodPostPickupPhase,
+  shouldHighlightDropZone,
+  shouldHighlightPickupZone,
+} from "@/lib/food-delivery-map-phase";
 
 interface RiderRouteMapProps {
   orderId: number;
@@ -30,6 +37,11 @@ interface RiderRouteMapProps {
   merchantStoreLon?: number | null;
   pickupAddressGeocoded?: string | null;
   orderStatus?: string | null;
+  coreStatus?: string | null;
+  foodOrderStatus?: string | null;
+  dispatchedAt?: string | null;
+  riderPickedUpAt?: string | null;
+  reachedMerchantAt?: string | null;
   pickedUpAt?: string | null;
   pickupLat: number | null | undefined;
   pickupLon: number | null | undefined;
@@ -64,7 +76,13 @@ const ROUTE_PLANNED_COLOR = "#94a3b8";
 const CONNECTOR_SOURCE_ID = "route-connectors";
 const CONNECTOR_CASING_LAYER_ID = "route-connectors-casing";
 const CONNECTOR_LAYER_ID = "route-connectors-line";
-const MAP_STYLE = "mapbox://styles/mapbox/standard";
+const PICKUP_ZONE_SOURCE_ID = "pickup-zone";
+const PICKUP_ZONE_FILL_ID = "pickup-zone-fill";
+const PICKUP_ZONE_STROKE_ID = "pickup-zone-stroke";
+const DROP_ZONE_SOURCE_ID = "drop-zone";
+const DROP_ZONE_FILL_ID = "drop-zone-fill";
+const DROP_ZONE_STROKE_ID = "drop-zone-stroke";
+const MAP_STYLE = "mapbox://styles/mapbox/streets-v12";
 const MAP_INITIAL_ZOOM = 15;
 const MAP_FIT_MAX_ZOOM = 17;
 const SAME_POINT_METERS = 18;
@@ -188,24 +206,97 @@ function normalizeStatus(value: string | null | undefined): string {
   return (value ?? "").trim().toLowerCase().replace(/\s+/g, "_");
 }
 
-function isPostPickupPhase(
-  orderStatus: string | null | undefined,
-  assignmentStatus: string | null | undefined,
-  pickedUpAt: string | null | undefined
-): boolean {
-  if (pickedUpAt) return true;
-  const tokens = [normalizeStatus(orderStatus), normalizeStatus(assignmentStatus)];
-  return tokens.some((s) =>
-    [
-      "picked_up",
-      "pickup_complete",
-      "in_transit",
-      "out_for_delivery",
-      "delivered",
-      "reached_customer",
-      "reached_drop",
-    ].some((needle) => s.includes(needle))
-  );
+type PostPickupPhaseArgs = {
+  orderStatus?: string | null;
+  assignmentStatus?: string | null;
+  pickedUpAt?: string | null;
+  coreStatus?: string | null;
+  foodOrderStatus?: string | null;
+  dispatchedAt?: string | null;
+  riderPickedUpAt?: string | null;
+};
+
+function isPostPickupPhase(args: PostPickupPhaseArgs): boolean {
+  return isFoodPostPickupPhase({
+    pickedUpAt: args.pickedUpAt,
+    dispatchedAt: args.dispatchedAt,
+    riderPickedUpAt: args.riderPickedUpAt,
+    foodOrderStatus: args.foodOrderStatus,
+    coreStatus: args.coreStatus,
+    currentStatus: args.orderStatus ?? args.assignmentStatus,
+  });
+}
+
+function emptyPolygonFeature(): GeoJSON.Feature<GeoJSON.Polygon> {
+  return {
+    type: "Feature",
+    properties: {},
+    geometry: { type: "Polygon", coordinates: [[]] },
+  };
+}
+
+function ensureZoneLayers(
+  map: any,
+  sourceId: string,
+  fillId: string,
+  strokeId: string,
+  beforeLayerId?: string
+) {
+  if (!map.getSource(sourceId)) {
+    map.addSource(sourceId, { type: "geojson", data: emptyPolygonFeature() });
+  }
+  if (!map.getLayer(fillId)) {
+    map.addLayer(
+      {
+        id: fillId,
+        type: "fill",
+        source: sourceId,
+        layout: { visibility: "none" },
+        paint: {
+          "fill-color": "#22c55e",
+          "fill-opacity": 0.14,
+        },
+      },
+      beforeLayerId
+    );
+  }
+  if (!map.getLayer(strokeId)) {
+    map.addLayer(
+      {
+        id: strokeId,
+        type: "line",
+        source: sourceId,
+        layout: { visibility: "none" },
+        paint: {
+          "line-color": "#22c55e",
+          "line-width": 1.5,
+          "line-opacity": 0.35,
+        },
+      },
+      beforeLayerId
+    );
+  }
+}
+
+function updateHighlightZone(
+  map: any,
+  sourceId: string,
+  fillId: string,
+  strokeId: string,
+  center: [number, number] | null,
+  visible: boolean
+) {
+  const src = map.getSource(sourceId);
+  if (!src) return;
+  if (!visible || !center) {
+    src.setData(emptyPolygonFeature());
+    map.setLayoutProperty(fillId, "visibility", "none");
+    map.setLayoutProperty(strokeId, "visibility", "none");
+    return;
+  }
+  src.setData(circlePolygonGeoJson(center[0], center[1], FOOD_DELIVERY_GEOFENCE_RADIUS_M));
+  map.setLayoutProperty(fillId, "visibility", "visible");
+  map.setLayoutProperty(strokeId, "visibility", "visible");
 }
 
 function routeStatusLabel(
@@ -226,10 +317,7 @@ function initialRiderPos(
 
 function resolveRiderRouteAnchorLngLat(
   payload: OrderRiderTrackingPayload | null,
-  opts: {
-    orderStatus: string | null | undefined;
-    assignmentStatus: string | null | undefined;
-    pickedUpAt: string | null | undefined;
+  opts: PostPickupPhaseArgs & {
     store: [number, number] | null;
     drop: [number, number] | null;
     prevGps: [number, number] | null;
@@ -239,11 +327,7 @@ function resolveRiderRouteAnchorLngLat(
   const loc = payload?.location;
   if (!loc || !isValidLatLon(loc.latitude, loc.longitude)) return null;
 
-  const postPickup = isPostPickupPhase(
-    opts.orderStatus,
-    opts.assignmentStatus,
-    opts.pickedUpAt
-  );
+  const postPickup = isPostPickupPhase(opts);
   const destination = postPickup ? opts.drop : opts.store;
 
   return resolveRiderFrontWheelLngLat({
@@ -261,11 +345,9 @@ function resolveLiveRouteEndpoints(
   rider: [number, number] | null,
   pickup: [number, number] | null,
   drop: [number, number] | null,
-  orderStatus: string | null | undefined,
-  assignmentStatus: string | null | undefined,
-  pickedUpAt: string | null | undefined
+  phaseArgs: PostPickupPhaseArgs
 ): RouteEndpoints | null {
-  const postPickup = isPostPickupPhase(orderStatus, assignmentStatus, pickedUpAt);
+  const postPickup = isPostPickupPhase(phaseArgs);
 
   if (!rider) return null;
 
@@ -277,14 +359,8 @@ function resolveLiveRouteEndpoints(
   return null;
 }
 
-function movementPhaseLabel(
-  orderStatus: string | null | undefined,
-  assignmentStatus: string | null | undefined,
-  pickedUpAt: string | null | undefined
-): string {
-  return isPostPickupPhase(orderStatus, assignmentStatus, pickedUpAt)
-    ? "Rider → customer"
-    : "Rider → restaurant";
+function movementPhaseLabel(phaseArgs: PostPickupPhaseArgs): string {
+  return isPostPickupPhase(phaseArgs) ? "Rider → customer" : "Rider → restaurant";
 }
 
 async function fetchMapboxDrivingGeometry(
@@ -453,6 +529,11 @@ export default function RiderRouteMap({
   merchantStoreLon,
   pickupAddressGeocoded,
   orderStatus,
+  coreStatus,
+  foodOrderStatus,
+  dispatchedAt,
+  riderPickedUpAt,
+  reachedMerchantAt,
   pickedUpAt,
   pickupLat,
   pickupLon,
@@ -493,9 +574,36 @@ export default function RiderRouteMap({
       [
         coordKey,
         pickedUpAt ?? "",
+        dispatchedAt ?? "",
+        riderPickedUpAt ?? "",
         normalizeStatus(orderStatus),
+        normalizeStatus(coreStatus),
+        normalizeStatus(foodOrderStatus),
       ].join("|"),
-    [coordKey, pickedUpAt, orderStatus]
+    [coordKey, pickedUpAt, dispatchedAt, riderPickedUpAt, orderStatus, coreStatus, foodOrderStatus]
+  );
+
+  const phaseArgsRef = useRef<PostPickupPhaseArgs>({});
+  phaseArgsRef.current = {
+    orderStatus,
+    pickedUpAt,
+    coreStatus,
+    foodOrderStatus,
+    dispatchedAt,
+    riderPickedUpAt,
+  };
+
+  const buildPhaseArgs = useCallback(
+    (assignmentStatus?: string | null): PostPickupPhaseArgs => ({
+      orderStatus,
+      assignmentStatus,
+      pickedUpAt,
+      coreStatus,
+      foodOrderStatus,
+      dispatchedAt,
+      riderPickedUpAt,
+    }),
+    [orderStatus, pickedUpAt, coreStatus, foodOrderStatus, dispatchedAt, riderPickedUpAt]
   );
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -557,15 +665,78 @@ export default function RiderRouteMap({
   const resolveRiderRouteAnchor = useCallback(
     (payload: OrderRiderTrackingPayload | null, assignmentStatus: string | null | undefined) =>
       resolveRiderRouteAnchorLngLat(payload, {
-        orderStatus,
-        assignmentStatus,
-        pickedUpAt,
+        ...buildPhaseArgs(assignmentStatus),
         store: storeRef.current,
         drop: dropRef.current,
         prevGps: prevRiderPosRef.current,
         routeBearingDeg: lastRouteBearingRef.current,
       }),
-    [orderStatus, pickedUpAt]
+    [buildPhaseArgs]
+  );
+
+  const applyGeofenceHighlights = useCallback(
+    (map: any, assignmentStatus: string | null | undefined) => {
+      if (!mapReadyRef.current || !map) return;
+
+      const phaseArgs = buildPhaseArgs(assignmentStatus);
+      const postPickup = isPostPickupPhase(phaseArgs);
+      const pickupPoint = storeRef.current;
+      const dropPoint = dropRef.current;
+      const loc = trackingRef.current?.location;
+      const riderLat =
+        loc && isValidLatLon(loc.latitude, loc.longitude) ? loc.latitude : null;
+      const riderLng =
+        loc && isValidLatLon(loc.latitude, loc.longitude) ? loc.longitude : null;
+
+      const beforeLayer = map.getLayer(ROUTE_CASING_LAYER_ID)
+        ? ROUTE_CASING_LAYER_ID
+        : undefined;
+
+      ensureZoneLayers(map, PICKUP_ZONE_SOURCE_ID, PICKUP_ZONE_FILL_ID, PICKUP_ZONE_STROKE_ID, beforeLayer);
+      ensureZoneLayers(map, DROP_ZONE_SOURCE_ID, DROP_ZONE_FILL_ID, DROP_ZONE_STROKE_ID, beforeLayer);
+
+      const highlightPickup =
+        pickupPoint != null &&
+        shouldHighlightPickupZone({
+          postPickup,
+          reachedMerchantAt,
+          foodOrderStatus,
+          riderLat,
+          riderLng,
+          pickupLat: pickupPoint[1],
+          pickupLng: pickupPoint[0],
+        });
+
+      const highlightDrop =
+        dropPoint != null &&
+        shouldHighlightDropZone({
+          postPickup,
+          foodOrderStatus,
+          currentStatus: orderStatus ?? assignmentStatus,
+          riderLat,
+          riderLng,
+          dropLat: dropPoint[1],
+          dropLng: dropPoint[0],
+        });
+
+      updateHighlightZone(
+        map,
+        PICKUP_ZONE_SOURCE_ID,
+        PICKUP_ZONE_FILL_ID,
+        PICKUP_ZONE_STROKE_ID,
+        pickupPoint,
+        highlightPickup
+      );
+      updateHighlightZone(
+        map,
+        DROP_ZONE_SOURCE_ID,
+        DROP_ZONE_FILL_ID,
+        DROP_ZONE_STROKE_ID,
+        dropPoint,
+        highlightDrop
+      );
+    },
+    [buildPhaseArgs, reachedMerchantAt, foodOrderStatus, orderStatus]
   );
 
   const applyConnectorLines = useCallback(
@@ -595,7 +766,7 @@ export default function RiderRouteMap({
         segments.push({ from, to });
       };
 
-      const postPickup = isPostPickupPhase(orderStatus, assignmentStatus, pickedUpAt);
+      const postPickup = isPostPickupPhase(buildPhaseArgs(assignmentStatus));
       if (endpoints.mode === "live") {
         const destPin = postPickup ? drop : store;
         if (destPin) pushSegment(routeEnd, destPin);
@@ -645,7 +816,7 @@ export default function RiderRouteMap({
         },
       });
     },
-    [orderStatus, pickedUpAt]
+    [buildPhaseArgs]
   );
 
   const applyRouteGeometry = useCallback(
@@ -749,7 +920,7 @@ export default function RiderRouteMap({
         beforeLiveRoute
       );
     },
-    []
+    [buildPhaseArgs]
   );
 
   const fitMapToPoints = useCallback(
@@ -761,7 +932,7 @@ export default function RiderRouteMap({
     ) => {
       if (userControlsViewRef.current || boundsFittedRef.current) return;
 
-      const postPickup = isPostPickupPhase(orderStatus, assignmentStatus, pickedUpAt);
+      const postPickup = isPostPickupPhase(buildPhaseArgs(assignmentStatus));
       const bounds = new mapboxgl.LngLatBounds();
       let hasBounds = false;
       const storeLngLat = storeRef.current;
@@ -790,7 +961,7 @@ export default function RiderRouteMap({
         }
       });
     },
-    []
+    [buildPhaseArgs]
   );
 
   const loadRoute = useCallback(
@@ -808,9 +979,7 @@ export default function RiderRouteMap({
         riderRouteAnchor,
         storeRef.current,
         dropRef.current,
-        orderStatus,
-        assignmentStatus,
-        pickedUpAt
+        buildPhaseArgs(assignmentStatus)
       );
 
       if (!endpoints) {
@@ -867,7 +1036,7 @@ export default function RiderRouteMap({
         /* route optional */
       }
     },
-    [orderStatus, pickedUpAt, applyRouteGeometry, applyConnectorLines, clearDeliveryLegRoute]
+    [buildPhaseArgs, applyRouteGeometry, applyConnectorLines, clearDeliveryLegRoute]
   );
 
   useEffect(() => {
@@ -897,11 +1066,10 @@ export default function RiderRouteMap({
     const pickupPoint = storeRef.current;
     const dropPoint = dropRef.current;
     const assignmentStatus = trackingRef.current?.rider?.assignment_status;
-    const postPickup = isPostPickupPhase(orderStatus, assignmentStatus, pickedUpAt);
+    const phaseArgs = buildPhaseArgs(assignmentStatus);
+    const postPickup = isPostPickupPhase(phaseArgs);
     const riderRouteAnchor = resolveRiderRouteAnchorLngLat(trackingRef.current, {
-      orderStatus,
-      assignmentStatus,
-      pickedUpAt,
+      ...phaseArgs,
       store: pickupPoint,
       drop: dropPoint,
       prevGps: prevRiderPosRef.current,
@@ -955,7 +1123,9 @@ export default function RiderRouteMap({
       markersRef.current.customer.remove();
       markersRef.current.customer = undefined;
     }
-  }, [orderStatus, pickedUpAt]);
+
+    applyGeofenceHighlights(map, assignmentStatus ?? null);
+  }, [buildPhaseArgs, applyGeofenceHighlights]);
 
   const fetchTracking = useCallback(async () => {
     if (!orderId) return;
@@ -975,13 +1145,13 @@ export default function RiderRouteMap({
       const assignmentStatus = json.rider?.assignment_status;
       setMovementLabel(
         json.location
-          ? `${routeStatusLabel(json, riderId)} · ${movementPhaseLabel(orderStatus, assignmentStatus, pickedUpAt)}`
+          ? `${routeStatusLabel(json, riderId)} · ${movementPhaseLabel(buildPhaseArgs(assignmentStatus))}`
           : routeStatusLabel(json, riderId)
       );
     } catch {
       /* keep last tracking */
     }
-  }, [orderId, riderId, orderStatus, pickedUpAt]);
+  }, [orderId, riderId, buildPhaseArgs]);
 
   useEffect(() => {
     void fetchTracking();
@@ -1117,7 +1287,7 @@ export default function RiderRouteMap({
     ): [number, number][] => {
       if (!payload) return [];
 
-      const postPickup = isPostPickupPhase(orderStatus, assignmentStatus, pickedUpAt);
+      const postPickup = isPostPickupPhase(buildPhaseArgs(assignmentStatus));
       const destination = postPickup ? dropRef.current : storeRef.current;
       const out: [number, number][] = [];
       const trail = payload.trail ?? [];
@@ -1158,9 +1328,7 @@ export default function RiderRouteMap({
       const loc = payload.location;
       if (loc && isValidLatLon(loc.latitude, loc.longitude)) {
         const liveAnchor = resolveRiderRouteAnchorLngLat(payload, {
-          orderStatus,
-          assignmentStatus,
-          pickedUpAt,
+          ...buildPhaseArgs(assignmentStatus),
           store: storeRef.current,
           drop: dropRef.current,
           prevGps: prevRiderPosRef.current,
@@ -1176,7 +1344,7 @@ export default function RiderRouteMap({
 
       return out;
     },
-    [orderStatus, pickedUpAt]
+    [buildPhaseArgs]
   );
 
   const updateRiderOnMap = useCallback(
@@ -1214,7 +1382,7 @@ export default function RiderRouteMap({
       const pickupPoint = storeRef.current;
       const dropPoint = dropRef.current;
       const assignmentStatus = payload?.rider?.assignment_status ?? null;
-      const postPickup = isPostPickupPhase(orderStatus, assignmentStatus, pickedUpAt);
+      const postPickup = isPostPickupPhase(buildPhaseArgs(assignmentStatus));
       const offsets = overlapMarkerOffsets([
         ...(pickupPoint ? [{ id: "store", point: pickupPoint }] : []),
         ...(postPickup && dropPoint ? [{ id: "customer", point: dropPoint }] : []),
@@ -1319,7 +1487,7 @@ export default function RiderRouteMap({
         trackingRef.current?.rider?.assignment_status ?? null
       );
     }
-  }, [routePhaseKey, syncPlaceMarkers, fitMapToPoints, resolveRiderRouteAnchor, orderStatus, pickedUpAt]);
+  }, [routePhaseKey, syncPlaceMarkers, fitMapToPoints, resolveRiderRouteAnchor]);
 
   useEffect(() => {
     if (!mapReadyRef.current || !mapRef.current) return;
@@ -1342,9 +1510,8 @@ export default function RiderRouteMap({
     }
 
     const initialRiderAnchor = resolveRiderRouteAnchorLngLat(trackingRef.current, {
-      orderStatus,
+      ...phaseArgsRef.current,
       assignmentStatus: trackingRef.current?.rider?.assignment_status,
-      pickedUpAt,
       store: storeRef.current,
       drop: dropRef.current,
       prevGps: prevRiderPosRef.current,
@@ -1409,9 +1576,8 @@ export default function RiderRouteMap({
           updateRiderOnMapRef.current(mapboxgl, map, trackingRef.current);
 
           const riderRouteAnchor = resolveRiderRouteAnchorLngLat(trackingRef.current, {
-            orderStatus,
+            ...phaseArgsRef.current,
             assignmentStatus: trackingRef.current?.rider?.assignment_status,
-            pickedUpAt,
             store: storeRef.current,
             drop: dropRef.current,
             prevGps: prevRiderPosRef.current,
@@ -1449,7 +1615,9 @@ export default function RiderRouteMap({
             msg.includes("vector.pbf") ||
             errorType === "TileLoadError" ||
             errorType === "StyleImageMissing";
-          if (msg && !cancelled && !isTileError) {
+          const isModelError =
+            msg.includes("Could not load model") || msg.includes(".glb");
+          if (msg && !cancelled && !isTileError && !isModelError) {
             setError(`Map error: ${msg.slice(0, 120)}`);
           }
         });
@@ -1566,14 +1734,13 @@ export default function RiderRouteMap({
         </span>
         <span className="inline-flex items-center gap-1">
           <span
-            className="h-0 w-5 border-t-[2px] border-dashed border-slate-400"
-            style={{ boxShadow: "0 0 0 1px #fff" }}
+            className="h-3 w-3 rounded-full border border-emerald-400 bg-emerald-400/20"
           />
-          Pin link (short)
+          200m highlight zone
         </span>
       </div>
 
-      <div className="relative flex-1 min-h-[280px] h-[280px] w-full">
+      <div className="relative flex-1 min-h-[280px] h-[280px] w-full bg-[#eef2f6]">
         {error ? (
           <div className="absolute inset-0 z-10 flex items-center justify-center rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800 text-center">
             {error}
@@ -1581,7 +1748,7 @@ export default function RiderRouteMap({
         ) : null}
         <div
           ref={containerRefCallback}
-          className="absolute inset-0 h-full w-full rounded border border-gray-200 [&_.mapboxgl-canvas]:!w-full [&_.mapboxgl-canvas]:!h-full [&_.mapboxgl-ctrl-bottom-left]:hidden"
+          className="absolute inset-0 h-full w-full rounded border border-gray-200 bg-[#eef2f6] [&_.mapboxgl-canvas]:!w-full [&_.mapboxgl-canvas]:!h-full [&_.mapboxgl-ctrl-bottom-left]:hidden"
         />
 
             {canShowRouteSheet && !routeSheetOpen ? (

@@ -20,7 +20,7 @@ const patchSchema = z.object({
     "payment_global_settings",
   ]),
   id: z.number().int().positive().optional(),
-  payload: z.record(z.unknown()),
+  payload: z.record(z.string(), z.unknown()),
 });
 
 export async function GET() {

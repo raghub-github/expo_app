@@ -225,11 +225,12 @@ export default function LoginScreen() {
       setDeviceSessionRetry(false);
       setStep("otp");
       startCountdown();
+      Alert.alert("Success", "OTP sent successfully.");
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
-      let errorMessage = err.message;
-      if (err.message?.toLowerCase().includes("network") || err.message?.toLowerCase().includes("failed")) {
-        errorMessage = `${errorMessage} Make sure backend is running and the app API URL is correct.`;
+      let errorMessage = err.message || "Unable to send OTP. Please try again.";
+      if (/network request failed|failed to fetch|network error|aborted/i.test(errorMessage)) {
+        errorMessage = "Unable to send OTP. Please try again.";
       }
       setError(errorMessage);
       console.error("OTP request error:", e);
@@ -304,9 +305,9 @@ export default function LoginScreen() {
       const normalizedPhone = phoneDigits.length === 10 ? `+91${phoneDigits}` : phoneE164.trim();
       await riderAuthService.sendOtp({ phoneE164: normalizedPhone });
       startCountdown();
-      Alert.alert("Success", "OTP has been resent to your phone number.");
+      Alert.alert("Success", "OTP sent successfully.");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to resend OTP");
+      setError(e instanceof Error ? e.message : "Unable to send OTP. Please try again.");
     } finally {
       setBusy(false);
     }

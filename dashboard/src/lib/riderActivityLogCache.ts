@@ -51,6 +51,12 @@ export function getCachedRiderActivityLog(
   return cache.get(orderId);
 }
 
+export function invalidateRiderActivityLogCache(orderId: number): void {
+  if (!Number.isFinite(orderId)) return;
+  cache.delete(orderId);
+  inflight.delete(orderId);
+}
+
 export function prefetchRiderActivityLog(orderId: number): void {
   if (!Number.isFinite(orderId)) return;
   if (cache.has(orderId) || inflight.has(orderId)) return;

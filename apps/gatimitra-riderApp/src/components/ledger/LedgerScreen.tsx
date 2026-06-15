@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -10,16 +10,24 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
-import { useFocusEffect } from "expo-router";
 import { useLedger } from "@/src/hooks/useLedger";
 import type { RiderLedgerPeriod, RiderLedgerSegment } from "@/src/services/api/riderApi";
 import { LedgerFilterPills } from "@/src/components/ledger/LedgerFilterPills";
-import { LedgerPeriodSelector } from "@/src/components/ledger/LedgerPeriodSelector";
 import { LedgerEmptyState } from "@/src/components/ledger/LedgerEmptyState";
-import { LedgerTransactionCard } from "@/src/components/ledger/LedgerTransactionCard";
+import { LedgerMonthlySummaryCard } from "@/src/components/ledger/LedgerMonthlySummaryCard";
+import { LedgerGroupedTransactionList } from "@/src/components/ledger/LedgerGroupedTransactionList";
+import { LedgerPeriodDropdown } from "@/src/components/ledger/LedgerPeriodDropdown";
+import { groupLedgerEntriesByDay } from "@/src/components/ledger/ledgerDisplay";
 import { LEDGER_PAGE_BG, LEDGER_TEAL } from "@/src/components/ledger/ledgerUiTokens";
 
 const PERIOD_CYCLE: RiderLedgerPeriod[] = ["this_month", "last_month", "all"];
+
+const DEFAULT_SUMMARY = {
+  totalEarnings: 0,
+  totalWithdrawals: 0,
+  pendingSettlement: 0,
+  monthLabel: "This Month Summary",
+};
 
 export function LedgerScreen() {
   const { t } = useTranslation();
@@ -28,7 +36,7 @@ export function LedgerScreen() {
 
   const {
     data,
-    isLoading,
+    isPending,
     isError,
     refetch,
     isRefetching,
@@ -37,18 +45,17 @@ export function LedgerScreen() {
     isFetchingNextPage,
   } = useLedger({ segment: selectedSegment, period, limit: 50 });
 
-  useFocusEffect(
-    useCallback(() => {
-      void refetch();
-    }, [refetch]),
-  );
-
   const entries = useMemo(
     () => data?.pages.flatMap((page) => page.entries) ?? [],
     [data],
   );
 
-  const totalCount = data?.pages[0]?.total ?? 0;
+  const summary = data?.pages[0]?.summary ?? DEFAULT_SUMMARY;
+
+  const groupedEntries = useMemo(
+    () => groupLedgerEntriesByDay(entries, t),
+    [entries, t],
+  );
 
   const segments = useMemo(
     () => [
@@ -57,8 +64,8 @@ export function LedgerScreen() {
       { id: "parcel" as const, label: t("ledger.parcel", "Parcel") },
       { id: "ride" as const, label: t("ledger.ride", "Ride") },
       { id: "incentives" as const, label: t("ledger.incentives", "Incentives") },
-      { id: "adjustments" as const, label: t("ledger.adjustments", "Adjustments") },
-      { id: "penalties" as const, label: t("ledger.penalties", "Penalties") },
+      { id: "subscriptions" as const, label: t("ledger.subscriptions", "Subscription") },
+      { id: "withdrawals" as const, label: t("ledger.withdrawals", "Withdrawals") },
     ],
     [t],
   );
@@ -68,25 +75,18 @@ export function LedgerScreen() {
     setPeriod(PERIOD_CYCLE[(idx + 1) % PERIOD_CYCLE.length]);
   };
 
-  const periodButtonLabel =
-    period === "this_month"
-      ? t("ledger.thisMonth", "This month")
-      : period === "last_month"
-        ? t("ledger.lastMonth", "Last month")
-        : t("ledger.allTime", "All time");
-
-  const showEmpty = !isLoading && !isError && entries.length === 0;
+  const showEmpty = !isPending && !isError && entries.length === 0;
+  const showInitialLoading = isPending && entries.length === 0;
 
   return (
-    <SafeAreaView style={styles.root} edges={["bottom"]}>
+    <SafeAreaView style={styles.root} edges={[]}>
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
-        nestedScrollEnabled
         refreshControl={
           <RefreshControl
-            refreshing={isRefetching && !isLoading}
+            refreshing={isRefetching && !isPending}
             onRefresh={() => void refetch()}
             tintColor={LEDGER_TEAL}
           />
@@ -100,14 +100,14 @@ export function LedgerScreen() {
           />
         </View>
 
-        <LedgerPeriodSelector label={periodButtonLabel} onPress={cyclePeriod} />
+        <LedgerMonthlySummaryCard summary={summary} onViewMonthlySummary={cyclePeriod} />
 
-        {isLoading ? (
+        {showInitialLoading ? (
           <View style={styles.centerBlock}>
             <ActivityIndicator size="large" color={LEDGER_TEAL} />
             <Text style={styles.helperText}>{t("ledger.loading", "Loading transactions…")}</Text>
           </View>
-        ) : isError ? (
+        ) : isError && entries.length === 0 ? (
           <View style={styles.centerBlock}>
             <Text style={styles.errorTitle}>{t("ledger.error", "Could not load ledger")}</Text>
             <Text style={styles.helperText}>
@@ -115,15 +115,20 @@ export function LedgerScreen() {
             </Text>
           </View>
         ) : showEmpty ? (
-          <LedgerEmptyState />
+          <>
+            <View style={styles.periodHeaderRow}>
+              <View style={styles.periodHeaderSpacer} />
+              <LedgerPeriodDropdown value={period} onChange={setPeriod} />
+            </View>
+            <LedgerEmptyState />
+          </>
         ) : (
           <View style={styles.list}>
-            <Text style={styles.listMeta}>
-              {t("ledger.showingCount", "{{count}} transactions", { count: totalCount })}
-            </Text>
-            {entries.map((entry) => (
-              <LedgerTransactionCard key={`${entry.id}-${entry.createdAt}`} entry={entry} />
-            ))}
+            <LedgerGroupedTransactionList
+              groups={groupedEntries}
+              period={period}
+              onPeriodChange={setPeriod}
+            />
             {hasNextPage ? (
               <Pressable
                 onPress={() => void fetchNextPage()}
@@ -156,7 +161,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 20,
     paddingTop: 4,
-    paddingBottom: 32,
+    paddingBottom: 16,
     flexGrow: 1,
   },
   filtersBlock: {
@@ -166,10 +171,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: 40,
-    gap: 12,
-    backgroundColor: LEDGER_PAGE_BG,
   },
   helperText: {
+    marginTop: 12,
     fontSize: 14,
     color: "#64748B",
     textAlign: "center",
@@ -180,27 +184,30 @@ const styles = StyleSheet.create({
     color: "#0F172A",
   },
   list: {
-    marginTop: 4,
+    marginTop: 2,
   },
-  listMeta: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#64748B",
-    textTransform: "uppercase",
-    letterSpacing: 0.6,
-    marginBottom: 12,
+  periodHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    marginBottom: 8,
+    paddingHorizontal: 2,
+    zIndex: 30,
+  },
+  periodHeaderSpacer: {
+    flex: 1,
   },
   loadMoreBtn: {
-    marginTop: 4,
+    marginTop: 12,
     paddingVertical: 14,
     alignItems: "center",
-    borderRadius: 14,
+    borderRadius: 12,
     backgroundColor: "#FFFFFF",
-    borderWidth: 1.5,
-    borderColor: "#E2E8F0",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
   },
   loadMorePressed: {
-    opacity: 0.9,
+    opacity: 0.92,
   },
   loadMoreText: {
     fontSize: 15,

@@ -20,6 +20,7 @@ import { useRouter } from "expo-router";
 import type { HomeBannerOffer } from "@/services/offers.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { formatRideOfferSubline } from "@/lib/ride-offers";
 import type { ImageSourcePropType } from "react-native";
 
 const { width: SCREEN_W } = Dimensions.get("window");
@@ -29,10 +30,14 @@ const SLIDE_GAP = 12;
 const DEFAULT_CARD_H = 136;
 const OFFER_BANNER_ART = require("../../public/img/offerimg.png");
 const OFFER_BANNER_ART_2 = require("../../public/img/offer2.png");
-const OFFER_BANNER_ARTS = [OFFER_BANNER_ART, OFFER_BANNER_ART_2] as const;
+const RIDE_OFFER_BANNER_ART_1 = require("../../public/img/offer1.png");
+const RIDE_OFFER_BANNER_ART_2 = require("../../public/img/offer2.png");
+const FOOD_OFFER_BANNER_ARTS = [OFFER_BANNER_ART, OFFER_BANNER_ART_2] as const;
+const RIDE_OFFER_BANNER_ARTS = [RIDE_OFFER_BANNER_ART_1, RIDE_OFFER_BANNER_ART_2] as const;
 
-function offerBannerArt(index: number) {
-  return OFFER_BANNER_ARTS[index % OFFER_BANNER_ARTS.length];
+function offerBannerArt(index: number, mode: "home" | "food" | "ride" = "home") {
+  const arts = mode === "ride" ? RIDE_OFFER_BANNER_ARTS : FOOD_OFFER_BANNER_ARTS;
+  return arts[index % arts.length];
 }
 const PROMO_AUTO_MS = 5500;
 const LIMITED_TIME_MAX_DAYS = 5;
@@ -93,10 +98,14 @@ const DEFAULT_FALLBACK_SLIDES: Slide[] = [
 
 function pickOffersForCarousel(
   offers: HomeBannerOffer[],
-  mode: "home" | "food"
+  mode: "home" | "food" | "ride"
 ): HomeBannerOffer[] {
   const merchant = offers.filter((o) => o.kind === "merchant");
   const platform = offers.filter((o) => o.kind === "platform");
+
+  if (mode === "ride") {
+    return platform.slice(0, 10);
+  }
 
   if (mode === "food") {
     return merchant;
@@ -112,12 +121,13 @@ function pickOffersForCarousel(
 function slideBackgroundSource(
   slide: Slide,
   index: number,
-  imageFailed: boolean
+  imageFailed: boolean,
+  mode: "home" | "food" | "ride"
 ): ImageSourcePropType {
   const useMerchantUpload =
     slide.kind === "merchant" && !!slide.imageUrl && !imageFailed;
   if (useMerchantUpload) return { uri: slide.imageUrl! };
-  return offerBannerArt(index);
+  return offerBannerArt(index, mode);
 }
 
 function hasCustomMerchantBanner(slide: Slide, imageFailed: boolean): boolean {
@@ -148,7 +158,14 @@ function parseTitle(title: string, offer: HomeBannerOffer): string {
   return raw;
 }
 
-function buildSubline(offer: HomeBannerOffer): string {
+function buildSubline(offer: HomeBannerOffer, mode: "home" | "food" | "ride"): string {
+  if (mode === "ride") {
+    return formatRideOfferSubline(offer.sub, {
+      minFare: offer.min_order_amount,
+      maxDiscount: offer.max_discount_amount,
+    });
+  }
+
   const trimmed = offer.sub?.trim();
   if (!trimmed) {
     if (offer.min_order_amount != null && offer.min_order_amount > 0) {
@@ -160,7 +177,7 @@ function buildSubline(offer: HomeBannerOffer): string {
   return primary || trimmed;
 }
 
-function offerToSlide(offer: HomeBannerOffer): Slide {
+function offerToSlide(offer: HomeBannerOffer, mode: "home" | "food" | "ride"): Slide {
   const rawImage =
     offer.kind === "merchant" ? offer.offer_image_url?.trim() || null : null;
   const imageUrl = rawImage ? toAbsoluteImageUrl(rawImage) ?? rawImage : null;
@@ -169,8 +186,8 @@ function offerToSlide(offer: HomeBannerOffer): Slide {
     kind: offer.kind,
     showLimitedBadge: shouldShowLimitedTimeBadge(offer.valid_till),
     title: parseTitle(offer.title, offer),
-    sub: buildSubline(offer),
-    cta: "Explore now",
+    sub: buildSubline(offer, mode),
+    cta: mode === "ride" ? "Book now" : "Explore now",
     storeId: offer.store_id?.trim() ?? "",
     imageUrl,
   };
@@ -180,10 +197,11 @@ type PromoSlideCardProps = {
   slide: Slide;
   index: number;
   cardHeight: number;
+  mode: "home" | "food" | "ride";
   onPress: (slide: Slide) => void;
 };
 
-function PromoSlideCard({ slide, index, cardHeight, onPress }: PromoSlideCardProps) {
+function PromoSlideCard({ slide, index, cardHeight, mode, onPress }: PromoSlideCardProps) {
   const [imageFailed, setImageFailed] = useState(false);
   const customBanner = hasCustomMerchantBanner(slide, imageFailed);
   const showParty = slide.sub.toLowerCase().includes("first order");
@@ -195,7 +213,7 @@ function PromoSlideCard({ slide, index, cardHeight, onPress }: PromoSlideCardPro
       onPress={() => onPress(slide)}
     >
       <ImageBackground
-        source={slideBackgroundSource(slide, index, imageFailed)}
+        source={slideBackgroundSource(slide, index, imageFailed, mode)}
         style={[styles.promoCard, { height: cardHeight }]}
         imageStyle={styles.promoBgImage}
         resizeMode="cover"
@@ -250,8 +268,8 @@ function PromoSlideCard({ slide, index, cardHeight, onPress }: PromoSlideCardPro
 type Props = {
   offers?: HomeBannerOffer[];
   cardHeight?: number;
-  /** Home: platform + store offers. Food listing: store offers only. */
-  mode?: "home" | "food";
+  /** Home: platform + store offers. Food listing: store offers only. Ride: platform ride offers. */
+  mode?: "home" | "food" | "ride";
   /** When no live offers, show default GatiMitra art banners (food page). */
   showDefaultWhenEmpty?: boolean;
 };
@@ -268,7 +286,7 @@ export function HomePromoCarousel({
 
   const slides: Slide[] = useMemo(() => {
     const picked = pickOffersForCarousel(offers, mode);
-    if (picked.length > 0) return picked.map(offerToSlide);
+    if (picked.length > 0) return picked.map((offer) => offerToSlide(offer, mode));
     if (showDefaultWhenEmpty) return DEFAULT_FALLBACK_SLIDES;
     return [];
   }, [offers, mode, showDefaultWhenEmpty]);
@@ -304,13 +322,17 @@ export function HomePromoCarousel({
 
   const handlePress = useCallback(
     (slide: Slide) => {
+      if (mode === "ride") {
+        router.push("/home/service/ride" as never);
+        return;
+      }
       if (slide.storeId) {
         router.push({ pathname: "/home/merchant/[id]", params: { id: slide.storeId } });
         return;
       }
       router.push("/home" as never);
     },
-    [router]
+    [router, mode]
   );
 
   if (slides.length === 0) return null;
@@ -337,6 +359,7 @@ export function HomePromoCarousel({
             slide={slide}
             index={index}
             cardHeight={cardHeight}
+            mode={mode}
             onPress={handlePress}
           />
         ))}

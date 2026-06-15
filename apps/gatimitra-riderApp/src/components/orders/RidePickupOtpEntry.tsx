@@ -11,196 +11,256 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
+import { OtpNumericKeypad } from "@/src/components/orders/OtpNumericKeypad";
 import { colors } from "@/src/theme";
 
 type Props = {
   loading?: boolean;
+  error?: string | null;
   resetKey?: number;
   mode?: "food" | "ride" | "delivery";
   autoSubmit?: boolean;
+  /** System keyboard vs in-sheet numeric keypad. */
+  inputMode?: "system" | "keypad";
+  /** Bottom-sheet layout with keypad docked below OTP boxes. */
+  layout?: "default" | "ride-sheet";
+  /** Sheet header already shows title/hint — omit duplicate copy. */
+  hideSectionCopy?: boolean;
   onSubmit: (otp: string) => void;
+  onErrorClear?: () => void;
 };
 
 const DIGIT_SLOTS = [0, 1, 2, 3] as const;
-const AUTO_VERIFY_DELAY_MS = 0;
 
 export function RidePickupOtpEntry({
   loading = false,
+  error = null,
   resetKey = 0,
   mode = "ride",
   autoSubmit = true,
+  inputMode = "system",
+  layout = "default",
+  hideSectionCopy = false,
   onSubmit,
+  onErrorClear,
 }: Props) {
   const { t } = useTranslation();
   const [otp, setOtp] = useState("");
   const [focused, setFocused] = useState(false);
   const inputRef = useRef<TextInput>(null);
   const submittedRef = useRef(false);
+  const lastSubmittedOtpRef = useRef<string | null>(null);
+  const lastHandledErrorRef = useRef<string | null>(null);
   const rowScale = useRef(new Animated.Value(1)).current;
-  const verifiedOpacity = useRef(new Animated.Value(0)).current;
+  const statusOpacity = useRef(new Animated.Value(0)).current;
 
+  const usesKeypad = inputMode === "keypad";
+  const isRideSheet = layout === "ride-sheet";
   const isFood = mode === "food";
   const isDelivery = mode === "delivery";
   const isComplete = otp.length === 4;
+  const isInvalid = !!error?.trim();
+  const isVerifying = loading && isComplete;
 
-  useEffect(() => {
+  const resetOtpState = useCallback(() => {
     setOtp("");
     submittedRef.current = false;
+    lastSubmittedOtpRef.current = null;
+    lastHandledErrorRef.current = null;
     rowScale.setValue(1);
-    verifiedOpacity.setValue(0);
-    const timer = setTimeout(() => inputRef.current?.focus(), 320);
-    return () => clearTimeout(timer);
-  }, [resetKey, rowScale, verifiedOpacity]);
+    statusOpacity.setValue(0);
+  }, [rowScale, statusOpacity]);
+
+  const tryAutoSubmit = useCallback(
+    (code: string) => {
+      if (!autoSubmit || code.length !== 4 || loading) return;
+      if (code === lastSubmittedOtpRef.current) return;
+      submittedRef.current = true;
+      lastSubmittedOtpRef.current = code;
+      onSubmit(code);
+    },
+    [autoSubmit, loading, onSubmit]
+  );
 
   useEffect(() => {
-    if (!isComplete) {
-      verifiedOpacity.setValue(0);
+    resetOtpState();
+    if (usesKeypad) return;
+    const timer = setTimeout(() => inputRef.current?.focus(), 280);
+    return () => clearTimeout(timer);
+  }, [resetKey, resetOtpState, usesKeypad]);
+
+  useEffect(() => {
+    const err = error?.trim() || null;
+    if (!err) {
+      lastHandledErrorRef.current = null;
       return;
     }
+    if (lastHandledErrorRef.current === err) return;
+    lastHandledErrorRef.current = err;
+    setOtp("");
+    submittedRef.current = false;
+    lastSubmittedOtpRef.current = null;
+    if (usesKeypad) return;
+    const focusTimer = setTimeout(() => inputRef.current?.focus(), 80);
+    return () => clearTimeout(focusTimer);
+  }, [error, usesKeypad]);
 
-    Animated.parallel([
-      Animated.sequence([
-        Animated.spring(rowScale, {
-          toValue: 1.04,
-          friction: 6,
-          tension: 120,
-          useNativeDriver: true,
-        }),
-        Animated.spring(rowScale, {
-          toValue: 1,
-          friction: 7,
-          tension: 90,
-          useNativeDriver: true,
-        }),
-      ]),
-      Animated.timing(verifiedOpacity, {
+  useEffect(() => {
+    if (!isInvalid) return;
+    rowScale.setValue(1);
+    Animated.sequence([
+      Animated.timing(rowScale, {
+        toValue: 1.03,
+        duration: 70,
+        useNativeDriver: true,
+      }),
+      Animated.timing(rowScale, {
+        toValue: 0.98,
+        duration: 70,
+        useNativeDriver: true,
+      }),
+      Animated.spring(rowScale, {
         toValue: 1,
-        duration: 220,
+        friction: 7,
+        tension: 120,
         useNativeDriver: true,
       }),
     ]).start();
-  }, [isComplete, rowScale, verifiedOpacity]);
+  }, [isInvalid, resetKey, rowScale]);
 
   useEffect(() => {
-    if (!autoSubmit || !isComplete || loading || submittedRef.current) return;
-
-    submittedRef.current = true;
-    const timer = setTimeout(() => {
-      onSubmit(otp);
-    }, AUTO_VERIFY_DELAY_MS);
-
-    return () => clearTimeout(timer);
-  }, [autoSubmit, isComplete, loading, otp, onSubmit]);
-
-  const handleChange = useCallback((value: string) => {
-    const digits = value.replace(/\D/g, "").slice(0, 4);
-    if (digits.length < 4) {
-      submittedRef.current = false;
+    if (!isVerifying && !isInvalid) {
+      statusOpacity.setValue(0);
+      return;
     }
-    setOtp(digits);
-    if (!autoSubmit && digits.length === 4) {
-      onSubmit(digits);
-    }
-  }, [autoSubmit, onSubmit]);
+
+    Animated.timing(statusOpacity, {
+      toValue: 1,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [isVerifying, isInvalid, statusOpacity]);
+
+  useEffect(() => {
+    if (!autoSubmit || !isComplete || loading) return;
+    tryAutoSubmit(otp);
+  }, [autoSubmit, isComplete, loading, otp, tryAutoSubmit]);
+
+  const applyOtp = useCallback(
+    (digits: string) => {
+      const next = digits.replace(/\D/g, "").slice(0, 4);
+      if (next !== lastSubmittedOtpRef.current) {
+        submittedRef.current = false;
+      }
+      if (error?.trim()) {
+        onErrorClear?.();
+      }
+      setOtp(next);
+      tryAutoSubmit(next);
+    },
+    [error, onErrorClear, tryAutoSubmit]
+  );
+
+  const handleChange = useCallback(
+    (value: string) => {
+      applyOtp(value);
+    },
+    [applyOtp]
+  );
+
+  const handleDigitPress = useCallback(
+    (digit: string) => {
+      if (loading || otp.length >= 4) return;
+      applyOtp(`${otp}${digit}`);
+    },
+    [applyOtp, loading, otp]
+  );
+
+  const handleBackspace = useCallback(() => {
+    if (loading || otp.length === 0) return;
+    applyOtp(otp.slice(0, -1));
+  }, [applyOtp, loading, otp]);
 
   const focusInput = useCallback(() => {
-    if (loading || isComplete) return;
+    if (loading || usesKeypad) return;
     inputRef.current?.focus();
-  }, [loading, isComplete]);
+  }, [loading, usesKeypad]);
 
-  const activeIndex = Math.min(otp.length, 3);
+  const activeIndex = usesKeypad
+    ? Math.min(otp.length, 3)
+    : Math.min(otp.length, 3);
+  const showActiveSlot = usesKeypad ? !isVerifying : focused && !isVerifying;
 
-  const verifiedLabel = loading
-    ? t("orders.activeFood.otpVerifying", "Verifying…")
-    : t("orders.activeFood.otpVerified", "Verified");
+  const invalidMessage =
+    error?.trim() ||
+    (isDelivery
+      ? t(
+          "orders.activeFood.deliveryOtpInvalidMessage",
+          "The delivery OTP did not match. Please try again."
+        )
+      : isFood
+        ? t(
+            "orders.activeFood.pickupOtpInvalidMessage",
+            "The pickup OTP did not match. Please try again."
+          )
+        : t("orders.activeRide.otpInvalidMessage", "The pickup OTP did not match. Please try again."));
 
-  return (
-    <View style={styles.wrap}>
-      <Text style={styles.sectionLabel}>
-        {isDelivery
-          ? t("orders.activeFood.deliveryOtpTitle", "Enter delivery OTP")
-          : isFood
-            ? t("orders.activeFood.otpEntryTitle", "Enter pickup OTP")
-            : t("orders.activeRide.otpTitle", "Enter customer pickup OTP")}
-      </Text>
-      <Text style={styles.sectionHint}>
-        {isDelivery
-          ? t(
-              "orders.activeFood.deliveryOtpHint",
-              "Use the Delivery OTP from the customer's app — not the restaurant pickup OTP."
-            )
-          : isFood
-            ? t(
-                "orders.activeFood.otpEntryHint",
-                "Enter the 4-digit code from the merchant to mark this order as picked up."
-              )
-            : t(
-                "orders.activeRide.otpSubtitle",
-                "Ask the customer for their 4-digit code to start the ride."
-              )}
-      </Text>
-
-      <View style={styles.digitTapArea}>
-        <Animated.View
-          style={[styles.digitRow, { transform: [{ scale: rowScale }] }]}
-          pointerEvents="none"
-        >
-          {DIGIT_SLOTS.map((slot) => {
-            const char = otp[slot] ?? "";
-            const isActive = focused && activeIndex === slot && !char && !isComplete;
-            const isFilled = !!char;
-            return (
-              <View
-                key={slot}
-                style={[
-                  styles.digitBox,
-                  isFilled && !isComplete && styles.digitBoxFilled,
-                  isActive && styles.digitBoxActive,
-                  isComplete && styles.digitBoxVerified,
-                ]}
-              >
-                {char ? (
-                  <Text
-                    style={[
-                      styles.digitTextFilled,
-                      isComplete && styles.digitTextVerified,
-                    ]}
-                  >
-                    {char}
-                  </Text>
-                ) : isActive ? (
-                  <View style={styles.cursor} />
-                ) : null}
-                {isComplete ? (
-                  <View style={styles.slotCheck}>
-                    <Ionicons
-                      name="checkmark"
-                      size={11}
-                      color={colors.success[700]}
-                    />
-                  </View>
-                ) : null}
-              </View>
-            );
-          })}
-        </Animated.View>
-
-        <Animated.View
-          style={[styles.verifiedBanner, { opacity: verifiedOpacity }]}
-          pointerEvents="none"
-        >
-          {isComplete ? (
-            <View style={styles.verifiedRow}>
-              {loading ? (
-                <ActivityIndicator size="small" color={colors.success[700]} />
-              ) : (
-                <Ionicons name="checkmark-circle" size={20} color={colors.success[600]} />
-              )}
-              <Text style={styles.verifiedText}>{verifiedLabel}</Text>
+  const digitBoxes = (
+    <View style={[styles.digitTapArea, isRideSheet && styles.digitTapAreaSheet]}>
+      <Animated.View
+        style={[styles.digitRow, { transform: [{ scale: rowScale }] }]}
+        pointerEvents="none"
+      >
+        {DIGIT_SLOTS.map((slot) => {
+          const char = otp[slot] ?? "";
+          const isActive = showActiveSlot && activeIndex === slot && !char && !isVerifying;
+          const isFilled = !!char;
+          return (
+            <View
+              key={slot}
+              style={[
+                styles.digitBox,
+                isRideSheet && styles.digitBoxSheet,
+                isInvalid && styles.digitBoxInvalid,
+                !isInvalid && isVerifying && styles.digitBoxVerifying,
+                !isInvalid && !isVerifying && isFilled && styles.digitBoxFilled,
+                !isInvalid && !isVerifying && isActive && styles.digitBoxActive,
+              ]}
+            >
+              {char ? (
+                <Text style={[styles.digitTextFilled, isInvalid && styles.digitTextInvalid]}>
+                  {char}
+                </Text>
+              ) : isActive ? (
+                <View style={styles.cursor} />
+              ) : isInvalid ? (
+                <Ionicons name="close" size={14} color={colors.error[400]} />
+              ) : null}
             </View>
-          ) : null}
-        </Animated.View>
+          );
+        })}
+      </Animated.View>
 
+      <Animated.View
+        style={[styles.statusBanner, { opacity: statusOpacity }]}
+        pointerEvents="none"
+      >
+        {isInvalid ? (
+          <View style={styles.invalidRow}>
+            <Ionicons name="alert-circle" size={18} color={colors.error[600]} />
+            <Text style={styles.invalidText}>{invalidMessage}</Text>
+          </View>
+        ) : isVerifying ? (
+          <View style={styles.verifyingRow}>
+            <ActivityIndicator size="small" color={colors.primary[700]} />
+            <Text style={styles.verifyingText}>
+              {t("orders.activeFood.otpVerifying", "Verifying…")}
+            </Text>
+          </View>
+        ) : null}
+      </Animated.View>
+
+      {usesKeypad ? null : (
         <TextInput
           ref={inputRef}
           value={otp}
@@ -210,17 +270,96 @@ export function RidePickupOtpEntry({
           onPressIn={focusInput}
           keyboardType="number-pad"
           maxLength={4}
-          editable={!loading && !isComplete}
+          editable={!loading}
           showSoftInputOnFocus
           blurOnSubmit={false}
           style={styles.overlayInput}
-          pointerEvents={loading || isComplete ? "none" : "auto"}
+          pointerEvents={loading ? "none" : "auto"}
           autoComplete="one-time-code"
           textContentType="oneTimeCode"
           caretHidden
           importantForAutofill="yes"
         />
+      )}
+    </View>
+  );
+
+  const footerHints = (
+    <>
+      {autoSubmit && isVerifying ? (
+        <View style={styles.autoVerifyHint}>
+          <ActivityIndicator size="small" color={colors.primary[700]} />
+          <Text style={styles.autoVerifyHintText}>
+            {isDelivery
+              ? t("orders.activeFood.autoVerifyingDeliveryOtp", "Confirming delivery…")
+              : isFood
+                ? t("orders.activeFood.autoVerifyingPickupOtp", "Confirming pickup…")
+                : t("orders.activeRide.autoVerifyingOtp", "Verifying pickup OTP…")}
+          </Text>
+        </View>
+      ) : null}
+
+      {autoSubmit && isInvalid ? (
+        <Text style={styles.reenterHint}>
+          {t("orders.activeRide.otpReenterHint", "Re-enter the correct 4-digit OTP.")}
+        </Text>
+      ) : null}
+    </>
+  );
+
+  const keypadBlock =
+    usesKeypad ? (
+      <OtpNumericKeypad
+        onDigit={handleDigitPress}
+        onBackspace={handleBackspace}
+        disabled={loading}
+      />
+    ) : null;
+
+  if (isRideSheet) {
+    return (
+      <View style={styles.sheetRoot}>
+        <View style={styles.sheetDigits}>
+          {digitBoxes}
+          {footerHints}
+        </View>
+        {keypadBlock}
       </View>
+    );
+  }
+
+  return (
+    <View style={[styles.wrap, usesKeypad && styles.wrapKeypad]}>
+      {hideSectionCopy ? null : (
+        <>
+          <Text style={styles.sectionLabel}>
+            {isDelivery
+              ? t("orders.activeFood.deliveryOtpTitle", "Enter delivery OTP")
+              : isFood
+                ? t("orders.activeFood.otpEntryTitle", "Enter pickup OTP")
+                : t("orders.activeRide.otpTitle", "Enter customer pickup OTP")}
+          </Text>
+          <Text style={styles.sectionHint}>
+            {isDelivery
+              ? t(
+                  "orders.activeFood.deliveryOtpHint",
+                  "Use the Delivery OTP from the customer's app — not the restaurant pickup OTP."
+                )
+              : isFood
+                ? t(
+                    "orders.activeFood.otpEntryHint",
+                    "Enter the 4-digit code from the merchant to mark this order as picked up."
+                  )
+                : t(
+                    "orders.activeRide.otpSubtitle",
+                    "Ask the customer for their 4-digit code to start the ride."
+                  )}
+          </Text>
+        </>
+      )}
+
+      {digitBoxes}
+      {keypadBlock}
 
       {!autoSubmit ? (
         <Pressable
@@ -260,40 +399,7 @@ export function RidePickupOtpEntry({
         </Pressable>
       ) : null}
 
-      {autoSubmit && isComplete ? (
-        <View style={styles.autoVerifyHint}>
-          {loading ? (
-            <ActivityIndicator size="small" color={colors.success[700]} />
-          ) : (
-            <Ionicons name="shield-checkmark" size={16} color={colors.success[700]} />
-          )}
-          <Text style={styles.autoVerifyHintText}>
-            {loading
-              ? isDelivery
-                ? t("orders.activeFood.autoVerifyingDeliveryOtp", "Confirming delivery…")
-                : isFood
-                  ? t(
-                      "orders.activeFood.autoVerifyingPickupOtp",
-                      "Confirming pickup…"
-                    )
-                  : t("orders.activeRide.autoVerifyingOtp", "Starting ride…")
-              : isDelivery
-                ? t(
-                    "orders.activeFood.autoVerifyDeliveryOtp",
-                    "OTP verified — completing delivery…"
-                  )
-                : isFood
-                  ? t(
-                      "orders.activeFood.autoVerifyPickupOtp",
-                      "OTP verified — starting delivery…"
-                    )
-                  : t(
-                      "orders.activeRide.autoVerifyOtp",
-                      "OTP verified — starting ride…"
-                    )}
-          </Text>
-        </View>
-      ) : null}
+      {footerHints}
     </View>
   );
 }
@@ -302,6 +408,25 @@ const styles = StyleSheet.create({
   wrap: {
     paddingHorizontal: 20,
     paddingBottom: 8,
+  },
+  wrapKeypad: {
+    paddingHorizontal: 12,
+    paddingBottom: 4,
+  },
+  sheetRoot: {
+    width: "100%",
+  },
+  sheetDigits: {
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 12,
+  },
+  digitTapAreaSheet: {
+    marginBottom: 4,
+  },
+  digitBoxSheet: {
+    maxHeight: 58,
   },
   sectionLabel: {
     fontSize: 15,
@@ -354,17 +479,21 @@ const styles = StyleSheet.create({
     borderColor: colors.primary[500],
     backgroundColor: "#ffffff",
   },
-  digitBoxVerified: {
-    borderColor: colors.success[500],
-    backgroundColor: colors.success[50],
+  digitBoxVerifying: {
+    borderColor: colors.primary[500],
+    backgroundColor: colors.primary[50],
+  },
+  digitBoxInvalid: {
+    borderColor: colors.error[500],
+    backgroundColor: colors.error[50],
     ...Platform.select({
       ios: {
-        shadowColor: colors.success[600],
+        shadowColor: colors.error[500],
         shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 0.35,
-        shadowRadius: 8,
+        shadowOpacity: 0.2,
+        shadowRadius: 6,
       },
-      android: { elevation: 3 },
+      android: { elevation: 2 },
     }),
   },
   digitTextFilled: {
@@ -373,19 +502,8 @@ const styles = StyleSheet.create({
     color: colors.gray[900],
     includeFontPadding: false,
   },
-  digitTextVerified: {
-    color: colors.success[800],
-  },
-  slotCheck: {
-    position: "absolute",
-    top: 5,
-    right: 6,
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: "#ffffff",
-    alignItems: "center",
-    justifyContent: "center",
+  digitTextInvalid: {
+    color: colors.error[700],
   },
   cursor: {
     width: 2,
@@ -393,11 +511,31 @@ const styles = StyleSheet.create({
     borderRadius: 1,
     backgroundColor: colors.primary[500],
   },
-  verifiedBanner: {
+  statusBanner: {
     marginTop: 12,
     minHeight: 28,
   },
-  verifiedRow: {
+  invalidRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: colors.error[50],
+    borderWidth: 1,
+    borderColor: colors.error[200],
+    alignSelf: "stretch",
+  },
+  invalidText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "700",
+    color: colors.error[700],
+    lineHeight: 18,
+  },
+  verifyingRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -405,15 +543,15 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 14,
     borderRadius: 999,
-    backgroundColor: colors.success[50],
+    backgroundColor: colors.primary[50],
     borderWidth: 1,
-    borderColor: colors.success[200],
+    borderColor: colors.primary[200],
     alignSelf: "center",
   },
-  verifiedText: {
+  verifyingText: {
     fontSize: 14,
-    fontWeight: "800",
-    color: colors.success[800],
+    fontWeight: "700",
+    color: colors.primary[800],
   },
   overlayInput: {
     ...StyleSheet.absoluteFillObject,
@@ -471,6 +609,13 @@ const styles = StyleSheet.create({
   autoVerifyHintText: {
     fontSize: 13,
     fontWeight: "600",
-    color: colors.success[800],
+    color: colors.primary[800],
+  },
+  reenterHint: {
+    marginTop: 8,
+    fontSize: 12,
+    fontWeight: "600",
+    color: colors.error[600],
+    textAlign: "center",
   },
 });

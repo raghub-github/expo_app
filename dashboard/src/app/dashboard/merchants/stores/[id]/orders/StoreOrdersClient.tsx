@@ -85,13 +85,14 @@ import {
   MerchantPreparingOrderActions,
   OrderPrepDelayedBanner,
   OrderPreparedLateTopBanner,
+  ExtraPrepTimeAddedBanner,
   computePrepExpired,
 } from '@/components/merchant/MerchantPreparingOrderActions';
 import {
   formatMerchantInstructionsForCard,
   resolveMerchantInstructionsForDisplay,
 } from '@/lib/merchant-order-instructions';
-import { resolvePreparedLateMinutes } from '@/lib/order-prep-time';
+import { resolvePreparedLateMinutes, formatExtraPrepTimeAddedLabel } from '@/lib/order-prep-time';
 import { resolveMerchantCtm } from '@/lib/merchant-order-ctm';
 import { MerchantOrderPipelineCard } from '@/components/merchant/MerchantOrderPipelineCard';
 import { MerchantPrepDelayModal } from '@/components/merchant/MerchantPrepDelayModal';
@@ -640,6 +641,8 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const [downloadOpen, setDownloadOpen] = useState(false);
 
   const hasNotifiedNew = useRef<Set<number>>(new Set());
+  const autoCancelFiredRef = useRef<Set<number>>(new Set());
+  const acceptanceSyncDoneRef = useRef(false);
   const [incomingModalOpen, setIncomingModalOpen] = useState(false);
 
   const { store: storeMeta } = useStore(storeId);
@@ -1056,9 +1059,49 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   }, [fetchOrders, fetchStats]);
 
   useEffect(() => {
+    acceptanceSyncDoneRef.current = false;
+    autoCancelFiredRef.current.clear();
+  }, [storeId]);
+
+  useEffect(() => {
     const ac = new AbortController();
-    fetchOrders(ac.signal);
+    void (async () => {
+      if (storeId && !acceptanceSyncDoneRef.current) {
+        acceptanceSyncDoneRef.current = true;
+        try {
+          const syncRes = await fetch(`/api/merchant/stores/${storeId}/sync-acceptance-timeout`, {
+            method: 'POST',
+            credentials: 'include',
+            cache: 'no-store',
+          });
+          const syncData = (await syncRes.json().catch(() => ({}))) as { cancelled?: number };
+          const cancelled = Number(syncData.cancelled ?? 0);
+          if (syncRes.ok && cancelled > 0) {
+            toast(
+              cancelled === 1
+                ? '1 order was auto-cancelled (acceptance window expired)'
+                : `${cancelled} orders were auto-cancelled (acceptance window expired)`,
+              'info'
+            );
+            try {
+              window.dispatchEvent(new CustomEvent('merchant-pending-orders-refresh'));
+            } catch {
+              /* ignore */
+            }
+          }
+        } catch {
+          /* ignore — per-order timers still enforce deadline */
+        }
+      }
+      await fetchOrders(ac.signal);
+    })();
     return () => ac.abort();
+  }, [fetchOrders, storeId, toast]);
+
+  useEffect(() => {
+    const onRefresh = () => void fetchOrders();
+    window.addEventListener('merchant-food-orders-refresh', onRefresh);
+    return () => window.removeEventListener('merchant-food-orders-refresh', onRefresh);
   }, [fetchOrders]);
 
   useEffect(() => {
@@ -1442,7 +1485,15 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   }, [closeClosureType, closeClosureDate, closeClosureTime, closeReason, closeReasonOther, confirmStoreClose]);
 
   const updateStatus = useCallback(
-    async (order: OrdersFoodRow, newStatus: string, extra?: { rejected_reason?: string }) => {
+    async (
+      order: OrdersFoodRow,
+      newStatus: string,
+      extra?: {
+        rejected_reason?: string;
+        cancel_mode?: 'auto' | 'manual';
+        action_source?: 'website' | 'system' | 'admin';
+      }
+    ) => {
       if (!storeId) {
         toast('Error: Store not loaded', 'error');
         return false;
@@ -1459,10 +1510,12 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
 
       const payload = {
         status: newStatus,
-        action_source: 'website' as const,
+        action_source: extra?.action_source ?? ('website' as const),
         ...(newStatus === 'ACCEPTED' ? { accept_mode: 'manual' as const } : {}),
-        ...(newStatus === 'CANCELLED' ? { cancel_mode: 'manual' as const } : {}),
-        ...extra,
+        ...(newStatus === 'CANCELLED'
+          ? { cancel_mode: extra?.cancel_mode ?? ('manual' as const) }
+          : {}),
+        ...(extra?.rejected_reason ? { rejected_reason: extra.rejected_reason } : {}),
       };
 
       const tryUpdate = async (pathId: number): Promise<{ ok: boolean; data: unknown }> => {
@@ -1534,6 +1587,28 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     [storeId, selectedOrder, closeOrderPanel, toast, fetchOrders, fetchStats]
   );
 
+  useEffect(() => {
+    if (!storeId || !acceptanceSettings) return;
+    const windowMins = Math.max(
+      1,
+      Math.min(180, Number(acceptanceSettings.acceptance_window_minutes ?? 5))
+    );
+    for (const order of orders) {
+      const st = normOrderStatus(order.order_status);
+      if (st !== 'CREATED' && st !== 'NEW') continue;
+      const deadline = new Date(order.created_at).getTime() + windowMins * 60_000;
+      if (nowTick < deadline) continue;
+      if (autoCancelFiredRef.current.has(order.id)) continue;
+      if (actionLoading === order.id) continue;
+      autoCancelFiredRef.current.add(order.id);
+      void updateStatus(order, 'CANCELLED', {
+        rejected_reason: 'Auto Cancelled',
+        cancel_mode: 'auto',
+        action_source: 'system',
+      });
+    }
+  }, [orders, nowTick, storeId, acceptanceSettings, actionLoading, updateStatus]);
+
   const extendPrepDelay = useCallback(
     async (order: OrdersFoodRow, additionalMinutes: number) => {
       if (!storeId) return false;
@@ -1582,7 +1657,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         } else {
           void fetchOrders();
         }
-        toast(`+${additionalMinutes} min added for customer`, 'success');
+        toast(`Extra Time Added: +${additionalMinutes} min`, 'success');
         setPrepDelayOrder(null);
         return true;
       } catch {
@@ -1799,8 +1874,8 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   }, [filteredOrders.length, displayOrders.length, filter]);
 
   const renderLiveOrderSwitcher = () => (
-    <div className="hidden lg:flex w-64 shrink-0 min-h-0 h-full flex-col overflow-hidden pl-4">
-      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain hide-scrollbar">
+    <div className="flex min-h-0 h-full flex-col overflow-hidden bg-gray-50/80 py-3 pl-4 pr-1">
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-contain">
         <div className="space-y-3 pr-1">
           {displayOrders.map((order) => (
             <OrderCard
@@ -1899,7 +1974,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
 
   return (
     <>
-      <div className="flex h-full min-h-0 bg-gray-50 relative flex-col">
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-gray-50">
         {ordersSection === 'live' ? (
         <header id="food-orders-header" className="shrink-0 z-20 bg-white border-b border-gray-200">
           <div className="w-full min-w-0 px-3 sm:px-4 lg:px-6 py-2 sm:py-3">
@@ -2260,8 +2335,8 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
           document.body
         )}
 
-        <div className="flex flex-1 min-h-0 overflow-hidden">
-          <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="flex min-h-0 flex-1 flex-col min-w-0 overflow-hidden">
           {ordersSection === 'history' ? (
             <div className="flex flex-1 min-h-0 flex-col lg:flex-row overflow-hidden">
               <aside className="w-full lg:w-[380px] shrink-0 border-b lg:border-b-0 lg:border-r border-gray-200 bg-white flex flex-col min-h-0 max-h-[45vh] lg:max-h-none">
@@ -2380,12 +2455,12 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
           ) : showFullStoreClosedBlankState ? (
             <StoreClosedOrdersState />
           ) : (
-          <div className="flex flex-col lg:flex-row flex-1 min-h-0 overflow-hidden">
+          <div className="flex min-h-0 flex-1 flex-col lg:flex-row overflow-hidden">
             {/* Desktop (lg+): When panel open, split layout. Card shows placeholder until an order is selected. */}
             {usePipelineListLayout ? (
               <>
-                <div className="hidden lg:flex flex-1 min-h-0 min-w-0 h-full overflow-hidden">
-                  <div className="flex-1 min-w-0 min-h-0 overflow-y-auto overscroll-contain p-3 sm:p-4 border-r border-gray-200 bg-gray-50/80 hide-scrollbar">
+                <div className="hidden lg:grid lg:grid-cols-[minmax(0,1fr)_16rem] min-h-0 min-w-0 h-full w-full flex-1 overflow-hidden">
+                  <div className="min-h-0 min-w-0 h-full overflow-y-auto overflow-x-hidden overscroll-y-contain border-r border-gray-200 bg-gray-50/80 p-3 sm:p-4 hide-scrollbar">
                     {pipelineMainOrder ? (
                       renderPipelineCard(pipelineMainOrder)
                     ) : (
@@ -2437,9 +2512,9 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
               </>
             ) : rightPanelOpen ? (
               <>
-                <div className="hidden lg:flex flex-1 min-h-0 min-w-0 overflow-hidden order-1">
-                <div className="flex flex-1 min-w-0 min-h-0 flex-col overflow-hidden border-r border-gray-200 bg-gray-50/80 p-3">
-                <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar overflow-x-hidden overscroll-contain">
+                <div className="order-1 hidden lg:grid lg:grid-cols-[minmax(0,1fr)_16rem] min-h-0 min-w-0 h-full w-full flex-1 overflow-hidden">
+                <div className="flex min-h-0 min-w-0 h-full flex-col overflow-hidden border-r border-gray-200 bg-gray-50/80 p-3">
+                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain">
                   {selectedOrder && selectedOrderPricing ? (
                     <OrderPanel
                       className="w-full"
@@ -2524,8 +2599,8 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                 </div>
               </div>
                 {/* Right: order cards — scrolls independently from detail panel */}
-                <div className="hidden lg:flex w-64 shrink-0 min-h-0 h-full flex-col overflow-hidden pl-4">
-                  <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain hide-scrollbar">
+                <div className="flex min-h-0 h-full flex-col overflow-hidden bg-gray-50/80 py-3 pl-4 pr-1">
+                  <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain">
                     <div className="space-y-3 pr-1">
                       {displayOrders.map((order) => (
                         <OrderCard
@@ -3025,13 +3100,16 @@ function StatBadge({
   label,
   value,
   accent,
+  title,
 }: {
   label: string;
   value: string;
   accent?: boolean;
+  title?: string;
 }) {
   return (
     <div
+      title={title}
       className={`px-3 py-1.5 rounded-lg text-xs font-medium ${
         accent ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-700'
       }`}
@@ -3703,6 +3781,13 @@ function OrderCard({
   const showPreparedLateBanner = preparedLateMins != null && preparedLateMins > 0;
   const showTopDelayBanner =
     (prepExpired && nowMs != null) || showPreparedLateBanner;
+  const extraTimeLabel =
+    isPrepPipeline
+      ? formatExtraPrepTimeAddedLabel(
+          order.last_prep_delay_minutes_added,
+          order.prep_delay_minutes
+        )
+      : null;
 
   return (
     <div className="min-w-0 touch-manipulation">
@@ -3714,13 +3799,14 @@ function OrderCard({
             <OrderPreparedLateTopBanner lateMinutes={preparedLateMins!} />
           ) : null
         ) : null}
+        {extraTimeLabel ? <ExtraPrepTimeAddedBanner label={extraTimeLabel} /> : null}
         <div
           onClick={onClick}
           role="button"
           tabIndex={0}
           onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
           className={`rounded-lg border-2 p-2.5 sm:p-3 cursor-pointer transition-all overflow-hidden min-w-0 active:scale-[0.99] ${
-            showTopDelayBanner ? 'rounded-t-none border-t-0' : ''
+            showTopDelayBanner || extraTimeLabel ? 'rounded-t-none border-t-0' : ''
           } ${
             selected
               ? 'border-orange-500 bg-orange-50 shadow-md'

@@ -38,6 +38,10 @@ type RideRouteMapPillOverlayProps = {
   dropBias: InwardBias;
   syncToken: number;
   mapFrameTick: number;
+  /** Hide pickup pill/stem when geofence circle is shown (rider at pickup). */
+  hidePickupPill?: boolean;
+  /** When false, hides the edit pencil on pills (e.g. ride searching). */
+  editable?: boolean;
   onEditPickup: () => void;
   onEditDrop: () => void;
 };
@@ -62,11 +66,13 @@ function RouteMarker({
   label,
   layout,
   onEdit,
+  editable = true,
 }: {
   variant: "pickup" | "drop";
   label: string;
   layout: MarkerOverlayLayout;
   onEdit: () => void;
+  editable?: boolean;
 }) {
   const stemTop = layout.pillTop + RIDE_MAP_PILL_HEIGHT;
   const stemHeight = Math.max(RIDE_MAP_STEM_HEIGHT, layout.dotTop - stemTop);
@@ -87,15 +93,17 @@ function RouteMarker({
         <Text style={styles.addressText} numberOfLines={1} ellipsizeMode="tail">
           {label}
         </Text>
-        <TouchableOpacity
-          onPress={onEdit}
-          activeOpacity={0.7}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          accessibilityRole="button"
-          accessibilityLabel={`Edit ${variant} location`}
-        >
-          <Ionicons name="pencil" size={15} color="#6B7280" />
-        </TouchableOpacity>
+        {editable ? (
+          <TouchableOpacity
+            onPress={onEdit}
+            activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel={`Edit ${variant} location`}
+          >
+            <Ionicons name="pencil" size={15} color="#6B7280" />
+          </TouchableOpacity>
+        ) : null}
       </View>
       <View
         style={[
@@ -128,6 +136,8 @@ export function RideRouteMapPillOverlay({
   dropBias,
   syncToken,
   mapFrameTick,
+  hidePickupPill = false,
+  editable = true,
   onEditPickup,
   onEditDrop,
 }: RideRouteMapPillOverlayProps) {
@@ -172,16 +182,23 @@ export function RideRouteMapPillOverlay({
 
   return (
     <View style={styles.host} onLayout={onLayout} pointerEvents="box-none">
-      {pickupLayout ? (
+      {pickupLayout && !hidePickupPill ? (
         <RouteMarker
           variant="pickup"
           label={pickupLabel}
           layout={pickupLayout}
           onEdit={onEditPickup}
+          editable={editable}
         />
       ) : null}
       {dropLayout ? (
-        <RouteMarker variant="drop" label={dropLabel} layout={dropLayout} onEdit={onEditDrop} />
+        <RouteMarker
+          variant="drop"
+          label={dropLabel}
+          layout={dropLayout}
+          onEdit={onEditDrop}
+          editable={editable}
+        />
       ) : null}
     </View>
   );

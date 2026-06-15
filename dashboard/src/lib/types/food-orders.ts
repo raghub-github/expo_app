@@ -40,8 +40,10 @@ export type OrdersFoodRow = {
   customer_paid_total?: number | string | null;
   preparation_time_minutes?: number | null;
   prep_ready_by_at?: string | null;
+  expected_ready_at?: string | null;
   prep_time_source?: 'merchant' | 'store_default' | string | null;
   prep_delay_minutes?: number | null;
+  last_prep_delay_minutes_added?: number | null;
   prepared_late_minutes?: number | null;
   estimated_delivery_time?: string | null;
   items?: Array<{
@@ -78,6 +80,10 @@ export type OrdersFoodRow = {
   cancelled_by_label?: string | null;
   /** Merchant answer: was rider in uniform? (from order_rider_assignments) */
   merchant_rider_in_uniform?: boolean | null;
+  /** Customer answer: packaging good / not_good */
+  customer_packaging_feedback?: "good" | "not_good" | null;
+  /** Customer answer: was rider in GatiMitra uniform? */
+  customer_rider_in_uniform?: boolean | null;
   rider_id?: number | null;
   rider_name?: string | null;
   rider_phone?: string | null;
@@ -111,6 +117,9 @@ export type OrdersFoodRow = {
   merchant_store_id?: number | null;
   pickup_otp?: string | null;
   rto_otp?: string | null;
+  delivery_type?: string | null;
+  prep_delay_use_count?: number | null;
+  is_bulk_order?: boolean | null;
 };
 
 export interface FoodOrderStats {

@@ -1,9 +1,12 @@
 "use client";
 
+import { useState } from "react";
 import { Car, Clock, MapPin, Phone, User, Users } from "lucide-react";
 import CustomerDetails from "./CustomerDetails";
 import PaymentDetails from "./PaymentDetails";
 import type { PersonRideOrderDetail } from "@/lib/db/operations/person-ride-order-detail";
+import { ConfirmModal } from "@/components/ui/ConfirmModal";
+import { useToast } from "@/context/ToastContext";
 
 type OrderLike = {
   id: number;
@@ -14,8 +17,8 @@ type OrderLike = {
   customerEmail: string | null;
   customerAccountStatus: string | null;
   customerRiskFlag: string | null;
-  customerUserType: string | null;
-  customerTrustTierLabel: string | null;
+  customerUserType?: string | null;
+  customerTrustTierLabel?: string | null;
   pickupAddressRaw?: string | null;
   pickupAddressNormalized?: string | null;
   pickupAddressGeocoded?: string | null;
@@ -29,6 +32,9 @@ type OrderLike = {
   distanceKm?: number | null;
   paymentMethod?: string | null;
   paymentStatus?: string | null;
+  status?: string | null;
+  currentStatus?: string | null;
+  riderId?: number | null;
   fareAmount: number | null;
   grandTotal: number | null;
   tipAmount: number | null;
@@ -81,6 +87,7 @@ export default function PersonRideOrderSections({
   orderRefunds,
   onCopy,
   onPhoneClick,
+  onRefresh,
 }: {
   order: OrderLike;
   rideDetail: PersonRideOrderDetail | null;
@@ -90,7 +97,47 @@ export default function PersonRideOrderSections({
   orderRefunds: unknown[];
   onCopy: (text: string) => void;
   onPhoneClick: (title: string, phone: string) => void;
+  onRefresh?: () => void;
 }) {
+  const [clearingHold, setClearingHold] = useState(false);
+  const [holdCleared, setHoldCleared] = useState(false);
+  const [clearHoldModalOpen, setClearHoldModalOpen] = useState(false);
+  const { toast } = useToast();
+
+  const statusUpper = String(order.currentStatus ?? order.status ?? "")
+    .trim()
+    .toUpperCase();
+  const paymentUpper = String(order.paymentStatus ?? "").trim().toLowerCase();
+  const paymentPending = paymentUpper !== "paid" && paymentUpper !== "completed";
+  const canClearRiderHold =
+    statusUpper === "DELIVERED" &&
+    paymentPending &&
+    order.riderId != null &&
+    order.riderId > 0 &&
+    !holdCleared;
+
+  const handleClearRiderHold = async () => {
+    if (!canClearRiderHold || clearingHold) return;
+    setClearingHold(true);
+    try {
+      const res = await fetch(`/api/orders/${order.id}/clear-rider-payment-hold`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const json = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
+      if (!res.ok || !json.success) {
+        toast(json.error ?? "Could not clear rider payment hold.", "error");
+        return;
+      }
+      setHoldCleared(true);
+      setClearHoldModalOpen(false);
+      toast("Rider payment hold cleared. Rider can accept new offers.", "success");
+      onRefresh?.();
+    } finally {
+      setClearingHold(false);
+    }
+  };
+
   const passengerName =
     rideDetail?.passengerName?.trim() ||
     order.customerName?.trim() ||
@@ -203,10 +250,29 @@ export default function PersonRideOrderSections({
             tipAmount: order.tipAmount,
           }}
           displayId={displayId}
-          orderRefunds={orderRefunds}
+          orderRefunds={orderRefunds as Parameters<typeof PaymentDetails>[0]["orderRefunds"]}
           paymentDetail={paymentDetail as Parameters<typeof PaymentDetails>[0]["paymentDetail"]}
           orderItemsPricing={null}
         />
+        {canClearRiderHold ? (
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3">
+            <p className="text-[11px] font-medium text-amber-900 leading-relaxed">
+              Customer fare is still unpaid. The assigned rider may be stuck on the payment-wait screen.
+            </p>
+            <button
+              type="button"
+              onClick={() => setClearHoldModalOpen(true)}
+              disabled={clearingHold}
+              className="mt-2 inline-flex items-center rounded-md bg-amber-600 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-amber-700 disabled:opacity-60"
+            >
+              {clearingHold ? "Clearing…" : "Clear rider payment hold"}
+            </button>
+          </div>
+        ) : holdCleared ? (
+          <p className="mt-2 text-[11px] font-medium text-emerald-700">
+            Rider payment hold cleared — rider can receive new offers.
+          </p>
+        ) : null}
       </div>
 
       {/* Booker / customer account */}
@@ -263,6 +329,24 @@ export default function PersonRideOrderSections({
           iconColor="text-red-500"
         />
       </div>
+
+      <ConfirmModal
+        open={clearHoldModalOpen}
+        title="Clear rider payment hold?"
+        description={
+          <>
+            Release this rider from the payment-wait hold? The rider will receive earnings and can
+            accept new offers. The customer will still need to pay before booking another ride.
+          </>
+        }
+        confirmLabel="Clear hold"
+        cancelLabel="Cancel"
+        confirmBusy={clearingHold}
+        onClose={() => {
+          if (!clearingHold) setClearHoldModalOpen(false);
+        }}
+        onConfirm={handleClearRiderHold}
+      />
     </div>
   );
 }

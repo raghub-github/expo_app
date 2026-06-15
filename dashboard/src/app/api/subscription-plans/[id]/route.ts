@@ -50,7 +50,17 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       await sql`UPDATE subscription_plans SET cta_label = ${String(body.ctaLabel).trim()}, updated_at = NOW() WHERE id = ${planId}`;
     }
     if (body.isActive !== undefined) {
-      await sql`UPDATE subscription_plans SET is_active = ${Boolean(body.isActive)}, updated_at = NOW() WHERE id = ${planId}`;
+      const activating = Boolean(body.isActive);
+      await sql`UPDATE subscription_plans SET is_active = ${activating}, updated_at = NOW() WHERE id = ${planId}`;
+      if (activating) {
+        await sql`
+          UPDATE subscription_plans
+          SET is_active = false, updated_at = NOW()
+          WHERE id != ${planId}
+            AND plan_audience = 'RIDER'
+            AND is_active = true
+        `;
+      }
     }
     if (body.displayOrder !== undefined) {
       await sql`UPDATE subscription_plans SET display_order = ${Number(body.displayOrder) || 0}, updated_at = NOW() WHERE id = ${planId}`;

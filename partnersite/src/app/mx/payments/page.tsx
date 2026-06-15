@@ -5,8 +5,8 @@ import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
-import { fetchRestaurantById, fetchRestaurantByName } from '@/lib/database'
 import { Restaurant } from '@/lib/types'
+import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord'
 import { DEMO_RESTAURANT_ID } from '@/lib/constants'
 import {
   useMerchantWallet,
@@ -150,8 +150,9 @@ function pctChangeLabel(current: number, prior: number): { text: string; positiv
 function PaymentsContent() {
   const searchParams = useSearchParams()
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
   const [storeId, setStoreId] = useState<string | null>(null)
+  const { data: storeRecord, isLoading: storeQueryLoading } = usePartnerStoreRecord(storeId)
+  const isLoading = storeQueryLoading && !storeRecord
   const [showWithdrawal, setShowWithdrawal] = useState(false)
   const [withdrawalAmount, setWithdrawalAmount] = useState('')
   const [isWithdrawing, setIsWithdrawing] = useState(false)
@@ -230,25 +231,8 @@ function PaymentsContent() {
   }, [searchParams])
 
   useEffect(() => {
-    if (!storeId) return
-    let cancelled = false
-    const load = async () => {
-      setIsLoading(true)
-      try {
-        let data = await fetchRestaurantById(storeId)
-        if (!data && !storeId.match(/^GMM\d{4}$/)) {
-          data = await fetchRestaurantByName(storeId)
-        }
-        if (data) setRestaurant(data as unknown as Restaurant)
-      } catch (e) {
-        console.error('Error loading payments:', e)
-      } finally {
-        if (!cancelled) setIsLoading(false)
-      }
-    }
-    load()
-    return () => { cancelled = true }
-  }, [storeId])
+    if (storeRecord) setRestaurant(storeRecord as unknown as Restaurant)
+  }, [storeRecord])
 
   useEffect(() => {
     if (bankAccounts.length === 0) return

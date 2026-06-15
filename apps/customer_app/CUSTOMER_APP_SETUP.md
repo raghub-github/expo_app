@@ -40,7 +40,7 @@ Customer app does **not** use Supabase Auth or the partnersite Send SMS hook. It
 
 ---
 
-## Auth & login/signup (Swiggy/Zomato-style)
+## Auth & login/signup (GatiMitra-style)
 
 - **Customer app is mobile-only:** there is no email login. Only **mobile number + OTP**.
 - **Unified flow:** There is no separate “signup” vs “login”. The user always enters mobile → OTP. The backend decides:

@@ -129,7 +129,7 @@ export async function GET(req: NextRequest) {
     const placedToday = list.filter((o) => istDateString((o as { created_at: string }).created_at) === ymd);
 
     const deliveredToday = list.filter((o) => {
-      const row = o as { delivered_at?: string | null; order_status?: string | null; order_id: number };
+      const row = o as { delivered_at?: string | null; order_status?: string | null; order_id: number; created_at?: string | null };
       const ui = effectiveUiForFood(row);
       if (ui !== 'DELIVERED') return false;
       const deliveredDay = istDateString(row.delivered_at ?? row.created_at);

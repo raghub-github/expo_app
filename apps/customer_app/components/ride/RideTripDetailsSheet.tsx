@@ -13,23 +13,54 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { OrderDetail } from "@/services/order.service";
+import { formatRideFare } from "@/lib/ride-order-display";
 
 type RideTripDetailsSheetProps = {
   visible: boolean;
   order: OrderDetail;
+  rideFare?: number | null;
+  waitingCharge?: number | null;
+  totalFare?: number | null;
+  hasPickupWait?: boolean;
   onClose: () => void;
+  onCancelRide?: () => void;
+  showCancelRide?: boolean;
 };
 
-export function RideTripDetailsSheet({ visible, order, onClose }: RideTripDetailsSheetProps) {
+export function RideTripDetailsSheet({
+  visible,
+  order,
+  rideFare,
+  waitingCharge,
+  totalFare,
+  hasPickupWait = false,
+  onClose,
+  onCancelRide,
+  showCancelRide = false,
+}: RideTripDetailsSheetProps) {
   const insets = useSafeAreaInsets();
   const pickup = order.merchantAddress?.trim() || "—";
   const drop = order.deliveryAddress?.trim() || "—";
   const vehicleLabel = order.rideType?.trim() || order.rider?.vehicleModel?.trim() || "Ride";
-  const fare =
-    order.totalAmount != null && Number.isFinite(order.totalAmount)
-      ? `₹${Math.round(order.totalAmount)}`
-      : "—";
   const payment = (order.paymentMethod ?? "UPI").replace(/_/g, " ").toUpperCase();
+
+  const resolvedRideFare =
+    rideFare != null && Number.isFinite(rideFare)
+      ? rideFare
+      : order.totalAmount != null && Number.isFinite(order.totalAmount)
+        ? Number(order.totalAmount)
+        : null;
+  const resolvedWaiting =
+    waitingCharge != null && Number.isFinite(waitingCharge) ? Math.max(0, waitingCharge) : 0;
+  const resolvedTotal =
+    totalFare != null && Number.isFinite(totalFare)
+      ? totalFare
+      : resolvedRideFare != null
+        ? resolvedRideFare + resolvedWaiting
+        : null;
+
+  const showFareBreakdown =
+    hasPickupWait || resolvedWaiting > 0 || (resolvedRideFare != null && resolvedTotal != null);
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -55,10 +86,37 @@ export function RideTripDetailsSheet({ visible, order, onClose }: RideTripDetail
             <Text style={styles.metaLabel}>Vehicle</Text>
             <Text style={styles.metaValue}>{vehicleLabel}</Text>
           </View>
-          <View style={styles.metaRow}>
-            <Text style={styles.metaLabel}>Fare</Text>
-            <Text style={styles.metaValue}>{fare}</Text>
-          </View>
+          {showFareBreakdown ? (
+            <>
+              <View style={styles.metaRow}>
+                <Text style={styles.metaLabel}>Ride fare</Text>
+                <Text style={styles.metaValue}>{formatRideFare(resolvedRideFare)}</Text>
+              </View>
+              <View style={styles.metaRow}>
+                <Text style={styles.metaLabel}>Waiting charges</Text>
+                <Text style={[styles.metaValue, styles.waitingValue]}>
+                  {formatRideFare(resolvedWaiting)}
+                </Text>
+              </View>
+              <View style={styles.metaRow}>
+                <Text style={styles.metaLabel}>Total fare</Text>
+                <Text style={[styles.metaValue, styles.totalFareValue]}>
+                  {formatRideFare(resolvedTotal)}
+                </Text>
+              </View>
+            </>
+          ) : (
+            <View style={styles.metaRow}>
+              <Text style={styles.metaLabel}>Fare</Text>
+              <Text style={styles.metaValue}>
+                {resolvedTotal != null
+                  ? formatRideFare(resolvedTotal)
+                  : resolvedRideFare != null
+                    ? formatRideFare(resolvedRideFare)
+                    : "—"}
+              </Text>
+            </View>
+          )}
           <View style={styles.metaRow}>
             <Text style={styles.metaLabel}>Payment</Text>
             <Text style={styles.metaValue}>{payment}</Text>
@@ -71,6 +129,11 @@ export function RideTripDetailsSheet({ visible, order, onClose }: RideTripDetail
         <TouchableOpacity style={styles.closeBtn} onPress={onClose} activeOpacity={0.9}>
           <Text style={styles.closeBtnText}>Close</Text>
         </TouchableOpacity>
+        {showCancelRide && onCancelRide ? (
+          <TouchableOpacity style={styles.cancelBtn} onPress={onCancelRide} activeOpacity={0.9}>
+            <Text style={styles.cancelBtnText}>Cancel Ride</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
     </Modal>
   );
@@ -132,6 +195,8 @@ const styles = StyleSheet.create({
   },
   metaLabel: { fontSize: 13, color: "#6B7280", fontWeight: "500" },
   metaValue: { fontSize: 13, color: "#111827", fontWeight: "600", maxWidth: "62%", textAlign: "right" },
+  waitingValue: { color: "#854D0E" },
+  totalFareValue: { fontWeight: "800", fontSize: 14 },
   closeBtn: {
     marginTop: 12,
     backgroundColor: "#111827",
@@ -140,4 +205,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   closeBtnText: { color: "#FFFFFF", fontSize: 15, fontWeight: "700" },
+  cancelBtn: {
+    marginTop: 10,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: "center",
+    borderWidth: 1.5,
+    borderColor: "#991B1B",
+    backgroundColor: "#FFFFFF",
+  },
+  cancelBtnText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#991B1B",
+  },
 });

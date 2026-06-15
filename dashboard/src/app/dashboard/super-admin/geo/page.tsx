@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { GeoTree, type GeoTreeFilters } from "@/components/geo-admin/GeoTree";
 import { SearchBar } from "@/components/geo-admin/SearchBar";
 import { FilterPanel, type ServiceTriState } from "@/components/geo-admin/FilterPanel";
@@ -11,13 +12,21 @@ import { AddLocationForm } from "@/components/geo-admin/AddLocationForm";
 import { EditLocationModal } from "@/components/geo-admin/EditLocationModal";
 import { PlatformOfferMapModal } from "@/components/geo-admin/PlatformOfferMapModal";
 import { DeliverySlabsModal } from "@/components/geo-admin/DeliverySlabsModal";
+import { DeliveryFallbackPanel } from "@/components/geo-admin/DeliveryFallbackPanel";
 import { useGeoStatesQuery, useLazyGeoSearchQuery } from "@/store/api/geoAdminApi";
 import type { GeoChildRow, GeoSearchRow } from "@/lib/geo/geo-shared";
-import { GitBranch, LayoutList, MapPin, Plus } from "lucide-react";
+import { GitBranch, LayoutList, MapPin, Plus, Truck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/geo-admin/Loader";
 
 const GEO_VIEW_STORAGE_KEY = "geo_super_admin_view_tab";
+
+type GeoView = "tree" | "flat" | "fallback";
+
+function parseGeoView(value: string | null): GeoView | null {
+  if (value === "tree" || value === "flat" || value === "fallback") return value;
+  return null;
+}
 
 function searchRowToChild(r: GeoSearchRow): GeoChildRow {
   return {
@@ -47,18 +56,29 @@ function searchRowToChild(r: GeoSearchRow): GeoChildRow {
 }
 
 export default function GeoSuperAdminPage() {
-  const [view, setViewState] = useState<"tree" | "flat">("tree");
+  const searchParams = useSearchParams();
+  const [view, setViewState] = useState<GeoView>("tree");
 
   useEffect(() => {
+    const fromUrl = parseGeoView(searchParams.get("view"));
+    if (fromUrl) {
+      setViewState(fromUrl);
+      try {
+        sessionStorage.setItem(GEO_VIEW_STORAGE_KEY, fromUrl);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
     try {
-      const stored = sessionStorage.getItem(GEO_VIEW_STORAGE_KEY);
-      if (stored === "flat" || stored === "tree") setViewState(stored);
+      const stored = parseGeoView(sessionStorage.getItem(GEO_VIEW_STORAGE_KEY));
+      if (stored) setViewState(stored);
     } catch {
       /* ignore */
     }
-  }, []);
+  }, [searchParams]);
 
-  const setView = useCallback((next: "tree" | "flat") => {
+  const setView = useCallback((next: GeoView) => {
     setViewState(next);
     try {
       sessionStorage.setItem(GEO_VIEW_STORAGE_KEY, next);
@@ -155,7 +175,10 @@ export default function GeoSuperAdminPage() {
           <button
             type="button"
             onClick={() => setAddOpen(true)}
-            className="inline-flex w-full shrink-0 items-center justify-center gap-2 self-start rounded-lg border border-teal-600/20 bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 sm:w-auto sm:self-auto"
+            className={cn(
+              "inline-flex w-full shrink-0 items-center justify-center gap-2 self-start rounded-lg border border-teal-600/20 bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 sm:w-auto sm:self-auto",
+              view === "fallback" && "hidden"
+            )}
           >
             <Plus className="h-4 w-4" aria-hidden />
             Add location
@@ -164,18 +187,20 @@ export default function GeoSuperAdminPage() {
       </div>
 
       <div className="mx-auto flex w-full min-w-0 max-w-6xl flex-col gap-4 px-3 py-4 sm:px-4 sm:py-5">
-        <FilterPanel
-          states={states}
-          stateId={stateId}
-          onStateId={setStateId}
-          food={food}
-          parcel={parcel}
-          ride={ride}
-          onFood={setFood}
-          onParcel={setParcel}
-          onRide={setRide}
-          statesLoading={statesLoading || statesFetching}
-        />
+        {view !== "fallback" ? (
+          <FilterPanel
+            states={states}
+            stateId={stateId}
+            onStateId={setStateId}
+            food={food}
+            parcel={parcel}
+            ride={ride}
+            onFood={setFood}
+            onParcel={setParcel}
+            onRide={setRide}
+            statesLoading={statesLoading || statesFetching}
+          />
+        ) : null}
 
         <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
           <div
@@ -213,6 +238,21 @@ export default function GeoSuperAdminPage() {
               <LayoutList className="h-4 w-4 shrink-0" aria-hidden />
               <span className="truncate">Flat search</span>
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === "fallback"}
+              onClick={() => setView("fallback")}
+              className={cn(
+                "inline-flex min-h-[44px] min-w-0 flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition sm:min-h-0 sm:flex-initial sm:px-3.5",
+                view === "fallback"
+                  ? "bg-slate-900 text-white shadow-sm"
+                  : "text-slate-600 hover:bg-slate-50"
+              )}
+            >
+              <Truck className="h-4 w-4 shrink-0" aria-hidden />
+              <span className="truncate">Fallback Del charge</span>
+            </button>
           </div>
 
           {view === "flat" ? (
@@ -236,7 +276,7 @@ export default function GeoSuperAdminPage() {
             onPlatformOfferMap={setOfferMapRow}
             onDeliverySlabs={setSlabsRow}
           />
-        ) : (
+        ) : view === "flat" ? (
           <div className="flex min-w-0 flex-col gap-4 rounded-xl border border-slate-200/80 bg-white/90 p-4 shadow-md shadow-slate-200/30 sm:rounded-2xl sm:p-5">
             {searchState.isError ? (
               <p className="text-sm font-medium text-red-600">Search failed. Check connection and try again.</p>
@@ -276,6 +316,8 @@ export default function GeoSuperAdminPage() {
               </>
             )}
           </div>
+        ) : (
+          <DeliveryFallbackPanel />
         )}
       </div>
 

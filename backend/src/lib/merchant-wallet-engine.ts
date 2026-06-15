@@ -56,6 +56,16 @@ export async function getOrCreateWallet(storeId: number): Promise<{ id: number }
 
 export async function getWalletSummary(storeId: number): Promise<WalletSummary> {
   const sql = getSql();
+
+  try {
+    const { backfillMissingDeliveredOrderCredits } = await import(
+      "./backfill-merchant-wallet-credits.js"
+    );
+    await backfillMissingDeliveredOrderCredits(sql, storeId);
+  } catch (e) {
+    console.warn("[getWalletSummary] backfill credits:", e);
+  }
+
   const wallet = await getOrCreateWallet(storeId);
   const walletId = wallet.id;
 
@@ -155,7 +165,7 @@ export async function getWalletSummary(storeId: number): Promise<WalletSummary> 
     yesterday_earning: roundMoney(yesterdayEarning),
     pending_withdrawal_total: roundMoney(pendingWithdrawal),
     locked_settlement_total: roundMoney(lockedSettlementTotal),
-    withdrawable_balance: available,
+    withdrawable_balance: roundMoney(available + locked),
     total_balance: roundMoney(available + locked + hold + pending),
     settlement_paused: settlementPaused,
     delivered_today: deliveredToday,

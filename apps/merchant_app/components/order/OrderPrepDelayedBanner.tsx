@@ -36,6 +36,14 @@ function OrderDelayTopBanner({ label }: { label: string }) {
   );
 }
 
+export function ExtraPrepTimeAddedBanner({ label }: { label: string }) {
+  return (
+    <View style={styles.extraWrap}>
+      <Text style={styles.extraText}>{label}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   wrap: {
     backgroundColor: BLOOD_RED,
@@ -51,5 +59,20 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "800",
     letterSpacing: 0.3,
+  },
+  extraWrap: {
+    backgroundColor: "#FFF7ED",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#FDBA74",
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  extraText: {
+    color: "#9A3412",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.2,
   },
 });

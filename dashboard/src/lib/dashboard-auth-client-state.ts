@@ -28,12 +28,14 @@ export function clearDashboardAuthCaches(): void {
 
 /**
  * Call immediately before navigating to /dashboard after a successful login.
- * Clears any prior user's cached bootstrap and forces a fresh bootstrap fetch.
+ * Clears prior bootstrap cache and forces a fresh bootstrap fetch.
+ * Does not clear the server cookie sync flag — login just posted tokens via set-cookie.
  */
 export function markDashboardFreshLogin(): void {
   if (typeof window === "undefined") return;
 
-  clearDashboardAuthCaches();
+  clearBootstrapFromStorage();
+  window.__gatiBootstrapDone = false;
 
   try {
     window.sessionStorage.setItem(DASHBOARD_FORCE_BOOTSTRAP_KEY, "1");

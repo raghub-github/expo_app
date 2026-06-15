@@ -243,7 +243,7 @@ const adminOptions: AdminOption[] = [
     name: "Geo & pincodes",
     href: "/dashboard/super-admin/geo",
     Icon: GeoIcon,
-    description: "Geo hierarchy & pricing rules",
+    description: "Geo hierarchy, delivery slabs & fallback rates",
     color: "text-teal-700",
     bgColor: "bg-teal-50 hover:bg-teal-100",
   },

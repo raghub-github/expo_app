@@ -4,15 +4,22 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { usePathname } from "next/navigation";
+import { hasReachedNavTarget } from "@/lib/navigation/dashboard-nav-transition";
 
 interface CurrentRouteContextValue {
-  currentRoute: string;
-  setCurrentRoute: (route: string) => void;
+  /** True while a sidebar navigation is in flight (global overlay covers workspace). */
+  isNavigating: boolean;
+  /** Target href for sidebar highlight during navigation. */
+  pendingNavHref: string | null;
+  startNavigation: (href: string) => void;
+  clearNavigation: () => void;
 }
 
 const CurrentRouteContext = createContext<CurrentRouteContextValue | null>(null);
@@ -21,39 +28,48 @@ function stripHashQuery(s: string) {
   return s.split("?")[0].split("#")[0];
 }
 
-/** Same rules as dashboard layout `pendingNavHref` / sidebar “arrived at target”. */
-function pathMatchesNavigationTarget(pathname: string, target: string) {
-  const cleanPath = stripHashQuery(pathname);
-  const cleanTarget = stripHashQuery(target);
-  return (
-    cleanPath === cleanTarget ||
-    (cleanTarget !== "/dashboard" && cleanPath.startsWith(cleanTarget + "/"))
-  );
-}
+const NAVIGATION_TIMEOUT_MS = 12_000;
 
 export function CurrentRouteProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const [optimisticTarget, setOptimisticTarget] = useState<string | null>(null);
+  const [pendingNavHref, setPendingNavHref] = useState<string | null>(null);
+  const navGenerationRef = useRef(0);
+
+  const clearNavigation = useCallback(() => {
+    setPendingNavHref(null);
+  }, []);
+
+  const startNavigation = useCallback((href: string) => {
+    navGenerationRef.current += 1;
+    setPendingNavHref(stripHashQuery(href));
+  }, []);
 
   useLayoutEffect(() => {
-    setOptimisticTarget((prev) => {
-      if (prev == null) return null;
-      return pathMatchesNavigationTarget(pathname, prev) ? null : prev;
-    });
-  }, [pathname]);
+    if (pendingNavHref == null) return;
+    if (hasReachedNavTarget(pathname, pendingNavHref)) {
+      setPendingNavHref(null);
+    }
+  }, [pathname, pendingNavHref]);
 
-  const currentRoute = optimisticTarget ?? pathname;
-
-  const setCurrentRoute = useCallback((route: string) => {
-    setOptimisticTarget(route);
-  }, []);
+  useEffect(() => {
+    if (!pendingNavHref) return;
+    const generation = navGenerationRef.current;
+    const timer = window.setTimeout(() => {
+      if (navGenerationRef.current === generation) {
+        setPendingNavHref(null);
+      }
+    }, NAVIGATION_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [pendingNavHref]);
 
   const value = useMemo(
     () => ({
-      currentRoute,
-      setCurrentRoute,
+      isNavigating: pendingNavHref != null,
+      pendingNavHref,
+      startNavigation,
+      clearNavigation,
     }),
-    [currentRoute, setCurrentRoute]
+    [pendingNavHref, startNavigation, clearNavigation]
   );
 
   return <CurrentRouteContext.Provider value={value}>{children}</CurrentRouteContext.Provider>;

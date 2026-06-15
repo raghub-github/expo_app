@@ -5,6 +5,7 @@ import { getDb } from "../../db/client.js";
 import { riders, onboardingPayments, paymentWebhookEvents } from "../../db/schema.js";
 import { eq, desc, and } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
+import { ensureRiderOnboardingStageForPayment } from "../../lib/rider-onboarding-progress.js";
 import {
   createRazorpayOrder,
   verifyRazorpaySignature,
@@ -460,28 +461,33 @@ export async function paymentRoutes(app: FastifyInstance) {
         },
       },
     },
-    async (req) => {
+    async (req, reply) => {
       const { riderId } = req.body as { riderId: string };
       const db = getDb();
       const env = getEnv();
 
       const riderIdInt = parseInt(riderId);
       if (isNaN(riderIdInt)) {
-        throw new Error("Invalid rider ID");
+        return reply.code(400).send({ error: "invalid_rider_id", message: "Invalid rider ID" });
       }
 
       const riderRows = await db.select().from(riders).where(eq(riders.id, riderIdInt)).limit(1);
       if (riderRows.length === 0) {
-        throw new Error("Rider not found");
+        return reply.code(404).send({ error: "rider_not_found", message: "Rider not found" });
       }
 
       const rider = riderRows[0]!;
-      if (rider.onboardingStage === "MOBILE_VERIFIED") {
-        throw new Error("Please complete document submission first");
+
+      const paymentReady = await ensureRiderOnboardingStageForPayment(riderIdInt);
+      if (!paymentReady.ready) {
+        return reply.code(409).send({
+          error: "documents_required",
+          message: paymentReady.message ?? "Please complete document submission first",
+        });
       }
 
       if (rider.onboardingStage === "ACTIVE") {
-        throw new Error("Rider already approved");
+        return reply.code(409).send({ error: "already_active", message: "Rider already approved" });
       }
 
       const existingPayment = await db
@@ -496,7 +502,7 @@ export async function paymentRoutes(app: FastifyInstance) {
         .limit(1);
 
       if (existingPayment.length > 0) {
-        throw new Error("Payment already completed");
+        return reply.code(409).send({ error: "payment_completed", message: "Payment already completed" });
       }
 
       const { getRiderOnboardingCommissionConfig, computeRiderOnboardingCheckoutPaise } =

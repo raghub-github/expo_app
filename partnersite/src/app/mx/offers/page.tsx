@@ -4,9 +4,11 @@ import React, { useState, useEffect, Suspense, useRef, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useSearchParams } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
+import { PageSkeletonGeneric } from '@/components/PageSkeleton'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
 import type { Offer as DbOffer, OfferType, ApplicabilityType } from '@/lib/database'
 import { fetchStoreById, fetchStoreByName, fetchMenuCategories } from '@/lib/database'
+import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord'
 import { Plus, Edit2, Trash2, Zap, X, Calendar, Percent, DollarSign, Tag, Gift, User, Clock, ChevronDown, Copy, Search, Check, Sparkles, Truck, Layers, Package } from 'lucide-react'
 import { toast } from 'sonner'
 import { OfferTrackCard } from './offer-track-card'
@@ -157,6 +159,7 @@ function OffersContent() {
   const searchParams = useSearchParams()
   const [store, setStore] = useState<MerchantStore | null>(null)
   const [storeId, setStoreId] = useState<string | null>(null)
+  const { data: storeRecord } = usePartnerStoreRecord(storeId)
   const [isLoading, setIsLoading] = useState(true)
   const [offers, setOffers] = useState<Offer[]>([])
   const [menuItems, setMenuItems] = useState<MenuItem[]>([])
@@ -270,10 +273,10 @@ function OffersContent() {
     let cancelled = false
 
     const loadData = async () => {
-      setIsLoading(true)
+      if (!storeRecord) setIsLoading(true)
       try {
-        // Load store
-        let storeData = await fetchStoreById(storeId)
+        // Load store (reuse shared cache when available)
+        let storeData = storeRecord ?? (await fetchStoreById(storeId))
         if (!storeData) {
           storeData = await fetchStoreByName(storeId)
         }
@@ -321,7 +324,7 @@ function OffersContent() {
     return () => {
       cancelled = true
     }
-  }, [storeId])
+  }, [storeId, storeRecord])
 
   useEffect(() => {
     let cancelled = false
@@ -1061,13 +1064,10 @@ function OffersContent() {
     setShowApplyToDropdown(false)
   }
 
-  if (isLoading) {
+  if (isLoading && !storeRecord && !store) {
     return (
-      <MXLayoutWhite restaurantName={displayStoreName || store?.store_name || "Loading..."} restaurantId={storeId || ""}>
-        <PartnerPageHeader title="Offers" breadcrumbs={offerHeaderBreadcrumbs} />
-        <div className="flex flex-1 items-center justify-center py-12 min-h-0">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-orange-600 border-t-transparent" />
-        </div>
+      <MXLayoutWhite restaurantName={displayStoreName || "Loading..."} restaurantId={storeId || ""}>
+        <PageSkeletonGeneric />
       </MXLayoutWhite>
     )
   }
@@ -1077,7 +1077,7 @@ function OffersContent() {
       <MXLayoutWhite restaurantName={displayStoreName || store?.store_name || "Offers"} restaurantId={storeId || ""}>
         <PartnerPageHeader title="Offers" breadcrumbs={offerHeaderBreadcrumbs} />
         <div className="flex h-full min-h-0 flex-col bg-white overflow-hidden">
-          <div className="shrink-0 border-b border-gray-200 bg-white px-4 sm:px-5 md:px-6">
+          <div className="shrink-0 border-b border-gray-200 bg-white px-4 pt-4 sm:px-5 sm:pt-5 md:px-6 md:pt-6">
             <div className="mt-1 flex gap-8 text-sm">
               <button
                 type="button"
@@ -1856,12 +1856,9 @@ function OffersContent() {
 export default function OffersPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-14 w-14 border-b-2 border-orange-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600 font-medium">Loading offers...</p>
-        </div>
-      </div>
+      <MXLayoutWhite restaurantName="Loading..." restaurantId="">
+        <PageSkeletonGeneric />
+      </MXLayoutWhite>
     }>
       <OffersContent />
     </Suspense>

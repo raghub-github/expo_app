@@ -2,7 +2,7 @@
  * Gmitra-style confetti + success modal when a coupon is applied on checkout.
  */
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
   View,
   Text,
@@ -120,22 +120,37 @@ export function CouponApplyCelebration({
   const savedLabel =
     savedAmount > 0.005 ? `You saved ₹${Math.round(savedAmount)}` : "Coupon applied!";
 
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
+
+  useEffect(() => {
+    if (!visible) return;
+    const timer = setTimeout(() => onDismissRef.current(), 2500);
+    return () => clearTimeout(timer);
+  }, [visible]);
+
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss} statusBarTranslucent>
       <View style={styles.overlay}>
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={onDismiss}
+          accessibilityRole="button"
+          accessibilityLabel="Dismiss coupon celebration"
+        />
         <CheckoutConfettiOverlay visible={visible} />
-        <Animated.View entering={FadeIn.duration(220)} style={styles.card}>
-          <View style={styles.cardIcon}>
-            <Text style={styles.cardIconPct}>%</Text>
-          </View>
-          <Text style={styles.cardCodeLine} numberOfLines={2}>
-            '{couponCode}' applied
-          </Text>
-          <Text style={styles.cardSaved}>{savedLabel}</Text>
-          <Pressable onPress={onDismiss} style={styles.ctaHit} hitSlop={12}>
+        <Pressable onPress={onDismiss} style={styles.cardPress} accessibilityRole="button">
+          <Animated.View entering={FadeIn.duration(220)} style={styles.card}>
+            <View style={styles.cardIcon}>
+              <Text style={styles.cardIconPct}>%</Text>
+            </View>
+            <Text style={styles.cardCodeLine} numberOfLines={2}>
+              '{couponCode}' applied
+            </Text>
+            <Text style={styles.cardSaved}>{savedLabel}</Text>
             <Text style={styles.ctaText}>Woohoo! Thanks</Text>
-          </Pressable>
-        </Animated.View>
+          </Animated.View>
+        </Pressable>
       </View>
     </Modal>
   );
@@ -149,15 +164,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingHorizontal: 28,
   },
-  card: {
+  cardPress: {
     width: "100%",
     maxWidth: 320,
+    zIndex: 10,
+  },
+  card: {
+    width: "100%",
     backgroundColor: "#fff",
     borderRadius: 16,
     paddingVertical: 28,
     paddingHorizontal: 22,
     alignItems: "center",
-    zIndex: 10,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.15,
@@ -192,10 +210,10 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginBottom: 20,
   },
-  ctaHit: { paddingVertical: 8, paddingHorizontal: 12 },
   ctaText: {
     fontSize: 16,
     fontWeight: "700",
     color: "#E23744",
+    paddingVertical: 8,
   },
 });

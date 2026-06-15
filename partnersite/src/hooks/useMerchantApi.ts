@@ -15,6 +15,10 @@ export interface WalletSummary {
   locked_balance?: number;
   withdrawable_balance?: number;
   pending_balance: number;
+  hold_balance?: number;
+  locked_settlement_total?: number;
+  total_balance?: number;
+  settlement_paused?: boolean;
   today_earning: number;
   yesterday_earning: number;
   total_earned: number;
@@ -166,6 +170,10 @@ async function fetchWallet(storeId: string): Promise<WalletSummary> {
     locked_balance: data.locked_balance ?? 0,
     withdrawable_balance: data.withdrawable_balance ?? data.available_balance ?? 0,
     pending_balance: data.pending_balance ?? 0,
+    hold_balance: data.hold_balance ?? 0,
+    locked_settlement_total: data.locked_settlement_total ?? data.locked_balance ?? 0,
+    total_balance: data.total_balance,
+    settlement_paused: data.settlement_paused === true,
     today_earning: data.today_earning ?? 0,
     yesterday_earning: data.yesterday_earning ?? 0,
     total_earned: data.total_earned ?? 0,
@@ -254,16 +262,30 @@ async function fetchBankAccounts(storeId: string): Promise<BankAccount[]> {
   }));
 }
 
-async function fetchStoreOperations(storeId: string): Promise<StoreOperationsData> {
-  const res = await fetch(`/api/store-operations?store_id=${encodeURIComponent(storeId)}`);
-  const data = await res.json();
+export async function fetchStoreOperations(storeId: string): Promise<StoreOperationsData> {
+  const res = await fetch(`/api/store-operations?store_id=${encodeURIComponent(storeId)}`, {
+    credentials: 'include',
+  });
+  let data: StoreOperationsData & { error?: string };
+  try {
+    data = (await res.json()) as StoreOperationsData & { error?: string };
+  } catch {
+    throw new Error('Network error — could not load store operations');
+  }
   if (!res.ok) throw new Error(data.error ?? 'Failed to fetch store operations');
   return data;
 }
 
 async function fetchStoreSettings(storeId: string): Promise<StoreSettingsData> {
-  const res = await fetch(`/api/merchant/store-settings?storeId=${encodeURIComponent(storeId)}`);
-  const data = await res.json();
+  const res = await fetch(`/api/merchant/store-settings?storeId=${encodeURIComponent(storeId)}`, {
+    credentials: 'include',
+  });
+  let data: StoreSettingsData & { error?: string };
+  try {
+    data = (await res.json()) as StoreSettingsData & { error?: string };
+  } catch {
+    throw new Error('Network error — could not load store settings');
+  }
   if (!res.ok) throw new Error(data.error ?? 'Failed to fetch store settings');
   return data;
 }
@@ -349,14 +371,19 @@ export function useMerchantBankAccounts(storeId: string | null, options?: { enab
 }
 
 /** Store open/closed, slots, last toggled; used by dashboard. */
-export function useStoreOperations(storeId: string | null, options?: { enabled?: boolean }) {
+export function useStoreOperations(
+  storeId: string | null,
+  options?: { enabled?: boolean; refetchInterval?: number | false }
+) {
   const enabled = (options?.enabled ?? true) && !!storeId;
   return useQuery({
     queryKey: merchantKeys.storeOperations(storeId ?? ''),
     queryFn: () => fetchStoreOperations(storeId!),
     enabled,
     staleTime: 15 * 1000,
-    refetchInterval: 30 * 1000,
+    gcTime: 5 * 60 * 1000,
+    placeholderData: keepPreviousData,
+    refetchInterval: options?.refetchInterval ?? 30 * 1000,
   });
 }
 

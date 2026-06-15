@@ -131,7 +131,7 @@ export async function PATCH(
     const { data: existing, error: fetchErr } = await db
       .from("orders_food")
       .select(
-        "id, order_id, order_status, merchant_store_id, food_items_total_value, preparation_time_minutes, prep_ready_by_at, preparing_at"
+        "id, order_id, order_status, merchant_store_id, food_items_total_value, preparation_time_minutes, prep_ready_by_at, preparing_at, accepted_at"
       )
       .eq("id", foodRowId)
       .single();
@@ -262,6 +262,11 @@ export async function PATCH(
 
     try {
       const corePatch: Record<string, unknown> = { current_status: newStatus, updated_at: now };
+      if (newStatus === "CANCELLED") {
+        corePatch.status = "cancelled";
+        corePatch.cancelled_at = now;
+        corePatch.cancelled_by = actionSource === "system" ? "SYSTEM" : "MERCHANT";
+      }
       if (newStatus === "ACCEPTED" && acceptPrepReadyByAt && acceptPrepMinutes != null) {
         corePatch.prep_ready_by_at = acceptPrepReadyByAt;
         corePatch.prep_time_minutes = acceptPrepMinutes;

@@ -22,6 +22,13 @@ type Props = {
   routeCoordinates: LatLng[];
   riderPosition: LatLng | null;
   riderHeading?: number | null;
+  pickupPosition?: LatLng | null;
+  dropPosition?: LatLng | null;
+  /** Google Maps–style blue nav route + tilted follow camera (drop leg). */
+  navigationMode?: boolean;
+  highlightPickupZone?: boolean;
+  highlightDropZone?: boolean;
+  geofenceRadiusM?: number;
   onMapReady?: () => void;
   onRegionChangeComplete?: () => void;
   style?: object;
@@ -34,6 +41,12 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
       routeCoordinates,
       riderPosition,
       riderHeading,
+      pickupPosition,
+      dropPosition = null,
+      navigationMode = false,
+      highlightPickupZone = false,
+      highlightDropZone = false,
+      geofenceRadiusM = 200,
       onMapReady,
       onRegionChangeComplete,
       style,
@@ -66,8 +79,10 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
 
     const html = useMemo(() => {
       if (!token || !bikeDataUri) return "";
-      return buildRideTrackingMapHtml(token, center, bikeDataUri);
-    }, [token, center.latitude, center.longitude, bikeDataUri]);
+      return buildRideTrackingMapHtml(token, center, bikeDataUri, {
+        navigationStyle: navigationMode,
+      });
+    }, [token, center.latitude, center.longitude, bikeDataUri, navigationMode]);
 
     const applyFit = useCallback((coords: LatLng[], options: { edgePadding: MapEdgePadding; maxZoom?: number }) => {
       const json = JSON.stringify(coords);
@@ -93,6 +108,34 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
         `window.updateRider && window.updateRider(${lat}, ${lng}, ${heading}); true;`
       );
     }, [riderPosition, riderHeading]);
+
+    const injectNavigationMode = useCallback(() => {
+      if (!readyRef.current) return;
+      const enabled = navigationMode ? "true" : "false";
+      const dLat = dropPosition?.latitude ?? null;
+      const dLng = dropPosition?.longitude ?? null;
+      webRef.current?.injectJavaScript(
+        `window.setNavigationMode && window.setNavigationMode(${enabled}, ${dLat}, ${dLng}); true;`
+      );
+    }, [navigationMode, dropPosition?.latitude, dropPosition?.longitude]);
+
+    const injectPickupZone = useCallback(() => {
+      if (!readyRef.current) return;
+      const lat = pickupPosition?.latitude ?? null;
+      const lng = pickupPosition?.longitude ?? null;
+      webRef.current?.injectJavaScript(
+        `window.updatePickupZoneHighlight && window.updatePickupZoneHighlight(${lat}, ${lng}, ${highlightPickupZone ? "true" : "false"}, ${geofenceRadiusM}); true;`
+      );
+    }, [pickupPosition, highlightPickupZone, geofenceRadiusM]);
+
+    const injectDropZone = useCallback(() => {
+      if (!readyRef.current) return;
+      const lat = dropPosition?.latitude ?? null;
+      const lng = dropPosition?.longitude ?? null;
+      webRef.current?.injectJavaScript(
+        `window.updateDropZoneHighlight && window.updateDropZoneHighlight(${lat}, ${lng}, ${highlightDropZone ? "true" : "false"}, ${geofenceRadiusM}); true;`
+      );
+    }, [dropPosition, highlightDropZone, geofenceRadiusM]);
 
     useImperativeHandle(
       ref,
@@ -120,10 +163,11 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
             pendingFitRef.current = { coords, options };
             return;
           }
+          if (navigationMode) return;
           applyFit(coords, options);
         },
       }),
-      [applyFit]
+      [applyFit, navigationMode]
     );
 
     const onMessage = useCallback(
@@ -149,7 +193,10 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
             readyRef.current = true;
             injectRoute();
             injectRider();
-            if (pendingFitRef.current) {
+            injectNavigationMode();
+            injectPickupZone();
+            injectDropZone();
+            if (pendingFitRef.current && !navigationMode) {
               applyFit(pendingFitRef.current.coords, pendingFitRef.current.options);
               pendingFitRef.current = null;
             }
@@ -161,13 +208,16 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
           /* ignore */
         }
       },
-      [applyFit, injectRoute, injectRider, onMapReady, onRegionChangeComplete]
+      [applyFit, injectRoute, injectRider, injectNavigationMode, injectPickupZone, injectDropZone, navigationMode, onMapReady, onRegionChangeComplete]
     );
 
     useEffect(() => {
       injectRoute();
       injectRider();
-    }, [injectRoute, injectRider]);
+      injectNavigationMode();
+      injectPickupZone();
+      injectDropZone();
+    }, [injectRoute, injectRider, injectNavigationMode, injectPickupZone, injectDropZone]);
 
     if (!token || !html) {
       return <CustomerMapUnavailable style={style} />;

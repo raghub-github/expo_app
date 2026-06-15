@@ -599,7 +599,7 @@ async function resolveTotalCtm(
       const foodTotal = asNum(
         (foodRows as unknown as Record<string, unknown>[])[0]?.food_items_total_value
       );
-      if (foodTotal > 0) {
+      if (foodTotal != null && foodTotal > 0) {
         const looksLikeCustomerTotal =
           customerGrand != null && foodTotal >= customerGrand - 0.02;
         if (!looksLikeCustomerTotal) return round2(foodTotal);

@@ -151,3 +151,84 @@ export async function resolveRiderOrderDistanceSnapshot(
     return null;
   }
 }
+
+/** Pickup leg (rider → merchant) stored at accept/assign milestone. */
+export async function loadStoredPickupDistanceKm(
+  orderCorePk: number,
+  riderId: number
+): Promise<number | null> {
+  try {
+    const sqlClient = getSql();
+    const rows = (await sqlClient`
+      SELECT merchant_distance_km
+      FROM order_rider_assignment_timeline_events
+      WHERE order_core_id = ${orderCorePk}
+        AND rider_id = ${riderId}
+        AND merchant_distance_km IS NOT NULL
+        AND event_type IN ('accepted', 'assigned')
+      ORDER BY
+        CASE event_type WHEN 'accepted' THEN 0 ELSE 1 END,
+        occurred_at DESC
+      LIMIT 1
+    `) as Array<{ merchant_distance_km: unknown }>;
+    const km = Number(rows[0]?.merchant_distance_km);
+    return Number.isFinite(km) && km > 0 ? km : null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildRiderOrderDistanceBreakdown(
+  order: {
+    distanceKm?: number;
+    pickupDistanceKm?: number;
+    tripDistanceKm?: number;
+    totalDistanceKm?: number;
+  },
+  storedPickupKm?: number | null
+): {
+  pickupDistanceKm?: number;
+  tripDistanceKm?: number;
+  totalDistanceKm?: number;
+  distanceKm?: number;
+} {
+  const tripKm =
+    order.tripDistanceKm != null && order.tripDistanceKm > 0
+      ? order.tripDistanceKm
+      : order.distanceKm != null && order.distanceKm > 0
+        ? order.distanceKm
+        : undefined;
+
+  const pickupKm =
+    order.pickupDistanceKm != null && order.pickupDistanceKm > 0
+      ? order.pickupDistanceKm
+      : storedPickupKm != null && storedPickupKm > 0
+        ? storedPickupKm
+        : undefined;
+
+  const totalKm =
+    pickupKm != null && tripKm != null
+      ? Math.round((pickupKm + tripKm) * 10) / 10
+      : order.totalDistanceKm != null && order.totalDistanceKm > 0
+        ? order.totalDistanceKm
+        : tripKm ?? pickupKm;
+
+  return {
+    pickupDistanceKm: pickupKm,
+    tripDistanceKm: tripKm,
+    totalDistanceKm: totalKm,
+    distanceKm: tripKm ?? order.distanceKm,
+  };
+}
+
+export async function attachRiderOrderDistanceBreakdown<
+  T extends {
+    distanceKm?: number;
+    pickupDistanceKm?: number;
+    tripDistanceKm?: number;
+    totalDistanceKm?: number;
+  },
+>(riderId: number, orderCorePk: number, order: T): Promise<T & ReturnType<typeof buildRiderOrderDistanceBreakdown>> {
+  const storedPickup = await loadStoredPickupDistanceKm(orderCorePk, riderId);
+  return { ...order, ...buildRiderOrderDistanceBreakdown(order, storedPickup) };
+}

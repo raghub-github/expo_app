@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
   StyleSheet,
   ActivityIndicator,
   TouchableOpacity,
+  BackHandler,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -22,7 +23,9 @@ import { useTranslation } from "react-i18next";
 import * as ImagePicker from "expo-image-picker";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useSaveOnboardingStep, useRiderStatus } from "@/src/hooks/useOnboarding";
+import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstablishedRedirect";
 import { onboardingStepToRoute } from "@/src/lib/onboarding-routes";
+import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import {
   uploadToR2,
@@ -267,6 +270,7 @@ export default function PanSelfieScreen() {
   const saveDocument = useSaveDocument();
   const updateStage = useUpdateRiderStage();
   const { data: riderStatus } = useRiderStatus(data.riderId);
+  useOnboardingEstablishedRedirect(riderStatus);
 
   useEffect(() => {
     const next = riderStatus?.nextOnboardingStep;
@@ -513,14 +517,22 @@ export default function PanSelfieScreen() {
     }
   };
 
-  const handleBack = () => {
+  const handleBack = useCallback(() => {
     if (wizardStep === "selfie") {
       setError(null);
       setWizardStep("pan");
       return;
     }
-    router.back();
-  };
+    goBackOrReplace("/(onboarding)/aadhaar");
+  }, [wizardStep]);
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      handleBack();
+      return true;
+    });
+    return () => sub.remove();
+  }, [handleBack]);
 
   const handleContinue = async () => {
     if (!selfieUri) {

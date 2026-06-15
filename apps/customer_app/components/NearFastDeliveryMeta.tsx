@@ -1,5 +1,5 @@
 /**
- * Animated "Near & Fast" + delivery time + distance row (Zomato-style).
+ * Animated "Near & Fast" + delivery time + distance row (GatiMitra-style).
  */
 
 import React, { useEffect } from "react";

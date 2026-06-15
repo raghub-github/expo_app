@@ -185,8 +185,12 @@ function isUsingDevicePickup(
 type RouteBookRestoreParams = {
   restore?: string;
   focusField?: string;
+  bookingMode?: string;
+  returnTo?: string;
   pickup?: string;
   drop?: string;
+  pickupLabel?: string;
+  dropLabel?: string;
   pickupLat?: string;
   pickupLng?: string;
   dropLat?: string;
@@ -303,6 +307,21 @@ export default function RidePickupScreen() {
     }
     return null;
   });
+  const [pickupPlaceLabel, setPickupPlaceLabel] = useState(() => {
+    if (restoringFromBook && routeParams.pickupLabel?.trim()) {
+      return resolvePlaceDisplayName({
+        primary: routeParams.pickupLabel,
+        fullAddress: routeParams.pickup,
+      });
+    }
+    return resolvePlaceDisplayName({
+      primary: address?.primary,
+      fullAddress: address?.fullAddress,
+    });
+  });
+  const [dropPlaceLabel, setDropPlaceLabel] = useState(() =>
+    restoringFromBook && routeParams.dropLabel?.trim() ? routeParams.dropLabel.trim() : ""
+  );
   const [activeStopQuery, setActiveStopQuery] = useState("");
 
   const applyDefaultPickup = useCallback(() => {
@@ -478,6 +497,13 @@ export default function RidePickupScreen() {
       }
 
       const params: Record<string, string> = { pickup, drop: dropLabel };
+      params.pickupLabel = resolvePlaceDisplayName({
+        primary: pickupPlaceLabel.trim() || address?.primary,
+        fullAddress: pickup,
+      });
+      params.dropLabel =
+        dropPlaceLabel.trim() ||
+        resolvePlaceDisplayName({ primary: dropLabel, fullAddress: dropLabel });
       params.pickupLat = String(pickupCoords.latitude);
       params.pickupLng = String(pickupCoords.longitude);
       params.dropLat = String(dropCoord.latitude);
@@ -501,11 +527,24 @@ export default function RidePickupScreen() {
       if (pickupDistanceFromBookerKm != null) {
         params.pickupDistanceFromBookerKm = String(pickupDistanceFromBookerKm);
       }
+
+      const isIntercityReturn =
+        routeParams.bookingMode === "intercity" && routeParams.returnTo === "ride";
+      if (isIntercityReturn) {
+        router.replace({
+          pathname: "/home/service/ride",
+          params: { ...params, tab: "intercity" },
+        });
+        return;
+      }
+
       router.push({ pathname: "/home/service/ride-book", params });
     },
     [
       pickupText,
       pickupCoords,
+      pickupPlaceLabel,
+      dropPlaceLabel,
       stops,
       address,
       selectedRiderId,
@@ -514,6 +553,10 @@ export default function RidePickupScreen() {
       farPickupPromptShown,
       farPickupAcknowledged,
       pickupDistanceFromBookerKm,
+      pickupPlaceLabel,
+      dropPlaceLabel,
+      routeParams.bookingMode,
+      routeParams.returnTo,
       router,
     ]
   );
@@ -529,6 +572,7 @@ export default function RidePickupScreen() {
 
       if (result.field === "pickup") {
         userEditedPickupRef.current = true;
+        setPickupPlaceLabel(result.primary?.trim() || "");
         setPickupText(result.fullAddress);
         setPickupCoords({ latitude: result.latitude, longitude: result.longitude });
         if (isPickupFarFromUser(result.latitude, result.longitude) && coords) {
@@ -549,6 +593,7 @@ export default function RidePickupScreen() {
       }
 
       if (result.field === "drop") {
+        setDropPlaceLabel(result.primary?.trim() || "");
         setDropText(result.fullAddress);
         setDropCoords({ latitude: result.latitude, longitude: result.longitude });
         if (stops.length === 0) {
@@ -722,6 +767,7 @@ export default function RidePickupScreen() {
         fullAddress: resolved.fullAddress,
         kind: "pickup",
       });
+      setPickupPlaceLabel(resolved.primary?.trim() || "");
       setPickupText(resolved.fullAddress);
       setPickupCoords({ latitude: resolved.latitude, longitude: resolved.longitude });
       if (isPickupFarFromUser(resolved.latitude, resolved.longitude)) {
@@ -753,6 +799,7 @@ export default function RidePickupScreen() {
         fullAddress: resolved.fullAddress,
         kind: "drop",
       });
+      setDropPlaceLabel(resolved.primary?.trim() || "");
       setDropText(resolved.fullAddress);
       setDropCoords({ latitude: resolved.latitude, longitude: resolved.longitude });
       if (stops.length === 0) {
@@ -1096,18 +1143,30 @@ export default function RidePickupScreen() {
   const showPickupClear = pickupText.length > 0 && !isUsingDevicePickup(pickupText, address);
 
   const formatDistance = (loc: EnrichedPlaceResult) => {
-    if (loc.distanceKm != null && Number.isFinite(loc.distanceKm)) {
-      const km = loc.distanceKm;
-      if (km < 1) return `${Math.round(km * 1000)} m`;
-      return `${Math.round(km)} km`;
-    }
     const anchor =
       activeField === "pickup" ? resolvePickupSearchAnchor() : resolveDropSearchAnchor();
-    if (!anchor || !loc.latitude || !loc.longitude) return null;
-    const km = haversineKm(anchor.latitude, anchor.longitude, loc.latitude, loc.longitude);
-    if (!Number.isFinite(km)) return null;
-    if (km < 1) return `${Math.round(km * 1000)} m`;
-    return `${Math.round(km)} km`;
+    const distanceSuffix =
+      activeField === "drop"
+        ? pickupCoords
+          ? "from pickup"
+          : hasCoords
+            ? "from current location"
+            : null
+        : hasCoords
+          ? "from current location"
+          : null;
+
+    let km: number | null = null;
+    if (loc.distanceKm != null && Number.isFinite(loc.distanceKm)) {
+      km = loc.distanceKm;
+    } else if (anchor && loc.latitude && loc.longitude) {
+      const straight = haversineKm(anchor.latitude, anchor.longitude, loc.latitude, loc.longitude);
+      km = Number.isFinite(straight) ? straight : null;
+    }
+    if (km == null) return null;
+
+    const distanceText = km < 1 ? `${Math.round(km * 1000)} m` : `${Math.round(km * 10) / 10} km`;
+    return distanceSuffix ? `${distanceText} ${distanceSuffix}` : distanceText;
   };
 
   const renderSuggestionRow = (

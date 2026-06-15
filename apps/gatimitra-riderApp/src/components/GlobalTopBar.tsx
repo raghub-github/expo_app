@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { View, StyleSheet, Platform } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
-import { HeaderActionIconGroup } from "@/src/components/header/HeaderActionIconGroup";
+import { HeaderTrailingActions } from "@/src/components/header/HeaderTrailingActions";
 import { TabHeaderBrand } from "@/src/components/header/TabHeaderBrand";
 import { LanguageSelectionSheet } from "@/src/components/language/LanguageSelectionSheet";
 import { useNotificationInboxStore } from "@/src/stores/notificationInboxStore";
@@ -20,7 +20,7 @@ export function GlobalTopBar() {
       <View style={styles.bar}>
         {tabConfig ? <TabHeaderBrand config={tabConfig} /> : <View style={styles.leadingSpacer} />}
 
-        <HeaderActionIconGroup
+        <HeaderTrailingActions
           onLanguagePress={() => setShowLangSheet(true)}
           onNotificationPress={() => router.push("/notifications")}
           notificationBadgeCount={unreadNotifications}

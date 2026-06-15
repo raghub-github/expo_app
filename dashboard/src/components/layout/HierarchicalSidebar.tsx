@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { prefetchDashboardSection } from "@/lib/dashboard-prefetch";
 import { ChevronLeft, LogOut, X } from "lucide-react";
@@ -25,6 +25,11 @@ import { getUserInitials } from "@/lib/user-avatar";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useCurrentRoute } from "@/context/CurrentRouteContext";
 import { TICKETS_QUEUE_HOME_PATH, isTicketsQueueWorkspacePath } from "@/lib/tickets/ticket-path-utils";
+import {
+  cleanDashboardHref,
+  getDashboardModuleKey,
+  isDashboardNavAlreadyAtTarget,
+} from "@/lib/navigation/dashboard-nav-transition";
 
 interface HierarchicalSidebarProps {
   isOpen: boolean;
@@ -36,7 +41,6 @@ interface HierarchicalSidebarProps {
 
 export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: propIsInSpecificDashboard, onNavigationStart }: HierarchicalSidebarProps) {
   const pathname = usePathname();
-  const router = useRouter();
   const queryClient = useQueryClient();
   const { dashboards, loading: accessLoading, error: accessError } = useDashboardAccess();
   const handleNavPrefetch = useCallback(
@@ -53,8 +57,9 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
   const setMobileMenuOpen = mobileCtx ? mobileCtx.setMobileMenuOpen : setInternalMobileOpen;
   const [hydrated, setHydrated] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
-  /** Optimistic active state: set on mousedown so the clicked item highlights instantly before route/API. */
-  const [pendingNavHref, setPendingNavHref] = useState<string | null>(null);
+  const currentRouteCtx = useCurrentRoute();
+  /** Optimistic active state: shared via CurrentRouteContext during cross-section navigation. */
+  const pendingNavHref = currentRouteCtx?.pendingNavHref ?? null;
   const { user: authUser, systemUser } = useAuth();
   const logoutMutation = useLogout();
   const [identityReady, setIdentityReady] = useState(false);
@@ -75,7 +80,6 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
     setIdentityReady(true);
     setHydrated(true);
   }, []);
-  const currentRouteCtx = useCurrentRoute();
 
   // Remove query parameters for comparison
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
@@ -116,22 +120,36 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
     );
   }, [dashboards, isLoading, hasError, isSuperAdmin]);
 
-  // Clear optimistic active state as soon as pathname changes (navigation completed or user navigated elsewhere)
-  useEffect(() => {
-    setPendingNavHref(null);
-  }, [cleanPathname]);
+  // Sidebar highlight syncs via CurrentRouteContext (cleared when route arrives or times out).
 
-  /** Same moment as optimistic sidebar highlight — updates the address bar immediately (App Router Link alone can lag behind context). */
-  const pushIfNavigating = useCallback(
+  /** Overlay + prefetch on pointer down; Link handles instant URL change (no preventDefault). */
+  const handleModuleNavIntent = useCallback(
     (targetHref: string) => {
-      const cleanTarget = targetHref.split("?")[0].split("#")[0];
-      const isAlreadyActive =
-        cleanPathname === cleanTarget ||
-        (cleanTarget !== "/dashboard" && cleanPathname.startsWith(cleanTarget + "/"));
-      if (isAlreadyActive) return;
-      router.push(targetHref);
+      const cleanTarget = cleanDashboardHref(targetHref);
+      if (isDashboardNavAlreadyAtTarget(cleanPathname, cleanTarget)) return;
+      onNavigationStart?.(cleanTarget);
     },
-    [cleanPathname, router]
+    [cleanPathname, onNavigationStart]
+  );
+
+  const handleModuleNavPointerDown = useCallback(
+    (event: React.PointerEvent<HTMLAnchorElement>, targetHref: string) => {
+      if (event.button !== 0) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      handleModuleNavIntent(targetHref);
+    },
+    [handleModuleNavIntent]
+  );
+
+  const handleModuleNavClick = useCallback(
+    (event: React.MouseEvent<HTMLAnchorElement>, targetHref: string) => {
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      setMobileMenuOpen(false);
+      if (isDashboardNavAlreadyAtTarget(cleanPathname, cleanDashboardHref(targetHref))) {
+        event.preventDefault();
+      }
+    },
+    [cleanPathname, setMobileMenuOpen]
   );
 
   const effectiveSuperAdmin = hasError ? true : isSuperAdmin;
@@ -231,26 +249,10 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
             <>
               <Link
                 href="/dashboard"
+                scroll={false}
                 className="flex flex-1 min-w-0 items-center gap-2.5 pl-3 pr-1"
-                onMouseDown={(e) => {
-                  if (e.button !== 0) return;
-                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-                  onNavigationStart?.("/dashboard");
-                  setPendingNavHref("/dashboard");
-                  currentRouteCtx?.setCurrentRoute("/dashboard");
-                  pushIfNavigating("/dashboard");
-                }}
-                onClick={(e) => {
-                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-                  e.preventDefault();
-                  setMobileMenuOpen(false);
-                  if (e.detail === 0) {
-                    onNavigationStart?.("/dashboard");
-                    setPendingNavHref("/dashboard");
-                    currentRouteCtx?.setCurrentRoute("/dashboard");
-                    pushIfNavigating("/dashboard");
-                  }
-                }}
+                onPointerDown={(e) => handleModuleNavPointerDown(e, "/dashboard")}
+                onClick={(e) => handleModuleNavClick(e, "/dashboard")}
               >
                 <Image
                   src="/onlylogo.png"
@@ -269,26 +271,10 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
           ) : (
             <Link
               href="/dashboard"
+              scroll={false}
               className="flex w-full items-center justify-start gap-2.5 pl-3 pr-2 max-lg:pl-3"
-              onMouseDown={(e) => {
-                if (e.button !== 0) return;
-                if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-                onNavigationStart?.("/dashboard");
-                setPendingNavHref("/dashboard");
-                currentRouteCtx?.setCurrentRoute("/dashboard");
-                pushIfNavigating("/dashboard");
-              }}
-              onClick={(e) => {
-                if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-                e.preventDefault();
-                setMobileMenuOpen(false);
-                if (e.detail === 0) {
-                  onNavigationStart?.("/dashboard");
-                  setPendingNavHref("/dashboard");
-                  currentRouteCtx?.setCurrentRoute("/dashboard");
-                  pushIfNavigating("/dashboard");
-                }
-              }}
+              onPointerDown={(e) => handleModuleNavPointerDown(e, "/dashboard")}
+              onClick={(e) => handleModuleNavClick(e, "/dashboard")}
             >
               <Image
                 src="/onlylogo.png"
@@ -308,48 +294,38 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
           <div className="space-y-0.5">
             {filteredNavigation.map((item) => {
               const inQueueWorkspace = isTicketsQueueWorkspacePath(cleanPathname);
-              const itemHref =
+              const prefetchHref =
                 item.href === "/dashboard/tickets" && inQueueWorkspace
                   ? TICKETS_QUEUE_HOME_PATH
                   : item.dashboardType === "ORDER_FOOD"
                     ? getOrdersNavHref(accessibleDashboards, effectiveSuperAdmin)
                     : item.href;
-              // Exactly one active: during pending nav only that item is active; otherwise use pathname
+              const moduleRootHref =
+                item.dashboardType === "ORDER_FOOD"
+                  ? "/dashboard/orders"
+                  : item.href === "/dashboard/tickets" && inQueueWorkspace
+                    ? TICKETS_QUEUE_HOME_PATH
+                    : item.href;
               const isRouteActive =
-                cleanPathname === itemHref ||
+                cleanPathname === moduleRootHref ||
                 (item.href !== "/dashboard" && cleanPathname.startsWith(item.href + "/")) ||
                 (item.dashboardType === "ORDER_FOOD" && isOrdersSectionPath(cleanPathname)) ||
                 (item.href === "/dashboard/super-admin" && isSuperAdminNavPath(cleanPathname));
               const isActive =
                 pendingNavHref !== null
-                  ? itemHref === pendingNavHref
+                  ? moduleRootHref === pendingNavHref ||
+                    getDashboardModuleKey(moduleRootHref) === getDashboardModuleKey(pendingNavHref)
                   : isRouteActive;
               const Icon = item.icon;
               return (
                 <Link
                   key={item.name}
-                  href={itemHref}
-                  onMouseDown={(e) => {
-                    if (e.button !== 0) return;
-                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-                    onNavigationStart?.(itemHref);
-                    setPendingNavHref(itemHref);
-                    currentRouteCtx?.setCurrentRoute(itemHref);
-                    pushIfNavigating(itemHref);
-                  }}
-                  onMouseEnter={() => handleNavPrefetch(itemHref)}
-                  onFocus={() => handleNavPrefetch(itemHref)}
-                  onClick={(e) => {
-                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-                    e.preventDefault();
-                    setMobileMenuOpen(false);
-                    if (e.detail === 0) {
-                      onNavigationStart?.(itemHref);
-                      setPendingNavHref(itemHref);
-                      currentRouteCtx?.setCurrentRoute(itemHref);
-                      pushIfNavigating(itemHref);
-                    }
-                  }}
+                  href={moduleRootHref}
+                  scroll={false}
+                  onMouseEnter={() => handleNavPrefetch(prefetchHref)}
+                  onFocus={() => handleNavPrefetch(prefetchHref)}
+                  onPointerDown={(e) => handleModuleNavPointerDown(e, moduleRootHref)}
+                  onClick={(e) => handleModuleNavClick(e, moduleRootHref)}
                   className={`group relative flex items-center rounded-xl transition-all duration-150 max-lg:gap-3 max-lg:px-3 max-lg:py-2.5 max-lg:text-sm ${
                     isOpen
                       ? `gap-3 px-3 py-2.5 text-sm font-medium ${

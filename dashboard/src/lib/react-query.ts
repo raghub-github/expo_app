@@ -29,15 +29,25 @@ function createQueryClient(): QueryClient {
   return new QueryClient(QUERY_CLIENT_OPTIONS);
 }
 
+let browserQueryClient: QueryClient | undefined;
+
 /**
- * QueryClient configuration with optimal defaults for smooth loading and updates.
- * In the browser we reuse a window singleton so dev HMR / multi-tab work does not
- * wipe in-memory caches and trigger full dashboard reloads.
+ * Browser: reuse one client (HMR-safe). Server: fresh client per call so requests
+ * never share in-memory cache.
  */
-export const queryClient =
-  typeof window !== "undefined"
-    ? (window.__GATI_QUERY_CLIENT__ ??= createQueryClient())
-    : createQueryClient();
+export function getQueryClient(): QueryClient {
+  if (typeof window === "undefined") {
+    return createQueryClient();
+  }
+  if (!browserQueryClient) {
+    browserQueryClient = createQueryClient();
+    window.__GATI_QUERY_CLIENT__ = browserQueryClient;
+  }
+  return browserQueryClient;
+}
+
+/** Shared singleton for imperative cache writes (store layout priming, etc.). */
+export const queryClient = getQueryClient();
 
 /**
  * Persister instance for localStorage persistence

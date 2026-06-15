@@ -226,6 +226,7 @@ export async function POST(
         ${pf}_verified_at = now(),
         ${pf}_verified_by = $1,
         ${pf}_rejection_reason = null,
+        ${pf}_document_metadata = COALESCE(${pf}_document_metadata, '{}'::jsonb) - 'renewal_pending' - 'renewal_submitted_at',
         step4_rejection_details = COALESCE(step4_rejection_details, '{}'::jsonb) - '${pf}',
         step4_resubmission_flags = jsonb_set(COALESCE(step4_resubmission_flags, '{}'::jsonb), ARRAY['${pf}']::text[], 'false'::jsonb, true),
         updated_at = now()

@@ -132,23 +132,29 @@ function ServiceTile({
 
 type AllServicesGridProps = {
   onSelectService: (id: ServiceId) => void;
+  /** When true, all tappable services are greyed out (e.g. unpaid prior ride fare). */
+  servicesDisabled?: boolean;
 };
 
-export function AllServicesGrid({ onSelectService }: AllServicesGridProps) {
+export function AllServicesGrid({ onSelectService, servicesDisabled = false }: AllServicesGridProps) {
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, servicesDisabled && styles.rootDisabled]}>
       <Text style={styles.title}>All Services</Text>
       <View style={styles.grid}>
-        {ALL_SERVICES.map((service) => (
-          <ServiceTile
-            key={service.id}
-            service={service}
-            onPress={() => {
-              if (service.disabled || DISABLED_SERVICE_IDS.includes(service.id)) return;
-              onSelectService(service.id);
-            }}
-          />
-        ))}
+        {ALL_SERVICES.map((service) => {
+          const disabled =
+            servicesDisabled || service.disabled === true || DISABLED_SERVICE_IDS.includes(service.id);
+          return (
+            <ServiceTile
+              key={service.id}
+              service={{ ...service, disabled }}
+              onPress={() => {
+                if (disabled) return;
+                onSelectService(service.id);
+              }}
+            />
+          );
+        })}
       </View>
     </View>
   );
@@ -157,6 +163,9 @@ export function AllServicesGrid({ onSelectService }: AllServicesGridProps) {
 const styles = StyleSheet.create({
   root: {
     marginBottom: 18,
+  },
+  rootDisabled: {
+    opacity: 0.92,
   },
   title: {
     fontSize: 22,

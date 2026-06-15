@@ -20,6 +20,7 @@ export const fetchVerificationStatusCounts = async () => {
 import { supabase, supabaseAdmin } from './supabase'
 import { FoodOrder, OrderStats } from './types'
 import { MerchantStore } from './types'
+import { looksLikePartnerPublicStoreId } from './partner-orders-routes'
 
 // ============================================
 // MENU CATEGORY QUERIES
@@ -160,7 +161,19 @@ export const fetchStoreById = async (storeId: string): Promise<MerchantStore | n
       .eq('store_id', trimmed)
       .maybeSingle();
     if (publicErr) {
-      console.error('Error fetching store:', publicErr.message ?? publicErr, publicErr.code ?? '', publicErr.details ?? '');
+      const msg = String(publicErr.message ?? publicErr.code ?? '');
+      const transient =
+        /fetch failed|ENOTFOUND|ECONNREFUSED|network|timeout|57014|temporarily unavailable/i.test(
+          msg
+        );
+      if (!transient) {
+        console.error(
+          'Error fetching store:',
+          publicErr.message ?? publicErr,
+          publicErr.code ?? '',
+          publicErr.details ?? ''
+        );
+      }
     }
     if (byPublicId) return byPublicId as MerchantStore;
 
@@ -192,7 +205,9 @@ export const fetchStoreByName = async (storeName: string): Promise<MerchantStore
       .ilike('store_name', `%${storeName}%`)
       .single();
     if (error) {
-      console.error('Store not found:', storeName);
+      if (!looksLikePartnerPublicStoreId(storeName)) {
+        console.error('Store not found:', storeName);
+      }
       return null;
     }
     return data as MerchantStore;

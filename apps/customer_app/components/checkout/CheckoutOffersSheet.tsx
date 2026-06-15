@@ -41,6 +41,8 @@ export type CheckoutOffersSheetProps = {
     platformOfferId?: number | null;
     merchantOfferId?: number | null;
   }>;
+  /** Active membership perks (e.g. GMitra Plus free delivery) — not removable as coupons. */
+  subscriptionBenefits?: Array<{ label: string; amount: number }>;
   onApplyCouponCode: (code: string, description?: string) => void;
   onApplyPlatformOffer: (id: number, name: string | null) => void;
   onApplyMerchantOffer: (id: number, couponCode?: string | null) => void;
@@ -135,6 +137,7 @@ export function CheckoutOffersSheet({
   appliedPlatformOfferId,
   appliedMerchantOfferId,
   appliedDiscounts,
+  subscriptionBenefits = [],
   onApplyCouponCode,
   onApplyPlatformOffer,
   onApplyMerchantOffer,
@@ -162,11 +165,13 @@ export function CheckoutOffersSheet({
     return d?.amount ?? null;
   };
 
-  const hasApplied =
+  const hasAppliedPromo =
     Boolean(appliedCouponCode || appliedPlatformOfferId || appliedMerchantOfferId) ||
     appliedDiscounts.length > 0;
 
-  const totalSavings = appliedDiscounts.reduce((s, d) => s + d.amount, 0);
+  const subscriptionSavings = subscriptionBenefits.reduce((s, d) => s + d.amount, 0);
+  const promoSavings = appliedDiscounts.reduce((s, d) => s + d.amount, 0);
+  const totalSavings = subscriptionSavings + promoSavings;
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent>
@@ -244,7 +249,23 @@ export function CheckoutOffersSheet({
                 <Text style={styles.errText}>Could not load offers. Try again.</Text>
               ) : (
                 <>
-                  {hasApplied ? (
+                  {subscriptionBenefits.length > 0 ? (
+                    <View style={styles.section}>
+                      <Text style={styles.sectionLabel}>MEMBER BENEFITS</Text>
+                      <Text style={styles.sectionHint}>Included with your plan · stacks with coupons</Text>
+                      {subscriptionBenefits.map((d, i) => (
+                        <OfferRow
+                          key={`sub-benefit-${i}`}
+                          title={d.label}
+                          subtitle="Membership benefit"
+                          applied
+                          savings={d.amount}
+                        />
+                      ))}
+                    </View>
+                  ) : null}
+
+                  {hasAppliedPromo ? (
                     <View style={styles.section}>
                       <Text style={styles.sectionLabel}>APPLIED ON THIS ORDER</Text>
                       {appliedCouponCode ? (
@@ -292,24 +313,6 @@ export function CheckoutOffersSheet({
                           onRemove={onRemoveMerchantOffer}
                         />
                       ) : null}
-                      {appliedDiscounts
-                        .filter(
-                          (d) =>
-                            !d.platformOfferId &&
-                            !d.merchantOfferId &&
-                            !appliedCouponCode &&
-                            d.amount > 0
-                        )
-                        .map((d, i) => (
-                          <OfferRow
-                            key={`applied-other-${i}`}
-                            title={d.label}
-                            subtitle="Applied on this order"
-                            applied
-                            savings={d.amount}
-                            onRemove={onRemoveAllOffers}
-                          />
-                        ))}
                       <TouchableOpacity onPress={onRemoveAllOffers} style={styles.clearAllBtn}>
                         <Text style={styles.clearAllText}>Remove all offers</Text>
                       </TouchableOpacity>
@@ -319,7 +322,9 @@ export function CheckoutOffersSheet({
                   {(data?.platformOffers.length ?? 0) > 0 ? (
                     <View style={styles.section}>
                       <Text style={styles.sectionLabel}>PLATFORM OFFERS</Text>
-                      <Text style={styles.sectionHint}>One offer at a time · tap to switch</Text>
+                      <Text style={styles.sectionHint}>
+                        One platform or store offer · stacks with membership benefits
+                      </Text>
                       {data!.platformOffers.map((o) => {
                         const isApplied = appliedPlatformOfferId === o.id;
                         return (

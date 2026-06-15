@@ -1,0 +1,281 @@
+﻿src/app/api/riders/[id]/documents/[docId]/route.ts(153,63): error TS2345: Argument of type '"RIDER_DOCUMENT_IMAGE_REMOVED"' is not assignable to parameter of type 'ActionType'.
+src/app/api/riders/[id]/wallet/route.ts(113,11): error TS2322: Type 'null' is not assignable to type 'Date'.
+src/app/api/super-admin/geo/ride-vehicle-limits/route.ts(71,11): error TS2322: Type 'number | undefined' is not assignable to type 'number'.
+  Type 'undefined' is not assignable to type 'number'.
+src/app/api/super-admin/payment-config/route.ts(23,14): error TS2554: Expected 2-3 arguments, but got 1.
+src/app/dashboard/merchants/MerchantsSearchClient.tsx(451,19): error TS2352: Conversion of type '{ success: boolean; total?: number | undefined; verified?: number | undefined; pending?: number | undefined; rejected?: number | undefined; drafted?: number | undefined; new?: number | undefined; }' to type 'StoreStats' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Property 'resubmitted' is missing in type '{ success: boolean; total?: number | undefined; verified?: number | undefined; pending?: number | undefined; rejected?: number | undefined; drafted?: number | undefined; new?: number | undefined; }' but required in type 'StoreStats'.
+src/app/dashboard/merchants/MerchantsSearchClient.tsx(452,22): error TS2352: Conversion of type '{ success: boolean; total?: number | undefined; verified?: number | undefined; pending?: number | undefined; rejected?: number | undefined; drafted?: number | undefined; new?: number | undefined; }' to type 'StoreStats' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Property 'resubmitted' is missing in type '{ success: boolean; total?: number | undefined; verified?: number | undefined; pending?: number | undefined; rejected?: number | undefined; drafted?: number | undefined; new?: number | undefined; }' but required in type 'StoreStats'.
+src/app/dashboard/merchants/MerchantsSearchClient.tsx(453,21): error TS2352: Conversion of type '{ success: boolean; total?: number | undefined; verified?: number | undefined; pending?: number | undefined; rejected?: number | undefined; drafted?: number | undefined; new?: number | undefined; }' to type 'StoreStats' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Property 'resubmitted' is missing in type '{ success: boolean; total?: number | undefined; verified?: number | undefined; pending?: number | undefined; rejected?: number | undefined; drafted?: number | undefined; new?: number | undefined; }' but required in type 'StoreStats'.
+src/app/dashboard/merchants/MerchantsSearchClient.tsx(454,22): error TS2352: Conversion of type '{ success: boolean; total?: number | undefined; verified?: number | undefined; pending?: number | undefined; rejected?: number | undefined; drafted?: number | undefined; new?: number | undefined; }' to type 'StoreStats' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Property 'resubmitted' is missing in type '{ success: boolean; total?: number | undefined; verified?: number | undefined; pending?: number | undefined; rejected?: number | undefined; drafted?: number | undefined; new?: number | undefined; }' but required in type 'StoreStats'.
+src/app/dashboard/merchants/MerchantsSearchClient.tsx(455,21): error TS2352: Conversion of type '{ success: boolean; total?: number | undefined; verified?: number | undefined; pending?: number | undefined; rejected?: number | undefined; drafted?: number | undefined; new?: number | undefined; }' to type 'StoreStats' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Property 'resubmitted' is missing in type '{ success: boolean; total?: number | undefined; verified?: number | undefined; pending?: number | undefined; rejected?: number | undefined; drafted?: number | undefined; new?: number | undefined; }' but required in type 'StoreStats'.
+src/app/dashboard/merchants/MerchantsSearchClient.tsx(456,17): error TS2352: Conversion of type '{ success: boolean; total?: number | undefined; verified?: number | undefined; pending?: number | undefined; rejected?: number | undefined; drafted?: number | undefined; new?: number | undefined; }' to type 'StoreStats' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Property 'resubmitted' is missing in type '{ success: boolean; total?: number | undefined; verified?: number | undefined; pending?: number | undefined; rejected?: number | undefined; drafted?: number | undefined; new?: number | undefined; }' but required in type 'StoreStats'.
+src/app/dashboard/merchants/MerchantsSearchClient.tsx(457,25): error TS2352: Conversion of type '{ success: boolean; total?: number | undefined; verified?: number | undefined; pending?: number | undefined; rejected?: number | undefined; drafted?: number | undefined; new?: number | undefined; }' to type 'StoreStats & { resubmitted?: number | undefined; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Property 'resubmitted' is missing in type '{ success: boolean; total?: number | undefined; verified?: number | undefined; pending?: number | undefined; rejected?: number | undefined; drafted?: number | undefined; new?: number | undefined; }' but required in type 'StoreStats'.
+src/app/dashboard/merchants/stores/[id]/orders/StoreOrdersClient.tsx(1084,15): error TS2345: Argument of type '"info"' is not assignable to parameter of type 'ToastVariant | undefined'.
+src/app/dashboard/merchants/stores/[id]/orders/StoreOrdersClient.tsx(1255,38): error TS2345: Argument of type 'OrdersFoodRow' is not assignable to parameter of type '{ pricing?: { total?: number | null | undefined; packaging?: number | undefined; discount?: number | undefined; } | null | undefined; total_ctm?: string | number | null | undefined; food_items_total_value?: string | ... 2 more ... | undefined; items?: NormalizedOrderLineItem[] | ... 1 more ... | undefined; }'.
+  Types of property 'items' are incompatible.
+    Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }[] | null | undefined' is not assignable to type 'NormalizedOrderLineItem[] | null | undefined'.
+      Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }[]' is not assignable to type 'NormalizedOrderLineItem[]'.
+        Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }' is not assignable to type 'NormalizedOrderLineItem'.
+          Types of property 'name' are incompatible.
+            Type 'string | undefined' is not assignable to type 'string'.
+              Type 'undefined' is not assignable to type 'string'.
+src/app/dashboard/merchants/stores/[id]/orders/StoreOrdersClient.tsx(1986,134): error TS2322: Type '{ label: string; value: string; accent: true; title: string; }' is not assignable to type 'IntrinsicAttributes & { label: string; value: string; accent?: boolean | undefined; }'.
+  Property 'title' does not exist on type 'IntrinsicAttributes & { label: string; value: string; accent?: boolean | undefined; }'.
+src/app/dashboard/merchants/stores/[id]/orders/StoreOrdersClient.tsx(2376,48): error TS2345: Argument of type 'OrdersFoodRow' is not assignable to parameter of type '{ pricing?: { total?: number | null | undefined; packaging?: number | undefined; discount?: number | undefined; } | null | undefined; total_ctm?: string | number | null | undefined; food_items_total_value?: string | ... 2 more ... | undefined; items?: NormalizedOrderLineItem[] | ... 1 more ... | undefined; }'.
+  Types of property 'items' are incompatible.
+    Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }[] | null | undefined' is not assignable to type 'NormalizedOrderLineItem[] | null | undefined'.
+      Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }[]' is not assignable to type 'NormalizedOrderLineItem[]'.
+        Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }' is not assignable to type 'NormalizedOrderLineItem'.
+          Types of property 'name' are incompatible.
+            Type 'string | undefined' is not assignable to type 'string'.
+              Type 'undefined' is not assignable to type 'string'.
+src/app/dashboard/merchants/stores/[id]/orders/StoreOrdersClient.tsx(3434,41): error TS2345: Argument of type 'OrdersFoodRow' is not assignable to parameter of type '{ pricing?: { total?: number | null | undefined; packaging?: number | undefined; discount?: number | undefined; } | null | undefined; total_ctm?: string | number | null | undefined; food_items_total_value?: string | ... 2 more ... | undefined; items?: NormalizedOrderLineItem[] | ... 1 more ... | undefined; }'.
+  Types of property 'items' are incompatible.
+    Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }[] | null | undefined' is not assignable to type 'NormalizedOrderLineItem[] | null | undefined'.
+      Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }[]' is not assignable to type 'NormalizedOrderLineItem[]'.
+        Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }' is not assignable to type 'NormalizedOrderLineItem'.
+          Types of property 'name' are incompatible.
+            Type 'string | undefined' is not assignable to type 'string'.
+              Type 'undefined' is not assignable to type 'string'.
+src/app/dashboard/merchants/stores/[id]/orders/StoreOrdersClient.tsx(3641,76): error TS2345: Argument of type 'OrdersFoodRow' is not assignable to parameter of type '{ pricing?: { total?: number | null | undefined; packaging?: number | undefined; discount?: number | undefined; } | null | undefined; total_ctm?: string | number | null | undefined; food_items_total_value?: string | ... 2 more ... | undefined; items?: NormalizedOrderLineItem[] | ... 1 more ... | undefined; }'.
+  Types of property 'items' are incompatible.
+    Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }[] | null | undefined' is not assignable to type 'NormalizedOrderLineItem[] | null | undefined'.
+      Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }[]' is not assignable to type 'NormalizedOrderLineItem[]'.
+        Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }' is not assignable to type 'NormalizedOrderLineItem'.
+          Types of property 'name' are incompatible.
+            Type 'string | undefined' is not assignable to type 'string'.
+              Type 'undefined' is not assignable to type 'string'.
+src/app/dashboard/merchants/stores/[id]/orders/StoreOrdersClient.tsx(3771,36): error TS2345: Argument of type 'OrdersFoodRow' is not assignable to parameter of type '{ pricing?: { total?: number | null | undefined; packaging?: number | undefined; discount?: number | undefined; } | null | undefined; total_ctm?: string | number | null | undefined; food_items_total_value?: string | ... 2 more ... | undefined; items?: NormalizedOrderLineItem[] | ... 1 more ... | undefined; }'.
+  Types of property 'items' are incompatible.
+    Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }[] | null | undefined' is not assignable to type 'NormalizedOrderLineItem[] | null | undefined'.
+      Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }[]' is not assignable to type 'NormalizedOrderLineItem[]'.
+        Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }' is not assignable to type 'NormalizedOrderLineItem'.
+          Types of property 'name' are incompatible.
+            Type 'string | undefined' is not assignable to type 'string'.
+              Type 'undefined' is not assignable to type 'string'.
+src/app/dashboard/merchants/stores/[id]/orders/StoreOrdersClient.tsx(3979,36): error TS2345: Argument of type 'OrdersFoodRow' is not assignable to parameter of type '{ pricing?: { total?: number | null | undefined; packaging?: number | undefined; discount?: number | undefined; } | null | undefined; total_ctm?: string | number | null | undefined; food_items_total_value?: string | ... 2 more ... | undefined; items?: NormalizedOrderLineItem[] | ... 1 more ... | undefined; }'.
+  Types of property 'items' are incompatible.
+    Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }[] | null | undefined' is not assignable to type 'NormalizedOrderLineItem[] | null | undefined'.
+      Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }[]' is not assignable to type 'NormalizedOrderLineItem[]'.
+        Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }' is not assignable to type 'NormalizedOrderLineItem'.
+          Types of property 'name' are incompatible.
+            Type 'string | undefined' is not assignable to type 'string'.
+              Type 'undefined' is not assignable to type 'string'.
+src/app/dashboard/merchants/stores/[id]/orders/StoreOrdersClient.tsx(4249,59): error TS2559: Type 'OrdersFoodRow' has no properties in common with type '{ delivery_type?: string | null | undefined; }'.
+src/app/dashboard/merchants/stores/[id]/payments/StorePaymentsClient.tsx(434,31): error TS2339: Property 'withdrawable_balance' does not exist on type 'WalletSummary'.
+src/app/dashboard/merchants/stores/[id]/payments/StorePaymentsClient.tsx(732,42): error TS2339: Property 'withdrawable_balance' does not exist on type 'WalletSummary'.
+src/app/dashboard/merchants/stores/[id]/payments/StorePaymentsClient.tsx(734,31): error TS2339: Property 'locked_settlement_total' does not exist on type 'WalletSummary'.
+src/app/dashboard/merchants/stores/[id]/payments/StorePaymentsClient.tsx(734,66): error TS2339: Property 'locked_balance' does not exist on type 'WalletSummary'.
+src/app/dashboard/merchants/stores/[id]/payments/StorePaymentsClient.tsx(736,62): error TS2339: Property 'locked_settlement_total' does not exist on type 'WalletSummary'.
+src/app/dashboard/merchants/stores/[id]/payments/StorePaymentsClient.tsx(736,97): error TS2339: Property 'locked_balance' does not exist on type 'WalletSummary'.
+src/app/dashboard/merchants/stores/[id]/StoreFullDashboard.tsx(610,21): error TS2322: Type 'string' is not assignable to type 'number'.
+src/app/dashboard/merchants/stores/[id]/StoreFullDashboard.tsx(620,39): error TS2322: Type 'string' is not assignable to type 'number'.
+src/app/dashboard/riders/[id]/onboarding/RiderOnboardingClient.tsx(343,24): error TS2345: Argument of type 'number' is not assignable to parameter of type 'SetStateAction<string | null>'.
+src/app/dashboard/riders/[id]/onboarding/RiderOnboardingClient.tsx(391,24): error TS2345: Argument of type 'number' is not assignable to parameter of type 'SetStateAction<string | null>'.
+src/app/dashboard/riders/[id]/onboarding/RiderOnboardingClient.tsx(857,38): error TS18048: 'riderData.onboardingPayments' is possibly 'undefined'.
+src/app/dashboard/super-admin/rule-engine/[id]/edit/page.tsx(37,37): error TS2322: Type '{ serviceTypes: postgres.Row[] & Iterable<postgres.Row> & postgres.ResultQueryMeta<number, string | number>; orderStages: OrderStageRow[]; ... 9 more ...; activeStatuses: string[]; }' is not assignable to type 'Catalogs'.
+  The types returned by 'serviceTypes.pop()' are incompatible between these types.
+    Type 'Row | undefined' is not assignable to type '{ code: string; label: string; } | undefined'.
+      Type 'Row' is missing the following properties from type '{ code: string; label: string; }': code, label
+src/app/dashboard/super-admin/rule-engine/new/page.tsx(21,26): error TS2322: Type '{ serviceTypes: Row[] & Iterable<Row> & ResultQueryMeta<number, string | number>; orderStages: OrderStageRow[]; triggeredBy: Row[] & ... 1 more ... & ResultQueryMeta<...>; ... 8 more ...; activeStatuses: string[]; } | null' is not assignable to type 'Catalogs | null'.
+  Type '{ serviceTypes: postgres.Row[] & Iterable<postgres.Row> & postgres.ResultQueryMeta<number, string | number>; orderStages: OrderStageRow[]; ... 9 more ...; activeStatuses: string[]; }' is not assignable to type 'Catalogs'.
+    The types returned by 'serviceTypes.pop()' are incompatible between these types.
+      Type 'Row | undefined' is not assignable to type '{ code: string; label: string; } | undefined'.
+        Type 'Row' is missing the following properties from type '{ code: string; label: string; }': code, label
+src/app/order/[id]/OrderDetailClient.tsx(737,37): error TS2339: Property 'riderDispatchUi' does not exist on type '{ success?: boolean | undefined; data?: unknown[] | undefined; error?: string | undefined; timeline?: OrderTimelineEntry[] | undefined; riderTimeline?: RiderTimelineData | null | undefined; ... 10 more ...; riderActivityLog?: RiderActivityLogCacheEntry | ... 1 more ... | undefined; }'.
+src/app/order/[id]/OrderDetailClient.tsx(750,46): error TS2339: Property 'partnerChat' does not exist on type '{ success?: boolean | undefined; data?: unknown[] | undefined; error?: string | undefined; timeline?: OrderTimelineEntry[] | undefined; riderTimeline?: RiderTimelineData | null | undefined; ... 10 more ...; riderActivityLog?: RiderActivityLogCacheEntry | ... 1 more ... | undefined; }'.
+src/app/order/[id]/OrderDetailClient.tsx(1647,15): error TS2322: Type 'OrderDetail' is not assignable to type 'OrderLike'.
+  Types of property 'customerUserType' are incompatible.
+    Type 'string | null | undefined' is not assignable to type 'string | null'.
+      Type 'undefined' is not assignable to type 'string | null'.
+src/app/order/[id]/PersonRideOrderSections.tsx(253,11): error TS2322: Type 'unknown[]' is not assignable to type 'OrderRefundForDisplay[]'.
+  Type 'unknown' is not assignable to type 'OrderRefundForDisplay'.
+src/components/geo-admin/RiderPayoutSlabsPanel.tsx(337,38): error TS2783: 'service' is specified more than once, so this usage will be overwritten.
+src/components/geo-admin/RiderPayoutSlabsPanel.tsx(337,62): error TS2783: 'leg' is specified more than once, so this usage will be overwritten.
+src/components/geo-admin/RiderPayoutSlabsPanel.tsx(374,38): error TS2783: 'service' is specified more than once, so this usage will be overwritten.
+src/components/geo-admin/RiderPayoutSlabsPanel.tsx(374,62): error TS2783: 'leg' is specified more than once, so this usage will be overwritten.
+src/components/geo-admin/RiderSurgeManagementPanel.tsx(382,20): error TS2353: Object literal may only specify known properties, and 'silent' does not exist in type '{ force?: boolean | undefined; }'.
+src/components/geo-admin/RiderSurgeManagementPanel.tsx(397,20): error TS2353: Object literal may only specify known properties, and 'silent' does not exist in type '{ force?: boolean | undefined; }'.
+src/components/merchant/MerchantOrderPipelineCard.tsx(107,35): error TS2304: Cannot find name 'resolveMerchantCtm'.
+src/components/merchant/MerchantOrderPipelineCard.tsx(348,38): error TS2559: Type 'OrdersFoodRow' has no properties in common with type '{ delivery_type?: string | null | undefined; }'.
+src/components/merchant/MerchantPreparingOrderActions.tsx(92,13): error TS2339: Property 'prep_delay_use_count' does not exist on type 'OrdersFoodRow'.
+src/components/merchant/MerchantPreparingOrderActions.tsx(93,21): error TS2339: Property 'is_bulk_order' does not exist on type 'OrdersFoodRow'.
+src/components/merchant/MerchantPreparingOrderCard.tsx(205,24): error TS2345: Argument of type 'OrdersFoodRow' is not assignable to parameter of type '{ pricing?: { total?: number | null | undefined; packaging?: number | undefined; discount?: number | undefined; } | null | undefined; total_ctm?: string | number | null | undefined; food_items_total_value?: string | ... 2 more ... | undefined; items?: NormalizedOrderLineItem[] | ... 1 more ... | undefined; }'.
+  Types of property 'items' are incompatible.
+    Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }[] | null | undefined' is not assignable to type 'NormalizedOrderLineItem[] | null | undefined'.
+      Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }[]' is not assignable to type 'NormalizedOrderLineItem[]'.
+        Type '{ name?: string | undefined; quantity?: number | undefined; price?: number | undefined; total?: number | undefined; customizations?: string[] | undefined; vegNonveg?: string | null | undefined; ... 9 more ...; hasCustomizations?: boolean | undefined; }' is not assignable to type 'NormalizedOrderLineItem'.
+          Types of property 'name' are incompatible.
+            Type 'string | undefined' is not assignable to type 'string'.
+              Type 'undefined' is not assignable to type 'string'.
+src/components/merchant/MerchantPreparingOrderCard.tsx(207,25): error TS2304: Cannot find name 'getUtensilsCustomerLabel'.
+src/components/merchant/MerchantPreparingOrderCard.tsx(235,13): error TS2339: Property 'prep_delay_use_count' does not exist on type 'OrdersFoodRow'.
+src/components/merchant/MerchantPreparingOrderCard.tsx(236,21): error TS2339: Property 'is_bulk_order' does not exist on type 'OrdersFoodRow'.
+src/components/offers/CustomerSubscriptionPlansAdmin.tsx(219,23): error TS2339: Property 'plans' does not exist on type '(prev: unknown) => unknown'.
+src/components/offers/CustomerSubscriptionPlansAdmin.tsx(220,23): error TS2339: Property 'stats' does not exist on type '(prev: unknown) => unknown'.
+src/components/offers/CustomerSubscriptionPlansAdmin.tsx(230,37): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/components/offers/RiderSubscriptionPlansAdmin.tsx(80,23): error TS2339: Property 'plans' does not exist on type '(prev: unknown) => unknown'.
+src/components/offers/RiderSubscriptionPlansAdmin.tsx(81,23): error TS2339: Property 'stats' does not exist on type '(prev: unknown) => unknown'.
+src/components/offers/RiderSubscriptionPlansAdmin.tsx(93,37): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/components/offers/RiderSubscriptionPlansAdmin.tsx(263,54): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/components/offers/RiderSubscriptionPlansAdmin.tsx(309,44): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/components/offers/RiderSubscriptionPlansAdmin.tsx(323,57): error TS7006: Parameter 'b' implicitly has an 'any' type.
+src/components/rules/gm-rule-form-ui.tsx(1,15): error TS2305: Module '"react"' has no exported member 'LucideIcon'.
+src/hooks/queries/useSubscriptionPlansQuery.ts(81,10): error TS2769: No overload matches this call.
+  Overload 1 of 3, '(options: DefinedInitialDataOptions<(prev: unknown) => unknown, Error, (prev: unknown) => unknown, string[]>, queryClient?: QueryClient | undefined): DefinedUseQueryResult<...>', gave the following error.
+    Type '() => Promise<RiderPlansResponse>' is not assignable to type 'QueryFunction<(prev: unknown) => unknown, string[]>'.
+      Type 'Promise<RiderPlansResponse>' is not assignable to type '((prev: unknown) => unknown) | Promise<(prev: unknown) => unknown>'.
+        Type 'Promise<RiderPlansResponse>' is not assignable to type 'Promise<(prev: unknown) => unknown>'.
+          Type 'RiderPlansResponse' is not assignable to type '(prev: unknown) => unknown'.
+            Type 'RiderPlansResponse' provides no match for the signature '(prev: unknown): unknown'.
+  Overload 2 of 3, '(options: UndefinedInitialDataOptions<RiderPlansResponse, Error, RiderPlansResponse, string[]>, queryClient?: QueryClient | undefined): UseQueryResult<...>', gave the following error.
+    Argument of type '{ staleTime: number; gcTime: number; refetchOnMount: false; refetchOnWindowFocus: false; placeholderData: (prev: unknown) => unknown; retry: number; queryKey: string[]; queryFn: () => Promise<RiderPlansResponse>; }' is not assignable to parameter of type 'UndefinedInitialDataOptions<RiderPlansResponse, Error, RiderPlansResponse, string[]>'.
+      Type '{ staleTime: number; gcTime: number; refetchOnMount: false; refetchOnWindowFocus: false; placeholderData: (prev: unknown) => unknown; retry: number; queryKey: string[]; queryFn: () => Promise<RiderPlansResponse>; }' is not assignable to type 'UseQueryOptions<RiderPlansResponse, Error, RiderPlansResponse, string[]>'.
+        Types of property 'placeholderData' are incompatible.
+          Type '(prev: unknown) => unknown' is not assignable to type 'RiderPlansResponse | PlaceholderDataFunction<RiderPlansResponse, Error, RiderPlansResponse, string[]> | undefined'.
+            Type '(prev: unknown) => unknown' is not assignable to type 'PlaceholderDataFunction<RiderPlansResponse, Error, RiderPlansResponse, string[]>'.
+              Type 'unknown' is not assignable to type 'RiderPlansResponse | undefined'.
+  Overload 3 of 3, '(options: UseQueryOptions<RiderPlansResponse, Error, RiderPlansResponse, string[]>, queryClient?: QueryClient | undefined): UseQueryResult<...>', gave the following error.
+    Argument of type '{ staleTime: number; gcTime: number; refetchOnMount: false; refetchOnWindowFocus: false; placeholderData: (prev: unknown) => unknown; retry: number; queryKey: string[]; queryFn: () => Promise<RiderPlansResponse>; }' is not assignable to parameter of type 'UseQueryOptions<RiderPlansResponse, Error, RiderPlansResponse, string[]>'.
+      Types of property 'placeholderData' are incompatible.
+        Type '(prev: unknown) => unknown' is not assignable to type 'RiderPlansResponse | PlaceholderDataFunction<RiderPlansResponse, Error, RiderPlansResponse, string[]> | undefined'.
+          Type '(prev: unknown) => unknown' is not assignable to type 'PlaceholderDataFunction<RiderPlansResponse, Error, RiderPlansResponse, string[]>'.
+            Type 'unknown' is not assignable to type 'RiderPlansResponse | undefined'.
+src/hooks/queries/useSubscriptionPlansQuery.ts(92,10): error TS2769: No overload matches this call.
+  Overload 1 of 3, '(options: DefinedInitialDataOptions<(prev: unknown) => unknown, Error, (prev: unknown) => unknown, string[]>, queryClient?: QueryClient | undefined): DefinedUseQueryResult<...>', gave the following error.
+    Type '() => Promise<CustomerPlansResponse>' is not assignable to type 'QueryFunction<(prev: unknown) => unknown, string[]>'.
+      Type 'Promise<CustomerPlansResponse>' is not assignable to type '((prev: unknown) => unknown) | Promise<(prev: unknown) => unknown>'.
+        Type 'Promise<CustomerPlansResponse>' is not assignable to type 'Promise<(prev: unknown) => unknown>'.
+          Type 'CustomerPlansResponse' is not assignable to type '(prev: unknown) => unknown'.
+            Type 'CustomerPlansResponse' provides no match for the signature '(prev: unknown): unknown'.
+  Overload 2 of 3, '(options: UndefinedInitialDataOptions<CustomerPlansResponse, Error, CustomerPlansResponse, string[]>, queryClient?: QueryClient | undefined): UseQueryResult<...>', gave the following error.
+    Argument of type '{ staleTime: number; gcTime: number; refetchOnMount: false; refetchOnWindowFocus: false; placeholderData: (prev: unknown) => unknown; retry: number; queryKey: string[]; queryFn: () => Promise<CustomerPlansResponse>; }' is not assignable to parameter of type 'UndefinedInitialDataOptions<CustomerPlansResponse, Error, CustomerPlansResponse, string[]>'.
+      Type '{ staleTime: number; gcTime: number; refetchOnMount: false; refetchOnWindowFocus: false; placeholderData: (prev: unknown) => unknown; retry: number; queryKey: string[]; queryFn: () => Promise<CustomerPlansResponse>; }' is not assignable to type 'UseQueryOptions<CustomerPlansResponse, Error, CustomerPlansResponse, string[]>'.
+        Types of property 'placeholderData' are incompatible.
+          Type '(prev: unknown) => unknown' is not assignable to type 'CustomerPlansResponse | PlaceholderDataFunction<CustomerPlansResponse, Error, CustomerPlansResponse, string[]> | undefined'.
+            Type '(prev: unknown) => unknown' is not assignable to type 'PlaceholderDataFunction<CustomerPlansResponse, Error, CustomerPlansResponse, string[]>'.
+              Type 'unknown' is not assignable to type 'CustomerPlansResponse | undefined'.
+  Overload 3 of 3, '(options: UseQueryOptions<CustomerPlansResponse, Error, CustomerPlansResponse, string[]>, queryClient?: QueryClient | undefined): UseQueryResult<...>', gave the following error.
+    Argument of type '{ staleTime: number; gcTime: number; refetchOnMount: false; refetchOnWindowFocus: false; placeholderData: (prev: unknown) => unknown; retry: number; queryKey: string[]; queryFn: () => Promise<CustomerPlansResponse>; }' is not assignable to parameter of type 'UseQueryOptions<CustomerPlansResponse, Error, CustomerPlansResponse, string[]>'.
+      Types of property 'placeholderData' are incompatible.
+        Type '(prev: unknown) => unknown' is not assignable to type 'CustomerPlansResponse | PlaceholderDataFunction<CustomerPlansResponse, Error, CustomerPlansResponse, string[]> | undefined'.
+          Type '(prev: unknown) => unknown' is not assignable to type 'PlaceholderDataFunction<CustomerPlansResponse, Error, CustomerPlansResponse, string[]>'.
+            Type 'unknown' is not assignable to type 'CustomerPlansResponse | undefined'.
+src/lib/credit-rider-wallet-after-delivery.ts(47,36): error TS18047: 'riderId' is possibly 'null'.
+src/lib/credit-rider-wallet-after-delivery.ts(49,82): error TS2345: Argument of type 'number | null' is not assignable to parameter of type 'number'.
+  Type 'null' is not assignable to type 'number'.
+src/lib/credit-rider-wallet-after-delivery.ts(63,5): error TS2322: Type 'number | null' is not assignable to type 'number'.
+  Type 'null' is not assignable to type 'number'.
+src/lib/db/operations/gm-rule-engine.ts(65,36): error TS2352: Conversion of type 'Row[] & Iterable<Row> & ResultQueryMeta<number, string | number>' to type 'OrderStageRow[]' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  The types returned by 'concat(...)' are incompatible between these types.
+    Type 'Row[]' is not comparable to type 'OrderStageRow[]'.
+      Type 'Row' is missing the following properties from type 'OrderStageRow': code, label
+src/lib/db/operations/gm-rule-engine.ts(382,7): error TS2345: Argument of type 'unknown[]' is not assignable to parameter of type 'ParameterOrJSON<never>[]'.
+  Type 'unknown' is not assignable to type 'ParameterOrJSON<never>'.
+src/lib/db/operations/gm-rule-engine.ts(423,9): error TS2769: No overload matches this call.
+  Argument of type '[number, unknown, unknown, number | null, unknown]' is not assignable to parameter of type 'never'.
+  Overload 2 of 2, '(template: TemplateStringsArray, ...parameters: readonly ParameterOrFragment<never>[]): PendingQuery<Row[]>', gave the following error.
+    Argument of type 'unknown' is not assignable to parameter of type 'ParameterOrFragment<never>'.
+src/lib/db/operations/gm-rule-engine.ts(692,9): error TS2769: No overload matches this call.
+  Argument of type '[unknown, unknown, unknown, number, unknown, unknown, unknown, unknown, number | null, number]' is not assignable to parameter of type 'never'.
+  Overload 2 of 2, '(template: TemplateStringsArray, ...parameters: readonly ParameterOrFragment<never>[]): PendingQuery<Row[]>', gave the following error.
+    Argument of type 'unknown' is not assignable to parameter of type 'ParameterOrFragment<never>'.
+src/lib/db/operations/gm-rule-engine.ts(710,11): error TS2769: No overload matches this call.
+  Argument of type '[number, unknown, unknown, unknown, unknown]' is not assignable to parameter of type 'never'.
+  Overload 2 of 2, '(template: TemplateStringsArray, ...parameters: readonly ParameterOrFragment<never>[]): PendingQuery<Row[]>', gave the following error.
+    Argument of type 'unknown' is not assignable to parameter of type 'ParameterOrFragment<never>'.
+src/lib/db/operations/payment-config.ts(26,38): error TS2322: Type 'PendingQuery<readonly (object | undefined)[]>' is not assignable to type 'Promise<unknown[]>'.
+  Types of property 'then' are incompatible.
+    Type '<TResult1 = RowList<readonly (object | undefined)[]>, TResult2 = never>(onfulfilled?: ((value: RowList<readonly (object | undefined)[]>) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<...>) | ... 1 more ... | undefined) => Promise<...>' is not assignable to type '<TResult1 = unknown[], TResult2 = never>(onfulfilled?: ((value: unknown[]) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null | undefined) => Promise<...>'.
+      Types of parameters 'onfulfilled' and 'onfulfilled' are incompatible.
+        Types of parameters 'value' and 'value' are incompatible.
+          Type 'readonly (object | undefined)[] & Iterable<object> & ResultQueryMeta<number, never>' is missing the following properties from type 'unknown[]': pop, push, reverse, shift, and 5 more.
+src/lib/db/operations/payment-config.ts(29,39): error TS2322: Type 'PendingQuery<readonly (object | undefined)[]>' is not assignable to type 'Promise<unknown[]>'.
+  Types of property 'then' are incompatible.
+    Type '<TResult1 = RowList<readonly (object | undefined)[]>, TResult2 = never>(onfulfilled?: ((value: RowList<readonly (object | undefined)[]>) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<...>) | ... 1 more ... | undefined) => Promise<...>' is not assignable to type '<TResult1 = unknown[], TResult2 = never>(onfulfilled?: ((value: unknown[]) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null | undefined) => Promise<...>'.
+      Types of parameters 'onfulfilled' and 'onfulfilled' are incompatible.
+        Types of parameters 'value' and 'value' are incompatible.
+          Type 'readonly (object | undefined)[] & Iterable<object> & ResultQueryMeta<number, never>' is missing the following properties from type 'unknown[]': pop, push, reverse, shift, and 5 more.
+src/lib/db/operations/payment-config.ts(30,41): error TS2322: Type 'PendingQuery<readonly (object | undefined)[]>' is not assignable to type 'Promise<unknown[]>'.
+  Types of property 'then' are incompatible.
+    Type '<TResult1 = RowList<readonly (object | undefined)[]>, TResult2 = never>(onfulfilled?: ((value: RowList<readonly (object | undefined)[]>) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<...>) | ... 1 more ... | undefined) => Promise<...>' is not assignable to type '<TResult1 = unknown[], TResult2 = never>(onfulfilled?: ((value: unknown[]) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null | undefined) => Promise<...>'.
+      Types of parameters 'onfulfilled' and 'onfulfilled' are incompatible.
+        Types of parameters 'value' and 'value' are incompatible.
+          Type 'readonly (object | undefined)[] & Iterable<object> & ResultQueryMeta<number, never>' is missing the following properties from type 'unknown[]': pop, push, reverse, shift, and 5 more.
+src/lib/db/operations/payment-config.ts(31,33): error TS2322: Type 'PendingQuery<readonly (object | undefined)[]>' is not assignable to type 'Promise<unknown[]>'.
+  Types of property 'then' are incompatible.
+    Type '<TResult1 = RowList<readonly (object | undefined)[]>, TResult2 = never>(onfulfilled?: ((value: RowList<readonly (object | undefined)[]>) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<...>) | ... 1 more ... | undefined) => Promise<...>' is not assignable to type '<TResult1 = unknown[], TResult2 = never>(onfulfilled?: ((value: unknown[]) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null | undefined) => Promise<...>'.
+      Types of parameters 'onfulfilled' and 'onfulfilled' are incompatible.
+        Types of parameters 'value' and 'value' are incompatible.
+          Type 'readonly (object | undefined)[] & Iterable<object> & ResultQueryMeta<number, never>' is missing the following properties from type 'unknown[]': pop, push, reverse, shift, and 5 more.
+src/lib/db/operations/payment-config.ts(32,35): error TS2322: Type 'PendingQuery<readonly (object | undefined)[]>' is not assignable to type 'Promise<unknown[]>'.
+  Types of property 'then' are incompatible.
+    Type '<TResult1 = RowList<readonly (object | undefined)[]>, TResult2 = never>(onfulfilled?: ((value: RowList<readonly (object | undefined)[]>) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<...>) | ... 1 more ... | undefined) => Promise<...>' is not assignable to type '<TResult1 = unknown[], TResult2 = never>(onfulfilled?: ((value: unknown[]) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null | undefined) => Promise<...>'.
+      Types of parameters 'onfulfilled' and 'onfulfilled' are incompatible.
+        Types of parameters 'value' and 'value' are incompatible.
+          Type 'readonly (object | undefined)[] & Iterable<object> & ResultQueryMeta<number, never>' is missing the following properties from type 'unknown[]': pop, push, reverse, shift, and 5 more.
+src/lib/db/operations/payment-config.ts(33,39): error TS2322: Type 'PendingQuery<readonly (object | undefined)[]>' is not assignable to type 'Promise<unknown[]>'.
+  Types of property 'then' are incompatible.
+    Type '<TResult1 = RowList<readonly (object | undefined)[]>, TResult2 = never>(onfulfilled?: ((value: RowList<readonly (object | undefined)[]>) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<...>) | ... 1 more ... | undefined) => Promise<...>' is not assignable to type '<TResult1 = unknown[], TResult2 = never>(onfulfilled?: ((value: unknown[]) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null | undefined) => Promise<...>'.
+      Types of parameters 'onfulfilled' and 'onfulfilled' are incompatible.
+        Types of parameters 'value' and 'value' are incompatible.
+          Type 'readonly (object | undefined)[] & Iterable<object> & ResultQueryMeta<number, never>' is missing the following properties from type 'unknown[]': pop, push, reverse, shift, and 5 more.
+src/lib/db/operations/payment-config.ts(34,32): error TS2322: Type 'PendingQuery<readonly (object | undefined)[]>' is not assignable to type 'Promise<unknown[]>'.
+  Types of property 'then' are incompatible.
+    Type '<TResult1 = RowList<readonly (object | undefined)[]>, TResult2 = never>(onfulfilled?: ((value: RowList<readonly (object | undefined)[]>) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<...>) | ... 1 more ... | undefined) => Promise<...>' is not assignable to type '<TResult1 = unknown[], TResult2 = never>(onfulfilled?: ((value: unknown[]) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null | undefined) => Promise<...>'.
+      Types of parameters 'onfulfilled' and 'onfulfilled' are incompatible.
+        Types of parameters 'value' and 'value' are incompatible.
+          Type 'readonly (object | undefined)[] & Iterable<object> & ResultQueryMeta<number, never>' is missing the following properties from type 'unknown[]': pop, push, reverse, shift, and 5 more.
+src/lib/db/operations/payment-config.ts(35,35): error TS2322: Type 'PendingQuery<readonly (object | undefined)[]>' is not assignable to type 'Promise<unknown[]>'.
+  Types of property 'then' are incompatible.
+    Type '<TResult1 = RowList<readonly (object | undefined)[]>, TResult2 = never>(onfulfilled?: ((value: RowList<readonly (object | undefined)[]>) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<...>) | ... 1 more ... | undefined) => Promise<...>' is not assignable to type '<TResult1 = unknown[], TResult2 = never>(onfulfilled?: ((value: unknown[]) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null | undefined) => Promise<...>'.
+      Types of parameters 'onfulfilled' and 'onfulfilled' are incompatible.
+        Types of parameters 'value' and 'value' are incompatible.
+          Type 'readonly (object | undefined)[] & Iterable<object> & ResultQueryMeta<number, never>' is missing the following properties from type 'unknown[]': pop, push, reverse, shift, and 5 more.
+src/lib/db/operations/payment-config.ts(36,39): error TS2322: Type 'PendingQuery<readonly (object | undefined)[]>' is not assignable to type 'Promise<unknown[]>'.
+  Types of property 'then' are incompatible.
+    Type '<TResult1 = RowList<readonly (object | undefined)[]>, TResult2 = never>(onfulfilled?: ((value: RowList<readonly (object | undefined)[]>) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<...>) | ... 1 more ... | undefined) => Promise<...>' is not assignable to type '<TResult1 = unknown[], TResult2 = never>(onfulfilled?: ((value: unknown[]) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null | undefined) => Promise<...>'.
+      Types of parameters 'onfulfilled' and 'onfulfilled' are incompatible.
+        Types of parameters 'value' and 'value' are incompatible.
+          Type 'readonly (object | undefined)[] & Iterable<object> & ResultQueryMeta<number, never>' is missing the following properties from type 'unknown[]': pop, push, reverse, shift, and 5 more.
+src/lib/db/operations/person-ride-orders.ts(154,21): error TS2769: No overload matches this call.
+  Overload 1 of 3, '(left: PgColumn<{ name: "status"; tableName: "orders_core"; dataType: "string"; columnType: "PgEnumColumn"; data: "accepted" | "rejected" | "assigned" | "reached_store" | "picked_up" | "in_transit" | ... 13 more ... | "rto_lost"; ... 9 more ...; generated: undefined; }, {}, {}>, right: "accepted" | ... 19 more ... | SQLWrapper): SQL<...>', gave the following error.
+    Argument of type 'string' is not assignable to parameter of type '"accepted" | "rejected" | "assigned" | "reached_store" | "picked_up" | "in_transit" | "delivered" | "cancelled" | "failed" | "created" | "bill_ready" | "payment_initiated_at" | ... 8 more ... | SQLWrapper'.
+  Overload 2 of 3, '(left: Aliased<string>, right: string | SQLWrapper): SQL<unknown>', gave the following error.
+    Argument of type 'PgColumn<{ name: "status"; tableName: "orders_core"; dataType: "string"; columnType: "PgEnumColumn"; data: "accepted" | "rejected" | "assigned" | "reached_store" | "picked_up" | "in_transit" | ... 13 more ... | "rto_lost"; ... 9 more ...; generated: undefined; }, {}, {}>' is not assignable to parameter of type 'Aliased<string>'.
+      Type 'PgColumn<{ name: "status"; tableName: "orders_core"; dataType: "string"; columnType: "PgEnumColumn"; data: "accepted" | "rejected" | "assigned" | "reached_store" | "picked_up" | "in_transit" | ... 13 more ... | "rto_lost"; ... 9 more ...; generated: undefined; }, {}, {}>' is missing the following properties from type 'Aliased<string>': sql, fieldAlias
+  Overload 3 of 3, '(left: never, right: unknown): SQL<unknown>', gave the following error.
+    Argument of type 'PgColumn<{ name: "status"; tableName: "orders_core"; dataType: "string"; columnType: "PgEnumColumn"; data: "accepted" | "rejected" | "assigned" | "reached_store" | "picked_up" | "in_transit" | ... 13 more ... | "rto_lost"; ... 9 more ...; generated: undefined; }, {}, {}>' is not assignable to parameter of type 'never'.
+src/lib/geo/riderPayoutPreview.ts(86,73): error TS2339: Property 'pickupPerKm' does not exist on type '{ id: number; minKm: number; maxKm: number | null; priority: number; }'.
+src/lib/geo/riderPayoutPreview.ts(87,67): error TS2339: Property 'dropPerKm' does not exist on type '{ id: number; minKm: number; maxKm: number | null; priority: number; }'.
+src/lib/merchant-growth/live-preview-insights.ts(155,17): error TS2352: Conversion of type 'RowList<Row[]>' to type '{ v: number; }[]' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  The types returned by 'concat(...)' are incompatible between these types.
+    Type 'Row[]' is not comparable to type '{ v: number; }[]'.
+      Property 'v' is missing in type 'Row' but required in type '{ v: number; }'.
+src/lib/merchant-growth/live-preview-insights.ts(176,17): error TS2352: Conversion of type 'RowList<Row[]>' to type '{ v: unknown; }[]' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  The types returned by 'concat(...)' are incompatible between these types.
+    Type 'Row[]' is not comparable to type '{ v: unknown; }[]'.
+      Property 'v' is missing in type 'Row' but required in type '{ v: unknown; }'.
+src/lib/merchant-growth/live-preview-insights.ts(417,19): error TS2352: Conversion of type 'RowList<Row[]>' to type '{ segment: string; cnt: number; }[]' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  The types returned by 'concat(...)' are incompatible between these types.
+    Type 'Row[]' is not comparable to type '{ segment: string; cnt: number; }[]'.
+      Type 'Row' is missing the following properties from type '{ segment: string; cnt: number; }': segment, cnt
+src/lib/orders/order-payment-detail.ts(602,11): error TS18047: 'foodTotal' is possibly 'null'.
+src/lib/orders/order-payment-detail.ts(604,36): error TS18047: 'foodTotal' is possibly 'null'.
+src/lib/orders/order-payment-detail.ts(605,52): error TS2345: Argument of type 'number | null' is not assignable to parameter of type 'number'.
+  Type 'null' is not assignable to type 'number'.
+src/lib/payment/apply-cancellation-payment.ts(1,52): error TS2307: Cannot find module './financial-rule-executor' or its corresponding type declarations.
+src/lib/payment/apply-cancellation-payment.ts(47,8): error TS2307: Cannot find module './financial-rule-executor' or its corresponding type declarations.
+src/lib/permissions/engine.ts(532,22): error TS2352: Conversion of type 'RowList<Row[]>' to type '{ id: number; system_user_id?: number | undefined; systemUserId?: number | undefined; dashboard_type?: string | undefined; dashboardType?: string | undefined; access_level?: string | undefined; ... 8 more ...; grantedAt?: Date | undefined; }[]' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  The types returned by 'concat(...)' are incompatible between these types.
+    Type 'Row[]' is not comparable to type '{ id: number; system_user_id?: number | undefined; systemUserId?: number | undefined; dashboard_type?: string | undefined; dashboardType?: string | undefined; access_level?: string | undefined; ... 8 more ...; grantedAt?: Date | undefined; }[]'.
+      Property 'id' is missing in type 'Row' but required in type '{ id: number; system_user_id?: number | undefined; systemUserId?: number | undefined; dashboard_type?: string | undefined; dashboardType?: string | undefined; access_level?: string | undefined; ... 8 more ...; grantedAt?: Date | undefined; }'.
+src/lib/riders/rider-orders-query.ts(173,5): error TS2322: Type 'string | null' is not assignable to type 'number | null'.
+  Type 'string' is not assignable to type 'number'.

@@ -73,6 +73,7 @@ export function OffersTrackView({
   const overall = useMemo(() => aggregateOffersPerformance(offers), [offers]);
   const pillCounts = useMemo(
     () => ({
+      all: countOffersForTrackFilter(offers, "all"),
       active: countOffersForTrackFilter(offers, "active"),
       inactive: countOffersForTrackFilter(offers, "inactive"),
       scheduled: countOffersForTrackFilter(offers, "scheduled"),

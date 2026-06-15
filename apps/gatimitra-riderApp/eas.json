@@ -15,8 +15,8 @@
       },
       "env": {
         "EXPO_PUBLIC_API_BASE_URL": "https://api.gatimitra.com",
-        "EXPO_PUBLIC_SUPABASE_URL": "https://mjfnzmepmeqemcoakjkw.supabase.co",
-        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qZm56bWVwbWVxZW1jb2Framt3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYwMjcwMjEsImV4cCI6MjA4MTYwMzAyMX0.jmxOdeGaM4ss20DZZuwV9LtyfddveCJooVZnJo9knkM"
+        "EXPO_PUBLIC_SUPABASE_URL": "https://uoxkwznciiibubtiiffh.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVveGt3em5jaWlpYnVidGlpZmZoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc1NDM2OTQsImV4cCI6MjA4MzExOTY5NH0.r61tUqHUEDp4ia9tyY8IJHB-6acRcbVsZo3s8T3v8_Q"
       }
     },
     "preview": {
@@ -27,8 +27,8 @@
       },
       "env": {
         "EXPO_PUBLIC_API_BASE_URL": "https://api.gatimitra.com",
-        "EXPO_PUBLIC_SUPABASE_URL": "https://mjfnzmepmeqemcoakjkw.supabase.co",
-        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qZm56bWVwbWVxZW1jb2Framt3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYwMjcwMjEsImV4cCI6MjA4MTYwMzAyMX0.jmxOdeGaM4ss20DZZuwV9LtyfddveCJooVZnJo9knkM"
+        "EXPO_PUBLIC_SUPABASE_URL": "https://uoxkwznciiibubtiiffh.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVveGt3em5jaWlpYnVidGlpZmZoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc1NDM2OTQsImV4cCI6MjA4MzExOTY5NH0.r61tUqHUEDp4ia9tyY8IJHB-6acRcbVsZo3s8T3v8_Q"
       }
     },
     "production": {
@@ -39,8 +39,8 @@
       },
       "env": {
         "EXPO_PUBLIC_API_BASE_URL": "https://api.gatimitra.com",
-        "EXPO_PUBLIC_SUPABASE_URL": "https://mjfnzmepmeqemcoakjkw.supabase.co",
-        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qZm56bWVwbWVxZW1jb2Framt3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYwMjcwMjEsImV4cCI6MjA4MTYwMzAyMX0.jmxOdeGaM4ss20DZZuwV9LtyfddveCJooVZnJo9knkM"
+        "EXPO_PUBLIC_SUPABASE_URL": "https://uoxkwznciiibubtiiffh.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVveGt3em5jaWlpYnVidGlpZmZoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc1NDM2OTQsImV4cCI6MjA4MzExOTY5NH0.r61tUqHUEDp4ia9tyY8IJHB-6acRcbVsZo3s8T3v8_Q"
       }
     }
   },

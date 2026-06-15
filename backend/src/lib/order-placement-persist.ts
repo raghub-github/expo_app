@@ -65,7 +65,7 @@ async function fetchStoreAvgPrepMinutes(
  * Run optional SQL without aborting the paid-order transaction.
  * postgres.js marks the txn failed on any error until ROLLBACK TO SAVEPOINT.
  */
-async function runInSavepoint(
+export async function runInSavepoint(
   tx: PostgresJsDatabase<Record<string, unknown>>,
   savepoint: string,
   fn: () => Promise<void>

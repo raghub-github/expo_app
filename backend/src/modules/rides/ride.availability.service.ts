@@ -5,6 +5,11 @@
 import { asc, eq } from "drizzle-orm";
 import { getDb, getSql } from "../../db/client.js";
 import { customerRideServiceCatalog } from "../../db/schema.js";
+import {
+  isCatalogOptionEligibleForTrip,
+  loadRideVehicleLimitsForState,
+  resolveRideStateIdFromCoords,
+} from "../ride-state-config/index.js";
 
 export const DEFAULT_RIDE_SUPPLY_RADIUS_KM = 2;
 export const RIDER_LOCATION_MAX_AGE_MINUTES = 10;
@@ -65,10 +70,27 @@ export async function getNearbyRideSupply(input: {
   pickupLng: number;
   radiusKm?: number;
   rideType?: string;
+  tripKm?: number;
+  pickupPincode?: string | null;
+  pickupState?: string | null;
 }): Promise<RideAvailabilityResult> {
   const radiusKm = input.radiusKm ?? DEFAULT_RIDE_SUPPLY_RADIUS_KM;
+  const tripKm = input.tripKm != null && Number.isFinite(input.tripKm) ? Math.max(0, input.tripKm) : null;
   const db = getDb();
   const sqlClient = getSql();
+
+  let rideLimits: Awaited<ReturnType<typeof loadRideVehicleLimitsForState>> = [];
+  if (tripKm != null) {
+    const stateId = await resolveRideStateIdFromCoords({
+      pickupLat: input.pickupLat,
+      pickupLng: input.pickupLng,
+      pickupPincode: input.pickupPincode,
+      pickupState: input.pickupState,
+    });
+    if (stateId) {
+      rideLimits = await loadRideVehicleLimitsForState(stateId);
+    }
+  }
 
   const catalogRows = await db
     .select()
@@ -190,6 +212,15 @@ export async function getNearbyRideSupply(input: {
   const options: RideAvailabilityOption[] = [];
 
   for (const row of catalogRows) {
+    if (tripKm != null && rideLimits.length > 0) {
+      const eligible = isCatalogOptionEligibleForTrip({
+        catalogCode: row.code,
+        tripKm,
+        limits: rideLimits,
+      });
+      if (!eligible) continue;
+    }
+
     const matchTypes = (row.vehicleTypes ?? []).filter(Boolean);
     const matchingRiders = riders
       .filter((r) => [...r.vehicleTypes].some((vt) => matchTypes.includes(vt)))

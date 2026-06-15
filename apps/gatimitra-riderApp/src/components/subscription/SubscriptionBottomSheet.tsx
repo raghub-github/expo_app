@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -6,8 +6,8 @@ import {
   ScrollView,
   StyleSheet,
   ActivityIndicator,
-  Alert,
   Platform,
+  Modal,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -16,10 +16,9 @@ import { DismissibleBottomSheetShell } from "@/src/components/language/Dismissib
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   type RiderSubscriptionPlan,
-  billingCycleLabel,
-  useRiderSubscriptionPayment,
+  useRiderSubscriptionWallet,
 } from "@/src/hooks/useRiderSubscription";
-import { formatRupeeFromPaise } from "@/src/hooks/useOnboardingFeeConfig";
+import { extractApiErrorMessage } from "@/src/services/http";
 
 type SubscriptionBottomSheetProps = {
   visible: boolean;
@@ -103,6 +102,27 @@ function SubscriptionHeroHeader({
   );
 }
 
+function SuccessOverlay({ visible, onDismiss }: { visible: boolean; onDismiss: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss}>
+      <View style={styles.successBackdrop}>
+        <View style={styles.successCard}>
+          <View style={styles.successIconWrap}>
+            <Ionicons name="checkmark" size={42} color="#FFFFFF" />
+          </View>
+          <Text style={styles.successTitle}>
+            {t("subscription.successTitle", "You are a Pro member now !")}
+          </Text>
+          <Pressable onPress={onDismiss} style={styles.successBtn}>
+            <Text style={styles.successBtnTxt}>{t("subscription.successCta", "Great, thanks")}</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 export function SubscriptionBottomSheet({
   visible,
   onClose,
@@ -112,136 +132,115 @@ export function SubscriptionBottomSheet({
   const { t } = useTranslation();
   const { bottom: safeBottom } = useSafeAreaInsets();
   const sheetBottomPad = Math.max(safeBottom, Platform.OS === "android" ? 12 : 8) + 12;
-  const { createOrder, verifyPayment } = useRiderSubscriptionPayment();
+  const { subscribeWallet } = useRiderSubscriptionWallet();
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showSuccess, setShowSuccess] = useState(false);
+
+  useEffect(() => {
+    if (visible) {
+      setError(null);
+      setShowSuccess(false);
+    }
+  }, [visible, plan?.id]);
 
   if (!plan) return null;
 
   const accent = plan.badgeColor || "#7C3AED";
   const featured = plan.featuredPrice;
-  const cycleLabel = featured ? billingCycleLabel(featured.billingCycle) : "Monthly";
 
   const handleSubscribe = async () => {
     if (!plan || loading) return;
     setLoading(true);
+    setError(null);
 
     try {
-      const order = await createOrder.mutateAsync({ planId: plan.id });
-
-      if (order.skipPayment) {
-        onSubscribed?.();
-        onClose();
-        return;
-      }
-
-      if (__DEV__) {
-        Alert.alert(
-          t("subscription.payTitle", "Subscribe"),
-          t(
-            "subscription.payDevMessage",
-            "Pay {{amount}} for {{plan}} ({{cycle}}, incl. GST). In production this opens Razorpay checkout.",
-            {
-              amount: formatRupeeFromPaise(order.amount),
-              plan: plan.planName,
-              cycle: cycleLabel,
-            }
-          ),
-          [
-            { text: t("common.cancel", "Cancel"), style: "cancel", onPress: () => setLoading(false) },
-            {
-              text: t("subscription.simulatePay", "Simulate Payment"),
-              onPress: async () => {
-                try {
-                  await verifyPayment.mutateAsync({
-                    planId: plan.id,
-                    razorpayOrderId: order.orderId,
-                    razorpayPaymentId: `pay_${Date.now()}`,
-                    razorpaySignature: "simulated_signature",
-                  });
-                  onSubscribed?.();
-                  onClose();
-                } catch (e) {
-                  Alert.alert(
-                    t("common.error", "Error"),
-                    e instanceof Error ? e.message : t("subscription.failed", "Subscription failed")
-                  );
-                } finally {
-                  setLoading(false);
-                }
-              },
-            },
-          ]
-        );
-        return;
-      }
-
-      Alert.alert(
-        t("common.error", "Error"),
-        t("subscription.razorpaySoon", "Razorpay checkout will open here in production builds.")
-      );
+      await subscribeWallet.mutateAsync({
+        planId: plan.id,
+        billingCycle: featured?.billingCycle,
+        autoWalletDeduction: true,
+      });
+      setShowSuccess(true);
     } catch (e) {
-      Alert.alert(
-        t("common.error", "Error"),
-        e instanceof Error ? e.message : t("subscription.failed", "Subscription failed")
+      setError(
+        extractApiErrorMessage(e, t("subscription.failed", "Subscription failed"))
       );
     } finally {
-      if (!__DEV__) setLoading(false);
+      setLoading(false);
     }
   };
 
+  const handleSuccessDismiss = () => {
+    setShowSuccess(false);
+    onSubscribed?.();
+    onClose();
+  };
+
   return (
-    <DismissibleBottomSheetShell
-      visible={visible}
-      onDismiss={onClose}
-      maxHeightRatio={0.78}
-      sheetBottomPadding={sheetBottomPad}
-      sheetStyle={styles.sheet}
-    >
-      <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
-        <SubscriptionHeroHeader
-          planName={plan.planName}
-          headline={plan.headline || plan.tagline}
-          badgeText={plan.badgeText}
-          featured={featured}
-          inclGstLabel={t("subscription.inclGst", "incl. GST")}
-        />
+    <>
+      <DismissibleBottomSheetShell
+        visible={visible}
+        onDismiss={onClose}
+        maxHeightRatio={0.78}
+        sheetBottomPadding={sheetBottomPad}
+        sheetStyle={styles.sheet}
+      >
+        <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
+          <SubscriptionHeroHeader
+            planName={plan.planName}
+            headline={plan.headline || plan.tagline}
+            badgeText={plan.badgeText}
+            featured={featured}
+            inclGstLabel={t("subscription.inclGst", "incl. GST")}
+          />
 
-        <View style={styles.body}>
-          <View style={styles.benefitsCard}>
-            {plan.benefits.map((benefit, index) => (
-              <View key={`${plan.id}-benefit-${index}`} style={styles.benefitRow}>
-                <LinearGradient colors={["#34D399", "#059669"]} style={styles.checkCircle}>
-                  <Ionicons name="checkmark" size={12} color="#ffffff" />
-                </LinearGradient>
-                <Text style={styles.benefitText}>{benefit}</Text>
-              </View>
-            ))}
-          </View>
+          <View style={styles.body}>
+            <View style={styles.benefitsCard}>
+              {plan.benefits.map((benefit, index) => (
+                <View key={`${plan.id}-benefit-${index}`} style={styles.benefitRow}>
+                  <LinearGradient colors={["#34D399", "#059669"]} style={styles.checkCircle}>
+                    <Ionicons name="checkmark" size={12} color="#ffffff" />
+                  </LinearGradient>
+                  <Text style={styles.benefitText}>{benefit}</Text>
+                </View>
+              ))}
+            </View>
 
-          <Pressable
-            onPress={handleSubscribe}
-            disabled={loading}
-            style={({ pressed }) => [styles.ctaWrap, pressed && { opacity: 0.94 }]}
-          >
-            <LinearGradient
-              colors={["#4C1D95", accent, "#C084FC"]}
-              start={{ x: 0, y: 0.5 }}
-              end={{ x: 1, y: 0.5 }}
-              style={styles.cta}
+            {error ? <Text style={styles.errorTxt}>{error}</Text> : null}
+
+            <Pressable
+              onPress={handleSubscribe}
+              disabled={loading}
+              style={({ pressed }) => [styles.ctaWrap, pressed && { opacity: 0.94 }]}
             >
-              {loading ? (
-                <ActivityIndicator color="#ffffff" />
-              ) : (
-                <Text style={styles.ctaText}>
-                  {plan.ctaLabel}
-                  {featured ? ` · ${formatRupee(featured.total)}` : ""}
-                </Text>
+              <LinearGradient
+                colors={["#4C1D95", accent, "#C084FC"]}
+                start={{ x: 0, y: 0.5 }}
+                end={{ x: 1, y: 0.5 }}
+                style={styles.cta}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#ffffff" />
+                ) : (
+                  <Text style={styles.ctaText}>
+                    {plan.ctaLabel}
+                    {featured ? ` · ${formatRupee(featured.total)}` : ""}
+                  </Text>
+                )}
+              </LinearGradient>
+            </Pressable>
+            <Text style={styles.walletHint}>
+              {t(
+                "subscription.walletPayHint",
+                "Amount will be deducted from your rider wallet instantly."
               )}
-            </LinearGradient>
-          </Pressable>
-        </View>
-      </ScrollView>
-    </DismissibleBottomSheetShell>
+            </Text>
+          </View>
+        </ScrollView>
+      </DismissibleBottomSheetShell>
+
+      <SuccessOverlay visible={showSuccess} onDismiss={handleSuccessDismiss} />
+    </>
   );
 }
 
@@ -395,14 +394,14 @@ const styles = StyleSheet.create({
   body: {
     paddingHorizontal: 20 + G,
     paddingTop: 14 + G,
-    paddingBottom: 0,
+    paddingBottom: 4,
+    gap: 14,
   },
   benefitsCard: {
     backgroundColor: "#FAFAFA",
     borderRadius: 14,
     padding: 12 + G,
     gap: 8 + G,
-    marginBottom: 14 + G,
     borderWidth: 1,
     borderColor: "#F3F4F6",
   },
@@ -424,6 +423,11 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#1F2937",
     lineHeight: 19 + G,
+  },
+  errorTxt: {
+    fontSize: 13,
+    color: "#DC2626",
+    fontWeight: "600",
   },
   ctaWrap: {
     borderRadius: 14,
@@ -447,5 +451,52 @@ const styles = StyleSheet.create({
     color: "#ffffff",
     fontSize: 16,
     fontWeight: "800",
+  },
+  walletHint: {
+    textAlign: "center",
+    fontSize: 12,
+    color: "#6B7280",
+    marginBottom: 4,
+  },
+  successBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
+  successCard: {
+    width: "100%",
+    maxWidth: 340,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    padding: 24,
+    alignItems: "center",
+  },
+  successIconWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: "#10B981",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 16,
+  },
+  successTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#111827",
+    textAlign: "center",
+    marginBottom: 20,
+  },
+  successBtn: {
+    alignSelf: "flex-end",
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  successBtnTxt: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#7C3AED",
   },
 });

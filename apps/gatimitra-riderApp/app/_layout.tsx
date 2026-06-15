@@ -17,7 +17,7 @@ import * as SplashScreen from 'expo-splash-screen';
 
 import { useEffect, useState } from 'react';
 
-import { View, ActivityIndicator, Text } from 'react-native';
+import { View, ActivityIndicator, Text, Image, StyleSheet } from 'react-native';
 
 import { StatusBar } from 'expo-status-bar';
 
@@ -41,9 +41,11 @@ import { Platform } from 'react-native';
 
 import { RiderPushSetup } from '@/src/components/RiderPushSetup';
 import { RiderDispatchRealtime } from '@/src/components/RiderDispatchRealtime';
+import { RiderDispatchKeepAlive } from '@/src/components/RiderDispatchKeepAlive';
 import { RiderDutyLocationPing } from '@/src/components/RiderDutyLocationPing';
 import { isRiderWsEnabled } from '@/src/config/env';
 import { IncomingRideOrderHost } from '@/src/components/orders/IncomingRideOrderHost';
+import { RiderToastHost } from '@/src/components/RiderToastHost';
 
 import { initializeMapbox } from '@/src/services/maps/mapbox';
 
@@ -106,11 +108,9 @@ export default function RootLayout() {
       try {
 
         await Asset.loadAsync([
-
+          require('../assets/images/rideraap.png'),
+          require('../assets/images/splash-logo.png'),
           require('../assets/images/logo.png'),
-
-          require('../assets/images/onlylogo.png'),
-
         ]);
 
         setAssetsLoaded(true);
@@ -166,9 +166,19 @@ export default function RootLayout() {
 
 
   if (!loaded || !assetsLoaded) {
-
-    return null;
-
+    return (
+      <View style={bootStyles.root}>
+        <StatusBar style="dark" />
+        <Image
+          source={require('../assets/images/rideraap.png')}
+          style={bootStyles.logo}
+          resizeMode="contain"
+          accessibilityLabel="GatiMitra Rider"
+        />
+        <Text style={bootStyles.title}>GatiMitra Rider</Text>
+        <ActivityIndicator size="small" color={colors.primary[600]} style={bootStyles.spinner} />
+      </View>
+    );
   }
 
 
@@ -319,6 +329,7 @@ function RootLayoutNav() {
 
           <RiderPushSetup />
           <RiderDutyLocationPing />
+          <RiderDispatchKeepAlive />
           {isRiderWsEnabled() ? <RiderDispatchRealtime /> : null}
 
           <Stack
@@ -385,6 +396,15 @@ function RootLayoutNav() {
             />
 
             <Stack.Screen
+              name="ride-payment-waiting"
+              options={{
+                gestureEnabled: false,
+                animation: "fade",
+                contentStyle: { flex: 1, backgroundColor: "#ffffff" },
+              }}
+            />
+
+            <Stack.Screen
               name="ride-delivery-success"
               options={{
                 gestureEnabled: false,
@@ -398,6 +418,7 @@ function RootLayoutNav() {
           </Stack>
 
           <IncomingRideOrderHost />
+          <RiderToastHost />
 
         </ThemeProvider>
 
@@ -425,4 +446,27 @@ function RootLayoutNav() {
 
 }
 
+const bootStyles = StyleSheet.create({
+  root: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 32,
+  },
+  logo: {
+    width: 220,
+    height: 220,
+  },
+  title: {
+    marginTop: 16,
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#14532D',
+    letterSpacing: 0.2,
+  },
+  spinner: {
+    marginTop: 24,
+  },
+});
 

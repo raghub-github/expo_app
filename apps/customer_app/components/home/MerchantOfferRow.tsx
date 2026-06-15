@@ -1,5 +1,5 @@
 /**
- * Zomato-style offer line under restaurant name (blue % badge + copy).
+ * GatiMitra-style offer line under restaurant name (blue % badge + copy).
  */
 
 import { View, Text, StyleSheet } from "react-native";

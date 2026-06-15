@@ -4,6 +4,7 @@ import { Hourglass } from 'lucide-react';
 import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
 import {
   isPrepCountdownExpired,
+  isPrepPerformanceOverdue,
   prepReadyCountdownLabel,
   canUseNeedMoreTime,
   prepOverdueSeconds,
@@ -46,11 +47,16 @@ function OrderDelayTopBanner({ label }: { label: string }) {
   );
 }
 
-export function computePrepExpired(order: PrepCountdownOrder, nowMs: number): boolean {
+export function ExtraPrepTimeAddedBanner({ label }: { label: string }) {
   return (
-    isPrepCountdownExpired(order, nowMs, { prefix: ORDER_READY_PREFIX }) ||
-    !prepReadyCountdownLabel(order, nowMs, { prefix: ORDER_READY_PREFIX }).label.includes('(')
+    <div className="flex items-center justify-center border-b border-orange-200 bg-orange-50 px-3 py-1.5">
+      <span className="text-xs font-extrabold tracking-normal text-orange-900">{label}</span>
+    </div>
   );
+}
+
+export function computePrepExpired(order: PrepCountdownOrder, nowMs: number): boolean {
+  return isPrepPerformanceOverdue(order, nowMs);
 }
 
 export type MerchantPreparingOrderActionsProps = {
@@ -77,9 +83,13 @@ export function MerchantPreparingOrderActions({
   compact,
   className = '',
 }: MerchantPreparingOrderActionsProps) {
-  const prepExpired = computePrepExpired(order, nowMs);
+  const performanceOverdue = computePrepExpired(order, nowMs);
+  const countdownExpired =
+    isPrepCountdownExpired(order, nowMs, { prefix: ORDER_READY_PREFIX }) ||
+    !prepReadyCountdownLabel(order, nowMs, { prefix: ORDER_READY_PREFIX }).label.includes('(');
   const canNeedMore =
-    prepExpired &&
+    performanceOverdue &&
+    countdownExpired &&
     !!onNeedMoreTime &&
     canUseNeedMoreTime(
       order.prep_delay_use_count,
@@ -107,7 +117,7 @@ export function MerchantPreparingOrderActions({
     />
   );
 
-  if (!prepExpired) {
+  if (!performanceOverdue) {
     return <div className={`w-full ${className}`}>{readyBtn}</div>;
   }
 

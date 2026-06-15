@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { assertStoreAccess } from '@/lib/auth/assert-store-access';
 import { WAITING_FOR_ORDER_TITLE } from '@/lib/partner-notification-constants';
+import {
+  isPartnerNotificationsPanelClearedForStore,
+  markPartnerNotificationsPanelCleared,
+} from '@/lib/partner-notifications-panel';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -81,6 +85,7 @@ export async function POST(req: NextRequest) {
         console.error('[store-notifications POST] clear_all', error);
         return NextResponse.json({ error: 'delete_failed' }, { status: 500 });
       }
+      await markPartnerNotificationsPanelCleared(db, gate.storeIdNum);
       return NextResponse.json({ ok: true });
     }
 
@@ -103,6 +108,9 @@ export async function POST(req: NextRequest) {
 
     if (action !== 'ensure_waiting') {
       return NextResponse.json({ error: 'invalid_action' }, { status: 400 });
+    }
+    if (await isPartnerNotificationsPanelClearedForStore(db, gate.storeIdNum)) {
+      return NextResponse.json({ created: false, suppressed: true });
     }
     const { data: existing, error: exErr } = await db
       .from('merchant_store_notifications')

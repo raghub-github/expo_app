@@ -18,6 +18,7 @@ import {
   NAV_SHEET_CALL_BLUE,
   NAV_SHEET_MAP_BTN_BG,
 } from "@/src/components/orders/nav-sheet-ui";
+import { PartnerChatUnreadBadge } from "@/src/components/orders/PartnerChatUnreadBadge";
 import type { RiderOrderSummary } from "@/src/services/api/riderApi";
 import type { NavigatePickupRouteMeta } from "@/src/components/orders/NavigatePickupBottomSheet";
 import type { MilestoneGeoState } from "@/src/hooks/useMilestoneGeoFence";
@@ -51,15 +52,21 @@ type Props = {
   onReachPickup: () => void;
   onReachDrop: () => void;
   onCompleteRide: () => void;
-  onEnterPickupOtp?: () => void;
   onStartRide?: () => void;
   startRideLoading?: boolean;
   completeRideLoading?: boolean;
   reachSliderDone?: boolean;
+  startRideSliderKey?: number;
+  waitTimerLabel?: string | null;
+  otpSheetOpen?: boolean;
   onCancel: () => void;
   onCallCustomer: () => void;
+  onChatCustomer?: () => void;
   onOpenMaps: () => void;
+  onGoHome?: () => void;
   callDisabled?: boolean;
+  chatDisabled?: boolean;
+  chatUnreadCount?: number;
   sheetExpanded?: boolean;
   onToggleSheetExpanded?: () => void;
   milestoneGeo?: Partial<Record<string, MilestoneGeoState>>;
@@ -86,15 +93,21 @@ export function PersonRideNavigateBottomSheet({
   onReachPickup,
   onReachDrop,
   onCompleteRide,
-  onEnterPickupOtp,
   onStartRide,
   startRideLoading = false,
   completeRideLoading = false,
   reachSliderDone = false,
+  startRideSliderKey = 0,
+  waitTimerLabel = null,
+  otpSheetOpen = false,
   onCancel,
   onCallCustomer,
+  onChatCustomer,
   onOpenMaps,
+  onGoHome,
   callDisabled,
+  chatDisabled,
+  chatUnreadCount = 0,
   sheetExpanded = true,
   onToggleSheetExpanded,
   milestoneGeo,
@@ -104,23 +117,24 @@ export function PersonRideNavigateBottomSheet({
     ? "…"
     : formatNavSheetDistance(routeMeta.metersAway);
   const fullAddress = [locationAddress, locationLandmark].filter(Boolean).join(", ");
+  const showCancel = phase === "pickup" && !rideStarted;
 
   const showReachPickup =
     phase === "pickup" && !pickupOtpVerified && !rideStarted && !reachSliderDone;
-  const showEnterPickupOtp =
-    phase === "pickup" && reachSliderDone && !pickupOtpVerified && !!onEnterPickupOtp;
   const showStartRide =
-    phase === "pickup" && pickupOtpVerified && !rideStarted && !!onStartRide;
+    phase === "pickup" && reachSliderDone && !pickupOtpVerified && !rideStarted && !!onStartRide;
+  const showPickupWaitTimer =
+    phase === "pickup" && reachSliderDone && !pickupOtpVerified && !rideStarted && !!waitTimerLabel;
   const showReachDrop = phase === "drop" && rideStarted && !atDrop && !orderDelivered;
   const showCompleteRide = phase === "drop" && atDrop && !orderDelivered;
 
   const flowStep: PersonRideFlowStep = orderDelivered
     ? "complete"
-    : !reachSliderDone && !pickupOtpVerified
+    : !reachSliderDone
       ? "reach"
-      : !pickupOtpVerified
+      : otpSheetOpen
         ? "otp"
-        : !rideStarted
+        : !pickupOtpVerified || !rideStarted
           ? "start"
           : "complete";
 
@@ -157,31 +171,15 @@ export function PersonRideNavigateBottomSheet({
           geoHint={reachPickupGeo.hintText}
         />
       ) : null}
-      {showEnterPickupOtp && pickupOtpGeo.locked && pickupOtpGeo.hintText ? (
-        <View style={styles.geoHintSlot}>
-          <Text style={styles.geoHint} numberOfLines={3}>
-            {pickupOtpGeo.hintText}
-          </Text>
+      {showPickupWaitTimer ? (
+        <View style={styles.waitTimerRow}>
+          <Ionicons name="time-outline" size={18} color={colors.secondary[700]} />
+          <Text style={styles.waitTimerText}>{waitTimerLabel}</Text>
         </View>
-      ) : null}
-      {showEnterPickupOtp ? (
-        <Pressable
-          onPress={onEnterPickupOtp}
-          disabled={pickupOtpGeo.locked}
-          style={({ pressed }) => [
-            styles.startOtpBtn,
-            pressed && styles.startOtpBtnPressed,
-            pickupOtpGeo.locked && styles.startOtpBtnDisabled,
-          ]}
-        >
-          <Ionicons name="keypad-outline" size={20} color="#ffffff" />
-          <Text style={styles.startOtpBtnText}>
-            {t("orders.activeRide.submitPickupOtp", "Submit pickup OTP")}
-          </Text>
-        </Pressable>
       ) : null}
       {showStartRide ? (
         <FoodSlideToReachStore
+          key={`start-ride-${startRideSliderKey}`}
           label={t("orders.activeRide.slideStartRide", "Start ride")}
           onComplete={onStartRide!}
           loading={startRideLoading}
@@ -214,12 +212,28 @@ export function PersonRideNavigateBottomSheet({
         />
       ) : null}
       {orderDelivered ? (
-        <View style={styles.doneBanner}>
-          <Ionicons name="checkmark-circle" size={22} color={colors.success[700]} />
-          <Text style={styles.doneBannerText}>
-            {t("orders.activeRide.rideCompletedBanner", "Ride completed successfully")}
-          </Text>
-        </View>
+        <>
+          <View style={styles.doneBanner}>
+            <Ionicons name="checkmark-circle" size={22} color={colors.success[700]} />
+            <Text style={styles.doneBannerText}>
+              {t("orders.activeRide.rideCompletedBanner", "Ride completed successfully")}
+            </Text>
+          </View>
+          {onGoHome ? (
+            <Pressable
+              onPress={onGoHome}
+              style={({ pressed }) => [styles.goHomeBtn, pressed && styles.goHomeBtnPressed]}
+              accessibilityRole="button"
+              accessibilityLabel={t("orders.deliverySuccess.goToHome", "Go to Home")}
+            >
+              <Ionicons name="grid-outline" size={20} color="#ffffff" />
+              <Text style={styles.goHomeBtnText}>
+                {t("orders.deliverySuccess.goToHome", "Go to Home")}
+              </Text>
+              <Ionicons name="chevron-forward" size={20} color="#ffffff" />
+            </Pressable>
+          ) : null}
+        </>
       ) : null}
     </>
   );
@@ -239,66 +253,62 @@ export function PersonRideNavigateBottomSheet({
       {sheetExpanded ? (
         <View style={styles.sheetBody}>
         <View style={styles.detailsBody}>
-          <View style={styles.metaTopRow}>
-            <Text style={styles.distanceLabel}>{distanceLabel}</Text>
+          <View style={styles.customerHeaderRow}>
+            <View style={styles.customerInfoCol}>
+              <Text style={styles.locationName} numberOfLines={2}>
+                {locationName}
+              </Text>
+              <Text style={styles.locationAddress} numberOfLines={2}>
+                {fullAddress}
+              </Text>
+            </View>
+            <View style={styles.metaTopCol}>
+              {showCancel ? (
+                <Pressable
+                  onPress={onCancel}
+                  disabled={cancelLoading}
+                  style={({ pressed }) => [
+                    styles.cancelTopBtn,
+                    pressed && styles.cancelTopBtnPressed,
+                  ]}
+                  hitSlop={6}
+                >
+                  {cancelLoading ? (
+                    <ActivityIndicator size="small" color={colors.error[600]} />
+                  ) : (
+                    <Text style={styles.cancelTopBtnText}>
+                      {t("orders.activeRide.cancelShort", "Cancel")}
+                    </Text>
+                  )}
+                </Pressable>
+              ) : null}
+              <Text style={styles.distanceLabel}>{distanceLabel}</Text>
+            </View>
           </View>
 
-          <Text style={styles.locationName} numberOfLines={2}>
-            {locationName}
-          </Text>
-          <Text style={styles.locationAddress} numberOfLines={3}>
-            {fullAddress}
-          </Text>
-
-          <View style={styles.callMapRow}>
-            <TouchableOpacity
-              activeOpacity={0.75}
+          <View style={styles.tripleActionRow}>
+            <RideNavActionButton
+              icon="call"
+              label={t("orders.activeFood.call", "Call")}
               onPress={onCallCustomer}
               disabled={callDisabled}
-              style={[styles.callBtn, callDisabled && styles.callBtnDisabled]}
-            >
-              <Ionicons
-                name="call"
-                size={20}
-                color={callDisabled ? "#9AA0A6" : NAV_SHEET_CALL_BLUE}
-              />
-              <Text
-                style={[styles.callBtnText, callDisabled && styles.callBtnTextDisabled]}
-              >
-                {t("orders.activeFood.call", "Call")}
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              activeOpacity={0.75}
+            />
+            <RideNavActionButton
+              icon="chatbubble-ellipses"
+              label={t("orders.activeRide.chat", "Chat")}
+              onPress={onChatCustomer ?? (() => {})}
+              disabled={chatDisabled || !onChatCustomer}
+              unreadCount={chatUnreadCount}
+            />
+            <RideNavActionButton
+              icon="navigate"
+              label={t("orders.activeFood.goToMap", "Go to Map")}
               onPress={onOpenMaps}
-              style={styles.mapBtn}
-            >
-              <Ionicons name="navigate" size={18} color="#ffffff" />
-              <Text style={styles.mapBtnText} numberOfLines={1} adjustsFontSizeToFit>
-                {t("orders.activeFood.goToMap", "Go to Map")}
-              </Text>
-            </TouchableOpacity>
+              variant="filled"
+            />
           </View>
 
           <PersonRideFlowSteps activeStep={flowStep} orderDelivered={orderDelivered} />
-
-          {phase === "pickup" && !rideStarted ? (
-            <Pressable
-              onPress={onCancel}
-              disabled={cancelLoading}
-              style={({ pressed }) => [styles.cancelBtn, pressed && styles.cancelBtnPressed]}
-              hitSlop={6}
-            >
-              {cancelLoading ? (
-                <ActivityIndicator size="small" color={colors.error[600]} />
-              ) : (
-                <Text style={styles.cancelBtnText}>
-                  {t("orders.activeRide.cancelShort", "Cancel")}
-                </Text>
-              )}
-            </Pressable>
-          ) : null}
 
         </View>
         </View>
@@ -317,6 +327,55 @@ export function PersonRideNavigateBottomSheet({
         <View style={styles.actionsDock}>{actionButtons}</View>
       </View>
     </View>
+  );
+}
+
+function RideNavActionButton({
+  icon,
+  label,
+  onPress,
+  disabled,
+  variant = "outline",
+  unreadCount = 0,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+  variant?: "outline" | "filled";
+  unreadCount?: number;
+}) {
+  const filled = variant === "filled";
+  return (
+    <TouchableOpacity
+      activeOpacity={0.75}
+      onPress={onPress}
+      disabled={disabled}
+      style={[
+        styles.actionIconBtn,
+        filled ? styles.actionIconBtnFilled : styles.actionIconBtnOutline,
+        disabled && styles.actionIconBtnDisabled,
+      ]}
+    >
+      <View style={styles.actionIconInner}>
+        <Ionicons
+          name={icon}
+          size={22}
+          color={filled ? "#ffffff" : disabled ? "#9AA0A6" : NAV_SHEET_CALL_BLUE}
+        />
+        <PartnerChatUnreadBadge count={unreadCount} style={styles.actionUnreadBadge} />
+      </View>
+      <Text
+        style={[
+          styles.actionIconBtnText,
+          filled ? styles.actionIconBtnTextFilled : styles.actionIconBtnTextOutline,
+          disabled && styles.actionIconBtnTextDisabled,
+        ]}
+        numberOfLines={1}
+      >
+        {label}
+      </Text>
+    </TouchableOpacity>
   );
 }
 
@@ -353,20 +412,93 @@ const styles = StyleSheet.create({
   },
   sheetBody: {
     width: "100%",
-    paddingHorizontal: 16,
-    marginTop: -6,
+    paddingHorizontal: 12,
+    marginTop: -8,
   },
-  metaTopRow: {
+  customerHeaderRow: {
     flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "flex-end",
-    marginBottom: 8,
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+    marginBottom: 10,
+  },
+  customerInfoCol: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: 4,
+  },
+  metaTopCol: {
+    alignItems: "flex-end",
+    gap: 2,
+    flexShrink: 0,
+  },
+  cancelTopBtn: {
+    paddingVertical: 2,
+    paddingHorizontal: 2,
+  },
+  cancelTopBtnPressed: { opacity: 0.75 },
+  cancelTopBtnText: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: colors.error[600],
   },
   distanceLabel: {
     fontSize: 15,
     fontWeight: "700",
     color: "#202124",
     letterSpacing: -0.2,
+  },
+  tripleActionRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 8,
+    marginBottom: 10,
+  },
+  actionIconBtn: {
+    flex: 1,
+    minHeight: 52,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+    paddingVertical: 9,
+  },
+  actionIconInner: {
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  actionUnreadBadge: {
+    position: "absolute",
+    top: -4,
+    right: -6,
+  },
+  actionIconBtnOutline: {
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: NAV_SHEET_CALL_BLUE,
+  },
+  actionIconBtnFilled: {
+    backgroundColor: NAV_SHEET_MAP_BTN_BG,
+    borderWidth: 0,
+  },
+  actionIconBtnDisabled: {
+    opacity: 0.55,
+  },
+  actionIconBtnText: {
+    marginTop: 3,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  actionIconBtnTextOutline: {
+    color: NAV_SHEET_CALL_BLUE,
+  },
+  actionIconBtnTextFilled: {
+    color: "#ffffff",
+  },
+  actionIconBtnTextDisabled: {
+    color: "#9AA0A6",
   },
   callMapRow: {
     width: "100%",
@@ -418,14 +550,14 @@ const styles = StyleSheet.create({
   },
   detailsBody: {
     width: "100%",
-    paddingBottom: 2,
+    paddingBottom: 0,
   },
   chevronDock: {
     width: "100%",
     alignItems: "center",
     justifyContent: "center",
-    paddingTop: 10,
-    paddingBottom: 8,
+    paddingTop: 6,
+    paddingBottom: 4,
   },
   handle: {
     width: 40,
@@ -535,19 +667,18 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   locationName: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: "700",
     color: "#202124",
-    marginBottom: 4,
+    marginBottom: 2,
     letterSpacing: -0.3,
-    lineHeight: 26,
+    lineHeight: 22,
   },
   locationAddress: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "400",
     color: "#5F6368",
-    lineHeight: 20,
-    marginBottom: 14,
+    lineHeight: 18,
   },
   doneBanner: {
     flexDirection: "row",
@@ -558,19 +689,45 @@ const styles = StyleSheet.create({
     backgroundColor: colors.success[50],
   },
   doneBannerText: { flex: 1, fontSize: 14, fontWeight: "700", color: colors.success[800] },
-  startOtpBtn: {
+  goHomeBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    marginTop: 10,
+    minHeight: 48,
+    borderRadius: 999,
+    backgroundColor: "#15803d",
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+  },
+  goHomeBtnPressed: { opacity: 0.92 },
+  goHomeBtnText: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#ffffff",
+    textAlign: "center",
+  },
+  waitTimerRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: colors.secondary[600],
+    backgroundColor: colors.secondary[50],
     borderRadius: 12,
-    paddingVertical: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     marginTop: 4,
+    marginBottom: 4,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.secondary[200],
   },
-  startOtpBtnPressed: { opacity: 0.9 },
-  startOtpBtnDisabled: { opacity: 0.5 },
-  startOtpBtnText: { fontSize: 15, fontWeight: "800", color: "#ffffff" },
+  waitTimerText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: colors.secondary[800],
+  },
   actionsDock: {
     width: "100%",
     paddingTop: 4,

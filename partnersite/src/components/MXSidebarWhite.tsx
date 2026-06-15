@@ -2,8 +2,12 @@
 
 import React, { useState, useEffect } from 'react'
 import { useMerchantSession } from '@/context/MerchantSessionContext'
+import { useApprovedPartnerStores } from '@/hooks/usePartnerResolveSession'
+import { prefetchPartnerRouteData } from '@/lib/partner-route-prefetch'
+import { readPartnerSelectedStoreId } from '@/lib/partner-selected-store'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   LayoutDashboard,
   UtensilsCrossed,
@@ -86,8 +90,14 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
-  const [storeList, setStoreList] = useState<Array<{ store_id: string; store_name: string }>>([]);
   const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
+  const queryClient = useQueryClient();
+  const { approvedStores } = useApprovedPartnerStores();
+  const storeList = approvedStores.map((s) => ({
+    store_id: String(s.store_id),
+    store_name: String(s.store_name || s.store_id || 'Store'),
+  }));
+  const activeStoreId = readPartnerSelectedStoreId(restaurantId);
 
   // On mobile: keep sidebar closed on any route change and on load/reload (never open automatically).
   useEffect(() => {
@@ -112,31 +122,6 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
       window.removeEventListener('closeMobileSidebar', handleCloseSidebar);
       window.removeEventListener('openMobileSidebar', handleOpenSidebar);
     };
-  }, []);
-
-  // Load approved stores for sidebar store switcher
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const res = await fetch('/api/merchant-auth/resolve-session', { credentials: 'include' });
-        const data = await res.json().catch(() => ({}));
-        if (cancelled || !res.ok || !Array.isArray((data as any).stores)) return;
-        const approved = ((data as any).stores as any[]).filter(
-          (s: any) => String(s.approval_status || '').toUpperCase() === 'APPROVED'
-        );
-        setStoreList(
-          approved.map((s: any) => ({
-            store_id: String(s.store_id),
-            store_name: String(s.store_name || s.store_id || 'Store'),
-          }))
-        );
-      } catch {
-        // ignore
-      }
-    };
-    load();
-    return () => { cancelled = true; };
   }, []);
 
   const merchantSession = useMerchantSession();
@@ -294,6 +279,9 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
     const link = (
       <Link
         href={item.href}
+        prefetch
+        onMouseEnter={() => prefetchPartnerRouteData(queryClient, item.href, activeStoreId)}
+        onFocus={() => prefetchPartnerRouteData(queryClient, item.href, activeStoreId)}
         onClick={() => setMobileMenuOpen(false)}
         className={`flex items-center rounded-lg transition-all duration-200 font-medium text-sm outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-0 ${
           effectiveCollapsed

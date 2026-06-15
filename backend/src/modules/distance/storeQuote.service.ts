@@ -37,7 +37,14 @@ import {
   calculateProgressiveSlabAmount,
   type SelectedSlabQuote,
 } from "../delivery-slab-pricing/deliverySlabPricing.service.js";
+import {
+  computeDeliveryFallbackFee,
+  getDeliveryFallbackRates,
+} from "../delivery/deliveryFallback.config.js";
 import type { DeliveryActorType, DeliveryRateSlabRow, DeliveryServiceType } from "../delivery-slab-pricing/types.js";
+import { resolveRiderPayoutQuote } from "../rider-payout-pricing/resolveRiderPayoutQuote.js";
+import { loadEffectiveRideCustomerPricing } from "../rider-payout-pricing/riderPayoutPricing.repository.js";
+import type { GeoHierarchyLevel, RideVehiclePricingType } from "../rider-payout-pricing/types.js";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -69,6 +76,13 @@ export type StoreQuoteInput = {
   serviceType?: "FOOD" | "PARCEL" | "RIDE";
   /** Optional override for waiting minutes (rider actor only). */
   riderWaitingMinutes?: number;
+  /** Rider payout v2: separate pickup (rider→merchant) and drop (merchant→customer) km. */
+  riderPickupKm?: number;
+  riderDropKm?: number;
+  /** Ride vehicle type for ride service pricing. */
+  rideVehicleType?: RideVehiclePricingType;
+  /** Rider id for GMitra Max surge/waiting eligibility. */
+  riderId?: number | null;
   /** Skip route cache if true. */
   skipCache?: boolean;
 };
@@ -346,13 +360,119 @@ export async function resolveStoreDeliveryQuote(
 
     if (slabs.length > 0) {
       if (actor === "rider") {
+        const geoLevel = (appliedGeoLevel ?? "pincode") as GeoHierarchyLevel;
+        const geoRefId =
+          geoLevelsToTry.find((g) => g.level === appliedGeoLevel)?.refId ??
+          dropGeoRefs.pincode ??
+          dropGeoRefs.state ??
+          "";
+
+        if (geoRefId) {
+          const pickupKm = input.riderPickupKm ?? 0;
+          const dropKm = input.riderDropKm ?? distanceKm;
+          const riderQuote = await resolveRiderPayoutQuote({
+            db: getDb(),
+            level: geoLevel,
+            refId: geoRefId,
+            service:
+              serviceTypeSlab === "parcel"
+                ? "parcel"
+                : serviceTypeSlab === "person_ride"
+                  ? "ride"
+                  : "food",
+            pickupKm,
+            dropKm,
+            waitingMinutes: input.riderWaitingMinutes ?? 0,
+            riderId: input.riderId,
+            vehicleType: input.rideVehicleType ?? null,
+          });
+          if (riderQuote.ok) {
+            slabQuote = {
+              distanceKm: riderQuote.quote.pickupKm + riderQuote.quote.dropKm,
+              slabId: riderQuote.quote.pickupSegments[0]?.slabId ?? riderQuote.quote.dropSegments[0]?.slabId ?? 0,
+              minKm: 0,
+              maxKm: null,
+              baseFareApplied: riderQuote.quote.baseFareApplied,
+              perKmRate: 0,
+              rawDistanceAmount: riderQuote.quote.pickupAmount + riderQuote.quote.dropAmount,
+              preMinChargeTotal: riderQuote.quote.subtotalBeforeSurge,
+              minCharge: null,
+              finalAmount: riderQuote.quote.finalAmount,
+            };
+            deliveryFee = riderQuote.quote.finalAmount;
+            pricingEngine = "slab_geo";
+          }
+        }
+
+        if (pricingEngine !== "slab_geo") {
+          const calc = calculateProgressiveSlabAmount({
+            distanceKm,
+            slabs,
+            waitingMinutes: input.riderWaitingMinutes ?? 0,
+            applyRiderExtras: true,
+          });
+          if (calc.ok) {
+            slabQuote = {
+              distanceKm: calc.quote.distanceKm,
+              slabId: calc.quote.segments[0]?.slabId ?? 0,
+              minKm: calc.quote.segments[0]?.minKm ?? 0,
+              maxKm: calc.quote.segments[0]?.maxKm ?? null,
+              baseFareApplied: calc.quote.baseFareApplied,
+              perKmRate: calc.quote.segments[0]?.perKmRate ?? 0,
+              rawDistanceAmount: calc.quote.preMinChargeTotal - calc.quote.baseFareApplied,
+              preMinChargeTotal: calc.quote.preMinChargeTotal,
+              minCharge: null,
+              finalAmount: calc.quote.finalAmount,
+            };
+            deliveryFee = calc.quote.finalAmount;
+            pricingEngine = "slab_geo";
+          }
+        }
+      } else if (serviceTypeSlab === "person_ride" && input.rideVehicleType) {
+        const geoLevel = (appliedGeoLevel ?? "pincode") as GeoHierarchyLevel;
+        const geoRefId =
+          geoLevelsToTry.find((g) => g.level === appliedGeoLevel)?.refId ??
+          dropGeoRefs.pincode ??
+          dropGeoRefs.state ??
+          "";
+        let rideSlabs: DeliveryRateSlabRow[] = slabs;
+        if (geoRefId) {
+          const ridePricing = await loadEffectiveRideCustomerPricing({
+            level: geoLevel,
+            refId: geoRefId,
+            vehicleType: input.rideVehicleType,
+          });
+          if (ridePricing.slabs.length > 0) {
+            rideSlabs = ridePricing.slabs.map((s) => ({
+              id: s.id,
+              geoLevel: s.geoLevel,
+              geoRefId: s.geoRefId,
+              serviceType: "person_ride" as DeliveryServiceType,
+              actorType: "customer" as DeliveryActorType,
+              minKm: s.minKm,
+              maxKm: s.maxKm,
+              baseFare: s.baseFare,
+              perKmRate: s.perKmRate,
+              minCharge: s.minCharge,
+              priority: s.priority,
+              isActive: s.isActive,
+            }));
+          }
+        }
         const calc = calculateProgressiveSlabAmount({
           distanceKm,
-          slabs,
-          waitingMinutes: input.riderWaitingMinutes ?? 0,
-          applyRiderExtras: true,
+          slabs: rideSlabs,
+          applyRiderExtras: false,
         });
         if (calc.ok) {
+          const sortedSlabs = [...rideSlabs].sort(
+            (a, b) =>
+              a.minKm - b.minKm ||
+              ((a.maxKm ?? 1e9) - (b.maxKm ?? 1e9)) ||
+              b.priority - a.priority ||
+              a.id - b.id
+          );
+          const includedKm = Math.max(0, Number(sortedSlabs[0]?.maxKm ?? 0) || 0);
           slabQuote = {
             distanceKm: calc.quote.distanceKm,
             slabId: calc.quote.segments[0]?.slabId ?? 0,
@@ -364,9 +484,25 @@ export async function resolveStoreDeliveryQuote(
             preMinChargeTotal: calc.quote.preMinChargeTotal,
             minCharge: null,
             finalAmount: calc.quote.finalAmount,
+            segments: calc.quote.segments,
+            includedKm,
           };
           deliveryFee = calc.quote.finalAmount;
           pricingEngine = "slab_geo";
+        } else {
+          pricingEngine = "slab_invalid";
+          slabValidationError = { code: calc.code, message: calc.message };
+          console.warn(
+            "[delivery-slabs] validation failed — bill falling back to env defaults",
+            JSON.stringify({
+              store_id: store.storeId,
+              actor,
+              distance_km: distanceKm,
+              applied_geo_level: appliedGeoLevel,
+              error: slabValidationError,
+              slab_ids: rideSlabs.map((s) => s.id),
+            })
+          );
         }
       } else {
         const calc = calculateProgressiveSlabAmount({
@@ -375,6 +511,14 @@ export async function resolveStoreDeliveryQuote(
           applyRiderExtras: false,
         });
         if (calc.ok) {
+          const sortedSlabs = [...slabs].sort(
+            (a, b) =>
+              a.minKm - b.minKm ||
+              ((a.maxKm ?? 1e9) - (b.maxKm ?? 1e9)) ||
+              b.priority - a.priority ||
+              a.id - b.id
+          );
+          const includedKm = Math.max(0, Number(sortedSlabs[0]?.maxKm ?? 0) || 0);
           slabQuote = {
             distanceKm: calc.quote.distanceKm,
             slabId: calc.quote.segments[0]?.slabId ?? 0,
@@ -386,20 +530,14 @@ export async function resolveStoreDeliveryQuote(
             preMinChargeTotal: calc.quote.preMinChargeTotal,
             minCharge: null,
             finalAmount: calc.quote.finalAmount,
+            segments: calc.quote.segments,
+            includedKm,
           };
           deliveryFee = calc.quote.finalAmount;
           pricingEngine = "slab_geo";
         } else {
-          // Validation failed (overlap / gap / missing zero slab / etc).
-          // Record the reason and switch engine to `slab_invalid` so:
-          //   (a) the bill label doesn't lie to the customer ("(slabs)"),
-          //   (b) admins/devs see exactly why the slabs they edited didn't apply.
           pricingEngine = "slab_invalid";
           slabValidationError = { code: calc.code, message: calc.message };
-          // Log loudly — this is the most common cause of "I updated the rate
-          // card but nothing changed". Includes the slab IDs so the admin can
-          // open the offending row in the dashboard.
-          // eslint-disable-next-line no-console
           console.warn(
             "[delivery-slabs] validation failed — bill falling back to env defaults",
             JSON.stringify({
@@ -451,11 +589,8 @@ export async function resolveStoreDeliveryQuote(
     pricingEngine === "no_geo_match" ||
     pricingEngine === "slab_invalid"
   ) {
-    const base = env.DELIVERY_DEFAULT_BASE_INR ?? 25;
-    const perKm = env.DELIVERY_DEFAULT_PER_KM_INR ?? 5;
-    const computed = round2(base + distanceKm * perKm);
-    const floor = env.DELIVERY_MIN_FEE_INR ?? 0;
-    deliveryFee = Math.max(computed, floor);
+    const fallbackRates = await getDeliveryFallbackRates();
+    deliveryFee = computeDeliveryFallbackFee(distanceKm, fallbackRates);
   }
 
   deliveryFee = round2(deliveryFee);

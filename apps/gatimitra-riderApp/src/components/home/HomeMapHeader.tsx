@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { View, StyleSheet } from "react-native";
 import { router } from "expo-router";
 import { DutyToggle } from "@/src/components/DutyToggle";
-import { HeaderActionIconGroup } from "@/src/components/header/HeaderActionIconGroup";
+import { HeaderTrailingActions } from "@/src/components/header/HeaderTrailingActions";
 import { LanguageSelectionSheet } from "@/src/components/language/LanguageSelectionSheet";
 import { useNotificationInboxStore } from "@/src/stores/notificationInboxStore";
 
@@ -18,7 +18,7 @@ export function HomeMapHeader() {
         <View style={styles.headerRow}>
           <DutyToggle variant="pill" />
 
-          <HeaderActionIconGroup
+          <HeaderTrailingActions
             onLanguagePress={() => setShowLangSheet(true)}
             onNotificationPress={() => router.push("/notifications")}
             notificationBadgeCount={unreadNotifications}

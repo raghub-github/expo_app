@@ -51,10 +51,14 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
     try {
       // Fetch sequentially to avoid two requests using the same Supabase refresh token.
       // Supabase refresh tokens are single-use; parallel calls can cause "Refresh Token Not Found".
-      const sessionRes = await fetch("/api/merchant-auth/merchant-session");
-      const sessionData = await sessionRes.json();
-      const statusRes = await fetch("/api/merchant-auth/merchant-session-status");
-      const statusData = await statusRes.json();
+      const sessionRes = await fetch("/api/merchant-auth/merchant-session", {
+        credentials: "include",
+      });
+      const sessionData = await sessionRes.json().catch(() => ({}));
+      const statusRes = await fetch("/api/merchant-auth/merchant-session-status", {
+        credentials: "include",
+      });
+      const statusData = await statusRes.json().catch(() => ({}));
       if (sessionData.success && sessionData.data?.user) {
         setUser({
           id: sessionData.data.user.id,

@@ -9,6 +9,7 @@ export type OrderBillBreakdown = {
   deliveryFeeOriginal: number | null;
   platformFee: number;
   donation: number;
+  tipAmount: number;
   grandTotal: number;
   couponCode: string | null;
   couponDiscount: number;
@@ -20,6 +21,14 @@ function num(v: unknown): number {
   if (v == null) return 0;
   const x = typeof v === "number" ? v : parseFloat(String(v));
   return Number.isFinite(x) ? x : 0;
+}
+
+function sumDiscountLines(snapshot: Record<string, unknown>): number {
+  const discounts = Array.isArray(snapshot.discounts) ? snapshot.discounts : [];
+  return discounts.reduce((sum, raw) => {
+    if (!raw || typeof raw !== "object") return sum;
+    return sum + Math.abs(num((raw as { amount?: unknown }).amount));
+  }, 0);
 }
 
 function extractCouponFromDiscounts(snapshot: Record<string, unknown>): {
@@ -58,7 +67,8 @@ function extractCouponFromDiscounts(snapshot: Record<string, unknown>): {
 
 export function parseOrderBillFromSnapshot(
   snapshot: Record<string, unknown> | null | undefined,
-  fallbackTotal: number | null | undefined
+  fallbackTotal: number | null | undefined,
+  fallbackTipAmount?: number | null
 ): OrderBillBreakdown {
   const snap = snapshot ?? {};
   const itemTotal = num(snap.item_total) + num(snap.addon_total);
@@ -69,7 +79,7 @@ export function parseOrderBillFromSnapshot(
   const deliveryFee = num(snap.delivery_fee);
   const deliveryFeeQuoted = num(snap.deliveryFeeQuotedInr);
   const deliveryFeeOriginal =
-    deliveryFee <= 0.005 && deliveryFeeQuoted > 0.005
+    deliveryFeeQuoted > deliveryFee + 0.005
       ? deliveryFeeQuoted
       : deliveryFee > 0.005
         ? deliveryFee
@@ -77,15 +87,41 @@ export function parseOrderBillFromSnapshot(
 
   const platformFee = num(snap.platform_fee);
   const donation = num(snap.donation_amount);
+  const tipAmount =
+    num(snap.tip_amount) > 0.005 ? num(snap.tip_amount) : num(fallbackTipAmount);
+  const extraFees =
+    num(snap.surge_fee) +
+    num(snap.small_order_fee) +
+    num(snap.convenience_fee) +
+    num(snap.misc_fee);
+
   const paid = num(snap.final_amount) || fallbackTotal || 0;
 
-  const { code: couponCode, amount: couponFromLines } = extractCouponFromDiscounts(snap);
   const discountTotal = num(snap.discount_total);
-  const couponDiscount = couponFromLines > 0 ? couponFromLines : discountTotal > 0 ? discountTotal : 0;
+  const discountFromLines = sumDiscountLines(snap);
+  const totalDiscount =
+    discountTotal > 0.005 ? discountTotal : discountFromLines > 0.005 ? discountFromLines : 0;
+
+  const { code: couponCode, amount: couponFromLines } = extractCouponFromDiscounts(snap);
+  const couponDiscount =
+    couponFromLines > 0.005
+      ? couponFromLines
+      : totalDiscount > 0.005 && couponCode
+        ? totalDiscount
+        : totalDiscount > 0.005
+          ? totalDiscount
+          : 0;
 
   const deliveryForGrand = deliveryFeeOriginal ?? deliveryFee;
-  const grandTotal = itemTotal + gstAndPackaging + deliveryForGrand + platformFee + donation;
-  const totalSavings = Math.max(0, grandTotal - paid);
+  const grandTotal =
+    itemTotal + gstAndPackaging + deliveryForGrand + platformFee + donation + tipAmount + extraFees;
+
+  let deliverySavings = 0;
+  if (deliveryFeeQuoted > deliveryFee + 0.005) {
+    deliverySavings = deliveryFeeQuoted - deliveryFee;
+  }
+
+  const totalSavings = Math.max(0, totalDiscount + deliverySavings);
 
   return {
     itemTotal,
@@ -94,6 +130,7 @@ export function parseOrderBillFromSnapshot(
     deliveryFeeOriginal,
     platformFee,
     donation,
+    tipAmount,
     grandTotal,
     couponCode,
     couponDiscount,

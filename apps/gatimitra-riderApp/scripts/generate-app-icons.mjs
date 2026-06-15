@@ -1,10 +1,12 @@
 /**
- * Generates Android launcher icons for GatiMitra Rider.
+ * Generates launcher icons for GatiMitra Rider from assets/images/rideraap.png.
  *
- * - icon.png: 1024×1024 full launcher icon (logo on brand background)
- * - adaptive-icon.png: 1024×1024 transparent foreground (logo only, safe-zone sized)
+ * - icon.png: 1024×1024 full launcher (designed squircle artwork, white background)
+ * - adaptive-icon.png: foreground scaled to Android safe zone (~72%) on transparent canvas
+ * - splash-logo.png: centered artwork for splash screen
  *
- * Logo occupies ~65% of canvas so it stays inside circle/squircle/teardrop masks.
+ * Source artwork already includes inner padding + green ring — we still inset for
+ * adaptive masks (circle / squircle / teardrop) so edges never clip after install.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -15,28 +17,29 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
 
 const CANVAS = 1024;
-const LOGO_SCALE = 0.65; // Android adaptive icon safe zone ≈ 66%
-const BRAND_BG = "#14532D";
-const LOGO_SOURCE = path.join(projectRoot, "assets/images/onlylogo.png");
+/** Android adaptive icon safe zone ≈ 66%; use 72% because rideraap has built-in padding. */
+const ADAPTIVE_SCALE = 0.72;
+const SPLASH_SCALE = 0.58;
+const BRAND_BG = "#FFFFFF";
+const LOGO_SOURCE = path.join(projectRoot, "assets/images/rideraap.png");
 const ICON_OUT = path.join(projectRoot, "assets/icon.png");
 const ADAPTIVE_OUT = path.join(projectRoot, "assets/adaptive-icon.png");
+const SPLASH_LOGO_OUT = path.join(projectRoot, "assets/images/splash-logo.png");
 
-async function buildLogoLayer() {
-  const trimmed = await sharp(LOGO_SOURCE).trim().png().toBuffer();
-  const meta = await sharp(trimmed).metadata();
-  const logoSize = Math.round(CANVAS * LOGO_SCALE);
-  const resized = await sharp(trimmed)
-    .resize(logoSize, logoSize, {
+async function buildScaledLayer(scale) {
+  const renderSize = Math.round(CANVAS * scale);
+  const resized = await sharp(LOGO_SOURCE)
+    .resize(renderSize, renderSize, {
       fit: "contain",
       background: { r: 0, g: 0, b: 0, alpha: 0 },
     })
     .png()
     .toBuffer();
 
-  const left = Math.round((CANVAS - logoSize) / 2);
-  const top = Math.round((CANVAS - logoSize) / 2);
+  const left = Math.round((CANVAS - renderSize) / 2);
+  const top = Math.round((CANVAS - renderSize) / 2);
 
-  return { resized, logoSize, left, top, trimmedMeta: meta };
+  return { resized, renderSize, left, top };
 }
 
 async function generateIcons() {
@@ -44,9 +47,21 @@ async function generateIcons() {
     throw new Error(`Logo source not found: ${LOGO_SOURCE}`);
   }
 
-  const { resized, logoSize, left, top, trimmedMeta } = await buildLogoLayer();
+  fs.mkdirSync(path.dirname(SPLASH_LOGO_OUT), { recursive: true });
 
-  // Adaptive foreground: transparent canvas, logo only, centered.
+  const sourceMeta = await sharp(LOGO_SOURCE).metadata();
+
+  // Full launcher icon — entire designed artwork on white (iOS + Android legacy).
+  await sharp(LOGO_SOURCE)
+    .resize(CANVAS, CANVAS, {
+      fit: "contain",
+      background: BRAND_BG,
+    })
+    .png()
+    .toFile(ICON_OUT);
+
+  const { resized, renderSize, left, top } = await buildScaledLayer(ADAPTIVE_SCALE);
+
   await sharp({
     create: {
       width: CANVAS,
@@ -59,30 +74,32 @@ async function generateIcons() {
     .png()
     .toFile(ADAPTIVE_OUT);
 
-  // Full icon: brand background + centered logo.
+  const splashLayer = await buildScaledLayer(SPLASH_SCALE);
   await sharp({
     create: {
       width: CANVAS,
       height: CANVAS,
       channels: 4,
-      background: BRAND_BG,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
     },
   })
-    .composite([{ input: resized, left, top }])
+    .composite([{ input: splashLayer.resized, left: splashLayer.left, top: splashLayer.top }])
     .png()
-    .toFile(ICON_OUT);
+    .toFile(SPLASH_LOGO_OUT);
 
   const report = {
     canvas: `${CANVAS}x${CANVAS}`,
-    logoScale: `${LOGO_SCALE * 100}%`,
-    logoRenderedSize: `${logoSize}x${logoSize}px`,
-    safePadding: `${Math.round((CANVAS - logoSize) / 2)}px per side`,
-    brandBackground: BRAND_BG,
-    sourceLogo: path.relative(projectRoot, LOGO_SOURCE),
-    trimmedSource: `${trimmedMeta.width}x${trimmedMeta.height}`,
+    adaptiveScale: `${ADAPTIVE_SCALE * 100}%`,
+    adaptiveRenderedSize: `${renderSize}x${renderSize}px`,
+    adaptiveSafePadding: `${left}px per side`,
+    splashScale: `${SPLASH_SCALE * 100}%`,
+    background: BRAND_BG,
+    source: path.relative(projectRoot, LOGO_SOURCE),
+    sourceSize: `${sourceMeta.width}x${sourceMeta.height}`,
     outputs: [
       path.relative(projectRoot, ICON_OUT),
       path.relative(projectRoot, ADAPTIVE_OUT),
+      path.relative(projectRoot, SPLASH_LOGO_OUT),
     ],
   };
 

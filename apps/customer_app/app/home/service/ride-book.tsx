@@ -15,6 +15,8 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
+import { useQueryClient } from "@tanstack/react-query";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { RideBookMap } from "@/components/maps/RideBookMap";
@@ -23,10 +25,7 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import { resolvePlaceDisplayName } from "@/services/location.service";
 import { RideServiceUnavailableSheet } from "@/features/ride/RideServiceUnavailableSheet";
 import { parseRideStopsParam } from "@/lib/ride-serviceability";
-import {
-  getCalculatedRouteWithStops,
-  type LatLng,
-} from "@/services/directions.service";
+import type { LatLng } from "@/services/directions.service";
 import { RideRouteMapPillOverlay } from "@/features/ride/RideRouteMapPillOverlay";
 import {
   rideMapFitPadding,
@@ -40,10 +39,34 @@ import { resolveRideImage } from "@/features/ride/rideOptionAssets";
 import { useNearbyRideAvailability } from "@/hooks/useNearbyRideAvailability";
 import type { RideAvailabilityOption } from "@/services/rideAvailability.service";
 import { estimateRideFare } from "@/features/ride/rideOptions";
+import { getRideFareQuote, type RideFareQuote } from "@/services/rideQuote.service";
+import { useLocationStore } from "@/store/locationStore";
+import { pickupGeoHintsFromAddress } from "@/lib/ride-geo-hints";
 import { ActiveRideBottomSheet } from "@/components/ride/ActiveRideBottomSheet";
 import { useActivePersonRideOrders } from "@/hooks/useActivePersonRideOrders";
 import { RidePreBookTipSheet } from "@/features/ride/RidePreBookTipSheet";
+import { RideOffersSheet } from "@/features/ride/RideOffersSheet";
+import { RideVehicleFareDetailsSheet } from "@/features/ride/RideVehicleFareDetailsSheet";
+import { RideBookAvailabilityToast } from "@/features/ride/RideBookAvailabilityToast";
+import { RIDE_BIKE_UNAVAILABLE_TOAST } from "@/lib/ride-search-toast-copy";
+import { mapFeaturedOffersToRideBookOffers } from "@/lib/ride-offers";
+import { useFeaturedOffersRide } from "@/hooks/useFeaturedOffersRide";
 import { shouldShowPreBookTipSheet } from "@/lib/ride-tip-amounts";
+import { applyBikeLiteFareRule, sortRideOptionsBikeLiteSecond } from "@/lib/ride-customer-fare";
+import { formatRideDistanceKm, logRideRouteDebug } from "@/lib/ride-route-snapshot";
+import { GMSkeleton } from "@/components/ShimmerSkeleton";
+import { useRideRouteSnapshot } from "@/hooks/useRideRouteSnapshot";
+import { rideRouteParamsFromSnapshot } from "@/services/rideRoute.service";
+import { rideFareDistanceNavParams } from "@/lib/ride-fare-distance";
+
+const ENTRY_SURGE_MESSAGE = "Fares are higher due to increased demand";
+const PRICING_BANNER_MS = 2500;
+const BIKE_FAMILY_IDS = new Set(["bike", "bike-lite"]);
+
+type PricingBanner = {
+  text: string;
+  variant?: "line" | "inline";
+};
 
 const DEFAULT_REGION = {
   latitude: 24.7969,
@@ -53,6 +76,7 @@ const DEFAULT_REGION = {
 };
 
 const SELECTED_BORDER = "#0F172A";
+const EMPTY_RIDE_OPTIONS: RideAvailabilityOption[] = [];
 
 type ConfirmedPickupOverride = {
   primary: string;
@@ -76,23 +100,63 @@ function estimateFare(baseFare: number, tripKm: number | null): number {
   return estimateRideFare(baseFare, tripKm);
 }
 
+function formatPickupKm(km: number | null | undefined): string | null {
+  if (km == null || !Number.isFinite(km) || km <= 0) return null;
+  return km < 10 ? km.toFixed(1) : String(Math.round(km));
+}
+
+function RideOptionCardSkeleton() {
+  return (
+    <View style={styles.rideCard} pointerEvents="none">
+      <GMSkeleton style={styles.rideImageSkeleton} />
+      <View style={styles.rideInfo}>
+        <GMSkeleton style={styles.skelLineTitle} />
+        <GMSkeleton style={styles.skelLineSub} />
+        <GMSkeleton style={styles.skelLineMeta} />
+        <GMSkeleton style={styles.skelLineMetaShort} />
+      </View>
+      <GMSkeleton style={styles.fareSkeleton} />
+    </View>
+  );
+}
+
 function RideOptionCard({
   option,
   selected,
   tripKm,
+  pickupDistanceKm,
   routeEtaMins,
+  quotedFare,
+  compareFare,
+  quoteLoading,
+  showSurgeHint,
+  fareDetailsEnabled = false,
   onSelect,
+  onImagePress,
 }: {
   option: RideAvailabilityOption;
   selected: boolean;
   tripKm: number | null;
+  pickupDistanceKm: number | null;
   routeEtaMins: number | null;
+  quotedFare?: number | null;
+  compareFare?: number | null;
+  quoteLoading?: boolean;
+  showSurgeHint?: boolean;
+  fareDetailsEnabled?: boolean;
   onSelect: () => void;
+  onImagePress: () => void;
 }) {
-  const price = estimateFare(option.baseFare, tripKm);
+  const fareReady = quotedFare != null && quotedFare > 0;
+  const farePending =
+    quoteLoading || (tripKm != null && tripKm > 0 && !fareReady);
+  const price = fareReady ? Math.round(quotedFare!) : null;
   const travelMins = routeEtaMins ?? Math.round((tripKm ?? 3) * 2);
   const awayMins = option.nearestRiderEtaMins ?? option.etaMins;
-  const dropLabel = formatDropTime(awayMins + travelMins);
+  const etaMins = awayMins + travelMins;
+  const dropLabel = formatDropTime(etaMins);
+  const pickupKmLabel = formatPickupKm(pickupDistanceKm ?? option.nearestRiderKm);
+  const rideKmLabel = formatRideDistanceKm(tripKm);
 
   return (
     <TouchableOpacity
@@ -100,11 +164,17 @@ function RideOptionCard({
       onPress={onSelect}
       activeOpacity={0.85}
     >
-      <Image source={resolveRideImage(option.imageKey)} style={styles.rideImage} resizeMode="contain" />
+      {fareDetailsEnabled ? (
+        <TouchableOpacity onPress={onImagePress} activeOpacity={0.75} hitSlop={6}>
+          <Image source={resolveRideImage(option.imageKey)} style={styles.rideImage} resizeMode="contain" />
+        </TouchableOpacity>
+      ) : (
+        <Image source={resolveRideImage(option.imageKey)} style={styles.rideImage} resizeMode="contain" />
+      )}
       <View style={styles.rideInfo}>
         <View style={styles.rideNameRow}>
           <Text style={styles.rideName}>{option.name}</Text>
-          {option.capacity != null ? (
+          {selected && option.capacity != null ? (
             <View style={styles.capacityWrap}>
               <Ionicons name="person" size={11} color="#6B7280" />
               <Text style={styles.capacityText}>{option.capacity}</Text>
@@ -123,10 +193,29 @@ function RideOptionCard({
         </View>
         {option.subtitle ? <Text style={styles.rideSubtitle}>{option.subtitle}</Text> : null}
         <Text style={styles.rideTiming}>
-          {awayMins} mins away • Drop {dropLabel}
+          {pickupKmLabel ? `Pickup: ${pickupKmLabel} km` : `${awayMins} mins away`}
+          {rideKmLabel ? ` • Ride: ${rideKmLabel}` : ""}
+          {routeEtaMins != null ? ` • ETA: ${etaMins} min` : ""}
         </Text>
+        <Text style={styles.rideDropTiming}>Drop {dropLabel}</Text>
       </View>
-      <Text style={styles.ridePrice}>₹{price}</Text>
+      <View style={styles.ridePriceWrap}>
+        {farePending ? (
+          <GMSkeleton style={styles.fareSkeletonInline} />
+        ) : (
+          <View style={styles.priceCol}>
+            {compareFare != null && compareFare > 0 && price != null && compareFare > price ? (
+              <Text style={styles.ridePriceStrike}>₹{Math.round(compareFare)}</Text>
+            ) : null}
+            <View style={styles.priceRow}>
+              {showSurgeHint && selected ? (
+                <Ionicons name="caret-up" size={14} color="#DC2626" style={styles.surgeCaret} />
+              ) : null}
+              <Text style={styles.ridePrice}>{price != null ? `₹${price}` : "—"}</Text>
+            </View>
+          </View>
+        )}
+      </View>
     </TouchableOpacity>
   );
 }
@@ -134,9 +223,13 @@ function RideOptionCard({
 export default function RideBookScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const isFocused = useIsFocused();
   const params = useLocalSearchParams<{
     pickup?: string;
     drop?: string;
+    pickupLabel?: string;
+    dropLabel?: string;
     pickupLat?: string;
     pickupLng?: string;
     dropLat?: string;
@@ -149,18 +242,46 @@ export default function RideBookScreen() {
 
   const [serviceUnavailableVisible, setServiceUnavailableVisible] = useState(false);
   const [tipSheetVisible, setTipSheetVisible] = useState(false);
+  const [offersSheetVisible, setOffersSheetVisible] = useState(false);
+  const [fareDetailsOptionId, setFareDetailsOptionId] = useState<string | null>(null);
+  const [bikeUnavailableToastVisible, setBikeUnavailableToastVisible] = useState(false);
   const [selectedRideId, setSelectedRideId] = useState<string | null>(null);
-  const [routeCoordinates, setRouteCoordinates] = useState<LatLng[]>([]);
-  const [routeLoading, setRouteLoading] = useState(false);
-  const [tripKm, setTripKm] = useState<number | null>(null);
-  const [routeEtaMins, setRouteEtaMins] = useState<number | null>(null);
-  const routeRequestRef = useRef(0);
   const mapRef = useRef<CustomerMapRef>(null);
   const [mapSyncToken, setMapSyncToken] = useState(0);
   const [mapFrameTick, setMapFrameTick] = useState(0);
   const [bottomSheetHeight, setBottomSheetHeight] = useState(0);
   const [mapReady, setMapReady] = useState(false);
   const mapFrameRafRef = useRef<number | null>(null);
+  const [fareQuotes, setFareQuotes] = useState<Record<string, number>>({});
+  const [fareQuoteMeta, setFareQuoteMeta] = useState<Record<string, RideFareQuote>>({});
+  const [fareQuotesLoading, setFareQuotesLoading] = useState(false);
+  const [pricingBanner, setPricingBanner] = useState<PricingBanner | null>(null);
+  const fareQuoteRequestRef = useRef(0);
+  const fareQuoteKeyRef = useRef<string | null>(null);
+  const pricingBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const entrySurgeBannerShownRef = useRef(false);
+  const entrySurgeRouteKeyRef = useRef<string | null>(null);
+  const bikeUnavailableToastRouteKeyRef = useRef<string | null>(null);
+  const bikeUnavailableToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const locationAddress = useLocationStore((s) => s.address);
+  const locationCoords = useLocationStore((s) => s.coords);
+  const locationHydrated = useLocationStore((s) => s.locationHydrated);
+  const pickupPincode = useMemo(
+    () => pickupGeoHintsFromAddress(locationAddress).pickupPincode,
+    [locationAddress]
+  );
+  const pickupState = useMemo(
+    () => pickupGeoHintsFromAddress(locationAddress).pickupState,
+    [locationAddress]
+  );
+  const pickupGeoHints = useMemo(
+    () => ({
+      ...(pickupPincode ? { pickupPincode } : {}),
+      ...(pickupState ? { pickupState } : {}),
+    }),
+    [pickupPincode, pickupState]
+  );
 
   const bumpMapOverlay = useCallback(() => {
     setMapSyncToken((v) => v + 1);
@@ -188,6 +309,10 @@ export default function RideBookScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      void queryClient.invalidateQueries({ queryKey: ["my-orders", "active-rides"] });
+      if (locationHydrated) {
+        void queryClient.invalidateQueries({ queryKey: ["featured-offers-ride"] });
+      }
       const nextPickup = consumePendingConfirmPickup();
       if (!nextPickup) return;
       setConfirmedPickup({
@@ -196,18 +321,18 @@ export default function RideBookScreen() {
         latitude: nextPickup.latitude,
         longitude: nextPickup.longitude,
       });
-    }, [consumePendingConfirmPickup])
+    }, [consumePendingConfirmPickup, locationHydrated, queryClient])
   );
 
   const pickupLabel = truncateAddress(
     resolvePlaceDisplayName({
-      primary: confirmedPickup?.primary ?? params.pickup,
+      primary: params.pickupLabel ?? confirmedPickup?.primary ?? params.pickup,
       fullAddress: confirmedPickup?.fullAddress ?? params.pickup,
     })
   );
   const dropLabel = truncateAddress(
     resolvePlaceDisplayName({
-      primary: params.drop,
+      primary: params.dropLabel ?? params.drop,
       fullAddress: params.drop,
     })
   );
@@ -221,20 +346,225 @@ export default function RideBookScreen() {
   const dropLat = params.dropLat != null ? Number(params.dropLat) : null;
   const dropLng = params.dropLng != null ? Number(params.dropLng) : null;
 
+  const stopCoords = useMemo(() => parseRideStopsParam(params.stops), [params.stops]);
+
+  const pickupPoint = useMemo(
+    () =>
+      pickupLat != null && pickupLng != null
+        ? { latitude: pickupLat, longitude: pickupLng }
+        : null,
+    [pickupLat, pickupLng]
+  );
+
+  const rideOfferLocationParams = useMemo(
+    () => ({
+      pincode: pickupPincode || locationAddress?.pincode?.trim() || undefined,
+      state: pickupState || locationAddress?.state?.trim() || undefined,
+      city: locationAddress?.city?.trim() || undefined,
+      lat: pickupLat ?? locationCoords?.latitude ?? undefined,
+      lng: pickupLng ?? locationCoords?.longitude ?? undefined,
+    }),
+    [
+      pickupPincode,
+      pickupState,
+      locationAddress?.pincode,
+      locationAddress?.state,
+      locationAddress?.city,
+      pickupLat,
+      pickupLng,
+      locationCoords?.latitude,
+      locationCoords?.longitude,
+    ]
+  );
+
+  const { data: rideOffersData } = useFeaturedOffersRide(
+    rideOfferLocationParams,
+    locationHydrated
+  );
+  const rideBookOffers = useMemo(
+    () => mapFeaturedOffersToRideBookOffers(rideOffersData?.offers ?? []),
+    [rideOffersData?.offers]
+  );
+
+  const dropPoint = useMemo(
+    () =>
+      dropLat != null && dropLng != null ? { latitude: dropLat, longitude: dropLng } : null,
+    [dropLat, dropLng]
+  );
+
+  const {
+    snapshot: rideRouteSnapshot,
+    tripKm,
+    routeEtaMins,
+    routeCoordinates,
+    loading: routeLoading,
+  } = useRideRouteSnapshot({
+    pickup: pickupPoint,
+    drop: dropPoint,
+    stops: stopCoords,
+    enabled: isFocused,
+  });
+
+  const fareTripKm = useMemo(() => {
+    if (tripKm == null || !Number.isFinite(tripKm) || tripKm <= 0) return null;
+    return Math.round(tripKm * 10) / 10;
+  }, [tripKm]);
+
   const {
     data: availability,
     isLoading: availabilityLoading,
     isError: availabilityError,
-  } = useNearbyRideAvailability(pickupLat, pickupLng);
+  } = useNearbyRideAvailability(pickupLat, pickupLng, tripKm, pickupGeoHints);
 
   const { activeRides } = useActivePersonRideOrders(true);
   const hasActiveRide = activeRides.length > 0;
 
-  const availableOptions = availability?.options ?? [];
+  const availableOptions = useMemo(
+    () => availability?.options ?? EMPTY_RIDE_OPTIONS,
+    [availability?.options]
+  );
+
+  const displayFareQuotes = useMemo(() => applyBikeLiteFareRule(fareQuotes), [fareQuotes]);
+
+  const sortedOptions = useMemo(
+    () => sortRideOptionsBikeLiteSecond(availableOptions, displayFareQuotes),
+    [availableOptions, displayFareQuotes]
+  );
+  const availableOptionIdsKey = useMemo(
+    () => availableOptions.map((o) => o.id).join("\u0000"),
+    [availableOptions]
+  );
   const allNearbyRiders = availability?.riders ?? [];
 
   const selectedRide =
-    availableOptions.find((r) => r.id === selectedRideId) ?? availableOptions[0] ?? null;
+    sortedOptions.find((r) => r.id === selectedRideId) ?? sortedOptions[0] ?? null;
+  const fareDetailsOption = useMemo(
+    () => sortedOptions.find((o) => o.id === fareDetailsOptionId) ?? null,
+    [sortedOptions, fareDetailsOptionId]
+  );
+  const fareDetailsQuote = fareDetailsOptionId ? fareQuoteMeta[fareDetailsOptionId] : undefined;
+  const fareDetailsDisplayFare =
+    fareDetailsOptionId != null ? displayFareQuotes[fareDetailsOptionId] ?? null : null;
+
+  const bikeUnavailableOnRoute = useMemo(() => {
+    if (availabilityLoading || routeLoading || availabilityError) return false;
+    if (fareTripKm == null || fareTripKm <= 0) return false;
+    if (availableOptions.length === 0) return false;
+    return !availableOptions.some((o) => o.id === "bike");
+  }, [
+    availabilityLoading,
+    routeLoading,
+    availabilityError,
+    fareTripKm,
+    availableOptions,
+  ]);
+
+  const showPricingBanner = useCallback((banner: PricingBanner) => {
+    if (pricingBannerTimerRef.current) clearTimeout(pricingBannerTimerRef.current);
+    setPricingBanner(banner);
+    pricingBannerTimerRef.current = setTimeout(() => {
+      setPricingBanner(null);
+      pricingBannerTimerRef.current = null;
+    }, PRICING_BANNER_MS);
+  }, []);
+
+  const selectRideOption = useCallback(
+    (id: string) => {
+      if (id === selectedRideId) return;
+      const prevId = selectedRideId;
+
+      if (
+        prevId &&
+        BIKE_FAMILY_IDS.has(prevId) &&
+        BIKE_FAMILY_IDS.has(id) &&
+        prevId !== id
+      ) {
+        if (prevId === "bike" && id === "bike-lite") {
+          const bikeFare = displayFareQuotes.bike;
+          const liteFare = displayFareQuotes["bike-lite"];
+          if (bikeFare != null && liteFare != null && bikeFare > liteFare) {
+            showPricingBanner({
+              text: `Saving ₹${Math.round(bikeFare - liteFare)} with Bike Lite`,
+              variant: "inline",
+            });
+          }
+        } else if (prevId === "bike-lite" && id === "bike") {
+          showPricingBanner({ text: ENTRY_SURGE_MESSAGE, variant: "inline" });
+        }
+      }
+
+      setSelectedRideId(id);
+    },
+    [selectedRideId, displayFareQuotes, showPricingBanner]
+  );
+
+  useEffect(() => {
+    const routeKey = [pickupLat, pickupLng, dropLat, dropLng, params.stops ?? ""].join("\u0000");
+    if (entrySurgeRouteKeyRef.current !== routeKey) {
+      entrySurgeRouteKeyRef.current = routeKey;
+      entrySurgeBannerShownRef.current = false;
+    }
+    if (entrySurgeBannerShownRef.current) return;
+    if (routeLoading || tripKm == null || tripKm <= 0 || sortedOptions.length === 0) return;
+    if (!sortedOptions.some((o) => o.id === "bike")) return;
+
+    entrySurgeBannerShownRef.current = true;
+    showPricingBanner({ text: ENTRY_SURGE_MESSAGE, variant: "line" });
+  }, [
+    routeLoading,
+    tripKm,
+    sortedOptions,
+    pickupLat,
+    pickupLng,
+    dropLat,
+    dropLng,
+    params.stops,
+    showPricingBanner,
+  ]);
+
+  useEffect(
+    () => () => {
+      if (pricingBannerTimerRef.current) clearTimeout(pricingBannerTimerRef.current);
+      if (bikeUnavailableToastTimerRef.current) clearTimeout(bikeUnavailableToastTimerRef.current);
+    },
+    []
+  );
+
+  useEffect(() => {
+    const routeKey = [
+      pickupLat,
+      pickupLng,
+      dropLat,
+      dropLng,
+      fareTripKm ?? "",
+      availableOptionIdsKey,
+    ].join("\u0000");
+
+    if (!bikeUnavailableOnRoute) {
+      setBikeUnavailableToastVisible(false);
+      return;
+    }
+
+    if (bikeUnavailableToastRouteKeyRef.current === routeKey) return;
+    bikeUnavailableToastRouteKeyRef.current = routeKey;
+    setBikeUnavailableToastVisible(true);
+
+    if (bikeUnavailableToastTimerRef.current) {
+      clearTimeout(bikeUnavailableToastTimerRef.current);
+    }
+    bikeUnavailableToastTimerRef.current = setTimeout(() => {
+      setBikeUnavailableToastVisible(false);
+      bikeUnavailableToastTimerRef.current = null;
+    }, 5000);
+  }, [
+    bikeUnavailableOnRoute,
+    pickupLat,
+    pickupLng,
+    dropLat,
+    dropLng,
+    fareTripKm,
+    availableOptionIdsKey,
+  ]);
 
   const nearbyRiders = useMemo(() => {
     if (!selectedRide?.vehicleTypes?.length) return allNearbyRiders;
@@ -245,81 +575,131 @@ export default function RideBookScreen() {
     });
   }, [allNearbyRiders, selectedRide]);
 
-  const stopCoords = useMemo(() => parseRideStopsParam(params.stops), [params.stops]);
+  const hasDrop = dropLat != null && dropLng != null;
+  const routeSettled = !hasDrop || !routeLoading;
 
-  useEffect(() => {
-    const pickup =
-      pickupLat != null && pickupLng != null
-        ? { latitude: pickupLat, longitude: pickupLng }
-        : null;
-    const noRidersNearPickup =
+  const noVehiclesAvailable = useMemo(
+    () =>
       !availabilityLoading &&
       !availabilityError &&
-      pickup != null &&
-      availableOptions.length === 0;
-    setServiceUnavailableVisible(noRidersNearPickup);
-  }, [
-    pickupLat,
-    pickupLng,
-    availabilityLoading,
-    availabilityError,
-    availableOptions.length,
-  ]);
+      routeSettled &&
+      pickupLat != null &&
+      pickupLng != null &&
+      availableOptions.length === 0,
+    [
+      availabilityLoading,
+      availabilityError,
+      routeSettled,
+      pickupLat,
+      pickupLng,
+      availableOptions.length,
+    ]
+  );
 
-  useEffect(() => {
-    if (availableOptions.length === 0) return;
-    if (!selectedRideId || !availableOptions.some((o) => o.id === selectedRideId)) {
-      setSelectedRideId(availableOptions[0]!.id);
+  const unavailableMessage = useMemo(() => {
+    if (tripKm != null && tripKm > 0) {
+      return "Oops! No rides are available for this route right now. The trip may be too long for nearby vehicles, or no captains are online. Try a different pickup or drop.";
     }
-  }, [availableOptions, selectedRideId]);
-
-  const pickupPoint = useMemo(
-    () =>
-      pickupLat != null && pickupLng != null
-        ? { latitude: pickupLat, longitude: pickupLng }
-        : null,
-    [pickupLat, pickupLng]
-  );
-  const dropPoint = useMemo(
-    () =>
-      dropLat != null && dropLng != null ? { latitude: dropLat, longitude: dropLng } : null,
-    [dropLat, dropLng]
-  );
+    return "Oops! No riders available near your pickup location. Please select a different pickup or try again shortly.";
+  }, [tripKm]);
 
   useEffect(() => {
-    if (!pickupPoint || !dropPoint) {
-      setRouteCoordinates([]);
-      setTripKm(null);
-      setRouteEtaMins(null);
+    setServiceUnavailableVisible(noVehiclesAvailable);
+  }, [noVehiclesAvailable]);
+
+  useEffect(() => {
+    if (sortedOptions.length === 0) return;
+    const firstId = sortedOptions[0]!.id;
+    if (selectedRideId === firstId) return;
+    if (!selectedRideId || !sortedOptions.some((o) => o.id === selectedRideId)) {
+      setSelectedRideId(firstId);
+    }
+  }, [availableOptionIdsKey, selectedRideId, sortedOptions]);
+
+  useEffect(() => {
+    if (!isFocused) return;
+    if (
+      pickupLat == null ||
+      pickupLng == null ||
+      dropLat == null ||
+      dropLng == null ||
+      fareTripKm == null ||
+      availableOptions.length === 0
+    ) {
+      fareQuoteKeyRef.current = null;
+      setFareQuotes({});
+      setFareQuoteMeta({});
+      setFareQuotesLoading(false);
       return;
     }
 
-    const requestId = ++routeRequestRef.current;
-    const vehicleId = selectedRideId;
+    const quoteKey = [
+      pickupLat,
+      pickupLng,
+      dropLat,
+      dropLng,
+      fareTripKm,
+      availableOptionIdsKey,
+      pickupPincode ?? "",
+      pickupState ?? "",
+    ].join("\u0000");
 
-    setRouteCoordinates([]);
-    setRouteLoading(true);
-    getCalculatedRouteWithStops(pickupPoint, stopCoords, dropPoint, vehicleId)
-      .then((route) => {
-        if (requestId !== routeRequestRef.current) return;
-        if (route) {
-          setRouteCoordinates(route.coordinates);
-          setTripKm(route.distanceKm);
-          setRouteEtaMins(route.etaMinutes);
-        } else {
-          setRouteCoordinates([]);
-          setTripKm(null);
-          setRouteEtaMins(null);
-        }
-      })
-      .finally(() => {
-        if (requestId === routeRequestRef.current) setRouteLoading(false);
-      });
+    if (quoteKey === fareQuoteKeyRef.current) return;
+    fareQuoteKeyRef.current = quoteKey;
+
+    const requestId = ++fareQuoteRequestRef.current;
+    setFareQuotes({});
+    setFareQuoteMeta({});
+    setFareQuotesLoading(true);
+    logRideRouteDebug("fare_quote_request", {
+      tripKm: fareTripKm,
+      pickupLat,
+      pickupLng,
+      dropLat,
+      dropLng,
+      vehicleCount: availableOptions.length,
+    });
+    const options = availableOptions;
+    void (async () => {
+      const entries = await Promise.all(
+        options.map(async (option) => {
+          const result = await getRideFareQuote({
+            pickupLat,
+            pickupLng,
+            dropLat,
+            dropLng,
+            tripKm: fareTripKm,
+            catalogCode: option.id,
+            pickupPincode,
+            pickupState,
+          });
+          if (!result.ok || !result.quote.eligible || result.quote.finalFare <= 0) return null;
+          return [option.id, result.quote] as const;
+        })
+      );
+      if (requestId !== fareQuoteRequestRef.current) return;
+      const next: Record<string, number> = {};
+      const nextMeta: Record<string, RideFareQuote> = {};
+      for (const entry of entries) {
+        if (!entry) continue;
+        nextMeta[entry[0]] = entry[1];
+        next[entry[0]] = Math.round(entry[1].finalFare);
+      }
+      setFareQuoteMeta(nextMeta);
+      setFareQuotes(applyBikeLiteFareRule(next));
+      setFareQuotesLoading(false);
+    })();
   }, [
-    pickupPoint,
-    dropPoint,
-    stopCoords,
-    selectedRideId,
+    isFocused,
+    pickupLat,
+    pickupLng,
+    dropLat,
+    dropLng,
+    fareTripKm,
+    availableOptionIdsKey,
+    pickupPincode,
+    pickupState,
+    availableOptions.length,
   ]);
 
   const mapFitPoints = useMemo(() => {
@@ -402,6 +782,8 @@ export default function RideBookScreen() {
       };
       if (effectivePickupAddress) restoreParams.pickup = effectivePickupAddress;
       if (params.drop) restoreParams.drop = String(params.drop);
+      if (pickupLabel) restoreParams.pickupLabel = pickupLabel;
+      if (dropLabel) restoreParams.dropLabel = dropLabel;
       if (pickupLat != null) restoreParams.pickupLat = String(pickupLat);
       if (pickupLng != null) restoreParams.pickupLng = String(pickupLng);
       if (params.dropLat) restoreParams.dropLat = String(params.dropLat);
@@ -409,16 +791,21 @@ export default function RideBookScreen() {
       if (params.stops) restoreParams.stops = String(params.stops);
       router.push({ pathname: "/home/service/ride-pickup", params: restoreParams });
     },
-    [effectivePickupAddress, params, pickupLat, pickupLng, router]
+    [effectivePickupAddress, params, pickupLat, pickupLng, pickupLabel, dropLabel, router]
   );
 
   const navigateToConfirmPickup = useCallback(
     (customerTipAmount = 0) => {
       if (!selectedRide || !selectedRideId) return;
-      const baseFare = estimateFare(selectedRide.baseFare, tripKm);
+      const quoted = displayFareQuotes[selectedRideId];
+      if (tripKm != null && tripKm > 0 && (quoted == null || quoted <= 0)) return;
+      const baseFare =
+        quoted != null && quoted > 0 ? quoted : estimateFare(selectedRide.baseFare, tripKm);
       const navParams: Record<string, string> = {
         pickup: effectivePickupAddress,
         drop: String(params.drop ?? ""),
+        pickupLabel,
+        dropLabel,
         selectedRideId,
         selectedRideName: selectedRide.name,
         selectedRideImageKey: selectedRide.imageKey,
@@ -432,8 +819,14 @@ export default function RideBookScreen() {
       if (params.passengerName) navParams.passengerName = String(params.passengerName);
       if (params.passengerPhone) navParams.passengerPhone = String(params.passengerPhone);
       navParams.estimatedFare = String(baseFare);
+      if (pickupGeoHints.pickupPincode) navParams.pickupPincode = pickupGeoHints.pickupPincode;
+      if (pickupGeoHints.pickupState) navParams.pickupState = pickupGeoHints.pickupState;
       if (customerTipAmount > 0) navParams.customerTipAmount = String(customerTipAmount);
-      if (tripKm != null) navParams.tripKm = String(tripKm);
+      if (rideRouteSnapshot) {
+        Object.assign(navParams, rideRouteParamsFromSnapshot(rideRouteSnapshot));
+      } else if (tripKm != null && tripKm > 0) {
+        Object.assign(navParams, rideFareDistanceNavParams(tripKm));
+      }
       setTipSheetVisible(false);
       router.push({ pathname: "/home/service/ride-confirm-pickup", params: navParams });
     },
@@ -445,9 +838,28 @@ export default function RideBookScreen() {
       selectedRideId,
       selectedRide,
       tripKm,
+      rideRouteSnapshot,
+      fareQuotes,
+      displayFareQuotes,
+      pickupGeoHints,
+      pickupLabel,
+      dropLabel,
       router,
     ]
   );
+
+  const selectedQuotedFare =
+    selectedRideId != null ? displayFareQuotes[selectedRideId] : undefined;
+  const faresLoadingForOptions = useMemo(() => {
+    if (routeLoading || tripKm == null || tripKm <= 0) return true;
+    if (fareQuotesLoading) return true;
+    if (sortedOptions.length === 0) return false;
+    return sortedOptions.some((o) => !(displayFareQuotes[o.id] > 0));
+  }, [routeLoading, tripKm, fareQuotesLoading, sortedOptions, displayFareQuotes]);
+  const canBookSelectedRide =
+    !!selectedRide &&
+    !faresLoadingForOptions &&
+    (tripKm == null || tripKm <= 0 || (selectedQuotedFare != null && selectedQuotedFare > 0));
 
   const handleBookPress = useCallback(() => {
     if (!selectedRide) return;
@@ -546,6 +958,25 @@ export default function RideBookScreen() {
             </View>
           ) : null}
           <View style={styles.sheetHandle} />
+          {pricingBanner ? (
+            <View
+              style={
+                pricingBanner.variant === "inline"
+                  ? styles.pricingBannerInline
+                  : styles.pricingBannerLine
+              }
+            >
+              <Text
+                style={
+                  pricingBanner.variant === "inline"
+                    ? styles.pricingBannerInlineText
+                    : styles.pricingBannerLineText
+                }
+              >
+                {pricingBanner.text}
+              </Text>
+            </View>
+          ) : null}
           <ScrollView
             style={styles.optionsScroll}
             contentContainerStyle={styles.optionsContent}
@@ -557,42 +988,73 @@ export default function RideBookScreen() {
                 <ActivityIndicator size="small" color={GatiMitraColors.primaryMint} />
                 <Text style={styles.optionsLoadingText}>Finding nearby riders…</Text>
               </View>
+            ) : faresLoadingForOptions ? (
+              sortedOptions.map((option) => (
+                <RideOptionCardSkeleton key={option.id} />
+              ))
             ) : (
-              availableOptions.map((option) => (
+              sortedOptions.map((option) => (
                 <RideOptionCard
                   key={option.id}
                   option={option}
                   selected={selectedRideId === option.id}
                   tripKm={tripKm}
-                  routeEtaMins={selectedRideId === option.id ? routeEtaMins : null}
-                  onSelect={() => setSelectedRideId(option.id)}
+                  pickupDistanceKm={option.nearestRiderKm ?? null}
+                  routeEtaMins={routeEtaMins}
+                  quotedFare={displayFareQuotes[option.id]}
+                  compareFare={
+                    option.id === "bike-lite" ? displayFareQuotes.bike : undefined
+                  }
+                  quoteLoading={fareQuotesLoading || routeLoading}
+                  showSurgeHint={option.id === "bike" && selectedRideId === "bike"}
+                  fareDetailsEnabled={BIKE_FAMILY_IDS.has(option.id)}
+                  onSelect={() => selectRideOption(option.id)}
+                  onImagePress={() => {
+                    if (BIKE_FAMILY_IDS.has(option.id)) {
+                      setFareDetailsOptionId(option.id);
+                    }
+                  }}
                 />
               ))
             )}
           </ScrollView>
 
+          <RideBookAvailabilityToast
+            visible={bikeUnavailableToastVisible}
+            message={RIDE_BIKE_UNAVAILABLE_TOAST}
+          />
+
           <View style={styles.payOffersRow}>
-            <TouchableOpacity style={styles.payOffersHalf} activeOpacity={0.85}>
-              <Ionicons name="cash-outline" size={18} color="#111827" />
-              <Text style={styles.payOffersText}>Cash</Text>
-              <Ionicons name="chevron-forward" size={14} color="#9CA3AF" />
-            </TouchableOpacity>
+            <View style={styles.payOffersHalf}>
+              <Ionicons name="card-outline" size={18} color="#111827" />
+              <Text style={styles.payOffersText}>Online</Text>
+            </View>
             <View style={styles.payOffersDivider} />
-            <TouchableOpacity style={styles.payOffersHalf} activeOpacity={0.85}>
+            <TouchableOpacity
+              style={styles.payOffersHalf}
+              activeOpacity={0.85}
+              onPress={() => setOffersSheetVisible(true)}
+            >
               <Ionicons name="pricetag-outline" size={18} color="#111827" />
-              <Text style={styles.payOffersText}>Offers</Text>
+              <Text style={styles.payOffersText}>
+                Offers{rideBookOffers.length > 0 ? ` (${rideBookOffers.length})` : ""}
+              </Text>
               <Ionicons name="chevron-forward" size={14} color="#9CA3AF" />
             </TouchableOpacity>
           </View>
 
           <TouchableOpacity
-            style={[styles.bookBtn, !selectedRide && styles.bookBtnDisabled]}
+            style={[styles.bookBtn, (!selectedRide || !canBookSelectedRide) && styles.bookBtnDisabled]}
             activeOpacity={0.9}
             onPress={handleBookPress}
-            disabled={!selectedRide}
+            disabled={!selectedRide || !canBookSelectedRide}
           >
             <Text style={styles.bookBtnText}>
-              {selectedRide ? `Book ${selectedRide.name}` : "Book ride"}
+              {faresLoadingForOptions
+                ? "Calculating fare…"
+                : selectedRide
+                  ? `Book ${selectedRide.name}`
+                  : "Book ride"}
             </Text>
           </TouchableOpacity>
         </View>
@@ -600,6 +1062,7 @@ export default function RideBookScreen() {
 
       <RideServiceUnavailableSheet
         visible={serviceUnavailableVisible}
+        message={unavailableMessage}
         onOkay={() => {
           setServiceUnavailableVisible(false);
           router.back();
@@ -610,9 +1073,30 @@ export default function RideBookScreen() {
         <ActiveRideBottomSheet rides={activeRides} bottomInset={insets.bottom + 16} />
       ) : null}
 
+      <RideOffersSheet
+        visible={offersSheetVisible}
+        onClose={() => setOffersSheetVisible(false)}
+        offers={rideBookOffers}
+      />
+
+      <RideVehicleFareDetailsSheet
+        visible={fareDetailsOption != null && BIKE_FAMILY_IDS.has(fareDetailsOption.id)}
+        onClose={() => setFareDetailsOptionId(null)}
+        vehicleName={fareDetailsOption?.name ?? "Ride"}
+        imageKey={fareDetailsOption?.imageKey ?? "bike"}
+        fare={fareDetailsDisplayFare}
+        rateCardSummary={fareDetailsQuote?.rateCardSummary}
+        waitingChargeNote={fareDetailsQuote?.waitingChargeNote}
+        loading={fareQuotesLoading || routeLoading}
+      />
+
       <RidePreBookTipSheet
         visible={tipSheetVisible && !!selectedRide}
-        baseFare={selectedRide ? estimateFare(selectedRide.baseFare, tripKm) : 0}
+        baseFare={
+          selectedRide && displayFareQuotes[selectedRide.id] > 0
+            ? displayFareQuotes[selectedRide.id]
+            : 0
+        }
         rideName={selectedRide?.name ?? "Ride"}
         pickupLabel={pickupLabel}
         dropLabel={dropLabel}
@@ -736,6 +1220,8 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   bottomSheet: {
+    position: "relative",
+    overflow: "visible",
     backgroundColor: "#FFFFFF",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
@@ -769,6 +1255,36 @@ const styles = StyleSheet.create({
   optionsContent: {
     paddingBottom: 4,
   },
+  pricingBannerLine: {
+    paddingVertical: 5,
+    paddingHorizontal: 16,
+    marginBottom: 0,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#ECECEC",
+    borderBottomColor: "#ECECEC",
+  },
+  pricingBannerLineText: {
+    fontSize: 11,
+    fontWeight: "500",
+    textAlign: "center",
+    color: "#15803D",
+    letterSpacing: 0,
+  },
+  pricingBannerInline: {
+    marginHorizontal: 12,
+    marginBottom: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: "#ECFDF5",
+  },
+  pricingBannerInlineText: {
+    fontSize: 12,
+    fontWeight: "600",
+    textAlign: "center",
+    color: "#047857",
+  },
   optionsLoading: {
     flexDirection: "row",
     alignItems: "center",
@@ -799,6 +1315,41 @@ const styles = StyleSheet.create({
     width: 56,
     height: 56,
     marginRight: 12,
+  },
+  rideImageSkeleton: {
+    width: 56,
+    height: 56,
+    marginRight: 12,
+    borderRadius: 10,
+  },
+  skelLineTitle: {
+    width: "48%",
+    height: 14,
+    marginBottom: 8,
+  },
+  skelLineSub: {
+    width: "62%",
+    height: 11,
+    marginBottom: 6,
+  },
+  skelLineMeta: {
+    width: "78%",
+    height: 10,
+    marginBottom: 5,
+  },
+  skelLineMetaShort: {
+    width: "42%",
+    height: 10,
+  },
+  fareSkeleton: {
+    width: 52,
+    height: 22,
+    borderRadius: 8,
+  },
+  fareSkeletonInline: {
+    width: 52,
+    height: 22,
+    borderRadius: 8,
   },
   rideInfo: {
     flex: 1,
@@ -860,11 +1411,38 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#6B7280",
   },
+  rideDropTiming: {
+    fontSize: 11,
+    color: "#9CA3AF",
+    marginTop: 2,
+  },
+  ridePriceWrap: {
+    marginLeft: 8,
+    minWidth: 52,
+    alignItems: "flex-end",
+    justifyContent: "center",
+  },
+  priceCol: {
+    alignItems: "flex-end",
+  },
+  priceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  surgeCaret: {
+    marginRight: 2,
+  },
+  ridePriceStrike: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#9CA3AF",
+    textDecorationLine: "line-through",
+    marginBottom: 2,
+  },
   ridePrice: {
     fontSize: 17,
     fontWeight: "700",
     color: "#111827",
-    marginLeft: 8,
   },
   payOffersRow: {
     flexDirection: "row",

@@ -26,7 +26,7 @@ const RiderMeResponseSchema = z.object({
   accountStatus: z.string(),
   onboardingStatus: z.string(),
 });
-import { desc, eq, and, inArray, sql } from "drizzle-orm";
+import { desc, eq, and, inArray, isNull, sql } from "drizzle-orm";
 import { ulid } from "ulid";
 import { auth } from "../../plugins/auth.js";
 import { getDb, getSql } from "../../db/client.js";
@@ -580,6 +580,159 @@ export async function riderRoutes(app: FastifyInstance) {
     },
   );
 
+  const RiderBankPaymentMethodSchema = z.object({
+    id: z.number(),
+    methodType: z.literal("bank"),
+    accountHolderName: z.string(),
+    bankName: z.string().nullable(),
+    ifsc: z.string().nullable(),
+    branch: z.string().nullable(),
+    accountNumberMasked: z.string(),
+    verificationStatus: z.enum(["pending", "verified", "rejected"]),
+    createdAt: z.string(),
+  });
+
+  app.get(
+    "/payment-methods/bank",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            paymentMethod: RiderBankPaymentMethodSchema.nullable(),
+          }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const { getRiderBankPaymentMethod } = await import(
+        "../../lib/rider-bank-payment-method.js"
+      );
+      const paymentMethod = await getRiderBankPaymentMethod(riderId);
+      return { paymentMethod };
+    },
+  );
+
+  app.post(
+    "/payment-methods/bank",
+    {
+      schema: {
+        body: z.object({
+          accountHolderName: z.string().min(2).max(80),
+          bankName: z.string().min(2).max(80),
+          ifsc: z.string().min(11).max(11),
+          branch: z.string().max(80).optional(),
+          accountNumber: z.string().regex(/^\d{9,18}$/),
+        }),
+        response: {
+          201: z.object({
+            paymentMethod: RiderBankPaymentMethodSchema,
+          }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const { createRiderBankPaymentMethod } = await import(
+        "../../lib/rider-bank-payment-method.js"
+      );
+      try {
+        const paymentMethod = await createRiderBankPaymentMethod(riderId, req.body);
+        return reply.status(201).send({ paymentMethod });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Could not save bank account";
+        const status = message === "Bank account already linked" ? 409 : 400;
+        return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
+  const RiderEmergencyContactSchema = z.object({
+    label: z.string().min(1).max(40),
+    phone: z.string().min(10).max(15),
+  });
+
+  app.get(
+    "/me/emergency-contacts",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            contacts: z.array(RiderEmergencyContactSchema),
+            defaults: z.object({
+              police: z.string(),
+              ambulance: z.string(),
+            }),
+          }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const { getRiderEmergencyContacts, INDIA_EMERGENCY_DEFAULTS } = await import(
+        "../../lib/rider-emergency-contacts.js"
+      );
+      const contacts = await getRiderEmergencyContacts(riderId);
+      return {
+        contacts,
+        defaults: {
+          police: INDIA_EMERGENCY_DEFAULTS.police,
+          ambulance: INDIA_EMERGENCY_DEFAULTS.ambulance,
+        },
+      };
+    }
+  );
+
+  app.put(
+    "/me/emergency-contacts",
+    {
+      schema: {
+        body: z.object({
+          contacts: z.array(RiderEmergencyContactSchema).max(2),
+        }),
+        response: {
+          200: z.object({
+            contacts: z.array(RiderEmergencyContactSchema),
+            defaults: z.object({
+              police: z.string(),
+              ambulance: z.string(),
+            }),
+          }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const { saveRiderEmergencyContacts } = await import(
+        "../../lib/rider-emergency-contacts.js"
+      );
+      const contacts = await saveRiderEmergencyContacts(riderId, req.body.contacts);
+      const { INDIA_EMERGENCY_DEFAULTS } = await import(
+        "../../lib/rider-emergency-contacts.js"
+      );
+      return {
+        contacts,
+        defaults: {
+          police: INDIA_EMERGENCY_DEFAULTS.police,
+          ambulance: INDIA_EMERGENCY_DEFAULTS.ambulance,
+        },
+      };
+    }
+  );
+
   app.get(
     "/me/documents",
     {
@@ -629,8 +782,10 @@ export async function riderRoutes(app: FastifyInstance) {
     totalBalance: z.number(),
     withdrawable: z.number(),
     locked: z.number(),
+    subscriptionDebited: z.number(),
     thisWeek: z.number(),
     thisMonth: z.number(),
+    hasBankAccount: z.boolean(),
     breakdown: z.object({
       food: z.number(),
       parcel: z.number(),
@@ -652,18 +807,31 @@ export async function riderRoutes(app: FastifyInstance) {
           totalBalance: 0,
           withdrawable: 0,
           locked: 0,
+          subscriptionDebited: 0,
           thisWeek: 0,
           thisMonth: 0,
+          hasBankAccount: false,
           breakdown: { food: 0, parcel: 0, ride: 0 },
         };
       }
       const { riderWallet } = await import("../../db/schema.js");
+      const { safeRiderHasBankPaymentMethod } = await import(
+        "../../lib/rider-bank-payment-method.js"
+      );
       const db = getDb();
       const [wallet] = await db
         .select()
         .from(riderWallet)
         .where(eq(riderWallet.riderId, riderId))
         .limit(1);
+      const { getRiderPeriodEarningsTotals, getRiderSubscriptionDebitedTotal } = await import(
+        "../../lib/rider-wallet-ledger-app.js"
+      );
+      const [hasBankAccount, periodTotals, subscriptionDebited] = await Promise.all([
+        safeRiderHasBankPaymentMethod(riderId),
+        getRiderPeriodEarningsTotals(riderId),
+        getRiderSubscriptionDebitedTotal(riderId),
+      ]);
       const total = wallet ? Number(wallet.totalBalance ?? 0) : 0;
       const food = wallet ? Number(wallet.earningsFood ?? 0) : 0;
       const parcel = wallet ? Number(wallet.earningsParcel ?? 0) : 0;
@@ -672,8 +840,10 @@ export async function riderRoutes(app: FastifyInstance) {
         totalBalance: total,
         withdrawable: Math.max(0, total),
         locked: 0,
-        thisWeek: 0,
-        thisMonth: 0,
+        subscriptionDebited,
+        thisWeek: periodTotals.thisWeek,
+        thisMonth: periodTotals.thisMonth,
+        hasBankAccount,
         breakdown: { food, parcel, ride },
       };
     },
@@ -693,11 +863,19 @@ export async function riderRoutes(app: FastifyInstance) {
     createdAt: z.string(),
   });
 
+  const RiderLedgerSummarySchema = z.object({
+    totalEarnings: z.number(),
+    totalWithdrawals: z.number(),
+    pendingSettlement: z.number(),
+    monthLabel: z.string(),
+  });
+
   const RiderLedgerResponseSchema = z.object({
     entries: z.array(RiderLedgerEntrySchema),
     total: z.number(),
     hasMore: z.boolean(),
     periodLabel: z.string(),
+    summary: RiderLedgerSummarySchema,
   });
 
   app.get(
@@ -706,7 +884,17 @@ export async function riderRoutes(app: FastifyInstance) {
       schema: {
         querystring: z.object({
           segment: z
-            .enum(["all", "food", "parcel", "ride", "incentives", "adjustments", "penalties"])
+            .enum([
+              "all",
+              "food",
+              "parcel",
+              "ride",
+              "incentives",
+              "adjustments",
+              "penalties",
+              "withdrawals",
+              "subscriptions",
+            ])
             .default("all"),
           period: z.enum(["this_month", "last_month", "all"]).default("this_month"),
           limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -718,11 +906,31 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return { entries: [], total: 0, hasMore: false, periodLabel: "This month" };
+        return {
+          entries: [],
+          total: 0,
+          hasMore: false,
+          periodLabel: "This month",
+          summary: {
+            totalEarnings: 0,
+            totalWithdrawals: 0,
+            pendingSettlement: 0,
+            monthLabel: "This Month Summary",
+          },
+        };
       }
 
       const { segment, period, limit, offset } = req.query as {
-        segment: "all" | "food" | "parcel" | "ride" | "incentives" | "adjustments" | "penalties";
+        segment:
+          | "all"
+          | "food"
+          | "parcel"
+          | "ride"
+          | "incentives"
+          | "adjustments"
+          | "penalties"
+          | "withdrawals"
+          | "subscriptions";
         period: "this_month" | "last_month" | "all";
         limit: number;
         offset: number;
@@ -818,6 +1026,57 @@ export async function riderRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: message });
       }
     },
+  );
+
+  // Read current duty status (source of truth for dispatch eligibility).
+  app.get(
+    "/duty",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            isOnDuty: z.boolean(),
+            allowedServiceTypes: z.array(z.string()),
+            blockedServiceTypes: z.array(z.string()).optional(),
+            lastUpdated: z.string(),
+          }),
+        },
+      },
+    },
+    async (req) => {
+      const userId = req.auth!.sub;
+      const riderIdMatch = userId.match(/usr_(\d+)/);
+      if (!riderIdMatch) {
+        return {
+          isOnDuty: false,
+          allowedServiceTypes: [],
+          lastUpdated: new Date().toISOString(),
+        };
+      }
+      const riderId = parseInt(riderIdMatch[1]!, 10);
+      const db = getDb();
+      const [latest] = await db
+        .select({
+          status: dutyLogs.status,
+          serviceTypes: dutyLogs.serviceTypes,
+          timestamp: dutyLogs.timestamp,
+        })
+        .from(dutyLogs)
+        .where(eq(dutyLogs.riderId, riderId))
+        .orderBy(desc(dutyLogs.timestamp))
+        .limit(1);
+
+      const isOnDuty = latest?.status === "ON";
+      const allowedServiceTypes = isOnDuty
+        ? (latest?.serviceTypes ?? []).map((s) => String(s)).filter(Boolean)
+        : [];
+
+      return {
+        isOnDuty,
+        allowedServiceTypes,
+        lastUpdated: (latest?.timestamp ?? new Date()).toISOString(),
+      };
+    }
   );
 
   // Update duty status (go online/offline). When going online, blacklisted services are excluded so rider can only be online for required services.
@@ -1543,6 +1802,11 @@ export async function riderRoutes(app: FastifyInstance) {
     estimatedEarning: z.number(),
     baseEarning: z.number().optional(),
     customerTipAmount: z.number().optional(),
+    waitingEarning: z.number().optional(),
+    surgeEarning: z.number().optional(),
+    appliedSurges: z
+      .array(z.object({ name: z.string(), amount: z.number() }))
+      .optional(),
     totalEarning: z.number().optional(),
     higherDispatchPriority: z.boolean().optional(),
     merchantName: z.string().nullable().optional(),
@@ -1571,6 +1835,10 @@ export async function riderRoutes(app: FastifyInstance) {
     prepDelayMinutes: z.number().nullable().optional(),
     customerName: z.string().nullable().optional(),
     customerPhone: z.string().nullable().optional(),
+    customerPrimaryName: z.string().nullable().optional(),
+    customerPrimaryPhone: z.string().nullable().optional(),
+    customerAlternateName: z.string().nullable().optional(),
+    customerAlternatePhone: z.string().nullable().optional(),
     pickupAddressGeocoded: z.string().optional(),
     dropAddressGeocoded: z.string().optional(),
     foodItems: z
@@ -1588,9 +1856,13 @@ export async function riderRoutes(app: FastifyInstance) {
     restaurantPhone: z.string().nullable().optional(),
     merchantFeedbackSubmitted: z.boolean().optional(),
     customerFeedbackSubmitted: z.boolean().optional(),
-    paymentMethod: z.string().nullable().optional(),
-    paymentStatus: z.string().nullable().optional(),
-  });
+  paymentMethod: z.string().nullable().optional(),
+  paymentStatus: z.string().nullable().optional(),
+  adminRiderPaymentClearedAt: z.string().nullable().optional(),
+  walletCreditPending: z.boolean().optional(),
+  customerRating: z.number().nullable().optional(),
+  passengerRating: z.number().nullable().optional(),
+});
 
   app.get(
     "/order-acceptance-settings",
@@ -1698,6 +1970,34 @@ export async function riderRoutes(app: FastifyInstance) {
       }
       const { getActiveOrdersForRider } = await import("./rider.orders.service.js");
       return getActiveOrdersForRider(riderId);
+    }
+  );
+
+  app.get(
+    "/orders/ride-payment-holds",
+    {
+      schema: {
+        response: {
+          200: z.array(
+            z.object({
+              orderId: z.string(),
+              formattedOrderId: z.string().nullable(),
+              totalEarning: z.number(),
+              passengerFare: z.number(),
+              completedAt: z.string(),
+            })
+          ),
+          403: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const { getRidePaymentHoldsForRider } = await import("./rider.orders.service.js");
+      return getRidePaymentHoldsForRider(riderId);
     }
   );
 
@@ -1815,6 +2115,75 @@ export async function riderRoutes(app: FastifyInstance) {
     }
   );
 
+  app.post(
+    "/orders/:id/offer-missed",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: z
+          .object({
+            reason: z.string().optional(),
+          })
+          .optional(),
+        response: {
+          200: z.object({ ok: z.literal(true), recorded: z.boolean() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      const body = (req.body ?? {}) as { reason?: string };
+      try {
+        const { missOrderOfferForRider } = await import("./rider.orders.service.js");
+        return await missOrderOfferForRider(riderId, id, { reason: body.reason });
+      } catch (e) {
+        const err = e as Error & { statusCode?: number };
+        const code = err.statusCode ?? 500;
+        if (code >= 400 && code < 500) {
+          return reply.status(code).send({ error: err.message || "Offer missed failed" });
+        }
+        throw e;
+      }
+    }
+  );
+
+  app.get(
+    "/dispatch-offer-stats",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            riderId: z.number(),
+            offersTotal: z.number(),
+            offersAccepted: z.number(),
+            offersRejected: z.number(),
+            offersMissed: z.number(),
+            acceptRate: z.number().nullable(),
+            lastOfferAt: z.string().nullable(),
+            lastAcceptedAt: z.string().nullable(),
+          }),
+          403: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const { getRiderDispatchOfferStats } = await import(
+        "../../lib/rider-dispatch-assignment-audit.js"
+      );
+      return getRiderDispatchOfferStats(riderId);
+    }
+  );
+
   app.get(
     "/orders/:id",
     {
@@ -1910,6 +2279,7 @@ export async function riderRoutes(app: FastifyInstance) {
         body: z.object({
           rating: z.number().int().min(1).max(5).optional(),
           tags: z.array(z.string().min(1).max(64)).max(12).optional(),
+          messages: z.array(z.string().min(1).max(200)).max(12).optional(),
           skipped: z.boolean().optional(),
         }),
         response: {
@@ -1930,6 +2300,7 @@ export async function riderRoutes(app: FastifyInstance) {
       const body = (req.body ?? {}) as {
         rating?: number;
         tags?: string[];
+        messages?: string[];
         skipped?: boolean;
       };
       try {
@@ -1951,6 +2322,7 @@ export async function riderRoutes(app: FastifyInstance) {
         body: z.object({
           rating: z.number().int().min(1).max(5).optional(),
           tags: z.array(z.string().min(1).max(64)).max(12).optional(),
+          messages: z.array(z.string().min(1).max(200)).max(12).optional(),
           comment: z.string().max(2000).optional(),
           skipped: z.boolean().optional(),
         }),
@@ -1972,6 +2344,7 @@ export async function riderRoutes(app: FastifyInstance) {
       const body = (req.body ?? {}) as {
         rating?: number;
         tags?: string[];
+        messages?: string[];
         comment?: string;
         skipped?: boolean;
       };
@@ -1980,6 +2353,9 @@ export async function riderRoutes(app: FastifyInstance) {
         return await submitRiderCustomerDeliveryFeedback(riderId, id, body);
       } catch (e) {
         const err = e as Error & { statusCode?: number };
+        if (!err.statusCode || err.statusCode >= 500) {
+          console.error("[customer-delivery-feedback]", err);
+        }
         const status = err.statusCode ?? 500;
         return reply.status(status as 409).send({ error: err.message || "Update failed" });
       }
@@ -2307,6 +2683,147 @@ export async function riderRoutes(app: FastifyInstance) {
     }
   );
 
+  const partnerChatMessageSchema = z.object({
+    id: z.number(),
+    senderType: z.enum(["CUSTOMER", "RIDER", "SYSTEM"]),
+    body: z.string(),
+    createdAt: z.string(),
+    isMine: z.boolean(),
+  });
+
+  const partnerChatListResponseSchema = z.object({
+    messages: z.array(partnerChatMessageSchema),
+    chatClosed: z.boolean(),
+  });
+
+  const partnerChatSendBodySchema = z.object({
+    body: z.string().trim().min(1).max(500),
+  });
+
+  const partnerChatUnreadResponseSchema = z.object({
+    unreadCount: z.number().int().nonnegative(),
+    chatClosed: z.boolean(),
+  });
+
+  app.get<{ Params: { id: string } }>(
+    "/orders/:id/partner-chat/unread",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: partnerChatUnreadResponseSchema,
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      try {
+        const { getOrderPartnerChatUnreadForRider } = await import(
+          "../../lib/order-partner-chat.service.js"
+        );
+        return await getOrderPartnerChatUnreadForRider(riderId, id);
+      } catch (e) {
+        const err = e as Error & { statusCode?: number };
+        if (err.statusCode === 404) {
+          return reply.status(404).send({ error: err.message || "Order not found" });
+        }
+        const msg = String(e);
+        if (msg.includes("order_partner_chat_messages") && /does not exist|42P01/i.test(msg)) {
+          return reply.send({ unreadCount: 0, chatClosed: false });
+        }
+        throw e;
+      }
+    }
+  );
+
+  app.get<{ Params: { id: string }; Querystring: { since?: string } }>(
+    "/orders/:id/partner-chat/messages",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        querystring: z.object({ since: z.string().optional() }),
+        response: {
+          200: partnerChatListResponseSchema,
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), code: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      const since = (req.query as { since?: string }).since;
+      try {
+        const { listOrderPartnerChatForRider } = await import(
+          "../../lib/order-partner-chat.service.js"
+        );
+        return await listOrderPartnerChatForRider(riderId, id, since);
+      } catch (e) {
+        const err = e as Error & { statusCode?: number; code?: string };
+        if (err.statusCode === 404) {
+          return reply.status(404).send({ error: err.message || "Order not found" });
+        }
+        if (err.statusCode === 409) {
+          return reply.status(409).send({ error: err.message, code: err.code });
+        }
+        throw e;
+      }
+    }
+  );
+
+  app.post<{ Params: { id: string }; Body: z.infer<typeof partnerChatSendBodySchema> }>(
+    "/orders/:id/partner-chat/messages",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: partnerChatSendBodySchema,
+        response: {
+          200: partnerChatMessageSchema,
+          400: z.object({ error: z.string() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), code: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      const body = partnerChatSendBodySchema.parse(req.body ?? {});
+      try {
+        const { sendOrderPartnerChatFromRider } = await import(
+          "../../lib/order-partner-chat.service.js"
+        );
+        return await sendOrderPartnerChatFromRider(riderId, id, body.body);
+      } catch (e) {
+        const err = e as Error & { statusCode?: number; code?: string };
+        if (err.statusCode === 400) {
+          return reply.status(400).send({ error: err.message });
+        }
+        if (err.statusCode === 404) {
+          return reply.status(404).send({ error: err.message || "Order not found" });
+        }
+        if (err.statusCode === 409) {
+          return reply.status(409).send({ error: err.message, code: err.code });
+        }
+        throw e;
+      }
+    }
+  );
+
   app.post(
     "/orders/:id/cancel-assigned",
     {
@@ -2332,8 +2849,8 @@ export async function riderRoutes(app: FastifyInstance) {
       const { id } = req.params as { id: string };
       const body = req.body as { reasonCode: string; reasonText?: string };
       try {
-        const { cancelAssignedRideForRider } = await import("./rider.orders.service.js");
-        return await cancelAssignedRideForRider(riderId, id, body);
+        const { cancelAssignedOrderForRider } = await import("./rider.orders.service.js");
+        return await cancelAssignedOrderForRider(riderId, id, body);
       } catch (e) {
         const err = e as Error & { statusCode?: number };
         const status = err.statusCode ?? 500;

@@ -1,16 +1,14 @@
 import React from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-} from "react-native";
-import { LinearGradient } from "expo-linear-gradient";
-import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { DismissibleBottomSheetShell } from "@/src/components/language/DismissibleBottomSheetShell";
-import { RidePickupOtpEntry } from "@/src/components/orders/RidePickupOtpEntry";
+import { OrderOtpVerifySheetContent } from "@/src/components/orders/OrderOtpVerifySheetContent";
 import { colors } from "@/src/theme";
+
+const PICKUP_SHEET_GRADIENT: [string, string] = ["#EFF6FF", "#FFFFFF"];
+const PICKUP_BADGE_GRADIENT: [string, string] = [
+  colors.secondary[600],
+  colors.secondary[400],
+];
 
 type Props = {
   visible: boolean;
@@ -18,13 +16,15 @@ type Props = {
   error?: string | null;
   resetKey?: number;
   customerName?: string | null;
+  orderIdLabel?: string | null;
   otpContext?: "customer" | "merchant";
-  /** Ride drop leg — delivery OTP without photo. */
   purpose?: "pickup" | "drop";
-  /** Keep tab bar visible under the sheet (navigation / tab screens). */
+  waitTimerLabel?: string | null;
+  rideType?: string | null;
   bottomOffset?: number;
   onDismiss: () => void;
   onSubmit: (otp: string) => void;
+  onClearError?: () => void;
 };
 
 export function PickupOtpBottomSheet({
@@ -33,15 +33,20 @@ export function PickupOtpBottomSheet({
   error,
   resetKey = 0,
   customerName,
+  orderIdLabel: _orderIdLabel,
   otpContext = "customer",
   purpose = "pickup",
+  waitTimerLabel: _waitTimerLabel,
+  rideType: _rideType,
   bottomOffset = 0,
   onDismiss,
   onSubmit,
+  onClearError,
 }: Props) {
   const { t } = useTranslation();
   const isFood = otpContext === "merchant";
   const isDropOtp = purpose === "drop";
+  const isRidePickup = !isFood && !isDropOtp;
 
   const displayName =
     customerName?.trim() ||
@@ -49,172 +54,81 @@ export function PickupOtpBottomSheet({
       ? t("orders.activeFood.merchantFallback", "the restaurant")
       : t("orders.activeRide.customerFallback", "Customer"));
 
+  const title = isFood
+    ? t("orders.activeFood.verifyPickupTitle", "Verify Pickup")
+    : isDropOtp
+      ? t("orders.activeRide.dropOtpSheetTitle", "Enter drop OTP")
+      : isRidePickup
+        ? t("orders.activeRide.verifyRideStartTitle", "Verify Ride Start")
+        : t("orders.activeRide.otpTitle", "Enter customer pickup OTP");
+
+  const subtitle = isFood
+    ? t(
+        "orders.activeFood.verifyPickupSubtitle",
+        "Ask {{name}} for the 4-digit OTP",
+        { name: displayName }
+      )
+    : isDropOtp
+      ? t(
+          "orders.activeRide.dropOtpSheetSubtitle",
+          "Ask {{name}} for the 4-digit drop OTP shown in their app to complete the ride.",
+          { name: displayName }
+        )
+      : isRidePickup
+        ? t(
+            "orders.activeRide.verifyRideStartSubtitle",
+            "Ask the passenger for the 4-digit OTP"
+          )
+        : t(
+            "orders.activeRide.otpSubtitle",
+            "Ask the customer for their 4-digit code to start the ride."
+          );
+
+  const compactSubtitle = isFood
+    ? t(
+        "orders.activeFood.verifyPickupCompact",
+        "Enter the 4-digit pickup OTP from {{name}}.",
+        { name: displayName }
+      )
+    : isDropOtp
+      ? t(
+          "orders.activeRide.dropOtpSheetCompact",
+          "Enter drop OTP from {{name}}.",
+          { name: displayName }
+        )
+      : t(
+          "orders.activeRide.otpSheetCompact",
+          "Enter the 4-digit pickup code from the customer."
+        );
+
   return (
     <DismissibleBottomSheetShell
       visible={visible}
       onDismiss={onDismiss}
-      maxHeightRatio={0.72}
+      maxHeightRatio={0.82}
       showOuterHandle={false}
       bottomOffset={bottomOffset}
+      compactBottomInset
+      fitContent
+      embedded
       keyboardAware
     >
-      <LinearGradient
-        colors={isFood ? ["#F0FDFA", "#FFFFFF"] : ["#EFF6FF", "#FFFFFF"]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 0, y: 1 }}
-        style={styles.headerGradient}
-      >
-        <View style={styles.handle} />
-
-        <View style={styles.headerRow}>
-          <LinearGradient
-            colors={
-              isFood
-                ? [colors.primary[600], colors.primary[400]]
-                : [colors.secondary[600], colors.secondary[400]]
-            }
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.iconBadge}
-          >
-            <Ionicons
-              name={isFood ? "restaurant-outline" : "shield-checkmark"}
-              size={22}
-              color="#ffffff"
-            />
-          </LinearGradient>
-
-          <View style={styles.headerCopy}>
-            <Text style={styles.title}>
-              {isFood
-                ? t(
-                    "orders.activeFood.otpSheetTitle",
-                    "Enter OTP to mark order as picked up"
-                  )
-                : isDropOtp
-                  ? t("orders.activeRide.dropOtpSheetTitle", "Enter drop OTP")
-                  : t("orders.activeRide.otpSheetTitle", "Verify pickup OTP")}
-            </Text>
-            <Text style={styles.subtitle}>
-              {isFood
-                ? t(
-                    "orders.activeFood.otpSheetSubtitle",
-                    "Ask {{name}} for the 4-digit pickup OTP, then enter it below to confirm collection.",
-                    { name: displayName }
-                  )
-                : isDropOtp
-                  ? t(
-                      "orders.activeRide.dropOtpSheetSubtitle",
-                      "Ask {{name}} for the 4-digit drop OTP shown in their app to complete the ride.",
-                      { name: displayName }
-                    )
-                  : t(
-                      "orders.activeRide.otpSheetSubtitle",
-                      "Ask {{name}} for the 4-digit pickup OTP from their app, then verify below.",
-                      { name: displayName }
-                    )}
-            </Text>
-          </View>
-        </View>
-      </LinearGradient>
-
-      <ScrollView
-        keyboardShouldPersistTaps="always"
-        keyboardDismissMode="interactive"
-        automaticallyAdjustKeyboardInsets
-        showsVerticalScrollIndicator={false}
-        bounces={false}
-        nestedScrollEnabled
-        contentContainerStyle={styles.scrollContent}
-      >
-        {error ? (
-          <View style={styles.errorRow}>
-            <Ionicons name="alert-circle" size={18} color={colors.error[600]} />
-            <Text style={styles.errorText}>{error}</Text>
-          </View>
-        ) : null}
-
-        <RidePickupOtpEntry
-          loading={loading}
-          resetKey={resetKey}
-          mode={isFood ? "food" : "ride"}
-          onSubmit={onSubmit}
-        />
-      </ScrollView>
+      <OrderOtpVerifySheetContent
+        title={title}
+        subtitle={subtitle}
+        compactSubtitle={compactSubtitle}
+        iconName="shield-checkmark"
+        headerGradient={PICKUP_SHEET_GRADIENT}
+        badgeGradient={PICKUP_BADGE_GRADIENT}
+        error={error}
+        loading={loading}
+        resetKey={resetKey}
+        otpMode={isFood ? "food" : "ride"}
+        inputMode="system"
+        autoFocus
+        onSubmit={onSubmit}
+        onClearError={onClearError}
+      />
     </DismissibleBottomSheetShell>
   );
 }
-
-const styles = StyleSheet.create({
-  headerGradient: {
-    paddingTop: 8,
-    paddingBottom: 16,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.gray[100],
-  },
-  handle: {
-    alignSelf: "center",
-    width: 40,
-    height: 4,
-    borderRadius: 999,
-    backgroundColor: colors.gray[300],
-    marginBottom: 14,
-  },
-  headerRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 14,
-    paddingHorizontal: 20,
-  },
-  iconBadge: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  headerCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  title: {
-    fontSize: 19,
-    fontWeight: "800",
-    color: colors.gray[900],
-    letterSpacing: -0.3,
-    lineHeight: 24,
-  },
-  subtitle: {
-    marginTop: 6,
-    fontSize: 13,
-    fontWeight: "500",
-    color: colors.gray[500],
-    lineHeight: 19,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    paddingTop: 16,
-    paddingBottom: 16,
-  },
-  errorRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginHorizontal: 20,
-    marginBottom: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: colors.error[50],
-    borderWidth: 1,
-    borderColor: colors.error[100],
-  },
-  errorText: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: "600",
-    color: colors.error[700],
-    lineHeight: 18,
-  },
-});
-

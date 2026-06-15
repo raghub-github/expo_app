@@ -22,6 +22,7 @@ import {
   type ScheduleEvaluation,
 } from '@/lib/storeScheduleEngine';
 import { syncMerchantLicenseCompliance } from '@/lib/syncMerchantLicenseCompliance';
+import type { MerchantLicenseEvaluation } from '@/lib/merchantLicenseExpiry';
 
 /**
  * Legacy constant kept for back-compat with any external importers. The 5-minute
@@ -56,6 +57,7 @@ export type SyncScheduleResult = {
   mutations: string[];
   scheduleEndPromptActive: boolean;
   scheduleEndPromptExpiresAt: string | null;
+  licenseEvaluation: MerchantLicenseEvaluation;
 };
 
 function merchantStoresOnlineFlags(online: boolean) {
@@ -417,6 +419,7 @@ export async function syncOperationalStatusFromSchedule(args: {
   const mutations: string[] = [];
 
   const licenseSync = await syncMerchantLicenseCompliance(db, storeInternalId, { trace });
+  const licenseEvaluation = licenseSync.evaluation;
   if (licenseSync.evaluation.blocked) {
     mutations.push('license_compliance_force_close');
     const { data: storeAfterLicense } = await db
@@ -433,7 +436,7 @@ export async function syncOperationalStatusFromSchedule(args: {
       expired: licenseSync.evaluation.expired.map((d) => d.prefix),
       pending: licenseSync.evaluation.pending_verification.map((d) => d.prefix),
     });
-    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, false, null);
+    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, false, null, licenseEvaluation);
   }
 
   let effectiveStatus: 'OPEN' | 'CLOSED' =
@@ -492,7 +495,7 @@ export async function syncOperationalStatusFromSchedule(args: {
     manualCloseUntil = parseManualCloseUntil(availRow?.manual_close_until ?? null);
     mutations.push('vacation_force_close');
     trace('vacation_force_close', { effective_status: effectiveStatus, vacationEndsAt: vacationCtx.endsAtIso });
-    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, scheduleEndPromptActive, promptExpiresAt);
+    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, scheduleEndPromptActive, promptExpiresAt, licenseEvaluation);
   }
 
   // Scheduled off day: always CLOSED (manual override cannot keep store online)
@@ -515,7 +518,7 @@ export async function syncOperationalStatusFromSchedule(args: {
     availRow = (await loadAvailability(db, storeInternalId)) ?? availRow;
     mutations.push('force_close_scheduled_off_day');
     trace('force_close_scheduled_off_day', { effective_status: effectiveStatus });
-    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, false, null);
+    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, false, null, licenseEvaluation);
   }
 
   // Manual activation lock
@@ -532,7 +535,7 @@ export async function syncOperationalStatusFromSchedule(args: {
     availRow = (await loadAvailability(db, storeInternalId)) ?? availRow;
     mutations.push('forced_lock_close');
     trace('forced_lock_close', { effective_status: effectiveStatus });
-    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, false, null);
+    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, false, null, licenseEvaluation);
   }
 
   const manualCloseActive = !!manualCloseUntil && nowMs < manualCloseUntil.getTime();
@@ -542,7 +545,7 @@ export async function syncOperationalStatusFromSchedule(args: {
       manual_indefinite: manualIndefinite,
       effective_status: effectiveStatus,
     });
-    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, scheduleEndPromptActive, promptExpiresAt);
+    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, scheduleEndPromptActive, promptExpiresAt, licenseEvaluation);
   }
 
   // Expired temp close
@@ -608,7 +611,8 @@ export async function syncOperationalStatusFromSchedule(args: {
         availRow,
         mutations,
         scheduleEndPromptActive,
-        promptExpiresAt
+        promptExpiresAt,
+        licenseEvaluation
       );
     }
     await closeStore(
@@ -629,7 +633,7 @@ export async function syncOperationalStatusFromSchedule(args: {
     availRow = (await loadAvailability(db, storeInternalId)) ?? availRow;
     mutations.push('auto_close_break');
     trace('auto_close_break_priority', { schedule_phase: schedulePhase });
-    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, false, null);
+    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, false, null, licenseEvaluation);
   }
 
   // OPEN while outside hours — always enforce schedule (even when auto-open is disabled).
@@ -656,7 +660,8 @@ export async function syncOperationalStatusFromSchedule(args: {
         availRow,
         mutations,
         scheduleEndPromptActive,
-        promptExpiresAt
+        promptExpiresAt,
+        licenseEvaluation
       );
     }
 
@@ -668,7 +673,8 @@ export async function syncOperationalStatusFromSchedule(args: {
         availRow,
         mutations,
         scheduleEndPromptActive,
-        promptExpiresAt
+        promptExpiresAt,
+        licenseEvaluation
       );
     }
 
@@ -704,11 +710,11 @@ export async function syncOperationalStatusFromSchedule(args: {
       schedule_phase: schedulePhase,
       close_policy: closePolicy,
     });
-    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, false, null);
+    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, false, null, licenseEvaluation);
   }
 
   if (!autoOpenEnabled || blockAutoOpen) {
-    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, scheduleEndPromptActive, promptExpiresAt);
+    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, scheduleEndPromptActive, promptExpiresAt, licenseEvaluation);
   }
 
   // Auto-open at slot start (never during break / pre-break alert window)
@@ -744,7 +750,7 @@ export async function syncOperationalStatusFromSchedule(args: {
       mutations.push('auto_open');
     }
     trace('auto_open_branch', { effective_status: effectiveStatus });
-    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, false, null);
+    return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, false, null, licenseEvaluation);
   }
 
   // Clear stale prompt when already closed outside hours
@@ -761,7 +767,7 @@ export async function syncOperationalStatusFromSchedule(args: {
   }
 
   void args.storeTimezone;
-  return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, scheduleEndPromptActive, promptExpiresAt);
+  return buildResult(effectiveStatus, manualCloseUntil, availRow, mutations, scheduleEndPromptActive, promptExpiresAt, licenseEvaluation);
 }
 
 const AVAIL_SELECT =
@@ -824,7 +830,8 @@ function buildResult(
   availFinal: AvailabilityRow | null,
   mutations: string[],
   scheduleEndPromptActive: boolean,
-  promptExpiresAt: Date | null
+  promptExpiresAt: Date | null,
+  licenseEvaluation: MerchantLicenseEvaluation
 ): SyncScheduleResult {
   return {
     effectiveStatus,
@@ -833,5 +840,6 @@ function buildResult(
     mutations,
     scheduleEndPromptActive,
     scheduleEndPromptExpiresAt: promptExpiresAt ? promptExpiresAt.toISOString() : null,
+    licenseEvaluation,
   };
 }

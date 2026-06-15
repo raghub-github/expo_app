@@ -1,6 +1,7 @@
 "use client";
 
 import { supabase } from "@/lib/supabase/client";
+import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 
 let inFlight: Promise<boolean> | null = null;
 
@@ -12,8 +13,19 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function readPersistedSession() {
-  const { data } = await supabase.auth.getSession();
-  return data.session ?? null;
+  try {
+    const { data, error } = await supabase.auth.getSession();
+    if (error && isInvalidRefreshToken(error)) {
+      await supabase.auth.signOut();
+      return null;
+    }
+    return data.session ?? null;
+  } catch (err) {
+    if (isInvalidRefreshToken(err)) {
+      await supabase.auth.signOut();
+    }
+    return null;
+  }
 }
 
 /**

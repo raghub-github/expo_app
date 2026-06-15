@@ -20,12 +20,20 @@ export async function appendCancellationTimeline(input: CancellationTimelineInpu
 
   const { data: existing } = await db
     .from("order_timelines")
-    .select("id")
+    .select("id, status")
     .eq("order_id", input.orderCorePk)
-    .eq("status", "Cancelled")
-    .limit(1)
-    .maybeSingle();
-  if (existing?.id) return;
+    .limit(20);
+  if (
+    (existing ?? []).some((row) =>
+      ["cancelled", "canceled", "rejected"].includes(
+        String(row.status ?? "")
+          .trim()
+          .toLowerCase()
+      )
+    )
+  ) {
+    return;
+  }
 
   const { data: last } = await db
     .from("order_timelines")
@@ -45,6 +53,7 @@ export async function appendCancellationTimeline(input: CancellationTimelineInpu
     metadata: {
       rejected_reason: reason || (isAuto ? "Auto Cancelled" : null),
       cancel_mode: input.cancelMode ?? (isAuto ? "auto" : "manual"),
+      order_cancellation: true,
     },
     occurred_at: new Date().toISOString(),
   });

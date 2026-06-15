@@ -8,7 +8,7 @@ import {
   StyleSheet,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Redirect, router } from "expo-router";
+import { router } from "expo-router";
 import { permissionManager } from "@/src/services/permissions/permissionManager";
 import { usePermissionStore } from "@/src/stores/permissionStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
@@ -34,6 +34,7 @@ export default function PermissionRequestScreen() {
   const setPermissionStepGranted = usePermissionStore((s) => s.setPermissionStepGranted);
   const session = useSessionStore((s) => s.session);
   const { ready: onboardingGateReady, href: onboardingHref } = useOnboardingGate();
+  const postPermissionReplaceRef = useRef<string | null>(null);
 
   const onboardingSteps: PermissionOnboardingStep[] = React.useMemo(
     () =>
@@ -48,6 +49,28 @@ export default function PermissionRequestScreen() {
   const [locationIssue, setLocationIssue] = useState<LocationBlockingReason | null>(null);
   const progressAnim = useRef(new Animated.Value(0)).current;
   const pendingSettingsReturnRef = useRef(false);
+
+  useEffect(() => {
+    if (!hasRequestedPermissions || !permissionHydrated) return;
+    if (session) {
+      if (!onboardingGateReady) return;
+      if (!onboardingHref) return;
+      const target = onboardingHref as string;
+      if (postPermissionReplaceRef.current === target) return;
+      postPermissionReplaceRef.current = target;
+      router.replace(onboardingHref);
+      return;
+    }
+    if (postPermissionReplaceRef.current === "/(auth)/login") return;
+    postPermissionReplaceRef.current = "/(auth)/login";
+    router.replace("/(auth)/login");
+  }, [
+    hasRequestedPermissions,
+    permissionHydrated,
+    session,
+    onboardingGateReady,
+    onboardingHref,
+  ]);
 
   const handleComplete = useCallback(async () => {
     try {
@@ -257,10 +280,24 @@ export default function PermissionRequestScreen() {
         );
       }
       if (onboardingHref) {
-        return <Redirect href={onboardingHref} />;
+        return (
+          <SafeAreaView style={styles.container}>
+            <View style={styles.centerContent}>
+              <Logo size="large" vertical style={{ marginBottom: 24 }} />
+              <Text style={styles.title}>Loading...</Text>
+            </View>
+          </SafeAreaView>
+        );
       }
     }
-    return <Redirect href="/(auth)/login" />;
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.centerContent}>
+          <Logo size="large" vertical style={{ marginBottom: 24 }} />
+          <Text style={styles.title}>Loading...</Text>
+        </View>
+      </SafeAreaView>
+    );
   }
 
   if (currentStep >= onboardingSteps.length) {

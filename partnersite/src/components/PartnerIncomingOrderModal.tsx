@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { usePathname, useRouter } from 'next/navigation';
 import { X, Volume2, VolumeX, Clock, Minus, Plus, UtensilsCrossed } from 'lucide-react';
 import { toast } from 'sonner';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
@@ -11,6 +12,8 @@ import {
   PARTNER_INCOMING_MODAL_CLOSED,
   PARTNER_INCOMING_MODAL_OPEN,
   PARTNER_PENDING_ORDERS_REFRESH,
+  isPartnerIncomingModalSuppressed,
+  setPartnerIncomingModalSuppressed,
   usePartnerSelectedStore,
 } from '@/lib/partner-selected-store';
 import {
@@ -19,6 +22,7 @@ import {
   volumeStepTo01,
 } from '@/lib/partner-device-order-alerts';
 import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
+import { fetchPartnerPendingNewOrdersCount, invalidatePartnerPendingCountCache } from '@/lib/partner-pending-count-fetch';
 import {
   hasShownPartnerOrderActionToast,
   markPartnerOrderActionToastShown,
@@ -41,6 +45,11 @@ import {
   resolveStoreDefaultPrepMinutes,
 } from '@/lib/order-prep-time';
 import { resolveMerchantCtm } from '@/lib/merchant-order-ctm';
+import {
+  broadcastIncomingOrderAlert,
+  subscribeIncomingOrderAlert,
+} from '@/lib/partner-incoming-order-broadcast';
+import { partnerNewOrdersHref } from '@/lib/partner-orders-routes';
 
 const PREP_STEP_MINUTES = 5;
 /** Max line items in accept popup; rest via +N more → sidesheet. */
@@ -48,7 +57,16 @@ const MAX_PREVIEW_ITEMS = 3;
 
 const MUTE_KEY = 'partner_incoming_order_mute_sound';
 const DEFAULT_ALERT_SOUND = '/notification.wav';
-const FALLBACK_POLL_MS = 12_000;
+
+function isIncomingSoundMuted(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return localStorage.getItem(MUTE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+const FALLBACK_POLL_MS = 15_000;
 const OPEN_ORDER_SYNC_MS = 2_500;
 const FALLBACK_SCAN_LIMIT = 12;
 const DISMISS_KEY = 'partner_incoming_order_dismissed_v1';
@@ -117,6 +135,7 @@ async function playChimeSequential(
   const safeRepeats = Math.max(1, Math.min(25, Math.floor(repeatCount || 1)));
   try {
     for (let i = 0; i < safeRepeats; i += 1) {
+      if (isIncomingSoundMuted()) break;
       // Cancel if a newer run started or modal closed.
       if (opts.getRunId() !== opts.runId) break;
       const audio = new Audio(src);
@@ -162,13 +181,9 @@ async function playChimeSequential(
 /** Device-local partner settings + modal mute toggle (same browser only). */
 function shouldPlayIncomingSound(storeId: string | null | undefined) {
   if (typeof window === 'undefined' || !storeId) return false;
+  if (isIncomingSoundMuted()) return false;
   const d = readPartnerDeviceOrderAlerts(storeId);
   if (!d.orderAlertsEnabled || !d.soundAlertsEnabled) return false;
-  try {
-    if (localStorage.getItem(MUTE_KEY) === '1') return false;
-  } catch {
-    /* ignore */
-  }
   return true;
 }
 
@@ -197,6 +212,8 @@ function MiniOrderId({
  * Global overlay: new store orders (orders_core assigned, or orders_food CREATED). Partnersite only.
  */
 export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: string }) {
+  const router = useRouter();
+  const pathname = usePathname() || '';
   const { storeId, storeInternalId, ready: storeReady } = usePartnerSelectedStore(restaurantId);
   const [muted, setMuted] = useState(false);
   const [modalOrder, setModalOrder] = useState<OrdersFoodRow | null>(null);
@@ -207,10 +224,13 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const [settings, setSettings] = useState<AcceptanceSettings>(DEFAULT_SETTINGS);
   /** Dedupe by orders_core.id */
   const shownInsertIds = useRef<Set<string>>(new Set());
+  /** In-memory dismiss set — avoids race when X is clicked before React state/ref sync. */
+  const dismissedOrderIdsRef = useRef<Set<number>>(new Set());
   const hydrateBusyRef = useRef(false);
   const menuIdHydrateAttemptedRef = useRef<Set<number>>(new Set());
   const chimeRunIdRef = useRef(0);
   const chimeAudioRef = useRef<HTMLAudioElement | null>(null);
+  const soundPlayedForOrderRef = useRef<Set<number>>(new Set());
   const autoAcceptTimerRef = useRef<number | null>(null);
   /** Prevents duplicate auto-cancel + toast when the acceptance timer hits zero. */
   const autoCancelFiredForOrderIdRef = useRef<number | null>(null);
@@ -247,16 +267,32 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   };
 
   const addDismissed = (orderId: number) => {
+    const id = Number(orderId);
+    if (!Number.isFinite(id)) return;
+    dismissedOrderIdsRef.current.add(id);
     if (typeof window === 'undefined') return;
     try {
       const prev = getDismissed();
-      prev.add(orderId);
+      prev.add(id);
       const arr = Array.from(prev).map((oid) => ({ order_id: oid, t: Date.now() }));
       localStorage.setItem(DISMISS_KEY, JSON.stringify(arr.slice(-200)));
     } catch {
       /* ignore */
     }
   };
+
+  const isOrderDismissed = useCallback((orderId: number) => {
+    const id = Number(orderId);
+    if (!Number.isFinite(id)) return false;
+    if (dismissedOrderIdsRef.current.has(id)) return true;
+    return getDismissed().has(id);
+  }, []);
+
+  useEffect(() => {
+    for (const id of getDismissed()) {
+      dismissedOrderIdsRef.current.add(id);
+    }
+  }, []);
 
   useEffect(() => {
     try {
@@ -401,11 +437,47 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     })();
   }, [storeId, modalOrder?.order_id, fetchByCoreId]);
 
+  const playIncomingAlert = useCallback(
+    (orderId: number) => {
+      if (soundPlayedForOrderRef.current.has(orderId)) return;
+      soundPlayedForOrderRef.current.add(orderId);
+      if (!shouldPlayIncomingSound(storeId) || !settings.alert_sound_enabled) return;
+      const device = readPartnerDeviceOrderAlerts(storeId);
+      const slots =
+        settings.alert_sound_urls_by_slot ??
+        ([settings.alert_sound_url, null, null] as [string | null, string | null, string | null]);
+      const chimeUrl =
+        resolveAlertUrlFromSlots(slots, device.alertSoundSlot) ??
+        settings.alert_sound_url ??
+        DEFAULT_ALERT_SOUND;
+      chimeRunIdRef.current += 1;
+      const myRun = chimeRunIdRef.current;
+      void playChimeSequential(chimeUrl, settings.alert_sound_repeat_count, {
+        volume01: volumeStepTo01(device.volumeStep),
+        ringInSilent: device.ringInSilent,
+        runId: myRun,
+        getRunId: () => chimeRunIdRef.current,
+        setAudioRef: (a) => {
+          chimeAudioRef.current = a;
+        },
+      });
+    },
+    [
+      storeId,
+      settings.alert_sound_enabled,
+      settings.alert_sound_repeat_count,
+      settings.alert_sound_url,
+      settings.alert_sound_urls_by_slot,
+    ]
+  );
+
   const openIfNew = useCallback(
-    async (full: OrdersFoodRow | null) => {
+    async (full: OrdersFoodRow | null, opts?: { skipBroadcast?: boolean }) => {
       if (!full) return;
-      const dismissed = getDismissed();
-      if (dismissed.has(full.order_id)) return;
+      if (storeId && isPartnerIncomingModalSuppressed(storeId)) return;
+      const coreOrderId = Number(full.order_id);
+      if (!Number.isFinite(coreOrderId)) return;
+      if (isOrderDismissed(coreOrderId)) return;
       const ext = full as OrdersFoodRow & { core_status?: string; current_status?: string | null };
       const fst = resolvePartnerPipeline(
         full.order_status,
@@ -423,7 +495,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       );
       const orderAgeMs = Date.now() - new Date(full.created_at).getTime();
       if (orderAgeMs >= acceptWindowMs) {
-        addDismissed(full.order_id);
+        addDismissed(coreOrderId);
         return;
       }
 
@@ -431,60 +503,42 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent(PARTNER_INCOMING_MODAL_OPEN));
       }
-      if (shouldPlayIncomingSound(storeId) && settings.alert_sound_enabled) {
-        const device = readPartnerDeviceOrderAlerts(storeId);
-        const slots =
-          settings.alert_sound_urls_by_slot ??
-          ([settings.alert_sound_url, null, null] as [
-            string | null,
-            string | null,
-            string | null,
-          ]);
-        const chimeUrl =
-          resolveAlertUrlFromSlots(slots, device.alertSoundSlot) ??
-          settings.alert_sound_url ??
-          DEFAULT_ALERT_SOUND;
-        chimeRunIdRef.current += 1;
-        const myRun = chimeRunIdRef.current;
-        void playChimeSequential(chimeUrl, settings.alert_sound_repeat_count, {
-          volume01: volumeStepTo01(device.volumeStep),
-          ringInSilent: device.ringInSilent,
-          runId: myRun,
-          getRunId: () => chimeRunIdRef.current,
-          setAudioRef: (a) => {
-            chimeAudioRef.current = a;
-          },
+      playIncomingAlert(full.order_id);
+      if (!opts?.skipBroadcast && storeId) {
+        broadcastIncomingOrderAlert({
+          storeId,
+          orderId: full.order_id,
+          ts: Date.now(),
         });
       }
     },
-    [
-      storeId,
-      settings.acceptance_window_minutes,
-      settings.alert_sound_enabled,
-      settings.alert_sound_repeat_count,
-      settings.alert_sound_url,
-      settings.alert_sound_urls_by_slot,
-    ]
+    [storeId, settings.acceptance_window_minutes, playIncomingAlert, isOrderDismissed]
   );
 
   const scanForNewOrders = useCallback(async () => {
     if (!storeId || !storeReady) return;
-    if (modalOrder) return;
+    if (isPartnerIncomingModalSuppressed(storeId)) return;
+    if (modalOrderRef.current) return;
     try {
-      const countRes = await fetch(
-        `/api/merchant/pending-new-orders-count?store_id=${encodeURIComponent(storeId)}`,
-        { credentials: 'include' }
-      );
-      const countData = (await countRes.json().catch(() => ({}))) as { count?: number };
-      const pending = Number(countData.count ?? 0);
-      if (!Number.isFinite(pending) || pending <= 0) return;
+      const pending = await fetchPartnerPendingNewOrdersCount(storeId);
+      if (pending == null || pending <= 0) return;
 
       const res = await fetch(
         `/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=${FALLBACK_SCAN_LIMIT}`
       );
-      const data = (await res.json().catch(() => ({}))) as { orders?: OrdersFoodRow[] };
+      const text = await res.text();
+      let data: { orders?: OrdersFoodRow[] } = {};
+      if (text.trim()) {
+        try {
+          data = JSON.parse(text) as { orders?: OrdersFoodRow[] };
+        } catch {
+          return;
+        }
+      }
       if (!res.ok || !Array.isArray(data.orders)) return;
       const firstCreated = data.orders.find((o) => {
+        const coreOrderId = Number(o.order_id);
+        if (!Number.isFinite(coreOrderId) || isOrderDismissed(coreOrderId)) return false;
         const ext = o as OrdersFoodRow & { core_status?: string; current_status?: string | null };
         const st = resolvePartnerPipeline(o.order_status, ext.core_status ?? 'assigned', ext.current_status ?? null);
         return st === 'CREATED';
@@ -493,10 +547,34 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     } catch {
       /* ignore */
     }
-  }, [storeId, storeReady, modalOrder, openIfNew]);
+  }, [storeId, storeReady, openIfNew, isOrderDismissed]);
 
   const scanForNewOrdersRef = useRef(scanForNewOrders);
   scanForNewOrdersRef.current = scanForNewOrders;
+  const openIfNewRef = useRef(openIfNew);
+  openIfNewRef.current = openIfNew;
+
+  useEffect(() => {
+    if (!storeId || !storeReady) return;
+    return subscribeIncomingOrderAlert((payload) => {
+      if (payload.storeId !== storeId) return;
+      void (async () => {
+        const full = await fetchByCoreId(payload.orderId);
+        await openIfNewRef.current(full, { skipBroadcast: true });
+      })();
+    });
+  }, [storeId, storeReady, fetchByCoreId]);
+
+  useEffect(() => {
+    if (!storeReady || !storeId) return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void scanForNewOrdersRef.current();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [storeReady, storeId]);
 
   useEffect(() => {
     if (!storeInternalId || !storeId || !storeReady) return () => {};
@@ -683,9 +761,23 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     } catch {
       /* ignore */
     }
+    if (v) {
+      chimeRunIdRef.current += 1;
+      try {
+        if (chimeAudioRef.current) {
+          chimeAudioRef.current.pause();
+          chimeAudioRef.current.currentTime = 0;
+        }
+      } catch {
+        /* ignore */
+      }
+      chimeAudioRef.current = null;
+    }
   };
 
-  const close = () => {
+  const finishModal = (opts?: { userDismissed?: boolean }) => {
+    const closedOrderId =
+      modalOrderRef.current?.order_id ?? modalOrder?.order_id ?? null;
     if (autoAcceptTimerRef.current != null) {
       window.clearTimeout(autoAcceptTimerRef.current);
       autoAcceptTimerRef.current = null;
@@ -701,33 +793,54 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       /* ignore */
     }
     chimeAudioRef.current = null;
-    if (modalOrder) addDismissed(modalOrder.order_id);
+    if (closedOrderId != null) addDismissed(closedOrderId);
+    if (opts?.userDismissed && storeId) {
+      setPartnerIncomingModalSuppressed(storeId);
+    }
+    // Clear ref before refresh events so syncOpenModalOrder cannot reopen this order.
+    modalOrderRef.current = null;
     setModalOrder(null);
     setRejectOpen(false);
     setItemsSheetOpen(false);
     if (typeof window !== 'undefined') {
+      invalidatePartnerPendingCountCache();
       window.dispatchEvent(new CustomEvent(PARTNER_INCOMING_MODAL_CLOSED));
       window.dispatchEvent(new CustomEvent(PARTNER_PENDING_ORDERS_REFRESH));
     }
-    queueMicrotask(() => void scanForNewOrdersRef.current());
+    if (!opts?.userDismissed) {
+      queueMicrotask(() => void scanForNewOrdersRef.current());
+    }
   };
+
+  const close = () => finishModal();
+  const dismissByUser = () => finishModal({ userDismissed: true });
 
   closeModalRef.current = close;
 
   const syncOpenModalOrder = useCallback(async () => {
     const open = modalOrderRef.current;
     if (!storeId || !open) return;
+    if (isOrderDismissed(open.order_id)) {
+      modalOrderRef.current = null;
+      setModalOrder(null);
+      return;
+    }
     try {
       const full = await fetchByCoreId(open.order_id);
       if (!isPartnerIncomingPending(full)) {
         closeModalRef.current();
         return;
       }
+      if (isOrderDismissed(open.order_id)) {
+        modalOrderRef.current = null;
+        setModalOrder(null);
+        return;
+      }
       setModalOrder(full);
     } catch {
       /* ignore */
     }
-  }, [storeId, fetchByCoreId]);
+  }, [storeId, fetchByCoreId, isOrderDismissed]);
 
   useEffect(() => {
     if (!modalOrder || !storeId) return;
@@ -811,7 +924,12 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       console.debug('[partner-incoming-modal] PATCH ok', { url, httpStatus: res.status });
       showOrderActionToast(status === 'ACCEPTED' ? 'accepted' : 'rejected', orderIdForToast);
       window.dispatchEvent(new CustomEvent(PARTNER_PENDING_ORDERS_REFRESH));
-      if (closeAfter) close();
+      if (closeAfter) {
+        close();
+        if (status === 'ACCEPTED') {
+          router.push(partnerNewOrdersHref(pathname, storeId));
+        }
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.debug('[partner-incoming-modal] PATCH exception', {
@@ -891,7 +1009,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                     type="button"
                     className="rounded-lg p-2 text-gray-500 hover:bg-gray-100"
                     aria-label="Close"
-                    onClick={close}
+                    onClick={dismissByUser}
                   >
                     <X size={20} />
                   </button>

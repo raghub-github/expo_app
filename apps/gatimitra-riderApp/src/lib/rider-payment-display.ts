@@ -53,3 +53,29 @@ export function formatRiderDropPaymentLabel(
   }
   return t?.("orders.activeFood.paidOnline", "Paid online") ?? "Paid online";
 }
+
+/** Order history list — "Paid online" / "Cash on Delivery" (never default to bare "Cash"). */
+export function formatOrderHistoryPaymentLabel(
+  paymentMethod: string | null | undefined,
+  paymentStatus: string | null | undefined,
+  t?: TFunction
+): string | null {
+  if (isCodPaymentMethod(paymentMethod)) {
+    return t?.("profile.myOrders.paymentCod", "Cash on Delivery") ?? "Cash on Delivery";
+  }
+  const status = norm(paymentStatus);
+  if (status === "pending" || status === "processing") {
+    return t?.("profile.myOrders.paymentPending", "Payment pending") ?? "Payment pending";
+  }
+  if (isPrepaidPaymentMethod(paymentMethod, paymentStatus)) {
+    return t?.("profile.myOrders.paymentOnline", "Paid online") ?? "Paid online";
+  }
+  const method = norm(paymentMethod);
+  if (method && !isCodPaymentMethod(method)) {
+    if (method === "online" || method === "upi" || method === "card" || method === "wallet") {
+      return t?.("profile.myOrders.paymentOnline", "Paid online") ?? "Paid online";
+    }
+    return method.charAt(0).toUpperCase() + method.slice(1);
+  }
+  return null;
+}

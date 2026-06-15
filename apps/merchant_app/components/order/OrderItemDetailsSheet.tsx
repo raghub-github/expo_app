@@ -84,7 +84,7 @@ export function OrderItemDetailsSheet({ visible, lineItem, onClose }: Props) {
     }
 
     let cancelled = false;
-    void fetchMenuItem(storeId, menuItemId, token)
+    void fetchMenuItem(String(storeId), menuItemId, token)
       .then((detail) => {
         if (cancelled || !detail) return;
         setCachedMenuItem(storeId, menuItemId, detail);
@@ -115,7 +115,7 @@ export function OrderItemDetailsSheet({ visible, lineItem, onClose }: Props) {
   const refreshMenu = useCallback(async () => {
     if (!storeId || !token || menuItemId == null) return;
     try {
-      const detail = await fetchMenuItem(storeId, menuItemId, token);
+      const detail = await fetchMenuItem(String(storeId), menuItemId, token);
       if (detail) {
         setCachedMenuItem(storeId, menuItemId, detail);
         setMenu(detail);
@@ -138,7 +138,7 @@ export function OrderItemDetailsSheet({ visible, lineItem, onClose }: Props) {
               : payload.mode === "CUSTOM"
                 ? "CUSTOM"
                 : "MANUAL";
-        await patchItemOutOfStock(storeId, menuItemId, token, {
+        await patchItemOutOfStock(String(storeId), menuItemId, token, {
           mode,
           hours: payload.mode === "HOURS" ? payload.hours : undefined,
           until: payload.mode === "CUSTOM" ? payload.until : undefined,
@@ -159,7 +159,7 @@ export function OrderItemDetailsSheet({ visible, lineItem, onClose }: Props) {
     if (!storeId || !token || menuItemId == null) return;
     setOosBusy(true);
     try {
-      await patchItemOutOfStock(storeId, menuItemId, token, { mode: "CLEAR" });
+      await patchItemOutOfStock(String(storeId), menuItemId, token, { mode: "CLEAR" });
       await refreshMenu();
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not restore stock";

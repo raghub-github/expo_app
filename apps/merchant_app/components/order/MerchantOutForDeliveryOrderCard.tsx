@@ -1,21 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, Pressable, Image } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import type { OrderRecord, LineItem } from "@/hooks/useOrders";
 import { MerchantOrderCardLayout } from "@/components/order/MerchantOrderCardLayout";
 import { MerchantOrderActionsSheet } from "@/components/order/MerchantOrderActionsSheet";
 import { OrderCustomerBottomSheet } from "@/components/order/OrderCustomerBottomSheet";
 import { OrderTimelineSheet } from "@/components/order/OrderTimelineSheet";
-import {
-  formatOrderDateTime,
-} from "@/components/order/orderFormatters";
+import { formatOrderDateTime } from "@/components/order/orderFormatters";
 import { useOrderSpeech } from "@/hooks/useOrderSpeech";
-import { callRider } from "@/lib/orderCardActions";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { resolvePreparedLateMinutes } from "@/lib/order-prep-time";
 import { OrderPreparedLateTopBanner } from "@/components/order/OrderPrepDelayedBanner";
-import { merchantOrderCardLayoutStyles as layoutStyles } from "@/components/order/merchantOrderCardLayoutStyles";
+import { MerchantAssignedRiderRow } from "@/components/order/MerchantAssignedRiderRow";
 import {
   fetchFoodOrderRidersLog,
   type FoodOrderRiderLogEntry,
@@ -41,10 +36,20 @@ function pickActiveRider(riders: FoodOrderRiderLogEntry[]): FoodOrderRiderLogEnt
   return accepted ?? riders[0];
 }
 
-function riderFirstName(name: string | null | undefined): string {
-  const n = (name ?? "").trim();
-  if (!n) return "Delivery partner";
-  return n.split(/\s+/)[0] ?? n;
+function mergeRiderIntoOrder(
+  order: OrderRecord,
+  rider: FoodOrderRiderLogEntry | null
+): OrderRecord {
+  if (!rider) return order;
+  return {
+    ...order,
+    riderId: rider.rider_id || order.riderId,
+    riderName: rider.rider_name ?? order.riderName,
+    riderMobile: rider.rider_mobile ?? order.riderMobile,
+    riderSelfieUrl: rider.selfie_url ?? order.riderSelfieUrl,
+    riderAssignmentStatus: rider.assignment_status ?? order.riderAssignmentStatus,
+    riderReachedAt: rider.reached_merchant_at ?? order.riderReachedAt,
+  };
 }
 
 export function MerchantOutForDeliveryOrderCard({
@@ -60,10 +65,14 @@ export function MerchantOutForDeliveryOrderCard({
   const [menuOpen, setMenuOpen] = useState(false);
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [customerOpen, setCustomerOpen] = useState(false);
-  const [rider, setRider] = useState<FoodOrderRiderLogEntry | null>(null);
+  const [fetchedRider, setFetchedRider] = useState<FoodOrderRiderLogEntry | null>(null);
   const { speaking, speak } = useOrderSpeech();
 
   const placedAt = formatOrderDateTime(order.createdAt);
+  const displayOrder = useMemo(
+    () => mergeRiderIntoOrder(order, fetchedRider),
+    [order, fetchedRider]
+  );
 
   const preparedLateMins = useMemo(
     () =>
@@ -75,18 +84,13 @@ export function MerchantOutForDeliveryOrderCard({
     [order.preparedLateMinutes, order.preparedAt, order.prepReadyByAt]
   );
 
-  const riderLine = useMemo(() => {
-    const first = riderFirstName(rider?.rider_name);
-    return `${first} is out for delivery`;
-  }, [rider?.rider_name]);
-
   useEffect(() => {
     if (!token || !storeId || order.id.startsWith("core-")) return;
     const foodId = parseInt(order.id, 10);
     if (!Number.isFinite(foodId)) return;
     let cancelled = false;
     void fetchFoodOrderRidersLog(storeId, foodId, token).then((rows) => {
-      if (!cancelled) setRider(pickActiveRider(rows));
+      if (!cancelled) setFetchedRider(pickActiveRider(rows));
     });
     return () => {
       cancelled = true;
@@ -100,7 +104,7 @@ export function MerchantOutForDeliveryOrderCard({
   return (
     <>
       <MerchantOrderCardLayout
-        order={order}
+        order={displayOrder}
         storeName={storeName}
         placedAt={placedAt}
         onViewDetail={openDetail}
@@ -114,27 +118,7 @@ export function MerchantOutForDeliveryOrderCard({
             <OrderPreparedLateTopBanner lateMinutes={preparedLateMins} />
           ) : undefined
         }
-        riderContent={
-          <View style={layoutStyles.riderRow}>
-            {rider?.selfie_url ? (
-              <Image source={{ uri: rider.selfie_url }} style={styles.riderAvatarImg} />
-            ) : (
-              <View style={styles.riderAvatar}>
-                <Ionicons name="person" size={18} color="#888888" />
-              </View>
-            )}
-            <Text style={layoutStyles.riderText} numberOfLines={2}>
-              {riderLine}
-            </Text>
-            <Pressable
-              onPress={() => void callRider(rider?.rider_mobile)}
-              style={({ pressed }) => [styles.callBtn, pressed && layoutStyles.pressed]}
-              hitSlop={8}
-            >
-              <Ionicons name="call" size={18} color="#1A1A1A" />
-            </Pressable>
-          </View>
-        }
+        riderContent={<MerchantAssignedRiderRow order={displayOrder} />}
       />
 
       <MerchantOrderActionsSheet
@@ -160,28 +144,3 @@ export function MerchantOutForDeliveryOrderCard({
     </>
   );
 }
-
-const styles = StyleSheet.create({
-  riderAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "#E8E8E8",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  riderAvatarImg: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "#E8E8E8",
-  },
-  callBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "#F0F0F0",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-});

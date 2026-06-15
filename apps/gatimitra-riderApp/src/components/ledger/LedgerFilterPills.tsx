@@ -37,26 +37,26 @@ export function LedgerFilterPills({ segments, selected, onSelect }: Props) {
 const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
-    gap: 8,
     paddingRight: 4,
     paddingBottom: 2,
   },
   chip: {
-    paddingHorizontal: 18,
-    paddingVertical: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
     borderRadius: 999,
     backgroundColor: "#FFFFFF",
-    borderWidth: 1.5,
-    borderColor: "#E2E8F0",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    marginRight: 8,
   },
   chipActive: {
     backgroundColor: LEDGER_TEAL,
     borderColor: LEDGER_TEAL,
   },
   chipText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "600",
-    color: "#475569",
+    color: "#374151",
   },
   chipTextActive: {
     color: "#FFFFFF",

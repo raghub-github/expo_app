@@ -51,7 +51,12 @@ type Props = {
   orderIdLabel: string;
   customerName: string;
   onSkip: () => void;
-  onSubmit: (payload: { rating: number; tags: string[]; comment?: string }) => void;
+  onSubmit: (payload: {
+    rating: number;
+    tags: string[];
+    messages: string[];
+    comment?: string;
+  }) => void;
 };
 
 function tagsForRating(rating: number | null): FeedbackTag[] {
@@ -100,16 +105,19 @@ export function CustomerFeedbackBottomSheet({
   return (
     <Modal
       visible={visible}
+      transparent
       animationType="slide"
       statusBarTranslucent
-      presentationStyle="fullScreen"
+      presentationStyle="overFullScreen"
       onRequestClose={() => undefined}
     >
       <KeyboardAvoidingView
         style={styles.root}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <View style={[styles.topPad, { paddingTop: Math.max(insets.top, 12) }]}>
+        <View style={styles.backdrop} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" />
+
+        <View style={[styles.sheet, { paddingBottom: bottomPad }]}>
           <View style={styles.header}>
             <Text style={styles.title}>
               {t("orders.activeFood.customerFeedbackTitle", "Customer Feedback")}
@@ -124,104 +132,112 @@ export function CustomerFeedbackBottomSheet({
               <Text style={styles.skipText}>{t("orders.activeFood.feedbackSkip", "Skip")}</Text>
             </Pressable>
           </View>
-        </View>
 
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-        >
-          <Text style={styles.lead}>
-            {t("orders.activeFood.customerFeedbackLead", "You just delivered an order")}
-          </Text>
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            <Text style={styles.lead}>
+              {t("orders.activeFood.customerFeedbackLead", "You just delivered an order")}
+            </Text>
 
-          <View style={styles.orderCard}>
-            <View style={styles.orderIcon}>
-              <Ionicons name="home" size={22} color="#fff" />
+            <View style={styles.orderRow}>
+              <View style={styles.orderIcon}>
+                <Ionicons name="home" size={22} color="#fff" />
+              </View>
+              <View style={styles.orderTextCol}>
+                <Text style={styles.orderIdLine}>
+                  {t("orders.activeFood.orderIdLabel", "Order ID")}: {orderIdLabel}
+                </Text>
+                <Text style={styles.customerName} numberOfLines={2}>
+                  {customerName}
+                </Text>
+              </View>
             </View>
-            <View style={styles.orderTextCol}>
-              <Text style={styles.orderIdLine}>
-                {t("orders.activeFood.orderIdLabel", "Order ID")}: {orderIdLabel}
-              </Text>
-              <Text style={styles.customerName} numberOfLines={2}>
-                {customerName}
-              </Text>
+
+            <View style={styles.divider} />
+
+            <Text style={styles.sectionLabel}>
+              {t(
+                "orders.activeFood.customerRatingPrompt",
+                "Please rate your experience with the customer"
+              )}
+            </Text>
+
+            <View style={styles.emojiRow}>
+              {RATING_EMOJIS.map((emoji, index) => {
+                const value = index + 1;
+                const selected = rating === value;
+                return (
+                  <Pressable
+                    key={value}
+                    onPress={() => setRating(value)}
+                    disabled={loading}
+                    style={[styles.emojiBtn, selected && styles.emojiBtnSelected]}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                  >
+                    <Text style={styles.emoji}>{emoji}</Text>
+                  </Pressable>
+                );
+              })}
             </View>
-          </View>
 
-          <Text style={styles.sectionLabel}>
-            {t(
-              "orders.activeFood.customerRatingPrompt",
-              "Please rate your experience with the customer"
-            )}
-          </Text>
+            <Text style={styles.sectionLabel}>
+              {t("orders.activeFood.customerFeedbackImprove", "Tell us more so we can improve")}
+            </Text>
 
-          <View style={styles.emojiRow}>
-            {RATING_EMOJIS.map((emoji, index) => {
-              const value = index + 1;
-              const selected = rating === value;
-              return (
-                <Pressable
-                  key={value}
-                  onPress={() => setRating(value)}
-                  disabled={loading}
-                  style={[styles.emojiBtn, selected && styles.emojiBtnSelected]}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected }}
-                >
-                  <Text style={styles.emoji}>{emoji}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
+            <View style={styles.tagsWrap}>
+              {availableTags.map((tag) => {
+                const active = selectedTags.includes(tag.id);
+                return (
+                  <Pressable
+                    key={tag.id}
+                    onPress={() => toggleTag(tag.id)}
+                    disabled={loading}
+                    style={[styles.tagPill, active && styles.tagPillActive]}
+                  >
+                    <Text style={[styles.tagText, active && styles.tagTextActive]}>
+                      {t(tag.labelKey, tag.fallback)}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
 
-          <Text style={styles.sectionLabel}>
-            {t("orders.activeFood.customerFeedbackImprove", "Tell us more so we can improve")}
-          </Text>
+            <TextInput
+              style={styles.commentInput}
+              value={comment}
+              onChangeText={setComment}
+              placeholder={t(
+                "orders.activeFood.customerFeedbackCommentPlaceholder",
+                "Add your comment here..."
+              )}
+              placeholderTextColor="#9CA3AF"
+              multiline
+              numberOfLines={4}
+              textAlignVertical="top"
+              editable={!loading}
+            />
+          </ScrollView>
 
-          <View style={styles.tagsWrap}>
-            {availableTags.map((tag) => {
-              const active = selectedTags.includes(tag.id);
-              return (
-                <Pressable
-                  key={tag.id}
-                  onPress={() => toggleTag(tag.id)}
-                  disabled={loading}
-                  style={[styles.tagPill, active && styles.tagPillActive]}
-                >
-                  <Text style={[styles.tagText, active && styles.tagTextActive]}>
-                    {t(tag.labelKey, tag.fallback)}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          <TextInput
-            style={styles.commentInput}
-            value={comment}
-            onChangeText={setComment}
-            placeholder={t(
-              "orders.activeFood.customerFeedbackCommentPlaceholder",
-              "Add your comment here..."
-            )}
-            placeholderTextColor="#9CA3AF"
-            multiline
-            numberOfLines={4}
-            textAlignVertical="top"
-            editable={!loading}
-          />
-        </ScrollView>
-
-        <View style={[styles.footer, { paddingBottom: bottomPad }]}>
           <Pressable
             onPress={() => {
               if (!canSubmit || rating == null) return;
+              const trimmedComment = comment.trim();
+              const messages = selectedTags.map((id) => {
+                const tag = availableTags.find((item) => item.id === id);
+                return tag ? t(tag.labelKey, tag.fallback) : id;
+              });
+              if (trimmedComment) messages.push(trimmedComment);
               onSubmit({
                 rating,
                 tags: selectedTags,
-                comment: comment.trim() || undefined,
+                messages,
+                comment: trimmedComment || undefined,
               });
             }}
             disabled={!canSubmit}
@@ -244,19 +260,25 @@ export function CustomerFeedbackBottomSheet({
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: "#fff",
+    justifyContent: "flex-end",
   },
-  topPad: {
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.55)",
+  },
+  sheet: {
     backgroundColor: "#fff",
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#E5E7EB",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: "92%",
+    paddingTop: 20,
+    paddingHorizontal: 20,
   },
   header: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 20,
-    paddingBottom: 14,
+    marginBottom: 16,
   },
   title: {
     fontSize: 20,
@@ -271,23 +293,21 @@ const styles = StyleSheet.create({
     color: SKIP_PINK,
   },
   scroll: {
-    flex: 1,
+    flexGrow: 0,
   },
   scrollContent: {
-    paddingHorizontal: 20,
-    paddingTop: 18,
-    paddingBottom: 12,
+    paddingBottom: 8,
   },
   lead: {
     fontSize: 15,
     color: "#374151",
-    marginBottom: 16,
+    marginBottom: 14,
   },
-  orderCard: {
+  orderRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 12,
-    marginBottom: 22,
+    marginBottom: 16,
   },
   orderIcon: {
     width: 44,
@@ -312,6 +332,11 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#111827",
   },
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#E5E7EB",
+    marginBottom: 18,
+  },
   sectionLabel: {
     fontSize: 15,
     color: "#374151",
@@ -331,11 +356,11 @@ const styles = StyleSheet.create({
     borderColor: "#E5E7EB",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#fff",
+    backgroundColor: "#F9FAFB",
   },
   emojiBtnSelected: {
-    borderColor: "#9CA3AF",
-    backgroundColor: "#F3F4F6",
+    borderColor: SUBMIT_GREEN,
+    backgroundColor: colors.success[50],
   },
   emoji: {
     fontSize: 26,
@@ -343,28 +368,28 @@ const styles = StyleSheet.create({
   tagsWrap: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: 10,
     marginBottom: 14,
   },
   tagPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: "#D1D5DB",
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     backgroundColor: "#fff",
   },
   tagPillActive: {
-    borderColor: colors.success[600],
+    borderColor: SUBMIT_GREEN,
     backgroundColor: colors.success[50],
   },
   tagText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#374151",
+    fontSize: 14,
+    color: "#6B7280",
+    fontWeight: "500",
   },
   tagTextActive: {
-    color: colors.success[800],
+    color: "#166534",
   },
   commentInput: {
     minHeight: 96,
@@ -376,27 +401,22 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#111827",
     backgroundColor: "#F9FAFB",
-  },
-  footer: {
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#E5E7EB",
-    backgroundColor: "#fff",
+    marginBottom: 8,
   },
   submitBtn: {
+    marginTop: 8,
     backgroundColor: SUBMIT_GREEN,
-    borderRadius: 10,
-    minHeight: 50,
+    borderRadius: 14,
+    paddingVertical: 16,
     alignItems: "center",
     justifyContent: "center",
   },
   submitBtnDisabled: {
-    backgroundColor: "#9CA3AF",
+    opacity: 0.55,
   },
   submitText: {
-    fontSize: 16,
-    fontWeight: "700",
     color: "#fff",
+    fontSize: 17,
+    fontWeight: "700",
   },
 });

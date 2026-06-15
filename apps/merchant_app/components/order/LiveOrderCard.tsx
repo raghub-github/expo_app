@@ -60,7 +60,7 @@ function formatTimerSince(createdAt: string, nowMs: number): string {
 function DeliveryBadge({ deliveryType }: { deliveryType: DeliveryType }) {
   let label = "Delivery";
   let bg = "#E5E7EB";
-  let color = GatiMitraMerchant.textSecondary;
+  let color: string = GatiMitraMerchant.textSecondary;
   if (deliveryType === "GATIMITRA_RIDER") {
     label = "GatiMitra Rider";
     bg = "#DBEAFE";
@@ -155,8 +155,8 @@ export function LiveOrderCard({
     card = (
       <TerminalOrderCard
         order={order}
-        formattedOrderId={order.formattedOrderId}
         rejectedReason={order.rejectedReason}
+        storeName={storeName}
         onPress={onViewDetail}
       />
     );

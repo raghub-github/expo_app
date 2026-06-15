@@ -46,7 +46,8 @@ export type OtpRequest = z.infer<typeof OtpRequestSchema>;
 export const OtpRequestResponseSchema = z.object({
   requestId: z.string(),
   expiresInSec: z.number().int().positive(),
-  otp: z.string().optional(), // For development - OTP to display to user
+  /** Whether MSG91 accepted the SMS send (OTP is never returned to clients). */
+  smsSent: z.boolean().optional(),
 });
 export type OtpRequestResponse = z.infer<typeof OtpRequestResponseSchema>;
 

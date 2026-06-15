@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { StyleSheet, View } from "react-native";
+import { usePathname } from "expo-router";
 import { SubscriptionBottomSheet } from "@/src/components/subscription/SubscriptionBottomSheet";
 import {
   pickFeaturedPlan,
@@ -12,6 +13,8 @@ import { useRiderVehicle } from "@/src/hooks/useRiderVehicle";
  * Shows GMitra Max subscription sheet on app open when rider has NO active subscription.
  */
 export function RiderSubscriptionPrompt() {
+  const pathname = usePathname();
+  const onSubscriptionPage = pathname.includes("your-subscription");
   const { data: plans = [], isFetched: plansFetched } = useRiderSubscriptionPlans();
   const { data: status, isFetched: statusFetched, isError: statusError } = useRiderSubscriptionStatus();
   const { data: vehicleStatus, isFetched: vehicleFetched } = useRiderVehicle();
@@ -23,7 +26,12 @@ export function RiderSubscriptionPrompt() {
   const vehicleGatePending = vehicleFetched && !vehicleStatus?.isComplete;
   const ready = plansFetched && statusFetched && vehicleFetched;
   const shouldOffer =
-    ready && Boolean(featured) && !isSubscribed && !sessionDismissed && !vehicleGatePending;
+    ready &&
+    Boolean(featured) &&
+    !isSubscribed &&
+    !sessionDismissed &&
+    !vehicleGatePending &&
+    !onSubscriptionPage;
 
   useEffect(() => {
     if (!shouldOffer) {

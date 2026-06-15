@@ -21,10 +21,12 @@ import { RiderPhotoModal } from "@/components/orders/RiderPhotoModal";
 import {
   fetchRiderActivityLogCached,
   getCachedRiderActivityLog,
+  prefetchRiderActivityLog,
   type RiderActivityLogApiRow,
   type RiderActivityLogSummary,
 } from "@/lib/riderActivityLogCache";
 import { useToast } from "@/context/ToastContext";
+import { riderDeliveryMilestoneLabel } from "@/lib/riders/rider-order-status-display";
 
 function riderManagementToastMessage(error: string | undefined, fallback: string): string {
   if (!error) return fallback;
@@ -54,6 +56,7 @@ interface RiderDetailsOrder {
   riderRestaurantWaitLive?: boolean;
   riderRestaurantWaitAnchorAt?: string | null;
   deliveryType?: string | null;
+  orderType?: string | null;
 }
 
 interface RiderDetailsProps {
@@ -67,7 +70,13 @@ interface RiderDetailsProps {
   onCopy: (text: string) => void;
   onPhoneClick?: (title: string, phone: string) => void;
   /** Refetch order after rider cancel / manual assign. */
-  onRiderManagementComplete?: () => void;
+  onRiderManagementComplete?: (detail: {
+    action: "cancel_only" | "cancel_reassign" | "assign_rider";
+  }) => void;
+  /** Active dispatch waves — hide manual assign while riders are being offered. */
+  dispatchSessionActive?: boolean;
+  /** Bumps when rider activity log should reload (e.g. new assignment). */
+  activityLogRefreshKey?: number;
   className?: string;
 }
 const EMPTY_RIDER_ACTIVITY_SUMMARY: RiderActivityLogSummary = {
@@ -83,6 +92,43 @@ function formatDistanceKm(km: number | null | undefined): string {
   return `${rounded}km`;
 }
 
+const RIDER_LOG_CANCELLED_BY_MARKER = "Cancelled by - ";
+
+/** Split stored reason into denial/reason line and cancelled-by line. */
+function parseRiderActivityReason(reason: string): {
+  main: string;
+  cancelledBy: string | null;
+} {
+  const trimmed = reason.trim();
+  if (!trimmed) return { main: "", cancelledBy: null };
+
+  const dotSep = ` · ${RIDER_LOG_CANCELLED_BY_MARKER}`;
+  const dotIdx = trimmed.indexOf(dotSep);
+  if (dotIdx >= 0) {
+    return {
+      main: trimmed.slice(0, dotIdx).trim(),
+      cancelledBy: trimmed.slice(dotIdx + dotSep.length).trim() || null,
+    };
+  }
+
+  const nlIdx = trimmed.indexOf(`\n${RIDER_LOG_CANCELLED_BY_MARKER}`);
+  if (nlIdx >= 0) {
+    return {
+      main: trimmed.slice(0, nlIdx).trim(),
+      cancelledBy: trimmed.slice(nlIdx + 1 + RIDER_LOG_CANCELLED_BY_MARKER.length).trim() || null,
+    };
+  }
+
+  if (trimmed.startsWith(RIDER_LOG_CANCELLED_BY_MARKER)) {
+    return {
+      main: "",
+      cancelledBy: trimmed.slice(RIDER_LOG_CANCELLED_BY_MARKER.length).trim() || null,
+    };
+  }
+
+  return { main: trimmed, cancelledBy: null };
+}
+
 function providerBadgeClass(provider: string): string {
   const upper = provider.toUpperCase();
   if (upper.includes("GATIMITRA")) return "bg-emerald-100 text-emerald-800";
@@ -93,10 +139,18 @@ function providerBadgeClass(provider: string): string {
 
 function statusBadgeClass(status: string): string {
   if (status === "DELIVERED") return "bg-emerald-100 text-emerald-800";
+  if (status === "REACHED MX SKIPPED") return "bg-slate-100 text-slate-700";
+  if (status === "PICKED_UP") return "bg-sky-100 text-sky-800";
   if (["CANCELLED", "REJECTED", "UNASSIGNED", "TIMEOUT"].includes(status)) {
     return "bg-red-100 text-red-800";
   }
   return "bg-amber-100 text-amber-800";
+}
+
+function shouldShowActivityReason(status: string, reason: string | null | undefined): boolean {
+  if (!reason?.trim()) return false;
+  if (isCancellationActivityStatus(status)) return true;
+  return ["REACHED MX SKIPPED", "PICKED_UP", "REACHED_MERCHANT"].includes(status);
 }
 
 function isCancellationActivityStatus(status: string): boolean {
@@ -106,31 +160,33 @@ function isCancellationActivityStatus(status: string): boolean {
 interface RiderLogModalProps {
   isOpen: boolean;
   orderId: number | null | undefined;
+  refreshKey?: number;
   onClose: () => void;
   onCopy: (text: string) => void;
 }
 
-function RiderLogModal({ isOpen, orderId, onClose, onCopy }: RiderLogModalProps) {
+function readRiderActivityLogSnapshot(orderId: number | null | undefined) {
+  const cached = orderId ? getCachedRiderActivityLog(orderId) : undefined;
+  return {
+    logs: cached?.logs ?? [],
+    summary: cached?.summary ?? EMPTY_RIDER_ACTIVITY_SUMMARY,
+  };
+}
+
+function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy }: RiderLogModalProps) {
   const [logs, setLogs] = useState<RiderActivityLogApiRow[]>([]);
   const [summary, setSummary] = useState<RiderActivityLogSummary>(EMPTY_RIDER_ACTIVITY_SUMMARY);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isOpen || !orderId) return;
 
-    let cancelled = false;
-    const cached = getCachedRiderActivityLog(orderId);
-    if (cached) {
-      setLogs(cached.logs);
-      setSummary(cached.summary);
-      setError(null);
-      setLoading(false);
-    } else {
-      setLoading(true);
-      setError(null);
-    }
+    const cached = readRiderActivityLogSnapshot(orderId);
+    setLogs(cached.logs);
+    setSummary(cached.summary);
+    setError(null);
 
+    let cancelled = false;
     void fetchRiderActivityLogCached(orderId)
       .then((entry) => {
         if (cancelled) return;
@@ -140,20 +196,17 @@ function RiderLogModal({ isOpen, orderId, onClose, onCopy }: RiderLogModalProps)
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        if (!cached) {
+        if (cached.logs.length === 0) {
           setLogs([]);
           setSummary(EMPTY_RIDER_ACTIVITY_SUMMARY);
         }
         setError(err instanceof Error ? err.message : "Failed to load rider activity log");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [isOpen, orderId]);
+  }, [isOpen, orderId, refreshKey]);
 
   if (!isOpen) return null;
 
@@ -161,7 +214,6 @@ function RiderLogModal({ isOpen, orderId, onClose, onCopy }: RiderLogModalProps)
   const visibleLogs = logs.length > 0 ? logs : (cachedEntry?.logs ?? []);
   const visibleSummary =
     summary.total > 0 ? summary : (cachedEntry?.summary ?? EMPTY_RIDER_ACTIVITY_SUMMARY);
-  const showLoading = loading && visibleLogs.length === 0;
 
   return (
     <div
@@ -171,10 +223,10 @@ function RiderLogModal({ isOpen, orderId, onClose, onCopy }: RiderLogModalProps)
       }}
     >
       <div
-        className="bg-white rounded-lg shadow-lg max-w-6xl w-[calc(100vw-2rem)] max-h-[90vh] flex flex-col overflow-hidden text-[12px] text-slate-800"
+        className="bg-white rounded-lg shadow-lg max-w-6xl w-[calc(100vw-2rem)] max-h-[min(90vh,calc(100dvh-2rem))] flex flex-col overflow-hidden text-[12px] text-slate-800"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex shrink-0 items-center justify-between px-5 py-3 border-b border-gray-200 bg-gradient-to-r from-emerald-50 to-white">
+        <div className="relative z-20 flex shrink-0 items-center justify-between px-5 py-3 border-b border-gray-200 bg-gradient-to-r from-emerald-50 to-white">
           <div className="flex items-center gap-2">
             <span className="p-1.5 rounded-full bg-emerald-100 text-emerald-700">
               <i className="bi bi-person-badge text-[14px]" />
@@ -197,60 +249,60 @@ function RiderLogModal({ isOpen, orderId, onClose, onCopy }: RiderLogModalProps)
           </button>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto p-4">
-          {showLoading ? (
-            <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-10 text-center text-[12px] text-slate-500">
-              Loading rider activity log...
-            </div>
-          ) : error && visibleLogs.length === 0 ? (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-6 text-center text-[12px] text-red-700">
-              {error}
+        <div className="min-h-0 max-h-[calc(min(90vh,calc(100dvh-2rem))-12rem)] overflow-y-auto overscroll-contain">
+          {error && visibleLogs.length === 0 ? (
+            <div className="p-4">
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-6 text-center text-[12px] text-red-700">
+                {error}
+              </div>
             </div>
           ) : visibleLogs.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-10 text-center text-[12px] text-slate-500">
-              No rider activity records for this order yet.
+            <div className="p-4">
+              <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-10 text-center text-[12px] text-slate-500">
+                No rider activity records for this order yet.
+              </div>
             </div>
           ) : (
-          <div className="overflow-x-auto rounded-lg border border-gray-200">
-            <table className="w-max table-auto divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide border-r border-gray-200 whitespace-nowrap">
-                    Created at
-                  </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide border-r border-gray-200 whitespace-nowrap">
-                    Provider
-                  </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide border-r border-gray-200 whitespace-nowrap">
-                    Tracking ID
-                  </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide border-r border-gray-200 whitespace-nowrap">
-                    Name
-                  </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide border-r border-gray-200 whitespace-nowrap">
-                    Mobile
-                  </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide border-r border-gray-200 whitespace-nowrap">
-                    Status
-                  </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide border-r border-gray-200 whitespace-nowrap">
-                    Updated By
-                  </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide border-r border-gray-200 whitespace-nowrap">
-                    Reason
-                  </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide border-r border-gray-200 whitespace-nowrap">
-                    CX Distance
-                  </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide border-r border-gray-200 whitespace-nowrap">
-                    MX Distance
-                  </th>
-                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide whitespace-nowrap">
-                    Action
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
+            <div className="mx-4 my-4 overflow-x-auto rounded-lg border border-gray-200">
+              <table className="w-max min-w-full table-auto divide-y divide-gray-200">
+                <thead>
+                  <tr className="bg-gray-50">
+                    <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600 shadow-[0_1px_0_0_rgb(229,231,235)]">
+                      Created at
+                    </th>
+                    <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600 shadow-[0_1px_0_0_rgb(229,231,235)]">
+                      Provider
+                    </th>
+                    <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600 shadow-[0_1px_0_0_rgb(229,231,235)]">
+                      Tracking ID
+                    </th>
+                    <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600 shadow-[0_1px_0_0_rgb(229,231,235)]">
+                      Name
+                    </th>
+                    <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600 shadow-[0_1px_0_0_rgb(229,231,235)]">
+                      Mobile
+                    </th>
+                    <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600 shadow-[0_1px_0_0_rgb(229,231,235)]">
+                      Status
+                    </th>
+                    <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600 shadow-[0_1px_0_0_rgb(229,231,235)]">
+                      Updated By
+                    </th>
+                    <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600 shadow-[0_1px_0_0_rgb(229,231,235)]">
+                      Reason
+                    </th>
+                    <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600 shadow-[0_1px_0_0_rgb(229,231,235)]">
+                      CX Distance
+                    </th>
+                    <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600 shadow-[0_1px_0_0_rgb(229,231,235)]">
+                      MX Distance
+                    </th>
+                    <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-gray-600 shadow-[0_1px_0_0_rgb(229,231,235)]">
+                      Action
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200 bg-white">
                 {visibleLogs.map((log) => {
                   const distanceCx = formatDistanceKm(log.distanceCxKm);
                   const distanceMx = formatDistanceKm(log.distanceMxKm);
@@ -262,7 +314,11 @@ function RiderLogModal({ isOpen, orderId, onClose, onCopy }: RiderLogModalProps)
                         ? "bg-red-50/40"
                         : log.status === "DELIVERED"
                           ? "bg-emerald-50/40"
-                          : ""
+                          : log.status === "REACHED MX SKIPPED"
+                            ? "bg-slate-50/80"
+                            : log.status === "PICKED_UP"
+                              ? "bg-sky-50/50"
+                              : ""
                     }`}
                   >
                     <td className="px-3 py-2 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100">
@@ -315,11 +371,25 @@ function RiderLogModal({ isOpen, orderId, onClose, onCopy }: RiderLogModalProps)
                     <td className="px-3 py-2 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100">
                       {log.updatedBy}
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-[11px] border-r border-gray-100">
-                      {log.reason && isCancellationActivityStatus(log.status) ? (
-                        <span className="text-red-600 font-medium">
-                          {log.reason}
-                        </span>
+                    <td className="px-3 py-2 text-[11px] border-r border-gray-100 align-top">
+                      {log.reason && shouldShowActivityReason(log.status, log.reason) ? (
+                        (() => {
+                          const { main, cancelledBy } = parseRiderActivityReason(log.reason);
+                          const tone = isCancellationActivityStatus(log.status)
+                            ? "text-red-600 font-medium"
+                            : "text-slate-700 font-medium";
+                          return (
+                            <div className={`flex flex-col gap-0.5 max-w-[220px] ${tone}`}>
+                              {main ? <span>{main}</span> : null}
+                              {cancelledBy ? (
+                                <span className="text-[10px] font-normal leading-snug">
+                                  {RIDER_LOG_CANCELLED_BY_MARKER}
+                                  {cancelledBy}
+                                </span>
+                              ) : null}
+                            </div>
+                          );
+                        })()
                       ) : (
                         <span className="text-slate-900">-</span>
                       )}
@@ -351,54 +421,56 @@ function RiderLogModal({ isOpen, orderId, onClose, onCopy }: RiderLogModalProps)
                     </td>
                   </tr>
                 )})}
-              </tbody>
-            </table>
-          </div>
+                </tbody>
+              </table>
+            </div>
           )}
-
-          {!showLoading && !error && visibleLogs.length > 0 ? (
-          <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px]">
-            <div className="bg-gray-50 rounded-md px-3 py-2 border border-gray-200">
-              <div className="flex items-center justify-between gap-2 whitespace-nowrap">
-                <span className="font-medium text-gray-600 shrink-0">Total Logs</span>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-base font-bold text-gray-900">{visibleSummary.total}</span>
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded bg-gray-100 text-gray-600">
-                    <i className="bi bi-list-ol text-[12px]" />
-                  </span>
-                </div>
-              </div>
-            </div>
-            <div className="bg-red-50 rounded-md px-3 py-2 border border-red-200">
-              <div className="flex items-center justify-between gap-2 whitespace-nowrap">
-                <span className="font-medium text-red-600 shrink-0">Cancelled</span>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-base font-bold text-red-900">{visibleSummary.cancelled}</span>
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded bg-red-100 text-red-600">
-                    <i className="bi bi-x-circle text-[12px]" />
-                  </span>
-                </div>
-              </div>
-            </div>
-            <div className="bg-emerald-50 rounded-md px-3 py-2 border border-emerald-200">
-              <div className="flex items-center justify-between gap-2 whitespace-nowrap">
-                <span className="font-medium text-emerald-600 shrink-0">Delivered</span>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-base font-bold text-emerald-900">{visibleSummary.delivered}</span>
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded bg-emerald-100 text-emerald-600">
-                    <i className="bi bi-check-circle text-[12px]" />
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-          ) : null}
         </div>
 
-        <div className="flex shrink-0 items-center justify-between px-5 py-3 border-t border-gray-200 bg-gray-50 text-[11px] text-gray-500">
+        {!error && visibleLogs.length > 0 ? (
+          <div className="relative z-20 shrink-0 border-t border-gray-200 bg-white px-4 py-3">
+            <div className="grid grid-cols-1 gap-2 text-[11px] md:grid-cols-3">
+              <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
+                <div className="flex items-center justify-between gap-2 whitespace-nowrap">
+                  <span className="shrink-0 font-medium text-gray-600">Total Logs</span>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="text-base font-bold text-gray-900">{visibleSummary.total}</span>
+                    <span className="inline-flex h-6 w-6 items-center justify-center rounded bg-gray-100 text-gray-600">
+                      <i className="bi bi-list-ol text-[12px]" />
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2">
+                <div className="flex items-center justify-between gap-2 whitespace-nowrap">
+                  <span className="shrink-0 font-medium text-red-600">Cancelled</span>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="text-base font-bold text-red-900">{visibleSummary.cancelled}</span>
+                    <span className="inline-flex h-6 w-6 items-center justify-center rounded bg-red-100 text-red-600">
+                      <i className="bi bi-x-circle text-[12px]" />
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2">
+                <div className="flex items-center justify-between gap-2 whitespace-nowrap">
+                  <span className="shrink-0 font-medium text-emerald-600">Delivered</span>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="text-base font-bold text-emerald-900">{visibleSummary.delivered}</span>
+                    <span className="inline-flex h-6 w-6 items-center justify-center rounded bg-emerald-100 text-emerald-600">
+                      <i className="bi bi-check-circle text-[12px]" />
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="relative z-20 flex shrink-0 items-center justify-between border-t border-gray-200 bg-gray-50 px-5 py-3 text-[11px] text-gray-500">
           <div>
             <i className="bi bi-info-circle mr-1" />
-            Showing {showLoading ? "…" : visibleSummary.total} rider activity records
+            Showing {visibleSummary.total} rider activity records
           </div>
           <button
             type="button"
@@ -485,6 +557,8 @@ export default function RiderDetails({
   onCopy,
   onPhoneClick,
   onRiderManagementComplete,
+  dispatchSessionActive = false,
+  activityLogRefreshKey = 0,
   className = "",
 }: RiderDetailsProps) {
   const [showLogModal, setShowLogModal] = useState(false);
@@ -507,12 +581,18 @@ export default function RiderDetails({
     setSelfieImgError(false);
   }, [riderSelfieUrl, order.riderId]);
 
-  const [loadCatalog, setLoadCatalog] = useState(false);
+  useEffect(() => {
+    if (order.orderId != null) {
+      prefetchRiderActivityLog(order.orderId);
+    }
+  }, [order.orderId, activityLogRefreshKey]);
+
+  const showRiderCancellationEarly = order.orderId != null;
   const {
     attributes: catalogAttributes,
     grouped: catalogGrouped,
     loading: catalogLoading,
-  } = useCancellationReasonCatalog({ enabled: loadCatalog });
+  } = useCancellationReasonCatalog({ enabled: showRiderCancellationEarly });
   const [riderAttribute, setRiderAttribute] = useState("");
   const [catalogReasonId, setCatalogReasonId] = useState<number | null>(null);
   const [rejectionOption, setRejectionOption] = useState("");
@@ -622,7 +702,10 @@ export default function RiderDetails({
     isDeliveredOrder || ["CANCELLED", "FAILED", "REJECTED"].includes(orderStatusUpper);
 
   const showManualAssign =
-    !hasAssignedRider && !isTerminalOrder && order.orderId != null;
+    !hasAssignedRider &&
+    !isTerminalOrder &&
+    order.orderId != null &&
+    !dispatchSessionActive;
 
   const showRiderCancellation = order.orderId != null;
   const riderCancellationDisabled = isTerminalOrder || !hasAssignedRider;
@@ -688,7 +771,9 @@ export default function RiderDetails({
       setCatalogReasonId(null);
       setRejectionOption("");
       setCancelAction("");
-      onRiderManagementComplete?.();
+      onRiderManagementComplete?.({
+        action: action === "cancel_reassign" ? "cancel_reassign" : "cancel_only",
+      });
     } catch {
       toast("Could not update rider assignment. Please try again.", "error");
     } finally {
@@ -722,7 +807,7 @@ export default function RiderDetails({
       }
 
       toast("Assignment offers sent to eligible riders.", "success");
-      onRiderManagementComplete?.();
+      onRiderManagementComplete?.({ action: "assign_rider" });
     } catch {
       toast("Could not start rider assignment. Please try again.", "error");
     } finally {
@@ -733,7 +818,7 @@ export default function RiderDetails({
   return (
     <>
       <div
-        className={`bg-white rounded-lg px-3 py-2.5 shadow-sm border border-[#e5e5e5] transition-all hover:shadow-md hover:border-gati-primary/20 flex flex-col h-full min-h-[300px] ${className}`}
+        className={`bg-white rounded-lg px-3 py-2.5 shadow-sm border border-[#e5e5e5] transition-all hover:shadow-md hover:border-gati-primary/20 flex flex-col ${className}`}
       >
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[#e5e5e5] pb-2 mb-2">
           <div className="flex min-w-0 items-center gap-2">
@@ -789,6 +874,12 @@ export default function RiderDetails({
             <button
               type="button"
               className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded-full transition-colors cursor-pointer"
+              onMouseEnter={() => {
+                if (order.orderId != null) prefetchRiderActivityLog(order.orderId);
+              }}
+              onFocus={() => {
+                if (order.orderId != null) prefetchRiderActivityLog(order.orderId);
+              }}
               onClick={() => setShowLogModal(true)}
             >
               <i className="bi bi-eye" />
@@ -797,9 +888,9 @@ export default function RiderDetails({
           ) : null}
         </div>
 
-        <div className="flex flex-1 flex-col gap-2.5 min-h-0">
+        <div className="flex flex-col gap-2.5">
           <div
-            className={`flex-1 grid gap-2.5 min-h-0 ${
+            className={`grid gap-2.5 ${
               order.orderId ? "grid-cols-1 md:grid-cols-[minmax(0,1fr)_12.5rem]" : "grid-cols-1"
             }`}
           >
@@ -929,7 +1020,7 @@ export default function RiderDetails({
             )}
 
             {order.orderId ? (
-              <div className="flex min-h-[140px] w-full max-w-[12.5rem] md:min-h-0 md:justify-self-end flex-col overflow-visible rounded-md border border-slate-200 bg-white px-2 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+              <div className="flex w-full max-w-[12.5rem] md:justify-self-end flex-col overflow-visible rounded-md border border-slate-200 bg-white px-2 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
                 <p className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
                   Delivery progress
                 </p>
@@ -938,6 +1029,7 @@ export default function RiderDetails({
                     className="h-full w-full border-0 shadow-none bg-transparent p-0"
                     orderId={order.orderId}
                     riderId={order.riderId ?? null}
+                    orderType={order.orderType}
                     initialData={initialRiderTimeline}
                   />
                 </div>
@@ -968,7 +1060,7 @@ export default function RiderDetails({
                 >
                   {!hasAssignedRider
                     ? "Assign a rider only if Needed !!"
-                    : `Disabled — order ${isDeliveredOrder ? "delivered" : "closed"}`}
+                    : `Disabled — order ${isDeliveredOrder ? riderDeliveryMilestoneLabel(order.orderType).toLowerCase() : "closed"}`}
                 </span>
               ) : (
                 <span className="text-[10px] text-slate-500">Cancel rider only · Cancel &amp; reassign</span>
@@ -989,7 +1081,6 @@ export default function RiderDetails({
                   riderCancellationDisabled ? "cursor-not-allowed" : "cursor-pointer"
                 }`}
                 value={riderAttribute}
-                onFocus={() => !riderCancellationDisabled && setLoadCatalog(true)}
                 onChange={(e) => handleAttributeChange(e.target.value)}
                 disabled={riderCancellationDisabled}
               >
@@ -1097,6 +1188,7 @@ export default function RiderDetails({
       <RiderLogModal
         isOpen={showLogModal}
         orderId={order.orderId}
+        refreshKey={activityLogRefreshKey}
         onClose={() => setShowLogModal(false)}
         onCopy={onCopy}
       />

@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
-import { View, Text, StyleSheet } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import { View, StyleSheet } from "react-native";
 import type { OrderRecord, LineItem } from "@/hooks/useOrders";
 import { useOrderSpeech } from "@/hooks/useOrderSpeech";
 import { ReadyHandoverTimeline } from "@/components/order/ReadyHandoverTimeline";
@@ -12,7 +11,15 @@ import { formatOrderDateTime } from "@/components/order/orderFormatters";
 import { resolvePreparedAtForHandover } from "@/lib/orderHandoverTimeline";
 import { resolvePreparedLateMinutes } from "@/lib/order-prep-time";
 import { OrderPreparedLateTopBanner } from "@/components/order/OrderPrepDelayedBanner";
-import { merchantOrderCardLayoutStyles as layoutStyles } from "@/components/order/merchantOrderCardLayoutStyles";
+import { RiderAssignPendingCard } from "@/components/order/RiderAssignPendingCard";
+import { MerchantAssignedRiderRow } from "@/components/order/MerchantAssignedRiderRow";
+import { useNearbyDispatchRiders } from "@/hooks/useNearbyDispatchRiders";
+import { shouldShowPendingRiderAssign } from "@/lib/orderAssignedRider";
+
+function parseOrdersFoodId(orderId: string): number | null {
+  const n = parseInt(orderId, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
 
 type Props = {
   order: OrderRecord;
@@ -35,6 +42,10 @@ export function MerchantReadyOrderCard({
   const { speaking, speak } = useOrderSpeech();
 
   const placedAt = formatOrderDateTime(order.createdAt);
+
+  const ordersFoodId = parseOrdersFoodId(order.id);
+  const showPendingRider = shouldShowPendingRiderAssign(order, ["ready"]);
+  const { summary: nearbyRiderSummary } = useNearbyDispatchRiders(ordersFoodId, showPendingRider);
 
   const preparedLateMins = useMemo(
     () =>
@@ -86,12 +97,11 @@ export function MerchantReadyOrderCard({
           </View>
         }
         riderContent={
-          <View style={layoutStyles.riderRow}>
-            <View style={layoutStyles.riderAvatar}>
-              <Ionicons name="bicycle" size={16} color="#888888" />
-            </View>
-            <Text style={layoutStyles.riderText}>Rider is arriving soon</Text>
-          </View>
+          showPendingRider ? (
+            <RiderAssignPendingCard summary={nearbyRiderSummary} />
+          ) : order.deliveryType === "GATIMITRA_RIDER" ? (
+            <MerchantAssignedRiderRow order={order} />
+          ) : null
         }
       />
 

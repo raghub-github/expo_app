@@ -22,7 +22,7 @@ type ServiceItem = {
   route: string;
 };
 
-const ACTIVE_SERVICE_IDS = new Set(["food", "ride"]);
+const ALWAYS_DISABLED_IDS = new Set(["ecom", "vouchers", "near-me"]);
 
 const SERVICES: ServiceItem[] = [
   {
@@ -80,9 +80,33 @@ type ServiceTileProps = {
   cardHeight: number;
 };
 
-function ServiceTile({ item, cardHeight }: ServiceTileProps) {
+type Props = {
+  cardHeight?: number;
+  enabledServices?: {
+    food: boolean;
+    ride: boolean;
+    parcels: boolean;
+  };
+};
+
+function isServiceEnabled(
+  id: string,
+  enabledServices: Props["enabledServices"]
+): boolean {
+  if (ALWAYS_DISABLED_IDS.has(id)) return false;
+  if (!enabledServices) return false;
+  if (id === "food") return enabledServices.food;
+  if (id === "ride") return enabledServices.ride;
+  if (id === "parcels") return enabledServices.parcels;
+  return false;
+}
+
+function ServiceTile({
+  item,
+  cardHeight,
+  enabled,
+}: ServiceTileProps & { enabled: boolean }) {
   const router = useRouter();
-  const enabled = ACTIVE_SERVICE_IDS.has(item.id);
   const imageSize = Math.round(cardHeight * 0.48);
   const iconWrap = Math.round(imageSize * 1.12);
 
@@ -120,15 +144,16 @@ function ServiceTile({ item, cardHeight }: ServiceTileProps) {
   );
 }
 
-type Props = {
-  cardHeight?: number;
-};
-
-export function HomeServicesRow({ cardHeight = DEFAULT_CARD_H }: Props) {
+export function HomeServicesRow({ cardHeight = DEFAULT_CARD_H, enabledServices }: Props) {
   return (
     <View style={styles.grid}>
       {SERVICES.map((s) => (
-        <ServiceTile key={s.id} item={s} cardHeight={cardHeight} />
+        <ServiceTile
+          key={s.id}
+          item={s}
+          cardHeight={cardHeight}
+          enabled={isServiceEnabled(s.id, enabledServices)}
+        />
       ))}
     </View>
   );

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { User } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { buildRiderDetailUrl } from "@/lib/riders/rider-dashboard-navigation";
 
 export interface RiderSectionHeaderRider {
   id: number;
@@ -17,6 +18,10 @@ interface RiderSectionHeaderProps {
   resolveLoading: boolean;
   error: string | null;
   hasSearch: boolean;
+  /** Hide h1/description when the dashboard header already shows the page title. */
+  hideTitle?: boolean;
+  /** Where to return after opening full rider details (current riders sub-page + search). */
+  returnTo?: string | null;
   /** Extra buttons next to "View details" (e.g. "Add Penalty", "Wallet History") */
   actionButtons?: React.ReactNode;
 }
@@ -28,15 +33,19 @@ export function RiderSectionHeader({
   resolveLoading,
   error,
   hasSearch,
+  hideTitle = false,
+  returnTo,
   actionButtons,
 }: RiderSectionHeaderProps) {
   return (
     <div className="space-y-4">
-      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 tracking-tight">{title}</h1>
-          <p className="text-sm text-gray-600 mt-1">{description}</p>
-        </div>
+      <div className={`flex flex-col gap-3 ${hideTitle ? "sm:flex-row sm:items-center sm:justify-end" : "sm:flex-row sm:items-start sm:justify-between"}`}>
+        {!hideTitle && (
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 tracking-tight">{title}</h1>
+            <p className="text-sm text-gray-600 mt-1">{description}</p>
+          </div>
+        )}
         {rider && (
           <div className="flex items-center gap-2 flex-shrink-0">
             <div className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 shadow-sm ring-1 ring-gray-900/5">
@@ -52,7 +61,11 @@ export function RiderSectionHeader({
               </div>
               <div className="flex items-center gap-2 ml-1">
                 <Link
-                  href={`/dashboard/riders/${rider.id}`}
+                  href={
+                    returnTo
+                      ? buildRiderDetailUrl(rider.id, returnTo)
+                      : `/dashboard/riders/${rider.id}`
+                  }
                   className="text-xs font-medium text-blue-600 hover:text-blue-700 whitespace-nowrap"
                 >
                   View details

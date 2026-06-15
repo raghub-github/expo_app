@@ -326,6 +326,13 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
       if (rule.type === "DONATION") continue;
       if (rule.type === "RIDER_TIP") continue;
       if (rule.type === "SUBSCRIPTION" && !ctx.subscriptionOptIn) continue;
+      if (
+        rule.type === "SUBSCRIPTION" &&
+        ctx.subscriptionPlanId != null &&
+        ctx.subscriptionPlanId > 0
+      ) {
+        continue;
+      }
       if (disabled.has(rule.id)) continue;
       if (!ruleConditionsPass(rule.conditions, ctx, state, itemPlusAddon)) continue;
 

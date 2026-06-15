@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { getItem, setItem } from "@/src/utils/storage";
+import { riderApi } from "@/src/services/api/riderApi";
 
 const DUTY_STORE_KEY = "rider_duty_status";
 
@@ -9,6 +10,8 @@ interface DutyStoreState {
   setDutyStatus: (status: boolean) => Promise<void>;
   toggleDuty: () => Promise<void>;
   hydrate: () => Promise<void>;
+  /** Align local duty with backend duty_logs (required for dispatch offers). */
+  syncFromServer: () => Promise<void>;
 }
 
 export const useDutyStore = create<DutyStoreState>((set, get) => ({
@@ -18,7 +21,6 @@ export const useDutyStore = create<DutyStoreState>((set, get) => ({
   setDutyStatus: async (status: boolean) => {
     set({ isOnDuty: status });
     await setItem(DUTY_STORE_KEY, JSON.stringify(status));
-    // TODO: Sync with backend API
   },
 
   toggleDuty: async () => {
@@ -39,5 +41,13 @@ export const useDutyStore = create<DutyStoreState>((set, get) => ({
       set({ hydrated: true });
     }
   },
-}));
 
+  syncFromServer: async () => {
+    try {
+      const status = await riderApi.getDutyStatus();
+      await get().setDutyStatus(status.isOnDuty);
+    } catch (error) {
+      console.warn("[DutyStore] Server duty sync failed (using local state):", error);
+    }
+  },
+}));

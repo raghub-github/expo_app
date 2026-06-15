@@ -6,6 +6,7 @@ import {
   formatOrderTypeLabel,
   incomingOrderBannerLabel,
 } from "@/src/lib/incoming-order-display";
+import { resolveRiderDisplayedEarning } from "@/src/lib/rider-earning-display";
 
 /** Tab bar content height (icon + label row, excluding safe area). */
 export const RIDER_TAB_BAR_CONTENT_HEIGHT = 58;
@@ -105,9 +106,9 @@ export function getActiveOrderFloatingIcon(
 }
 
 export function formatActiveOrderEarning(order: RiderOrderSummary): string {
-  const amount = order.totalEarning ?? order.estimatedEarning;
-  if (!Number.isFinite(amount) || amount <= 0) return "";
-  return `₹${Math.round(amount)}`;
+  const amount = resolveRiderDisplayedEarning(order);
+  if (amount <= 0) return "";
+  return `₹${amount}`;
 }
 
 export function formatActiveOrderDistance(order: RiderOrderSummary): string {

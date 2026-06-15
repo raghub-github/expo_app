@@ -24,6 +24,13 @@ export function resolveRidePickupPoint(order: OrderDetail): MapLatLng | null {
   return null;
 }
 
+export function resolveRideDropPoint(order: OrderDetail): MapLatLng | null {
+  if (isValidMapCoordinate(order.deliveryLat, order.deliveryLng)) {
+    return { latitude: order.deliveryLat!, longitude: order.deliveryLng! };
+  }
+  return null;
+}
+
 export function distanceKmBetween(a: MapLatLng, b: MapLatLng): number {
   return haversineKm(a.latitude, a.longitude, b.latitude, b.longitude);
 }

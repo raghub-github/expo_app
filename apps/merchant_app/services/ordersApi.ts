@@ -53,7 +53,28 @@ export type ApiFoodOrder = {
   created_at: string;
   delivery_type: "GATIMITRA_RIDER" | "SELF_DELIVERY" | "SELF_PICKUP" | string;
   rider_id: number | null;
+  rider_name?: string | null;
+  rider_mobile?: string | null;
+  rider_selfie_url?: string | null;
+  rider_assignment_status?: string | null;
+  rider_reached_at?: string | null;
+  rider_display_variant?:
+    | "on_the_way"
+    | "arrived"
+    | "picked_up"
+    | "delivered"
+    | "cancelled"
+    | "rto"
+    | null;
+  core_status?: string | null;
+  current_status?: string | null;
+  reached_merchant_at?: string | null;
+  rider_reached_pickup_at?: string | null;
+  pickup_wait_seconds?: number | null;
+  rider_store_wait_live?: boolean;
+  rider_store_wait_anchor_at?: string | null;
   grand_total: number;
+  food_items_total_value?: number | null;
   pricing?: ApiFoodOrderPricing | null;
   billing_snapshot?: Record<string, unknown> | null;
   payment_status?: string | null;
@@ -70,9 +91,10 @@ export type ApiFoodOrder = {
   dispatched_at: string | null;
   preparation_time_minutes?: number | null;
   prep_ready_by_at?: string | null;
-  preparation_time_minutes?: number | null;
+  expected_ready_at?: string | null;
   prep_delay_minutes?: number | null;
   prep_delay_use_count?: number | null;
+  last_prep_delay_minutes_added?: number | null;
   prepared_late_minutes?: number | null;
   handed_over_to_rider_at?: string | null;
   rider_picked_up_at?: string | null;
@@ -106,6 +128,23 @@ export async function fetchFoodOrders(
   return Array.isArray(data.orders) ? data.orders : [];
 }
 
+/** Cancel unaccepted orders past the acceptance window (portal-open flush). */
+export async function syncAcceptanceTimeout(
+  storeId: number,
+  token: string
+): Promise<{ cancelled: number }> {
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/sync-acceptance-timeout`,
+    token,
+    { method: "POST" }
+  );
+  const data = (await res.json().catch(() => ({}))) as { cancelled?: number; error?: string };
+  if (!res.ok) {
+    throw new Error(data.error || "Failed to sync acceptance timeout");
+  }
+  return { cancelled: Number(data.cancelled ?? 0) };
+}
+
 export async function fetchFoodOrder(
   storeId: number,
   ordersFoodId: number,
@@ -122,6 +161,35 @@ export async function fetchFoodOrder(
   const data = (await res.json()) as { order?: ApiFoodOrder };
   if (!data.order) throw new Error("Order not found");
   return data.order;
+}
+
+export type NearbyDispatchRiderSummary = {
+  nearbyCount: number;
+  radiusKm: number;
+  assignSoonMessage: string;
+};
+
+export async function fetchNearbyDispatchRiders(
+  storeId: number,
+  ordersFoodId: number,
+  token: string
+): Promise<{ summary: NearbyDispatchRiderSummary | null; riderAssigned: boolean }> {
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}/nearby-dispatch-riders`,
+    token
+  );
+  if (!res.ok) {
+    return { summary: null, riderAssigned: false };
+  }
+  const data = (await res.json()) as {
+    ok?: boolean;
+    summary?: NearbyDispatchRiderSummary | null;
+    riderAssigned?: boolean;
+  };
+  return {
+    summary: data.summary ?? null,
+    riderAssigned: Boolean(data.riderAssigned),
+  };
 }
 
 export type FoodOrderRiderLogEntry = {
@@ -210,6 +278,7 @@ export async function patchFoodOrderStatus(
     action_source?: string;
     accept_mode?: "auto" | "manual";
     cancel_mode?: "auto" | "manual";
+    preparation_time_minutes?: number;
   }
 ): Promise<ApiFoodOrder> {
   const st = status.toUpperCase();
@@ -222,7 +291,14 @@ export async function patchFoodOrderStatus(
       body: JSON.stringify({
         status,
         action_source: opts?.action_source ?? "app",
-        ...(st === "ACCEPTED" ? { accept_mode: opts?.accept_mode ?? "manual" } : {}),
+        ...(st === "ACCEPTED"
+          ? {
+              accept_mode: opts?.accept_mode ?? "manual",
+              ...(opts?.preparation_time_minutes != null
+                ? { preparation_time_minutes: opts.preparation_time_minutes }
+                : {}),
+            }
+          : {}),
         ...(st === "CANCELLED" ? { cancel_mode: opts?.cancel_mode ?? "manual" } : {}),
         ...(rejectedReason ? { rejected_reason: rejectedReason } : {}),
       }),

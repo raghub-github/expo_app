@@ -15,6 +15,10 @@
 
 import { getSql } from "../../db/client.js";
 import { ETA_ENGINE_VERSION, type EtaSnapshot } from "./eta.engine.js";
+import {
+  resolveCustomerEtaContext,
+  type CustomerEtaView,
+} from "./eta.customer-view.js";
 
 export type EtaRecalcReason =
   | "ORDER_PLACED"
@@ -95,7 +99,12 @@ export async function writeEtaPromiseToOrder(
       eta_peak_window                = ${snap.context.peakWindow},
       eta_drop_context               = ${snap.context.dropContext},
       eta_engine_version             = ${snap.engineVersion},
-      eta_v2_metadata                = ${JSON.stringify(snap)}::jsonb
+      eta_v2_metadata                = ${JSON.stringify(snap)}::jsonb,
+
+      promised_eta_minutes           = ${snap.etaMaxMinutes},
+      current_eta_minutes            = ${snap.etaMaxMinutes},
+      live_promised_delivery_at      = ${snap.promisedDeliveryAt}::timestamptz,
+      live_eta_updated_at            = NOW()
     WHERE order_id = ${orderIdText}
   `;
 }
@@ -219,6 +228,8 @@ export type OrderEtaView = {
     minutes: number | null;
     readyByAt: string | null;
   };
+  /** Single dynamic ETA for customer UI (v3 live engine). */
+  customer: CustomerEtaView;
 };
 
 function toIsoOrNull(v: Date | string | null | undefined): string | null {
@@ -231,50 +242,108 @@ function toIsoOrNull(v: Date | string | null | undefined): string | null {
   return null;
 }
 
+type EtaOrderRow = {
+  eta_min_minutes: number | null;
+  eta_max_minutes: number | null;
+  promised_delivery_at: Date | string | null;
+  eta_generated_at: Date | string | null;
+  eta_buffer_minutes: number | null;
+  eta_route_distance_km: string | null;
+  eta_confidence_score: string | null;
+  eta_food_prep_minutes: number | null;
+  eta_kitchen_load_buffer_minutes: number | null;
+  eta_pickup_buffer_minutes: number | null;
+  eta_apartment_buffer_minutes: number | null;
+  eta_rider_arrival_minutes: number | null;
+  eta_critical_path_minutes: number | null;
+  eta_store_to_customer_minutes: number | null;
+  eta_traffic_multiplier: string | null;
+  eta_weather_multiplier: string | null;
+  eta_peak_hour_multiplier: string | null;
+  eta_weather_state: string | null;
+  eta_peak_window: string | null;
+  eta_drop_context: string | null;
+  eta_engine_version: string | null;
+  prep_time_minutes: number | null;
+  prep_ready_by_at: Date | string | null;
+  current_eta_minutes: number | null;
+  promised_eta_minutes: number | null;
+  merchant_delayed: boolean | null;
+  merchant_delay_minutes: number | null;
+  rider_wait_minutes: number | null;
+  live_promised_delivery_at: Date | string | null;
+  rider_id: number | null;
+  status: string | null;
+  current_status: string | null;
+  rider_reached_pickup_at: Date | string | null;
+  prepared_at: Date | string | null;
+  rider_picked_up_at: Date | string | null;
+};
+
+async function loadEtaOrderRow(orderIdText: string): Promise<EtaOrderRow[]> {
+  const sql = getSql();
+  try {
+    return await sql<EtaOrderRow[]>`
+      SELECT
+        eta_min_minutes, eta_max_minutes, promised_delivery_at, eta_generated_at,
+        eta_buffer_minutes, eta_route_distance_km, eta_confidence_score,
+        eta_food_prep_minutes, eta_kitchen_load_buffer_minutes,
+        eta_pickup_buffer_minutes, eta_apartment_buffer_minutes,
+        eta_rider_arrival_minutes, eta_critical_path_minutes,
+        eta_store_to_customer_minutes,
+        eta_traffic_multiplier, eta_weather_multiplier, eta_peak_hour_multiplier,
+        eta_weather_state, eta_peak_window, eta_drop_context,
+        eta_engine_version,
+        prep_time_minutes, prep_ready_by_at,
+        current_eta_minutes, promised_eta_minutes,
+        merchant_delayed, merchant_delay_minutes, rider_wait_minutes,
+        live_promised_delivery_at,
+        rider_id, status::text AS status, current_status,
+        reached_store_at AS rider_reached_pickup_at,
+        actual_ready_at AS prepared_at,
+        rider_picked_up_at
+      FROM orders_core
+      WHERE order_id = ${orderIdText}
+      LIMIT 1
+    `;
+  } catch (err) {
+    const msg = String(err);
+    if (!/reached_store_at|actual_ready_at|current_eta_minutes|live_promised_delivery_at|does not exist|42703/i.test(msg)) {
+      throw err;
+    }
+    return await sql<EtaOrderRow[]>`
+      SELECT
+        oc.eta_min_minutes, oc.eta_max_minutes, oc.promised_delivery_at, oc.eta_generated_at,
+        oc.eta_buffer_minutes, oc.eta_route_distance_km, oc.eta_confidence_score,
+        oc.eta_food_prep_minutes, oc.eta_kitchen_load_buffer_minutes,
+        oc.eta_pickup_buffer_minutes, oc.eta_apartment_buffer_minutes,
+        oc.eta_rider_arrival_minutes, oc.eta_critical_path_minutes,
+        oc.eta_store_to_customer_minutes,
+        oc.eta_traffic_multiplier, oc.eta_weather_multiplier, oc.eta_peak_hour_multiplier,
+        oc.eta_weather_state, oc.eta_peak_window, oc.eta_drop_context,
+        oc.eta_engine_version,
+        oc.prep_time_minutes, oc.prep_ready_by_at,
+        NULL::int AS current_eta_minutes,
+        oc.promised_eta_minutes,
+        NULL::boolean AS merchant_delayed,
+        NULL::int AS merchant_delay_minutes,
+        NULL::int AS rider_wait_minutes,
+        oc.promised_delivery_at AS live_promised_delivery_at,
+        oc.rider_id, oc.status::text AS status, oc.current_status,
+        of.rider_reached_pickup_at AS rider_reached_pickup_at,
+        of.prepared_at AS prepared_at,
+        of.rider_picked_up_at AS rider_picked_up_at
+      FROM orders_core oc
+      LEFT JOIN orders_food of ON of.order_id = oc.id OR of.core_order_id = oc.order_id
+      WHERE oc.order_id = ${orderIdText}
+      LIMIT 1
+    `;
+  }
+}
+
 export async function getEtaForOrder(orderIdText: string): Promise<OrderEtaView | null> {
   const sql = getSql();
-  const rows = await sql<
-    Array<{
-      eta_min_minutes: number | null;
-      eta_max_minutes: number | null;
-      promised_delivery_at: Date | string | null;
-      eta_generated_at: Date | string | null;
-      eta_buffer_minutes: number | null;
-      eta_route_distance_km: string | null;
-      eta_confidence_score: string | null;
-      eta_food_prep_minutes: number | null;
-      eta_kitchen_load_buffer_minutes: number | null;
-      eta_pickup_buffer_minutes: number | null;
-      eta_apartment_buffer_minutes: number | null;
-      eta_rider_arrival_minutes: number | null;
-      eta_critical_path_minutes: number | null;
-      eta_store_to_customer_minutes: number | null;
-      eta_traffic_multiplier: string | null;
-      eta_weather_multiplier: string | null;
-      eta_peak_hour_multiplier: string | null;
-      eta_weather_state: string | null;
-      eta_peak_window: string | null;
-      eta_drop_context: string | null;
-      eta_engine_version: string | null;
-      prep_time_minutes: number | null;
-      prep_ready_by_at: Date | string | null;
-    }>
-  >`
-    SELECT
-      eta_min_minutes, eta_max_minutes, promised_delivery_at, eta_generated_at,
-      eta_buffer_minutes, eta_route_distance_km, eta_confidence_score,
-      eta_food_prep_minutes, eta_kitchen_load_buffer_minutes,
-      eta_pickup_buffer_minutes, eta_apartment_buffer_minutes,
-      eta_rider_arrival_minutes, eta_critical_path_minutes,
-      eta_store_to_customer_minutes,
-      eta_traffic_multiplier, eta_weather_multiplier, eta_peak_hour_multiplier,
-      eta_weather_state, eta_peak_window, eta_drop_context,
-      eta_engine_version,
-      prep_time_minutes, prep_ready_by_at
-    FROM orders_core
-    WHERE order_id = ${orderIdText}
-    LIMIT 1
-  `;
+  const rows = await loadEtaOrderRow(orderIdText);
   if (rows.length === 0) return null;
   const r = rows[0]!;
 
@@ -293,6 +362,28 @@ export async function getEtaForOrder(orderIdText: string): Promise<OrderEtaView 
     ORDER BY id DESC
     LIMIT 1
   `;
+
+  const promisedMinutes = r.promised_eta_minutes ?? r.eta_max_minutes;
+  const currentMinutes =
+    r.current_eta_minutes ??
+    (live.length > 0 ? Number(live[0]!.new_eta_max) : null) ??
+    promisedMinutes;
+
+  const orderStatus = String(r.current_status ?? r.status ?? "").trim().toUpperCase();
+  const customer = resolveCustomerEtaContext({
+    orderStatus,
+    currentEtaMinutes: currentMinutes,
+    promisedEtaMinutes: promisedMinutes,
+    merchantDelayed: r.merchant_delayed === true,
+    hasRider: r.rider_id != null && r.rider_id > 0,
+    riderAtStore: r.rider_reached_pickup_at != null,
+    isReady: r.prepared_at != null || orderStatus === "READY_FOR_PICKUP" || orderStatus === "READY",
+    isPickedUp:
+      r.rider_picked_up_at != null ||
+      orderStatus === "OUT_FOR_DELIVERY" ||
+      orderStatus === "IN_TRANSIT" ||
+      orderStatus === "PICKED_UP",
+  });
 
   return {
     orderIdText,
@@ -342,5 +433,6 @@ export async function getEtaForOrder(orderIdText: string): Promise<OrderEtaView 
           : null,
       readyByAt: toIsoOrNull(r.prep_ready_by_at),
     },
+    customer,
   };
 }

@@ -86,7 +86,10 @@ export default function FloatingOrdersManager() {
         }
       },
       addListener: (eventName: string, listener: (event: any) => void): EventSubscription => {
-        const sub = emitter.addListener(eventName, listener);
+        const sub = (emitter as { addListener: (event: string, cb: (event: unknown) => void) => { remove: () => void } }).addListener(
+          eventName,
+          listener
+        );
         return {
           remove: () => sub.remove(),
         };

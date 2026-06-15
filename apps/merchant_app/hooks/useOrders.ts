@@ -6,7 +6,7 @@ import type {
   ApiFoodOrder,
   ApiFoodOrderItem,
 } from "@/services/ordersApi";
-import { merchantOrderBillTotal } from "@/lib/merchant-line-total";
+import { resolveMerchantOrderTotal } from "@/lib/resolveMerchantOrderTotal";
 
 export type DeliveryType = "GATIMITRA_RIDER" | "SELF_DELIVERY" | "SELF_PICKUP";
 
@@ -18,6 +18,14 @@ export type OrderStage =
   | "delivered"
   | "rejected"
   | "rto";
+
+export type OrderPricing = {
+  subtotal: number;
+  packaging: number;
+  taxes: number;
+  discount: number;
+  total: number;
+};
 
 export type LineItem = {
   qty: number;
@@ -45,10 +53,34 @@ export type OrderRecord = {
   displayTime: string;
   lineItems: LineItem[];
   total: number;
+  pricing?: OrderPricing | null;
+  billingSnapshot?: Record<string, unknown> | null;
+  totalCtm?: number | null;
   status: OrderStage;
   /** Raw API status (CREATED, ACCEPTED, PREPARING, …) for valid transitions. */
   pipelineStatus: string;
   deliveryType: DeliveryType;
+  riderId?: number | null;
+  riderName?: string | null;
+  riderMobile?: string | null;
+  riderSelfieUrl?: string | null;
+  riderAssignmentStatus?: string | null;
+  riderReachedAt?: string | null;
+  riderDisplayVariant?:
+    | "on_the_way"
+    | "arrived"
+    | "picked_up"
+    | "delivered"
+    | "cancelled"
+    | "rto"
+    | null;
+  coreStatus?: string | null;
+  currentStatus?: string | null;
+  reachedMerchantAt?: string | null;
+  riderReachedPickupAt?: string | null;
+  pickupWaitSeconds?: number | null;
+  riderStoreWaitLive?: boolean;
+  riderStoreWaitAnchorAt?: string | null;
   pickupOtp?: string;
   rtoOtp?: string;
   rejectedReason?: string | null;
@@ -65,8 +97,10 @@ export type OrderRecord = {
   deliveredAt?: string | null;
   preparationTimeMinutes?: number | null;
   prepReadyByAt?: string | null;
+  expectedReadyAt?: string | null;
   prepDelayMinutes?: number | null;
   prepDelayUseCount?: number | null;
+  lastPrepDelayMinutesAdded?: number | null;
   preparedLateMinutes?: number | null;
   customerPhone?: string | null;
   customerEmail?: string | null;
@@ -188,10 +222,52 @@ export function mapApiOrder(o: ApiFoodOrder): OrderRecord {
       captured_addon_amount: it.captured_addon_amount,
       has_customizations: it.has_customizations,
     })),
-    total: merchantOrderBillTotal(o),
+    total: resolveMerchantOrderTotal({
+      pricing: o.pricing
+        ? {
+            subtotal: Number(o.pricing.subtotal) || 0,
+            packaging: Number(o.pricing.packaging) || 0,
+            taxes: Number(o.pricing.taxes) || 0,
+            discount: Number(o.pricing.discount) || 0,
+            total: Number(o.pricing.total) || 0,
+          }
+        : null,
+      grand_total: o.grand_total,
+      food_items_total_value: o.food_items_total_value ?? null,
+      items: o.items,
+      billingSnapshot: o.billing_snapshot ?? null,
+    }),
+    pricing: o.pricing
+      ? {
+          subtotal: Number(o.pricing.subtotal) || 0,
+          packaging: Number(o.pricing.packaging) || 0,
+          taxes: Number(o.pricing.taxes) || 0,
+          discount: Number(o.pricing.discount) || 0,
+          total: Number(o.pricing.total) || 0,
+        }
+      : null,
+    billingSnapshot: o.billing_snapshot ?? null,
+    totalCtm: o.pricing?.total ?? o.food_items_total_value ?? o.grand_total ?? null,
     status: apiStatusToStage(o.order_status),
     pipelineStatus: String(o.order_status || "CREATED").toUpperCase(),
     deliveryType,
+    riderId: o.rider_id != null ? Number(o.rider_id) : null,
+    riderName: o.rider_name?.trim() || null,
+    riderMobile: o.rider_mobile?.trim() || null,
+    riderSelfieUrl: o.rider_selfie_url?.trim() || null,
+    riderAssignmentStatus: o.rider_assignment_status?.trim() || null,
+    riderReachedAt: coerceTimestamp(o.reached_merchant_at ?? o.rider_reached_at),
+    riderDisplayVariant: o.rider_display_variant ?? null,
+    coreStatus: o.core_status?.trim() || null,
+    currentStatus: o.current_status?.trim() || null,
+    reachedMerchantAt: coerceTimestamp(o.reached_merchant_at),
+    riderReachedPickupAt: coerceTimestamp(o.rider_reached_pickup_at),
+    pickupWaitSeconds:
+      o.pickup_wait_seconds != null && Number.isFinite(Number(o.pickup_wait_seconds))
+        ? Math.max(0, Math.floor(Number(o.pickup_wait_seconds)))
+        : null,
+    riderStoreWaitLive: o.rider_store_wait_live === true,
+    riderStoreWaitAnchorAt: coerceTimestamp(o.rider_store_wait_anchor_at),
     pickupOtp: o.pickup_otp ?? undefined,
     rtoOtp: o.rto_otp ?? undefined,
     rejectedReason: o.rejected_reason ?? null,
@@ -209,8 +285,13 @@ export function mapApiOrder(o: ApiFoodOrder): OrderRecord {
   preparationTimeMinutes:
       o.preparation_time_minutes != null ? Number(o.preparation_time_minutes) : null,
     prepReadyByAt: o.prep_ready_by_at?.trim() || null,
+    expectedReadyAt: o.expected_ready_at?.trim() || null,
     prepDelayMinutes: o.prep_delay_minutes != null ? Number(o.prep_delay_minutes) : null,
     prepDelayUseCount: o.prep_delay_use_count != null ? Number(o.prep_delay_use_count) : null,
+    lastPrepDelayMinutesAdded:
+      o.last_prep_delay_minutes_added != null
+        ? Number(o.last_prep_delay_minutes_added)
+        : null,
     preparedLateMinutes:
       o.prepared_late_minutes != null ? Number(o.prepared_late_minutes) : null,
     customerPhone: o.customer_phone?.trim() || null,

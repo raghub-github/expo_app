@@ -36,7 +36,34 @@ const VEHICLE_APP_TO_DB: Record<string, string> = {
 const VEHICLE_DB_TO_APP: Record<string, string> = {
   bicycle: "cycle",
   scooter: "bike",
+  ev_car: "ev_auto",
 };
+
+/** Pricing / legacy codes → catalog vehicle_type codes used in ride dispatch. */
+const CATALOG_VEHICLE_ALIASES: Record<string, string[]> = {
+  two_wheeler: ["bike", "ev_bike", "cycle", "scooter", "bicycle"],
+  cab: ["car", "taxi", "ev_car", "ev_auto"],
+  auto: ["auto", "cng_auto", "ev_auto", "e_rickshaw"],
+};
+
+export function expandVehicleTypeCodesForCatalogMatch(raw: string): string[] {
+  const key = String(raw ?? "").trim().toLowerCase();
+  if (!key) return [];
+
+  const codes = new Set<string>([key]);
+  const appCode = mapVehicleTypeFromDb(key);
+  if (appCode) codes.add(appCode.toLowerCase());
+
+  const dbCode = mapVehicleTypeToDb(key);
+  if (dbCode) codes.add(dbCode.toLowerCase());
+
+  const aliases = CATALOG_VEHICLE_ALIASES[key];
+  if (aliases) {
+    for (const alias of aliases) codes.add(alias.toLowerCase());
+  }
+
+  return [...codes];
+}
 
 export function mapFuelTypeToDb(appFuel: string | null | undefined): string | null {
   if (!appFuel) return null;

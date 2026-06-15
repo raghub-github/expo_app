@@ -73,7 +73,7 @@ export function useRiderSummaryQuery(
   const SNAPSHOT_TTL_MS = 10_000;
   const snapshotKey = useMemo(() => {
     if (!enabled) return null;
-    return `dashboard_snapshot:rider_summary_v2:${pathname}:${riderId}:${JSON.stringify(params)}`;
+    return `dashboard_snapshot:rider_summary_v4:${pathname}:${riderId}:${JSON.stringify(params)}`;
   }, [enabled, pathname, riderId, params]);
 
   const initialSnapshot = useMemo(() => {

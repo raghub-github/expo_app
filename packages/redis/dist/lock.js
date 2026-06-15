@@ -15,7 +15,7 @@
  *   });
  */
 import { randomBytes } from "node:crypto";
-import { getRedis } from "./client.js";
+import { getRedis, isRedisOptional } from "./client.js";
 const RELEASE_SCRIPT = `
 if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("del", KEYS[1])
@@ -23,6 +23,9 @@ else
   return 0
 end
 `;
+function localDevLock() {
+    return { release: async () => undefined };
+}
 /**
  * Acquire a lock; returns null if it's already held by someone else.
  * Caller is responsible for releasing — or use `withLock()` which does it.
@@ -30,23 +33,30 @@ end
 export async function tryAcquireLock(key, ttlMs) {
     if (!key || ttlMs <= 0)
         throw new Error("tryAcquireLock: invalid key/ttl");
-    const redis = getRedis();
-    const token = randomBytes(16).toString("hex");
-    const fullKey = `lock:${key}`;
-    // SET with NX (only set if not exists) + PX (TTL in ms). Atomic.
-    const ok = await redis.set(fullKey, token, "PX", ttlMs, "NX");
-    if (ok !== "OK")
+    try {
+        const redis = getRedis();
+        const token = randomBytes(16).toString("hex");
+        const fullKey = `lock:${key}`;
+        const ok = await redis.set(fullKey, token, "PX", ttlMs, "NX");
+        if (ok !== "OK")
+            return null;
+        return {
+            release: async () => {
+                try {
+                    await redis.eval(RELEASE_SCRIPT, 1, fullKey, token);
+                }
+                catch {
+                    /* best-effort */
+                }
+            },
+        };
+    }
+    catch {
+        if (isRedisOptional()) {
+            return localDevLock();
+        }
         return null;
-    return {
-        release: async () => {
-            try {
-                await redis.eval(RELEASE_SCRIPT, 1, fullKey, token);
-            }
-            catch {
-                /* best-effort */
-            }
-        },
-    };
+    }
 }
 /**
  * Run `fn` exclusively. If the lock is held elsewhere, returns `null`

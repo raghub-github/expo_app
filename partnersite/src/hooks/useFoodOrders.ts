@@ -23,9 +23,11 @@ export interface OrdersFoodRow {
   restaurant_phone: string | null;
   preparation_time_minutes: number | null;
   prep_ready_by_at?: string | null;
+  expected_ready_at?: string | null;
   prep_time_source?: string | null;
   prep_delay_minutes?: number | null;
   prep_delay_use_count?: number | null;
+  last_prep_delay_minutes_added?: number | null;
   prepared_late_minutes?: number | null;
   food_items_count: number | null;
   display_item_count?: number | null;
@@ -116,6 +118,9 @@ export interface OrdersFoodRow {
   prepared_at?: string | null;
   handed_over_to_rider_at?: string | null;
   rider_picked_up_at?: string | null;
+  reached_merchant_at?: string | null;
+  rider_reached_pickup_at?: string | null;
+  pickup_wait_seconds?: number | null;
   dispatched_at?: string | null;
   delivered_at?: string | null;
   cancelled_at?: string | null;
@@ -139,6 +144,8 @@ export interface OrdersFoodRow {
   /** Kitchen / state machine (PLACED, ACCEPTED, PREPARING, …) — drives tabs with orders_core.status */
   current_status?: string | null;
   order_type?: string | null;
+  /** Platform vs merchant self-delivery (orders_core.delivery_type / fulfillment). */
+  delivery_type?: string | null;
 }
 
 export interface FoodOrderStats {

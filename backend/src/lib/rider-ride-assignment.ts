@@ -169,7 +169,8 @@ export async function recordRideRiderReachedPickup(
 
   await tx.execute(sql`
     UPDATE orders_ride
-    SET rider_reached_pickup_at = ${now.toISOString()}::timestamptz, updated_at = ${now.toISOString()}::timestamptz
+    SET rider_reached_pickup_at = COALESCE(rider_reached_pickup_at, ${now.toISOString()}::timestamptz),
+        updated_at = ${now.toISOString()}::timestamptz
     WHERE order_id = ${orderCorePk}
   `);
 
@@ -270,6 +271,14 @@ export async function recordFoodRiderAdminCancelled(
   const reasonText = input.reasonText?.trim() || null;
   const actorType = input.actorType ?? "admin";
   const actorId = input.actorId ?? input.removedBy ?? "system";
+  const cancelledByEmail =
+    (input.removedBy?.includes("@") ? input.removedBy.trim() : null) ??
+    (input.actorId?.includes("@") ? input.actorId.trim() : null) ??
+    (input.cancelledBy?.includes("@") ? input.cancelledBy.trim() : null);
+  const baseReason = reasonText ?? "Rider cancelled by agent";
+  const statusMessage = cancelledByEmail
+    ? `${baseReason}\nCancelled by - ${cancelledByEmail}`
+    : baseReason;
 
   await insertAssignmentEvent(tx, {
     orderIdText,
@@ -306,7 +315,13 @@ export async function recordFoodRiderAdminCancelled(
     riderId,
     eventType: "cancelled",
     occurredAt: now,
-    statusMessage: reasonText ?? "Rider cancelled by agent",
+    statusMessage,
+    metadata: {
+      actor_type: actorType,
+      actor_id: "GatimitraTeam",
+      updated_by: "GatimitraTeam",
+      adminCancelled: true,
+    },
   });
 
   await tx.execute(sql`

@@ -40,12 +40,20 @@ export async function getRideAvailability(params: {
   pickupLng: number;
   radiusKm?: number;
   rideType?: string;
+  tripKm?: number;
+  pickupPincode?: string;
+  pickupState?: string;
 }): Promise<RideAvailabilityResponse> {
   const search = new URLSearchParams();
   search.set("pickupLat", String(params.pickupLat));
   search.set("pickupLng", String(params.pickupLng));
   if (params.radiusKm != null) search.set("radiusKm", String(params.radiusKm));
   if (params.rideType) search.set("rideType", params.rideType);
+  if (params.tripKm != null && Number.isFinite(params.tripKm)) {
+    search.set("tripKm", String(params.tripKm));
+  }
+  if (params.pickupPincode) search.set("pickupPincode", params.pickupPincode);
+  if (params.pickupState) search.set("pickupState", params.pickupState);
 
   const { data } = await api.get<RideAvailabilityResponse>(
     `${RIDES_PREFIX}/availability?${search.toString()}`

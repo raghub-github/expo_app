@@ -4,6 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
 import { colors } from "@/src/theme";
+import { resolveRiderDisplayedEarning } from "@/src/lib/rider-earning-display";
 
 const BRAND = colors.primary[500];
 
@@ -35,6 +36,56 @@ export function PenaltyBanner({ amount, onPay }: PenaltyBannerProps) {
       >
         <Text style={styles.payBtnText}>
           {t("home.payPenalty", "Pay ₹{{amount}}", { amount: Math.round(amount) })}
+        </Text>
+      </Pressable>
+    </View>
+  );
+}
+
+type RidePaymentHoldBannerProps = {
+  hold: {
+    orderId: string;
+    formattedOrderId: string | null;
+    totalEarning: number;
+  };
+  onView?: () => void;
+};
+
+export function RidePaymentHoldBanner({ hold, onView }: RidePaymentHoldBannerProps) {
+  const { t } = useTranslation();
+  const displayId = hold.formattedOrderId?.trim() || hold.orderId;
+  const amount = resolveRiderDisplayedEarning({ totalEarning: hold.totalEarning });
+  if (amount <= 0) return null;
+
+  return (
+    <View style={styles.penaltyWrap}>
+      <View style={styles.penaltyIcon}>
+        <Ionicons name="warning" size={18} color="#ffffff" />
+      </View>
+      <View style={styles.bannerTextCol}>
+        <Text style={styles.penaltyTitle}>
+          {t("home.ridePaymentHoldTitle", "Customer payment pending !")}
+        </Text>
+        <Text style={styles.penaltySub}>
+          {t(
+            "home.ridePaymentHoldSub",
+            "Wait for passenger payment before your earnings unlock"
+          )}
+        </Text>
+      </View>
+      <Pressable
+        style={styles.payBtn}
+        onPress={
+          onView ??
+          (() =>
+            router.push({
+              pathname: "/ride-payment-waiting",
+              params: { orderId: hold.orderId, displayId },
+            }))
+        }
+      >
+        <Text style={styles.payBtnText}>
+          {t("home.ridePaymentHoldCta", "View ₹{{amount}}", { amount })}
         </Text>
       </Pressable>
     </View>

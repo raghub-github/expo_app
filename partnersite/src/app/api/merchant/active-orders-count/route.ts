@@ -2,14 +2,20 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { assertStoreAccess } from '@/lib/auth/assert-store-access';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 function getDb() {
+  if (!supabaseUrl || !supabaseServiceKey) {
+    throw new Error('Supabase env not configured');
+  }
   return createClient(supabaseUrl, supabaseServiceKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 }
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 /** Same active pipeline as Fastify GET .../active-orders-count */
 const ACTIVE_STATUSES = ['assigned', 'accepted', 'reached_store', 'picked_up'];

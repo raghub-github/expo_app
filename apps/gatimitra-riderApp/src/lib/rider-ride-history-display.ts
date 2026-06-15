@@ -2,6 +2,7 @@ import type { ComponentProps } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import type { RiderOrderSummary } from "@/src/services/api/riderApi";
 import { formatOrderTypeLabel } from "@/src/lib/incoming-order-display";
+import { isRideFarePaymentPending } from "@/src/lib/ride-payment-wait";
 
 type IonName = ComponentProps<typeof Ionicons>["name"];
 
@@ -128,10 +129,17 @@ export function rideHistoryPickupShort(order: RiderOrderSummary): string {
 
 export function rideHistoryStatusLabel(
   status: RiderOrderSummary["status"],
-  t: (key: string, fallback: string) => string
+  t: (key: string, fallback: string) => string,
+  order?: Pick<RiderOrderSummary, "category" | "paymentStatus" | "adminRiderPaymentClearedAt" | "walletCreditPending">
 ): string {
+  if (order && isOrderEarningCreditPending({ ...order, status } as RiderOrderSummary)) {
+    return t("profile.myRides.statusPaymentPending", "Payment pending");
+  }
   switch (status) {
     case "delivered":
+      if (order?.category === "food" || order?.category === "parcel") {
+        return t("profile.myRides.statusDelivered", "Delivered");
+      }
       return t("profile.myRides.statusCompleted", "Completed");
     case "cancelled":
       return t("profile.myRides.statusCancelled", "Cancelled");
@@ -152,10 +160,33 @@ export function rideHistoryStatusTone(
   return { bg: "#F1F5F9", color: "#475569", border: "#E2E8F0" };
 }
 
-export function rideHistoryEarningLabel(order: RiderOrderSummary): string {
+export function isOrderEarningCreditPending(order: RiderOrderSummary): boolean {
+  if (order.walletCreditPending === true) return true;
+  return isRideFarePaymentPending(order);
+}
+
+export function rideHistoryEarningLabel(
+  order: RiderOrderSummary,
+  t?: (key: string, fallback: string) => string
+): string {
+  if (isOrderEarningCreditPending(order)) {
+    return t?.("profile.myRides.earningPending", "Pending") ?? "Pending";
+  }
   const amount = order.totalEarning ?? order.estimatedEarning ?? 0;
   if (!amount) return "—";
   return `₹${Math.round(amount).toLocaleString("en-IN")}`;
+}
+
+export function rideHistoryEarningPlusLabel(
+  order: RiderOrderSummary,
+  t?: (key: string, fallback: string) => string
+): string {
+  if (isOrderEarningCreditPending(order)) {
+    return t?.("profile.myRides.earningPending", "Pending") ?? "Pending";
+  }
+  const amount = order.totalEarning ?? order.estimatedEarning ?? 0;
+  if (!amount) return "—";
+  return `+₹${Math.round(amount).toLocaleString("en-IN")}`;
 }
 
 export function rideHistoryOrderId(order: RiderOrderSummary): string {
@@ -195,10 +226,28 @@ export function formatRideHistoryListDate(iso: string): string {
   return `${date} • ${time}`;
 }
 
-export function rideHistoryEarningPlusLabel(order: RiderOrderSummary): string {
-  const amount = order.totalEarning ?? order.estimatedEarning ?? 0;
-  if (!amount) return "—";
-  return `+₹${Math.round(amount).toLocaleString("en-IN")}`;
+export function resolveOrderDistanceBreakdown(order: RiderOrderSummary): {
+  pickupKm: number | null;
+  tripKm: number | null;
+  totalKm: number | null;
+} {
+  const tripKm =
+    order.tripDistanceKm != null && order.tripDistanceKm > 0
+      ? order.tripDistanceKm
+      : order.distanceKm != null && order.distanceKm > 0
+        ? order.distanceKm
+        : null;
+  const pickupKm =
+    order.pickupDistanceKm != null && order.pickupDistanceKm > 0
+      ? order.pickupDistanceKm
+      : null;
+  const totalKm =
+    order.totalDistanceKm != null && order.totalDistanceKm > 0
+      ? order.totalDistanceKm
+      : pickupKm != null && tripKm != null
+        ? Math.round((pickupKm + tripKm) * 10) / 10
+        : tripKm ?? pickupKm;
+  return { pickupKm, tripKm, totalKm };
 }
 
 export function orderMatchesHistorySearch(order: RiderOrderSummary, query: string): boolean {

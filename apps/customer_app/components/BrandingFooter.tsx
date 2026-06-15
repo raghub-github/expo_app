@@ -13,7 +13,7 @@ const TAGLINE = "Made for Your Moments";
 
 const FADE_DURATION = 500;
 
-/** Soft gray for watermark-style brand name (Zomato-like footer). */
+/** Soft gray for watermark-style brand name (GatiMitra footer). */
 const WATERMARK_GRAY = "rgba(107, 114, 128, 0.55)";
 
 type BrandingFooterProps = {

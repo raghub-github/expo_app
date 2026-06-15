@@ -152,6 +152,20 @@ function kindUpper(o: PlatformOfferRow): string {
   return String(o.offerKind ?? "DISCOUNT").toUpperCase();
 }
 
+/** Active membership or checkout opt-in — required for SUBSCRIPTION_BENEFIT platform offers. */
+export function customerHasSubscriptionOfferAccess(ctx: BillContext): boolean {
+  return ctx.subscriptionOptIn === true || ctx.customerSubscriptionActive === true;
+}
+
+/** Redundant when membership already waives delivery (membership stacks with one cart promo). */
+export function platformOfferConflictsWithSubscriptionFreeDelivery(
+  ctx: BillContext,
+  o: PlatformOfferRow
+): boolean {
+  if (!ctx.customerSubscriptionFreeDeliveryEligible) return false;
+  return kindUpper(o) === "FREE_DELIVERY";
+}
+
 const CART_LIKE_KINDS = new Set([
   "DISCOUNT",
   "COUPON",
@@ -266,6 +280,31 @@ export function estimateOfferDiscountValue(o: PlatformOfferRow, ctx: BillContext
   return 0;
 }
 
+/** Resolve an explicitly selected platform offer (same gates as listing + apply). */
+export function resolveSelectedPlatformOfferForCheckout(
+  ctx: BillContext,
+  dataset: BillingDataset,
+  grossCart: number,
+  offerId: number,
+  kindFilter?: (o: PlatformOfferRow) => boolean
+): PlatformOfferRow | null {
+  const eligible = listEligiblePlatformOffersForCheckout(ctx, dataset, grossCart);
+  let offer = eligible.find((o) => o.id === offerId) ?? null;
+
+  if (!offer) {
+    const candidate = dataset.platformOffers.find((o) => o.id === offerId);
+    if (!candidate) return null;
+    const k = kindUpper(candidate);
+    if (platformOfferConflictsWithSubscriptionFreeDelivery(ctx, candidate)) return null;
+    if (k === "SUBSCRIPTION_BENEFIT" && !customerHasSubscriptionOfferAccess(ctx)) return null;
+    if (!platformOfferEligible(ctx, candidate, grossCart)) return null;
+    offer = candidate;
+  }
+
+  if (kindFilter && !kindFilter(offer)) return null;
+  return offer;
+}
+
 /**
  * Pick the offer that produces the LARGEST discount among eligible candidates.
  * Customer-facing rule: only one platform offer is applied per order, and we apply
@@ -283,14 +322,13 @@ function pickPlatformOfferWinner(
   if (ctx.forceNoAutoOffer === true && ctx.selectedPlatformOfferId == null) return null;
 
   const eligible = listEligiblePlatformOffersForCheckout(ctx, dataset, grossCart).filter(kindFilter);
-  if (eligible.length === 0) return null;
 
-  // Honour user's explicit selection when present and eligible
   const selectedId = ctx.selectedPlatformOfferId;
   if (selectedId != null) {
-    const picked = eligible.find((o) => o.id === selectedId);
-    return picked ?? null; // if selection is no longer eligible, do not silently substitute
+    return resolveSelectedPlatformOfferForCheckout(ctx, dataset, grossCart, selectedId, kindFilter);
   }
+
+  if (eligible.length === 0) return null;
 
   // No user selection — pick the one that yields the highest discount value
   if (rem) {
@@ -329,6 +367,9 @@ export function listEligiblePlatformOffersForCheckout(
     const cohort = effectiveCustomerSegment(o);
     if ((cohort === "NEW" && ctx.userSegment !== "NEW") || (cohort === "EXISTING" && ctx.userSegment === "NEW"))
       continue;
+    if (platformOfferConflictsWithSubscriptionFreeDelivery(ctx, o)) continue;
+    const k = kindUpper(o);
+    if (k === "SUBSCRIPTION_BENEFIT" && !customerHasSubscriptionOfferAccess(ctx)) continue;
     if (!platformOfferEligible(ctx, o, grossCart)) continue;
     out.push(o);
   }
@@ -391,7 +432,7 @@ export function applyPlatformCartOffers(
     if (FEE_KIND_TO_REM_KEY[k]) return false;
 
     if (k === "SUBSCRIPTION_BENEFIT") {
-      if (ctx.subscriptionOptIn !== true) return false;
+      if (!customerHasSubscriptionOfferAccess(ctx)) return false;
       return hasStandardCartDiscount(o);
     }
 

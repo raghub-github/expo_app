@@ -3,6 +3,7 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   Calendar,
   ChevronDown,
@@ -16,9 +17,12 @@ import {
 import { MXLayoutWhite } from '@/components/MXLayoutWhite';
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
 import { PageSkeletonOrders } from '@/components/PageSkeleton';
-import { fetchStoreById } from '@/lib/database';
 import { MerchantStore } from '@/lib/merchantStore';
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
+import { readPartnerSelectedStoreId } from '@/lib/partner-selected-store';
+import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord';
+import { getQueryClient } from '@/lib/query-client';
+import { merchantKeys } from '@/lib/query-keys';
 import { toast } from 'sonner';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
@@ -179,10 +183,22 @@ function buildOrderPricing(order: OrdersFoodRow): OrderPricingBreakdown {
 
 function OrderHistoryInner() {
   const searchParams = useSearchParams();
+  const queryClient = useQueryClient();
   const [store, setStore] = useState<MerchantStore | null>(null);
   const [storeId, setStoreId] = useState<string | null>(null);
-  const [orders, setOrders] = useState<OrdersFoodRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [orders, setOrders] = useState<OrdersFoodRow[]>(() => {
+    if (typeof window === 'undefined') return [];
+    const id = readPartnerSelectedStoreId();
+    if (!id) return [];
+    return getQueryClient().getQueryData<OrdersFoodRow[]>(merchantKeys.orderHistory(id)) ?? [];
+  });
+  const [loading, setLoading] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    const id = readPartnerSelectedStoreId();
+    if (!id) return true;
+    const cached = getQueryClient().getQueryData<OrdersFoodRow[]>(merchantKeys.orderHistory(id));
+    return !cached?.length;
+  });
   const [dateFrom, setDateFrom] = useState(() => {
     const t = new Date();
     t.setDate(t.getDate() - 1);
@@ -249,22 +265,28 @@ function OrderHistoryInner() {
     setStoreId(isValidPartnerStoreId(trimmed) ? trimmed : null);
   }, [searchParams]);
 
+  const { data: storeRecord } = usePartnerStoreRecord(storeId);
+
   useEffect(() => {
-    if (!storeId) return;
-    (async () => {
-      const s = await fetchStoreById(storeId);
-      if (s) setStore(s as MerchantStore);
-    })();
-  }, [storeId]);
+    if (storeRecord) setStore(storeRecord);
+  }, [storeRecord]);
 
   const fetchOrders = useCallback(async () => {
     if (!storeId) return;
-    setLoading(true);
+    const cached = queryClient.getQueryData<OrdersFoodRow[]>(merchantKeys.orderHistory(storeId));
+    if (cached?.length) {
+      setOrders(cached);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     try {
       const res = await fetch(`/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=500`);
       const data = await res.json();
-      if (res.ok && Array.isArray(data.orders)) setOrders(data.orders);
-      else {
+      if (res.ok && Array.isArray(data.orders)) {
+        setOrders(data.orders);
+        queryClient.setQueryData(merchantKeys.orderHistory(storeId), data.orders);
+      } else {
         setOrders([]);
         toast.error(data.error || 'Failed to load orders');
       }
@@ -274,7 +296,7 @@ function OrderHistoryInner() {
     } finally {
       setLoading(false);
     }
-  }, [storeId]);
+  }, [storeId, queryClient]);
 
   useEffect(() => {
     fetchOrders();

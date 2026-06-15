@@ -17,3 +17,11 @@ export function getSupabaseAuth(): SupabaseClient | null {
   });
   return _client;
 }
+
+export function getSupabaseOtpEnvDebugInfo(): { urlSet: boolean; anonKeySet: boolean } {
+  const { supabaseUrl, supabaseAnonKey } = getConfig();
+  return {
+    urlSet: Boolean(supabaseUrl),
+    anonKeySet: Boolean(supabaseAnonKey),
+  };
+}

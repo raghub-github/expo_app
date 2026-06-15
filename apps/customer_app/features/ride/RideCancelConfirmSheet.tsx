@@ -20,6 +20,9 @@ import { MAPBIKE_IMAGE } from "@/lib/customer-map-assets";
 export type RideCancelConfirmSheetProps = {
   visible: boolean;
   loading?: boolean;
+  message?: string;
+  confirmLabel?: string;
+  keepLabel?: string;
   onConfirm: () => void;
   onKeepSearching: () => void;
   onClose: () => void;
@@ -32,6 +35,9 @@ function DashedDivider() {
 export function RideCancelConfirmSheet({
   visible,
   loading = false,
+  message = "By cancelling this ride, you'll have to restart the search that may lead to delay in finding a rider.",
+  confirmLabel = "Cancel my ride",
+  keepLabel = "Keep searching",
   onConfirm,
   onKeepSearching,
   onClose,
@@ -64,10 +70,7 @@ export function RideCancelConfirmSheet({
 
           <DashedDivider />
 
-          <Text style={styles.message}>
-            By cancelling this ride, you&apos;ll have to restart the search that may lead to
-            delay in finding a rider.
-          </Text>
+          <Text style={styles.message}>{message}</Text>
 
           <TouchableOpacity
             style={[styles.confirmBtn, loading && styles.confirmBtnDisabled]}
@@ -78,7 +81,7 @@ export function RideCancelConfirmSheet({
             {loading ? (
               <ActivityIndicator color="#FFFFFF" />
             ) : (
-              <Text style={styles.confirmBtnText}>Cancel my ride</Text>
+              <Text style={styles.confirmBtnText}>{confirmLabel}</Text>
             )}
           </TouchableOpacity>
 
@@ -88,7 +91,7 @@ export function RideCancelConfirmSheet({
             activeOpacity={0.9}
             disabled={loading}
           >
-            <Text style={styles.keepBtnText}>Keep searching</Text>
+            <Text style={styles.keepBtnText}>{keepLabel}</Text>
           </TouchableOpacity>
         </View>
       </View>

@@ -50,7 +50,7 @@ type Props = {
   restaurantName: string;
   restaurantAddress: string;
   onSkip: () => void;
-  onSubmit: (payload: { rating: number; tags: string[] }) => void;
+  onSubmit: (payload: { rating: number; tags: string[]; messages: string[] }) => void;
 };
 
 function tagsForRating(rating: number | null): FeedbackTag[] {
@@ -200,7 +200,11 @@ export function RestaurantFeedbackBottomSheet({
           <Pressable
             onPress={() => {
               if (!canSubmit || rating == null) return;
-              onSubmit({ rating, tags: selectedTags });
+              const messages = selectedTags.map((id) => {
+                const tag = availableTags.find((item) => item.id === id);
+                return tag ? t(tag.labelKey, tag.fallback) : id;
+              });
+              onSubmit({ rating, tags: selectedTags, messages });
             }}
             disabled={!canSubmit}
             style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}

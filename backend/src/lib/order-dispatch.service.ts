@@ -5,7 +5,13 @@
 
 import { and, eq } from "drizzle-orm";
 import { getDb, getSql } from "../db/client.js";
-import { ordersCore, ordersFood, ordersParcel, ordersRide } from "../db/schema.js";
+import {
+  customerRideServiceCatalog,
+  ordersCore,
+  ordersFood,
+  ordersParcel,
+  ordersRide,
+} from "../db/schema.js";
 import {
   fetchDispatchWaveSettings,
   fetchEffectiveDispatchRadiusMeters,
@@ -20,6 +26,10 @@ import {
 import { isFoodStatusDispatchableForConfiguredFlow } from "./food-rider-accept-flow.js";
 import { recordDispatchOffersSent } from "./rider-dispatch-assignment-audit.js";
 import { notifyEligibleRidersDispatchOffer } from "./rider-dispatch-notify.js";
+import {
+  isOrderDispatchManualHold,
+  setOrderDispatchManualHold,
+} from "./order-dispatch-manual-hold.js";
 
 export type DispatchSessionStatus = "active" | "accepted" | "expired" | "cancelled";
 
@@ -102,8 +112,11 @@ async function loadDispatchOrderTarget(
       orderType: ordersCore.orderType,
       pickupLat: ordersCore.pickupLat,
       pickupLon: ordersCore.pickupLon,
+      rideType: ordersRide.rideType,
+      vehicleTypeRequired: ordersRide.vehicleTypeRequired,
     })
     .from(ordersCore)
+    .leftJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
     .where(eq(ordersCore.id, orderCoreId))
     .limit(1);
 
@@ -111,6 +124,26 @@ async function loadDispatchOrderTarget(
   if (!row?.orderId || !serviceType) return null;
 
   const effectiveRadiusMeters = await fetchEffectiveDispatchRadiusMeters(serviceType, waveNumber);
+
+  let personRideVehicleTypes: string[] | undefined;
+  if (serviceType === "person_ride") {
+    const rideType = row.rideType?.trim();
+    if (rideType) {
+      const [catalog] = await db
+        .select({ vehicleTypes: customerRideServiceCatalog.vehicleTypes })
+        .from(customerRideServiceCatalog)
+        .where(eq(customerRideServiceCatalog.code, rideType))
+        .limit(1);
+      const fromCatalog = (catalog?.vehicleTypes ?? []).map((t) => String(t).trim()).filter(Boolean);
+      if (fromCatalog.length > 0) {
+        personRideVehicleTypes = fromCatalog;
+      }
+    }
+    if (!personRideVehicleTypes?.length) {
+      const fallback = row.vehicleTypeRequired?.trim();
+      if (fallback) personRideVehicleTypes = [fallback];
+    }
+  }
 
   return {
     orderCoreId,
@@ -123,6 +156,7 @@ async function loadDispatchOrderTarget(
     },
     waveNumber,
     effectiveRadiusMeters,
+    personRideVehicleTypes,
   };
 }
 
@@ -161,6 +195,49 @@ async function filterNewlyEligibleRiders(
   return eligible.filter((r) => !already.has(r.riderId));
 }
 
+/** Admin chose "Cancel rider only" — block waves/offers/pool/accept until manual assign. */
+export async function isDispatchHeldForManualAssignment(
+  orderCoreId: number
+): Promise<boolean> {
+  return isOrderDispatchManualHold(orderCoreId);
+}
+
+/** Stop dispatch after admin unassign — includes sessions already marked accepted by a rider. */
+export async function pauseOrderDispatchForManualAssignment(
+  orderCoreId: number
+): Promise<void> {
+  await setOrderDispatchManualHold(orderCoreId, true);
+
+  const sql = getSql();
+  const updated = (await sql`
+    UPDATE order_dispatch_sessions
+    SET
+      status = 'cancelled',
+      completed_at = NOW(),
+      next_wave_at = NULL,
+      updated_at = NOW()
+    WHERE order_core_id = ${orderCoreId}
+      AND status IN ('active', 'accepted')
+    RETURNING id
+  `) as Array<{ id: number }>;
+
+  if (updated.length === 0) {
+    await completeOrderDispatch(orderCoreId, "cancelled");
+    return;
+  }
+
+  const { recordPendingDispatchOffersMissed } = await import(
+    "./rider-dispatch-assignment-audit.js"
+  );
+  await recordPendingDispatchOffersMissed({
+    orderCoreId,
+    reason: "dispatch_admin_rider_hold",
+    missSource: "dispatch_session",
+  }).catch((err) => {
+    console.warn("[pauseOrderDispatchForManualAssignment] missed-offer audit failed:", err);
+  });
+}
+
 export async function completeOrderDispatch(
   orderCoreId: number,
   status: Exclude<DispatchSessionStatus, "active">
@@ -174,8 +251,21 @@ export async function completeOrderDispatch(
       next_wave_at = NULL,
       updated_at = NOW()
     WHERE order_core_id = ${orderCoreId}
-      AND status = 'active'
+      AND status IN ('active', 'accepted')
   `;
+
+  if (status === "expired" || status === "cancelled") {
+    const { recordPendingDispatchOffersMissed } = await import(
+      "./rider-dispatch-assignment-audit.js"
+    );
+    await recordPendingDispatchOffersMissed({
+      orderCoreId,
+      reason: `dispatch_${status}`,
+      missSource: "dispatch_session",
+    }).catch((err) => {
+      console.warn("[completeOrderDispatch] missed-offer audit failed:", err);
+    });
+  }
 }
 
 /**
@@ -184,6 +274,7 @@ export async function completeOrderDispatch(
  */
 export async function startOrderDispatch(orderCoreId: number): Promise<void> {
   if (!(await isOrderStillDispatchable(orderCoreId))) return;
+  if (await isDispatchHeldForManualAssignment(orderCoreId)) return;
 
   const sql = getSql();
   const existing = (await sql`
@@ -198,7 +289,16 @@ export async function startOrderDispatch(orderCoreId: number): Promise<void> {
     return;
   }
 
-  if (existing[0]?.id) return;
+  if (existing[0]?.status === "cancelled" && (await isDispatchHeldForManualAssignment(orderCoreId))) {
+    return;
+  }
+
+  if (existing[0]?.id) {
+    if (await isOrderStillDispatchable(orderCoreId)) {
+      await restartOrderDispatch(orderCoreId);
+    }
+    return;
+  }
 
   const target = await loadDispatchOrderTarget(orderCoreId, 1);
   if (!target) return;
@@ -276,6 +376,10 @@ export async function executeDispatchWave(sessionId: number): Promise<{
     await completeOrderDispatch(orderCoreId, "expired");
     return { notified: 0, eligible: 0 };
   }
+  if (await isDispatchHeldForManualAssignment(orderCoreId)) {
+    await pauseOrderDispatchForManualAssignment(orderCoreId);
+    return { notified: 0, eligible: 0 };
+  }
 
   const waveNumber = Math.max(1, Number(session.current_wave) || 1);
   const target = await loadDispatchOrderTarget(orderCoreId, waveNumber);
@@ -328,6 +432,10 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
     await completeOrderDispatch(orderCoreId, "expired");
     return false;
   }
+  if (await isDispatchHeldForManualAssignment(orderCoreId)) {
+    await pauseOrderDispatchForManualAssignment(orderCoreId);
+    return false;
+  }
 
   const serviceType = normalizeOrderServiceType(session.service_type);
   if (!serviceType) return false;
@@ -364,6 +472,7 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
 /** Restart rider matching after unassign — reactivates dispatch session and re-runs wave 1. */
 export async function restartOrderDispatch(orderCoreId: number): Promise<void> {
   if (!(await isOrderStillDispatchable(orderCoreId))) return;
+  await setOrderDispatchManualHold(orderCoreId, false);
 
   const sql = getSql();
   const target = await loadDispatchOrderTarget(orderCoreId, 1);
@@ -389,6 +498,10 @@ export async function restartOrderDispatch(orderCoreId: number): Promise<void> {
 
   const sessionId = Number(reactivated[0]?.id);
   if (sessionId) {
+    await sql`
+      DELETE FROM order_dispatch_rider_notifications
+      WHERE session_id = ${sessionId}
+    `;
     await executeDispatchWave(sessionId);
     return;
   }

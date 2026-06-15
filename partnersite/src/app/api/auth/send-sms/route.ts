@@ -59,8 +59,8 @@ async function sendSmsViaMsg91(mobile: string, otp: string): Promise<void> {
         short_url: "0",
         recipients: [recipient],
       };
-      if (flowId) payload.flow_id = flowId;
-      else payload.template_id = templateId;
+      if (templateId) payload.template_id = templateId;
+      else if (flowId) payload.flow_id = flowId;
       const res = await fetch("https://control.msg91.com/api/v5/flow/", {
         method: "POST",
         headers: {

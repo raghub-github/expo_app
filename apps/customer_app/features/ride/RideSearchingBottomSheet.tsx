@@ -6,67 +6,132 @@ import {
   Image,
   ImageSourcePropType,
   Platform,
+  ScrollView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { formatRideDistanceKm } from "@/lib/ride-route-snapshot";
 
 type Props = {
   phase: "placing" | "searching" | "tip_boost" | "error";
   title: string;
   subtitle: string;
-  countdownLabel?: string;
+  elapsedLabel?: string;
   progress: number;
   fare: number;
   rideImage: ImageSourcePropType;
+  rideName: string;
   pickupLabel: string;
+  dropLabel: string;
   tripKm?: number;
+  pickupDistanceKm?: number | null;
+  routeEtaMins?: number | null;
+  nearbyRidersCount?: number;
+  showFastestTag?: boolean;
   placementError?: string | null;
-  onTripDetails: () => void;
+  routeViaLabel?: string;
+  onTripDetails?: () => void;
+  onShareTrip?: () => void;
+  shareTripEnabled?: boolean;
   onRetry?: () => void;
   onCancelRide?: () => void;
   showCancel: boolean;
   bottomInset?: number;
 };
 
-function truncatePickup(text: string, max = 28): string {
+function truncateText(text: string, max = 34): string {
   const t = text.trim();
   if (t.length <= max) return t;
   return `${t.slice(0, max - 1)}…`;
 }
 
-function formatEta(tripKm?: number): string {
+function formatKmValue(km: number | null | undefined): string {
+  if (km == null || !Number.isFinite(km) || km <= 0) return "—";
+  return km < 10 ? km.toFixed(1) : String(Math.round(km * 10) / 10);
+}
+
+function formatEtaRange(tripKm?: number, routeEtaMins?: number | null): string {
+  if (routeEtaMins != null && routeEtaMins > 0) {
+    const max = routeEtaMins + 2;
+    return `${routeEtaMins} – ${max} min`;
+  }
   if (tripKm != null && Number.isFinite(tripKm) && tripKm > 0) {
     const mins = Math.max(3, Math.round(tripKm * 2.2));
-    const maxMins = mins + 2;
-    return `${mins}-${maxMins} min`;
+    return `${mins} – ${mins + 2} min`;
   }
-  return "3-5 min";
+  return "3 – 5 min";
 }
 
-function formatDistance(tripKm?: number): string {
-  if (tripKm != null && Number.isFinite(tripKm) && tripKm > 0) {
-    return `${tripKm.toFixed(1)} km`;
-  }
-  return "—";
-}
+type StepState = "done" | "active" | "pending";
 
-function TrustBadge({
-  icon,
-  label,
-  color,
+function SearchStepper({
+  nearbyCount,
+  progress,
 }: {
-  icon: keyof typeof Ionicons.glyphMap;
-  label: string;
-  color: string;
+  nearbyCount: number;
+  progress: number;
 }) {
+  const ridersLabel =
+    nearbyCount > 0 ? `${nearbyCount} rider${nearbyCount === 1 ? "" : "s"} found` : "Scanning area";
+
+  const steps: { label: string; state: StepState }[] = [
+    { label: "Searching nearby riders", state: "done" },
+    {
+      label: ridersLabel,
+      state: nearbyCount > 0 ? "done" : progress > 0.12 ? "active" : "pending",
+    },
+    {
+      label: "Sending requests",
+      state:
+        nearbyCount > 0
+          ? progress > 0.45
+            ? "done"
+            : "active"
+          : "pending",
+    },
+    {
+      label: "Waiting for acceptance",
+      state: nearbyCount > 0 && progress > 0.45 ? "active" : "pending",
+    },
+  ];
+
   return (
-    <View style={styles.trustItem}>
-      <View style={[styles.trustIconWrap, { backgroundColor: `${color}18` }]}>
-        <Ionicons name={icon} size={16} color={color} />
-      </View>
-      <Text style={styles.trustLabel} numberOfLines={2}>
-        {label}
-      </Text>
+    <View style={styles.stepperRow}>
+      {steps.map((step, index) => (
+        <View key={step.label} style={styles.stepItem}>
+          <View style={styles.stepTop}>
+            <View
+              style={[
+                styles.stepDot,
+                step.state === "done" && styles.stepDotDone,
+                step.state === "active" && styles.stepDotActive,
+              ]}
+            >
+              {step.state === "done" ? (
+                <Ionicons name="checkmark" size={10} color="#FFFFFF" />
+              ) : null}
+            </View>
+            {index < steps.length - 1 ? (
+              <View
+                style={[
+                  styles.stepLine,
+                  step.state === "done" ? styles.stepLineDone : null,
+                ]}
+              />
+            ) : null}
+          </View>
+          <Text
+            style={[
+              styles.stepLabel,
+              step.state === "done" && styles.stepLabelDone,
+              step.state === "active" && styles.stepLabelActive,
+            ]}
+            numberOfLines={2}
+          >
+            {step.label}
+          </Text>
+        </View>
+      ))}
     </View>
   );
 }
@@ -75,134 +140,198 @@ export function RideSearchingBottomSheet({
   phase,
   title,
   subtitle,
-  countdownLabel,
+  elapsedLabel,
   progress,
   fare,
   rideImage,
+  rideName,
   pickupLabel,
+  dropLabel,
   tripKm,
+  pickupDistanceKm,
+  routeEtaMins,
+  nearbyRidersCount = 0,
+  showFastestTag = false,
   placementError,
+  routeViaLabel = "Optimized",
   onTripDetails,
+  onShareTrip,
+  shareTripEnabled = true,
   onRetry,
   onCancelRide,
   showCancel,
   bottomInset = 0,
 }: Props) {
   const isError = phase === "error";
+  const rideKm = tripKm ?? null;
+  const pickupKm = pickupDistanceKm ?? 0;
+  const totalKm =
+    rideKm != null && pickupKm > 0 ? Math.round((rideKm + pickupKm) * 10) / 10 : rideKm;
 
   return (
-    <View style={[styles.sheet, { paddingBottom: Math.max(12, bottomInset + 8) }]}>
+    <View style={[styles.sheet, { paddingBottom: Math.max(8, bottomInset) }]}>
       <View style={styles.handle} />
 
-      <View style={styles.headerRow}>
-        <View style={styles.searchIconOuter}>
-          <View style={styles.searchIconRadar} pointerEvents="none">
-            <View style={[styles.searchRadarDot, { top: 4, left: 8 }]} />
-            <View style={[styles.searchRadarDot, { top: 2, right: 6 }]} />
-            <View style={[styles.searchRadarDot, { bottom: 6, left: 14 }]} />
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+        nestedScrollEnabled
+      >
+        <View style={styles.headerRow}>
+          <View style={styles.searchIconOuter}>
+            <View style={styles.searchIconBox}>
+              <Ionicons name="search" size={20} color="#059669" />
+            </View>
           </View>
-          <View style={styles.searchIconBox}>
-            <Ionicons name="search" size={22} color="#0D9488" />
-          </View>
-        </View>
 
-        <View style={styles.headerTextCol}>
-          <Text style={styles.title} numberOfLines={2}>
-            {title}
-          </Text>
-          {!isError && countdownLabel ? (
-            <Text style={styles.countdown}>
-              Searching for <Text style={styles.countdownBold}>{countdownLabel}</Text>
+          <View style={styles.headerTextCol}>
+            <Text style={styles.title} numberOfLines={2}>
+              {isError ? title : "Finding your rider…"}
             </Text>
-          ) : isError && placementError ? (
-            <Text style={styles.errorText}>{placementError}</Text>
-          ) : (
-            <Text style={styles.countdown}>{subtitle}</Text>
-          )}
+            <Text style={styles.subtitle} numberOfLines={2}>
+              {isError && placementError ? placementError : subtitle}
+            </Text>
+          </View>
+
+          {!isError && elapsedLabel ? (
+            <View style={styles.elapsedBadge}>
+              <Text style={styles.elapsedText}>{elapsedLabel}</Text>
+            </View>
+          ) : null}
         </View>
 
-        {!isError ? (
-          <TouchableOpacity style={styles.tripDetailsBtn} onPress={onTripDetails} activeOpacity={0.85}>
-            <Text style={styles.tripDetailsText}>Trip Details</Text>
+        {isError ? (
+          <TouchableOpacity style={styles.retryBtn} onPress={onRetry} activeOpacity={0.9}>
+            <Text style={styles.retryBtnText}>Go back</Text>
+          </TouchableOpacity>
+        ) : (
+          <>
+            <SearchStepper nearbyCount={nearbyRidersCount} progress={progress} />
+
+            <View style={styles.summaryCard}>
+              <Image source={rideImage} style={styles.rideImage} resizeMode="contain" />
+
+              <View style={styles.summaryCenter}>
+                <View style={styles.rideNameRow}>
+                  <Text style={styles.rideName}>{rideName}</Text>
+                  {showFastestTag ? (
+                    <View style={styles.fastestTag}>
+                      <Text style={styles.fastestText}>FASTEST</Text>
+                    </View>
+                  ) : null}
+                </View>
+                <Text style={styles.fareAmount}>₹{Number.isFinite(fare) ? fare : "—"}</Text>
+                <View style={styles.inclusiveTag}>
+                  <Text style={styles.inclusiveText}>Inclusive of all charges</Text>
+                </View>
+              </View>
+
+              <View style={styles.summaryMeta}>
+                <View style={styles.metaLine}>
+                  <Text style={styles.metaKey}>Pickup distance:</Text>
+                  <Text style={styles.metaVal}>{formatKmValue(pickupKm)} km</Text>
+                </View>
+                <View style={styles.metaLine}>
+                  <Text style={styles.metaKey}>Ride distance:</Text>
+                  <Text style={styles.metaVal}>{formatRideDistanceKm(rideKm) ?? "—"}</Text>
+                </View>
+                <View style={styles.metaDivider} />
+                <View style={styles.metaLine}>
+                  <Text style={styles.metaKey}>Estimated time:</Text>
+                  <Text style={[styles.metaVal, styles.metaValGreen]}>
+                    {formatEtaRange(rideKm ?? undefined, routeEtaMins)}
+                  </Text>
+                </View>
+                <View style={styles.metaLine}>
+                  <Text style={styles.metaKey}>Total distance:</Text>
+                  <Text style={[styles.metaVal, styles.metaValBold]}>
+                    {totalKm != null ? `${formatKmValue(totalKm)} km` : "—"}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.routeCard}>
+              <View style={styles.routeLeftCol}>
+                <View style={styles.routeStepper}>
+                  <View style={styles.routeDotGreen} />
+                  <View style={styles.routeStepLine} />
+                  <View style={styles.routeDotRed} />
+                </View>
+                <View style={styles.routeAddrCol}>
+                  <View style={styles.routeStopBlock}>
+                    <Text style={styles.routeStopLabel}>Pickup</Text>
+                    <Text style={styles.routeStopAddr} numberOfLines={2}>
+                      {truncateText(pickupLabel, 48)}
+                    </Text>
+                  </View>
+                  <View style={styles.routeStopBlock}>
+                    <Text style={styles.routeStopLabel}>Drop</Text>
+                    <Text style={styles.routeStopAddr} numberOfLines={2}>
+                      {truncateText(dropLabel, 48)}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              <View style={styles.routeDivider} />
+
+              <View style={styles.routeMetricCol}>
+                <Ionicons name="trail-sign-outline" size={18} color="#94A3B8" />
+                <Text style={styles.routeMetricLabel}>Route distance</Text>
+                <Text style={styles.routeMetricValue}>
+                  {rideKm != null ? `${formatKmValue(rideKm)} km` : "—"}
+                </Text>
+              </View>
+
+              <View style={styles.routeDivider} />
+
+              <View style={styles.routeMetricCol}>
+                <Ionicons name="git-network-outline" size={18} color="#94A3B8" />
+                <Text style={styles.routeMetricLabel}>Via</Text>
+                <Text style={styles.routeMetricValue} numberOfLines={2}>
+                  {routeViaLabel}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.actionRow}>
+              <TouchableOpacity
+                style={[styles.actionBtn, !shareTripEnabled && styles.actionBtnDisabled]}
+                onPress={onShareTrip}
+                activeOpacity={0.85}
+                disabled={!shareTripEnabled || !onShareTrip}
+              >
+                <Ionicons name="share-social-outline" size={16} color="#111827" />
+                <Text style={styles.actionBtnText}>Share Trip</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.actionBtn}
+                onPress={onTripDetails}
+                activeOpacity={0.85}
+                disabled={!onTripDetails}
+              >
+                <Ionicons name="receipt-outline" size={16} color="#111827" />
+                <Text style={styles.actionBtnText}>Trip Details</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
+
+        {showCancel ? (
+          <TouchableOpacity style={styles.cancelBtn} onPress={onCancelRide} activeOpacity={0.9}>
+            <View style={styles.cancelIconCircle}>
+              <Ionicons name="close" size={18} color="#FFFFFF" />
+            </View>
+            <View style={styles.cancelTextCol}>
+              <Text style={styles.cancelTitle}>Cancel Ride</Text>
+              <Text style={styles.cancelSub}>Free cancellation before rider accepts</Text>
+            </View>
           </TouchableOpacity>
         ) : null}
-      </View>
-
-      {!isError ? (
-        <>
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${Math.min(100, progress * 100)}%` }]} />
-          </View>
-          <Text style={styles.waitHint}>Please wait while we match you with a nearby rider.</Text>
-        </>
-      ) : (
-        <TouchableOpacity style={styles.retryBtn} onPress={onRetry} activeOpacity={0.9}>
-          <Text style={styles.retryBtnText}>Go back</Text>
-        </TouchableOpacity>
-      )}
-
-      <View style={styles.tripCard}>
-        <Image source={rideImage} style={styles.rideImage} resizeMode="contain" />
-
-        <View style={styles.tripCardCenter}>
-          <Text style={styles.fareLabel}>Total Fare</Text>
-          <Text style={styles.fareAmount}>₹{Number.isFinite(fare) ? fare : "—"}</Text>
-          <View style={styles.cashTag}>
-            <Ionicons name="cash-outline" size={13} color="#059669" />
-            <Text style={styles.cashTagText}>Cash</Text>
-          </View>
-        </View>
-
-        <View style={styles.tripMetaCol}>
-          <View style={styles.metaRow}>
-            <Ionicons name="time-outline" size={15} color="#64748B" />
-            <View style={styles.metaTextCol}>
-              <Text style={styles.metaLabel}>Estimated time</Text>
-              <Text style={styles.metaValue}>{formatEta(tripKm)}</Text>
-            </View>
-          </View>
-          <View style={styles.metaRow}>
-            <Ionicons name="navigate-outline" size={15} color="#64748B" />
-            <View style={styles.metaTextCol}>
-              <Text style={styles.metaLabel}>Distance</Text>
-              <Text style={styles.metaValue}>{formatDistance(tripKm)}</Text>
-            </View>
-          </View>
-          <View style={styles.metaRow}>
-            <Ionicons name="location-outline" size={15} color="#64748B" />
-            <View style={styles.metaTextCol}>
-              <Text style={styles.metaLabel}>Pickup</Text>
-              <Text style={styles.metaValue} numberOfLines={2}>
-                {truncatePickup(pickupLabel)}
-              </Text>
-            </View>
-          </View>
-        </View>
-      </View>
-
-      <View style={styles.trustRow}>
-        <TrustBadge icon="shield-checkmark-outline" label="Verified riders" color="#059669" />
-        <View style={styles.trustDivider} />
-        <TrustBadge icon="radio-outline" label="Nearby search" color="#2563EB" />
-        <View style={styles.trustDivider} />
-        <TrustBadge icon="flash-outline" label="Best match" color="#2563EB" />
-        <View style={styles.trustDivider} />
-        <TrustBadge icon="people-outline" label="Safe & secure" color="#059669" />
-      </View>
-
-      <View style={styles.dashedDivider} />
-
-      {showCancel ? (
-        <TouchableOpacity style={styles.cancelRow} onPress={onCancelRide} activeOpacity={0.85}>
-          <View style={styles.cancelIconCircle}>
-            <Ionicons name="close" size={22} color="#FFFFFF" />
-          </View>
-          <View style={styles.cancelTextCol}>
-            <Text style={styles.cancelTitle}>Cancel ride</Text>
-            <Text style={styles.cancelSub}>You can cancel anytime</Text>
-          </View>
-        </TouchableOpacity>
-      ) : null}
+      </ScrollView>
     </View>
   );
 }
@@ -223,10 +352,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    marginTop: -20,
-    paddingHorizontal: 18,
-    paddingTop: 10,
-    paddingBottom: 8,
+    marginTop: -18,
     ...sheetShadow,
   },
   handle: {
@@ -235,37 +361,30 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 2,
     backgroundColor: "#D1D5DB",
-    marginBottom: 14,
+    marginTop: 10,
+    marginBottom: 12,
+  },
+  scroll: {},
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 4,
   },
   headerRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 12,
-    marginBottom: 12,
+    gap: 10,
+    marginBottom: 14,
   },
   searchIconOuter: {
-    width: 48,
-    height: 48,
+    width: 42,
+    height: 42,
     alignItems: "center",
     justifyContent: "center",
-  },
-  searchIconRadar: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  searchRadarDot: {
-    position: "absolute",
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: "#93C5FD",
-    opacity: 0.7,
   },
   searchIconBox: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: "#ECFDF5",
     borderWidth: 1,
     borderColor: "#A7F3D0",
@@ -280,53 +399,325 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 17,
     fontWeight: "800",
-    color: "#1E3A5F",
+    color: "#0F172A",
     lineHeight: 22,
-    marginBottom: 4,
+    marginBottom: 3,
   },
-  countdown: {
-    fontSize: 13,
+  subtitle: {
+    fontSize: 12,
+    fontWeight: "500",
     color: "#64748B",
+    lineHeight: 17,
   },
-  countdownBold: {
+  elapsedBadge: {
+    backgroundColor: "#ECFDF5",
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: "#A7F3D0",
+    marginTop: 2,
+  },
+  elapsedText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#047857",
+  },
+  stepperRow: {
+    flexDirection: "row",
+    marginBottom: 14,
+    paddingHorizontal: 2,
+  },
+  stepItem: {
+    flex: 1,
+    alignItems: "center",
+  },
+  stepTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    width: "100%",
+    justifyContent: "center",
+    marginBottom: 6,
+    minHeight: 18,
+  },
+  stepDot: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: "#CBD5E1",
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  stepDotDone: {
+    backgroundColor: "#059669",
+    borderColor: "#059669",
+  },
+  stepDotActive: {
+    borderColor: "#059669",
+    backgroundColor: "#FFFFFF",
+  },
+  stepLine: {
+    flex: 1,
+    height: 2,
+    backgroundColor: "#E2E8F0",
+    marginHorizontal: 2,
+    marginTop: 7,
+  },
+  stepLineDone: {
+    backgroundColor: "#86EFAC",
+  },
+  stepLabel: {
+    fontSize: 9,
+    fontWeight: "600",
+    color: "#94A3B8",
+    textAlign: "center",
+    lineHeight: 12,
+    paddingHorizontal: 2,
+  },
+  stepLabelDone: {
+    color: "#059669",
+  },
+  stepLabelActive: {
+    color: "#047857",
+    fontWeight: "700",
+  },
+  summaryCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    padding: 12,
+    marginBottom: 10,
+    gap: 8,
+  },
+  rideImage: {
+    width: 56,
+    height: 56,
+    marginTop: 2,
+  },
+  summaryCenter: {
+    minWidth: 88,
+    flexShrink: 0,
+  },
+  rideNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 4,
+    flexWrap: "wrap",
+  },
+  rideName: {
+    fontSize: 15,
     fontWeight: "800",
     color: "#0F172A",
   },
-  errorText: {
-    fontSize: 13,
-    color: "#DC2626",
-    lineHeight: 18,
+  fastestTag: {
+    backgroundColor: "#ECFDF5",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
   },
-  tripDetailsBtn: {
-    borderWidth: 1,
-    borderColor: "#CBD5E1",
-    borderRadius: 18,
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    backgroundColor: "#FFFFFF",
-    marginTop: 2,
+  fastestText: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: "#059669",
   },
-  tripDetailsText: {
-    fontSize: 12,
+  fareAmount: {
+    fontSize: 26,
+    fontWeight: "800",
+    color: "#0F172A",
+    marginBottom: 4,
+  },
+  inclusiveTag: {
+    alignSelf: "flex-start",
+    backgroundColor: "#EFF6FF",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  inclusiveText: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: "#2563EB",
+  },
+  summaryMeta: {
+    flex: 1,
+    gap: 4,
+    paddingTop: 2,
+  },
+  metaLine: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 6,
+  },
+  metaKey: {
+    fontSize: 10,
+    color: "#94A3B8",
+    flex: 1,
+  },
+  metaVal: {
+    fontSize: 11,
     fontWeight: "700",
+    color: "#334155",
+  },
+  metaValGreen: {
+    color: "#059669",
+  },
+  metaValBold: {
+    fontWeight: "800",
     color: "#0F172A",
   },
-  progressTrack: {
-    height: 5,
-    borderRadius: 3,
+  metaDivider: {
+    height: StyleSheet.hairlineWidth,
     backgroundColor: "#E2E8F0",
-    overflow: "hidden",
-    marginBottom: 8,
+    marginVertical: 2,
   },
-  progressFill: {
-    height: "100%",
-    borderRadius: 3,
-    backgroundColor: GatiMitraColors.primaryMint,
+  routeCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    marginBottom: 10,
+    flexDirection: "row",
+    alignItems: "stretch",
+    backgroundColor: "#FFFFFF",
   },
-  waitHint: {
-    fontSize: 12,
+  routeLeftCol: {
+    flex: 1.35,
+    flexDirection: "row",
+    gap: 8,
+    minWidth: 0,
+  },
+  routeStepper: {
+    alignItems: "center",
+    paddingTop: 14,
+    width: 10,
+  },
+  routeStepLine: {
+    width: 2,
+    height: 22,
+    backgroundColor: "#CBD5E1",
+    marginVertical: 3,
+  },
+  routeAddrCol: {
+    flex: 1,
+    minWidth: 0,
+    gap: 12,
+  },
+  routeStopBlock: {
+    gap: 2,
+  },
+  routeStopLabel: {
+    fontSize: 10,
+    fontWeight: "600",
     color: "#94A3B8",
-    marginBottom: 14,
+  },
+  routeStopAddr: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#0F172A",
+    lineHeight: 15,
+  },
+  routeDivider: {
+    width: StyleSheet.hairlineWidth,
+    backgroundColor: "#E2E8F0",
+    marginHorizontal: 8,
+  },
+  routeMetricCol: {
+    width: 72,
+    alignItems: "center",
+    justifyContent: "flex-start",
+    gap: 4,
+    paddingTop: 2,
+  },
+  routeMetricLabel: {
+    fontSize: 9,
+    color: "#94A3B8",
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  routeMetricValue: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#0F172A",
+    textAlign: "center",
+    lineHeight: 15,
+  },
+  routeDotGreen: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: "#22C55E",
+  },
+  routeDotRed: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: "#EF4444",
+  },
+  actionRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 10,
+  },
+  actionBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 12,
+    paddingVertical: 11,
+    backgroundColor: "#FFFFFF",
+  },
+  actionBtnDisabled: {
+    opacity: 0.45,
+  },
+  actionBtnText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  cancelBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#FEF2F2",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginTop: 4,
+  },
+  cancelIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#EF4444",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cancelTextCol: {
+    flex: 1,
+  },
+  cancelTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#DC2626",
+  },
+  cancelSub: {
+    fontSize: 11,
+    color: "#94A3B8",
+    marginTop: 2,
   },
   retryBtn: {
     backgroundColor: GatiMitraColors.primaryMint,
@@ -339,142 +730,5 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
     color: "#111827",
-  },
-  tripCard: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    backgroundColor: "#F0F9FF",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#E0F2FE",
-    padding: 12,
-    marginBottom: 14,
-    gap: 8,
-  },
-  rideImage: {
-    width: 52,
-    height: 52,
-    marginTop: 4,
-  },
-  tripCardCenter: {
-    minWidth: 72,
-  },
-  fareLabel: {
-    fontSize: 11,
-    color: "#64748B",
-    marginBottom: 2,
-  },
-  fareAmount: {
-    fontSize: 24,
-    fontWeight: "800",
-    color: "#0F172A",
-    marginBottom: 6,
-  },
-  cashTag: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    alignSelf: "flex-start",
-    backgroundColor: "#ECFDF5",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-  },
-  cashTagText: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#059669",
-  },
-  tripMetaCol: {
-    flex: 1,
-    gap: 8,
-    paddingTop: 2,
-  },
-  metaRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 6,
-  },
-  metaTextCol: {
-    flex: 1,
-    minWidth: 0,
-  },
-  metaLabel: {
-    fontSize: 10,
-    color: "#94A3B8",
-    marginBottom: 1,
-  },
-  metaValue: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#334155",
-    lineHeight: 16,
-  },
-  trustRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    marginBottom: 12,
-    paddingHorizontal: 2,
-  },
-  trustItem: {
-    flex: 1,
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 2,
-  },
-  trustIconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  trustLabel: {
-    fontSize: 9,
-    fontWeight: "600",
-    color: "#475569",
-    textAlign: "center",
-    lineHeight: 12,
-  },
-  trustDivider: {
-    width: 1,
-    height: 36,
-    backgroundColor: "#E2E8F0",
-    marginTop: 4,
-  },
-  dashedDivider: {
-    borderTopWidth: 1,
-    borderStyle: "dashed",
-    borderColor: "#CBD5E1",
-    marginBottom: 12,
-  },
-  cancelRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 12,
-    paddingVertical: 6,
-  },
-  cancelIconCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "#EF4444",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cancelTextCol: {
-    alignItems: "flex-start",
-  },
-  cancelTitle: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: "#DC2626",
-  },
-  cancelSub: {
-    fontSize: 12,
-    color: "#94A3B8",
-    marginTop: 2,
   },
 });

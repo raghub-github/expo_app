@@ -8,7 +8,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
 import { fetchRiderUnifiedTickets } from "@/lib/riders/rider-unified-tickets";
 import { fetchRiderRecentOrders, formatRiderOrderDisplayId } from "@/lib/riders/rider-orders-query";
-import { riders, withdrawalRequests, blacklistHistory, dutyLogs, riderVehicles, riderPenalties, riderWallet, riderWalletFreezeHistory, riderNegativeWalletBlocks, systemUsers, onboardingPayments } from "@/lib/db/schema";
+import { riders, withdrawalRequests, blacklistHistory, dutyLogs, riderVehicles, riderPenalties, riderWallet, riderWalletFreezeHistory, riderNegativeWalletBlocks, systemUsers, onboardingPayments, riderPaymentMethods } from "@/lib/db/schema";
 import { eq, and, or, desc, gte, lte, isNull, sql } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -121,7 +121,7 @@ export async function GET(
 
     // Per‑rider summary cache (30s) – keyed by rider + filters to avoid
     // recalculating heavy aggregates on quick tab switches.
-    const cacheKey = riderId ? `rider_summary_v2:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
+    const cacheKey = riderId ? `rider_summary_v4:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
     const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
 
     if (cacheKey) {
@@ -228,6 +228,7 @@ export async function GET(
       latestFreezeRow,
       latestDutyLog,
       logoutSession,
+      activeBankAccount,
     ] = await Promise.all([
       fetchRiderRecentOrders(db, riderId, orderFilters),
       db
@@ -325,6 +326,19 @@ export async function GET(
         .limit(1)
         .then((rows) => rows[0] ?? null),
       getRiderLogoutSessionSnapshot(riderId),
+      db
+        .select()
+        .from(riderPaymentMethods)
+        .where(
+          and(
+            eq(riderPaymentMethods.riderId, riderId),
+            eq(riderPaymentMethods.methodType, "bank"),
+            isNull(riderPaymentMethods.deletedAt),
+          ),
+        )
+        .orderBy(desc(riderPaymentMethods.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
     ]);
 
     let recentPenalties: Array<Record<string, unknown>> = [];
@@ -553,6 +567,7 @@ export async function GET(
           status: order.status,
           fareAmount: order.fareAmount,
           riderEarning: order.riderEarning,
+          walletCredited: order.walletCredited ?? false,
           createdAt:
             order.createdAt instanceof Date
               ? order.createdAt.toISOString()
@@ -585,6 +600,21 @@ export async function GET(
           serviceTypes: activeVehicle.serviceTypes || [],
           verified: activeVehicle.verified,
         } : null,
+        bankAccount: activeBankAccount
+          ? {
+              id: activeBankAccount.id,
+              accountHolderName: activeBankAccount.accountHolderName,
+              bankName: activeBankAccount.bankName ?? null,
+              ifsc: activeBankAccount.ifsc ?? null,
+              branch: activeBankAccount.branch ?? null,
+              accountNumberMasked: activeBankAccount.accountNumberEncrypted ? "••••" : null,
+              verificationStatus: activeBankAccount.verificationStatus,
+              verifiedAt: activeBankAccount.verifiedAt
+                ? activeBankAccount.verifiedAt.toISOString()
+                : null,
+              createdAt: activeBankAccount.createdAt.toISOString(),
+            }
+          : null,
         blacklistStatusByService,
         blacklistHistory: blacklistHistoryList,
         negativeWalletBlocks: negativeWalletBlockRows.map((b) => ({

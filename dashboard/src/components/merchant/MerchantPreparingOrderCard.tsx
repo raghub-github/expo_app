@@ -18,11 +18,19 @@ import {
 import type { OrdersFoodRow } from '@/lib/types/food-orders';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
 import { resolveMerchantCtm } from '@/lib/merchant-order-ctm';
+import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import {
   isPrepCountdownExpired,
+  isPrepPerformanceOverdue,
   prepReadyCountdownLabel,
+  formatExtraPrepTimeAddedLabel,
+  canUseNeedMoreTime,
 } from '@/lib/order-prep-time';
 import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
+import {
+  OrderPrepDelayedBanner,
+  ExtraPrepTimeAddedBanner,
+} from '@/components/merchant/MerchantPreparingOrderActions';
 
 function ordinalSuffix(n: number): string {
   const v = n % 100;
@@ -216,9 +224,23 @@ export function MerchantPreparingOrderCard({
     return 'Assigning delivery partner…';
   }, [riderName, etaMins]);
 
-  const prepExpired =
-    isPrepCountdownExpired(order, nowMs) ||
+  const performanceOverdue = isPrepPerformanceOverdue(order, nowMs);
+  const countdownExpired =
+    isPrepCountdownExpired(order, nowMs, { prefix: 'Order Ready' }) ||
     !prepReadyCountdownLabel(order, nowMs, { prefix: 'Order Ready' }).label.includes('(');
+  const canNeedMore =
+    performanceOverdue &&
+    countdownExpired &&
+    !!onNeedMoreTime &&
+    canUseNeedMoreTime(
+      order.prep_delay_use_count,
+      Boolean(order.is_bulk_order),
+      order.prep_delay_minutes
+    );
+  const extraTimeLabel = formatExtraPrepTimeAddedLabel(
+    order.last_prep_delay_minutes_added,
+    order.prep_delay_minutes
+  );
 
   const restaurantLabel =
     (storeName || order.restaurant_name || '').trim() || 'Restaurant';
@@ -244,6 +266,8 @@ export function MerchantPreparingOrderCard({
         selected ? 'border-gray-900 ring-2 ring-gray-200' : 'border-[#EEEEEE]'
       } ${onClick ? 'cursor-pointer' : ''}`}
     >
+      {performanceOverdue ? <OrderPrepDelayedBanner order={order} nowMs={nowMs} /> : null}
+      {extraTimeLabel ? <ExtraPrepTimeAddedBanner label={extraTimeLabel} /> : null}
       <div className="px-4 pt-4 pb-3" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
@@ -410,7 +434,7 @@ export function MerchantPreparingOrderCard({
       </div>
 
       <div className="px-4 pb-4 pt-0" onClick={(e) => e.stopPropagation()}>
-        {prepExpired && onNeedMoreTime ? (
+        {canNeedMore ? (
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"

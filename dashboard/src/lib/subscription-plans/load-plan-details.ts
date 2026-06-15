@@ -41,6 +41,14 @@ export async function loadPlanDetails(planId: number) {
     isActive: Boolean(p.is_active),
     displayOrder: Number(p.display_order ?? 0),
     defaultBillingCycle: p.default_billing_cycle != null ? String(p.default_billing_cycle) : "monthly",
+    planAudience: p.plan_audience != null ? String(p.plan_audience) : "RIDER",
+    isFeatured: p.is_featured === true,
+    freeDeliveryEnabled: p.free_delivery_enabled === true,
+    maxFreeDeliveryRadiusKm: p.max_free_delivery_radius_km != null ? Number(p.max_free_delivery_radius_km) : 7,
+    discountPercentage: p.discount_percentage != null ? Number(p.discount_percentage) : null,
+    cashbackEnabled: p.cashback_enabled === true,
+    cashbackPercentage: p.cashback_percentage != null ? Number(p.cashback_percentage) : null,
+    prioritySupport: p.priority_support === true,
     prices: (prices as Record<string, unknown>[]).map((r) => {
       const subtotal = Number(r.amount ?? 0);
       const gstPercent = r.gst_percent != null ? Number(r.gst_percent) : 18;

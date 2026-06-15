@@ -4,6 +4,7 @@ import { View, Text, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { ComponentProps } from "react";
 import { PROFILE_CARD_RADIUS } from "@/src/components/profile/ProfilePromoCard";
+import { profileCardShadow } from "@/src/components/profile/profileCardShadow";
 
 type IoniconName = ComponentProps<typeof Ionicons>["name"];
 
@@ -107,11 +108,9 @@ const styles = StyleSheet.create({
     borderRadius: PROFILE_CARD_RADIUS,
     backgroundColor: "#FFFFFF",
     overflow: "hidden",
-    shadowColor: "#0F172A",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    elevation: 3,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#E5E7EB",
+    ...profileCardShadow,
   },
   headerInner: {
     flexDirection: "row",

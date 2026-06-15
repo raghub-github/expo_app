@@ -1,8 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { useState, useMemo, useEffect } from "react";
 import {
   Plus,
   Search,
@@ -13,7 +11,6 @@ import {
   Store,
   Gift,
   IndianRupee,
-  ArrowLeft,
 } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
 import {
@@ -24,7 +21,9 @@ import {
 } from "@/hooks/queries/useMerchantPlansQuery";
 import { MerchantPlanForm } from "./MerchantPlanForm";
 import { RiderSubscriptionPlansAdmin } from "./RiderSubscriptionPlansAdmin";
+import { CustomerSubscriptionPlansAdmin } from "./CustomerSubscriptionPlansAdmin";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { usePrefetchSubscriptionPlans } from "@/hooks/queries/useSubscriptionPlansQuery";
 
 type OfferTab = "merchant" | "rider" | "customer";
 
@@ -193,20 +192,14 @@ function MerchantPlanCards({
   );
 }
 
-function useOffersBackLink(): { href: string; label: string } | null {
-  const pathname = usePathname();
-  if (pathname === "/dashboard/offers") {
-    return { href: "/dashboard/super-admin", label: "Back to super admin" };
-  }
-  if (pathname === "/dashboard/merchants/offers") {
-    return { href: "/dashboard/merchants", label: "Back to dashboard" };
-  }
-  return null;
-}
-
 export function OffersClient() {
   const { toast } = useToast();
-  const backLink = useOffersBackLink();
+  const prefetchSubscriptionPlans = usePrefetchSubscriptionPlans();
+
+  useEffect(() => {
+    prefetchSubscriptionPlans();
+  }, [prefetchSubscriptionPlans]);
+
   const [tab, setTab] = useState<OfferTab>("merchant");
   const [search, setSearch] = useState("");
   const [searchApplied, setSearchApplied] = useState("");
@@ -277,19 +270,9 @@ export function OffersClient() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        {backLink && (
-          <Link
-            href={backLink.href}
-            className="inline-flex w-fit items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 hover:text-gray-900"
-          >
-            <ArrowLeft className="h-4 w-4 shrink-0" aria-hidden />
-            {backLink.label}
-          </Link>
-        )}
-        <div className={`flex items-center gap-2 ${backLink ? "sm:ml-auto" : ""}`}>
-          <div role="group" aria-label="Subscription plan audience" className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <div role="group" aria-label="Subscription plan audience" className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
             {(
               [
                 { key: "merchant", label: "Merchant", icon: Store },
@@ -310,12 +293,10 @@ export function OffersClient() {
               </button>
             ))}
           </div>
-        </div>
       </div>
 
-      {(tab === "merchant") && (
-        <>
-          <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+      <div className={tab === "merchant" ? "space-y-3" : "hidden"} aria-hidden={tab !== "merchant"}>
+        <div className="flex flex-col sm:flex-row sm:items-center gap-4">
             <div className="flex flex-1 flex-wrap items-center gap-2">
               <div className="relative flex-1 min-w-[200px]">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -407,18 +388,15 @@ export function OffersClient() {
               )}
             </>
           )}
-        </>
-      )}
+      </div>
 
-      {tab === "rider" && <RiderSubscriptionPlansAdmin />}
+      <div className={tab === "rider" ? undefined : "hidden"} aria-hidden={tab !== "rider"}>
+        <RiderSubscriptionPlansAdmin />
+      </div>
 
-      {tab === "customer" && (
-        <div className="rounded-2xl border-2 border-dashed border-gray-200 bg-gray-50/50 px-6 py-16 text-center">
-          <Gift className="h-14 w-14 text-gray-300 mx-auto mb-4" />
-          <p className="text-lg font-medium text-gray-700">User subscription plans coming soon</p>
-          <p className="text-sm text-gray-500 mt-1">This section will be available in a future update</p>
-        </div>
-      )}
+      <div className={tab === "customer" ? undefined : "hidden"} aria-hidden={tab !== "customer"}>
+        <CustomerSubscriptionPlansAdmin />
+      </div>
 
       <MerchantPlanForm
         isOpen={formOpen}

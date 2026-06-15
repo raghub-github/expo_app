@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
 import {
   labelsForStatusUpdate,
   normalizeActionMode,
@@ -20,18 +19,23 @@ import {
   lookupOrderContext,
 } from '@/lib/financial-rule-executor';
 import { creditMerchantOrderEarningOnDelivered } from '@/lib/credit-merchant-order-on-delivered';
-import { appendDispatchedTimeline, appendReadyTimeline } from '@/lib/orderFoodStatusTimeline';
-import { loadPartnerOrderItemsForFoodRow } from '@/lib/partnerFoodOrderItems';
 import {
   persistMerchantCtmAtAccept,
   resolveMerchantWalletCreditAmount,
 } from '@/lib/merchant-order-ctm';
+import { appendDispatchedTimeline, appendReadyTimeline } from '@/lib/orderFoodStatusTimeline';
+import { loadPartnerOrderItemsForFoodRow } from '@/lib/partnerFoodOrderItems';
+import {
+  clearStoreOrderNotifications,
+  shouldClearOrderNotifications,
+} from '@/lib/clear-store-order-notifications';
 import {
   PLATFORM_DEFAULT_PREP_MINUTES,
   resolveAcceptPrepCommitment,
   resolveStoreDefaultPrepMinutes,
   computePreparedLateMinutes,
 } from '@/lib/order-prep-time';
+import { triggerOrderEtaRecalcAfterAccept } from '@/lib/trigger-order-eta-recalc';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -113,7 +117,7 @@ export async function PATCH(
     const { data: existing, error: fetchErr } = await db
       .from('orders_food')
       .select(
-        'id, order_id, order_status, merchant_store_id, food_items_total_value, preparation_time_minutes, preparing_at, prep_ready_by_at'
+        'id, order_id, order_status, merchant_store_id, food_items_total_value, preparation_time_minutes, preparing_at, prep_ready_by_at, accepted_at'
       )
       .eq('id', orderIdNum)
       .single();
@@ -125,55 +129,38 @@ export async function PATCH(
       return NextResponse.json({ error: 'Order does not belong to this store' }, { status: 403 });
     }
 
-    // orders_food.order_status can lag behind orders_core.current_status in unified pipeline.
-    // Validate transitions using the same pipeline resolver used by partner UI.
-    let currentStatus = normalizeOrderStatusForTransition(existing.order_status as string);
-    try {
-      const { data: core } = await db
-        .from('orders_core')
-        .select('status, current_status')
-        .eq('id', existing.order_id as number)
-        .maybeSingle();
-      if (core) {
-        const pipeline = resolvePartnerPipeline(
-          existing.order_status as string | null,
-          (core as any).status ?? 'assigned',
-          (core as any).current_status ?? null
-        );
-        currentStatus = normalizeOrderStatusForTransition(pipeline);
-      }
-    } catch {
-      /* ignore and fall back to orders_food.order_status */
+    const rawFoodStatus = normalizeOrderStatusForTransition(existing.order_status as string);
+
+    // Idempotent — merchant UI may re-send the same status (e.g. Mark Ready while already ready).
+    if (newStatus === rawFoodStatus) {
+      const enrichedItems = await loadPartnerOrderItemsForFoodRow(
+        db,
+        existing as Record<string, unknown>
+      );
+      const itemCount = computeOrderItemQuantityCount({
+        items: enrichedItems,
+        food_items_count: (existing as { food_items_count?: number | null }).food_items_count,
+      });
+      return NextResponse.json({
+        order: {
+          ...existing,
+          order_status: rawFoodStatus,
+          items: enrichedItems,
+          food_items_count: itemCount,
+          display_item_count: itemCount,
+        },
+        idempotent: true,
+      });
     }
+
+    // Validate against orders_food.order_status — orders_core.current_status can run ahead
+    // (ETA/rider) while the food row still needs merchant PREPARING → READY_FOR_PICKUP.
+    const currentStatus = rawFoodStatus;
     const allowed = VALID_TRANSITIONS[currentStatus] || [];
     if (!allowed.includes(newStatus)) {
       return NextResponse.json({
         error: `Invalid transition from ${currentStatus} to ${newStatus}`,
       }, { status: 400 });
-    }
-
-    if (
-      newStatus === 'ACCEPTED' &&
-      (currentStatus === 'CREATED' || currentStatus === 'NEW')
-    ) {
-      const { data: storeGate } = await db
-        .from('merchant_stores')
-        .select('is_accepting_orders')
-        .eq('id', storeInternalId)
-        .maybeSingle();
-      const { data: avail } = await db
-        .from('merchant_store_availability')
-        .select('is_accepting_orders')
-        .eq('store_id', storeInternalId)
-        .maybeSingle();
-      const accepting =
-        avail?.is_accepting_orders ?? storeGate?.is_accepting_orders ?? true;
-      if (accepting === false) {
-        return NextResponse.json(
-          { error: 'Store is closed for new orders. Finish your active orders first.' },
-          { status: 403 }
-        );
-      }
     }
 
     const now = new Date().toISOString();
@@ -263,9 +250,15 @@ export async function PATCH(
 
     try {
       const corePatch: Record<string, unknown> = { current_status: newStatus, updated_at: now };
+      if (newStatus === 'CANCELLED') {
+        corePatch.status = 'cancelled';
+        corePatch.cancelled_at = now;
+        corePatch.cancelled_by = 'SYSTEM';
+      }
       if (newStatus === 'ACCEPTED' && acceptPrepReadyByAt && acceptPrepMinutes != null) {
         corePatch.prep_ready_by_at = acceptPrepReadyByAt;
         corePatch.prep_time_minutes = acceptPrepMinutes;
+        corePatch.expected_ready_at = acceptPrepReadyByAt;
       }
       if (newStatus === 'READY_FOR_PICKUP' && updates.prepared_late_minutes != null) {
         corePatch.prepared_late_minutes = updates.prepared_late_minutes;
@@ -300,22 +293,11 @@ export async function PATCH(
           .eq('id', existing.order_id as number)
           .maybeSingle();
         const orderIdText = (coreMeta?.order_id as string | null)?.trim();
-        const backendBase = (
-          process.env.GATIMITRA_BACKEND_API_URL ||
-          process.env.BACKEND_API_URL ||
-          ''
-        ).replace(/\/+$/, '');
-        if (orderIdText && backendBase) {
-          await fetch(
-            `${backendBase}/v1/eta/orders/${encodeURIComponent(orderIdText)}/recalc`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ reason: 'MERCHANT_DELAY' }),
-            }
-          ).catch((err) => {
-            console.warn('[food-orders PATCH] ETA recalc after accept failed:', err);
-          });
+        if (orderIdText) {
+          const ok = await triggerOrderEtaRecalcAfterAccept(orderIdText, 'STATUS_CHANGE');
+          if (!ok) {
+            console.warn('[food-orders PATCH] ETA recalc after accept skipped or failed for', orderIdText);
+          }
         }
       } catch (etaErr) {
         console.warn('[food-orders PATCH] ETA recalc setup failed:', etaErr);
@@ -463,6 +445,22 @@ export async function PATCH(
       newStatus,
       previousStatus: currentStatus,
     });
+
+    if (shouldClearOrderNotifications(newStatus)) {
+      try {
+        await clearStoreOrderNotifications(db, {
+          storeId: storeInternalId,
+          ordersFoodId: orderIdNum,
+          orderCoreId: existing.order_id as number,
+          formattedOrderId:
+            (data as { formatted_order_id?: string | null }).formatted_order_id ??
+            (existing as { formatted_order_id?: string | null }).formatted_order_id ??
+            null,
+        });
+      } catch (clearErr) {
+        console.warn('[food-orders PATCH] clear order notifications failed:', clearErr);
+      }
+    }
 
     const enrichedItems = await loadPartnerOrderItemsForFoodRow(db, data as Record<string, unknown>);
     const itemCount = computeOrderItemQuantityCount({

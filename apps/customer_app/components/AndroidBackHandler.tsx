@@ -6,17 +6,39 @@
 
 import { useEffect } from "react";
 import { BackHandler, Platform } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, useSegments } from "expo-router";
+import {
+  resolveAndroidBackFallback,
+  safeRouterBack,
+  type SafeRouterBackFallback,
+} from "@/lib/safeRouterBack";
 
-export function AndroidBackHandler() {
+type AndroidBackHandlerProps = {
+  /** When set, used instead of segment-based fallback when the stack cannot go back. */
+  fallback?: SafeRouterBackFallback;
+  /** When true, always navigate to `fallback` instead of router.back(). */
+  preferFallback?: boolean;
+};
+
+export function AndroidBackHandler({ fallback, preferFallback = false }: AndroidBackHandlerProps = {}) {
   const router = useRouter();
+  const segments = useSegments();
 
   useEffect(() => {
     if (Platform.OS !== "android") return;
 
     const onHardwareBack = () => {
+      const resolvedFallback = fallback ?? resolveAndroidBackFallback(segments);
+      if (preferFallback && resolvedFallback) {
+        safeRouterBack(router, resolvedFallback);
+        return true;
+      }
       if (typeof router.canGoBack === "function" && router.canGoBack()) {
         router.back();
+        return true;
+      }
+      if (resolvedFallback) {
+        safeRouterBack(router, resolvedFallback);
         return true;
       }
       return false;
@@ -24,7 +46,7 @@ export function AndroidBackHandler() {
 
     const sub = BackHandler.addEventListener("hardwareBackPress", onHardwareBack);
     return () => sub.remove();
-  }, [router]);
+  }, [router, segments, fallback, preferFallback]);
 
   return null;
 }

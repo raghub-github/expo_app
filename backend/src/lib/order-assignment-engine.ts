@@ -21,6 +21,7 @@ import {
   riders,
 } from "../db/schema.js";
 import { fetchEffectiveDispatchRadiusMeters } from "./order-dispatch-settings.js";
+import { expandVehicleTypeCodesForCatalogMatch } from "./rider-vehicle-db-map.js";
 import { fetchFoodDispatchableStatusesForFlow } from "./food-rider-accept-flow.js";
 import {
   assertRiderCanAcceptDispatchOffer,
@@ -109,6 +110,8 @@ export type DispatchOrderTarget = {
   pickup: DispatchPickupPoint;
   waveNumber: number;
   effectiveRadiusMeters: number;
+  /** Person ride: catalog vehicle_type codes that may accept this order (e.g. bike, two_wheeler). */
+  personRideVehicleTypes?: string[];
 };
 
 export type ActiveDispatchSessionRow = {
@@ -236,19 +239,74 @@ export async function fetchAllPickupRadiiMeters(): Promise<Record<DispatchServic
 
 async function getActiveVehicleServiceTypes(riderId: number): Promise<DispatchServiceType[]> {
   const db = getDb();
-  const [row] = await db
+  const rows = await db
     .select({ serviceTypes: riderVehicles.serviceTypes })
     .from(riderVehicles)
     .where(
       and(
         eq(riderVehicles.riderId, riderId),
         eq(riderVehicles.isActive, true),
-        isNull(riderVehicles.deletedAt)
+        eq(riderVehicles.verified, true),
+        isNull(riderVehicles.deletedAt),
+        sql`COALESCE(${riderVehicles.vehicleActiveStatus}, 'active') = 'active'`
       )
-    )
-    .limit(1);
+    );
 
-  return normalizeDispatchServices(row?.serviceTypes);
+  const merged: DispatchServiceType[] = [];
+  for (const row of rows) {
+    for (const service of normalizeDispatchServices(row.serviceTypes)) {
+      if (!merged.includes(service)) merged.push(service);
+    }
+  }
+  return merged;
+}
+
+/** Active verified vehicle_type codes for dispatch matching (person ride catalog). */
+export async function getRiderActiveVehicleTypeCodes(riderId: number): Promise<string[]> {
+  const db = getDb();
+  const rows = await db
+    .select({ vehicleType: riderVehicles.vehicleType })
+    .from(riderVehicles)
+    .where(
+      and(
+        eq(riderVehicles.riderId, riderId),
+        eq(riderVehicles.isActive, true),
+        eq(riderVehicles.verified, true),
+        isNull(riderVehicles.deletedAt),
+        sql`COALESCE(${riderVehicles.vehicleActiveStatus}, 'active') = 'active'`
+      )
+    );
+
+  const types = new Set<string>();
+  for (const row of rows) {
+    const vt = String(row.vehicleType ?? "").trim();
+    if (vt) types.add(vt);
+  }
+  return [...types];
+}
+
+function riderMatchesPersonRideVehicleTypes(
+  riderVehicleTypes: string[],
+  requiredTypes: string[] | undefined
+): boolean {
+  if (!requiredTypes?.length) return true;
+
+  const allowed = new Set<string>();
+  for (const required of requiredTypes) {
+    for (const code of expandVehicleTypeCodesForCatalogMatch(required)) {
+      allowed.add(code);
+    }
+  }
+  if (allowed.size === 0) return true;
+
+  const riderExpanded = new Set<string>();
+  for (const riderType of riderVehicleTypes) {
+    for (const code of expandVehicleTypeCodesForCatalogMatch(riderType)) {
+      riderExpanded.add(code);
+    }
+  }
+
+  return [...riderExpanded].some((code) => allowed.has(code));
 }
 
 function intersectServices(
@@ -454,12 +512,27 @@ export async function evaluateRiderDispatchEligibility(
   riderId: number,
   target: Pick<
     DispatchOrderTarget,
-    "serviceType" | "pickup" | "effectiveRadiusMeters" | "orderCoreId" | "orderId"
+    | "serviceType"
+    | "pickup"
+    | "effectiveRadiusMeters"
+    | "orderCoreId"
+    | "orderId"
+    | "personRideVehicleTypes"
   >
 ): Promise<EligibleDispatchRider | null> {
+  const { isRiderSubscriptionDispatchBlocked } = await import("./rider-subscription-wallet.js");
+  if (await isRiderSubscriptionDispatchBlocked(riderId)) return null;
+
   const ctx = await resolveRiderAssignmentContext(riderId, { skipAssignmentCheck: true });
   if (!ctx) return null;
   if (!ctx.eligibleServices.includes(target.serviceType)) return null;
+
+  if (target.serviceType === "person_ride") {
+    const riderVehicleTypes = await getRiderActiveVehicleTypeCodes(riderId);
+    if (!riderMatchesPersonRideVehicleTypes(riderVehicleTypes, target.personRideVehicleTypes)) {
+      return null;
+    }
+  }
 
   const assignmentOk = await canRiderReceiveDispatchOffer(riderId, target.serviceType, {
     orderCoreId: target.orderCoreId,
@@ -501,6 +574,9 @@ export async function evaluateRiderDispatchEligibility(
 export async function listEligibleRidersForDispatchOrder(
   target: DispatchOrderTarget
 ): Promise<EligibleDispatchRider[]> {
+  const { isOrderDispatchManualHold } = await import("./order-dispatch-manual-hold.js");
+  if (await isOrderDispatchManualHold(target.orderCoreId)) return [];
+
   const candidateIds = await loadOnDutyRiderIds();
   const { fetchExcludedRiderIdsForOrder } = await import("./rider-dispatch-order-exclusion.js");
   const excludedRiderIds = await fetchExcludedRiderIdsForOrder(target.orderCoreId);
@@ -559,7 +635,13 @@ export async function resolveRiderAssignmentContext(
   if (latestDuty?.status !== "ON") return null;
 
   const dutyServices = normalizeDispatchServices(latestDuty.serviceTypes);
-  const vehicleServices = await getActiveVehicleServiceTypes(riderId);
+  let vehicleServices = await getActiveVehicleServiceTypes(riderId);
+  if (vehicleServices.length === 0) {
+    const vehicleTypeCodes = await getRiderActiveVehicleTypeCodes(riderId);
+    if (vehicleTypeCodes.length > 0) {
+      vehicleServices = dutyServices;
+    }
+  }
   const eligibleServices = intersectServices(dutyServices, vehicleServices);
 
   if (eligibleServices.length === 0) return null;
@@ -691,6 +773,7 @@ async function fetchFoodPoolRows(): Promise<DispatchPoolOrderRow[]> {
       and(
         eq(ordersCore.orderType, "food"),
         isNull(ordersCore.riderId),
+        eq(ordersCore.dispatchManualHold, false),
         inArray(ordersFood.orderStatus, dispatchableStatuses),
         sql`${ordersFood.cancelledAt} IS NULL`
       )
@@ -791,8 +874,10 @@ export async function listDispatchPoolOrdersForRider(
   );
 
   const withinRadius: DispatchPoolOrderRow[] = [];
+  const { isOrderDispatchManualHold } = await import("./order-dispatch-manual-hold.js");
   for (const order of candidates) {
     if (excludedCoreIds.has(order.orderCoreId)) continue;
+    if (await isOrderDispatchManualHold(order.orderCoreId)) continue;
     if (await isRiderBlacklistedForService(riderId, order.serviceType)) continue;
 
     const ctx = baseCtx;
@@ -861,6 +946,14 @@ export async function validateRiderAcceptance(
   await assertRiderWithinServicePickupRadius(ctx, serviceType, pickup, radiusMeters);
 
   if (options?.orderCoreId != null) {
+    const { isOrderDispatchManualHold } = await import("./order-dispatch-manual-hold.js");
+    if (await isOrderDispatchManualHold(options.orderCoreId)) {
+      throw new RiderDispatchIneligibleError(
+        "This order is waiting for admin assignment",
+        409
+      );
+    }
+
     const { isRiderExcludedFromOrderDispatch } = await import("./rider-dispatch-order-exclusion.js");
     const excluded = await isRiderExcludedFromOrderDispatch(riderId, options.orderCoreId);
     if (excluded) {

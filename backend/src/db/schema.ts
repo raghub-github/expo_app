@@ -94,7 +94,7 @@ export const documentFileSideEnum = pgEnum("document_file_side", [
   "single",
 ]);
 
-export const paymentMethodTypeEnum = pgEnum("payment_method_type", [
+export const riderPayoutMethodTypeEnum = pgEnum("rider_payout_method_type", [
   "bank",
   "upi",
 ]);
@@ -266,6 +266,7 @@ export const walletEntryTypeEnum = pgEnum("wallet_entry_type", [
   "refund",
   "bonus",
   "referral_bonus",
+  "subscription_fee",
 ]);
 
 export const withdrawalStatusEnum = pgEnum("withdrawal_status", [
@@ -568,6 +569,8 @@ const ridersTable = pgTable(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     referredBy: integer("referred_by").references((): any => (ridersTable as any).id),
     defaultLanguage: text("default_language").notNull().default("en"),
+    /** Up to 2 personal SOS contacts: [{ label, phone }] */
+    emergencyContacts: jsonb("emergency_contacts").notNull().default([]),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     deletedBy: integer("deleted_by"),
     createdBy: integer("created_by"),
@@ -1536,6 +1539,8 @@ export const ordersCore = pgTable(
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     cancelledBy: text("cancelled_by"),
     cancelledById: bigint("cancelled_by_id", { mode: "number" }),
+    /** Admin cancelled rider only — block auto dispatch until manual assign. */
+    dispatchManualHold: boolean("dispatch_manual_hold").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1559,6 +1564,15 @@ export const ordersCore = pgTable(
     pickupOtp: text("pickup_otp"),
     deliveryOtp: text("delivery_otp"),
     rtoOtp: text("rto_otp"),
+    deliveryInstructionsList: jsonb("delivery_instructions_list").notNull().default([]),
+    merchantInstructionsList: jsonb("merchant_instructions_list").notNull().default([]),
+    /** Customer help — alternate receiver contact for this order only. */
+    alternateContactName: text("alternate_contact_name"),
+    alternateContactPhone: text("alternate_contact_phone"),
+    alternateContactSetAt: timestamp("alternate_contact_set_at", { withTimezone: true }),
+    deliveryPrimaryContactName: text("delivery_primary_contact_name"),
+    deliveryPrimaryContactPhone: text("delivery_primary_contact_phone"),
+    isScheduledOrder: boolean("is_scheduled_order").notNull().default(false),
   },
   (table) => ({
     orderIdIdx: index("orders_core_order_id_idx").on(table.orderId),
@@ -2228,6 +2242,45 @@ export const orderRiderTracking = pgTable(
   })
 );
 
+export const orderPartnerChatSenderEnum = pgEnum("order_partner_chat_sender", [
+  "CUSTOMER",
+  "RIDER",
+  "SYSTEM",
+]);
+
+export const orderPartnerChatMessages = pgTable(
+  "order_partner_chat_messages",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderCoreId: bigint("order_core_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    orderPublicId: text("order_public_id").notNull(),
+    senderType: orderPartnerChatSenderEnum("sender_type").notNull(),
+    senderCustomerId: bigint("sender_customer_id", { mode: "number" }).references(
+      () => customers.id,
+      { onDelete: "set null" }
+    ),
+    senderRiderId: integer("sender_rider_id").references(() => riders.id, {
+      onDelete: "set null",
+    }),
+    body: text("body").notNull(),
+    readByCustomerAt: timestamp("read_by_customer_at", { withTimezone: true }),
+    readByRiderAt: timestamp("read_by_rider_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    coreCreatedIdx: index("order_partner_chat_messages_core_created_idx").on(
+      table.orderCoreId,
+      table.createdAt
+    ),
+    publicCreatedIdx: index("order_partner_chat_messages_public_created_idx").on(
+      table.orderPublicId,
+      table.createdAt
+    ),
+  })
+);
+
 // Level-2: delivery_assignments, rider_live_locations, rider_location_history, order_tracking_tokens
 export const deliveryAssignments = pgTable(
   "delivery_assignments",
@@ -2287,6 +2340,24 @@ export const orderTrackingTokens = pgTable("order_tracking_tokens", {
   trackingToken: text("tracking_token").notNull().unique(),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
 });
+
+export const tripShareLinks = pgTable(
+  "trip_share_links",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    tripId: text("trip_id").notNull(),
+    token: text("token").notNull().unique(),
+    createdBy: bigint("created_by", { mode: "number" }).references(() => customers.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+  },
+  (table) => ({
+    tripIdIdx: index("trip_share_links_trip_id_idx").on(table.tripId),
+  })
+);
 
 export const orderKitchenTimeline = pgTable(
   "order_kitchen_timeline",
@@ -2382,6 +2453,9 @@ export const ordersFood = pgTable(
     isHighValue: boolean("is_high_value").notNull().default(false),
     vegNonVeg: vegNonVegTypeEnum("veg_non_veg"),
     deliveryInstructions: text("delivery_instructions"),
+    deliveryInstructionsList: jsonb("delivery_instructions_list").notNull().default([]),
+    merchantInstructionsList: jsonb("merchant_instructions_list").notNull().default([]),
+    isScheduledOrder: boolean("is_scheduled_order").notNull().default(false),
     customerId: bigint("customer_id", { mode: "number" }),
     customerName: text("customer_name"),
     customerPhone: text("customer_phone"),
@@ -2403,6 +2477,12 @@ export const ordersFood = pgTable(
     dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    rejectedReason: text("rejected_reason"),
+    cancelledByLabel: text("cancelled_by_label"),
+    customerPackagingFeedback: text("customer_packaging_feedback"),
+    customerPackagingReportedAt: timestamp("customer_packaging_reported_at", {
+      withTimezone: true,
+    }),
     isRto: boolean("is_rto").notNull().default(false),
     rtoAt: timestamp("rto_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -2527,6 +2607,7 @@ export const ordersRide = pgTable(
     }),
     riderAssignedAt: timestamp("rider_assigned_at", { withTimezone: true }),
     riderReachedPickupAt: timestamp("rider_reached_pickup_at", { withTimezone: true }),
+    pickupWaitSeconds: integer("pickup_wait_seconds"),
     pickupOtpVerifiedAt: timestamp("pickup_otp_verified_at", { withTimezone: true }),
     searchStartedAt: timestamp("search_started_at", { withTimezone: true }),
     searchExpiresAt: timestamp("search_expires_at", { withTimezone: true }),
@@ -2547,6 +2628,8 @@ export const ordersRide = pgTable(
     tipBoostApplied: boolean("tip_boost_applied").notNull().default(false),
     higherDispatchPriority: boolean("higher_dispatch_priority").notNull().default(false),
     awaitingTipBoost: boolean("awaiting_tip_boost").notNull().default(false),
+    adminRiderPaymentClearedAt: timestamp("admin_rider_payment_cleared_at", { withTimezone: true }),
+    acceptPayoutSnapshot: jsonb("accept_payout_snapshot"),
     cancelledByType: text("cancelled_by_type"),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     cancellationReasonCode: text("cancellation_reason_code"),
@@ -2773,7 +2856,7 @@ export const riderPaymentMethods = pgTable(
     riderId: integer("rider_id")
       .notNull()
       .references(() => riders.id, { onDelete: "cascade" }),
-    methodType: paymentMethodTypeEnum("method_type").notNull(),
+    methodType: riderPayoutMethodTypeEnum("method_type").notNull(),
     accountHolderName: text("account_holder_name").notNull(),
     bankName: text("bank_name"),
     ifsc: text("ifsc"),
@@ -3264,6 +3347,9 @@ export const merchantStoreRatings = pgTable(
     packagingRating: smallint("packaging_rating"),
     reviewText: text("review_text"),
     reviewTitle: text("review_title"),
+    storeReviewTags: jsonb("store_review_tags").$type<string[]>().notNull().default([]),
+    riderReviewTags: jsonb("rider_review_tags").$type<string[]>().notNull().default([]),
+    riderReviewText: text("rider_review_text"),
     reviewImages: jsonb("review_images").$type<string[] | null>().default(null),
     helpfulCount: integer("helpful_count").default(0),
     notHelpfulCount: integer("not_helpful_count").default(0),

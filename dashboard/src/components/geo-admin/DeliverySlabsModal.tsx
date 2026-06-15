@@ -3,7 +3,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GeoChildRow } from "@/lib/geo/geo-shared";
 import { toast } from "sonner";
-import { Layers, Loader2, X } from "lucide-react";
+import { Layers, Loader2, Plus, X } from "lucide-react";
+import { RiderPayoutSlabsPanel, VEHICLE_OPTIONS, type VehicleType } from "./RiderPayoutSlabsPanel";
+import { RideCustomerPricingPanel } from "./RideCustomerPricingPanel";
+import { InlineVehicleRideLimitField } from "./InlineVehicleRideLimitField";
+import { StateSurgeManagementSidesheet } from "./StateSurgeManagementSidesheet";
+import { prefetchRiderPayoutSlabs } from "@/lib/geo/riderPayoutSlabsCache";
 
 type ServiceType = "food" | "parcel" | "person_ride";
 type ActorType = "customer" | "rider";
@@ -33,6 +38,34 @@ function numOr(v: string, fallback: number): number {
   return n == null ? fallback : n;
 }
 
+/** Keep modals inside the dashboard main column (right of fixed left sidebar). */
+function useMainAreaLeftInset() {
+  const [leftPx, setLeftPx] = useState(0);
+
+  useEffect(() => {
+    const measure = () => {
+      const main = document.querySelector("main");
+      if (!main) {
+        setLeftPx(0);
+        return;
+      }
+      setLeftPx(Math.max(0, Math.round(main.getBoundingClientRect().left)));
+    };
+
+    measure();
+    window.addEventListener("resize", measure);
+    const ro = new ResizeObserver(measure);
+    const main = document.querySelector("main");
+    if (main?.parentElement) ro.observe(main.parentElement);
+    return () => {
+      window.removeEventListener("resize", measure);
+      ro.disconnect();
+    };
+  }, []);
+
+  return leftPx;
+}
+
 export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: {
   row: GeoChildRow;
   onClose: () => void;
@@ -41,18 +74,33 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
   const level = row.kind as "state" | "region" | "district" | "division" | "post_office" | "pincode";
 
   const [serviceType, setServiceType] = useState<ServiceType>("food");
-  const [actorType, setActorType] = useState<ActorType>("customer");
+  const [pricingTab, setPricingTab] = useState<"customer" | "rider">("customer");
+  const [rideVehicleType, setRideVehicleType] = useState<VehicleType>("2_wheeler");
   const [loading, setLoading] = useState(false);
   const [rowBusyId, setRowBusyId] = useState<number | null>(null);
   const [rowBusyAction, setRowBusyAction] = useState<"save" | "delete" | null>(null);
   const [applied, setApplied] = useState<{ level: string; refId: string } | null>(null);
   const [effectiveSlabs, setEffectiveSlabs] = useState<SlabRow[]>([]);
   const [slabs, setSlabs] = useState<SlabRow[]>([]);
+  const [surgeRefreshKey, setSurgeRefreshKey] = useState(0);
+  const [surgeSheetOpen, setSurgeSheetOpen] = useState(false);
   const slabsRef = useRef<SlabRow[]>([]);
+  const actorType: ActorType = pricingTab === "rider" ? "rider" : "customer";
+  const riderService = serviceType === "person_ride" ? "ride" : serviceType;
 
   useEffect(() => {
     slabsRef.current = slabs;
   }, [slabs]);
+
+  useEffect(() => {
+    if (pricingTab !== "rider") return;
+    prefetchRiderPayoutSlabs({
+      level,
+      refId: row.id,
+      service: riderService,
+      vehicleType: serviceType === "person_ride" ? rideVehicleType : undefined,
+    });
+  }, [pricingTab, level, row.id, riderService, serviceType, rideVehicleType]);
 
   const mapRows = useCallback((rows: any[] | undefined | null): SlabRow[] => {
     if (!Array.isArray(rows)) return [];
@@ -71,6 +119,7 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
   }, []);
 
   const refresh = useCallback(async () => {
+    if (pricingTab === "rider" || (pricingTab === "customer" && serviceType === "person_ride")) return;
     setLoading(true);
     try {
       const qs = new URLSearchParams({
@@ -97,7 +146,7 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
     } finally {
       setLoading(false);
     }
-  }, [actorType, level, mapRows, row.id, serviceType]);
+  }, [actorType, level, mapRows, pricingTab, row.id, serviceType]);
 
   useEffect(() => {
     void refresh();
@@ -112,8 +161,6 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
   }, [applied, level, row.id]);
 
   const isInherited = applied != null && (applied.level !== level || applied.refId !== row.id);
-
-  const showRiderExtras = actorType === "rider";
 
   const patchRow = useCallback((id: number, patch: Partial<SlabRow>) => {
     setSlabs((prev) => prev.map((x) => (x.id === id ? { ...x, ...patch } : x)));
@@ -242,10 +289,20 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
     }
   };
 
+  const showCustomerSlabActions =
+    pricingTab === "customer" && serviceType !== "person_ride";
+  const mainAreaLeft = useMainAreaLeftInset();
+
   return (
-    <div className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/40 p-3 sm:items-center">
-      <div className="w-full max-w-5xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl">
-        <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+    <>
+    <div
+      className="fixed inset-y-0 right-0 z-[70] flex items-center justify-center bg-slate-950/50 p-2 sm:p-4 max-lg:left-0"
+      style={{ left: mainAreaLeft > 0 ? mainAreaLeft : undefined }}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="flex max-h-[92vh] w-full max-w-[min(100%,1100px)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 px-6 py-4">
           <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-teal-700">Geo · Delivery slabs</p>
             <h2 className="mt-1 truncate text-lg font-semibold text-slate-900">
@@ -253,22 +310,24 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
             </h2>
             <p className="mt-1 text-xs text-slate-600">{inheritedHint}</p>
           </div>
-          <button
-            type="button"
-            onClick={props.onClose}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={props.onClose}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
 
-        <div className="px-5 py-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <div className="flex flex-wrap gap-3">
-              <label className="text-xs font-semibold text-slate-700">
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div className="flex flex-wrap items-end gap-4">
+              <label className="block text-xs font-semibold text-slate-700">
                 Service
                 <select
-                  className="mt-1 w-44 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm"
+                  className="mt-1.5 block w-40 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
                   value={serviceType}
                   onChange={(e) => setServiceType(e.target.value as ServiceType)}
                 >
@@ -277,63 +336,121 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
                   <option value="person_ride">RIDE</option>
                 </select>
               </label>
-              <div className="flex flex-col gap-1">
-                <span className="text-xs font-semibold text-slate-700">Actor</span>
-                <div className="inline-flex overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+              <div className="block">
+                <span className="text-xs font-semibold text-slate-700">Pricing</span>
+                <div className="mt-1.5 inline-flex overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
                   <button
                     type="button"
                     disabled={loading || rowBusyId != null}
-                    onClick={() => setActorType("customer")}
+                    onClick={() => setPricingTab("customer")}
                     className={
                       "px-3 py-2 text-sm font-semibold transition " +
-                      (actorType === "customer"
+                      (pricingTab === "customer"
                         ? "bg-slate-900 text-white"
                         : "text-slate-700 hover:bg-slate-50")
                     }
                   >
-                    CUSTOMER
+                    Customer
                   </button>
                   <button
                     type="button"
                     disabled={loading || rowBusyId != null}
-                    onClick={() => setActorType("rider")}
+                    onClick={() => setPricingTab("rider")}
                     className={
                       "px-3 py-2 text-sm font-semibold transition " +
-                      (actorType === "rider"
+                      (pricingTab === "rider"
                         ? "bg-slate-900 text-white"
                         : "text-slate-700 hover:bg-slate-50")
                     }
                   >
-                    RIDER
+                    Rider
                   </button>
                 </div>
               </div>
+              {serviceType === "person_ride" ? (
+                <>
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Vehicle
+                    <select
+                      className="mt-1.5 block w-52 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm"
+                      value={rideVehicleType}
+                      onChange={(e) => setRideVehicleType(e.target.value as VehicleType)}
+                    >
+                      {VEHICLE_OPTIONS.map((v) => (
+                        <option key={v.value} value={v.value}>
+                          {v.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {level === "state" ? (
+                    <InlineVehicleRideLimitField
+                      stateId={row.id}
+                      vehicleType={rideVehicleType}
+                      stateLabel={row.name}
+                    />
+                  ) : null}
+                </>
+              ) : null}
             </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={addBlank}
-                disabled={loading || rowBusyId != null}
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:border-teal-300"
-              >
-                <Layers className="h-4 w-4 text-teal-700" />
-                Add slab
-              </button>
-              <button
-                type="button"
-                onClick={() => void refresh()}
-                disabled={loading || rowBusyId != null}
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-white"
-              >
-                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                Refresh
-              </button>
+            <div className="flex shrink-0 items-center gap-2">
+              {level === "state" && pricingTab === "rider" ? (
+                <button
+                  type="button"
+                  onClick={() => setSurgeSheetOpen(true)}
+                  className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-amber-700"
+                >
+                  <Plus className="h-4 w-4" />
+                  Add surge
+                </button>
+              ) : null}
+              {showCustomerSlabActions ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={addBlank}
+                    disabled={loading || rowBusyId != null}
+                    className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:border-teal-300"
+                  >
+                    <Layers className="h-4 w-4 text-teal-700" />
+                    Add slab
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void refresh()}
+                    disabled={loading || rowBusyId != null}
+                    className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-white"
+                  >
+                    {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    Refresh
+                  </button>
+                </>
+              ) : null}
             </div>
           </div>
 
+          {level !== "state" && pricingTab === "rider" ? (
+            <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+              State rider surge rules are configured at the <strong>state</strong> level only. Open the
+              parent state node to manage surges for Food, Parcel &amp; Ride.
+            </p>
+          ) : null}
+
+          {pricingTab === "rider" ? (
+            <RiderPayoutSlabsPanel
+              level={level}
+              refId={row.id}
+              service={riderService as "food" | "parcel" | "ride"}
+              vehicleType={rideVehicleType}
+              surgeRefreshKey={surgeRefreshKey}
+            />
+          ) : serviceType === "person_ride" ? (
+            <RideCustomerPricingPanel level={level} refId={row.id} vehicleType={rideVehicleType} />
+          ) : (
+          <>
           {isInherited && effectiveSlabs.length > 0 ? (
-            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/40 p-3">
+            <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50/40 p-4">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-xs font-semibold text-amber-900">Effective slabs (inherited)</p>
@@ -351,12 +468,6 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
                       <th className="px-3 py-2">Base fare</th>
                       <th className="px-3 py-2">Per km</th>
                       <th className="px-3 py-2">Min charge</th>
-                      {showRiderExtras ? (
-                        <>
-                          <th className="px-3 py-2">Waiting ₹/min</th>
-                          <th className="px-3 py-2">Surge ×</th>
-                        </>
-                      ) : null}
                       <th className="px-3 py-2">Priority</th>
                       <th className="px-3 py-2">Active</th>
                     </tr>
@@ -369,12 +480,6 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
                         <td className="px-3 py-2 font-mono">{s.baseFare ?? "—"}</td>
                         <td className="px-3 py-2 font-mono">{s.perKmRate}</td>
                         <td className="px-3 py-2 font-mono">{s.minCharge ?? "—"}</td>
-                        {showRiderExtras ? (
-                          <>
-                            <td className="px-3 py-2 font-mono">{s.waitingChargePerMin ?? "—"}</td>
-                            <td className="px-3 py-2 font-mono">{s.surgeMultiplier ?? "—"}</td>
-                          </>
-                        ) : null}
                         <td className="px-3 py-2 font-mono">{s.priority}</td>
                         <td className="px-3 py-2">{s.isActive ? "✓" : "—"}</td>
                       </tr>
@@ -385,109 +490,84 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
             </div>
           ) : null}
 
-          <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
-            <table className="min-w-full text-left text-xs">
-              <thead className="bg-slate-50 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+          <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200 bg-white">
+            <table className="min-w-[800px] w-full text-left text-sm">
+              <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wide text-slate-500">
                 <tr>
-                  <th className="px-3 py-2">Min km</th>
-                  <th className="px-3 py-2">Max km</th>
-                  <th className="px-3 py-2">Base fare</th>
-                  <th className="px-3 py-2">Per km</th>
-                  <th className="px-3 py-2">Min charge</th>
-                  {showRiderExtras ? (
-                    <>
-                      <th className="px-3 py-2">Waiting ₹/min</th>
-                      <th className="px-3 py-2">Surge ×</th>
-                    </>
-                  ) : null}
-                  <th className="px-3 py-2">Priority</th>
-                  <th className="px-3 py-2">Active</th>
-                  <th className="px-3 py-2 text-right">Actions</th>
+                  <th className="whitespace-nowrap px-4 py-3">Min km</th>
+                  <th className="whitespace-nowrap px-4 py-3">Max km</th>
+                  <th className="whitespace-nowrap px-4 py-3">Base fare</th>
+                  <th className="whitespace-nowrap px-4 py-3">Per km</th>
+                  <th className="whitespace-nowrap px-4 py-3">Min charge</th>
+                  <th className="whitespace-nowrap px-4 py-3">Priority</th>
+                  <th className="whitespace-nowrap px-4 py-3 text-center">Active</th>
+                  <th className="whitespace-nowrap px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {slabs.length === 0 ? (
                   <tr>
-                    <td className="px-3 py-4 text-slate-500" colSpan={showRiderExtras ? 10 : 8}>
+                    <td className="px-4 py-10 text-center text-sm text-slate-500" colSpan={8}>
                       No slabs stored at this node.
                     </td>
                   </tr>
                 ) : (
                   slabs.map((s) => (
-                    <tr key={s.id} className="border-t border-slate-100">
-                      <td className="px-3 py-2">
+                    <tr key={s.id} className="border-t border-slate-100 hover:bg-slate-50/50">
+                      <td className="px-4 py-2.5">
                         <input
-                          className="w-24 rounded-md border border-slate-200 px-2 py-1 font-mono"
+                          className="w-full min-w-[4rem] rounded-md border border-slate-200 px-2.5 py-1.5 font-mono text-sm"
                           value={String(s.minKm)}
                           onChange={(e) => patchRow(s.id, { minKm: numOr(e.target.value, s.minKm) })}
                         />
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-4 py-2.5">
                         <input
-                          className="w-24 rounded-md border border-slate-200 px-2 py-1 font-mono"
+                          className="w-full min-w-[4rem] rounded-md border border-slate-200 px-2.5 py-1.5 font-mono text-sm"
                           placeholder="∞"
                           value={s.maxKm == null ? "" : String(s.maxKm)}
                           onChange={(e) => patchRow(s.id, { maxKm: num(e.target.value) })}
                         />
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-4 py-2.5">
                         <input
-                          className="w-24 rounded-md border border-slate-200 px-2 py-1 font-mono"
+                          className="w-full min-w-[4rem] rounded-md border border-slate-200 px-2.5 py-1.5 font-mono text-sm"
                           disabled={s.minKm !== 0}
                           placeholder={s.minKm !== 0 ? "—" : ""}
                           value={s.minKm !== 0 ? "" : s.baseFare == null ? "" : String(s.baseFare)}
                           onChange={(e) => patchRow(s.id, { baseFare: num(e.target.value) })}
                         />
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-4 py-2.5">
                         <input
-                          className="w-24 rounded-md border border-slate-200 px-2 py-1 font-mono"
+                          className="w-full min-w-[4rem] rounded-md border border-slate-200 px-2.5 py-1.5 font-mono text-sm"
                           value={String(s.perKmRate)}
                           onChange={(e) => patchRow(s.id, { perKmRate: numOr(e.target.value, s.perKmRate) })}
                         />
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-4 py-2.5">
                         <input
-                          className="w-24 rounded-md border border-slate-200 px-2 py-1 font-mono"
+                          className="w-full min-w-[4rem] rounded-md border border-slate-200 px-2.5 py-1.5 font-mono text-sm"
                           value={s.minCharge == null ? "" : String(s.minCharge)}
                           onChange={(e) => patchRow(s.id, { minCharge: num(e.target.value) })}
                         />
                       </td>
-                      {showRiderExtras ? (
-                        <>
-                          <td className="px-3 py-2">
-                            <input
-                              className="w-28 rounded-md border border-slate-200 px-2 py-1 font-mono"
-                              placeholder="0"
-                              value={s.waitingChargePerMin == null ? "" : String(s.waitingChargePerMin)}
-                              onChange={(e) => patchRow(s.id, { waitingChargePerMin: num(e.target.value) })}
-                            />
-                          </td>
-                          <td className="px-3 py-2">
-                            <input
-                              className="w-20 rounded-md border border-slate-200 px-2 py-1 font-mono"
-                              placeholder="1"
-                              value={s.surgeMultiplier == null ? "" : String(s.surgeMultiplier)}
-                              onChange={(e) => patchRow(s.id, { surgeMultiplier: num(e.target.value) })}
-                            />
-                          </td>
-                        </>
-                      ) : null}
-                      <td className="px-3 py-2">
+                      <td className="px-4 py-2.5">
                         <input
-                          className="w-20 rounded-md border border-slate-200 px-2 py-1 font-mono"
+                          className="w-full min-w-[4rem] rounded-md border border-slate-200 px-2.5 py-1.5 font-mono text-sm"
                           value={String(s.priority)}
                           onChange={(e) => patchRow(s.id, { priority: Math.floor(numOr(e.target.value, s.priority)) })}
                         />
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-4 py-2.5 text-center">
                         <input
                           type="checkbox"
+                          className="h-4 w-4"
                           checked={s.isActive}
                           onChange={(e) => patchRow(s.id, { isActive: e.target.checked })}
                         />
                       </td>
-                      <td className="px-3 py-2 text-right">
+                      <td className="px-4 py-2.5 text-right">
                         <div className="inline-flex items-center gap-2">
                           <button
                             type="button"
@@ -528,23 +608,30 @@ export const DeliverySlabsModal = React.memo(function DeliverySlabsModal(props: 
             </table>
           </div>
 
-          <div className="mt-3 space-y-1 text-[11px] text-slate-600">
+          <div className="mt-4 space-y-1 pb-2 text-[11px] text-slate-600">
             <p>
               <span className="font-semibold text-slate-800">Base fare</span> is added <span className="font-semibold">once</span> (only slab with minKm=0).
               <span className="ml-1 font-semibold text-slate-800">Min charge</span> is a floor applied to the final total after base + per-km.
             </p>
-            {showRiderExtras ? (
-              <p>
-                <span className="font-semibold text-slate-800">Rider only</span>: Waiting ₹/min and Surge × apply to rider payout. Recommended to set them on the first slab (minKm=0).
-              </p>
-            ) : null}
             <p className="text-slate-500">
               Validation: slabs start at 0 km, ranges are contiguous with no overlaps or gaps, base fare only on the first slab. Leave max km empty on the last row to cover longer distances.
             </p>
           </div>
+          </>
+          )}
         </div>
       </div>
     </div>
+    {level === "state" ? (
+      <StateSurgeManagementSidesheet
+        open={surgeSheetOpen}
+        onClose={() => setSurgeSheetOpen(false)}
+        stateId={row.id}
+        stateLabel={row.name}
+        onChange={() => setSurgeRefreshKey((k) => k + 1)}
+      />
+    ) : null}
+    </>
   );
 });
 

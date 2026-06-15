@@ -15,9 +15,11 @@ export type RideIntermediateStopPayload = {
 
 export type PlaceRideOrderPayload = {
   pickupAddress: string;
+  pickupLabel?: string;
   pickupLat: number;
   pickupLng: number;
   dropAddress: string;
+  dropLabel?: string;
   dropLat: number;
   dropLng: number;
   intermediateStops?: RideIntermediateStopPayload[];
@@ -34,6 +36,8 @@ export type PlaceRideOrderPayload = {
   farPickupAcknowledged?: boolean;
   searchTimeoutSec?: number;
   customerTipAmount?: number;
+  pickupPincode?: string;
+  pickupState?: string;
 };
 
 export type PlaceRideOrderResponse = {
@@ -60,6 +64,12 @@ export type RideOrderStatusResponse = {
   cancelled: boolean;
   pickupOtp: string | null;
   rideStarted: boolean;
+  riderReachedPickupAt?: string | null;
+  pickupOtpVerifiedAt?: string | null;
+  pickupWaitSeconds?: number | null;
+  pickupWaitFreeMinutes?: number;
+  pickupWaitingChargePerMin?: number;
+  estimatedPickupWaitingCharge?: number;
   awaitingTipBoost?: boolean;
   dispatchRetryCount?: number;
   customerTipAmount?: number;
@@ -93,6 +103,20 @@ export async function placeRideOrder(
 export async function getRideOrderStatus(orderId: string): Promise<RideOrderStatusResponse> {
   const { data } = await api.get<RideOrderStatusResponse>(`${RIDES_PREFIX}/${orderId}`);
   return data;
+}
+
+/** Captain accepted / assigned — customer should leave the searching screen. */
+export function isRideCaptainAssigned(status: RideOrderStatusResponse): boolean {
+  if (status.cancelled) return false;
+  if (status.riderAssigned) return true;
+  if (status.riderId != null && status.riderId > 0) return true;
+  const app = (status.appStatus ?? "").trim().toUpperCase();
+  return (
+    app === "RIDER_ASSIGNED" ||
+    app === "RIDE_IN_PROGRESS" ||
+    app === "RIDER_AT_PICKUP" ||
+    app === "REACHED_STORE"
+  );
 }
 
 export async function cancelRideOrder(

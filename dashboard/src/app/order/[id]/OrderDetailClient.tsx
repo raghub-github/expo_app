@@ -28,6 +28,7 @@ import {
   OrderCustomerFeedbackSideSheet,
   type FeedbackSheetTarget,
 } from "./OrderCustomerFeedbackSideSheet";
+import { OrderPartnerChatSideSheet } from "./OrderPartnerChatSideSheet";
 import {
   isManualStatusOptionDisabled,
   canApplyManualStatusUpdate,
@@ -45,8 +46,12 @@ import { formatDeliveredByLabel } from "@/lib/orders/order-detail-display";
 import {
   prefetchRiderActivityLog,
   seedRiderActivityLogCache,
+  invalidateRiderActivityLogCache,
+  fetchRiderActivityLogCached,
   type RiderActivityLogCacheEntry,
 } from "@/lib/riderActivityLogCache";
+import { prefetchCancellationCatalogClient } from "@/lib/orders/cancellation-catalog-client-cache";
+import { prefetchPartnerChat, seedPartnerChatCache, type PartnerChatCacheEntry } from "@/lib/partnerChatCache";
 import {
   mapNotificationsFromApi,
   mapReconsFromApi,
@@ -58,6 +63,7 @@ import {
 import { resolveOrderTypeFromPublicId } from "@/lib/orders/resolve-order-type-from-public-id";
 import type { PersonRideOrderDetail } from "@/lib/db/operations/person-ride-order-detail";
 import PersonRideOrderSections from "./PersonRideOrderSections";
+import { formatRiderOrderStatusDisplayLabel } from "@/lib/riders/rider-order-status-display";
 
 /** Status options for "Update order status" modal (value = DB enum) */
 const STATUS_OPTIONS = [
@@ -147,6 +153,9 @@ interface OrderDetail {
   customerRiskFlag: string | null;
   customerName: string | null;
   customerMobile: string | null;
+  customerAlternateMobile: string | null;
+  orderAlternateContactPhone: string | null;
+  orderDeliveryPrimaryContactPhone: string | null;
   riderId?: number | null;
   riderName: string | null;
   riderMobile: string | null;
@@ -170,6 +179,10 @@ interface OrderDetail {
   manualStatusUpdatedByEmail?: string | null;
   /** orders_food.order_status — drives Dispatch Ready enablement with rider-at-store. */
   foodOrderStatus?: string | null;
+  /** orders_food.dispatched_at — admin/rider dispatch timestamp. */
+  dispatchedAt?: string | null;
+  /** orders_food.rider_picked_up_at — rider physical pickup from store. */
+  riderPickedUpAt?: string | null;
   /** Delivery instructions from orders_food (food orders only). */
   deliveryInstructions?: string | null;
   /** ETA in seconds from creation (for timeline). */
@@ -393,6 +406,9 @@ export default function OrderDetailClient({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refetchTrigger, setRefetchTrigger] = useState(0);
+  const [dispatchSessionActive, setDispatchSessionActive] = useState(false);
+  const [watchRiderAssignment, setWatchRiderAssignment] = useState(false);
+  const [activityLogRefreshKey, setActivityLogRefreshKey] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [selectedStatus, setSelectedStatus] = useState<
@@ -420,6 +436,7 @@ export default function OrderDetailClient({
   const [feedbackSheetTarget, setFeedbackSheetTarget] = useState<FeedbackSheetTarget | null>(
     null
   );
+  const [partnerChatOpen, setPartnerChatOpen] = useState(false);
 
   const ensureOrderItemsPrefetch = useCallback(() => {
     const orderId = order?.id;
@@ -490,6 +507,7 @@ export default function OrderDetailClient({
 
   useEffect(() => {
     if (!isOrderPage || !pageVisible) return;
+    if (!auth?.authReady) return;
 
     let cancelled = false;
 
@@ -583,6 +601,8 @@ export default function OrderDetailClient({
             statusHistory?: unknown[];
             paymentDetail?: OrderPaymentDetail;
             riderActivityLog?: RiderActivityLogCacheEntry | null;
+            riderDispatchUi?: unknown;
+            partnerChat?: unknown;
           };
         } catch {
           throw new Error("Invalid order response");
@@ -716,6 +736,34 @@ export default function OrderDetailClient({
             } else {
               prefetchRiderActivityLog(coreOrderId);
             }
+            prefetchCancellationCatalogClient();
+            const dispatchUi = body.riderDispatchUi as
+              | {
+                  dispatchSessionActive?: boolean;
+                  dispatchManualHold?: boolean;
+                }
+              | undefined;
+            if (dispatchUi) {
+              setDispatchSessionActive(Boolean(dispatchUi.dispatchSessionActive));
+              setWatchRiderAssignment(Boolean(dispatchUi.dispatchSessionActive));
+            } else {
+              setDispatchSessionActive(false);
+              setWatchRiderAssignment(false);
+            }
+            const embeddedPartnerChat = body.partnerChat as
+              | { messages?: unknown[]; chatClosed?: boolean }
+              | undefined;
+            if (
+              embeddedPartnerChat &&
+              Array.isArray(embeddedPartnerChat.messages)
+            ) {
+              seedPartnerChatCache(coreOrderId, {
+                messages: embeddedPartnerChat.messages as PartnerChatCacheEntry["messages"],
+                chatClosed: Boolean(embeddedPartnerChat.chatClosed),
+              });
+            } else {
+              prefetchPartnerChat(coreOrderId);
+            }
           }
           setOrder({
             id: row.id,
@@ -744,6 +792,9 @@ export default function OrderDetailClient({
             customerRiskFlag: row.customerRiskFlag ?? null,
             customerName: row.customerName,
             customerMobile: row.customerMobile,
+            customerAlternateMobile: row.customerAlternateMobile ?? null,
+            orderAlternateContactPhone: row.orderAlternateContactPhone ?? null,
+            orderDeliveryPrimaryContactPhone: row.orderDeliveryPrimaryContactPhone ?? null,
             riderId: row.riderId ?? null,
             riderName: row.riderName,
             riderMobile: row.riderMobile,
@@ -768,6 +819,10 @@ export default function OrderDetailClient({
             manualStatusUpdatedByEmail: row.manualStatusUpdatedByEmail ?? null,
             foodOrderStatus:
               typeof row.foodOrderStatus === "string" ? row.foodOrderStatus : null,
+            dispatchedAt:
+              row.dispatchedAt != null ? String(row.dispatchedAt) : null,
+            riderPickedUpAt:
+              row.riderPickedUpAt != null ? String(row.riderPickedUpAt) : null,
             deliveryInstructions: row.deliveryInstructions ?? null,
             etaSeconds: row.etaSeconds ?? null,
             estimatedDeliveryTime: row.estimatedDeliveryTime != null ? String(row.estimatedDeliveryTime) : null,
@@ -923,7 +978,7 @@ export default function OrderDetailClient({
     return () => {
       cancelled = true;
     };
-  }, [orderPublicId, refetchTrigger, isOrderPage, pageVisible]);
+  }, [orderPublicId, refetchTrigger, isOrderPage, pageVisible, auth?.authReady]);
 
   const dispatchStage = useMemo(
     () =>
@@ -1009,6 +1064,121 @@ export default function OrderDetailClient({
   const handleRefreshOrder = useCallback(() => {
     setRefetchTrigger((t) => t + 1);
   }, []);
+
+  const refreshRiderAssignmentArtifacts = useCallback(
+    (coreOrderId: number, riderId: number, previousRiderId: number | null) => {
+      if (riderId === previousRiderId) return;
+      invalidateRiderActivityLogCache(coreOrderId);
+      void fetchRiderActivityLogCached(coreOrderId);
+      setActivityLogRefreshKey((k) => k + 1);
+      void fetch(`/api/orders/${coreOrderId}/rider-timeline?rider_id=${riderId}`, {
+        credentials: "include",
+      })
+        .then((r) => r.json().catch(() => null))
+        .then((body) => {
+          if (body && typeof body === "object") {
+            setRiderTimelineInitial(body as RiderTimelineData);
+          }
+        });
+      void fetch(`/api/orders/${coreOrderId}/rider-tracking`, { credentials: "include" })
+        .then((r) => r.json().catch(() => null))
+        .then((body) => {
+          if (body && typeof body === "object") {
+            setRiderTrackingInitial(body as OrderRiderTrackingPayload);
+          }
+        });
+    },
+    []
+  );
+
+  useEffect(() => {
+    const coreId = order?.id;
+    if (!isOrderPage || !pageVisible || coreId == null || !order) return;
+
+    const statusUpper = String(order.currentStatus ?? order.status ?? "").toUpperCase();
+    const isTerminal =
+      statusUpper === "DELIVERED" || ["CANCELLED", "FAILED", "REJECTED"].includes(statusUpper);
+    const hasRider =
+      order.riderId != null &&
+      Number.isFinite(Number(order.riderId)) &&
+      Number(order.riderId) > 0;
+    const shouldPoll =
+      !isTerminal && !hasRider && (watchRiderAssignment || dispatchSessionActive);
+
+    if (!shouldPoll) return;
+
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/orders/${coreId}/rider-assignment-snapshot`, {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const body = (await res.json().catch(() => ({}))) as {
+          success?: boolean;
+          riderId?: number | null;
+          riderName?: string | null;
+          riderMobile?: string | null;
+          dispatchManualHold?: boolean;
+          dispatchSessionActive?: boolean;
+        };
+        if (cancelled || !res.ok || !body.success) return;
+
+        setDispatchSessionActive(Boolean(body.dispatchSessionActive));
+
+        setOrder((prev) => {
+          if (!prev || prev.id !== coreId) return prev;
+          const previousRiderId =
+            prev.riderId != null && Number.isFinite(Number(prev.riderId))
+              ? Number(prev.riderId)
+              : null;
+          const nextRiderId =
+            body.riderId != null && Number.isFinite(Number(body.riderId))
+              ? Number(body.riderId)
+              : null;
+
+          if (nextRiderId != null && nextRiderId !== previousRiderId) {
+            refreshRiderAssignmentArtifacts(coreId, nextRiderId, previousRiderId);
+            setWatchRiderAssignment(false);
+          } else if (!body.dispatchSessionActive && nextRiderId == null) {
+            setWatchRiderAssignment(false);
+          }
+
+          if (
+            previousRiderId === nextRiderId &&
+            (prev.riderName ?? null) === (body.riderName ?? null) &&
+            (prev.riderMobile ?? null) === (body.riderMobile ?? null)
+          ) {
+            return prev;
+          }
+
+          return {
+            ...prev,
+            riderId: nextRiderId,
+            riderName: body.riderName ?? null,
+            riderMobile: body.riderMobile ?? null,
+          };
+        });
+      } catch {
+        /* ignore transient poll errors */
+      }
+    };
+
+    void poll();
+    const timer = window.setInterval(() => void poll(), 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    order,
+    isOrderPage,
+    pageVisible,
+    watchRiderAssignment,
+    dispatchSessionActive,
+    refreshRiderAssignmentArtifacts,
+  ]);
 
   const displayId = useMemo(
     () =>
@@ -1114,12 +1284,7 @@ export default function OrderDetailClient({
   const idLast4 = normalizedId.length > 4 ? normalizedId.slice(-4) : "";
   const idLast4Chars = idLast4.split("");
 
-  const orderStatusLabel = statusLabel
-    ? statusLabel
-        .toString()
-        .replace(/_/g, " ")
-        .replace(/\b\w/g, (c) => c.toUpperCase())
-    : "—";
+  const orderStatusLabel = formatRiderOrderStatusDisplayLabel(statusLabel, order.orderType);
 
   const statusForChip = (statusLabel ?? "").toString().toLowerCase();
 
@@ -1141,7 +1306,11 @@ export default function OrderDetailClient({
   const statusOptionMatch = STATUS_OPTIONS.find(
     (opt) => opt.value === (order.status ?? "").toString().toLowerCase()
   );
-  const statusButtonLabel = statusOptionMatch ? statusOptionMatch.label : "Select Option";
+  const statusButtonLabel = statusOptionMatch
+    ? order.orderType === "person_ride" && statusOptionMatch.value === "delivered"
+      ? "Completed"
+      : statusOptionMatch.label
+    : "Select Option";
   const isOrderCancelledOrRejected = dispatchStage === "cancelled";
 
   const isOptionDisabled = (value: ManualStatusValue) =>
@@ -1231,8 +1400,8 @@ export default function OrderDetailClient({
 
   return (
     <>
-      <div className="space-y-3 lg:space-y-0 lg:flex lg:items-start lg:justify-between lg:gap-4 text-[12px] md:text-[13px] text-slate-700">
-      <div className="w-full lg:basis-[80%] lg:pr-3 space-y-3 lg:h-[calc(100vh-64px)] lg:overflow-y-auto">
+      <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto overscroll-y-contain lg:flex-row lg:gap-4 lg:overflow-hidden text-[12px] md:text-[13px] text-slate-700">
+      <div className="w-full min-w-0 space-y-3 bg-[#F8FAFC] lg:min-h-0 lg:flex-[4] lg:overflow-y-auto lg:overscroll-y-contain lg:pr-3">
         {/* Primary order summary just below main header */}
         <section className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 pb-2 border-b border-slate-100">
           <div>
@@ -1486,6 +1655,7 @@ export default function OrderDetailClient({
               orderRefunds={orderRefunds}
               onCopy={handleCopy}
               onPhoneClick={handleCustomerPhoneClick}
+              onRefresh={handleRefreshOrder}
             />
           ) : (
           <>
@@ -1501,6 +1671,9 @@ export default function OrderDetailClient({
                     : null,
                 customerName: order.customerName,
                 customerMobile: order.customerMobile,
+                customerAlternateMobile: order.customerAlternateMobile,
+                orderAlternateContactPhone: order.orderAlternateContactPhone,
+                orderDeliveryPrimaryContactPhone: order.orderDeliveryPrimaryContactPhone,
                 customerEmail: order.customerEmail,
                 customerAddress: order.dropAddressNormalized ?? order.dropAddressRaw,
                 dropAddressRaw: order.dropAddressRaw,
@@ -1513,6 +1686,7 @@ export default function OrderDetailClient({
               }}
               onCopy={handleCopy}
               onPhoneClick={handleCustomerPhoneClick}
+              onOpenPartnerChat={() => setPartnerChatOpen(true)}
             />
 
             {/* Merchant card */}
@@ -1550,6 +1724,8 @@ export default function OrderDetailClient({
               className="h-full flex flex-col"
               initialRiderTimeline={riderTimelineInitial}
               riderSelfieUrl={riderSelfieUrl}
+              dispatchSessionActive={dispatchSessionActive}
+              activityLogRefreshKey={activityLogRefreshKey}
               order={{
                 orderId: order.id,
                 riderId: order.riderId ?? null,
@@ -1569,6 +1745,7 @@ export default function OrderDetailClient({
                 riderRestaurantWaitSeconds: order.riderRestaurantWaitSeconds ?? null,
                 riderRestaurantWaitLive: order.riderRestaurantWaitLive ?? false,
                 riderRestaurantWaitAnchorAt: order.riderRestaurantWaitAnchorAt ?? null,
+                orderType: order.orderType,
               }}
               deliveryProofImageUrl={order.deliveryProofImageUrl ?? null}
               customerFeedback={order.customerFeedback ?? null}
@@ -1576,8 +1753,22 @@ export default function OrderDetailClient({
               onOpenFeedback={() => setFeedbackSheetTarget("rider")}
               onCopy={handleCopy}
               onPhoneClick={handleCustomerPhoneClick}
-              onRiderManagementComplete={() => {
-                if (order.id != null) prefetchRiderActivityLog(order.id);
+              onRiderManagementComplete={(detail) => {
+                if (order.id != null) {
+                  invalidateRiderActivityLogCache(order.id);
+                  void fetchRiderActivityLogCached(order.id);
+                  setActivityLogRefreshKey((k) => k + 1);
+                }
+                if (
+                  detail.action === "cancel_reassign" ||
+                  detail.action === "assign_rider"
+                ) {
+                  setDispatchSessionActive(true);
+                  setWatchRiderAssignment(true);
+                } else {
+                  setDispatchSessionActive(false);
+                  setWatchRiderAssignment(false);
+                }
                 handleRefreshOrder();
               }}
             />
@@ -1611,7 +1802,17 @@ export default function OrderDetailClient({
                 }
                 pickupAddressGeocoded={order.pickupAddressGeocoded ?? null}
                 orderStatus={order.currentStatus ?? order.status}
-                pickedUpAt={riderTimelineInitial?.picked_up_at ?? null}
+                coreStatus={order.status}
+                foodOrderStatus={order.foodOrderStatus}
+                dispatchedAt={order.dispatchedAt}
+                riderPickedUpAt={order.riderPickedUpAt}
+                pickedUpAt={
+                  riderTimelineInitial?.picked_up_at ??
+                  order.riderPickedUpAt ??
+                  order.dispatchedAt ??
+                  null
+                }
+                reachedMerchantAt={riderTimelineInitial?.reached_merchant_at ?? null}
                 pickupLat={order.pickupLat ?? null}
                 pickupLon={order.pickupLon ?? null}
                 dropLat={mapDropLat}
@@ -1625,7 +1826,7 @@ export default function OrderDetailClient({
       </div>
 
         {/* Right sidebar */}
-      <div className="w-full lg:basis-[20%] lg:pl-2 lg:h-[calc(100vh-64px)] lg:overflow-y-auto">
+      <div className="w-full min-w-0 bg-[#F8FAFC] lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-y-contain lg:pl-2 lg:max-w-[320px] xl:max-w-[360px]">
         <OrderRightSidebar
           order={order}
           orderRefunds={orderRefunds}
@@ -1696,8 +1897,10 @@ export default function OrderDetailClient({
                     {statusHistory.map((entry, i) => (
                       <tr key={i} className="border-b border-slate-100 hover:bg-slate-50/50">
                         <td className="py-2 pr-4 font-medium text-slate-800">
-                          {MANUAL_STATUS_LABELS[entry.toStatus as ManualStatusValue] ??
-                            entry.toStatus.replace(/_/g, " ")}
+                          {entry.toStatus === "delivered"
+                            ? formatRiderOrderStatusDisplayLabel("delivered", order.orderType)
+                            : MANUAL_STATUS_LABELS[entry.toStatus as ManualStatusValue] ??
+                              entry.toStatus.replace(/_/g, " ")}
                         </td>
                         <td className="py-2 pr-3 text-slate-600 whitespace-nowrap">
                           {new Date(entry.createdAt).toLocaleString()}
@@ -1806,6 +2009,20 @@ export default function OrderDetailClient({
           merchantName={merchantSummary?.storeName}
           riderName={order.riderName}
           onClose={() => setFeedbackSheetTarget(null)}
+        />
+      ) : null}
+
+      {partnerChatOpen && order ? (
+        <OrderPartnerChatSideSheet
+          orderCoreId={order.id}
+          orderLabel={
+            order.formattedOrderId?.trim() ||
+            order.orderId?.trim() ||
+            `#${order.id}`
+          }
+          customerName={order.customerName}
+          riderName={order.riderName}
+          onClose={() => setPartnerChatOpen(false)}
         />
       ) : null}
     </>

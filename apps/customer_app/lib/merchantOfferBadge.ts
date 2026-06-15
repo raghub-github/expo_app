@@ -18,7 +18,7 @@ export function formatGridOfferBadge(offerText: string | null | undefined): stri
   return raw;
 }
 
-/** Zomato-style list row — show any meaningful running offer. */
+/** GatiMitra-style list row — show any meaningful running offer. */
 export function formatCardOfferLine(offerText: string | null | undefined): string | null {
   return normalizeOffer(offerText);
 }

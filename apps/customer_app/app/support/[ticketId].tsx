@@ -82,6 +82,20 @@ function statusBadge(status: string): { label: string; color: string; bg: string
 function resolveAttachmentUrl(att: string | TicketAttachment): { name: string; url: string; isImage: boolean } | null {
   const { apiBaseUrl } = getConfig();
   const base = apiBaseUrl.replace(/\/+$/, "");
+
+  if (typeof att === "string") {
+    const text = att.trim();
+    if (!text) return null;
+    if (text.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(text) as TicketAttachment;
+        return resolveAttachmentUrl(parsed);
+      } catch {
+        return null;
+      }
+    }
+  }
+
   let storageKey = "";
   let url = "";
   let name = "attachment";
@@ -236,7 +250,12 @@ export default function TicketDetailScreen() {
     try {
       await customerSupportService.sendMessage(ticketIdNum, {
         message_text: text || "(attachment)",
-        attachments: pendingAttachments.map((a) => a.storageKey),
+        attachments: pendingAttachments.map((a) => ({
+          storageKey: a.storageKey,
+          url: a.url,
+          name: a.name,
+          mimeType: a.mimeType,
+        })),
       });
       setDraft("");
       setPendingAttachments([]);

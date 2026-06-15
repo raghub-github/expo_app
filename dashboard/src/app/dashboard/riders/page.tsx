@@ -15,6 +15,11 @@ import { useRiderAccessQuery } from '@/hooks/queries/useRiderAccessQuery';
 import type { RiderListEntry, RiderSummary } from '@/types/rider-dashboard';
 import { ONBOARDING_STAGE_LABELS } from '@/types/rider-dashboard';
 import { formatRiderOrderDisplayId } from '@/lib/riders/format-rider-order-display-id';
+import { formatRiderOrderStatusDisplayLabel } from '@/lib/riders/rider-order-status-display';
+import {
+  buildRiderDetailUrl,
+  buildRidersHomeUrl,
+} from '@/lib/riders/rider-dashboard-navigation';
 import type { RiderSummaryParams } from '@/lib/queryKeys';
 import Link from 'next/link';
 import { CheckCircle, Circle, Filter, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, ShieldCheck, ShieldOff, Clock, User, Wallet, Lock, Unlock, History, Plus, RotateCcw, RefreshCw, MoreVertical, Banknote, Trash2, Check, X, ClipboardList, Search, Download, ShoppingBag, Package } from 'lucide-react';
@@ -27,6 +32,14 @@ const RiderLogoutHistorySideSheet = dynamic(
   () =>
     import('@/components/riders/RiderLogoutHistorySideSheet').then(
       (m) => m.RiderLogoutHistorySideSheet,
+    ),
+  { ssr: false },
+);
+
+const RiderBankAccountVerifySideSheet = dynamic(
+  () =>
+    import('@/components/riders/RiderBankAccountVerifySideSheet').then(
+      (m) => m.RiderBankAccountVerifySideSheet,
     ),
   { ssr: false },
 );
@@ -67,6 +80,7 @@ export default function RidersPage() {
   const { data: permissionsData, isLoading: permissionsLoading, error: permissionsError } = usePermissionsQuery();
   const { data: dashboardAccessData, isLoading: dashboardAccessLoading, error: dashboardAccessError } = useDashboardAccessQuery();
   const searchParams = useSearchParams();
+  const searchFromUrl = searchParams.get("search")?.trim() ?? "";
   const router = useRouter();
   const queryClient = useQueryClient();
 
@@ -131,6 +145,8 @@ export default function RidersPage() {
   const [penaltiesOrderIdSearch, setPenaltiesOrderIdSearch] = useState('');
   const [vehicleOpen, setVehicleOpen] = useState(false);
   const [vehicleVerifyLoading, setVehicleVerifyLoading] = useState(false);
+  const [bankVerifySheetOpen, setBankVerifySheetOpen] = useState(false);
+  const [bankVerifyLoading, setBankVerifyLoading] = useState(false);
   const [selfieImgError, setSelfieImgError] = useState(false);
   const [logoutHistoryOpen, setLogoutHistoryOpen] = useState(false);
   const [ordersPage, setOrdersPage] = useState(1);
@@ -158,30 +174,57 @@ export default function RidersPage() {
   ) ?? false;
 
   const riderId = riders[0]?.id ?? null;
+  const ordersOrderIdFilter = ordersOrderIdSearch.trim() || "";
+  const penaltiesOrderIdFilter = penaltiesOrderIdSearch.trim() || "";
   // Use page size (Rows dropdown) as API limit so changing Rows refetches with new limit
-  const summaryParams: RiderSummaryParams = {
-    ordersLimit: ordersPageSize,
-    ordersFrom,
-    ordersTo,
-    ordersOrderType,
-    ordersStatus,
-    ordersOrderId: ordersOrderIdSearch.trim() || '',
-    withdrawalsLimit: withdrawalsPageSize,
-    withdrawalsFrom,
-    withdrawalsTo,
-    ticketsLimit: ticketsPageSize,
-    ticketsFrom,
-    ticketsTo,
-    ticketsStatus,
-    ticketsCategory,
-    ticketsPriority,
-    penaltiesLimit: penaltiesPageSize,
-    penaltiesFrom,
-    penaltiesTo,
-    penaltiesStatus,
-    penaltiesServiceType,
-    penaltiesOrderId: penaltiesOrderIdSearch.trim() || '',
-  };
+  const summaryParams: RiderSummaryParams = useMemo(
+    () => ({
+      ordersLimit: ordersPageSize,
+      ordersFrom,
+      ordersTo,
+      ordersOrderType,
+      ordersStatus,
+      ordersOrderId: ordersOrderIdFilter,
+      withdrawalsLimit: withdrawalsPageSize,
+      withdrawalsFrom,
+      withdrawalsTo,
+      ticketsLimit: ticketsPageSize,
+      ticketsFrom,
+      ticketsTo,
+      ticketsStatus,
+      ticketsCategory,
+      ticketsPriority,
+      penaltiesLimit: penaltiesPageSize,
+      penaltiesFrom,
+      penaltiesTo,
+      penaltiesStatus,
+      penaltiesServiceType,
+      penaltiesOrderId: penaltiesOrderIdFilter,
+    }),
+    [
+      ordersPageSize,
+      ordersFrom,
+      ordersTo,
+      ordersOrderType,
+      ordersStatus,
+      ordersOrderIdFilter,
+      withdrawalsPageSize,
+      withdrawalsFrom,
+      withdrawalsTo,
+      ticketsPageSize,
+      ticketsFrom,
+      ticketsTo,
+      ticketsStatus,
+      ticketsCategory,
+      ticketsPriority,
+      penaltiesPageSize,
+      penaltiesFrom,
+      penaltiesTo,
+      penaltiesStatus,
+      penaltiesServiceType,
+      penaltiesOrderIdFilter,
+    ]
+  );
 
   // TanStack Query: rider summary (cached by riderId + params; refetches when params change)
   const {
@@ -389,6 +432,35 @@ export default function RidersPage() {
       setVehicleVerifyLoading(false);
     }
   }, [riderId, queryClient, refetchRiderSummary]);
+
+  const handleBankAccountAction = useCallback(
+    async (action: "verify" | "reject") => {
+      if (!riderId) return false;
+      setBankVerifyLoading(true);
+      try {
+        const res = await fetch(`/api/riders/${riderId}/payment-methods/bank/verify`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || "Failed to update bank account");
+        }
+        invalidateRiderSummary(queryClient, riderId);
+        await refetchRiderSummary();
+        setBankVerifySheetOpen(false);
+        return true;
+      } catch (e) {
+        alert(e instanceof Error ? e.message : "Could not update bank account");
+        return false;
+      } finally {
+        setBankVerifyLoading(false);
+      }
+    },
+    [riderId, queryClient, refetchRiderSummary],
+  );
 
   // Fetch pending wallet credit request order IDs for badge
   useEffect(() => {
@@ -668,10 +740,7 @@ export default function RidersPage() {
 
   // Track the last search we actually ran to avoid re-running when effect re-fires.
   const lastRanSearchRef = useRef<string | null>(null);
-  const debouncedSearchParam = useDebouncedValue(
-    searchParams.get('search')?.trim() ?? '',
-    400
-  );
+  const debouncedSearchParam = useDebouncedValue(searchFromUrl, 400);
 
   // Run search only when URL has ?search= and it's a *different* rider than already in context.
   // When returning to Rider Information from Orders/Penalties/etc., same rider in URL + context → skip search.
@@ -697,13 +766,24 @@ export default function RidersPage() {
 
     if (matchesCurrentRider) {
       lastRanSearchRef.current = searchValue;
+      if (showDefault) setShowDefault(false);
+      if (!hasSearched) setHasSearched(true);
       return;
     }
     // Prevent loop: runSearch sets riders to [], effect re-runs with new riders ref → don't run same search again.
     if (lastRanSearchRef.current === searchValue) return;
     lastRanSearchRef.current = searchValue;
     runSearch(searchValue);
-  }, [debouncedSearchParam, runSearch, riders, router]);
+  }, [
+    debouncedSearchParam,
+    runSearch,
+    riders,
+    router,
+    setShowDefault,
+    setHasSearched,
+    showDefault,
+    hasSearched,
+  ]);
 
 
   // When rider changes (new search), reset so section effects don’t refetch until user changes a filter
@@ -911,7 +991,15 @@ export default function RidersPage() {
                     <CheckCircle className="h-3.5 w-3.5" /> Verify
                   </button>
                 )}
-                <button onClick={() => router.push(`/dashboard/riders/${rider.id}`)} className="px-3 py-1.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 text-xs font-medium cursor-pointer">
+                <button
+                  onClick={() => {
+                    const currentSearch =
+                      searchParams.get("search")?.trim() || `GMR${rider.id}`;
+                    const returnTo = buildRidersHomeUrl(rider.id, currentSearch);
+                    router.push(buildRiderDetailUrl(rider.id, returnTo));
+                  }}
+                  className="px-3 py-1.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 text-xs font-medium cursor-pointer"
+                >
                   View Full Details
                 </button>
               </div>
@@ -1036,6 +1124,38 @@ export default function RidersPage() {
                       ) : null}
                     </div>
                   )}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Account</span>
+                    {displaySummary?.bankAccount ? (
+                      <>
+                        <span className="text-sm font-semibold text-gray-900">
+                          {displaySummary.bankAccount.bankName || "Bank account"}
+                        </span>
+                        {displaySummary.bankAccount.verificationStatus === "pending" ? (
+                          <button
+                            type="button"
+                            onClick={() => setBankVerifySheetOpen(true)}
+                            className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-emerald-700"
+                          >
+                            <ShieldCheck className="h-3 w-3" />
+                            Verify
+                          </button>
+                        ) : displaySummary.bankAccount.verificationStatus === "verified" ? (
+                          <span className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-emerald-700">
+                            <CheckCircle className="h-3 w-3" />
+                            Verified
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-red-700">
+                            <X className="h-3 w-3" />
+                            Rejected
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <span className="text-sm font-semibold text-gray-500">Not added</span>
+                    )}
+                  </div>
                 </div>
 
                 {/* Vehicle details: inline line(s) in dropdown when expanded */}
@@ -1285,7 +1405,7 @@ export default function RidersPage() {
                           </tr>
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-100">
-                          {displayedOrders.map((order: { id: number; orderType: string; status: string; riderEarning?: number; createdAt: string; formattedOrderId?: string | null; orderId?: string | null; externalRef?: string | null; displayOrderId?: string | null }) => {
+                          {displayedOrders.map((order: { id: number; orderType: string; status: string; fareAmount?: number | string | null; riderEarning?: number; walletCredited?: boolean; createdAt: string; formattedOrderId?: string | null; orderId?: string | null; externalRef?: string | null; displayOrderId?: string | null }) => {
                             const extra = approvedExtraByOrderId.get(order.id) ?? 0;
                             const earning = Number(order.riderEarning || 0);
                             const totalAmount = earning + extra;
@@ -1302,7 +1422,7 @@ export default function RidersPage() {
                                   </div>
                                 </td>
                                 <td className="px-3 py-1.5">
-                                  <OrderStatusBadge status={order.status} />
+                                  <OrderStatusBadge status={order.status} orderType={order.orderType} />
                                 </td>
                                 <td className="px-3 py-1.5 whitespace-nowrap leading-tight">
                                   <span className="text-xs font-bold text-gray-900 tabular-nums">₹{totalAmount.toFixed(2)}</span>
@@ -1405,7 +1525,7 @@ export default function RidersPage() {
                           <button
                             type="button"
                             onClick={() => {
-                              const orderValue = Number(order.riderEarning || 0) || 0;
+                              const orderValue = Number(order.fareAmount || 0) || 0;
                               setAddPenaltyFromOrder({
                                 orderId: order.id,
                                 orderType: order.orderType || "food",
@@ -2498,6 +2618,27 @@ export default function RidersPage() {
                   />
                 ) : null}
 
+                {bankVerifySheetOpen && riderId ? (
+                  <RiderBankAccountVerifySideSheet
+                    riderId={riderId}
+                    riderName={rider.name}
+                    open
+                    onClose={() => {
+                      if (!bankVerifyLoading) setBankVerifySheetOpen(false);
+                    }}
+                    actionLoading={bankVerifyLoading}
+                    onAction={async (action) => {
+                      if (action === "reject") {
+                        const confirmed = window.confirm(
+                          "Reject this bank account? The rider will need to add a new account.",
+                        );
+                        if (!confirmed) return;
+                      }
+                      await handleBankAccountAction(action);
+                    }}
+                  />
+                ) : null}
+
                 {/* Add Penalty modal */}
                 {addPenaltyModalOpen && riderId && (
                   <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={() => !addPenaltySubmitting && (setAddPenaltyModalOpen(false), setAddPenaltyFromOrder(null), setAddPenaltyError(null))}>
@@ -2794,9 +2935,9 @@ function OrderTypeIcon({ orderType }: { orderType: string }) {
   );
 }
 
-function OrderStatusBadge({ status }: { status: string }) {
+function OrderStatusBadge({ status, orderType }: { status: string; orderType?: string }) {
   const key = (status || "").toLowerCase();
-  const label = status ? status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : "—";
+  const label = formatRiderOrderStatusDisplayLabel(status, orderType);
 
   type StatusCfg = { bg: string; text: string; border: string; icon: React.ReactNode };
   const configs: Record<string, StatusCfg> = {
@@ -2876,7 +3017,7 @@ function exportOrdersCsv(
     return [
       formatRiderOrderDisplayId(o),
       formatOrderTypeLabel(o.orderType),
-      o.status,
+      formatRiderOrderStatusDisplayLabel(o.status, o.orderType),
       amount.toFixed(2),
       orderWalletEntryType(o, extra),
       new Date(o.createdAt).toLocaleString(),
@@ -2893,12 +3034,12 @@ function exportOrdersCsv(
 }
 
 function orderWalletEntryType(
-  order: { status: string; riderEarning?: number | string | null },
+  order: { status: string; riderEarning?: number | string | null; walletCredited?: boolean },
   extra = 0
 ): "Credit" | "Debit" | "Pending" | "—" {
   const earning = Number(order.riderEarning || 0);
   const total = earning + extra;
-  if (total > 0) return "Credit";
+  if (total > 0 || order.walletCredited) return "Credit";
   const status = String(order.status || "").toLowerCase();
   if (status === "cancelled" || status === "failed") return "—";
   return "Pending";

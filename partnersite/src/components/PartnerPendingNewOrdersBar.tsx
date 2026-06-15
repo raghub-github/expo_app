@@ -10,18 +10,15 @@ import {
   PARTNER_INCOMING_MODAL_OPEN,
   PARTNER_PENDING_ORDERS_REFRESH,
   PARTNER_SELECTED_STORE_CHANGED,
+  clearPartnerIncomingModalSuppressed,
   isValidPartnerStoreId,
   readPartnerSelectedStoreId,
   usePartnerSelectedStore,
 } from '@/lib/partner-selected-store';
+import { fetchPartnerPendingNewOrdersCount, invalidatePartnerPendingCountCache } from '@/lib/partner-pending-count-fetch';
+import { partnerNewOrdersHref } from '@/lib/partner-orders-routes';
 
-const POLL_MS = 12_000;
-
-function ordersHref(pathname: string, storeId: string): string {
-  const q = `filter=NEW_ORDERS&store_id=${encodeURIComponent(storeId)}`;
-  if (pathname.startsWith('/mx')) return `/mx/food-orders?${q}`;
-  return `/partners/orders?${q}`;
-}
+const POLL_MS = 15_000;
 
 function isOnNewOrdersSection(pathname: string, filterParam: string | null): boolean {
   const onOrdersPage =
@@ -50,15 +47,8 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
   const loadPending = useCallback(async () => {
     const sid = readPartnerSelectedStoreId(restaurantId);
     if (!isValidPartnerStoreId(sid)) return;
-    try {
-      const res = await fetch(
-        `/api/merchant/pending-new-orders-count?store_id=${encodeURIComponent(sid)}`
-      );
-      const data = (await res.json().catch(() => ({}))) as { count?: number };
-      if (res.ok && typeof data.count === 'number') setPending(data.count);
-    } catch {
-      /* ignore */
-    }
+    const count = await fetchPartnerPendingNewOrdersCount(sid);
+    if (count != null) setPending(count);
   }, [restaurantId]);
 
   const loadFloatingSetting = useCallback(async () => {
@@ -103,7 +93,10 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
   }, [loadPending]);
 
   useEffect(() => {
-    const onRefresh = () => void loadPending();
+    const onRefresh = () => {
+      invalidatePartnerPendingCountCache();
+      void loadPending();
+    };
     window.addEventListener(PARTNER_PENDING_ORDERS_REFRESH, onRefresh);
     return () => window.removeEventListener(PARTNER_PENDING_ORDERS_REFRESH, onRefresh);
   }, [loadPending]);
@@ -176,8 +169,9 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-4 z-[200] flex justify-center px-3 sm:bottom-5">
       <Link
-        href={ordersHref(pathname, sid)}
+        href={partnerNewOrdersHref(pathname, sid)}
         onClick={() => {
+          clearPartnerIncomingModalSuppressed(sid);
           window.dispatchEvent(new CustomEvent('partner-incoming-order-rescan'));
         }}
         className="pointer-events-auto flex max-w-lg items-center gap-3 rounded-full bg-emerald-600 px-5 py-3.5 text-white shadow-xl shadow-emerald-900/30 ring-2 ring-white/20 transition hover:bg-emerald-700 hover:scale-[1.02] active:scale-[0.98]"

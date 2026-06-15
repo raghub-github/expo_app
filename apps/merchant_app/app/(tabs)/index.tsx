@@ -38,7 +38,6 @@ import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
 import { fetchWalletSummary } from "@/services/walletApi";
 import { getActiveOrdersCount } from "@/services/storeSettingsApi";
 import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedActiveOrdersNotice";
-import { MerchantMarketInsightsPanel } from "@/components/growth/MerchantMarketInsightsPanel";
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
 
 const { width } = Dimensions.get("window");
@@ -131,7 +130,7 @@ export default function DashboardScreen() {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
-  const { orders, refetch: refetchOrders, transitionOrder, extendPrepDelay, acceptanceWindowMinutes } = useOrders(12000);
+  const { orders, refetch: refetchOrders, transitionOrder, extendPrepDelay, acceptanceWindowMinutes } = useOrders();
   const {
     isOnline,
     manualCloseUntil,
@@ -166,7 +165,9 @@ export default function DashboardScreen() {
       ]);
       setTodayEarning(Number(wallet.today_earning) || 0);
       setDeliveredToday(Number(wallet.delivered_today ?? 0) || 0);
-      setWalletBalance(Number(wallet.available_balance ?? 0) || 0);
+      setWalletBalance(
+        Number(wallet.withdrawable_balance ?? wallet.available_balance ?? 0) || 0
+      );
       setPendingCount(Number(active) || 0);
     } catch {
       setTodayEarning(0);
@@ -399,8 +400,6 @@ export default function DashboardScreen() {
           />
         </View>
       </View>
-
-      <MerchantMarketInsightsPanel storeId={storeId} />
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>All Orders</Text>

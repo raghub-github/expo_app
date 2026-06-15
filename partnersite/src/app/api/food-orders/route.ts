@@ -481,11 +481,19 @@ export async function GET(req: NextRequest) {
           prep_ready_by_at: (food?.prep_ready_by_at as string | null) ??
             ((core as Record<string, unknown>).prep_ready_by_at as string | null) ??
             null,
+          expected_ready_at:
+            (food?.expected_ready_at as string | null) ??
+            ((core as Record<string, unknown>).expected_ready_at as string | null) ??
+            null,
           prep_time_source: (food?.prep_time_source as string | null) ?? null,
           prep_delay_minutes:
             food?.prep_delay_minutes != null ? Number(food.prep_delay_minutes) : 0,
           prep_delay_use_count:
             food?.prep_delay_use_count != null ? Number(food.prep_delay_use_count) : 0,
+          last_prep_delay_minutes_added:
+            food?.last_prep_delay_minutes_added != null
+              ? Number(food.last_prep_delay_minutes_added)
+              : null,
           prepared_late_minutes:
             food?.prepared_late_minutes != null ? Number(food.prepared_late_minutes) : null,
           food_items_count: displayItemCount,
@@ -569,6 +577,15 @@ export async function GET(req: NextRequest) {
             ((core as Record<string, unknown>).rider_picked_up_at as string | null) ??
             ((core as Record<string, unknown>).actual_pickup_time as string | null) ??
             null,
+          reached_merchant_at:
+            (food?.rider_reached_pickup_at as string | null) ??
+            (food?.reached_merchant_at as string | null) ??
+            null,
+          rider_reached_pickup_at: (food?.rider_reached_pickup_at as string | null) ?? null,
+          pickup_wait_seconds:
+            food?.pickup_wait_seconds != null && food?.pickup_wait_seconds !== ''
+              ? Number(food.pickup_wait_seconds)
+              : null,
           dispatched_at: (food?.dispatched_at as string | null) ?? null,
           delivered_at: (food?.delivered_at as string | null) ?? null,
           cancelled_at: (food?.cancelled_at as string | null) ?? (core.cancelled_at as string | null) ?? null,

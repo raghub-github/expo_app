@@ -1,7 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { fetchCancellationCatalogClient } from "@/lib/orders/cancellation-catalog-client-cache";
+import {
+  fetchCancellationCatalogClient,
+  getCachedCancellationCatalog,
+} from "@/lib/orders/cancellation-catalog-client-cache";
 import type {
   CancellationAttributeRow,
   CancellationReasonCatalogGrouped,
@@ -14,13 +17,19 @@ type Options = {
 
 export function useCancellationReasonCatalog(options?: Options) {
   const enabled = options?.enabled !== false;
-  const [attributes, setAttributes] = useState<CancellationAttributeRow[]>([]);
-  const [grouped, setGrouped] = useState<CancellationReasonCatalogGrouped>({});
-  const [loading, setLoading] = useState(false);
+  const initialCache = getCachedCancellationCatalog();
+  const [attributes, setAttributes] = useState<CancellationAttributeRow[]>(
+    () => initialCache?.attributes ?? []
+  );
+  const [grouped, setGrouped] = useState<CancellationReasonCatalogGrouped>(
+    () => initialCache?.grouped ?? {}
+  );
+  const [loading, setLoading] = useState(() => enabled && !initialCache);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    const cached = getCachedCancellationCatalog();
+    if (!cached) setLoading(true);
     setError(null);
     try {
       const data = await fetchCancellationCatalogClient();
@@ -28,8 +37,10 @@ export function useCancellationReasonCatalog(options?: Options) {
       setGrouped(data.grouped);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load cancellation reasons");
-      setAttributes([]);
-      setGrouped({});
+      if (!cached) {
+        setAttributes([]);
+        setGrouped({});
+      }
     } finally {
       setLoading(false);
     }

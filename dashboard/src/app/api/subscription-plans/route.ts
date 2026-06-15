@@ -8,6 +8,7 @@ import { isSuperAdmin } from "@/lib/permissions/engine";
 import { getSql } from "@/lib/db/client";
 import { apiErrorResponse } from "@/lib/api-errors";
 import { loadPlanDetails } from "@/lib/subscription-plans/load-plan-details";
+import { loadPlansListForAudience, loadRiderSubscriptionStats } from "@/lib/subscription-plans/load-plans-list";
 
 export const runtime = "nodejs";
 
@@ -20,27 +21,24 @@ export async function GET(request: NextRequest) {
     }
 
     const search = request.nextUrl.searchParams.get("search")?.trim() || "";
-    const sql = getSql() as { unsafe: (q: string, v?: unknown[]) => Promise<Record<string, unknown>[]> };
+    const audience = request.nextUrl.searchParams.get("audience")?.trim().toUpperCase() || "RIDER";
+    const planAudience = audience === "CUSTOMER" ? "CUSTOMER" : "RIDER";
 
-    const rows = search
-      ? await sql.unsafe(
-          `SELECT id FROM subscription_plans
-           WHERE name ILIKE $1 OR code ILIKE $1
-           ORDER BY display_order ASC, id ASC`,
-          [`%${search}%`]
-        )
-      : await sql.unsafe(
-          `SELECT id FROM subscription_plans ORDER BY display_order ASC, id ASC`,
-          []
-        );
+    const plans = await loadPlansListForAudience(planAudience, search || undefined);
 
-    const plans = [];
-    for (const row of rows) {
-      const detail = await loadPlanDetails(Number(row.id));
-      if (detail) plans.push(detail);
+    let stats: Record<string, unknown> | null = null;
+    if (planAudience === "RIDER" && request.nextUrl.searchParams.get("stats") === "1") {
+      const riderStats = await loadRiderSubscriptionStats();
+      const activeCount = plans.filter((p) => p.isActive).length;
+      stats = {
+        activePlans: activeCount,
+        totalPlans: plans.length,
+        subscribedRiders: riderStats.subscribedRiders,
+        monthlyRevenueInr: riderStats.monthlyRevenueInr,
+      };
     }
 
-    return NextResponse.json({ success: true, data: { plans, total: plans.length } });
+    return NextResponse.json({ success: true, data: { plans, total: plans.length, stats } });
   } catch (error) {
     console.error("[subscription-plans] GET", error);
     const { body, status } = apiErrorResponse(error);
@@ -81,7 +79,7 @@ export async function POST(request: NextRequest) {
 
     const sql = getSql();
     const [inserted] = await sql`
-      INSERT INTO subscription_plans (code, name, description, badge_text, badge_color, headline, cta_label, is_active, display_order, default_billing_cycle)
+      INSERT INTO subscription_plans (code, name, description, badge_text, badge_color, headline, cta_label, is_active, display_order, default_billing_cycle, plan_audience)
       VALUES (
         ${String(code).trim().toUpperCase()},
         ${String(name).trim()},
@@ -92,11 +90,22 @@ export async function POST(request: NextRequest) {
         ${String(ctaLabel).trim()},
         ${Boolean(isActive)},
         ${Number(displayOrder) || 0},
-        ${String(defaultBillingCycle)}::public.subscription_billing_cycle
+        ${String(defaultBillingCycle)}::public.subscription_billing_cycle,
+        'RIDER'::public.subscription_plan_audience
       )
       RETURNING id
     `;
     const planId = Number((inserted as { id: number }).id);
+
+    if (Boolean(isActive)) {
+      await sql`
+        UPDATE subscription_plans
+        SET is_active = false, updated_at = NOW()
+        WHERE id != ${planId}
+          AND plan_audience = 'RIDER'
+          AND is_active = true
+      `;
+    }
 
     for (const price of prices as Array<Record<string, unknown>>) {
       await sql`

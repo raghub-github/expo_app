@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Modal,
@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   Platform,
+  Keyboard,
   useWindowDimensions,
   type ViewStyle,
 } from "react-native";
@@ -21,6 +22,8 @@ export type StoreBottomSheetShellProps = {
   sheetStyle?: ViewStyle;
   /** Sheet + footer extend flush to device bottom; safe area applied by child footer only. */
   flushBottom?: boolean;
+  /** Lift sheet above the software keyboard when a field inside is focused. */
+  keyboardAvoiding?: boolean;
 };
 
 /** Shared bottom sheet shell — flush to device bottom edge, floating close above sheet. */
@@ -31,10 +34,31 @@ export function StoreBottomSheetShell({
   maxHeightRatio = 0.88,
   sheetStyle,
   flushBottom = false,
+  keyboardAvoiding = false,
 }: StoreBottomSheetShellProps) {
   const insets = useSafeAreaInsets();
   const { height: winH } = useWindowDimensions();
   const maxH = Math.round(winH * maxHeightRatio);
+  const [keyboardInset, setKeyboardInset] = useState(0);
+
+  useEffect(() => {
+    if (!visible || !keyboardAvoiding) {
+      setKeyboardInset(0);
+      return;
+    }
+    const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const showSub = Keyboard.addListener(showEvt, (e) => {
+      setKeyboardInset(e.endCoordinates.height);
+    });
+    const hideSub = Keyboard.addListener(hideEvt, () => setKeyboardInset(0));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [visible, keyboardAvoiding]);
+
+  const bottomLift = keyboardAvoiding ? keyboardInset : 0;
 
   return (
     <Modal
@@ -47,7 +71,7 @@ export function StoreBottomSheetShell({
     >
       <View style={styles.root}>
         <Pressable style={styles.backdrop} onPress={onClose} accessibilityRole="button" />
-        <View style={[styles.anchor, { maxHeight: maxH }]}>
+        <View style={[styles.anchor, { maxHeight: maxH, marginBottom: bottomLift }]}>
           <TouchableOpacity style={styles.closeBtn} onPress={onClose} hitSlop={12} activeOpacity={0.85}>
             <Ionicons name="close" size={22} color="#fff" />
           </TouchableOpacity>

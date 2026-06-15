@@ -9,10 +9,18 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 
 type RideServiceUnavailableSheetProps = {
   visible: boolean;
+  message?: string;
   onOkay: () => void;
 };
 
-export function RideServiceUnavailableSheet({ visible, onOkay }: RideServiceUnavailableSheetProps) {
+const DEFAULT_UNAVAILABLE_MESSAGE =
+  "Oops! No riders available near your pickup location. Please select a different pickup or try again shortly.";
+
+export function RideServiceUnavailableSheet({
+  visible,
+  message = DEFAULT_UNAVAILABLE_MESSAGE,
+  onOkay,
+}: RideServiceUnavailableSheetProps) {
   const insets = useSafeAreaInsets();
 
   if (!visible) return null;
@@ -33,10 +41,7 @@ export function RideServiceUnavailableSheet({ visible, onOkay }: RideServiceUnav
           <View style={styles.iconWrap}>
             <Ionicons name="location-outline" size={32} color="#DC2626" />
           </View>
-          <Text style={styles.message}>
-            Oops! No riders available near your pickup location. Please select a different pickup
-            or try again shortly.
-          </Text>
+          <Text style={styles.message}>{message}</Text>
           <TouchableOpacity style={styles.okayBtn} onPress={onOkay} activeOpacity={0.9}>
             <Text style={styles.okayBtnText}>Okay</Text>
           </TouchableOpacity>

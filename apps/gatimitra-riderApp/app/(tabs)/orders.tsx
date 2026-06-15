@@ -18,7 +18,7 @@ import { useDutyStore } from "@/src/stores/dutyStore";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { createForegroundLocationTracker, type LocationTrackerState } from "@/src/services/location/locationTracker";
 import { pingLocation } from "@/src/services/location/locationPinger";
-import { useAvailableOrders, useActiveOrders, RIDER_ACTIVE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
+import { useAvailableOrders, useActiveOrders, useRidePaymentHolds, RIDER_ACTIVE_ORDERS_QUERY_KEY, RIDER_RIDE_PAYMENT_HOLDS_QUERY_KEY } from "@/src/hooks/useOrders";
 import { useFocusEffect } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { isActiveRiderOrder } from "@/src/lib/active-order-display";
@@ -30,7 +30,8 @@ import { Button } from "@/src/components/ui/Button";
 import { permissionManager } from "@/src/services/permissions/permissionManager";
 import { RiderMapView, type RiderMapViewHandle } from "@/src/components/RiderMapView";
 import { HomeMapHeader } from "@/src/components/home/HomeMapHeader";
-import { PenaltyBanner, OffDutyBanner } from "@/src/components/home/HomeAlertBanners";
+import { PenaltyBanner, OffDutyBanner, RidePaymentHoldBanner } from "@/src/components/home/HomeAlertBanners";
+import { SubscriptionDuesBanner } from "@/src/components/subscription/SubscriptionDuesBanner";
 import { MapRightControls } from "@/src/components/home/MapRightControls";
 import { SearchingOrdersPill } from "@/src/components/home/SearchingOrdersPill";
 
@@ -47,8 +48,10 @@ export default function OrdersScreen() {
   const queryClient = useQueryClient();
   const { data: availableOrders = [] } = useAvailableOrders();
   const { data: activeOrders = [] } = useActiveOrders();
+  const { data: ridePaymentHolds = [] } = useRidePaymentHolds();
   const { data: earnings } = useEarningsSummary();
   const penaltyAmount = earnings?.locked && earnings.locked > 0 ? earnings.locked : 0;
+  const primaryPaymentHold = ridePaymentHolds[0] ?? null;
 
   const hasActiveOrder = useMemo(
     () => activeOrders.some(isActiveRiderOrder),
@@ -58,6 +61,7 @@ export default function OrdersScreen() {
   useFocusEffect(
     useCallback(() => {
       void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: RIDER_RIDE_PAYMENT_HOLDS_QUERY_KEY });
     }, [queryClient])
   );
 
@@ -212,6 +216,8 @@ export default function OrdersScreen() {
       <SafeAreaView edges={["top"]} style={styles.chrome}>
         <HomeMapHeader />
         <PenaltyBanner amount={penaltyAmount} />
+        {primaryPaymentHold ? <RidePaymentHoldBanner hold={primaryPaymentHold} /> : null}
+        <SubscriptionDuesBanner />
       </SafeAreaView>
 
       <View style={styles.mapSection}>

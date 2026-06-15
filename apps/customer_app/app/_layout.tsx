@@ -11,7 +11,7 @@ import { StatusBar } from "expo-status-bar";
 import { useEffect, useCallback, useRef, useState } from "react";
 import { View, LogBox, Alert, AppState, type AppStateStatus } from "react-native";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 import { useAuthStore } from "@/store/authStore";
 import { useCartStore } from "@/store/cartStore";
 import { useLanguageStore } from "@/store/languageStore";
@@ -19,9 +19,9 @@ import { useLocationStore } from "@/store/locationStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useStoreStatusRealtime } from "@/hooks/useStoreStatusRealtime";
 import { useOrderRealtime } from "@/hooks/useOrderRealtime";
+import { useActiveOrdersHydration } from "@/hooks/useActiveOrdersHydration";
 import { LocationPermissionModal } from "@/components/LocationPermissionModal";
 import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
-import { GlobalPrepDelayMarquee } from "@/components/GlobalPrepDelayMarquee";
 import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
 import { setOnSessionRevoked } from "@/services/api";
 import { PushNotificationBootstrap } from "@/components/PushNotificationBootstrap";
@@ -29,6 +29,7 @@ import { AddressesPrefetch } from "@/components/AddressesPrefetch";
 import { FeaturedOffersPrefetch } from "@/components/FeaturedOffersPrefetch";
 import { UserAppCategoriesPrefetch } from "@/components/UserAppCategoriesPrefetch";
 import { ProfilePrefetch } from "@/components/ProfilePrefetch";
+import { SubscriptionPlansPrefetch } from "@/components/SubscriptionPlansPrefetch";
 import { profileService } from "@/services/profile.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { colors } from "@/theme";
@@ -68,6 +69,8 @@ LogBox.ignoreLogs([
   "Require cycles are allowed",
   "[Worklets] Tried to modify key `current`",
   "VirtualizedList: You have a large list that is slow to update",
+  "expo-notifications",
+  "Push notifications (remote notifications) functionality provided by expo-notifications was removed from Expo Go",
 ]);
 
 SplashScreen.preventAutoHideAsync().catch(() => {
@@ -140,19 +143,21 @@ export default function RootLayout() {
         >
           {ready ? (
             <>
+              <ReactQueryFocusSync />
               <StoreStatusRealtimeSync />
+              <OrderRealtimeSync />
               <SessionRevokedHandler />
               <LocationPermissionRealtimeSync />
               <LanguageSync />
               <RootStack onLayoutRootView={onLayoutRootView} />
               <GlobalFloatingCart />
-              <GlobalPrepDelayMarquee />
               <LocationModalWrapper />
               <PushNotificationBootstrap />
               <AddressesPrefetch />
               <FeaturedOffersPrefetch />
               <UserAppCategoriesPrefetch />
               <ProfilePrefetch />
+              <SubscriptionPlansPrefetch />
             </>
           ) : null}
           {!splashExited ? (
@@ -169,7 +174,19 @@ export default function RootLayout() {
 }
 
 function OrderRealtimeSync() {
+  useActiveOrdersHydration();
   useOrderRealtime();
+  return null;
+}
+
+/** Lets React Query refetch on app foreground (required on React Native). */
+function ReactQueryFocusSync() {
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state: AppStateStatus) => {
+      focusManager.setFocused(state === "active");
+    });
+    return () => sub.remove();
+  }, []);
   return null;
 }
 
@@ -278,10 +295,11 @@ function RootStack({ onLayoutRootView }: { onLayoutRootView: () => void }) {
   const inProfileStack = segments[0] === "profile";
   const statusBarHeight = inProfileStack ? 0 : (insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT);
   const statusBarBackground = useScreenChromeStore((s) => s.statusBarBackground);
+  const statusBarStyle = useScreenChromeStore((s) => s.statusBarStyle);
 
   return (
     <>
-      <StatusBar style="dark" backgroundColor={statusBarBackground} />
+      <StatusBar style={statusBarStyle} backgroundColor={statusBarBackground} />
       <View
         style={{
           height: statusBarHeight,

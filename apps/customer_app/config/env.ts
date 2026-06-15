@@ -143,9 +143,11 @@ export function getConfig(): {
 
   const mapboxAccessToken =
     asNonEmptyString(process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN) ??
+    asNonEmptyString(process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN) ??
     asNonEmptyString(process.env.MAPBOX_PUBLIC_TOKEN) ??
     asNonEmptyString(process.env.NEXT_PUBLIC_MAPBOX_TOKEN) ??
     asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN as string) ??
+    asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.mapboxAccessToken as string) ??
     asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.MAPBOX_PUBLIC_TOKEN as string) ??
     asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.NEXT_PUBLIC_MAPBOX_TOKEN as string) ??
     null;

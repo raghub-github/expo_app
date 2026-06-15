@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 const SERVICE_TYPES = ["food", "parcel", "person_ride"] as const;
 
 /** Max milestone radius (100 km) — wide enough for testing; still bounded in DB. */
-export const RIDER_STATUS_GEO_FENCE_MAX_RADIUS_METERS = 100_000;
+const RIDER_STATUS_GEO_FENCE_MAX_RADIUS_METERS = 100_000;
 
 const upsertSchema = z.object({
   service_type: z.enum(SERVICE_TYPES),

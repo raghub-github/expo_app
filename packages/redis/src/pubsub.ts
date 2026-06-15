@@ -10,8 +10,12 @@
 import { getRedis, getRedisSubscriber } from "./client.js";
 
 export async function publish(channel: string, payload: unknown): Promise<void> {
-  const redis = getRedis();
-  await redis.publish(channel, JSON.stringify(payload));
+  try {
+    const redis = getRedis();
+    await redis.publish(channel, JSON.stringify(payload));
+  } catch {
+    /* Redis optional — realtime push skipped for this event. */
+  }
 }
 
 export type Unsubscribe = () => Promise<void>;

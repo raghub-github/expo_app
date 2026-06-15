@@ -607,7 +607,7 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
               {insightsTab === "live" && (
                 <div className="mt-6 sm:mt-8">
                   <LivePreviewInsightsPanel
-                    storeInternalId={storeId}
+                    storeInternalId={Number(storeId)}
                     periodPreset="today"
                     userInsightsHref={`/dashboard/merchants/stores/${storeId}/user-insights`}
                     paymentsHref={`/dashboard/merchants/stores/${storeId}/payments`}
@@ -617,7 +617,7 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
               )}
 
               {insightsTab === "reports" && (
-                <BusinessReportsPanel storeInternalId={storeId} periodPreset="this_week" subview={reportsSubview} />
+                <BusinessReportsPanel storeInternalId={Number(storeId)} periodPreset="this_week" subview={reportsSubview} />
               )}
             </div>
           </div>

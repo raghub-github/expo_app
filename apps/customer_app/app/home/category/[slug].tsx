@@ -1,5 +1,5 @@
 /**
- * Category browse – Zomato-style inner page for GatiMitra.
+ * Category browse – GatiMitra inner page.
  * Header with search, horizontal category chips, filter/offer pills,
  * Recommended For You grid, All Restaurants section.
  */

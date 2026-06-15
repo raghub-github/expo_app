@@ -340,7 +340,7 @@ export default function RiderOnboardingClient() {
     if (!editingDoc) return;
 
     try {
-      setActionLoading(editingDoc.id);
+      setActionLoading(documentActionKey(editingDoc));
 
       const formData = new FormData();
       formData.append("displayDocType", editingDoc.docType);
@@ -388,7 +388,7 @@ export default function RiderOnboardingClient() {
     if (!editingDoc) return;
 
     try {
-      setActionLoading(editingDoc.id);
+      setActionLoading(documentActionKey(editingDoc));
 
       const formData = new FormData();
       formData.append("displayDocType", editingDoc.docType);
@@ -854,7 +854,7 @@ export default function RiderOnboardingClient() {
             const additionalVerified = additionalDocs.filter(d => d.verified).length;
             
             const allRequiredVerified = identityVerified === identityTotal && vehicleVerified === vehicleTotal;
-            const paymentCompleted = riderData.onboardingPayments.some((p) => p.status === "completed");
+            const paymentCompleted = (riderData.onboardingPayments ?? []).some((p) => p.status === "completed");
             const isActive = riderData.rider.status === "ACTIVE";
             
             return (

@@ -4,13 +4,13 @@
     "slug": "gatimitra-customer",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./public/img/fav.png",
+    "icon": "./assets/icon.png",
     "scheme": "gatimitra",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "image": "./public/img/fav.png",
+      "image": "./assets/images/splash-logo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#14b8a6"
+      "backgroundColor": "#FFFFFF"
     },
     "assetBundlePatterns": [
       "**/*"
@@ -22,14 +22,17 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.gatimitra.customer"
+      "bundleIdentifier": "com.gatimitra.customer",
+      "icon": "./assets/icon.png"
     },
     "android": {
+      "icon": "./assets/icon.png",
       "adaptiveIcon": {
-        "foregroundImage": "./public/img/fav.png",
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#14b8a6"
       },
-      "package": "com.gatimitra.customer"
+      "package": "com.gatimitra.customer",
+      "softwareKeyboardLayoutMode": "resize"
     },
     "web": {
       "bundler": "metro",

@@ -3,10 +3,15 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo, Suspense } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams, useRouter } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 import { MXLayoutWhite } from '@/components/MXLayoutWhite';
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
 import { toast } from 'sonner';
 import { showFoodOrderStatusToast } from '@/lib/showFoodOrderStatusToast';
+import {
+  dispatchPartnerNotificationsChanged,
+  shouldClearOrderNotifications,
+} from '@/lib/clear-store-order-notifications';
 import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback';
 import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline';
 import {
@@ -40,13 +45,15 @@ import {
 import { type OrdersFoodRow, type FoodOrderStats } from '@/hooks/useFoodOrders';
 import { usePastRidersEligibility } from '@/hooks/usePastRidersEligibility';
 import { PageSkeletonOrders } from '@/components/PageSkeleton';
-import { fetchStoreById } from '@/lib/database';
 import { MerchantStore } from '@/lib/merchantStore';
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
+import { readPartnerSelectedStoreId } from '@/lib/partner-selected-store';
+import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord';
+import { getQueryClient } from '@/lib/query-client';
+import { merchantKeys } from '@/lib/query-keys';
 import { createClient } from '@/lib/supabase/client';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 import { FoodOrdersEmptyState } from '@/components/FoodOrdersEmptyState';
-import { mapStateMachineStatusToPartnerUi, normFoodStatus } from '@/lib/partner-orders-unify';
 import {
   actionSourceLabel,
   computeOrderItemQuantityCount,
@@ -88,12 +95,19 @@ import {
   MerchantPreparingOrderActions,
   OrderPrepDelayedBanner,
   OrderPreparedLateTopBanner,
+  ExtraPrepTimeAddedBanner,
   computePrepExpired,
 } from '@/components/orders/MerchantPreparingOrderActions';
+import { formatExtraPrepTimeAddedLabel } from '@/lib/order-prep-time';
 import { StoreClosedActiveOrdersNotice } from '@/components/orders/StoreClosedActiveOrdersNotice';
 import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';
 import { isActiveMerchantFoodOrderStatus, canMerchantMarkDelivered } from '@/lib/merchantActiveOrders';
-import { countLiveSidebarPipelineOrders } from '@/lib/foodOrdersLivePipeline';
+import {
+  countLiveSidebarPipelineOrders,
+  orderMatchesLiveSidebarFilter as orderMatchesFoodOrdersSidebar,
+  pipelineTabForSidebarStatus,
+  resolveOrderSidebarPipelineStatus,
+} from '@/lib/foodOrdersLivePipeline';
 
 // orders_food_status enum: CREATED, ACCEPTED, PREPARING, READY_FOR_PICKUP, OUT_FOR_DELIVERY, DELIVERED, RTO, CANCELLED
 const STATUS_LABEL: Record<string, string> = {
@@ -125,9 +139,6 @@ function mergeFoodOrderPatch(prev: OrdersFoodRow, patch: OrdersFoodRow): OrdersF
   return merged;
 }
 
-/** Accepted by merchant and in kitchen prep (excludes unaccepted “new” rows). */
-const PREPARING_PIPELINE = new Set(['ACCEPTED', 'PREPARING']);
-
 const FOOD_ORDERS_SIDEBAR_FILTERS = [
   { id: 'NEW_ORDERS', label: 'New orders' },
   { id: 'PREPARING', label: 'Preparing' },
@@ -137,23 +148,6 @@ const FOOD_ORDERS_SIDEBAR_FILTERS = [
 ] as const;
 
 type FoodOrdersSidebarFilterId = (typeof FOOD_ORDERS_SIDEBAR_FILTERS)[number]['id'];
-
-/** Normalize any backend/food string (incl. PLACED) to tab filter codes. */
-function normOrderStatus(s: string | null | undefined) {
-  const mapped = mapStateMachineStatusToPartnerUi(s);
-  if (mapped) return mapped;
-  return normFoodStatus(s);
-}
-
-function orderMatchesFoodOrdersSidebar(order: OrdersFoodRow, filterId: string): boolean {
-  const st = normOrderStatus(order.order_status);
-  if (filterId === 'NEW_ORDERS') return st === 'CREATED';
-  if (filterId === 'PREPARING') return PREPARING_PIPELINE.has(st);
-  if (filterId === 'READY_FOR_PICKUP') return st === 'READY_FOR_PICKUP';
-  if (filterId === 'OUT_FOR_DELIVERY') return st === 'OUT_FOR_DELIVERY';
-  if (filterId === 'RTO') return st === 'RTO';
-  return false;
-}
 
 /** Zomato-style pills: white active tab, light grey inactive */
 const SIDEBAR_ACTIVE_CLASS = 'bg-white text-gray-900 border-gray-300 shadow-sm';
@@ -234,10 +228,16 @@ function FormattedOrderId({
 function OrdersPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [store, setStore] = useState<MerchantStore | null>(null);
   const [storeId, setStoreId] = useState<string | null>(null);
   const [storeInternalId, setStoreInternalId] = useState<number | null>(null);
-  const [orders, setOrders] = useState<OrdersFoodRow[]>([]);
+  const [orders, setOrders] = useState<OrdersFoodRow[]>(() => {
+    if (typeof window === 'undefined') return [];
+    const id = readPartnerSelectedStoreId();
+    if (!id) return [];
+    return getQueryClient().getQueryData<OrdersFoodRow[]>(merchantKeys.foodOrders(id)) ?? [];
+  });
   const [stats, setStats] = useState<FoodOrderStats | null>(null);
   const [filter, setFilter] = useState<string>('PREPARING');
   const [selectedOrder, setSelectedOrder] = useState<OrdersFoodRow | null>(null);
@@ -318,7 +318,13 @@ function OrdersPageContent() {
   const [rtoOtpInput, setRtoOtpInput] = useState('');
   const [otpVerified, setOtpVerified] = useState<Record<number, { pickup?: boolean; rto?: boolean }>>({});
   const [otpCache, setOtpCache] = useState<Record<number, CachedOrderOtps>>({});
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    const id = readPartnerSelectedStoreId();
+    if (!id) return true;
+    const cached = getQueryClient().getQueryData<OrdersFoodRow[]>(merchantKeys.foodOrders(id));
+    return !cached?.length;
+  });
   const [notifyEnabled, setNotifyEnabled] = useState(() => {
     if (typeof window === 'undefined') return true;
     try {
@@ -432,6 +438,27 @@ function OrdersPageContent() {
     updateUrlParams({ filter: f, orderId: null });
   }, [updateUrlParams]);
 
+  /** Move sidebar to the tab that matches this order's pipeline status. */
+  const switchToOrderTab = useCallback(
+    (order: OrdersFoodRow, keepPanelOpen = true) => {
+      const tab = pipelineTabForSidebarStatus(resolveOrderSidebarPipelineStatus(order));
+      if (!tab) return false;
+      setFilter(tab);
+      if (keepPanelOpen) {
+        setSelectedOrder(order);
+        setRightPanelOpen(true);
+        updateUrlParams({
+          filter: tab,
+          orderId: String(order.order_id || order.id),
+        });
+      } else {
+        updateUrlParams({ filter: tab, orderId: null });
+      }
+      return true;
+    },
+    [updateUrlParams]
+  );
+
   useEffect(() => {
     let id = searchParams?.get('storeId') || searchParams?.get('store_id');
     if (!id && typeof window !== 'undefined') id = localStorage.getItem('selectedStoreId');
@@ -477,11 +504,9 @@ function OrdersPageContent() {
       setSelectedOrder(order);
       setRightPanelOpen(true);
     } else if (order) {
-      updateUrlParams({ orderId: null });
-      setSelectedOrder(null);
-      setRightPanelOpen(false);
+      switchToOrderTab(order, true);
     }
-  }, [loading, orderIdFromUrl, orders, filter, updateUrlParams]);
+  }, [loading, orderIdFromUrl, orders, filter, switchToOrderTab]);
 
   /** Close detail panel when the open order no longer belongs on the active tab (e.g. after Complete). */
   useEffect(() => {
@@ -496,22 +521,23 @@ function OrdersPageContent() {
       setSelectedOrder(fresh);
     }
     if (!orderMatchesFoodOrdersSidebar(orderToCheck, filter)) {
+      const movedTab = pipelineTabForSidebarStatus(resolveOrderSidebarPipelineStatus(fresh));
+      if (movedTab && movedTab !== filter) {
+        switchToOrderTab(fresh, true);
+        return;
+      }
       closeOrderPanel();
     }
-  }, [orders, filter, selectedOrder, rightPanelOpen, closeOrderPanel]);
+  }, [orders, filter, selectedOrder, rightPanelOpen, closeOrderPanel, switchToOrderTab]);
+
+  const { data: storeRecord } = usePartnerStoreRecord(storeId);
 
   useEffect(() => {
-    if (!storeId) return;
-    (async () => {
-      const s = await fetchStoreById(storeId);
-      if (s) {
-        setStore(s as MerchantStore);
-        setStoreInternalId((s as MerchantStore).id);
-        const ms = s as MerchantStore;
-        setIsStoreOpen(ms.operational_status === 'OPEN');
-      }
-    })();
-  }, [storeId]);
+    if (!storeRecord) return;
+    setStore(storeRecord);
+    setStoreInternalId(storeRecord.id);
+    setIsStoreOpen(storeRecord.operational_status === 'OPEN');
+  }, [storeRecord]);
 
   const fetchStoreStatus = useCallback(async () => {
     if (!storeId) return;
@@ -558,6 +584,11 @@ function OrdersPageContent() {
 
   const fetchOrders = useCallback(async () => {
     if (!storeId) return;
+    const cached = queryClient.getQueryData<OrdersFoodRow[]>(merchantKeys.foodOrders(storeId));
+    if (cached?.length) {
+      setOrders(cached);
+      setLoading(false);
+    }
     try {
       const res = await fetch(`/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=200`);
       const data = await res.json();
@@ -565,9 +596,11 @@ function OrdersPageContent() {
         if (Array.isArray(data.orders)) {
           console.log(`[FoodOrders] Loaded ${data.orders.length} orders for store ${storeId}`);
           setOrders(data.orders);
+          queryClient.setQueryData(merchantKeys.foodOrders(storeId), data.orders);
         } else {
           console.warn('[FoodOrders] Invalid response format:', data);
           setOrders([]);
+          queryClient.setQueryData(merchantKeys.foodOrders(storeId), []);
         }
       } else {
         console.error('[FoodOrders] API error:', data.error);
@@ -581,7 +614,7 @@ function OrdersPageContent() {
     } finally {
       setLoading(false);
     }
-  }, [storeId]);
+  }, [storeId, queryClient]);
 
   const fetchStats = useCallback(async () => {
     if (!storeId) return;
@@ -593,7 +626,18 @@ function OrdersPageContent() {
   }, [storeId]);
 
   useEffect(() => {
-    fetchOrders();
+    if (!storeId) return;
+    void fetch(
+      `/api/merchant/sync-acceptance-timeout?store_id=${encodeURIComponent(storeId)}`,
+      { method: 'POST', credentials: 'include', cache: 'no-store' }
+    ).catch(() => {});
+    void fetchOrders();
+  }, [fetchOrders, storeId]);
+
+  useEffect(() => {
+    const onRefresh = () => void fetchOrders();
+    window.addEventListener('partner-food-orders-refresh', onRefresh);
+    return () => window.removeEventListener('partner-food-orders-refresh', onRefresh);
   }, [fetchOrders]);
 
   useEffect(() => {
@@ -601,6 +645,15 @@ function OrdersPageContent() {
     const t = setInterval(fetchStats, 15000);
     return () => clearInterval(t);
   }, [fetchStats]);
+
+  /** Poll orders so admin / dashboard status changes appear even if realtime misses an event. */
+  useEffect(() => {
+    if (!storeId) return;
+    const t = setInterval(() => {
+      void fetchOrders();
+    }, 12000);
+    return () => clearInterval(t);
+  }, [storeId, fetchOrders]);
 
   useEffect(() => {
     if (!storeId) return;
@@ -947,6 +1000,7 @@ function OrdersPageContent() {
   }, [closeClosureType, closeClosureDate, closeClosureTime, closeReason, closeReasonOther, confirmStoreClose]);
 
   const autoCancelFiredRef = useRef<Set<number>>(new Set());
+  const orderPipelineByKeyRef = useRef<Map<number, string>>(new Map());
 
   const updateStatus = useCallback(
     async (
@@ -1061,6 +1115,9 @@ function OrdersPageContent() {
           return;
         }
         window.dispatchEvent(new CustomEvent('partner-pending-orders-refresh'));
+        if (shouldClearOrderNotifications(newStatus)) {
+          dispatchPartnerNotificationsChanged();
+        }
         if (coreOnly) {
           await fetchOrders();
           showFoodOrderStatusToast(newStatus);
@@ -1143,9 +1200,11 @@ function OrdersPageContent() {
         );
         const payload = (await res.json().catch(() => ({}))) as {
           error?: string;
+          expected_ready_at?: string;
           prep_ready_by_at?: string;
           prep_delay_minutes?: number;
           prep_delay_use_count?: number;
+          last_prep_delay_minutes_added?: number;
         };
         if (!res.ok) {
           toast.error(
@@ -1156,9 +1215,12 @@ function OrdersPageContent() {
           return false;
         }
         const patch = {
+          expected_ready_at: payload.expected_ready_at ?? order.expected_ready_at,
           prep_ready_by_at: payload.prep_ready_by_at ?? order.prep_ready_by_at,
           prep_delay_minutes: payload.prep_delay_minutes ?? order.prep_delay_minutes,
           prep_delay_use_count: payload.prep_delay_use_count ?? order.prep_delay_use_count,
+          last_prep_delay_minutes_added:
+            payload.last_prep_delay_minutes_added ?? additionalMinutes,
         };
         setOrders((prev) =>
           prev.map((o) => (o.id === order.id ? { ...o, ...patch } : o))
@@ -1166,7 +1228,7 @@ function OrdersPageContent() {
         if (selectedOrder?.id === order.id) {
           setSelectedOrder((prev) => (prev ? { ...prev, ...patch } : prev));
         }
-        toast.success(`+${additionalMinutes} min added for customer`);
+        toast.success(`Extra Time Added: +${additionalMinutes} min`);
         setPrepDelayOrder(null);
         return true;
       } catch {
@@ -1214,11 +1276,8 @@ function OrdersPageContent() {
 
   const acceptCountdown = useMemo(() => {
     if (!selectedOrder) return { label: undefined as string | undefined, disabled: false };
-    const st = normOrderStatus(selectedOrder.order_status);
+    const st = resolveOrderSidebarPipelineStatus(selectedOrder);
     if (st !== 'CREATED' && st !== 'NEW') return { label: undefined, disabled: false };
-    if (isStoreOpen === false) {
-      return { label: 'Store closed', disabled: true };
-    }
     const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
     const deadline = new Date(selectedOrder.created_at).getTime() + mins * 60_000;
     const secondsLeft = Math.max(0, Math.ceil((deadline - nowTick) / 1000));
@@ -1228,15 +1287,12 @@ function OrdersPageContent() {
       label: `Accept (${m}:${s.toString().padStart(2, '0')})`,
       disabled: secondsLeft <= 0,
     };
-  }, [selectedOrder, acceptanceSettings?.acceptance_window_minutes, nowTick, isStoreOpen]);
+  }, [selectedOrder, acceptanceSettings?.acceptance_window_minutes, nowTick]);
 
   const acceptCountdownFor = useCallback(
     (order: OrdersFoodRow) => {
-      const st = normOrderStatus(order.order_status);
+      const st = resolveOrderSidebarPipelineStatus(order);
       if (st !== 'CREATED' && st !== 'NEW') return { label: undefined as string | undefined, disabled: false };
-      if (isStoreOpen === false) {
-        return { label: 'Store closed', disabled: true };
-      }
       const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
       const deadline = new Date(order.created_at).getTime() + mins * 60_000;
       const secondsLeft = Math.max(0, Math.ceil((deadline - nowTick) / 1000));
@@ -1247,14 +1303,14 @@ function OrdersPageContent() {
         disabled: secondsLeft <= 0,
       };
     },
-    [acceptanceSettings?.acceptance_window_minutes, nowTick, isStoreOpen]
+    [acceptanceSettings?.acceptance_window_minutes, nowTick]
   );
 
   useEffect(() => {
     if (!storeId) return;
     const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
     for (const order of orders) {
-      const st = normOrderStatus(order.order_status);
+      const st = resolveOrderSidebarPipelineStatus(order);
       if (st !== 'CREATED') continue;
       const deadline = new Date(order.created_at).getTime() + mins * 60_000;
       if (nowTick < deadline) continue;
@@ -1276,6 +1332,64 @@ function OrdersPageContent() {
   ]);
 
   const filteredOrders = orders.filter((o) => orderMatchesFoodOrdersSidebar(o, filter));
+
+  /** When status changes externally (admin dashboard), follow the order into its new tab. */
+  useEffect(() => {
+    if (loading || orders.length === 0) return;
+
+    const prev = orderPipelineByKeyRef.current;
+    let orderToFollow: OrdersFoodRow | null = null;
+
+    for (const order of orders) {
+      const key = Number(order.order_id ?? order.id);
+      if (!Number.isFinite(key)) continue;
+
+      const pipeline = resolveOrderSidebarPipelineStatus(order);
+      const previousPipeline = prev.get(key);
+      prev.set(key, pipeline);
+
+      if (!previousPipeline || previousPipeline === pipeline) continue;
+
+      const fromTab = pipelineTabForSidebarStatus(previousPipeline);
+      const toTab = pipelineTabForSidebarStatus(pipeline);
+      if (!fromTab || !toTab || fromTab === toTab) continue;
+
+      const isSelected =
+        selectedOrder?.id === order.id ||
+        selectedOrder?.order_id === order.order_id ||
+        (orderIdFromUrl != null &&
+          (orderIdFromUrl === String(order.order_id) || orderIdFromUrl === String(order.id)));
+
+      const othersStillOnFromTab = orders.some(
+        (o) =>
+          o.id !== order.id &&
+          pipelineTabForSidebarStatus(resolveOrderSidebarPipelineStatus(o)) === fromTab
+      );
+
+      if (isSelected || (fromTab === filter && !othersStillOnFromTab)) {
+        orderToFollow = order;
+        break;
+      }
+    }
+
+    if (orderToFollow) {
+      switchToOrderTab(
+        orderToFollow,
+        Boolean(
+          selectedOrder?.id === orderToFollow.id ||
+            orderIdFromUrl === String(orderToFollow.order_id) ||
+            orderIdFromUrl === String(orderToFollow.id)
+        )
+      );
+    }
+  }, [
+    orders,
+    loading,
+    filter,
+    selectedOrder,
+    orderIdFromUrl,
+    switchToOrderTab,
+  ]);
 
   const selectedOrderBelongsToFilter =
     selectedOrder != null && orderMatchesFoodOrdersSidebar(selectedOrder, filter);
@@ -3035,13 +3149,20 @@ function OrderCard({
   const showPreparedLateBanner = preparedLateMins != null && preparedLateMins > 0;
   const showTopDelayBanner =
     (prepExpired && nowMs != null) || showPreparedLateBanner;
+  const extraTimeLabel = formatExtraPrepTimeAddedLabel(
+    order.last_prep_delay_minutes_added,
+    order.prep_delay_minutes
+  );
 
   return (
     <div className="min-w-0 touch-manipulation">
       <div className="overflow-hidden rounded-lg">
         {showTopDelayBanner ? (
           prepExpired && nowMs != null ? (
-            <OrderPrepDelayedBanner order={order} nowMs={nowMs} />
+            <>
+              <OrderPrepDelayedBanner order={order} nowMs={nowMs} />
+              {extraTimeLabel ? <ExtraPrepTimeAddedBanner label={extraTimeLabel} /> : null}
+            </>
           ) : showPreparedLateBanner ? (
             <OrderPreparedLateTopBanner lateMinutes={preparedLateMins!} />
           ) : null

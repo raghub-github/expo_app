@@ -14,7 +14,7 @@
  *
  * Missing env behaviour:
  *   Throws on first call rather than at import time. Callers that want a
- *   soft-degrade can wrap in try/catch.
+ *   soft-degrade can wrap in try/catch or use isRedisOptional().
  */
 // Use namespace import + .default — ioredis ships its class as default
 // export but NodeNext-resolved consumers see only the namespace under the
@@ -28,41 +28,107 @@ const RedisCtor = (IORedisNs as unknown as {
 
 let _client: RedisInstance | null = null;
 let _subscriber: RedisInstance | null = null;
+let _redisMarkedUnavailable = false;
+let _lastConnectAttemptMs = 0;
+let _lastErrorLogMs = 0;
+let _suppressedErrorCount = 0;
+
+const UNAVAILABLE_RETRY_MS = 30_000;
+const ERROR_LOG_INTERVAL_MS = 60_000;
 
 export type RedisClient = RedisInstance;
 
+/** True when REDIS_URL is set. */
+export function isRedisConfigured(): boolean {
+  const url = process.env.REDIS_URL?.trim();
+  return Boolean(url && url.length >= 10);
+}
+
+/**
+ * When true, cache/lock/pubsub degrade instead of crashing or spamming logs.
+ * Defaults to true in non-production unless REDIS_OPTIONAL=false.
+ */
+export function isRedisOptional(): boolean {
+  const raw = (process.env.REDIS_OPTIONAL ?? "").trim().toLowerCase();
+  if (raw === "false" || raw === "0") return false;
+  if (raw === "true" || raw === "1") return true;
+  return process.env.NODE_ENV !== "production";
+}
+
+function logRedisError(message: string): void {
+  const now = Date.now();
+  if (now - _lastErrorLogMs < ERROR_LOG_INTERVAL_MS) {
+    _suppressedErrorCount += 1;
+    return;
+  }
+  const suffix =
+    _suppressedErrorCount > 0 ? ` (+${_suppressedErrorCount} similar)` : "";
+  _suppressedErrorCount = 0;
+  _lastErrorLogMs = now;
+  // eslint-disable-next-line no-console
+  console.warn(`[redis] ${message}${suffix}`);
+}
+
+function markUnavailable(): void {
+  _redisMarkedUnavailable = true;
+  _lastConnectAttemptMs = Date.now();
+}
+
+function shouldAttemptConnect(): boolean {
+  if (!_redisMarkedUnavailable) return true;
+  return Date.now() - _lastConnectAttemptMs >= UNAVAILABLE_RETRY_MS;
+}
+
 function buildOptions(extra?: Partial<RedisOptions>): RedisOptions {
-  // Sensible defaults for a production Node service. ioredis applies
-  // exponential backoff and reconnects on transient failures.
+  const optional = isRedisOptional();
   return {
-    lazyConnect: false,
+    lazyConnect: true,
+    enableOfflineQueue: false,
     enableReadyCheck: true,
-    maxRetriesPerRequest: 3,
-    retryStrategy: (times) => Math.min(times * 200, 2000),
+    maxRetriesPerRequest: optional ? 1 : 3,
+    retryStrategy: (times) => {
+      if (optional && times >= 5) {
+        markUnavailable();
+        return null;
+      }
+      return Math.min(times * 200, 2000);
+    },
     reconnectOnError: (err) => {
       const msg = err.message || "";
-      // ReadOnly errors fire when a Redis Sentinel failover happens; force
-      // ioredis to reconnect to the new primary instead of erroring out.
       return msg.includes("READONLY");
     },
     ...extra,
   };
 }
 
+function attachErrorHandler(instance: RedisInstance, label: "client" | "subscriber"): void {
+  instance.on("error", (err: Error) => {
+    if (isRedisOptional()) {
+      markUnavailable();
+    }
+    logRedisError(`${label} error ${err.message}`);
+  });
+  instance.on("connect", () => {
+    _redisMarkedUnavailable = false;
+  });
+  instance.on("ready", () => {
+    _redisMarkedUnavailable = false;
+  });
+}
+
 export function getRedis(): RedisInstance {
   if (_client) return _client;
-  const url = process.env.REDIS_URL;
+  const url = process.env.REDIS_URL?.trim();
   if (!url) {
     throw new Error(
       "@gatimitra/redis: REDIS_URL is not set. Required for cache + locks + queue.",
     );
   }
+  if (_redisMarkedUnavailable && !shouldAttemptConnect()) {
+    throw new Error("@gatimitra/redis: Redis unavailable (optional mode backoff).");
+  }
   const instance = new RedisCtor(url, buildOptions());
-  instance.on("error", (err: Error) => {
-    // Surface but never crash the process — ioredis will reconnect.
-    // eslint-disable-next-line no-console
-    console.warn("[redis] client error", err.message);
-  });
+  attachErrorHandler(instance, "client");
   _client = instance;
   return instance;
 }
@@ -74,15 +140,15 @@ export function getRedis(): RedisInstance {
  */
 export function getRedisSubscriber(): RedisInstance {
   if (_subscriber) return _subscriber;
-  const url = process.env.REDIS_URL;
+  const url = process.env.REDIS_URL?.trim();
   if (!url) {
     throw new Error("@gatimitra/redis: REDIS_URL is not set (subscriber).");
   }
-  const instance = new RedisCtor(url, buildOptions({ lazyConnect: false }));
-  instance.on("error", (err: Error) => {
-    // eslint-disable-next-line no-console
-    console.warn("[redis] subscriber error", err.message);
-  });
+  if (_redisMarkedUnavailable && !shouldAttemptConnect()) {
+    throw new Error("@gatimitra/redis: Redis subscriber unavailable (optional mode backoff).");
+  }
+  const instance = new RedisCtor(url, buildOptions());
+  attachErrorHandler(instance, "subscriber");
   _subscriber = instance;
   return instance;
 }
@@ -98,5 +164,6 @@ export async function closeRedis(): Promise<void> {
     tasks.push(_subscriber.quit().catch(() => undefined));
     _subscriber = null;
   }
+  _redisMarkedUnavailable = false;
   await Promise.all(tasks);
 }

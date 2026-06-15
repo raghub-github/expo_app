@@ -1,15 +1,14 @@
 /**
  * Auth service – Supabase OTP (via Send SMS hook / MSG91) + backend session exchange.
  *
- * Flow:
- *  1. sendOtp   → Supabase signInWithOtp (Supabase triggers Send SMS hook → MSG91).
- *  2. verifyOtp → Supabase verifyOtp, then exchange Supabase token for backend session.
- *  3. Backend finds-or-creates customer row and returns a backend JWT.
+ * Flow (same pattern as merchant / rider apps):
+ *  1. sendOtp   → Supabase signInWithOtp (Send SMS hook → MSG91), or backend /otp/request
+ *  2. verifyOtp → Supabase verifyOtp → exchange-customer, or backend /otp/verify
  */
 
 import type { Session } from "@gatimitra/contracts";
 import api from "./api";
-import { getSupabaseAuth } from "@/lib/supabaseClient";
+import { getSupabaseAuth, getSupabaseOtpEnvDebugInfo } from "@/lib/supabaseClient";
 import { getItem, setItem, removeItem } from "@/utils/storage";
 import { STORAGE_KEYS } from "@/constants";
 
@@ -22,52 +21,100 @@ export type VerifyOtpPayload = {
   deviceId: string;
 };
 
-export const authService = {
-  /**
-   * Send OTP via Supabase Auth (triggers the Send SMS hook → MSG91).
-   * Falls back to backend /otp/request if Supabase is not configured.
-   */
-  async sendOtp(payload: SendOtpPayload): Promise<void> {
-    const supabase = getSupabaseAuth();
-    if (supabase) {
-      const { error } = await supabase.auth.signInWithOtp({
-        phone: payload.phoneE164,
-        options: { channel: "sms", shouldCreateUser: true },
-      });
-      if (error) throw new Error(error.message);
-      return;
-    }
-    // Fallback: backend-owned OTP (for dev when Supabase is not configured)
-    await api.post(`${AUTH_PREFIX}/otp/request`, payload, { timeout: 15000 });
-  },
+/** Set after successful backend /otp/request; cleared on verify or new send. */
+let _lastBackendOtpRequestId: string | null = null;
 
-  /**
-   * Verify OTP via Supabase Auth, then exchange the Supabase access token
-   * for a backend customer session (JWT + customer row).
-   * Falls back to backend /otp/verify if Supabase is not configured.
-   */
-  async verifyOtp(payload: VerifyOtpPayload): Promise<Session> {
-    const supabase = getSupabaseAuth();
-    if (supabase) {
-      const { data, error } = await supabase.auth.verifyOtp({
-        phone: payload.phoneE164,
-        token: payload.otp,
-        type: "sms",
+function shouldSendPhoneOtpViaBackend(): boolean {
+  const flag = (process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND ?? "").trim().toLowerCase();
+  if (flag === "true" || flag === "1" || flag === "yes") return true;
+  return getSupabaseAuth() == null;
+}
+
+export const authService = {
+  async sendOtp(payload: SendOtpPayload): Promise<void> {
+    _lastBackendOtpRequestId = null;
+    const viaBackend = shouldSendPhoneOtpViaBackend();
+
+    if (__DEV__) {
+      // eslint-disable-next-line no-console
+      console.log("[CustomerAuth] sendOtp", {
+        channel: viaBackend ? "backend" : "supabase",
+        supabase: getSupabaseOtpEnvDebugInfo(),
       });
-      if (error) throw new Error(error.message);
-      const sbToken = data?.session?.access_token;
-      if (!sbToken) throw new Error("No session returned from Supabase after OTP verify.");
-      const { data: session } = await api.post<Session>(
-        `${AUTH_PREFIX}/supabase/exchange-customer`,
-        { accessToken: sbToken, phoneE164: payload.phoneE164, deviceId: payload.deviceId },
+    }
+
+    if (viaBackend) {
+      const { data } = await api.post<{ requestId: string }>(
+        `${AUTH_PREFIX}/otp/request`,
+        payload,
         { timeout: 15000 },
       );
-      return session;
+      const rid = typeof data?.requestId === "string" ? data.requestId : "";
+      if (!rid) {
+        throw new Error("Server did not return an OTP request id.");
+      }
+      _lastBackendOtpRequestId = rid;
+      return;
     }
-    // Fallback: backend-owned OTP
-    const body = { ...payload, requestId: "", appType: "customer" as const };
-    const { data } = await api.post<Session>(`${AUTH_PREFIX}/otp/verify`, body, { timeout: 15000 });
-    return data;
+
+    const supabase = getSupabaseAuth();
+    if (!supabase) {
+      throw new Error(
+        "Supabase is not configured. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.",
+      );
+    }
+
+    const { error } = await supabase.auth.signInWithOtp({
+      phone: payload.phoneE164,
+      options: { channel: "sms", shouldCreateUser: true },
+    });
+    if (error) {
+      const hint =
+        /hook|sms|provider|phone/i.test(error.message || "")
+          ? " Check Supabase Phone Auth, Send SMS hook, and backend MSG91 config."
+          : "";
+      throw new Error((error.message || "Could not send OTP via Supabase.") + hint);
+    }
+  },
+
+  async verifyOtp(payload: VerifyOtpPayload): Promise<Session> {
+    const backendRequestId = _lastBackendOtpRequestId;
+    if (backendRequestId) {
+      const { data } = await api.post<Session>(
+        `${AUTH_PREFIX}/otp/verify`,
+        {
+          requestId: backendRequestId,
+          phoneE164: payload.phoneE164,
+          otp: payload.otp,
+          deviceId: payload.deviceId,
+          appType: "customer",
+        },
+        { timeout: 15000 },
+      );
+      _lastBackendOtpRequestId = null;
+      return data;
+    }
+
+    const supabase = getSupabaseAuth();
+    if (!supabase) {
+      throw new Error("OTP not requested yet. Tap Send OTP first and wait for the code.");
+    }
+
+    const { data, error } = await supabase.auth.verifyOtp({
+      phone: payload.phoneE164,
+      token: payload.otp,
+      type: "sms",
+    });
+    if (error) throw new Error(error.message);
+    const sbToken = data?.session?.access_token;
+    if (!sbToken) throw new Error("No session returned from Supabase after OTP verify.");
+
+    const { data: session } = await api.post<Session>(
+      `${AUTH_PREFIX}/supabase/exchange-customer`,
+      { accessToken: sbToken, phoneE164: payload.phoneE164, deviceId: payload.deviceId },
+      { timeout: 15000 },
+    );
+    return session;
   },
 
   async persistSession(session: Session): Promise<void> {

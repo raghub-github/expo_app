@@ -6,11 +6,10 @@ import Link from 'next/link'
 import { useRouter, useSearchParams, usePathname } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
-import { fetchRestaurantById as fetchStoreById, fetchRestaurantByName as fetchStoreByName } from '@/lib/database'
 import { MerchantStore } from '@/lib/merchantStore'
+import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord'
+import { useApprovedPartnerStores } from '@/hooks/usePartnerResolveSession'
 import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants'
-import { clientStoreOpsDebugLog } from '@/lib/store-ops-client-debug'
-import { partnerSurfaceOnlineFromStoreOperationsBody } from '@/lib/partnerStoreSurfaceOnline'
 import {
   PARTNER_STORE_OPERATIONS_REFRESH_EVENT,
   type PartnerStoreOperationsRefreshDetail,
@@ -52,7 +51,13 @@ import { LivePreviewInsightsPanel, mapInsightsDatePreset } from '@/components/me
 import { BusinessReportsPanel } from '@/components/merchant/BusinessReportsPanel';
 import { prefetchGrowthInsights } from '@/lib/merchant-growth/growth-insights-cache';
 import { createClient } from '@/lib/supabase/client';
-import { useMerchantWallet, useSelfDeliveryRiders } from '@/hooks/useMerchantApi';
+import { useMerchantWallet, useSelfDeliveryRiders, useStoreOperations } from '@/hooks/useMerchantApi';
+import {
+  deriveStoreOperationsUiPatch,
+  readCachedStoreOpenFromEngine,
+  type ActiveRushRow,
+  type ScheduledTimeOffRow,
+} from '@/lib/applyStoreOperationsResponse';
 
 export const dynamic = 'force-dynamic'
 
@@ -147,67 +152,32 @@ const FILTER_SHEET_CATEGORIES = [
 
 type FilterCategoryId = (typeof FILTER_SHEET_CATEGORIES)[number]['id']
 
-type ScheduledTimeOffRow = {
-  id: number
-  reason: string | null
-  starts_at: string
-  ends_at: string
-  status: string
-  phase: 'active' | 'upcoming'
-  marked_from: string | null
-}
-
-type ActiveRushRow = {
-  is_active: boolean
-  remaining_minutes: number
-  marked_from: string | null
-}
-
-function parseScheduledTimeOffsFromApi(raw: unknown): ScheduledTimeOffRow[] {
-  if (!Array.isArray(raw)) return []
-  const out: ScheduledTimeOffRow[] = []
-  for (const item of raw) {
-    if (item == null || typeof item !== 'object') continue
-    const o = item as Record<string, unknown>
-    const id = Number(o.id)
-    const starts_at = typeof o.starts_at === 'string' ? o.starts_at : ''
-    const ends_at = typeof o.ends_at === 'string' ? o.ends_at : ''
-    const status = typeof o.status === 'string' ? o.status : ''
-    const phaseRaw = o.phase
-    const phase = phaseRaw === 'active' || phaseRaw === 'upcoming' ? phaseRaw : null
-    const reason =
-      typeof o.reason === 'string' && o.reason.trim() !== '' ? o.reason.trim() : null
-    const marked_from =
-      o.marked_from != null && String(o.marked_from).trim() !== '' ? String(o.marked_from).trim() : null
-    if (!Number.isFinite(id) || !starts_at || !ends_at || !phase) continue
-    out.push({ id, reason, starts_at, ends_at, status, phase, marked_from })
-  }
-  return out
-}
-
-function parseActiveRushFromApi(raw: unknown): ActiveRushRow | null {
-  if (raw == null || typeof raw !== 'object') return null
-  const o = raw as Record<string, unknown>
-  if (o.is_active !== true) return null
-  const remaining = Number(o.remaining_minutes)
-  return {
-    is_active: true,
-    remaining_minutes: Number.isFinite(remaining) ? remaining : 0,
-    marked_from:
-      o.marked_from != null && String(o.marked_from).trim() !== '' ? String(o.marked_from).trim() : null,
-  }
-}
-
 function DashboardContent() {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const [store, setStore] = useState<MerchantStore | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
   const [storeId, setStoreId] = useState<string | null>(null)
+  const { data: storeRecord, isLoading: storeQueryLoading } = usePartnerStoreRecord(storeId)
+  const { approvedStores } = useApprovedPartnerStores()
+  const outletList = useMemo(
+    () =>
+      approvedStores.map((s) => ({
+        store_id: String(s.store_id),
+        store_name: String(s.store_name || s.store_id || 'Store'),
+      })),
+    [approvedStores]
+  )
+  const isLoading = storeQueryLoading && !storeRecord
   
   // Store Status & Delivery Mode — card follows GET /api/store-operations (same effective OPEN as dashboard); engine for modals + persistence.
   const engine = useLocalStoreStatusEngineStore()
+  const [storeOpsPainted, setStoreOpsPainted] = useState(false)
+  const {
+    data: storeOpsData,
+    refetch: refetchStoreOperations,
+    isFetching: storeOpsFetching,
+  } = useStoreOperations(storeId, { refetchInterval: false })
   const [isStoreOpen, setIsStoreOpen] = useState(false)
   const [mxDeliveryEnabled, setMxDeliveryEnabled] = useState(false)
   const { data: selfDeliveryRidersData = [], isLoading: selfDeliveryRidersLoading } = useSelfDeliveryRiders(storeId, mxDeliveryEnabled)
@@ -453,7 +423,6 @@ function DashboardContent() {
   const walletPendingBalance = walletData?.pending_balance ?? 0
 
   /** Approved outlets (same source as sidebar) for quick switch + filter sheet */
-  const [outletList, setOutletList] = useState<{ store_id: string; store_name: string }[]>([])
   const [insightsTab, setInsightsTab] = useState<'live' | 'reports'>('live')
   const [reportsSubview, setReportsSubview] = useState<'table' | 'chart'>('table')
   const [filterSheetOpen, setFilterSheetOpen] = useState(false)
@@ -486,32 +455,6 @@ function DashboardContent() {
     },
     [pathname, router, searchParams]
   )
-
-  useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      try {
-        const res = await fetch('/api/merchant-auth/resolve-session', { credentials: 'include' })
-        const data = await res.json().catch(() => ({}))
-        if (cancelled || !res.ok || !Array.isArray((data as { stores?: unknown }).stores)) return
-        const approved = ((data as { stores: { store_id?: string; store_name?: string; approval_status?: string }[] }).stores).filter(
-          (s) => String(s.approval_status || '').toUpperCase() === 'APPROVED'
-        )
-        setOutletList(
-          approved.map((s) => ({
-            store_id: String(s.store_id),
-            store_name: String(s.store_name || s.store_id || 'Store'),
-          }))
-        )
-      } catch {
-        /* ignore */
-      }
-    }
-    void load()
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   useEffect(() => {
     if (!outletList.length) return
@@ -598,137 +541,78 @@ function DashboardContent() {
     getStoreId()
   }, [searchParams])
 
-  // Load store data
+  // Sync store record from shared cache
   useEffect(() => {
-    if (!storeId) return
+    if (!storeRecord) return
 
-    const loadStore = async () => {
-      setIsLoading(true)
-      try {
-        let storeData = await fetchStoreById(storeId)
-
-        if (storeData && (storeData as any).notFound) {
-          setStore(null)
-          toast.error('Your store is not in our database. Please check your registration or contact support.')
-          setIsLoading(false)
-          return
-        }
-
-        if (!storeData && !storeId.match(/^GMM\d{4}$/)) {
-          storeData = await fetchStoreByName(storeId)
-        }
-
-        if (storeData) {
-          setStore(storeData as MerchantStore)
-          // Modal logic: if not APPROVED, show modal
-          if (storeData.approval_status !== 'APPROVED') {
-            setModalStatus({ status: storeData.approval_status ?? '', reason: storeData.approval_reason ?? '' })
-            setShowStatusModal(true)
-          }
-        }
-      } catch (error) {
-        console.error('Error loading store:', error)
-      } finally {
-        setIsLoading(false)
-      }
+    if ((storeRecord as { notFound?: boolean }).notFound) {
+      setStore(null)
+      toast.error('Your store is not in our database. Please check your registration or contact support.')
+      return
     }
 
-    loadStore()
+    setStore(storeRecord)
+    if (storeRecord.approval_status !== 'APPROVED') {
+      setModalStatus({
+        status: storeRecord.approval_status ?? '',
+        reason: storeRecord.approval_reason ?? '',
+      })
+      setShowStatusModal(true)
+    }
+  }, [storeRecord])
+
+  // Instant paint from last-known local status while network fetch runs.
+  useEffect(() => {
+    if (!storeId) {
+      setStoreOpsPainted(false)
+      return
+    }
+    useLocalStoreStatusEngineStore.getState().hydrate(storeId)
+    const cachedOpen = readCachedStoreOpenFromEngine(storeId)
+    if (cachedOpen !== null) {
+      setIsStoreOpen(cachedOpen)
+      setStoreOpsPainted(true)
+    } else {
+      setStoreOpsPainted(false)
+    }
   }, [storeId])
 
-  // Fetch store operations (same API as Food Orders header) – open/closed, today's slots, activity
+  useEffect(() => {
+    if (!storeOpsData) return
+    const patch = deriveStoreOperationsUiPatch(storeOpsData)
+    setIsStoreOpen(patch.isStoreOpen)
+    setOpensAt(patch.opensAt)
+    setTodaySlots(patch.todaySlots)
+    setOpeningTime(patch.openingTime)
+    setClosingTime(patch.closingTime)
+    setSchedulePhase(patch.schedulePhase)
+    setWithinOperatingHours(patch.withinOperatingHours)
+    setScheduleStatusLabel(patch.scheduleStatusLabel)
+    setIsTodayScheduledClosed(patch.isTodayScheduledClosed)
+    setConfiguredTodaySlots(patch.configuredTodaySlots)
+    setLastToggleBy(patch.lastToggleBy)
+    setLastToggleType(patch.lastToggleType)
+    setLastToggledByName(patch.lastToggledByName)
+    setLastToggledById(patch.lastToggledById)
+    setRestrictionType(patch.restrictionType)
+    setWithinHoursButRestricted(patch.withinHoursButRestricted)
+    setLastToggledAt(patch.lastToggledAt)
+    setManualActivationLock(patch.manualActivationLock)
+    setLicenseBlockedForOps(patch.licenseBlockedForOps)
+    setCloseReasonFromOps(patch.closeReasonFromOps)
+    setNextScheduleTransitionAt(patch.nextScheduleTransitionAt)
+    setCountdownAt(patch.countdownAt)
+    setCountdownKind(patch.countdownKind)
+    setCountdownWallLabel(patch.countdownWallLabel)
+    setScheduledTimeOffs(patch.scheduledTimeOffs)
+    setActiveRush(patch.activeRush)
+    setStoreOpsPainted(true)
+  }, [storeOpsData])
+
   const fetchStoreOperations = React.useCallback(async () => {
     if (!storeId) return
-    try {
-      const res = await fetch(`/api/store-operations?store_id=${encodeURIComponent(storeId)}`)
-      const data = await res.json()
-      if (res.ok) {
-        const surfaceOnline = partnerSurfaceOnlineFromStoreOperationsBody(data as Record<string, unknown>)
-        clientStoreOpsDebugLog('dashboard fetchStoreOperations', {
-          storeId,
-          operational_status: data.operational_status,
-          within_operating_hours: data.within_operating_hours,
-          surface_online: surfaceOnline,
-          last_toggle_type: data.last_toggle_type,
-          last_toggled_at: data.last_toggled_at,
-          restriction_type: data.restriction_type,
-          within_hours_but_restricted: data.within_hours_but_restricted,
-        })
-        const openForPartnerUi = surfaceOnline ?? false
-        setIsStoreOpen(openForPartnerUi)
-        setOpensAt(data.opens_at ?? null)
-        const slots = (data.today_slots || []) as { start: string; end: string }[]
-        setTodaySlots(slots)
-        const activeSlot = (data.active_slot ?? null) as { start: string; end: string } | null
-        const displaySlot = activeSlot ?? slots[0] ?? null
-        if (displaySlot) {
-          setOpeningTime(displaySlot.start ?? null)
-          setClosingTime(displaySlot.end ?? null)
-        } else {
-          setOpeningTime(null)
-          setClosingTime(null)
-        }
-        setSchedulePhase(typeof data.schedule_phase === 'string' ? data.schedule_phase : null)
-        setWithinOperatingHours(
-          typeof data.within_operating_hours === 'boolean' ? data.within_operating_hours : null
-        )
-        setScheduleStatusLabel(
-          typeof data.schedule_status_label === 'string' ? data.schedule_status_label : null
-        )
-        setIsTodayScheduledClosed(data.is_today_scheduled_closed === true)
-        const configured = (data.configured_today_slots || []) as { start: string; end: string }[]
-        setConfiguredTodaySlots(configured)
-        setLastToggleBy(data.last_toggled_by_email || null)
-        setLastToggleType(data.last_toggle_type || null)
-        setLastToggledByName(data.last_toggled_by_name || null)
-        setLastToggledById(data.last_toggled_by_id || null)
-        const rt = data.restriction_type != null ? String(data.restriction_type).toLowerCase() : ''
-        setRestrictionType(rt === 'manual_hold' ? 'MANUAL_HOLD' : data.restriction_type || null)
-        setWithinHoursButRestricted(data.within_hours_but_restricted === true)
-        setLastToggledAt(data.last_toggled_at || null)
-        setManualActivationLock(data.block_auto_open === true)
-        setLicenseBlockedForOps(data.license_blocked === true)
-        setCloseReasonFromOps(
-          typeof data.close_reason === 'string' && data.close_reason.trim() !== '' ? data.close_reason.trim() : null
-        )
-        const manualUntil =
-          typeof data.manual_close_until === 'string' && data.manual_close_until.trim() !== ''
-            ? data.manual_close_until.trim()
-            : null
-        const closeReason =
-          typeof data.close_reason === 'string' && data.close_reason.trim() !== '' ? data.close_reason.trim() : null
-        setNextScheduleTransitionAt(
-          typeof data.next_schedule_transition_at === 'string' ? data.next_schedule_transition_at : null
-        )
-        setCountdownAt(typeof data.countdown_at === 'string' ? data.countdown_at : null)
-        setCountdownKind(typeof data.countdown_kind === 'string' ? data.countdown_kind : null)
-        setCountdownWallLabel(
-          typeof data.countdown_wall_label === 'string' ? data.countdown_wall_label : null
-        )
-        setScheduledTimeOffs(parseScheduledTimeOffsFromApi((data as { scheduled_time_offs?: unknown }).scheduled_time_offs))
-        setActiveRush(parseActiveRushFromApi((data as { active_rush?: unknown }).active_rush))
-        if (data.schedule_end_prompt_active === true) {
-          engine.openScheduleEndModal()
-        }
-        useLocalStoreStatusEngineStore.getState().syncFromStoreOperations({
-          operationalOpen: openForPartnerUi,
-          manualCloseUntil: manualUntil,
-          manualCloseReason: closeReason,
-        })
-      } else {
-        setTodaySlots([])
-        setCloseReasonFromOps(null)
-        setScheduledTimeOffs([])
-        setActiveRush(null)
-      }
-    } catch {
-      // keep current state
-    }
-  }, [storeId])
-
-  useEffect(() => {
-    if (storeId) fetchStoreOperations()
-  }, [storeId, fetchStoreOperations])
+    await refetchStoreOperations()
+  }, [storeId, refetchStoreOperations])
 
   useEffect(() => {
     if (!storeId) return
@@ -748,12 +632,12 @@ function DashboardContent() {
     return () => window.removeEventListener(PARTNER_STORE_OPERATIONS_REFRESH_EVENT, onRefresh as EventListener)
   }, [storeId, fetchStoreOperations])
 
-  // Poll store-operations: faster near slot/break boundaries, otherwise every 30s
+  // Poll store-operations: faster near slot/break boundaries, otherwise every 30s (React Query handles initial fetch).
   useEffect(() => {
     if (!storeId) return
     let timer: ReturnType<typeof setTimeout> | undefined
     const schedulePoll = () => {
-      void fetchStoreOperations().finally(() => {
+      void refetchStoreOperations().finally(() => {
         const transitionMs = nextScheduleTransitionAt
           ? new Date(nextScheduleTransitionAt).getTime() - Date.now()
           : null
@@ -764,11 +648,18 @@ function DashboardContent() {
         timer = setTimeout(schedulePoll, delay)
       })
     }
-    schedulePoll()
+    const transitionMs = nextScheduleTransitionAt
+      ? new Date(nextScheduleTransitionAt).getTime() - Date.now()
+      : null
+    const initialDelay =
+      transitionMs != null && transitionMs > 0 && transitionMs <= 120_000
+        ? Math.max(3_000, Math.min(transitionMs + 500, 15_000))
+        : 30_000
+    timer = setTimeout(schedulePoll, initialDelay)
     return () => {
       if (timer) clearTimeout(timer)
     }
-  }, [storeId, fetchStoreOperations, nextScheduleTransitionAt])
+  }, [storeId, refetchStoreOperations, nextScheduleTransitionAt])
 
   // When close popup opens, set default date (today, local) and time (now + 10 min) for Temporary Closed
   useEffect(() => {
@@ -1433,6 +1324,20 @@ function DashboardContent() {
                           : 'border-red-500'
                     }`}
                   >
+                    {!storeOpsPainted && storeOpsFetching ? (
+                      <div className="flex flex-1 flex-col gap-3 animate-pulse min-h-[200px]">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="space-y-2 flex-1">
+                            <div className="h-8 w-44 rounded-md bg-slate-200/70" />
+                            <div className="h-4 w-36 rounded bg-slate-200/60" />
+                          </div>
+                          <div className="h-10 w-10 rounded-full bg-slate-200/70 shrink-0" />
+                        </div>
+                        <div className="flex-1 rounded-lg bg-slate-200/40" />
+                        <div className="h-10 rounded-md bg-slate-200/50 mt-auto" />
+                      </div>
+                    ) : (
+                    <>
                     <div className="flex items-start justify-between gap-2 shrink-0">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
@@ -1670,6 +1575,8 @@ function DashboardContent() {
                         <div className="relative h-6 w-11 rounded-full bg-slate-200 transition-colors after:absolute after:left-[3px] after:top-[3px] after:h-[18px] after:w-[18px] after:rounded-full after:border after:border-slate-200/80 after:bg-white after:shadow-sm after:transition-transform after:content-[''] peer-focus-visible:ring-2 peer-focus-visible:ring-orange-400 peer-focus-visible:ring-offset-2 peer-checked:bg-red-600 peer-checked:after:translate-x-[22px]" />
                       </label>
                     </div>
+                    </>
+                    )}
                   </div>
                 </section>
 

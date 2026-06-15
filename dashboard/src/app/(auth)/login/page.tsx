@@ -28,6 +28,27 @@ export default function LoginPage() {
 
   // Check for error in URL params (e.g., from OAuth callback or validation failures)
   useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search);
+    const reason = searchParams.get("reason");
+
+    if (reason === "session_invalid" || reason === "session_required") {
+      void (async () => {
+        try {
+          await supabase.auth.signOut();
+        } catch {
+          // ignore
+        }
+        try {
+          await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+        } catch {
+          // ignore
+        }
+        searchParams.delete("reason");
+        const qs = searchParams.toString();
+        window.history.replaceState({}, "", qs ? `/login?${qs}` : "/login");
+      })();
+    }
+
     // Add global error handler to catch unhandled promise rejections
     const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
       console.error("Unhandled promise rejection:", event.reason);
@@ -40,7 +61,6 @@ export default function LoginPage() {
 
     window.addEventListener("unhandledrejection", handleUnhandledRejection);
 
-    const searchParams = new URLSearchParams(window.location.search);
     const errorParam = searchParams.get("error");
     if (errorParam) {
       setError(decodeURIComponent(errorParam));

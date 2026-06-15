@@ -46,6 +46,7 @@ import { incrCounter, renderPrometheus } from "@gatimitra/logger";
 import { merchantMenuRoutes } from "./modules/merchant-menu/merchant-menu.routes.js";
 import { pushRoutes } from "./modules/push/push.routes.js";
 import { offersRoutes } from "./modules/offers/offers.routes.js";
+import { customerSubscriptionModule } from "./modules/subscription/customer-subscription.routes.js";
 import { errorHandler } from "./plugins/errorHandler.js";
 import { requestLogger } from "./plugins/requestLogger.js";
 import { getDb } from "./db/client.js";
@@ -331,6 +332,21 @@ await app.register(merchantReportRoutes, { prefix: "/v1/merchants" });
 await app.register(bookmarkRoutes, { prefix: "/v1/bookmarks" });
 await app.register(billingModule, { prefix: "/v1/billing" });
 await app.register(orderRoutes, { prefix: "/v1/orders" });
+const { tripShareRoutes } = await import("./modules/trip-share/trip-share.routes.js");
+await app.register(tripShareRoutes, { prefix: "/v1/orders" });
+const { publicTrackingRoutes } = await import("./modules/trip-share/public-tracking.routes.js");
+await app.register(publicTrackingRoutes, { prefix: "/v1/public" });
+const { buildLiveTrackPageHtml } = await import("./modules/trip-share/live-track-page.js");
+const { liveTrackPageRouteConfig } = await import("./modules/trip-share/live-track-route-config.js");
+const liveTrackRouteOpts = { config: liveTrackPageRouteConfig() };
+app.get<{ Params: { token: string } }>("/trip/:token", liveTrackRouteOpts, async (req, reply) => {
+  reply.type("text/html; charset=utf-8").send(buildLiveTrackPageHtml(req.params.token));
+});
+app.get<{ Params: { token: string } }>("/live-trip/:token", liveTrackRouteOpts, async (req, reply) => {
+  reply.type("text/html; charset=utf-8").send(buildLiveTrackPageHtml(req.params.token));
+});
+const { sendLiveTrackMapbike } = await import("./modules/trip-share/live-track-map-assets.js");
+app.get("/trip/assets/mapbike.png", liveTrackRouteOpts, async (_req, reply) => sendLiveTrackMapbike(reply));
 await app.register(rideRoutes, { prefix: "/v1/rides" });
 await app.register(distanceModule, { prefix: "/v1/distance" });
 const { weatherRoutes } = await import("./modules/weather/weather.routes.js");
@@ -342,6 +358,7 @@ await app.register(geoRoutes, { prefix: "/v1" });
 await app.register(deliveryRateCardModule, { prefix: "/v1/delivery-fee" });
 await app.register(pushRoutes, { prefix: "/v1/push" });
 await app.register(offersRoutes, { prefix: "/v1/offers" });
+await app.register(customerSubscriptionModule, { prefix: "/v1" });
 
 // Internal routes for in-cluster workers (payment-worker etc). Guarded by
 // the shared INTERNAL_API_TOKEN header. Not exposed to the public internet.
@@ -413,6 +430,8 @@ let rideSearchTimeoutInterval: ReturnType<typeof setInterval> | null = null;
 let orderDispatchWaveInterval: ReturnType<typeof setInterval> | null = null;
 let competitorSnapshotsInterval: ReturnType<typeof setInterval> | null = null;
 let weatherRefreshInterval: ReturnType<typeof setInterval> | null = null;
+let etaLiveTickInterval: ReturnType<typeof setInterval> | null = null;
+let subscriptionRenewalInterval: ReturnType<typeof setInterval> | null = null;
 let shuttingDown = false;
 let inFlightRequests = 0;
 
@@ -455,6 +474,8 @@ const gracefulShutdown = async (signal: string) => {
   if (orderDispatchWaveInterval) { clearInterval(orderDispatchWaveInterval); orderDispatchWaveInterval = null; }
   if (competitorSnapshotsInterval) { clearInterval(competitorSnapshotsInterval); competitorSnapshotsInterval = null; }
   if (weatherRefreshInterval) { clearInterval(weatherRefreshInterval); weatherRefreshInterval = null; }
+  if (etaLiveTickInterval) { clearInterval(etaLiveTickInterval); etaLiveTickInterval = null; }
+  if (subscriptionRenewalInterval) { clearInterval(subscriptionRenewalInterval); subscriptionRenewalInterval = null; }
 
   const drainStart = Date.now();
   while (inFlightRequests > 0 && Date.now() - drainStart < SHUTDOWN_DRAIN_TIMEOUT_MS) {
@@ -644,6 +665,53 @@ try {
       void runWeatherTickLocked();
     }, weatherRefreshIntervalMs);
     app.log.info({ intervalMinutes: 12 }, "weather zone refresh tick started");
+
+    // Live ETA engine — every 60 s; lock TTL 75 s.
+    const etaLiveTickIntervalMs = 60_000;
+    const runEtaLiveTickLocked = () =>
+      withLock("tick:eta-live", 75_000, async () => {
+        const { runLiveEtaTick } = await import("./modules/eta/eta.live-tick.js");
+        return runLiveEtaTick(250);
+      })
+        .then((result) => {
+          incrCounter(
+            "tick_runs_total",
+            "Polling tick outcomes by lock state",
+            1,
+            { tick: "eta_live", outcome: result === null ? "skipped" : "ran" },
+          );
+        })
+        .catch((err) => app.log.error({ err }, "eta_live_tick"));
+    void runEtaLiveTickLocked();
+    etaLiveTickInterval = setInterval(() => {
+      void runEtaLiveTickLocked();
+    }, etaLiveTickIntervalMs);
+    app.log.info({ intervalSeconds: 60 }, "live ETA tick started");
+
+    // GMitra Max subscription auto-renewal — every 10 min; lock TTL 12 min.
+    const subscriptionRenewalIntervalMs = 10 * 60 * 1000;
+    const subscriptionRenewalLockMs = 12 * 60 * 1000;
+    const runSubscriptionRenewalLocked = () =>
+      withLock("tick:rider-subscription-renewal", subscriptionRenewalLockMs, async () => {
+        const { processRiderSubscriptionRenewals } = await import(
+          "./modules/rider/rider-subscription.service.js"
+        );
+        return processRiderSubscriptionRenewals();
+      })
+        .then((result) => {
+          incrCounter(
+            "tick_runs_total",
+            "Polling tick outcomes by lock state",
+            1,
+            { tick: "rider_subscription_renewal", outcome: result === null ? "skipped" : "ran" },
+          );
+        })
+        .catch((err) => app.log.error({ err }, "rider_subscription_renewal_tick"));
+    void runSubscriptionRenewalLocked();
+    subscriptionRenewalInterval = setInterval(() => {
+      void runSubscriptionRenewalLocked();
+    }, subscriptionRenewalIntervalMs);
+    app.log.info({ intervalMinutes: 10 }, "rider subscription renewal tick started");
   }
 } catch (error) {
   app.log.error({ error }, "Failed to start server");

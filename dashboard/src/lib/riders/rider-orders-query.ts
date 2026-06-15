@@ -2,11 +2,12 @@
  * Shared rider order queries for dashboard (orders_core + order_rider_assignments, legacy fallback).
  */
 
-import { orders, ordersCore } from "@/lib/db/schema";
+import { orders, ordersCore, ordersRide } from "@/lib/db/schema";
 import type { getDb } from "@/lib/db/client";
 import { eq, and, desc, gte, lte, sql, or, ilike } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
 import { formatRiderOrderDisplayId } from "@/lib/riders/format-rider-order-display-id";
+import { enrichRiderOrdersWithEarnings } from "@/lib/riders/rider-order-earnings";
 
 export { formatRiderOrderDisplayId };
 
@@ -44,6 +45,13 @@ export type RiderRecentOrderRow = {
   orderId?: string | null;
   externalRef?: string | null;
   displayOrderId?: string | null;
+  grandTotal?: string | number | null;
+  tipAmount?: string | number | null;
+  billingSnapshot?: unknown;
+  paymentStatus?: string | null;
+  adminRiderPaymentClearedAt?: Date | string | null;
+  walletCredited?: boolean;
+  earningCreditPending?: boolean;
 };
 
 function parseFromBound(from: string): string {
@@ -101,6 +109,11 @@ function mapCoreRow(row: {
   distanceKm: string | number | null;
   fareAmount: string | number | null;
   riderEarning: string | number | null;
+  grandTotal?: string | number | null;
+  tipAmount?: string | number | null;
+  billingSnapshot?: unknown;
+  paymentStatus?: string | null;
+  adminRiderPaymentClearedAt?: Date | string | null;
   createdAt: Date;
   updatedAt: Date;
   formattedOrderId: string | null;
@@ -126,6 +139,11 @@ function mapCoreRow(row: {
     distanceKm: row.distanceKm != null ? Number(row.distanceKm) : null,
     fareAmount: row.fareAmount,
     riderEarning: row.riderEarning,
+    grandTotal: row.grandTotal ?? null,
+    tipAmount: row.tipAmount ?? null,
+    billingSnapshot: row.billingSnapshot ?? null,
+    paymentStatus: row.paymentStatus ?? null,
+    adminRiderPaymentClearedAt: row.adminRiderPaymentClearedAt ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt ?? null,
     formattedOrderId,
@@ -152,7 +170,7 @@ function mapLegacyRow(row: OrdersLegacyRow): RiderRecentOrderRow {
     pickupLon: row.pickupLon ?? null,
     dropLat: row.dropLat ?? null,
     dropLon: row.dropLon ?? null,
-    distanceKm: row.distanceKm ?? null,
+    distanceKm: row.distanceKm != null ? Number(row.distanceKm) : null,
     fareAmount: row.fareAmount,
     riderEarning: row.riderEarning,
     createdAt: row.createdAt,
@@ -204,6 +222,11 @@ async function listFromOrdersCore(
       distanceKm: ordersCore.distanceKm,
       fareAmount: ordersCore.fareAmount,
       riderEarning: ordersCore.riderEarning,
+      grandTotal: ordersCore.grandTotal,
+      tipAmount: ordersCore.tipAmount,
+      billingSnapshot: ordersCore.billingSnapshot,
+      paymentStatus: ordersCore.paymentStatus,
+      adminRiderPaymentClearedAt: ordersRide.adminRiderPaymentClearedAt,
       createdAt: ordersCore.createdAt,
       updatedAt: ordersCore.updatedAt,
       formattedOrderId: ordersCore.formattedOrderId,
@@ -211,11 +234,12 @@ async function listFromOrdersCore(
       externalRef: ordersCore.externalRef,
     })
     .from(ordersCore)
+    .leftJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
     .where(conditions.length > 1 ? and(...conditions) : conditions[0])
     .orderBy(desc(ordersCore.createdAt))
     .limit(filters.limit);
 
-  return rows.map(mapCoreRow);
+  return enrichRiderOrdersWithEarnings(db, riderId, rows.map(mapCoreRow));
 }
 
 async function listFromLegacyOrders(
@@ -322,6 +346,11 @@ export async function listRiderOrdersPaginated(
         distanceKm: ordersCore.distanceKm,
         fareAmount: ordersCore.fareAmount,
         riderEarning: ordersCore.riderEarning,
+        grandTotal: ordersCore.grandTotal,
+        tipAmount: ordersCore.tipAmount,
+        billingSnapshot: ordersCore.billingSnapshot,
+        paymentStatus: ordersCore.paymentStatus,
+        adminRiderPaymentClearedAt: ordersRide.adminRiderPaymentClearedAt,
         createdAt: ordersCore.createdAt,
         updatedAt: ordersCore.updatedAt,
         formattedOrderId: ordersCore.formattedOrderId,
@@ -329,12 +358,17 @@ export async function listRiderOrdersPaginated(
         externalRef: ordersCore.externalRef,
       })
       .from(ordersCore)
+      .leftJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
       .where(whereClause)
       .orderBy(desc(ordersCore.createdAt))
       .limit(args.limit)
       .offset(args.offset);
 
-    return { orders: rows.map(mapCoreRow), total: Number(total) ?? 0, source: "core" };
+    return {
+      orders: await enrichRiderOrdersWithEarnings(db, riderId, rows.map(mapCoreRow)),
+      total: Number(total) ?? 0,
+      source: "core",
+    };
   } catch (err) {
     console.warn("[listRiderOrdersPaginated] orders_core failed, trying legacy:", err);
   }

@@ -208,6 +208,21 @@ export function OrderPanel({
   const rtoDisplay = formatRtoOtpDisplay(status, displayOtps.rto);
   const showRiderCard =
     !!riderName || !!displayOtps.pickup || !!displayOtps.rto || !!otpCode || !!onViewPastRiders;
+  const isDelivered = status === "DELIVERED";
+  const packagingLabel =
+    order.customer_packaging_feedback === "good"
+      ? "Good"
+      : order.customer_packaging_feedback === "not_good"
+        ? "Not good"
+        : null;
+  const customerUniformLabel =
+    order.customer_rider_in_uniform === true
+      ? "Yes"
+      : order.customer_rider_in_uniform === false
+        ? "No"
+        : null;
+  const showCustomerFeedback =
+    isDelivered && (packagingLabel != null || customerUniformLabel != null);
 
   return (
     <div
@@ -340,6 +355,25 @@ export function OrderPanel({
             pricing={pricing}
             onTotalClick={onOpenBill}
           />
+
+          {showCustomerFeedback ? (
+            <div className="mt-4 rounded-lg border border-emerald-100 bg-emerald-50/60 p-3 space-y-2 shrink-0">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-800">
+                Customer feedback
+              </p>
+              {packagingLabel ? (
+                <p className="text-xs text-gray-800">
+                  <span className="font-semibold">Packaging:</span> {packagingLabel}
+                </p>
+              ) : null}
+              {customerUniformLabel ? (
+                <p className="text-xs text-gray-800">
+                  <span className="font-semibold">Rider in GatiMitra uniform:</span>{" "}
+                  {customerUniformLabel}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="relative flex flex-col p-4 xl:w-[28%] min-w-[240px] shrink-0 gap-2 min-h-0">

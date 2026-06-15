@@ -13,7 +13,10 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { resolveRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { DismissibleBottomSheetShell } from "@/src/components/language/DismissibleBottomSheetShell";
+import { RiderEmergencySosBottomSheet } from "@/src/components/orders/RiderEmergencySosBottomSheet";
 import { FoodSlideToReachStore } from "@/src/components/orders/FoodSlideToReachStore";
+import { PartnerChatUnreadBadge } from "@/src/components/orders/PartnerChatUnreadBadge";
 import { colors } from "@/src/theme";
 import type { RiderOrderSummary } from "@/src/services/api/riderApi";
 import {
@@ -32,16 +35,102 @@ type Props = {
   deliveryAddress: string;
   restaurantName: string;
   onBack: () => void;
-  onEmergencyPress: () => void;
-  onDirectionsPress: () => void;
+  onEmergencyPress?: () => void;
+  onDirectionsPress?: () => void;
   onHelpPress: () => void;
   onCallCustomer: () => void;
   onChatCustomer: () => void;
   onOpenMaps: () => void;
   onDelivered: () => void;
   deliverLoading?: boolean;
+  /** Photo already captured + uploaded — slide reopens OTP, not camera. */
+  deliverPhotoReady?: boolean;
   customerRating?: number | null;
+  chatUnreadCount?: number;
 };
+
+type FoodItem = NonNullable<RiderOrderSummary["foodItems"]>[number];
+
+type DropOrderItemsSheetProps = {
+  visible: boolean;
+  items: FoodItem[];
+  itemCount: number;
+  fallbackLine: string;
+  specialNotes: string[];
+  onDismiss: () => void;
+};
+
+function DropOrderItemsSheet({
+  visible,
+  items,
+  itemCount,
+  fallbackLine,
+  specialNotes,
+  onDismiss,
+}: DropOrderItemsSheetProps) {
+  const { t } = useTranslation();
+
+  return (
+    <DismissibleBottomSheetShell visible={visible} onDismiss={onDismiss} maxHeightRatio={0.72}>
+      <View style={styles.sheetContent}>
+        <View style={styles.sheetHeader}>
+          <View style={styles.sheetTitleRow}>
+            <View style={[styles.sheetIconWrap, styles.sheetIconWrapGreen]}>
+              <Ionicons name="fast-food-outline" size={20} color={REF_GREEN} />
+            </View>
+            <View style={styles.sheetTitleCol}>
+              <Text style={styles.sheetTitle}>
+                {t("orders.activeFood.allOrderItems", "All order items")}
+              </Text>
+              <Text style={styles.sheetSubtitle}>
+                {t("orders.activeFood.totalItemsCount", "{{count}} items total", {
+                  count: itemCount,
+                })}
+              </Text>
+            </View>
+          </View>
+          <Pressable onPress={onDismiss} hitSlop={10} style={styles.sheetCloseBtn}>
+            <Ionicons name="close" size={22} color="#5F6368" />
+          </Pressable>
+        </View>
+
+        <ScrollView
+          style={styles.sheetScroll}
+          contentContainerStyle={styles.sheetScrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.allItemsPanel}>
+            {items.length > 0 ? (
+              items.map((item, idx) => {
+                const label = item.variantName
+                  ? `${item.quantity} x ${item.name} (${item.variantName})`
+                  : `${item.quantity} x ${item.name}`;
+                return (
+                  <View key={`${item.name}-${idx}`} style={styles.itemRow}>
+                    <View style={styles.itemBullet} />
+                    <Text style={styles.sheetItemLine}>{label}</Text>
+                  </View>
+                );
+              })
+            ) : (
+              <View style={styles.itemRow}>
+                <View style={styles.itemBullet} />
+                <Text style={styles.sheetItemLine}>{fallbackLine}</Text>
+              </View>
+            )}
+          </View>
+
+          {specialNotes.length > 0 ? (
+            <View style={styles.instructionBar}>
+              <Ionicons name="information-circle" size={16} color={REF_GREEN} />
+              <Text style={styles.instructionText}>{specialNotes.join(" | ")}</Text>
+            </View>
+          ) : null}
+        </ScrollView>
+      </View>
+    </DismissibleBottomSheetShell>
+  );
+}
 
 export function FoodDropOrderScreen({
   visible,
@@ -51,14 +140,15 @@ export function FoodDropOrderScreen({
   restaurantName,
   onBack,
   onEmergencyPress,
-  onDirectionsPress,
   onHelpPress,
   onCallCustomer,
   onChatCustomer,
   onOpenMaps,
   onDelivered,
   deliverLoading = false,
+  deliverPhotoReady = false,
   customerRating,
+  chatUnreadCount = 0,
 }: Props) {
   const { t } = useTranslation();
   const paymentLabel = formatRiderDropPaymentLabel(
@@ -69,12 +159,18 @@ export function FoodDropOrderScreen({
   const isCod = isCodPaymentMethod(order.paymentMethod);
   const insets = useSafeAreaInsets();
   const bottomInset = resolveRiderBottomInset(insets.bottom);
-  const [customerOpen, setCustomerOpen] = useState(true);
-  const [orderDetailsOpen, setOrderDetailsOpen] = useState(false);
+  const [orderItemsSheetOpen, setOrderItemsSheetOpen] = useState(false);
+  const [sosSheetOpen, setSosSheetOpen] = useState(false);
 
   const customerName =
     order.customerName?.trim() || t("orders.activeFood.customerFallback", "Customer");
-  const customerPhone = order.customerPhone?.trim();
+  const resolvedRating = customerRating ?? order.customerRating ?? null;
+  const customerPhone =
+    order.customerPhone?.trim() ||
+    order.customerAlternatePhone?.trim() ||
+    order.customerPrimaryPhone?.trim() ||
+    "";
+  const hasCallablePhone = Boolean(customerPhone);
   const itemCount = order.itemCount ?? order.foodItems?.length ?? 0;
   const firstItemName = order.foodItems?.[0]?.name?.trim() || restaurantName;
   const orderDetailSubtitle =
@@ -83,9 +179,18 @@ export function FoodDropOrderScreen({
       : restaurantName;
 
   const ratingLabel = useMemo(() => {
-    if (customerRating == null || !Number.isFinite(customerRating)) return null;
-    return customerRating.toFixed(2);
-  }, [customerRating]);
+    if (resolvedRating == null || !Number.isFinite(resolvedRating)) return null;
+    return resolvedRating.toFixed(1);
+  }, [resolvedRating]);
+
+  const foodItems = order.foodItems ?? [];
+  const specialNotes = useMemo(() => {
+    const notes: string[] = [];
+    if (order.deliveryInstructions?.trim()) {
+      notes.push(order.deliveryInstructions.trim());
+    }
+    return notes;
+  }, [order.deliveryInstructions]);
 
   return (
     <Modal
@@ -98,18 +203,19 @@ export function FoodDropOrderScreen({
       <View style={styles.root}>
         <View style={[styles.headerWrap, { paddingTop: insets.top }]}>
           <View style={styles.headerRow}>
-            <Pressable onPress={onBack} hitSlop={10} style={styles.headerHit}>
-              <Ionicons name="chevron-down" size={22} color="#202124" />
-            </Pressable>
             <Text style={styles.headerTitle}>
               {t("orders.activeFood.dropOrderHeader", "Drop order")}
             </Text>
             <View style={styles.headerRight}>
-              <Pressable onPress={onEmergencyPress} hitSlop={8} style={styles.headerHit}>
+              <Pressable
+                onPress={() => {
+                  setSosSheetOpen(true);
+                  onEmergencyPress?.();
+                }}
+                hitSlop={8}
+                style={styles.headerHit}
+              >
                 <MaterialCommunityIcons name="alarm-light" size={22} color={EMERGENCY_PINK} />
-              </Pressable>
-              <Pressable onPress={onDirectionsPress} hitSlop={8} style={styles.headerHit}>
-                <Ionicons name="navigate-circle-outline" size={26} color="#202124" />
               </Pressable>
               <Pressable onPress={onHelpPress} style={styles.helpBtn}>
                 <Text style={styles.helpBtnText}>{t("orders.activeFood.helpLabel", "HELP")}</Text>
@@ -160,10 +266,7 @@ export function FoodDropOrderScreen({
             </View>
           </View>
 
-          <Pressable
-            style={styles.expandCard}
-            onPress={() => setCustomerOpen((v) => !v)}
-          >
+          <View style={styles.expandCard}>
             <View style={styles.expandCardHeader}>
               <View style={styles.expandIconWrap}>
                 <Ionicons name="person-outline" size={18} color="#5F6368" />
@@ -177,18 +280,16 @@ export function FoodDropOrderScreen({
                     </Text>
                     <Ionicons name="star" size={12} color="#F59E0B" />
                   </View>
-                ) : null}
+                ) : (
+                  <View style={styles.newUserTag}>
+                    <Text style={styles.newUserTagText}>
+                      {t("orders.activeFood.newUser", "New User")}
+                    </Text>
+                  </View>
+                )}
               </View>
-              <Ionicons
-                name={customerOpen ? "chevron-up" : "chevron-down"}
-                size={18}
-                color="#5F6368"
-              />
             </View>
-            {customerOpen && customerPhone ? (
-              <Text style={styles.expandBody}>{customerPhone}</Text>
-            ) : null}
-          </Pressable>
+          </View>
 
           <View style={styles.addressCard}>
             <View style={styles.addressTopRow}>
@@ -197,8 +298,8 @@ export function FoodDropOrderScreen({
               </Text>
               <Pressable
                 onPress={onCallCustomer}
-                disabled={!customerPhone}
-                style={[styles.phoneFab, !customerPhone && styles.phoneFabDisabled]}
+                disabled={!hasCallablePhone}
+                style={[styles.phoneFab, !hasCallablePhone && styles.phoneFabDisabled]}
               >
                 <Ionicons name="call" size={20} color="#ffffff" />
               </Pressable>
@@ -211,9 +312,14 @@ export function FoodDropOrderScreen({
             </View>
             <View style={styles.dualActionRow}>
               <Pressable style={styles.outlineActionBtn} onPress={onChatCustomer}>
-                <Ionicons name="chatbubble-outline" size={18} color={REF_BLUE} />
+                <View style={styles.chatIconWrap}>
+                  <Ionicons name="chatbubble-outline" size={18} color={REF_BLUE} />
+                  <PartnerChatUnreadBadge count={chatUnreadCount} style={styles.chatUnreadBadge} />
+                </View>
                 <Text style={styles.outlineActionText}>
-                  {t("orders.activeRide.chat", "Message")}
+                  {chatUnreadCount > 0
+                    ? t("orders.partnerChat.newMessages", "{{count}} new", { count: chatUnreadCount })
+                    : t("orders.activeRide.chat", "Message")}
                 </Text>
               </Pressable>
               <Pressable style={styles.outlineActionBtn} onPress={onOpenMaps}>
@@ -227,7 +333,7 @@ export function FoodDropOrderScreen({
 
           <Pressable
             style={styles.expandCard}
-            onPress={() => setOrderDetailsOpen((v) => !v)}
+            onPress={() => setOrderItemsSheetOpen(true)}
           >
             <View style={styles.expandCardHeader}>
               <View style={styles.expandIconWrap}>
@@ -241,39 +347,43 @@ export function FoodDropOrderScreen({
                   {orderDetailSubtitle}
                 </Text>
               </View>
-              <Ionicons
-                name={orderDetailsOpen ? "chevron-up" : "chevron-down"}
-                size={18}
-                color="#5F6368"
-              />
+              <Ionicons name="chevron-down" size={18} color="#5F6368" />
             </View>
-            {orderDetailsOpen ? (
-              <View style={styles.itemsBlock}>
-                {(order.foodItems ?? []).slice(0, 8).map((item, idx) => (
-                  <Text key={`${item.name}-${idx}`} style={styles.itemLine} numberOfLines={2}>
-                    {item.quantity}× {item.name}
-                    {item.variantName ? ` (${item.variantName})` : ""}
-                  </Text>
-                ))}
-                {order.deliveryInstructions?.trim() ? (
-                  <Text style={styles.instructionLine} numberOfLines={3}>
-                    {order.deliveryInstructions.trim()}
-                  </Text>
-                ) : null}
-              </View>
-            ) : null}
           </Pressable>
         </ScrollView>
 
-        <View style={[styles.footer, { paddingBottom: Math.max(bottomInset, 12) }]}>
+        <DropOrderItemsSheet
+          visible={orderItemsSheetOpen}
+          items={foodItems}
+          itemCount={itemCount}
+          fallbackLine={orderDetailSubtitle}
+          specialNotes={specialNotes}
+          onDismiss={() => setOrderItemsSheetOpen(false)}
+        />
+
+        <View
+          style={[
+            styles.footer,
+            { paddingBottom: Math.max(bottomInset, 12) },
+          ]}
+        >
           <FoodSlideToReachStore
-            label={t("orders.activeFood.slideDelivered", "Order delivered")}
+            label={
+              deliverPhotoReady
+                ? t("orders.activeFood.slideEnterDeliveryOtp", "Enter delivery OTP")
+                : t("orders.activeFood.slideDelivered", "Order delivered")
+            }
             onComplete={onDelivered}
             loading={deliverLoading}
             completed={false}
             completedLabel={t("orders.activeFood.deliveredDone", "Delivered ✓")}
           />
         </View>
+
+        <RiderEmergencySosBottomSheet
+          visible={sosSheetOpen}
+          onDismiss={() => setSosSheetOpen(false)}
+        />
       </View>
     </Modal>
   );
@@ -313,7 +423,6 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     flex: 1,
-    marginLeft: 4,
     fontSize: 18,
     fontWeight: "700",
     color: "#202124",
@@ -445,12 +554,19 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#5F6368",
   },
-  expandBody: {
-    marginTop: 8,
-    marginLeft: 42,
-    fontSize: 13,
-    fontWeight: "500",
-    color: "#5F6368",
+  newUserTag: {
+    alignSelf: "flex-start",
+    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: "#E8F0FE",
+  },
+  newUserTagText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: REF_BLUE,
+    letterSpacing: 0.2,
   },
   addressCard: {
     paddingHorizontal: 16,
@@ -510,28 +626,121 @@ const styles = StyleSheet.create({
     borderColor: REF_BLUE,
     backgroundColor: "#ffffff",
   },
+  chatIconWrap: {
+    width: 22,
+    height: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  chatUnreadBadge: {
+    position: "absolute",
+    top: -6,
+    right: -8,
+  },
   outlineActionText: {
     fontSize: 14,
     fontWeight: "600",
     color: REF_BLUE,
   },
-  itemsBlock: {
-    marginTop: 10,
-    marginLeft: 42,
-    gap: 4,
+  sheetContent: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 8,
   },
-  itemLine: {
+  sheetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  sheetTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    flex: 1,
+  },
+  sheetIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#E8F4FD",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sheetIconWrapGreen: {
+    backgroundColor: colors.success[50],
+  },
+  sheetTitleCol: {
+    flex: 1,
+    gap: 2,
+  },
+  sheetTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#202124",
+  },
+  sheetSubtitle: {
     fontSize: 13,
-    fontWeight: "500",
-    color: "#3C4043",
-    lineHeight: 18,
+    fontWeight: "600",
+    color: "#80868B",
   },
-  instructionLine: {
-    marginTop: 6,
+  sheetCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sheetScroll: {
+    maxHeight: 360,
+  },
+  sheetScrollContent: {
+    paddingBottom: 8,
+  },
+  allItemsPanel: {
+    backgroundColor: "#F4F6F8",
+    borderRadius: 12,
+    padding: 14,
+    gap: 12,
+    marginBottom: 12,
+  },
+  itemRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  itemBullet: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: REF_GREEN,
+    marginTop: 7,
+  },
+  sheetItemLine: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#3C4043",
+    lineHeight: 20,
+  },
+  instructionBar: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    backgroundColor: colors.success[50],
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: colors.success[100],
+    marginBottom: 8,
+  },
+  instructionText: {
+    flex: 1,
     fontSize: 12,
-    fontWeight: "500",
-    color: "#5F6368",
-    fontStyle: "italic",
+    fontWeight: "600",
+    color: colors.success[800],
+    lineHeight: 17,
   },
   footer: {
     paddingHorizontal: 16,

@@ -23,6 +23,9 @@ export function useDutyToggle() {
   const updateDutyMutation = useMutation({
     mutationFn: ({ status, serviceTypes }: { status: boolean; serviceTypes?: string[] }) =>
       riderApi.updateDutyStatus(status, serviceTypes),
+    onSuccess: (data) => {
+      void useDutyStore.getState().setDutyStatus(data.isOnDuty);
+    },
     onError: (error) => {
       void toggleDuty();
       if (isVehicleDetailsRequiredError(error)) {

@@ -22,6 +22,7 @@ import {
   resolveRiderSelfieFromStored,
 } from "@/lib/rider-selfie-url";
 import { loadMerchantRiderUniformByOrderCoreIds } from "@/lib/merchant-food-orders/rider-uniform-feedback";
+import { loadCustomerRiderUniformByOrderCoreIds } from "@/lib/merchant-food-orders/customer-post-delivery-feedback";
 
 type CoreRow = Record<string, unknown>;
 type FoodRow = Record<string, unknown>;
@@ -399,6 +400,7 @@ export async function loadMerchantStoreFoodOrders(
 
     const coreIds = coreRows.map((c) => Number(c.id)).filter((id) => Number.isFinite(id));
     const uniformByCoreId = await loadMerchantRiderUniformByOrderCoreIds(db, coreIds);
+    const customerUniformByCoreId = await loadCustomerRiderUniformByOrderCoreIds(db, coreIds);
 
     const ordersWithDetails = await Promise.all(
       coreRows.map(async (core) => {
@@ -616,6 +618,9 @@ export async function loadMerchantStoreFoodOrders(
               ? platformOrdinalByKey.get(`p:${custId}:${String(core.created_at)}`) ?? null
               : null,
           merchant_rider_in_uniform: uniformByCoreId.get(coreId) ?? null,
+          customer_packaging_feedback:
+            (food?.customer_packaging_feedback as string | null) ?? null,
+          customer_rider_in_uniform: customerUniformByCoreId.get(coreId) ?? null,
           rider_id: riderId,
           rider_name: (riderDetails?.name as string | null) ?? (food?.rider_name as string | null) ?? null,
           rider_phone: (riderDetails?.mobile as string | null) ?? (food?.rider_phone as string | null) ?? null,

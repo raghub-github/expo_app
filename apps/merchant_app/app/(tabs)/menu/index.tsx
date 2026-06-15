@@ -2511,7 +2511,7 @@ export default function MenuScreen() {
                     );
                   })}
 
-                  {kindFilter !== "COMBOS" ? renderComboTreeSection() : null}
+                  {renderComboTreeSection()}
                 </View>
               ))}
               {showCombos && kindFilter === "COMBOS" && viewMode === "tree" ? (

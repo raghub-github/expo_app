@@ -39,7 +39,7 @@ export default function GroupOrderScreen() {
   const displayName = profile?.name?.trim() || profile?.primaryMobile || "You";
 
   useEnsureStoreLiveStatus(storeId ?? null);
-  const storeStatus = useStoreStatusStore((s) => (storeId ? s.getStatus(storeId) : null));
+  const storeStatus = useStoreStatusStore((s) => (storeId ? (s.statusMap[storeId] ?? null) : null));
   const isStoreClosed = storeStatus === "CLOSED";
 
   const [timerMinsLeft, setTimerMinsLeft] = useState(30);

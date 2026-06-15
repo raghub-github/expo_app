@@ -46,7 +46,7 @@ export function LedgerTransactionCard({ entry }: Props) {
       <View style={styles.footer}>
         <View style={styles.statusPill}>
           <View style={styles.statusDot} />
-          <Text style={styles.statusText}>{t("ledger.completed", "Completed")}</Text>
+          <Text style={styles.statusText}>{t("ledger.created", "Created")}</Text>
         </View>
         <Text style={styles.date}>{formatLedgerDateTime(entry.createdAt)}</Text>
       </View>

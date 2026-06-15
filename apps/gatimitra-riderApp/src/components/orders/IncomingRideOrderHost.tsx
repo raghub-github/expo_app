@@ -8,7 +8,9 @@ import {
   useAvailableOrders,
   useAcceptOrder,
   useRejectOrder,
+  useMissOrderOffer,
   RIDER_ACTIVE_ORDERS_QUERY_KEY,
+  seedRiderOrderDetailCache,
 } from "@/src/hooks/useOrders";
 import { useRiderOrderAcceptanceSettings } from "@/src/hooks/useRiderOrderAcceptanceSettings";
 import {
@@ -30,6 +32,10 @@ import {
   playIncomingOrderAlert,
   stopOrderAlertSound,
 } from "@/src/lib/playOrderAlertSound";
+import {
+  showAcceptedByAnotherRiderToast,
+  subscribeDispatchOfferWithdrawn,
+} from "@/src/lib/riderDispatchTakenToast";
 
 const EMPTY_ORDERS: RiderOrderSummary[] = [];
 
@@ -50,6 +56,9 @@ function toIncomingOrder(order: RiderOrderSummary, offerShownAtMs: number): Inco
     estimatedEarning: order.estimatedEarning,
     baseEarning: order.baseEarning,
     customerTipAmount: order.customerTipAmount,
+    waitingEarning: order.waitingEarning,
+    surgeEarning: order.surgeEarning,
+    appliedSurges: order.appliedSurges,
     totalEarning: order.totalEarning,
     higherDispatchPriority: order.higherDispatchPriority,
     createdAt: order.createdAt,
@@ -67,11 +76,14 @@ export function IncomingRideOrderHost() {
   const { data: acceptanceSettings } = useRiderOrderAcceptanceSettings();
   const acceptOrder = useAcceptOrder();
   const rejectOrder = useRejectOrder();
+  const missOrderOffer = useMissOrderOffer();
 
   const orders = available ?? EMPTY_ORDERS;
   const rejectedRef = useRef(new Set<string>());
   const expiredRef = useRef(new Set<string>());
   const soundPlayedRef = useRef(new Set<string>());
+  const locallyAcceptedRef = useRef(new Set<string>());
+  const prevAvailableRef = useRef<RiderOrderSummary[]>([]);
   const offerShownAtRef = useRef(new Map<string, number>());
   const acceptingRef = useRef(false);
   const [rejectHydrated, setRejectHydrated] = useState(false);
@@ -80,6 +92,11 @@ export function IncomingRideOrderHost() {
 
   const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
+  const activeOrderIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    activeOrderIdRef.current = activeOrderId;
+  }, [activeOrderId]);
 
   const bumpPool = useCallback(() => {
     setPoolEpoch((n) => n + 1);
@@ -121,6 +138,48 @@ export function IncomingRideOrderHost() {
     const offerShownAtMs = offerShownAtRef.current.get(activeOrderId) ?? Date.now();
     return toIncomingOrder(hit, offerShownAtMs);
   }, [activeOrderId, orders]);
+
+  const dismissTakenOffer = useCallback(
+    (orderId: string) => {
+      const id = orderId.trim();
+      if (!id) return;
+      stopOrderAlertSound();
+      offerShownAtRef.current.delete(id);
+      soundPlayedRef.current.delete(id);
+      if (activeOrderIdRef.current === id) {
+        setModalVisible(false);
+        setActiveOrderId(null);
+      }
+      bumpPool();
+    },
+    [bumpPool]
+  );
+
+  useEffect(() => {
+    return subscribeDispatchOfferWithdrawn((orderId) => {
+      dismissTakenOffer(orderId);
+    });
+  }, [dismissTakenOffer]);
+
+  useEffect(() => {
+    const prev = prevAvailableRef.current;
+    if (prev.length > 0) {
+      const currentIds = new Set(orders.map((o) => o.id));
+      for (const o of prev) {
+        if (currentIds.has(o.id)) continue;
+        if (rejectedRef.current.has(o.id)) continue;
+        if (expiredRef.current.has(o.id)) continue;
+        if (locallyAcceptedRef.current.has(o.id)) continue;
+        const wasOffered =
+          offerShownAtRef.current.has(o.id) || soundPlayedRef.current.has(o.id);
+        if (!wasOffered) continue;
+        if (showAcceptedByAnotherRiderToast(o.id)) {
+          dismissTakenOffer(o.id);
+        }
+      }
+    }
+    prevAvailableRef.current = orders;
+  }, [orders, dismissTakenOffer]);
 
   useEffect(() => {
     const liveIds = new Set(orders.map((o) => o.id));
@@ -271,6 +330,7 @@ export function IncomingRideOrderHost() {
 
     const finishAccept = () => {
       acceptingRef.current = false;
+      locallyAcceptedRef.current.add(id);
       offerShownAtRef.current.delete(id);
       closeModal();
       setActiveOrderId(null);
@@ -278,7 +338,10 @@ export function IncomingRideOrderHost() {
     };
 
     acceptOrder.mutate(acceptRef, {
-      onSuccess: finishAccept,
+      onSuccess: (data) => {
+        seedRiderOrderDetailCache(queryClient, data, [id, acceptRef]);
+        finishAccept();
+      },
       onError: async (err) => {
         acceptingRef.current = false;
 
@@ -311,32 +374,36 @@ export function IncomingRideOrderHost() {
               ? payloadObj.message
               : null;
 
-        Alert.alert(
-          t("orders.incoming.acceptFailedTitle", "Could not accept"),
-          apiMessage ??
-            t("orders.incoming.acceptFailedMessage", "This ride may already be taken.")
-        );
-
         if (err instanceof ApiError && err.status === 409) {
+          showAcceptedByAnotherRiderToast(id);
           expiredRef.current.add(id);
           offerShownAtRef.current.delete(id);
           bumpPool();
           closeModal();
           setActiveOrderId(null);
+          return;
         }
+
+        Alert.alert(
+          t("orders.incoming.acceptFailedTitle", "Could not accept"),
+          apiMessage ??
+            t("orders.incoming.acceptFailedMessage", "This ride may already be taken.")
+        );
       },
     });
   }, [acceptOrder, activeOrderId, activeOrder, closeModal, t, bumpPool, navigateAfterAccept]);
 
   const handleExpired = useCallback(() => {
-    if (activeOrderId) {
+    if (activeOrderId && activeOrder) {
+      const orderRef = activeOrder.formattedOrderId?.trim() || activeOrderId;
+      missOrderOffer.mutate({ orderId: orderRef, reason: "timer_expired" });
       expiredRef.current.add(activeOrderId);
       offerShownAtRef.current.delete(activeOrderId);
       bumpPool();
     }
     closeModal();
     setActiveOrderId(null);
-  }, [activeOrderId, closeModal, bumpPool]);
+  }, [activeOrderId, activeOrder, closeModal, bumpPool, missOrderOffer]);
 
   if (!isOnDuty) return null;
 

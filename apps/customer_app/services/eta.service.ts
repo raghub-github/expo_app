@@ -1,13 +1,8 @@
 /**
  * Customer-side ETA client.
  *
- * Reads the frozen promise + live recalculation snapshot from
- *   GET /v1/eta/orders/:orderIdText
- *
- * The promise is set ONCE on order placement and never changes — used for
- * disputes / accountability. The `live` field reflects the most recent
- * recalculation event (rider assigned, picked up, traffic update) and is what
- * the tracking countdown should follow.
+ * Reads the frozen promise + live dynamic ETA from GET /v1/eta/orders/:orderIdText.
+ * The customer UI shows a single `customer.etaMinutes` value — never a range.
  */
 import api from "./api";
 
@@ -34,12 +29,32 @@ export type OrderEtaPrep = {
   readyByAt: string | null;
 };
 
+export type CustomerEtaContextMessage =
+  | "PREPARING"
+  | "MERCHANT_DELAYED"
+  | "READY_FOR_PICKUP"
+  | "RIDER_PICKING_UP"
+  | "ON_THE_WAY"
+  | "ALMOST_THERE"
+  | "DELIVERED"
+  | "UPDATING";
+
+export type CustomerEtaView = {
+  etaMinutes: number | null;
+  contextMessage: CustomerEtaContextMessage;
+  contextLabel: string;
+  merchantDelayed: boolean;
+  etaUpdated: boolean;
+  promisedEtaMinutes: number | null;
+};
+
 export type OrderEtaResponse = {
   ok: true;
   orderIdText: string;
   promise: EtaPromise;
   live: EtaLive | null;
   prep?: OrderEtaPrep;
+  customer: CustomerEtaView;
 };
 
 export const etaService = {
@@ -56,8 +71,8 @@ export const etaService = {
 };
 
 /**
- * Minutes-to-promise countdown that updates every 30s. Returns negative when
- * the order is overdue (used to flip the UI to "Running late" state).
+ * Minutes-to-promise countdown. Prefer `customer.etaMinutes` from the API for
+ * display — this helper is kept for internal timing / overdue detection.
  */
 export function minutesUntil(iso: string | null | undefined, now: Date = new Date()): number | null {
   if (!iso) return null;
@@ -66,14 +81,11 @@ export function minutesUntil(iso: string | null | undefined, now: Date = new Dat
   return Math.round((t - now.getTime()) / 60_000);
 }
 
-/**
- * Formats the customer-facing range. Falls back to a generic copy when the
- * server hasn't computed an ETA (legacy orders before migration 0232).
- */
+/** @deprecated Use single `customer.etaMinutes` — ranges are no longer shown. */
 export function formatEtaRange(min: number | null | undefined, max: number | null | undefined): string {
-  if (min != null && max != null && Number.isFinite(min) && Number.isFinite(max)) {
-    if (max - min <= 1) return `${max} mins`;
-    return `${min}–${max} mins`;
+  const single = min != null && max != null ? max : min ?? max;
+  if (single != null && Number.isFinite(single) && single > 0) {
+    return `${Math.round(single)} min`;
   }
-  return "Delivery 45–55 mins";
+  return "Updating estimate…";
 }

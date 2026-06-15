@@ -6,8 +6,10 @@ export type OrderCustomerFeedback = {
   deliveryRating: number | null;
   packagingRating: number | null;
   storeReviewText: string | null;
-  /** Stored in merchant_store_ratings.review_title */
+  /** Stored in merchant_store_ratings.review_title (legacy) or rider_review_text */
   riderReviewText: string | null;
+  storeReviewTags: string[];
+  riderReviewTags: string[];
   ratedAtIso: string | null;
   customerName: string | null;
 };

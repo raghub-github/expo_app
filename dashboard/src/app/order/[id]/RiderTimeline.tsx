@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { riderDeliveryMilestoneLabel } from "@/lib/riders/rider-order-status-display";
 
 export type RiderTimelineData = {
   assigned_at?: string | null;
@@ -8,6 +9,9 @@ export type RiderTimelineData = {
   reached_merchant_at?: string | null;
   picked_up_at?: string | null;
   delivered_at?: string | null;
+  reached_merchant_skipped?: boolean;
+  picked_up_actor_type?: string | null;
+  picked_up_actor_label?: string | null;
   events?: Array<{
     event_type: string;
     occurred_at: string;
@@ -19,21 +23,55 @@ export type RiderTimelineData = {
 interface RiderTimelineProps {
   orderId: number;
   riderId?: number | null;
+  orderType?: string | null;
   /** When provided with order fetch, timeline renders instantly (no loading state). */
   initialData?: RiderTimelineData | null;
   className?: string;
 }
 
-const RIDER_STEPS = [
-  { key: "assigned", label: "Assigned", at: (data: RiderTimelineData) => data.assigned_at },
-  {
-    key: "reached_merchant",
-    label: "Reached Mx",
-    at: (data: RiderTimelineData) => data.reached_merchant_at,
-  },
-  { key: "picked_up", label: "Picked Up", at: (data: RiderTimelineData) => data.picked_up_at },
-  { key: "delivered", label: "Delivered", at: (data: RiderTimelineData) => data.delivered_at },
-] as const;
+type TimelineStep = {
+  key: string;
+  label: string;
+  distEventType: string;
+  at: (data: RiderTimelineData) => string | null | undefined;
+};
+
+function buildTimelineSteps(data: RiderTimelineData | null, orderType?: string | null): TimelineStep[] {
+  const reachedSkipped = Boolean(data?.reached_merchant_skipped);
+  const steps: TimelineStep[] = [
+    {
+      key: "assigned",
+      label: "Assigned",
+      distEventType: "assigned",
+      at: (d) => d.assigned_at,
+    },
+  ];
+
+  if (!reachedSkipped) {
+    steps.push({
+      key: "reached_merchant",
+      label: "Reached Mx",
+      distEventType: "reached_merchant",
+      at: (d) => d.reached_merchant_at,
+    });
+  }
+
+  steps.push({
+    key: "picked_up",
+    label: "Picked Up",
+    distEventType: "picked_up",
+    at: (d) => d.picked_up_at,
+  });
+
+  steps.push({
+    key: "delivered",
+    label: riderDeliveryMilestoneLabel(orderType),
+    distEventType: "delivered",
+    at: (d) => d.delivered_at,
+  });
+
+  return steps;
+}
 
 function formatDistKm(v: number | null | undefined): string | null {
   if (v == null || !Number.isFinite(Number(v))) return null;
@@ -165,6 +203,7 @@ function TimelineDistances({
 export default function RiderTimeline({
   orderId,
   riderId,
+  orderType,
   initialData,
   className = "",
 }: RiderTimelineProps) {
@@ -204,14 +243,17 @@ export default function RiderTimeline({
     };
   }, [orderId, riderId, initialData]);
 
+  const steps = useMemo(() => buildTimelineSteps(data, orderType), [data, orderType]);
+  const reachedSkipped = Boolean(data?.reached_merchant_skipped);
+
   const currentStepIdx = useMemo(() => {
-    if (!riderId) return -1;
+    if (!riderId || !data) return -1;
     let idx = 0;
-    RIDER_STEPS.forEach((step, i) => {
-      if (data && step.at(data)) idx = i;
+    steps.forEach((step, i) => {
+      if (step.at(data)) idx = i;
     });
     return idx;
-  }, [data, riderId]);
+  }, [data, riderId, steps]);
 
   const formatTimeShort = (s: string | null | undefined) => {
     if (!s) return "";
@@ -235,13 +277,13 @@ export default function RiderTimeline({
       aria-label="Rider delivery progress"
     >
       <ol className="flex flex-col py-0.5">
-        {RIDER_STEPS.map((step, index) => {
+        {steps.map((step, index) => {
           const ts = hasRider && data ? step.at(data) : null;
           const done = hasRider && currentStepIdx >= index;
           const isActive = hasRider && index === currentStepIdx && !ts;
           const isComplete = Boolean(ts);
-          const dist = hasRider ? eventDistances(data, step.key) : { mx: null, cx: null };
-          const isLast = index === RIDER_STEPS.length - 1;
+          const dist = hasRider ? eventDistances(data, step.distEventType) : { mx: null, cx: null };
+          const isLast = index === steps.length - 1;
           const segmentDone = hasRider && currentStepIdx > index;
           const dotColor = done || isActive ? "bg-emerald-500 ring-emerald-100" : "bg-slate-300 ring-slate-100";
           const labelColor = done || isActive ? "text-emerald-800" : "text-slate-500";

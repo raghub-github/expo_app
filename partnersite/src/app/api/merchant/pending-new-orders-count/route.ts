@@ -1,61 +1,103 @@
+/**
+ * GET /api/merchant/pending-new-orders-count?store_id=GMMC1001
+ * Count of orders still awaiting merchant acceptance (partner UI CREATED pipeline).
+ * Excludes orders past the acceptance window (those should be auto-cancelled).
+ */
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { assertStoreAccess } from '@/lib/auth/assert-store-access';
 import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
+import {
+  isWithinAcceptanceWindow,
+  loadAcceptanceWindowMinutes,
+} from '@/lib/order-acceptance-timeout-sync';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
-function getSupabase() {
+function getDb() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !supabaseServiceKey) {
+    throw new Error('Supabase env not configured');
+  }
   return createClient(supabaseUrl, supabaseServiceKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 }
 
-/**
- * GET /api/merchant/pending-new-orders-count?store_id=GMMC1001
- * Count of orders still awaiting merchant acceptance (partner UI CREATED / PLACED pipeline), all time (capped scan).
- */
 export async function GET(req: NextRequest) {
   try {
     const storeId = new URL(req.url).searchParams.get('store_id');
-    if (!storeId?.trim()) {
-      return NextResponse.json({ error: 'store_id is required' }, { status: 400 });
+    const gate = await assertStoreAccess(storeId);
+    if (!gate.ok) {
+      return NextResponse.json({ error: gate.error }, { status: gate.status });
     }
 
-    const db = getSupabase();
-    const { data: store, error: storeErr } = await db
-      .from('merchant_stores')
-      .select('id')
-      .eq('store_id', storeId.trim())
-      .single();
-
-    if (storeErr || !store) {
-      return NextResponse.json({ error: 'Store not found' }, { status: 404 });
-    }
-
-    const internalId = store.id as number;
+    const db = getDb();
+    const windowMins = await loadAcceptanceWindowMinutes(db, gate.storeIdNum);
 
     const { data: rows, error } = await db
       .from('orders_core')
-      .select('status, current_status')
-      .eq('merchant_store_id', internalId)
+      .select('id, status, current_status, created_at')
+      .eq('merchant_store_id', gate.storeIdNum)
+      .eq('status', 'assigned')
       .order('created_at', { ascending: false })
-      .limit(500);
+      .limit(200);
 
     if (error) {
       console.error('[pending-new-orders-count]', error);
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    let count = 0;
-    for (const o of rows || []) {
-      const row = o as { status?: string; current_status?: string | null };
-      if (resolvePartnerPipeline(null, row.status ?? 'assigned', row.current_status ?? null) === 'CREATED') {
-        count += 1;
+    const coreIds = (rows ?? []).map((o) => Number((o as { id?: number }).id)).filter((id) => id > 0);
+    const foodByCore = new Map<number, { order_status?: string | null; created_at?: string | null }>();
+
+    if (coreIds.length > 0) {
+      const { data: foodRows } = await db
+        .from('orders_food')
+        .select('order_id, order_status, created_at')
+        .eq('merchant_store_id', gate.storeIdNum)
+        .in('order_id', coreIds);
+      for (const f of foodRows ?? []) {
+        const coreId = Number((f as { order_id?: number }).order_id);
+        if (coreId > 0) foodByCore.set(coreId, f as { order_status?: string | null; created_at?: string | null });
       }
     }
 
-    return NextResponse.json({ count, store_id: storeId.trim() });
+    let count = 0;
+    const nowMs = Date.now();
+    for (const o of rows ?? []) {
+      const row = o as {
+        id?: number;
+        status?: string;
+        current_status?: string | null;
+        created_at?: string | null;
+      };
+      const coreId = Number(row.id ?? 0);
+      const food = coreId > 0 ? foodByCore.get(coreId) : undefined;
+      const pipeline = resolvePartnerPipeline(
+        food?.order_status ?? null,
+        row.status ?? 'assigned',
+        row.current_status ?? null
+      );
+      if (pipeline !== 'CREATED') continue;
+
+      const createdAt = food?.created_at ?? row.created_at ?? '';
+      if (createdAt && !isWithinAcceptanceWindow(createdAt, windowMins, nowMs)) {
+        continue;
+      }
+      count += 1;
+    }
+
+    return NextResponse.json(
+      { count, store_id: String(storeId).trim() },
+      {
+        headers: {
+          'Cache-Control': 'private, no-store, max-age=0',
+        },
+      }
+    );
   } catch (e) {
     console.error('[pending-new-orders-count]', e);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

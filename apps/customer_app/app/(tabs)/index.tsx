@@ -24,6 +24,7 @@ import {
   prefetchFeaturedOffersHome,
   useFeaturedOffersHome,
 } from "@/hooks/useFeaturedOffersHome";
+import { useCustomerGeoServiceAvailability } from "@/hooks/useCustomerGeoServiceAvailability";
 
 const BG = "#FFFFFF";
 const TEAL = GatiMitraColors.splashMint;
@@ -48,6 +49,7 @@ export default function HomeScreen() {
         queryClient.invalidateQueries({ queryKey: ["addresses"] }),
         queryClient.invalidateQueries({ queryKey: ["active-location"] }),
         queryClient.invalidateQueries({ queryKey: ["featured-offers-home"] }),
+        queryClient.invalidateQueries({ queryKey: ["geo", "services"] }),
       ]);
       if (locationSource !== "selected") {
         await refetchLocation();
@@ -80,6 +82,7 @@ export default function HomeScreen() {
   const stateCandidate =
     address?.state ??
     [...fullParts].reverse().find((p) => !isPincode(p) && p.toLowerCase() !== "india");
+  const { enabledServices } = useCustomerGeoServiceAvailability();
   const normalizedState = stateCandidate?.toLowerCase() ?? "";
   const areaLocalityCandidates = [...secondaryParts, ...fullParts, address?.primary ?? ""]
     .map((p) => p.trim())
@@ -175,7 +178,7 @@ export default function HomeScreen() {
           mode="home"
         />
 
-        <HomeServicesRow cardHeight={serviceCardH} />
+        <HomeServicesRow cardHeight={serviceCardH} enabledServices={enabledServices} />
 
         <View style={styles.brandSpacer} />
         <HomeBrandBanner bannerHeight={brandH} />

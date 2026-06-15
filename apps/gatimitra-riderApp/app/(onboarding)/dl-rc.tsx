@@ -18,7 +18,8 @@ import { useTranslation } from "react-i18next";
 import * as ImagePicker from "expo-image-picker";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useSaveOnboardingStep, useRiderStatus } from "@/src/hooks/useOnboarding";
-import { onboardingStepToRoute } from "@/src/lib/onboarding-routes";
+import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstablishedRedirect";
+import { onboardingStepToRoute, isVehicleOnboardingComplete, type ServerOnboardingStep } from "@/src/lib/onboarding-routes";
 import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { uploadToR2, deleteFromR2, buildRiderDocumentKey } from "@/src/services/storage/cloudflareR2";
@@ -261,6 +262,7 @@ export default function DlRcScreen() {
   const saveStep = useSaveOnboardingStep();
   const saveDocument = useSaveDocument();
   const { data: riderStatus } = useRiderStatus(data.riderId);
+  useOnboardingEstablishedRedirect(riderStatus);
   const { data: vehicleTypes = FALLBACK_ONBOARDING_VEHICLE_TYPES } = useOnboardingVehicleTypes();
   const { data: vehicleCategories = FALLBACK_ONBOARDING_VEHICLE_CATEGORIES } =
     useOnboardingVehicleCategories();
@@ -280,18 +282,27 @@ export default function DlRcScreen() {
     const next = riderStatus?.nextOnboardingStep;
     if (!next || next === "dl_rc" || next === "pan_selfie" || next === "aadhaar_name") return;
     if (
-      data.vehicleOnboardingFlow === "payment" ||
-      data.vehicleOnboardingFlow === "dl_rc"
+      next === "payment" ||
+      (next === "rental_ev" &&
+        isVehicleOnboardingComplete(
+          next as ServerOnboardingStep,
+          riderStatus?.completedOnboardingSteps,
+          data.vehicleOnboardingFlow
+        ))
     ) {
       router.replace("/(onboarding)/payment");
       return;
     }
-    if (data.vehicleOnboardingFlow === "rental_ev" && next === "rental_ev") {
+    if (next === "rental_ev") {
       router.replace("/(onboarding)/rental-ev");
       return;
     }
-    router.replace(onboardingStepToRoute(next as "rental_ev"));
-  }, [riderStatus?.nextOnboardingStep, data.vehicleChoice, data.vehicleOnboardingFlow]);
+    router.replace(onboardingStepToRoute(next as ServerOnboardingStep));
+  }, [
+    riderStatus?.nextOnboardingStep,
+    riderStatus?.completedOnboardingSteps,
+    data.vehicleOnboardingFlow,
+  ]);
 
   const [categoryChoice, setCategoryChoice] = useState<string>(
     () => data.vehicleCategoryCode ?? ""

@@ -3,6 +3,12 @@ import { getRideOption } from "@/features/ride/rideOptions";
 import { resolveRideImage } from "@/features/ride/rideOptionAssets";
 import { normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
 import { resolvePlaceDisplayName } from "@/services/location.service";
+import { parseRideFareDistanceKm } from "@/lib/ride-fare-distance";
+import {
+  estimateRidePickupWaitingCharge,
+  resolveRidePickupWaitingChargePerMin,
+  type RidePickupWaitFields,
+} from "@/lib/ride-pickup-wait";
 
 const RIDE_IMAGE_KEY: Record<string, string> = {
   bike: "bike",
@@ -78,6 +84,378 @@ export function getRideFareBreakdown(order: Pick<OrderDetail, "totalAmount" | "t
   const tip = Math.max(0, Number(order.tipAmount ?? 0));
   const rideCharge = Math.max(0, total - tip);
   return { total, tip, rideCharge };
+}
+
+function billNum(v: unknown): number {
+  if (v == null) return 0;
+  const x = typeof v === "number" ? v : parseFloat(String(v));
+  return Number.isFinite(x) ? x : 0;
+}
+
+function isPersonRideOrder(
+  order: Pick<OrderDetail, "checkoutMetadata" | "orderType">
+): boolean {
+  const meta = order.checkoutMetadata as Record<string, unknown> | null;
+  if (meta?.serviceType === "RIDE") return true;
+  return order.orderType === "person_ride";
+}
+
+/** Parse ₹X/min from fare quote waiting note. */
+export function parseWaitingChargePerMinFromNote(note: string | null | undefined): number {
+  if (!note?.trim()) return 0;
+  const match = note.match(/₹\s*(\d+(?:\.\d+)?)\s*\/\s*min/i);
+  if (!match?.[1]) return 0;
+  const perMin = Number(match[1]);
+  return Number.isFinite(perMin) && perMin > 0 ? perMin : 0;
+}
+
+/** Booking-time ride fare (excludes tip and waiting). */
+export function resolveRideBookingBaseFare(
+  order: Pick<
+    OrderDetail,
+    "totalAmount" | "tipAmount" | "checkoutMetadata" | "billingSnapshot" | "orderType"
+  >,
+  liveEstimatedFare?: number | null
+): number {
+  if (liveEstimatedFare != null && Number.isFinite(liveEstimatedFare) && liveEstimatedFare > 0) {
+    return Math.round(liveEstimatedFare);
+  }
+
+  const meta = order.checkoutMetadata as Record<string, unknown> | null;
+  const metaFare = Number(meta?.estimatedFare ?? meta?.finalFare);
+  if (Number.isFinite(metaFare) && metaFare > 0) return Math.round(metaFare);
+
+  const snap = (order.billingSnapshot ?? {}) as Record<string, unknown>;
+  const snapFare = billNum(snap.fare_amount) || billNum(snap.ride_fare);
+  if (snapFare > 0 && isPersonRideOrder(order)) return Math.round(snapFare);
+
+  const tip = Math.max(0, Number(order.tipAmount ?? 0));
+  const total = Number(order.totalAmount ?? 0);
+  return Math.max(0, Math.round(total - tip));
+}
+
+export type ActiveRideTripFare = {
+  rideFare: number;
+  waitingCharge: number;
+  tip: number;
+  totalFare: number;
+  hasPickupWait: boolean;
+};
+
+export function buildActiveRideTripFareBreakdown(args: {
+  order: OrderDetail;
+  liveEstimatedFare?: number | null;
+  serverWaitingCharge?: number | null;
+  waitingChargePerMin?: number | null;
+  pickupWaitFields: RidePickupWaitFields;
+  finalizedPickupWaitSec: number;
+  pickupWaitActive?: boolean;
+  nowMs?: number;
+}): ActiveRideTripFare {
+  const snapBill = parseRideDeliveredBill(args.order);
+  const tip = Math.max(0, Number(args.order.tipAmount ?? snapBill.tip ?? 0));
+  const rideFare = resolveRideBookingBaseFare(args.order, args.liveEstimatedFare);
+
+  const meta = args.order.checkoutMetadata as Record<string, unknown> | null;
+  const perMin =
+    args.waitingChargePerMin != null && args.waitingChargePerMin > 0
+      ? args.waitingChargePerMin
+      : resolveRidePickupWaitingChargePerMin(meta) ||
+        parseWaitingChargePerMinFromNote(
+          typeof meta?.waitingChargeNote === "string" ? meta.waitingChargeNote : null
+        );
+
+  const billWaitFields: RidePickupWaitFields = {
+    ...args.pickupWaitFields,
+    pickupWaitSeconds: args.finalizedPickupWaitSec,
+  };
+  const estimatedWaiting = estimateRidePickupWaitingCharge(
+    billWaitFields,
+    perMin,
+    args.nowMs ?? Date.now()
+  );
+  let waitingCharge = resolveRidePaymentWaitingCharge({
+    order: args.order,
+    snapWaiting: snapBill.waitingCharge,
+    liveWaiting: estimatedWaiting,
+  });
+  if (
+    args.serverWaitingCharge != null &&
+    args.serverWaitingCharge > 0 &&
+    !isRidePickupWaitFinalized(args.order)
+  ) {
+    waitingCharge = args.serverWaitingCharge;
+  }
+
+  const hasPickupWait = args.finalizedPickupWaitSec > 0;
+  const totalFare = rideFare + waitingCharge + tip;
+
+  return { rideFare, waitingCharge, tip, totalFare, hasPickupWait };
+}
+
+function tripKmFromBillingSnapshot(snap: Record<string, unknown>): number | null {
+  const raw = snap.rider_payout_snapshot;
+  if (raw == null || typeof raw !== "object") return null;
+  const trip = Number((raw as Record<string, unknown>).tripDistanceKm);
+  return Number.isFinite(trip) && trip > 0 ? Math.round(trip * 10) / 10 : null;
+}
+
+/** Canonical booking trip km — matches fare quote and rider accept-offer modal. */
+export function resolveRideOrderTripDistanceKm(
+  order: Pick<OrderDetail | OrderSummary, "distanceKm" | "checkoutMetadata" | "billingSnapshot">
+): number | null {
+  const snap =
+    order.billingSnapshot != null && typeof order.billingSnapshot === "object"
+      ? (order.billingSnapshot as Record<string, unknown>)
+      : null;
+  const fromSnap = snap ? tripKmFromBillingSnapshot(snap) : null;
+  if (fromSnap != null) return fromSnap;
+
+  const fromMeta = parseRideFareDistanceKm(
+    order.checkoutMetadata as { routeDistanceKm?: number | string; tripKm?: number | string } | undefined
+  );
+  if (fromMeta != null) return fromMeta;
+
+  const fromSnapLegacy = snap ? billNum(snap.distance_km) || billNum(snap.route_distance_km) : 0;
+  if (fromSnapLegacy > 0) return Math.round(fromSnapLegacy * 10) / 10;
+
+  const core = order.distanceKm;
+  if (core != null && Number.isFinite(Number(core)) && Number(core) > 0) {
+    return Math.round(Number(core) * 10) / 10;
+  }
+  return null;
+}
+
+export type RideDeliveredBill = {
+  rideFare: number;
+  waitingCharge: number;
+  surgeCharge: number;
+  additionalCharges: number;
+  tip: number;
+  total: number;
+  distanceKm: number | null;
+  paymentMethodLabel: string;
+};
+
+export type RidePaymentFareLine = {
+  label: string;
+  amount: number;
+  emphasis?: boolean;
+};
+
+export type RidePaymentFareBreakdown = {
+  lines: RidePaymentFareLine[];
+  rideFare: number;
+  waitingCharge: number;
+  surgeCharge: number;
+  tip: number;
+  additionalCharges: number;
+  total: number;
+};
+
+export function formatRidePaymentMethod(method: string | null | undefined): string {
+  const raw = (method ?? "").trim().toLowerCase();
+  if (!raw || raw === "cod") return "Online";
+  if (raw.includes("online")) return "Online";
+  if (raw.includes("upi")) return "UPI";
+  if (raw.includes("card")) return "Card";
+  if (raw.includes("wallet")) return "Wallet";
+  if (raw.includes("cash")) return "Cash";
+  return method?.trim() || "Online";
+}
+
+function resolveBillingSnapshotWaitingCharge(snap: Record<string, unknown>): number {
+  const waitingCharge = billNum(snap.waiting_charge);
+  const pickupWaiting = billNum(snap.pickup_waiting_charge);
+  const waitingFee = billNum(snap.waiting_fee);
+  return Math.max(waitingCharge, pickupWaiting, waitingFee, 0);
+}
+
+export function parseRideDeliveredBill(
+  order: Pick<
+    OrderDetail,
+    | "totalAmount"
+    | "tipAmount"
+    | "paymentMethod"
+    | "billingSnapshot"
+    | "distanceKm"
+    | "checkoutMetadata"
+    | "orderType"
+  > & { fareAmount?: number | null }
+): RideDeliveredBill {
+  const snap = (order.billingSnapshot ?? {}) as Record<string, unknown>;
+  const tip = Math.max(0, billNum(snap.tip_amount) || Number(order.tipAmount ?? 0));
+  const waitingCharge = resolveBillingSnapshotWaitingCharge(snap);
+  const additionalCharges = Math.max(
+    0,
+    billNum(snap.misc_fee) +
+      billNum(snap.convenience_fee) +
+      billNum(snap.small_order_fee) +
+      billNum(snap.additional_charge) +
+      billNum(snap.extra_charge)
+  );
+  const surgeCharge = Math.max(0, billNum(snap.surge_fee) + billNum(snap.surge_charge));
+  const personRide = isPersonRideOrder(order);
+  const rideFareFromSnap = Math.max(
+    0,
+    billNum(snap.ride_fare) ||
+      billNum(snap.fare_amount) ||
+      (!personRide ? billNum(snap.item_total) || billNum(snap.delivery_fee) : 0)
+  );
+  const serverTotal = Math.max(0, billNum(snap.final_amount) || Number(order.totalAmount ?? 0));
+  const rideFare =
+    rideFareFromSnap > 0
+      ? rideFareFromSnap
+      : personRide
+        ? resolveRideBookingBaseFare(order)
+        : Math.max(0, serverTotal - tip - waitingCharge - surgeCharge - additionalCharges);
+
+  const distanceKm = resolveRideOrderTripDistanceKm(order);
+  const componentTotal = rideFare + waitingCharge + surgeCharge + additionalCharges + tip;
+  const total = Math.max(componentTotal, serverTotal);
+
+  return {
+    rideFare,
+    waitingCharge,
+    surgeCharge,
+    additionalCharges,
+    tip,
+    total,
+    distanceKm,
+    paymentMethodLabel: formatRidePaymentMethod(order.paymentMethod),
+  };
+}
+
+function isRidePickupWaitFinalized(
+  order: Pick<OrderDetail, "pickupOtpVerifiedAt" | "pickupWaitSeconds">
+): boolean {
+  return (
+    order.pickupOtpVerifiedAt != null &&
+    order.pickupWaitSeconds != null &&
+    Number.isFinite(Number(order.pickupWaitSeconds))
+  );
+}
+
+function resolveRidePaymentWaitingCharge(args: {
+  order: Pick<
+    OrderDetail,
+    | "pickupOtpVerifiedAt"
+    | "pickupWaitSeconds"
+    | "estimatedPickupWaitingCharge"
+  >;
+  snapWaiting: number;
+  liveWaiting: number;
+}): number {
+  if (isRidePickupWaitFinalized(args.order) && args.snapWaiting > 0) {
+    return args.snapWaiting;
+  }
+  const serverEst = Number(args.order.estimatedPickupWaitingCharge ?? 0);
+  if (Number.isFinite(serverEst) && serverEst > 0) return serverEst;
+  return Math.max(0, args.liveWaiting);
+}
+
+/** Amount due on delivered unpaid person rides (list + detail). */
+export function resolveRidePaymentDueAmount(
+  order: Pick<
+    OrderSummary | OrderDetail,
+    | "totalAmount"
+    | "tipAmount"
+    | "billingSnapshot"
+    | "checkoutMetadata"
+    | "orderType"
+    | "pickupOtpVerifiedAt"
+    | "pickupWaitSeconds"
+    | "pickupWaitingChargePerMin"
+    | "estimatedPickupWaitingCharge"
+    | "paymentMethod"
+    | "distanceKm"
+    | "riderReachedPickupAt"
+  >
+): number {
+  if ("billingSnapshot" in order && order.billingSnapshot != null) {
+    return buildRidePaymentFareBreakdown(order as OrderDetail).total;
+  }
+  const total = Number(order.totalAmount ?? 0);
+  return Number.isFinite(total) && total > 0 ? Math.round(total) : 0;
+}
+
+/** Full fare breakdown for the post-ride payment screen (ride + waiting + surges + tip). */
+export function buildRidePaymentFareBreakdown(
+  order: Pick<
+    OrderDetail,
+    | "totalAmount"
+    | "tipAmount"
+    | "paymentMethod"
+    | "billingSnapshot"
+    | "distanceKm"
+    | "checkoutMetadata"
+    | "orderType"
+    | "riderReachedPickupAt"
+    | "pickupOtpVerifiedAt"
+    | "pickupWaitSeconds"
+    | "pickupWaitingChargePerMin"
+    | "estimatedPickupWaitingCharge"
+  >
+): RidePaymentFareBreakdown {
+  const snapBill = parseRideDeliveredBill(order);
+  const pickupWaitFields: RidePickupWaitFields = {
+    riderReachedPickupAt: order.riderReachedPickupAt ?? null,
+    pickupOtpVerifiedAt: order.pickupOtpVerifiedAt ?? null,
+    pickupWaitSeconds: order.pickupWaitSeconds ?? null,
+  };
+  const finalizedPickupWaitSec =
+    order.pickupWaitSeconds != null && Number.isFinite(order.pickupWaitSeconds)
+      ? Math.max(0, Math.floor(order.pickupWaitSeconds))
+      : 0;
+
+  const liveTrip = buildActiveRideTripFareBreakdown({
+    order: order as OrderDetail,
+    serverWaitingCharge: order.estimatedPickupWaitingCharge,
+    waitingChargePerMin: order.pickupWaitingChargePerMin,
+    pickupWaitFields,
+    finalizedPickupWaitSec,
+    pickupWaitActive: false,
+  });
+
+  const waitingCharge = resolveRidePaymentWaitingCharge({
+    order,
+    snapWaiting: snapBill.waitingCharge,
+    liveWaiting: liveTrip.waitingCharge,
+  });
+  const rideFare = snapBill.rideFare > 0 ? snapBill.rideFare : liveTrip.rideFare;
+  const surgeCharge = snapBill.surgeCharge;
+  const tip = Math.max(snapBill.tip, liveTrip.tip);
+  const additionalCharges = snapBill.additionalCharges;
+  const componentTotal = rideFare + waitingCharge + surgeCharge + additionalCharges + tip;
+  const serverTotal = Math.max(0, Number(order.totalAmount ?? 0));
+  const total = Math.max(componentTotal, snapBill.total, serverTotal);
+
+  const lines: RidePaymentFareLine[] = [
+    { label: "Ride fare", amount: rideFare },
+  ];
+  if (waitingCharge > 0) {
+    lines.push({ label: "Waiting charges", amount: waitingCharge });
+  }
+  if (surgeCharge > 0) {
+    lines.push({ label: "Surge pricing", amount: surgeCharge });
+  }
+  if (additionalCharges > 0) {
+    lines.push({ label: "Additional charges", amount: additionalCharges });
+  }
+  if (tip > 0) {
+    lines.push({ label: "Captain tip", amount: tip });
+  }
+  lines.push({ label: "Total fare", amount: total, emphasis: true });
+
+  return {
+    lines,
+    rideFare,
+    waitingCharge,
+    surgeCharge,
+    tip,
+    additionalCharges,
+    total,
+  };
 }
 
 export function formatRideTripStats(distanceKm?: number | null, durationMins?: number | null): string | null {

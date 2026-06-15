@@ -20,11 +20,13 @@ import { PersonRideNavigateBottomSheet } from "@/src/components/orders/PersonRid
 import type { NavMapViewMode } from "@/src/lib/map-assets";
 import {
   FoodNavigateBottomSheet,
-  FOOD_NAV_SHEET_COLLAPSED_HEIGHT,
   FOOD_NAV_SHEET_HEIGHT,
 } from "@/src/components/orders/FoodNavigateBottomSheet";
 import {
-  PERSON_RIDE_NAV_SHEET_COLLAPSED_HEIGHT,
+  buildRidePickupWaitRiderLabel,
+  isRidePickupWaitActive,
+} from "@/src/lib/ride-pickup-wait";
+import {
   PERSON_RIDE_NAV_SHEET_HEIGHT,
 } from "@/src/components/orders/PersonRideNavigateBottomSheet";
 import { buildNavMapEdgeInsets } from "@/src/lib/navigation-camera-fit";
@@ -33,6 +35,9 @@ import { FoodNavigationMapChrome } from "@/src/components/orders/FoodNavigationM
 import { FoodPickOrderSheet } from "@/src/components/orders/FoodPickOrderSheet";
 import { FoodPickOrderDetailScreen } from "@/src/components/orders/FoodPickOrderDetailScreen";
 import { FoodDropOrderScreen } from "@/src/components/orders/FoodDropOrderScreen";
+import { CustomerCallBottomSheet } from "@/src/components/orders/CustomerCallBottomSheet";
+import { RiderEmergencySosBottomSheet } from "@/src/components/orders/RiderEmergencySosBottomSheet";
+import { CustomerCallConfirmModal } from "@/src/components/orders/CustomerCallConfirmModal";
 import { RestaurantFeedbackBottomSheet } from "@/src/components/orders/RestaurantFeedbackBottomSheet";
 import { CustomerFeedbackBottomSheet } from "@/src/components/orders/CustomerFeedbackBottomSheet";
 import { FoodPickupVerificationScreen } from "@/src/components/orders/FoodPickupVerificationScreen";
@@ -49,6 +54,8 @@ import {
 import {
   useRideOrder,
   syncRiderOrderDetailCache,
+  findRiderOrderInQueryCache,
+  seedRiderOrderDetailCache,
   useReachedPickup,
   useSubmitMerchantPickupFeedback,
   useSubmitCustomerDeliveryFeedback,
@@ -64,10 +71,13 @@ import {
   RIDER_ACTIVE_ORDERS_QUERY_KEY,
 } from "@/src/hooks/useOrders";
 import type { RiderOrderSummary } from "@/src/services/api/riderApi";
+import { riderApi } from "@/src/services/api/riderApi";
 import { useQueryClient } from "@tanstack/react-query";
 import { buildFoodDeliverySuccessParams } from "@/src/lib/food-delivery-success-nav";
 import { buildRideDeliverySuccessParams } from "@/src/lib/ride-delivery-success-nav";
+import { isRideFarePaymentPending } from "@/src/lib/ride-payment-wait";
 import { useNavScreenBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { usePartnerChatUnread } from "@/src/hooks/usePartnerChatUnread";
 import { useMilestoneGeoFence } from "@/src/hooks/useMilestoneGeoFence";
 import { resolveMilestoneGeoUi } from "@/src/lib/milestone-geo-hint";
 import { RiderRideCancelReasonSheet } from "@/src/components/orders/RiderRideCancelReasonSheet";
@@ -79,8 +89,9 @@ import {
 import { captureDeliveryProofPhoto } from "@/src/lib/capture-delivery-proof-photo";
 import { buildOrderDeliveryProofKey, uploadToR2 } from "@/src/services/storage/cloudflareR2";
 import { useSessionStore } from "@/src/stores/sessionStore";
+import { useRiderToastStore } from "@/src/stores/riderToastStore";
 import { useSmoothedRiderPosition } from "@/src/hooks/useSmoothedRiderPosition";
-import { extractApiErrorMessage } from "@/src/services/http";
+import { extractApiErrorMessage, isOrderFetchNotFoundError } from "@/src/services/http";
 import {
   splitRouteProgress,
   etaMinutesFromMeters,
@@ -98,6 +109,17 @@ type Props = {
   orderId: string;
   mode?: "ride" | "food";
 };
+
+type DeliveryProofState = {
+  localUri: string;
+  uploaded?: { proxyUrl: string; key: string };
+};
+
+function isDeliveryProofUploaded(
+  proof: DeliveryProofState | null | undefined
+): proof is DeliveryProofState & { uploaded: { proxyUrl: string; key: string } } {
+  return Boolean(proof?.localUri && proof.uploaded?.proxyUrl && proof.uploaded?.key);
+}
 
 function compactAddress(raw: string): { line1: string; landmark?: string } {
   const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
@@ -145,9 +167,11 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const userControllingMapRef = useRef(false);
   const autoFollowResumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const { data: order, isLoading, isError } = useRideOrder(orderId, {
+  const { data: order, isLoading, isError, error, isFetching } = useRideOrder(orderId, {
     refetchInterval: isFoodOrder ? 5000 : 8000,
   });
+  const { data: chatUnread } = usePartnerChatUnread(orderId, Boolean(order));
+  const chatUnreadCount = chatUnread?.unreadCount ?? 0;
   const reachedPickup = useReachedPickup();
   const submitMerchantFeedback = useSubmitMerchantPickupFeedback();
   const submitCustomerFeedback = useSubmitCustomerDeliveryFeedback();
@@ -164,13 +188,14 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const [cancelSheetOpen, setCancelSheetOpen] = useState(false);
   const [otpSheetOpen, setOtpSheetOpen] = useState(false);
   const [deliveryOtpSheetOpen, setDeliveryOtpSheetOpen] = useState(false);
-  /** Local capture only until delivery OTP is verified; R2 + DB happen on OTP submit. */
-  const [deliveryProof, setDeliveryProof] = useState<{ localUri: string } | null>(null);
+  /** Delivery photo — uploaded to R2 before OTP sheet; reused on OTP retry. */
+  const [deliveryProof, setDeliveryProof] = useState<DeliveryProofState | null>(null);
   const [deliveryPhotoUploading, setDeliveryPhotoUploading] = useState(false);
   const session = useSessionStore((s) => s.session);
   const [otpError, setOtpError] = useState<string | null>(null);
   const [otpResetKey, setOtpResetKey] = useState(0);
   const [reachSliderDone, setReachSliderDone] = useState(false);
+  const [startRideSliderKey, setStartRideSliderKey] = useState(0);
   const [pickOrderSheetDismissed, setPickOrderSheetDismissed] = useState(false);
   const [pickOrderDetailOpen, setPickOrderDetailOpen] = useState(false);
   const [restaurantFeedbackOpen, setRestaurantFeedbackOpen] = useState(false);
@@ -180,10 +205,94 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const foodPickupOtpFromVerificationRef = useRef(false);
   const prevFoodPickupMarkedRef = useRef<boolean | null>(null);
   const prevReachSliderDoneRef = useRef(false);
-  const [navSheetExpanded, setNavSheetExpanded] = useState(true);
   const [dropOrderScreenOpen, setDropOrderScreenOpen] = useState(false);
+  const [customerCallConfirmOpen, setCustomerCallConfirmOpen] = useState(false);
+  const [customerCallSheetOpen, setCustomerCallSheetOpen] = useState(false);
   const [customerFeedbackOpen, setCustomerFeedbackOpen] = useState(false);
+  const [sosSheetOpen, setSosSheetOpen] = useState(false);
+  const [redirectingAfterCancel, setRedirectingAfterCancel] = useState(false);
+  const [waitTick, setWaitTick] = useState(() => Date.now());
+  const hadActiveOrderRef = useRef(false);
+  const adminCancelHandledRef = useRef(false);
+  const showRiderToast = useRiderToastStore((s) => s.showToast);
+
+  useEffect(() => {
+    void queryClient.prefetchQuery({
+      queryKey: ["rider", "emergency-contacts"],
+      queryFn: () => riderApi.getEmergencyContacts(),
+      staleTime: 5 * 60_000,
+    });
+  }, [queryClient]);
   const deliveredOrderForSuccessRef = useRef<RiderOrderSummary | null>(null);
+  const prevOrderStatusRef = useRef<string | undefined>(undefined);
+  const deliverySuccessHandledRef = useRef(false);
+  useEffect(() => {
+    deliverySuccessHandledRef.current = false;
+    prevOrderStatusRef.current = undefined;
+    hadActiveOrderRef.current = false;
+    adminCancelHandledRef.current = false;
+    setRedirectingAfterCancel(false);
+    setDeliveryProof(null);
+    setDeliveryOtpSheetOpen(false);
+    setDeliveryPhotoUploading(false);
+    setOtpError(null);
+  }, [orderId]);
+
+  useEffect(() => {
+    const cached = findRiderOrderInQueryCache(queryClient, orderId);
+    if (cached) {
+      seedRiderOrderDetailCache(queryClient, cached, [orderId]);
+    }
+  }, [orderId, queryClient]);
+
+  useEffect(() => {
+    if (!redirectingAfterCancel) return;
+    const t = setTimeout(() => {
+      setRedirectingAfterCancel(false);
+      router.replace("/(tabs)/orders");
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [redirectingAfterCancel]);
+
+  useEffect(() => {
+    if (order) {
+      hadActiveOrderRef.current = true;
+    }
+  }, [order]);
+
+  useEffect(() => {
+    if (adminCancelHandledRef.current || !hadActiveOrderRef.current || isLoading) return;
+
+    const unassignedByAdmin =
+      isError && isOrderFetchNotFoundError(error);
+    const cancelledOnOrder = order?.status === "cancelled";
+
+    if (!unassignedByAdmin && !cancelledOnOrder) return;
+
+    adminCancelHandledRef.current = true;
+    setRedirectingAfterCancel(true);
+    void tracker.stop();
+    void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
+    queryClient.removeQueries({ queryKey: ["rider", "orders", "detail", orderId] });
+    showRiderToast(
+      t(
+        "orders.activeFood.adminCancelled",
+        "Order cancelled by admin"
+      )
+    );
+    router.replace("/(tabs)/orders");
+  }, [
+    error,
+    isError,
+    isLoading,
+    order?.status,
+    orderId,
+    queryClient,
+    showRiderToast,
+    t,
+    tracker,
+  ]);
+
   const sheetBottomInset = useNavScreenBottomInset();
   const riderFix = trackerState.status === "tracking" ? trackerState.lastFix : undefined;
   const smoothDurationMs = useMemo(() => {
@@ -227,10 +336,29 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   useEffect(() => {
     if (isFoodOrder) {
       setReachSliderDone(!!order?.atPickup);
-    } else if (order?.pickupOtpVerified) {
+    } else if (order?.pickupOtpVerified || order?.pickupWaitStartedAt) {
       setReachSliderDone(true);
     }
-  }, [isFoodOrder, order?.atPickup, order?.pickupOtpVerified]);
+  }, [isFoodOrder, order?.atPickup, order?.pickupOtpVerified, order?.pickupWaitStartedAt]);
+
+  const ridePickupWaitActive =
+    !isFoodOrder &&
+    isRidePickupWaitActive({
+      pickupWaitStartedAt: order?.pickupWaitStartedAt,
+      pickupOtpVerified: order?.pickupOtpVerified,
+      pickupWaitFinalized: order?.pickupWaitFinalized,
+    });
+
+  useEffect(() => {
+    if (!ridePickupWaitActive) return;
+    const timer = setInterval(() => setWaitTick(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [ridePickupWaitActive]);
+
+  const rideWaitTimerLabel =
+    order && ridePickupWaitActive
+      ? buildRidePickupWaitRiderLabel(order, waitTick)
+      : null;
 
   const foodOrderStatus = (order?.foodOrderStatus ?? "").trim().toUpperCase();
   const coreOrderStatus = (order?.status ?? "").toLowerCase();
@@ -276,7 +404,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     }
     if (reachSliderDone && !prevReachSliderDoneRef.current) {
       setPickOrderSheetDismissed(false);
-      setNavSheetExpanded(false);
     }
     prevReachSliderDoneRef.current = reachSliderDone;
   }, [isFoodOrder, reachSliderDone, foodDeliveryActive, orderDelivered]);
@@ -291,7 +418,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     if (!isFoodOrder) return;
     if (atCustomer && !orderDelivered) {
       setDropOrderScreenOpen(true);
-      setNavSheetExpanded(false);
     }
     if (orderDelivered) {
       setDropOrderScreenOpen(false);
@@ -483,7 +609,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     const deviation = analyzeRiderOnRoute(route.coordinates, {
       latitude: navRider.lat,
       longitude: navRider.lng,
-      headingDeg: "headingDeg" in navRider ? navRider.headingDeg : riderLocation?.headingDeg,
+      headingDeg: riderLocation?.headingDeg,
     });
     if (!deviation) return;
 
@@ -527,7 +653,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     const split = splitRouteProgress(route.coordinates, {
       latitude: navRider.lat,
       longitude: navRider.lng,
-      headingDeg: "headingDeg" in navRider ? navRider.headingDeg : undefined,
+      headingDeg: riderLocation?.headingDeg,
     });
     return {
       traveled: split.traveled,
@@ -649,7 +775,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     riderLocation?.lng,
     riderFix?.speedMps,
     trackerState.status,
-    trackerState.lastFix?.speedMps,
+    riderFix?.speedMps,
   ]);
 
   const sheetTitle = useMemo(() => {
@@ -678,9 +804,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       return t("orders.activeRide.navigateDrop", "Navigate to drop");
     }
     if (reachSliderDone && !pickupOtpVerified) {
-      return t("orders.activeRide.verifyPickupOtpTitle", "Submit pickup OTP");
-    }
-    if (pickupOtpVerified && !rideStarted) {
       return t("orders.activeRide.startRideTitle", "Start ride");
     }
     if (pickupOtpVerified) {
@@ -707,32 +830,59 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     return t("orders.activeNav.reachPickup", "Reach pickup");
   }, [isFoodOrder, foodDeliveryActive, rideStarted, t]);
 
+  const hasCustomerCallablePhone = useMemo(() => {
+    if (!order) return false;
+    return Boolean(
+      order.customerPhone?.trim() ||
+        order.customerAlternatePhone?.trim() ||
+        order.customerPrimaryPhone?.trim()
+    );
+  }, [order]);
+
   const handleCallCustomer = useCallback(() => {
-    const phone = order?.customerPhone?.trim();
-    if (!phone) {
+    if (!hasCustomerCallablePhone) {
       Alert.alert(
         t("orders.activeRide.noPhoneTitle", "Phone unavailable"),
         t("orders.activeRide.noPhoneMessage", "Customer phone number is not available for this ride.")
       );
       return;
     }
+    if (isFoodOrder) {
+      setCustomerCallConfirmOpen(true);
+      return;
+    }
+    const phone = order?.customerPhone?.trim();
+    if (!phone) return;
     void Linking.openURL(`tel:${phone}`).catch(() => {
       Alert.alert(
         t("orders.activeRide.callFailedTitle", "Could not call"),
         t("orders.activeRide.callFailedMessage", "Unable to open the phone dialer.")
       );
     });
-  }, [order?.customerPhone, t]);
+  }, [hasCustomerCallablePhone, isFoodOrder, order?.customerPhone, t]);
+
+  const handleConfirmCustomerCall = useCallback(() => {
+    setCustomerCallConfirmOpen(false);
+    setCustomerCallSheetOpen(true);
+  }, []);
 
   const handleChatCustomer = useCallback(() => {
-    Alert.alert(
-      t("orders.activeRide.chatSoonTitle", "Chat coming soon"),
-      t(
-        "orders.activeRide.chatSoonMessage",
-        "In-app chat with customers will be available in a future update."
-      )
-    );
-  }, [t]);
+    if (!order) return;
+    const orderLabel =
+      isFoodOrder && order.merchantName?.trim()
+        ? `${order.merchantName.trim()} order`
+        : t("orders.partnerChat.rideTripLabel", "Live ride trip");
+    router.push({
+      pathname: "/order-partner-chat/[orderId]",
+      params: {
+        orderId: order.id,
+        customerName: order.customerName?.trim() || t("orders.partnerChat.customerFallback", "Customer"),
+        orderLabel,
+        ...(order.customerPhone?.trim() ? { customerPhone: order.customerPhone.trim() } : {}),
+        ...(atCustomer ? { atDrop: "1" } : {}),
+      },
+    });
+  }, [order, isFoodOrder, atCustomer, t]);
 
   const handleReachedPickup = useCallback(() => {
     const gps = riderGps();
@@ -741,18 +891,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       {
         onSuccess: () => {
           setReachSliderDone(true);
-          if (!isFoodOrder) {
-            const otpGeo = resolveMilestoneGeoUi(
-              milestoneGeo?.pickup_confirmation,
-              "pickup_confirmation"
-            );
-            if (!otpGeo.locked) {
-              setNavSheetExpanded(false);
-              setOtpError(null);
-              setOtpResetKey((k) => k + 1);
-              setOtpSheetOpen(true);
-            }
-          }
         },
         onError: (err) => {
           setReachSliderDone(false);
@@ -766,7 +904,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         },
       }
     );
-  }, [orderId, reachedPickup, isFoodOrder, riderGps, milestoneGeo?.pickup_confirmation, t]);
+  }, [orderId, reachedPickup, isFoodOrder, riderGps, t]);
 
   const handleReachStore = useCallback(() => {
     const gps = riderGps();
@@ -776,7 +914,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         onSuccess: () => {
           setReachSliderDone(true);
           setPickOrderSheetDismissed(false);
-          setNavSheetExpanded(false);
         },
         onError: (err) => {
           setReachSliderDone(false);
@@ -798,6 +935,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
   const navigateToFoodDeliverySuccess = useCallback(
     (deliveredOrder: RiderOrderSummary) => {
+      deliverySuccessHandledRef.current = true;
       void tracker.stop();
       void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
       queryClient.setQueryData(["rider", "orders", "detail", orderId], deliveredOrder);
@@ -808,6 +946,98 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     },
     [orderId, queryClient, tracker]
   );
+
+  const navigateToRideSuccess = useCallback(
+    (deliveredOrder: RiderOrderSummary) => {
+      deliverySuccessHandledRef.current = true;
+      void tracker.stop();
+      void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
+      queryClient.setQueryData(["rider", "orders", "detail", orderId], deliveredOrder);
+      router.replace({
+        pathname: "/ride-delivery-success",
+        params: { ...buildRideDeliverySuccessParams(deliveredOrder), kind: "ride" },
+      });
+    },
+    [orderId, queryClient, tracker]
+  );
+
+  const navigateToRidePaymentWaiting = useCallback(
+    (deliveredOrder: RiderOrderSummary) => {
+      deliverySuccessHandledRef.current = true;
+      void tracker.stop();
+      void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
+      queryClient.setQueryData(["rider", "orders", "detail", orderId], deliveredOrder);
+      router.replace({
+        pathname: "/ride-payment-waiting",
+        params: {
+          orderId: deliveredOrder.id,
+          displayId: deliveredOrder.formattedOrderId?.trim() || deliveredOrder.id,
+        },
+      });
+    },
+    [orderId, queryClient, tracker]
+  );
+
+  const finishRideDeliveryFlow = useCallback(
+    (deliveredOrder: RiderOrderSummary) => {
+      if (isRideFarePaymentPending(deliveredOrder)) {
+        navigateToRidePaymentWaiting(deliveredOrder);
+      } else {
+        navigateToRideSuccess(deliveredOrder);
+      }
+    },
+    [navigateToRidePaymentWaiting, navigateToRideSuccess]
+  );
+
+  useEffect(() => {
+    if (!order) return;
+
+    const status = order.status;
+    const prevStatus = prevOrderStatusRef.current;
+
+    if (status !== "delivered") {
+      prevOrderStatusRef.current = status;
+      return;
+    }
+
+    if (deliverySuccessHandledRef.current || customerFeedbackOpen) {
+      prevOrderStatusRef.current = status;
+      return;
+    }
+
+    const transitioned = prevStatus != null && prevStatus !== "delivered";
+    const mountAlreadyDelivered = prevStatus === undefined;
+    if (!transitioned && !mountAlreadyDelivered) {
+      prevOrderStatusRef.current = status;
+      return;
+    }
+
+    prevOrderStatusRef.current = status;
+    deliverySuccessHandledRef.current = true;
+
+    if (isFoodOrder) {
+      if (order.customerFeedbackSubmitted === true) {
+        navigateToFoodDeliverySuccess(order);
+      } else {
+        deliveredOrderForSuccessRef.current = order;
+        setCustomerFeedbackOpen(true);
+      }
+      return;
+    }
+
+    void tracker.stop();
+    void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
+    finishRideDeliveryFlow(order);
+  }, [
+    order,
+    order?.status,
+    isFoodOrder,
+    customerFeedbackOpen,
+    navigateToFoodDeliverySuccess,
+    finishRideDeliveryFlow,
+    queryClient,
+    tracker,
+  ]);
 
   const finishCustomerFeedbackAndShowSuccess = useCallback(() => {
     const deliveredOrder = deliveredOrderForSuccessRef.current;
@@ -826,27 +1056,18 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, [finishCustomerFeedbackAndShowSuccess]);
 
   const handleRestaurantFeedbackSkip = useCallback(() => {
-    submitMerchantFeedback.mutate(
-      { orderId, skipped: true },
-      {
-        onSuccess: closeRestaurantFeedback,
-        onError: (err) => {
-          Alert.alert(
-            t("orders.activeRide.updateFailedTitle", "Update failed"),
-            extractApiErrorMessage(
-              err,
-              t("orders.activeFood.feedbackFailed", "Could not save feedback. Try again.")
-            )
-          );
-        },
-      }
-    );
-  }, [orderId, submitMerchantFeedback, closeRestaurantFeedback, t]);
+    closeRestaurantFeedback();
+  }, [closeRestaurantFeedback]);
 
   const handleRestaurantFeedbackSubmit = useCallback(
-    (payload: { rating: number; tags: string[] }) => {
+    (payload: { rating: number; tags: string[]; messages: string[] }) => {
       submitMerchantFeedback.mutate(
-        { orderId, rating: payload.rating, tags: payload.tags },
+        {
+          orderId,
+          rating: payload.rating,
+          tags: payload.tags,
+          messages: payload.messages,
+        },
         {
           onSuccess: closeRestaurantFeedback,
           onError: (err) => {
@@ -865,30 +1086,22 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   );
 
   const handleCustomerFeedbackSkip = useCallback(() => {
-    submitCustomerFeedback.mutate(
-      { orderId, skipped: true },
-      {
-        onSuccess: closeCustomerFeedback,
-        onError: (err) => {
-          Alert.alert(
-            t("orders.activeRide.updateFailedTitle", "Update failed"),
-            extractApiErrorMessage(
-              err,
-              t("orders.activeFood.feedbackFailed", "Could not save feedback. Try again.")
-            )
-          );
-        },
-      }
-    );
-  }, [orderId, submitCustomerFeedback, closeCustomerFeedback, t]);
+    closeCustomerFeedback();
+  }, [closeCustomerFeedback]);
 
   const handleCustomerFeedbackSubmit = useCallback(
-    (payload: { rating: number; tags: string[]; comment?: string }) => {
+    (payload: {
+      rating: number;
+      tags: string[];
+      messages: string[];
+      comment?: string;
+    }) => {
       submitCustomerFeedback.mutate(
         {
           orderId,
           rating: payload.rating,
           tags: payload.tags,
+          messages: payload.messages,
           comment: payload.comment,
         },
         {
@@ -978,7 +1191,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     }
 
     if (!barcodeVerificationEnabled && otpVerificationEnabled) {
-      foodPickupOtpFromVerificationRef.current = true;
+      foodPickupOtpFromVerificationRef.current = false;
       setOtpError(null);
       setOtpResetKey((k) => k + 1);
       setOtpSheetOpen(true);
@@ -1040,7 +1253,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       {
         onSuccess: () => {
           setDropOrderScreenOpen(true);
-          setNavSheetExpanded(false);
         },
         onError: (err) => {
           Alert.alert(
@@ -1063,13 +1275,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       { orderId, ...gps },
       {
         onSuccess: (deliveredOrder) => {
-          void tracker.stop();
-          void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
-          queryClient.setQueryData(["rider", "orders", "detail", orderId], deliveredOrder);
-          router.replace({
-            pathname: "/ride-delivery-success",
-            params: { ...buildRideDeliverySuccessParams(deliveredOrder), kind: "ride" },
-          });
+          finishRideDeliveryFlow(deliveredOrder);
         },
         onError: (err) => {
           Alert.alert(
@@ -1082,68 +1288,125 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         },
       }
     );
-  }, [completeRide, orderId, riderGps, tracker, queryClient, t]);
+  }, [completeRide, orderId, riderGps, finishRideDeliveryFlow, t]);
 
-  const handleEnterPickupOtp = useCallback(() => {
-    const otpGeo = resolveMilestoneGeoUi(
-      milestoneGeo?.pickup_confirmation,
-      "pickup_confirmation"
-    );
-    if (otpGeo.locked) {
-      Alert.alert(
-        t("orders.activeRide.geoBlockedTitle", "Too far from pickup"),
-        otpGeo.hintText ??
-          t(
-            "orders.activeRide.geoBlockedPickup",
-            "Move closer to the pickup location before entering OTP."
-          )
-      );
+  const handleGoHomeAfterRide = useCallback(() => {
+    if (order?.status === "delivered") {
+      finishRideDeliveryFlow(order);
       return;
     }
-    setNavSheetExpanded(false);
+    router.replace("/(tabs)/orders");
+  }, [finishRideDeliveryFlow, order]);
+
+  useEffect(() => {
+    if (isFoodOrder || !order || order.status !== "delivered") return;
+    if (deliverySuccessHandledRef.current) return;
+    const timer = setTimeout(() => {
+      if (deliverySuccessHandledRef.current) return;
+      finishRideDeliveryFlow(order);
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [isFoodOrder, finishRideDeliveryFlow, order, order?.status]);
+
+  const handleStartRide = useCallback(() => {
+    if (isFoodOrder) return;
+    const startGeo = resolveMilestoneGeoUi(milestoneGeo?.start_ride, "start_ride");
+    if (startGeo.locked) {
+      Alert.alert(
+        t("orders.activeRide.geoBlockedTitle", "Too far from pickup"),
+        startGeo.hintText ??
+          t(
+            "orders.activeRide.geoBlockedStartRide",
+            "Move closer to the pickup point before starting the ride."
+          )
+      );
+      setStartRideSliderKey((k) => k + 1);
+      return;
+    }
     setOtpError(null);
     setOtpResetKey((k) => k + 1);
     setOtpSheetOpen(true);
-  }, [milestoneGeo?.pickup_confirmation, t]);
+  }, [isFoodOrder, milestoneGeo?.start_ride, t]);
 
-  const handleStartRide = useCallback(() => {
-    const gps = riderGps();
-    startRide.mutate(
-      { orderId, ...gps },
-      {
-        onSuccess: () => {
-          setPickupBannerMessage(
-            t("orders.activeRide.rideStartedBanner", "Ride started — navigate to drop location")
-          );
-          setPickupBannerVisible(true);
-          setCameraFitTrigger((n) => n + 1);
-        },
-        onError: (err) => {
-          Alert.alert(
-            t("orders.activeRide.updateFailedTitle", "Update failed"),
-            extractApiErrorMessage(
-              err,
-              t("orders.activeRide.startRideFailed", "Could not start ride. Try again.")
-            )
-          );
-        },
+  const uploadDeliveryProof = useCallback(
+    async (uri: string): Promise<boolean> => {
+      const token = session?.accessToken;
+      if (!token) {
+        Alert.alert(
+          t("orders.activeFood.uploadAuthError", "Session expired"),
+          t("orders.activeFood.signInAgain", "Sign in again and retry delivery.")
+        );
+        return false;
       }
-    );
-  }, [orderId, startRide, riderGps, t]);
+
+      setDeliveryPhotoUploading(true);
+      try {
+        const key = buildOrderDeliveryProofKey(orderId);
+        const result = await uploadToR2(uri, "orders", token, key);
+        setDeliveryProof({
+          localUri: uri,
+          uploaded: { proxyUrl: result.proxyUrl, key: result.key },
+        });
+        return true;
+      } catch (err) {
+        Alert.alert(
+          t("orders.activeFood.uploadFailedTitle", "Upload failed"),
+          err instanceof Error
+            ? err.message
+            : t(
+                "orders.activeFood.uploadFailed",
+                "Could not upload delivery photo. Slide again to retry."
+              )
+        );
+        return false;
+      } finally {
+        setDeliveryPhotoUploading(false);
+      }
+    },
+    [orderId, session?.accessToken, t]
+  );
+
+  const reopenDeliveryOtpSheet = useCallback(
+    (opts?: { resetOtp?: boolean }) => {
+      setOtpError(null);
+      verifyDeliveryOtp.reset();
+      if (opts?.resetOtp) {
+        setOtpResetKey((k) => k + 1);
+      }
+      setDeliveryOtpSheetOpen(true);
+    },
+    [verifyDeliveryOtp]
+  );
 
   const handleDelivered = useCallback(async () => {
     setOtpSheetOpen(false);
-    setOtpError(null);
+
+    if (isDeliveryProofUploaded(deliveryProof)) {
+      reopenDeliveryOtpSheet();
+      return;
+    }
+
+    if (deliveryProof?.localUri) {
+      const uploaded = await uploadDeliveryProof(deliveryProof.localUri);
+      if (uploaded) {
+        reopenDeliveryOtpSheet({ resetOtp: true });
+      }
+      return;
+    }
+
     setDeliveryProof(null);
     setDeliveryOtpSheetOpen(false);
+    verifyDeliveryOtp.reset();
 
     try {
       const uri = await captureDeliveryProofPhoto(t);
       if (!uri) return;
 
       setDeliveryProof({ localUri: uri });
-      setOtpResetKey((k) => k + 1);
-      setDeliveryOtpSheetOpen(true);
+      const uploaded = await uploadDeliveryProof(uri);
+      if (uploaded) {
+        reopenDeliveryOtpSheet({ resetOtp: true });
+      }
     } catch (err) {
       Alert.alert(
         t("orders.activeFood.captureFailedTitle", "Photo failed"),
@@ -1155,44 +1418,64 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
             )
       );
     }
-  }, [t]);
+  }, [deliveryProof, reopenDeliveryOtpSheet, t, uploadDeliveryProof, verifyDeliveryOtp]);
 
   const handleDismissOtpSheet = useCallback(() => {
     if (verifyPickupOtp.isPending) return;
+    if (!isFoodOrder && startRide.isPending) return;
     setOtpSheetOpen(false);
-    if (isFoodOrder && foodPickupOtpFromVerificationRef.current) {
-      foodPickupOtpFromVerificationRef.current = false;
-      setPickupVerificationOpen(true);
+
+    if (isFoodOrder) {
+      if (foodPickupOtpFromVerificationRef.current) {
+        foodPickupOtpFromVerificationRef.current = false;
+        setPickupVerificationOpen(true);
+        return;
+      }
+      if (!pickupConfirmed && !foodDeliveryActive) {
+        setReachSliderDone(false);
+      }
       return;
     }
-    if (!isFoodOrder && !pickupOtpVerified) {
-      setReachSliderDone(false);
+
+    if (reachSliderDone && !pickupOtpVerified) {
+      setStartRideSliderKey((k) => k + 1);
       return;
     }
-    if (!pickupConfirmed && !(isFoodOrder ? foodDeliveryActive : rideStarted)) {
+    if (!pickupConfirmed && !rideStarted) {
       setReachSliderDone(false);
     }
   }, [
     verifyPickupOtp.isPending,
+    startRide.isPending,
     pickupConfirmed,
     pickupOtpVerified,
     rideStarted,
     isFoodOrder,
     foodDeliveryActive,
+    reachSliderDone,
   ]);
 
   const handleCancelReason = useCallback(
     (reasonCode: string, label: string) => {
       Alert.alert(
-        t("orders.activeRide.cancelConfirmTitle", "Cancel this ride?"),
-        t(
-          "orders.activeRide.cancelConfirmMessage",
-          "The order will be offered to other riders. This cannot be undone."
-        ),
+        isFoodOrder
+          ? t("orders.activeFood.cancelConfirmTitle", "Cancel this delivery?")
+          : t("orders.activeRide.cancelConfirmTitle", "Cancel this ride?"),
+        isFoodOrder
+          ? t(
+              "orders.activeFood.cancelConfirmMessage",
+              "The order will be offered to other riders. This cannot be undone."
+            )
+          : t(
+              "orders.activeRide.cancelConfirmMessage",
+              "The order will be offered to other riders. This cannot be undone."
+            ),
         [
           { text: t("common.back", "Back"), style: "cancel" },
           {
-            text: t("orders.activeRide.confirmCancel", "Yes, cancel ride"),
+            text: isFoodOrder
+              ? t("orders.activeFood.confirmCancel", "Yes, cancel delivery")
+              : t("orders.activeRide.confirmCancel", "Yes, cancel ride"),
             style: "destructive",
             onPress: () => {
               cancelAssigned.mutate(
@@ -1204,11 +1487,18 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
                   },
                   onError: () => {
                     Alert.alert(
-                      t("orders.activeRide.cancelFailedTitle", "Could not cancel"),
-                      t(
-                        "orders.activeRide.cancelFailedMessage",
-                        "Please try again or contact support."
-                      )
+                      isFoodOrder
+                        ? t("orders.activeFood.cancelFailedTitle", "Could not cancel")
+                        : t("orders.activeRide.cancelFailedTitle", "Could not cancel"),
+                      isFoodOrder
+                        ? t(
+                            "orders.activeFood.cancelFailedMessage",
+                            "Please try again or contact support."
+                          )
+                        : t(
+                            "orders.activeRide.cancelFailedMessage",
+                            "Please try again or contact support."
+                          )
                     );
                   },
                 }
@@ -1218,7 +1508,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         ]
       );
     },
-    [cancelAssigned, orderId, t]
+    [cancelAssigned, orderId, t, isFoodOrder]
   );
 
   const handleVerifyOtp = useCallback(
@@ -1239,14 +1529,29 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           }
           syncRiderOrderDetailCache(queryClient, orderId, data);
           setOtpSheetOpen(false);
-          setReachSliderDone(true);
-          setPickupBannerMessage(
-            t(
-              "orders.activeRide.pickupOtpVerifiedBanner",
-              "OTP verified — slide to start ride"
-            )
-          );
-          setPickupBannerVisible(true);
+          const gps = riderGps();
+          void startRide
+            .mutateAsync({ orderId, ...gps })
+            .then(() => {
+              setPickupBannerMessage(
+                t(
+                  "orders.activeRide.rideStartedBanner",
+                  "Ride started — navigate to drop location"
+                )
+              );
+              setPickupBannerVisible(true);
+              setCameraFitTrigger((n) => n + 1);
+            })
+            .catch((err) => {
+              setStartRideSliderKey((k) => k + 1);
+              Alert.alert(
+                t("orders.activeRide.updateFailedTitle", "Update failed"),
+                extractApiErrorMessage(
+                  err,
+                  t("orders.activeRide.startRideFailed", "Could not start ride. Try again.")
+                )
+              );
+            });
         })
         .catch((err) => {
           setOtpError(
@@ -1263,7 +1568,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
                   )
             )
           );
-          setOtpResetKey((k) => k + 1);
         });
     },
     [
@@ -1274,88 +1578,70 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       t,
       completeFoodPickupVerification,
       queryClient,
+      startRide,
+      riderGps,
     ]
   );
 
   const handleVerifyDeliveryOtp = useCallback(
-    async (otp: string) => {
-      const localUri = deliveryProof?.localUri;
-      if (!localUri) return;
+    (otp: string) => {
+      const uploaded = deliveryProof?.uploaded;
+      if (!uploaded) {
+        setOtpError(
+          t(
+            "orders.activeFood.uploadFailed",
+            "Could not upload delivery photo. Close and slide deliver again."
+          )
+        );
+        setOtpResetKey((k) => k + 1);
+        return;
+      }
+      if (verifyDeliveryOtp.isPending) return;
 
       setOtpError(null);
-      setDeliveryPhotoUploading(true);
 
-      try {
-        const token = session?.accessToken;
-        if (!token) {
-          setDeliveryPhotoUploading(false);
-          Alert.alert(
-            t("orders.activeFood.uploadAuthError", "Session expired"),
-            t("orders.activeFood.signInAgain", "Sign in again and retry delivery.")
-          );
-          return;
-        }
-
-        const key = buildOrderDeliveryProofKey(orderId);
-        const uploaded = await uploadToR2(localUri, "orders", token, key);
-        const gps = riderGps();
-
-        verifyDeliveryOtp.mutate(
-          {
-            orderId,
-            otp,
-            ...gps,
-            deliveryImageUrl: uploaded.proxyUrl,
-            deliveryImageR2Key: uploaded.key,
+      const gps = riderGps();
+      verifyDeliveryOtp.mutate(
+        {
+          orderId,
+          otp,
+          ...gps,
+          deliveryImageUrl: uploaded.proxyUrl,
+          deliveryImageR2Key: uploaded.key,
+        },
+        {
+          onSuccess: (deliveredOrder) => {
+            deliverySuccessHandledRef.current = true;
+            setDeliveryOtpSheetOpen(false);
+            setDeliveryProof(null);
+            setDropOrderScreenOpen(false);
+            deliveredOrderForSuccessRef.current = deliveredOrder;
+            queryClient.setQueryData(["rider", "orders", "detail", orderId], deliveredOrder);
+            if (deliveredOrder.customerFeedbackSubmitted === true) {
+              navigateToFoodDeliverySuccess(deliveredOrder);
+            } else {
+              setCustomerFeedbackOpen(true);
+            }
           },
-          {
-            onSuccess: (deliveredOrder) => {
-              setDeliveryOtpSheetOpen(false);
-              setDeliveryProof(null);
-              setDropOrderScreenOpen(false);
-              deliveredOrderForSuccessRef.current = deliveredOrder;
-              queryClient.setQueryData(["rider", "orders", "detail", orderId], deliveredOrder);
-              if (deliveredOrder.customerFeedbackSubmitted === true) {
-                navigateToFoodDeliverySuccess(deliveredOrder);
-              } else {
-                setCustomerFeedbackOpen(true);
-              }
-            },
-            onError: (err) => {
-              setOtpError(
-                extractApiErrorMessage(
-                  err,
-                  t(
-                    "orders.activeFood.deliveryOtpFailed",
-                    "Incorrect delivery OTP. Ask the customer for the code shown in their app (Delivery OTP)."
-                  )
+          onError: (err) => {
+            verifyDeliveryOtp.reset();
+            setOtpError(
+              extractApiErrorMessage(
+                err,
+                t(
+                  "orders.activeFood.deliveryOtpFailed",
+                  "Incorrect delivery OTP. Ask the customer for the code shown in their app (Delivery OTP)."
                 )
-              );
-              setDeliveryOtpSheetOpen(true);
-              setOtpResetKey((k) => k + 1);
-            },
-            onSettled: () => {
-              setDeliveryPhotoUploading(false);
-            },
-          }
-        );
-      } catch (err) {
-        setDeliveryPhotoUploading(false);
-        setOtpError(
-          err instanceof Error
-            ? err.message
-            : t(
-                "orders.activeFood.uploadFailed",
-                "Could not upload delivery photo. Try OTP again."
               )
-        );
-        setDeliveryOtpSheetOpen(true);
-        setOtpResetKey((k) => k + 1);
-      }
+            );
+            setOtpResetKey((k) => k + 1);
+          },
+        }
+      );
     },
     [
-      deliveryProof?.localUri,
-      session?.accessToken,
+      deliveryProof?.uploaded,
+      verifyDeliveryOtp.isPending,
       orderId,
       verifyDeliveryOtp,
       riderGps,
@@ -1373,24 +1659,16 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     }
   }, [isFoodOrder, foodDeliveryActive, rideStarted]);
 
-  const toggleNavSheetExpanded = useCallback(() => {
-    setNavSheetExpanded((v) => !v);
-  }, []);
+  const navSheetHeight = useMemo(
+    () => (isFoodOrder ? FOOD_NAV_SHEET_HEIGHT : PERSON_RIDE_NAV_SHEET_HEIGHT),
+    [isFoodOrder]
+  );
 
   const speedKmh = useMemo(() => {
     const mps = riderFix?.speedMps;
     if (mps == null || !Number.isFinite(mps) || mps < 0) return null;
     return mps * 3.6;
   }, [riderFix?.speedMps]);
-
-  const navSheetHeight = useMemo(() => {
-    if (isFoodOrder) {
-      return navSheetExpanded ? FOOD_NAV_SHEET_HEIGHT : FOOD_NAV_SHEET_COLLAPSED_HEIGHT;
-    }
-    return navSheetExpanded
-      ? PERSON_RIDE_NAV_SHEET_HEIGHT
-      : PERSON_RIDE_NAV_SHEET_COLLAPSED_HEIGHT;
-  }, [isFoodOrder, navSheetExpanded]);
 
   const mapControlsBottom = navSheetHeight + Math.max(sheetBottomInset, 12) + 16;
 
@@ -1405,21 +1683,15 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   );
 
   useEffect(() => {
-    if (mapNavigationFollowMode) return;
-    setCameraFitTrigger((t) => t + 1);
-  }, [navSheetExpanded, mapNavigationFollowMode]);
+    initialNavCamDoneRef.current = false;
+    userControllingMapRef.current = false;
+    setMapFollowEnabled(true);
+  }, [navDestination?.lat, navDestination?.lng]);
 
   useEffect(() => {
     if (mapNavigationFollowMode || userControllingMapRef.current) return;
     setCameraFitTrigger((t) => t + 1);
   }, [route?.coordinates?.length, mapNavigationFollowMode]);
-
-  useEffect(() => {
-    setNavSheetExpanded(true);
-    initialNavCamDoneRef.current = false;
-    userControllingMapRef.current = false;
-    setMapFollowEnabled(true);
-  }, [navDestination?.lat, navDestination?.lng]);
 
   useEffect(() => {
     if (!mapRiderLocation || !navDestination) return;
@@ -1480,23 +1752,16 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, [navDestination, riderLocation, riderForRoute]);
 
   const handleEmergencyPress = useCallback(() => {
-    Alert.alert(
-      isFoodOrder
-        ? t("orders.activeFood.emergencyTitle", "Emergency")
-        : t("orders.activeRide.safetyTitle", "Safety"),
-      isFoodOrder
-        ? t(
-            "orders.activeFood.emergencyMessage",
-            "Emergency support is coming soon. Call local emergency services if you are in danger."
-          )
-        : t(
-            "orders.activeRide.safetyMessage",
-            "Emergency and safety tools are coming soon."
-          )
-    );
-  }, [isFoodOrder, t]);
+    setSosSheetOpen(true);
+  }, []);
 
-  if (isLoading) {
+  if (
+    redirectingAfterCancel ||
+    (hadActiveOrderRef.current &&
+      isError &&
+      isOrderFetchNotFoundError(error)) ||
+    (hadActiveOrderRef.current && order?.status === "cancelled")
+  ) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color={colors.primary[500]} />
@@ -1504,17 +1769,56 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     );
   }
 
-  if (isError || !order || !navDestination) {
+  if (isLoading && !order) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" color={colors.primary[500]} />
+        <Text style={styles.loadingHint}>
+          {t("orders.activeRide.loadingOrder", "Loading navigation…")}
+        </Text>
+      </View>
+    );
+  }
+
+  if (isError && !order) {
     return (
       <View style={styles.centered}>
         <Text style={styles.errorTitle}>
-          {isFoodOrder
-            ? t("orders.activeFood.notFound", "Order not found")
-            : t("orders.activeRide.notFound", "Ride not found")}
+          {extractApiErrorMessage(
+            error,
+            isFoodOrder
+              ? t("orders.activeFood.notFound", "Order not found")
+              : t("orders.activeRide.notFound", "Ride not found")
+          )}
         </Text>
         <Button onPress={() => router.replace("/(tabs)/orders")} style={{ marginTop: 16 }}>
           {t("orders.activeRide.backHome", "Back to orders")}
         </Button>
+      </View>
+    );
+  }
+
+  if (!order || !navDestination) {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.errorTitle}>
+          {isFetching
+            ? t("orders.activeRide.loadingOrder", "Loading navigation…")
+            : isFoodOrder
+              ? t("orders.activeFood.notFound", "Order not found")
+              : t("orders.activeRide.notFound", "Ride not found")}
+        </Text>
+        {isFetching ? (
+          <ActivityIndicator
+            size="large"
+            color={colors.primary[500]}
+            style={{ marginTop: 16 }}
+          />
+        ) : (
+          <Button onPress={() => router.replace("/(tabs)/orders")} style={{ marginTop: 16 }}>
+            {t("orders.activeRide.backHome", "Back to orders")}
+          </Button>
+        )}
       </View>
     );
   }
@@ -1524,7 +1828,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const pickupAddressParts = compactAddress(
     (isFoodOrder ? foodDeliveryActive : rideStarted) && delivery?.address
       ? delivery.address
-      : pickup.address
+      : pickup?.address ?? ""
   );
   const foodPhase = foodDeliveryActive && !orderDelivered ? "drop" : "pickup";
   const passengerName =
@@ -1629,6 +1933,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           orderDelivered={orderDelivered}
           reachedLoading={reachedPickup.isPending || reachedCustomer.isPending}
           deliveryPhotoLoading={deliveryPhotoUploading}
+          deliveryPhotoReady={isDeliveryProofUploaded(deliveryProof)}
           bottomInset={sheetBottomInset}
           onReachStore={handleReachStore}
           onMarkPickup={handleMarkPickup}
@@ -1649,14 +1954,15 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           onCallRestaurant={handleCallRestaurant}
           onCallCustomer={handleCallCustomer}
           onChatCustomer={handleChatCustomer}
+          chatUnreadCount={chatUnreadCount}
           onOpenMaps={handleOpenMaps}
+          onCancel={() => setCancelSheetOpen(true)}
+          cancelLoading={cancelAssigned.isPending}
           callDisabled={
             foodPhase === "drop"
-              ? !order.customerPhone?.trim()
-              : !(order.restaurantPhone?.trim() || order.customerPhone?.trim())
+              ? !hasCustomerCallablePhone
+              : !(order.restaurantPhone?.trim() || hasCustomerCallablePhone)
           }
-          sheetExpanded={navSheetExpanded}
-          onToggleSheetExpanded={toggleNavSheetExpanded}
           milestoneGeo={milestoneGeo}
           suppressDropDeliverSlider={dropOrderScreenOpen}
         />
@@ -1688,22 +1994,25 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           atDrop={atCustomer}
           orderDelivered={orderDelivered}
           reachedLoading={reachedPickup.isPending || reachedCustomer.isPending}
-          startRideLoading={startRide.isPending}
+          startRideLoading={startRide.isPending || verifyPickupOtp.isPending}
           cancelLoading={cancelAssigned.isPending}
           bottomInset={sheetBottomInset}
           completeRideLoading={completeRide.isPending}
           onReachPickup={handleReachedPickup}
           onReachDrop={handleReachCustomer}
           onCompleteRide={handleCompleteRide}
-          onEnterPickupOtp={handleEnterPickupOtp}
           onStartRide={handleStartRide}
           reachSliderDone={reachSliderDone}
+          startRideSliderKey={startRideSliderKey}
+          waitTimerLabel={rideWaitTimerLabel}
+          otpSheetOpen={otpSheetOpen}
           onCancel={() => setCancelSheetOpen(true)}
           onCallCustomer={handleCallCustomer}
+          onChatCustomer={handleChatCustomer}
+          chatUnreadCount={chatUnreadCount}
           onOpenMaps={handleOpenMaps}
-          callDisabled={!order.customerPhone?.trim()}
-          sheetExpanded={navSheetExpanded}
-          onToggleSheetExpanded={toggleNavSheetExpanded}
+          onGoHome={handleGoHomeAfterRide}
+          callDisabled={!hasCustomerCallablePhone}
           milestoneGeo={milestoneGeo}
         />
       )}
@@ -1716,7 +2025,9 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           order={order}
           orderIdLabel={displayId}
           restaurantName={restaurantDisplayName}
-          restaurantAddress={pickupAddressParts.line1}
+          restaurantAddress={[pickupAddressParts.line1, pickupAddressParts.landmark]
+            .filter(Boolean)
+            .join(", ") || order.pickup.address}
           merchantReady={order.merchantOrderReady === true}
           onBack={() => setPickOrderDetailOpen(false)}
           onCall={handleCallRestaurant}
@@ -1779,22 +2090,47 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         />
       ) : null}
 
-      <PickupOtpBottomSheet
-        visible={otpSheetOpen && !(isFoodOrder && foodDeliveryActive) && !deliveryOtpSheetOpen}
-        loading={verifyPickupOtp.isPending}
-        error={otpError}
-        resetKey={otpResetKey}
-        customerName={isFoodOrder ? order.merchantName : order.customerName}
-        otpContext={isFoodOrder ? "merchant" : "customer"}
-        purpose="pickup"
-        bottomOffset={sheetBottomInset}
-        onDismiss={handleDismissOtpSheet}
-        onSubmit={handleVerifyOtp}
-      />
+      <View style={styles.otpSheetHost} pointerEvents="box-none">
+        <PickupOtpBottomSheet
+          visible={otpSheetOpen && !(isFoodOrder && foodDeliveryActive) && !deliveryOtpSheetOpen}
+          loading={verifyPickupOtp.isPending || (!isFoodOrder && startRide.isPending)}
+          error={otpError}
+          resetKey={otpResetKey}
+          customerName={isFoodOrder ? order.merchantName : order.customerName}
+          orderIdLabel={displayId}
+          otpContext={isFoodOrder ? "merchant" : "customer"}
+          purpose="pickup"
+          waitTimerLabel={isFoodOrder ? null : rideWaitTimerLabel}
+          rideType={isFoodOrder ? null : order?.rideType}
+          bottomOffset={0}
+          onDismiss={handleDismissOtpSheet}
+          onSubmit={handleVerifyOtp}
+          onClearError={() => setOtpError(null)}
+        />
+
+        {deliveryProof ? (
+          <FoodDeliveryConfirmBottomSheet
+            visible={deliveryOtpSheetOpen && isFoodOrder}
+            proofImageUri={deliveryProof.localUri}
+            loading={verifyDeliveryOtp.isPending}
+            error={otpError}
+            resetKey={otpResetKey}
+            customerName={order.customerName}
+            bottomOffset={0}
+            onDismiss={() => {
+              if (verifyDeliveryOtp.isPending) return;
+              verifyDeliveryOtp.reset();
+              setDeliveryOtpSheetOpen(false);
+            }}
+            onSubmit={handleVerifyDeliveryOtp}
+            onClearError={() => setOtpError(null)}
+          />
+        ) : null}
+      </View>
 
       {isFoodOrder && order ? (
         <FoodDropOrderScreen
-          visible={dropOrderScreenOpen && atCustomer && !orderDelivered}
+          visible={dropOrderScreenOpen && atCustomer && !orderDelivered && !deliveryOtpSheetOpen}
           order={order}
           orderIdLabel={displayId}
           deliveryAddress={[pickupAddressParts.line1, pickupAddressParts.landmark]
@@ -1807,9 +2143,12 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           onHelpPress={handleReportIssue}
           onCallCustomer={handleCallCustomer}
           onChatCustomer={handleChatCustomer}
+          chatUnreadCount={chatUnreadCount}
           onOpenMaps={handleOpenMaps}
           onDelivered={handleDelivered}
           deliverLoading={deliveryPhotoUploading}
+          deliverPhotoReady={isDeliveryProofUploaded(deliveryProof)}
+          customerRating={order.customerRating ?? undefined}
         />
       ) : null}
 
@@ -1831,47 +2170,53 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           visible={showRestaurantFeedbackSheet}
           loading={submitMerchantFeedback.isPending}
           restaurantName={restaurantDisplayName}
-          restaurantAddress={pickup.address}
+          restaurantAddress={pickup?.address ?? ""}
           onSkip={handleRestaurantFeedbackSkip}
           onSubmit={handleRestaurantFeedbackSubmit}
         />
       ) : null}
 
-      {deliveryProof ? (
-        <FoodDeliveryConfirmBottomSheet
-          visible={deliveryOtpSheetOpen && isFoodOrder}
-          proofImageUri={deliveryProof.localUri}
-          loading={verifyDeliveryOtp.isPending || deliveryPhotoUploading}
-          error={otpError}
-          resetKey={otpResetKey}
-          customerName={order.customerName}
-          bottomOffset={sheetBottomInset}
-          onDismiss={() => {
-            if (verifyDeliveryOtp.isPending) return;
-            setDeliveryOtpSheetOpen(false);
-            setDeliveryProof(null);
-          }}
-          onSubmit={handleVerifyDeliveryOtp}
-        />
-      ) : null}
-
-      {deliveryPhotoUploading ? (
+      {deliveryPhotoUploading && !deliveryOtpSheetOpen ? (
         <View style={styles.deliveryUploadOverlay} pointerEvents="auto">
           <ActivityIndicator size="large" color={colors.primary[600]} />
           <Text style={styles.deliveryUploadText}>
-            {t("orders.activeFood.completingDelivery", "Completing delivery…")}
+            {t("orders.activeFood.uploadingDeliveryPhoto", "Uploading delivery photo…")}
           </Text>
         </View>
       ) : null}
 
-      {!isFoodOrder ? (
-        <RiderRideCancelReasonSheet
-          visible={cancelSheetOpen}
-          loading={cancelAssigned.isPending}
-          onClose={() => setCancelSheetOpen(false)}
-          onSelect={handleCancelReason}
-        />
+      <RiderRideCancelReasonSheet
+        visible={cancelSheetOpen}
+        variant={isFoodOrder ? "food" : "ride"}
+        loading={cancelAssigned.isPending}
+        onClose={() => setCancelSheetOpen(false)}
+        onSelect={handleCancelReason}
+      />
+
+      {isFoodOrder && order ? (
+        <>
+          <CustomerCallConfirmModal
+            visible={customerCallConfirmOpen}
+            onCancel={() => setCustomerCallConfirmOpen(false)}
+            onConfirm={handleConfirmCustomerCall}
+          />
+          <CustomerCallBottomSheet
+            visible={customerCallSheetOpen}
+            onDismiss={() => setCustomerCallSheetOpen(false)}
+            customerName={order.customerName}
+            customerPhone={order.customerPhone}
+            customerPrimaryName={order.customerPrimaryName}
+            customerPrimaryPhone={order.customerPrimaryPhone}
+            customerAlternateName={order.customerAlternateName}
+            customerAlternatePhone={order.customerAlternatePhone}
+          />
+        </>
       ) : null}
+
+      <RiderEmergencySosBottomSheet
+        visible={sosSheetOpen}
+        onDismiss={() => setSosSheetOpen(false)}
+      />
     </View>
   );
 }
@@ -1923,6 +2268,11 @@ const styles = StyleSheet.create({
     opacity: 0,
     pointerEvents: "none",
   },
+  otpSheetHost: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 2000,
+    elevation: 2000,
+  },
   centered: {
     flex: 1,
     alignItems: "center",
@@ -1934,6 +2284,13 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "700",
     color: colors.gray[900],
+    textAlign: "center",
+  },
+  loadingHint: {
+    marginTop: 12,
+    fontSize: 14,
+    color: colors.gray[600],
+    textAlign: "center",
   },
   deliveryUploadOverlay: {
     ...StyleSheet.absoluteFillObject,

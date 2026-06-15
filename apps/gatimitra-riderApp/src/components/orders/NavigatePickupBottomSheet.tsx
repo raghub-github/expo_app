@@ -167,7 +167,7 @@ export function NavigatePickupBottomSheet({
   onOpenMaps,
   callDisabled,
   chatDisabled,
-  sheetExpanded = false,
+  sheetExpanded = true,
   onToggleSheetExpanded,
 }: Props) {
   const { t } = useTranslation();

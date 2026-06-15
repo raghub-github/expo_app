@@ -77,9 +77,11 @@ type Props = {
   onClose: () => void;
   onSuccess: () => void;
   editPlan: RiderSubscriptionPlan | null;
+  /** Prefill fields when cloning an existing plan (creates new plan on save). */
+  cloneFrom?: RiderSubscriptionPlan | null;
 };
 
-export function RiderSubscriptionPlanForm({ isOpen, onClose, onSuccess, editPlan }: Props) {
+export function RiderSubscriptionPlanForm({ isOpen, onClose, onSuccess, editPlan, cloneFrom }: Props) {
   const [code, setCode] = useState("GMITRA_MAX");
   const [name, setName] = useState("GMitra Max");
   const [description, setDescription] = useState("");
@@ -103,19 +105,25 @@ export function RiderSubscriptionPlanForm({ isOpen, onClose, onSuccess, editPlan
   useEffect(() => {
     if (!isOpen) return;
     setError(null);
-    if (editPlan) {
-      setCode(editPlan.code);
-      setName(editPlan.name);
-      setDescription(editPlan.description ?? "");
-      setBadgeText(editPlan.badgeText ?? "");
-      setBadgeColor(editPlan.badgeColor ?? "#7C3AED");
-      setHeadline(editPlan.headline ?? "");
-      setCtaLabel(editPlan.ctaLabel ?? "Subscribe now");
-      setDefaultBillingCycle(editPlan.defaultBillingCycle ?? "monthly");
-      setIsActive(editPlan.isActive);
-      setDisplayOrder(String(editPlan.displayOrder ?? 0));
-      const priceMap: Record<string, PriceRow> = { ...prices };
-      for (const p of editPlan.prices) {
+    const source = editPlan ?? cloneFrom;
+    if (source) {
+      setCode(editPlan ? source.code : `${source.code}_COPY`);
+      setName(editPlan ? source.name : `${source.name} (Copy)`);
+      setDescription(source.description ?? "");
+      setBadgeText(source.badgeText ?? "");
+      setBadgeColor(source.badgeColor ?? "#7C3AED");
+      setHeadline(source.headline ?? "");
+      setCtaLabel(source.ctaLabel ?? "Subscribe now");
+      setDefaultBillingCycle(source.defaultBillingCycle ?? "monthly");
+      setIsActive(cloneFrom && !editPlan ? false : source.isActive);
+      setDisplayOrder(String(source.displayOrder ?? 0));
+      const priceMap: Record<string, PriceRow> = {
+        daily: { amount: "10", gstPercent: "18", autoWallet: true },
+        monthly: { amount: "199", gstPercent: "18", autoWallet: false },
+        semi_yearly: { amount: "999", gstPercent: "18", autoWallet: false },
+        yearly: { amount: "1799", gstPercent: "18", autoWallet: false },
+      };
+      for (const p of source.prices) {
         priceMap[p.billingCycle] = {
           amount: String(p.amount),
           gstPercent: String(p.gstPercent ?? 18),
@@ -124,12 +132,12 @@ export function RiderSubscriptionPlanForm({ isOpen, onClose, onSuccess, editPlan
       }
       setPrices(priceMap);
       setBenefitsText(
-        editPlan.benefits.length
-          ? benefitLabelsFromPlan(editPlan.benefits).join("\n")
+        source.benefits.length
+          ? benefitLabelsFromPlan(source.benefits).join("\n")
           : DEFAULT_BENEFITS.map((b) => b.displayLabel).join("\n")
       );
     }
-  }, [isOpen, editPlan]);
+  }, [isOpen, editPlan, cloneFrom]);
 
   if (!isOpen) return null;
 
@@ -199,10 +207,12 @@ export function RiderSubscriptionPlanForm({ isOpen, onClose, onSuccess, editPlan
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 overflow-y-auto" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 overflow-y-auto">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[95vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b">
-          <h2 className="text-lg font-semibold">{editPlan ? "Edit Rider Plan" : "Create Rider Plan"}</h2>
+          <h2 className="text-lg font-semibold">
+            {editPlan ? "Edit Rider Plan" : cloneFrom ? "Clone Rider Plan" : "Create Rider Plan"}
+          </h2>
           <button type="button" onClick={onClose} className="p-2 rounded-lg hover:bg-gray-100"><X className="h-5 w-5" /></button>
         </div>
 

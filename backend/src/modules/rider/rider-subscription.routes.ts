@@ -1,9 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { formatSubscriptionWalletError } from "../../lib/rider-subscription-wallet.js";
 import {
   createRiderSubscriptionPaymentOrder,
   getRiderSubscriptionStatus,
   listRiderSubscriptionPlans,
+  payRiderSubscriptionDues,
+  subscribeRiderViaWallet,
+  updateRiderSubscriptionAutoRenewal,
   verifyRiderSubscriptionPayment,
 } from "./rider-subscription.service.js";
 
@@ -26,6 +30,10 @@ const paymentBodySchema = subscribeBodySchema.extend({
   razorpaySignature: z.string().min(1),
 });
 
+const autoRenewBodySchema = z.object({
+  enabled: z.boolean(),
+});
+
 export function registerRiderSubscriptionRoutes(app: FastifyInstance) {
   app.get("/subscription/plans", async (_req, reply) => {
     try {
@@ -44,7 +52,12 @@ export function registerRiderSubscriptionRoutes(app: FastifyInstance) {
     }
     try {
       const result = await getRiderSubscriptionStatus(riderId);
-      return reply.send({ success: true, active: result.active, plan: result.plan });
+      return reply.send({
+        success: true,
+        active: result.active,
+        plan: result.plan,
+        dues: result.dues,
+      });
     } catch (err) {
       app.log.error({ err }, "GET /rider/subscription/status failed");
       return reply.code(500).send({ success: false, active: false, plan: null });
@@ -86,6 +99,60 @@ export function registerRiderSubscriptionRoutes(app: FastifyInstance) {
     });
     if (!result.ok) {
       return reply.code(result.status).send({ success: false, error: result.error });
+    }
+    return reply.send({ success: true, ...result });
+  });
+
+  app.post("/subscription/subscribe-wallet", async (req, reply) => {
+    const riderId = parseRiderIdFromAuth(req.auth!.sub);
+    if (riderId == null) {
+      return reply.code(403).send({ success: false, error: "rider_not_found" });
+    }
+    const body = subscribeBodySchema.parse(req.body ?? {});
+    try {
+      const result = await subscribeRiderViaWallet({
+        riderId,
+        planId: body.planId,
+        billingCycle: body.billingCycle,
+        autoWalletDeduction: body.autoWalletDeduction,
+      });
+      if (!result.ok) {
+        return reply.code(result.status).send({ success: false, error: result.error });
+      }
+      return reply.send({ success: true, ...result });
+    } catch (err) {
+      app.log.error({ err }, "POST /rider/subscription/subscribe-wallet failed");
+      const message = formatSubscriptionWalletError(err);
+      return reply.code(500).send({ success: false, error: message });
+    }
+  });
+
+  app.patch("/subscription/auto-renewal", async (req, reply) => {
+    const riderId = parseRiderIdFromAuth(req.auth!.sub);
+    if (riderId == null) {
+      return reply.code(403).send({ success: false, error: "rider_not_found" });
+    }
+    const body = autoRenewBodySchema.parse(req.body ?? {});
+    const result = await updateRiderSubscriptionAutoRenewal({ riderId, enabled: body.enabled });
+    if (!result.ok) {
+      return reply.code(result.status).send({ success: false, error: result.error });
+    }
+    return reply.send({ success: true, ...result });
+  });
+
+  app.post("/subscription/pay-dues", async (req, reply) => {
+    const riderId = parseRiderIdFromAuth(req.auth!.sub);
+    if (riderId == null) {
+      return reply.code(403).send({ success: false, error: "rider_not_found" });
+    }
+    const result = await payRiderSubscriptionDues(riderId);
+    if (!result.ok) {
+      return reply.code(result.status).send({
+        success: false,
+        error: result.error,
+        needEarnings: result.needEarnings,
+        totalDue: result.totalDue,
+      });
     }
     return reply.send({ success: true, ...result });
   });

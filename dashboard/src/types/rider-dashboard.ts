@@ -57,6 +57,17 @@ export interface RiderSummary {
     serviceTypes: string[];
     verified: boolean;
   } | null;
+  bankAccount: {
+    id: number;
+    accountHolderName: string;
+    bankName: string | null;
+    ifsc: string | null;
+    branch: string | null;
+    accountNumberMasked: string | null;
+    verificationStatus: "pending" | "verified" | "rejected";
+    verifiedAt: string | null;
+    createdAt: string;
+  } | null;
   recentOrders: any[];
   recentWithdrawals: any[];
   recentTickets: any[];

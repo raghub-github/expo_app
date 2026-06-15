@@ -284,9 +284,10 @@ describe("applyPlatformCartOffers", () => {
     assert.ok(state.discountTotal > 0);
   });
 
-  it("SUBSCRIPTION_BENEFIT does not apply without subscriptionOptIn", () => {
+  it("SUBSCRIPTION_BENEFIT does not apply without subscription access", () => {
     const ctx = baseCtx();
     ctx.subscriptionOptIn = false;
+    ctx.customerSubscriptionActive = false;
     ctx.itemSubtotal = 100;
     const o = baseOffer();
     o.offerKind = "SUBSCRIPTION_BENEFIT";
@@ -306,6 +307,30 @@ describe("applyPlatformCartOffers", () => {
     applyPlatformCartOffers(ctx, datasetWithOffers([o]), state, 100, rem);
     assert.equal(rem.items, 100);
     assert.equal(state.discountTotal, 0);
+  });
+
+  it("SUBSCRIPTION_BENEFIT applies when customerSubscriptionActive is true", () => {
+    const ctx = baseCtx();
+    ctx.subscriptionOptIn = false;
+    ctx.customerSubscriptionActive = true;
+    ctx.itemSubtotal = 100;
+    const o = baseOffer();
+    o.offerKind = "SUBSCRIPTION_BENEFIT";
+    o.discountType = "PERCENTAGE";
+    o.valueNumeric = 10;
+    const rem: FeeRem = {
+      items: 100,
+      delivery: 0,
+      platform: 0,
+      packaging: 0,
+      surge: 0,
+      smallOrder: 0,
+      convenience: 0,
+      misc: 0,
+    };
+    const state = emptyState();
+    applyPlatformCartOffers(ctx, datasetWithOffers([o]), state, 100, rem);
+    assert.ok(state.discountTotal > 0);
   });
 
   it("SUBSCRIPTION_BENEFIT applies when subscriptionOptIn is true", () => {

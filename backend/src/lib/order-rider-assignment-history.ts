@@ -310,6 +310,8 @@ async function patchAssignmentRow(
         UPDATE order_rider_assignments
         SET
           picked_up_at = COALESCE(picked_up_at, ${ts}::timestamptz),
+          picked_up_actor_type = COALESCE(picked_up_actor_type, 'rider'),
+          picked_up_actor_label = COALESCE(picked_up_actor_label, 'GatiMitra App'),
           distance_to_merchant_km = COALESCE(distance_to_merchant_km, ${mx}),
           distance_to_customer_km = COALESCE(distance_to_customer_km, ${cx}),
           updated_at = ${ts}::timestamptz
@@ -389,6 +391,7 @@ export async function recordRiderAssignmentMilestone(
     occurredAt?: Date;
     distance?: RiderDistanceSnapshot;
     statusMessage?: string | null;
+    metadata?: Record<string, unknown>;
   }
 ): Promise<void> {
   const now = input.occurredAt ?? new Date();
@@ -420,6 +423,19 @@ export async function recordRiderAssignmentMilestone(
     occurredAt: now,
     distance,
     statusMessage: input.statusMessage,
+    metadata:
+      input.metadata ??
+      (input.eventType === "picked_up"
+        ? {
+            actor_type: "rider",
+            actor_id: "GatiMitra App",
+          }
+        : input.eventType === "reached_merchant"
+          ? {
+              actor_type: "rider",
+              actor_id: "GatiMitra App",
+            }
+          : undefined),
   });
 }
 

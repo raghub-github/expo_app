@@ -95,6 +95,7 @@ export type RiderAssignmentTimelineEvent = {
   merchant_distance_km: number | null;
   customer_distance_km: number | null;
   status_message: string | null;
+  metadata?: Record<string, unknown> | null;
 };
 
 export type RiderAssignmentTimelineData = {
@@ -103,6 +104,9 @@ export type RiderAssignmentTimelineData = {
   reached_merchant_at: string | null;
   picked_up_at: string | null;
   delivered_at: string | null;
+  reached_merchant_skipped: boolean;
+  picked_up_actor_type: string | null;
+  picked_up_actor_label: string | null;
   events: RiderAssignmentTimelineEvent[];
 };
 
@@ -127,6 +131,9 @@ export async function getRiderAssignmentTimeline(
     reached_merchant_at: null,
     picked_up_at: null,
     delivered_at: null,
+    reached_merchant_skipped: false,
+    picked_up_actor_type: null,
+    picked_up_actor_label: null,
     events: [],
   };
 
@@ -141,7 +148,10 @@ export async function getRiderAssignmentTimeline(
       accepted_at,
       reached_merchant_at,
       picked_up_at,
-      delivered_at
+      delivered_at,
+      reached_merchant_skipped,
+      picked_up_actor_type,
+      picked_up_actor_label
     FROM order_rider_assignments
     WHERE rider_id = ${riderId}
       AND (order_core_id = ${orderCoreId} OR order_id = ${orderCoreId})
@@ -159,7 +169,8 @@ export async function getRiderAssignmentTimeline(
       occurred_at,
       merchant_distance_km,
       customer_distance_km,
-      status_message
+      status_message,
+      metadata
     FROM order_rider_assignment_timeline_events
     WHERE rider_assignment_id = ${assignmentId}
     ORDER BY occurred_at ASC, id ASC
@@ -173,10 +184,33 @@ export async function getRiderAssignmentTimeline(
     customer_distance_km:
       row.customer_distance_km == null ? null : Number(row.customer_distance_km),
     status_message: row.status_message == null ? null : String(row.status_message),
+    metadata:
+      row.metadata && typeof row.metadata === "object"
+        ? (row.metadata as Record<string, unknown>)
+        : null,
   }));
 
   const pickEvent = (type: string) =>
     events.find((e) => e.event_type === type)?.occurred_at ?? null;
+
+  const pickedUpMeta = events.find((e) => e.event_type === "picked_up")?.metadata ?? null;
+  const skippedFromEvent = events.some((e) => e.event_type === "reached_merchant_skipped");
+  const reachedSkipped =
+    Boolean(assignment.reached_merchant_skipped) ||
+    skippedFromEvent ||
+    Boolean(
+      (toIso(assignment.picked_up_at) ?? pickEvent("picked_up")) &&
+        !(toIso(assignment.reached_merchant_at) ?? pickEvent("reached_merchant"))
+    );
+
+  const actorTypeFromMeta =
+    typeof pickedUpMeta?.actor_type === "string" ? pickedUpMeta.actor_type.trim() : null;
+  const actorLabelFromMeta =
+    typeof pickedUpMeta?.updated_by === "string"
+      ? pickedUpMeta.updated_by.trim()
+      : typeof pickedUpMeta?.actor_label === "string"
+        ? pickedUpMeta.actor_label.trim()
+        : null;
 
   return {
     assigned_at: toIso(assignment.assigned_at) ?? pickEvent("assigned"),
@@ -185,6 +219,15 @@ export async function getRiderAssignmentTimeline(
       toIso(assignment.reached_merchant_at) ?? pickEvent("reached_merchant"),
     picked_up_at: toIso(assignment.picked_up_at) ?? pickEvent("picked_up"),
     delivered_at: toIso(assignment.delivered_at) ?? pickEvent("delivered"),
+    reached_merchant_skipped: reachedSkipped,
+    picked_up_actor_type:
+      (assignment.picked_up_actor_type as string | null)?.trim() ||
+      actorTypeFromMeta ||
+      ((toIso(assignment.picked_up_at) ?? pickEvent("picked_up")) ? "rider" : null),
+    picked_up_actor_label:
+      (assignment.picked_up_actor_label as string | null)?.trim() ||
+      actorLabelFromMeta ||
+      null,
     events,
   };
 }
@@ -224,6 +267,8 @@ type TimelineQueryRow = {
 };
 
 function formatActivityLogStatus(eventType: string): string {
+  const key = eventType.trim().replace(/\s+/g, "_").toLowerCase();
+  if (key === "reached_merchant_skipped") return "REACHED MX SKIPPED";
   return eventType.trim().replace(/\s+/g, "_").toUpperCase();
 }
 
@@ -247,25 +292,54 @@ function formatActivityLogTimestamp(value: unknown): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+const CANCELLATION_EVENT_TYPES = new Set(["cancelled", "rejected", "unassigned", "timeout"]);
+
+const RIDER_APP_UPDATED_BY = "Rider: GatiMitra App";
+const ADMIN_TEAM_UPDATED_BY = "GatimitraTeam";
+
 function resolveActivityUpdatedBy(
   eventType: string,
   metadata: Record<string, unknown> | null | undefined
 ): string {
   const meta = metadata ?? {};
-  const actorType = typeof meta.actor_type === "string" ? meta.actor_type.trim() : "";
-  const actorId = typeof meta.actor_id === "string" ? meta.actor_id.trim() : "";
-  const updatedBy = typeof meta.updated_by === "string" ? meta.updated_by.trim() : "";
+  const actorType =
+    typeof meta.actor_type === "string" ? meta.actor_type.trim().toLowerCase() : "";
+  const adminCancelled = meta.adminCancelled === true;
 
-  if (updatedBy) return updatedBy;
-  if (actorType && actorId) {
-    if (actorType.toLowerCase() === "rider") return `Rider: ${actorId}`;
-    if (actorType.toLowerCase() === "system") return "System";
-    return `${actorType}: ${actorId}`;
+  if (CANCELLATION_EVENT_TYPES.has(eventType)) {
+    if (adminCancelled || actorType === "admin" || actorType === "agent") {
+      return ADMIN_TEAM_UPDATED_BY;
+    }
   }
-  if (actorType) return actorType;
-  if (["assigned", "accepted", "reached_merchant", "picked_up", "reached_customer", "delivered"].includes(eventType)) {
-    return "Rider: GatiMitra App";
+
+  if (actorType === "rider") {
+    return RIDER_APP_UPDATED_BY;
   }
+
+  if (actorType === "admin" || actorType === "agent") {
+    return ADMIN_TEAM_UPDATED_BY;
+  }
+
+  if (actorType === "system") return "System";
+
+  if (eventType === "reached_merchant_skipped") return "GatiMitra team (skipped)";
+
+  if (
+    ["assigned", "accepted", "reached_merchant", "picked_up", "reached_customer", "delivered"].includes(
+      eventType
+    )
+  ) {
+    return RIDER_APP_UPDATED_BY;
+  }
+
+  const updatedBy = typeof meta.updated_by === "string" ? meta.updated_by.trim() : "";
+  if (updatedBy) {
+    if (updatedBy.includes("@") && CANCELLATION_EVENT_TYPES.has(eventType)) {
+      return ADMIN_TEAM_UPDATED_BY;
+    }
+    return updatedBy;
+  }
+
   return "System";
 }
 
@@ -278,16 +352,37 @@ function resolveActivityTrackingUrl(metadata: Record<string, unknown> | null | u
   return null;
 }
 
-const CANCELLATION_EVENT_TYPES = new Set(["cancelled", "rejected", "unassigned", "timeout"]);
 
 /** Reason is shown only when a rider assignment was cancelled/rejected/unassigned/timed out. */
 function resolveActivityReason(
   eventType: string,
   statusMessage: string | null | undefined,
-  cancellationReason: string | null | undefined
+  cancellationReason: string | null | undefined,
+  metadata?: Record<string, unknown> | null
 ): string | null {
-  if (!CANCELLATION_EVENT_TYPES.has(eventType)) return null;
-  return statusMessage?.trim() || cancellationReason?.trim() || null;
+  if (CANCELLATION_EVENT_TYPES.has(eventType)) {
+    return statusMessage?.trim() || cancellationReason?.trim() || null;
+  }
+  if (eventType === "reached_merchant_skipped") {
+    return statusMessage?.trim() || "Reached store skipped — pickup marked before rider reach";
+  }
+  if (eventType === "picked_up") {
+    const meta = metadata ?? {};
+    const actorType =
+      typeof meta.actor_type === "string" ? meta.actor_type.trim().toLowerCase() : "";
+    const skipped = meta.reached_merchant_skipped === true;
+    if (actorType === "agent") {
+      const by =
+        typeof meta.updated_by === "string" && meta.updated_by.trim()
+          ? meta.updated_by.trim()
+          : "GatiMitra team";
+      return `${statusMessage?.trim() || "Pickup marked by GatiMitra team"}${skipped ? " · reach skipped" : ""} (${by})`;
+    }
+    if (actorType === "rider") {
+      return statusMessage?.trim() || "Pickup marked by rider (GatiMitra app)";
+    }
+  }
+  return null;
 }
 
 function mapTimelineRow(row: TimelineQueryRow): RiderActivityLogRow {
@@ -295,7 +390,8 @@ function mapTimelineRow(row: TimelineQueryRow): RiderActivityLogRow {
   const reason = resolveActivityReason(
     row.eventType,
     row.statusMessage,
-    row.cancellationReason
+    row.cancellationReason,
+    row.metadata
   );
 
   return {
@@ -478,5 +574,137 @@ export async function getOrderRiderActivityLogPayload(
     trackingOrderId,
     summary: buildRiderActivityLogSummary(logs),
   };
+}
+
+export type OrderReconRiderOption = {
+  id: number;
+  riderId: number | null;
+  riderName: string | null;
+  riderMobile: string | null;
+  deliveryProvider: string | null;
+};
+
+type ReconRiderAccumulator = OrderReconRiderOption & { sortKey: number };
+
+function upsertReconRider(
+  map: Map<number, ReconRiderAccumulator>,
+  row: Omit<OrderReconRiderOption, "id"> & { id?: number; sortKey: number }
+): void {
+  const riderId = row.riderId;
+  if (riderId == null || !Number.isFinite(riderId)) return;
+
+  const next: ReconRiderAccumulator = {
+    id: row.id ?? riderId,
+    riderId,
+    riderName: row.riderName?.trim() || null,
+    riderMobile: row.riderMobile?.trim() || null,
+    deliveryProvider: row.deliveryProvider?.trim() || null,
+    sortKey: row.sortKey,
+  };
+
+  const prev = map.get(riderId);
+  if (!prev) {
+    map.set(riderId, next);
+    return;
+  }
+
+  map.set(riderId, {
+    id: Math.max(prev.id, next.id),
+    riderId,
+    riderName: prev.riderName || next.riderName,
+    riderMobile: prev.riderMobile || next.riderMobile,
+    deliveryProvider: prev.deliveryProvider || next.deliveryProvider,
+    sortKey: Math.max(prev.sortKey, next.sortKey),
+  });
+}
+
+/**
+ * Every distinct rider ever linked to an order (assignments, timeline, dispatch audit).
+ * Used by Rider Recon "Select rider" dropdown — not just the current rider on orders_core.
+ */
+export async function listDistinctOrderRidersForRecon(
+  orderId: number
+): Promise<OrderReconRiderOption[]> {
+  if (!Number.isFinite(orderId)) return [];
+
+  const sql = getSql();
+  const byRiderId = new Map<number, ReconRiderAccumulator>();
+
+  const assignments = await listOrderRiderAssignmentsForOrder(orderId);
+  for (const assignment of assignments) {
+    if (assignment.riderId == null) continue;
+    upsertReconRider(byRiderId, {
+      id: assignment.id,
+      riderId: assignment.riderId,
+      riderName: assignment.riderName,
+      riderMobile: assignment.riderMobile,
+      deliveryProvider: assignment.deliveryProvider,
+      sortKey: assignment.id,
+    });
+  }
+
+  const timelineRows = (await sql`
+    SELECT DISTINCT ON (te.rider_id)
+      te.rider_id AS "riderId",
+      ora.id AS "assignmentId",
+      COALESCE(NULLIF(TRIM(ora.rider_name), ''), NULLIF(TRIM(r.name), '')) AS "riderName",
+      COALESCE(NULLIF(TRIM(ora.rider_mobile), ''), NULLIF(TRIM(r.mobile), '')) AS "riderMobile",
+      COALESCE(
+        NULLIF(TRIM(ora.delivery_provider), ''),
+        NULLIF(TRIM(ora.assignment_metadata->>'delivery_provider'), ''),
+        NULLIF(TRIM(ora.assignment_metadata->>'provider'), ''),
+        'internal'
+      ) AS "deliveryProvider",
+      EXTRACT(EPOCH FROM te.occurred_at)::bigint AS "sortKey"
+    FROM order_rider_assignment_timeline_events te
+    LEFT JOIN order_rider_assignments ora ON ora.id = te.rider_assignment_id
+    LEFT JOIN riders r ON r.id = te.rider_id
+    WHERE te.order_core_id = ${orderId}
+      AND te.rider_id IS NOT NULL
+    ORDER BY te.rider_id, te.occurred_at DESC, te.id DESC
+  `) as Array<Record<string, unknown>>;
+
+  for (const row of timelineRows) {
+    upsertReconRider(byRiderId, {
+      id: Number(row.assignmentId ?? 0) || undefined,
+      riderId: Number(row.riderId),
+      riderName: (row.riderName as string | null) ?? null,
+      riderMobile: (row.riderMobile as string | null) ?? null,
+      deliveryProvider: (row.deliveryProvider as string | null) ?? null,
+      sortKey: Number(row.sortKey ?? 0),
+    });
+  }
+
+  try {
+    const auditRows = (await sql`
+      SELECT DISTINCT ON (a.rider_id)
+        a.rider_id AS "riderId",
+        COALESCE(NULLIF(TRIM(r.name), ''), NULLIF(TRIM(a.metadata->>'rider_name'), '')) AS "riderName",
+        COALESCE(NULLIF(TRIM(r.mobile), ''), NULLIF(TRIM(a.metadata->>'rider_mobile'), '')) AS "riderMobile",
+        EXTRACT(EPOCH FROM a.created_at)::bigint AS "sortKey"
+      FROM order_rider_dispatch_assignment_audit a
+      LEFT JOIN riders r ON r.id = a.rider_id
+      WHERE a.order_core_id = ${orderId}
+        AND a.rider_id IS NOT NULL
+        AND a.event_type IN ('accepted', 'assigned', 'cancelled', 'unassigned', 'rejected')
+      ORDER BY a.rider_id, a.created_at DESC, a.id DESC
+    `) as Array<Record<string, unknown>>;
+
+    for (const row of auditRows) {
+      upsertReconRider(byRiderId, {
+        riderId: Number(row.riderId),
+        riderName: (row.riderName as string | null) ?? null,
+        riderMobile: (row.riderMobile as string | null) ?? null,
+        deliveryProvider: "internal",
+        sortKey: Number(row.sortKey ?? 0),
+      });
+    }
+  } catch {
+    /* audit table optional in some envs */
+  }
+
+  return Array.from(byRiderId.values())
+    .sort((a, b) => b.sortKey - a.sortKey)
+    .map(({ sortKey: _sortKey, ...rider }) => rider);
 }
 

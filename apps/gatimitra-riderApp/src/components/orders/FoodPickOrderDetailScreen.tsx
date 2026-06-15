@@ -30,6 +30,7 @@ import {
   resolvePickupWaitSeconds,
 } from "@/src/lib/food-pickup-wait";
 import { colors } from "@/src/theme";
+import { formatHistoryAddressLabel } from "@/src/lib/rider-ride-history-display";
 import type { RiderOrderSummary } from "@/src/services/api/riderApi";
 
 const REF_GREEN = colors.success[600];
@@ -201,7 +202,11 @@ function ContactDetailSheet({
   const icon = kind === "customer" ? "person-outline" : "storefront-outline";
 
   return (
-    <DismissibleBottomSheetShell visible={visible} onDismiss={onDismiss} maxHeightRatio={0.55}>
+    <DismissibleBottomSheetShell
+      visible={visible}
+      onDismiss={onDismiss}
+      maxHeightRatio={kind === "merchant" ? 0.72 : 0.55}
+    >
       <View style={styles.sheetContent}>
         <View style={styles.sheetHeader}>
           <View style={styles.sheetTitleRow}>
@@ -341,6 +346,10 @@ export function FoodPickOrderDetailScreen({
   const customerPhone = order.customerPhone?.trim();
   const restaurantPhone = order.restaurantPhone?.trim();
   const customerAddress = order.delivery?.address?.trim();
+  const merchantFullAddress = formatHistoryAddressLabel(
+    [order.pickup?.address, order.pickupAddressGeocoded],
+    restaurantName
+  );
 
   return (
     <Modal
@@ -578,7 +587,7 @@ export function FoodPickOrderDetailScreen({
           title={t("orders.activeFood.restaurantDetails", "Restaurant details")}
           name={restaurantName}
           phone={restaurantPhone}
-          address={restaurantAddress}
+          address={merchantFullAddress}
           onDismiss={() => setDetailSheet(null)}
           onCall={restaurantPhone ? onCall : undefined}
         />

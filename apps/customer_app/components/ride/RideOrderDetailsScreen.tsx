@@ -24,6 +24,7 @@ import {
   getRideFareBreakdown,
   getRideHistoryStatusLabel,
   getRideServiceLabel,
+  resolveRideOrderTripDistanceKm,
   resolveRideVehicleImage,
 } from "@/lib/ride-order-display";
 
@@ -71,7 +72,10 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
   const pickupAddress = order.merchantAddress?.trim() || "Pickup location";
   const dropAddress = order.deliveryAddress?.trim() || "Drop location";
   const { total, tip, rideCharge } = getRideFareBreakdown(order);
-  const tripStats = formatRideTripStats(order.distanceKm, order.rideDurationMinutes);
+  const tripStats = formatRideTripStats(
+    resolveRideOrderTripDistanceKm(order),
+    order.rideDurationMinutes
+  );
 
   return (
     <View style={styles.screen}>

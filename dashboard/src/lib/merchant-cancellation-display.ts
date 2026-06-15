@@ -87,7 +87,100 @@ export type OrderCancellationInfo = {
   reasonText: string | null;
   refundStatus: string | null;
   refundAmount: string | null;
+  /** e.g. customer_app, website — from order_cancellation_reasons.action_source */
+  actionSource?: string | null;
 };
+
+/** Dashboard Rejection Info — who initiated cancellation (channel). */
+export function formatDashboardCanceledBy(
+  cancelledByType: string | null | undefined,
+  actionSource?: string | null
+): string | null {
+  const type = (cancelledByType ?? "").trim().toLowerCase();
+  if (type === "customer") {
+    const src = (actionSource ?? "").trim().toLowerCase();
+    if (src === "customer_app") return "Customer App";
+    return "Customer";
+  }
+  return formatCancelledByType(cancelledByType);
+}
+
+/** Dashboard Rejection Info — actor label for "Rejected by". */
+export function formatDashboardRejectedBy(
+  cancelledByType: string | null | undefined,
+  cancelledByRaw: string | null | undefined,
+  cancelledByLabel?: string | null
+): string | null {
+  const type = (cancelledByType ?? "").trim().toLowerCase();
+  if (type === "customer") return "User";
+  if (type === "store") return "Merchant";
+  if (type === "admin") return "GatiMitra Team";
+  if (type === "system") return "System";
+  if (type === "rider") return "Rider";
+  const raw = (cancelledByRaw ?? "").trim().toLowerCase();
+  if (raw === "customer") return "User";
+  if (raw === "merchant" || raw === "store") return "Merchant";
+  if (raw === "system") return "System";
+  if (raw === "rider") return "Rider";
+  if (raw === "admin" || raw === "agent") return "GatiMitra Team";
+  const label = (cancelledByLabel ?? "").trim();
+  if (label) return label;
+  return cancelledByRaw?.trim() || null;
+}
+
+/** Maps stored cancellation rows to dashboard Rejection Info card fields. */
+export function dashboardRejectionCancellationDisplay(info: OrderCancellationInfo): {
+  reason: string;
+  detail: string | null;
+  canceledBy: string | null;
+  rejectedBy: string | null;
+} {
+  const type = (info.cancelledByType ?? "").trim().toLowerCase();
+  const selectedReason =
+    info.rejectedReason?.trim() ||
+    info.reasonText?.trim() ||
+    info.reasonCode?.trim() ||
+    null;
+
+  if (type === "customer") {
+    return {
+      reason: selectedReason ?? "Order cancelled",
+      detail: null,
+      canceledBy: formatDashboardCanceledBy(type, info.actionSource),
+      rejectedBy: "User",
+    };
+  }
+
+  const { headline, detail } = merchantCancellationDisplay({
+    rejected_reason: info.rejectedReason,
+    cancelled_by_label: info.cancelledByLabel,
+  });
+  const reasonText = info.reasonText?.trim() || null;
+  const reason =
+    headline ||
+    reasonText ||
+    info.reasonCode?.trim() ||
+    info.rejectedReason?.trim() ||
+    "Order cancelled";
+  let detailText = detail;
+  if (!detailText && reasonText && reasonText !== reason) {
+    detailText = reasonText;
+  }
+
+  return {
+    reason,
+    detail: detailText,
+    canceledBy:
+      formatDashboardCanceledBy(info.cancelledByType, info.actionSource) ||
+      info.cancelledByLabel?.trim() ||
+      null,
+    rejectedBy: formatDashboardRejectedBy(
+      info.cancelledByType,
+      info.cancelledBy,
+      info.cancelledByLabel
+    ),
+  };
+}
 
 export function hasOrderCancellationInfo(info: OrderCancellationInfo | null | undefined): boolean {
   if (!info) return false;

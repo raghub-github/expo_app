@@ -88,13 +88,14 @@ export async function notifyMerchantStoreNewOrder(
       : `${displayId} — tap to accept`;
 
   await sql`
-    INSERT INTO merchant_store_notifications (store_id, type, title, body, read, action_url)
+    INSERT INTO merchant_store_notifications (store_id, type, title, body, read, order_id, action_url)
     VALUES (
       ${merchantStoreId},
       'order',
       ${title},
       ${body},
       FALSE,
+      ${foodId ? Number(foodId) : null},
       ${foodId ? `/order/${foodId}` : "/(tabs)/"}
     )
   `;

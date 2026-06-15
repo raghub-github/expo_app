@@ -1,9 +1,9 @@
 import { getSql, sqlJsonbParam } from "../client";
 
 /** Empty strings fail Postgres enum CHECK constraints — store NULL instead. */
-function emptyToNull(v: unknown): unknown {
+function emptyToNull(v: unknown): string | number | boolean | Date | null {
   if (v === "" || v === undefined) return null;
-  return v;
+  return v as string | number | boolean | Date;
 }
 
 type OrderStageRow = {
@@ -61,10 +61,14 @@ export async function getGmRuleEngineCatalogs() {
     `.catch(() => []),
   ]);
   return {
-    serviceTypes,
-    orderStages: dedupeOrderStages(orderStages as OrderStageRow[]),
-    triggeredBy,
-    cancellationReasons,
+    serviceTypes: serviceTypes as unknown as { code: string; label: string }[],
+    orderStages: dedupeOrderStages(orderStages as unknown as OrderStageRow[]),
+    triggeredBy: triggeredBy as unknown as { code: string; label: string }[],
+    cancellationReasons: cancellationReasons as unknown as {
+      id: number;
+      label: string;
+      attribute: string;
+    }[],
     scenarioTypes: [
       "CANCELLATION",
       "POST_DELIVERY_CANCELLATION",
@@ -379,7 +383,7 @@ async function upsertChild(
        ON CONFLICT (rule_id) DO UPDATE SET ${keys
          .map((c) => `${c} = EXCLUDED.${c}`)
          .join(", ")}`,
-      vals
+      vals as (string | number | boolean | Date | null)[]
     );
   };
 
@@ -687,18 +691,32 @@ export async function updateGmRule(
 ) {
   const existing = await getGmRuleById(id, { includeSnapshot: false });
   if (!existing) throw new Error("Rule not found");
+  const ex = existing as {
+    rule_name: string;
+    description: string | null;
+    scenario_type: string;
+    priority: number;
+    active_status: string;
+    effective_from: Date;
+    effective_to: Date | null;
+    change_reason: string | null;
+    service_type: string | null;
+    order_stage: string | null;
+    cancellation_reason_id: number | null;
+    triggered_by: string | null;
+  };
 
   const sql = getSql();
   await sql`
     UPDATE gm_rule_master SET
-      rule_name = ${payload.rule_name ?? existing.rule_name},
-      description = ${payload.description !== undefined ? payload.description : existing.description},
-      scenario_type = ${(payload.scenario_type ?? existing.scenario_type)}::gm_rule_scenario_type,
-      priority = ${Number(payload.priority ?? existing.priority ?? 100)},
-      active_status = ${(payload.active_status ?? existing.active_status)}::gm_rule_active_status,
-      effective_from = ${payload.effective_from ? new Date(payload.effective_from) : existing.effective_from},
-      effective_to = ${payload.effective_to !== undefined ? (payload.effective_to ? new Date(payload.effective_to) : null) : existing.effective_to},
-      change_reason = ${payload.change_reason ?? existing.change_reason},
+      rule_name = ${payload.rule_name ?? ex.rule_name},
+      description = ${payload.description !== undefined ? payload.description : ex.description},
+      scenario_type = ${(payload.scenario_type ?? ex.scenario_type)}::gm_rule_scenario_type,
+      priority = ${Number(payload.priority ?? ex.priority ?? 100)},
+      active_status = ${(payload.active_status ?? ex.active_status)}::gm_rule_active_status,
+      effective_from = ${payload.effective_from ? new Date(payload.effective_from) : ex.effective_from},
+      effective_to = ${payload.effective_to !== undefined ? (payload.effective_to ? new Date(payload.effective_to) : null) : ex.effective_to},
+      change_reason = ${payload.change_reason ?? ex.change_reason},
       version_no = version_no + 1,
       updated_by = ${actorId ?? null},
       updated_at = NOW()
@@ -711,10 +729,10 @@ export async function updateGmRule(
       INSERT INTO gm_rule_conditions (rule_id, service_type, order_stage, cancellation_reason_id, triggered_by)
       VALUES (
         ${id},
-        ${emptyToNull(c.service_type !== undefined ? c.service_type : existing.service_type)},
-        ${emptyToNull(c.order_stage !== undefined ? c.order_stage : existing.order_stage)},
-        ${c.cancellation_reason_id !== undefined ? c.cancellation_reason_id : existing.cancellation_reason_id},
-        ${emptyToNull(c.triggered_by !== undefined ? c.triggered_by : existing.triggered_by)}
+        ${emptyToNull(c.service_type !== undefined ? c.service_type : ex.service_type)},
+        ${emptyToNull(c.order_stage !== undefined ? c.order_stage : ex.order_stage)},
+        ${c.cancellation_reason_id !== undefined ? c.cancellation_reason_id : ex.cancellation_reason_id},
+        ${emptyToNull(c.triggered_by !== undefined ? c.triggered_by : ex.triggered_by)}
       )
       ON CONFLICT (rule_id) DO UPDATE SET
         service_type = EXCLUDED.service_type,

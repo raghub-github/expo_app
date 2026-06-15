@@ -1,13 +1,15 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
-import { Bike, MapPin, Phone } from 'lucide-react';
+import { Bike, Clock, MapPin, Phone } from 'lucide-react';
+import { useLiveElapsedSeconds } from '@/hooks/useLiveElapsedSeconds';
+import { formatRiderStoreWaitLabel } from '@/lib/rider-store-wait-display';
 
 export type RiderDeliveryPartnerCardProps = {
   riderName: string;
   riderPhone?: string | null;
   riderSelfieUrl?: string | null;
-  variant: 'on_the_way' | 'arrived' | 'picked_up';
+  variant: 'on_the_way' | 'arrived' | 'picked_up' | 'delivered' | 'cancelled' | 'rto';
   /** Shown under headline when rider is en route to merchant (e.g. Arriving in 8 min · 1.2 km away). */
   arrivalSubtitle?: string | null;
   pickupOtp?: string | null;
@@ -21,6 +23,10 @@ export type RiderDeliveryPartnerCardProps = {
   onOpenRiderPhoto?: (url: string) => void;
   onUniformFeedback?: (inUniform: boolean) => void;
   uniformFeedback?: boolean | null;
+  /** ISO timestamp when rider reached store — enables live waiting timer. */
+  storeWaitAnchorAt?: string | null;
+  storeWaitLive?: boolean;
+  storeWaitFinalizedSeconds?: number | null;
   showHeader?: boolean;
   className?: string;
 };
@@ -76,6 +82,29 @@ function RiderAvatar({
   return shell;
 }
 
+function RiderStoreWaitBadge({
+  anchorAt,
+  live,
+  finalizedSeconds,
+}: {
+  anchorAt?: string | null;
+  live?: boolean;
+  finalizedSeconds?: number | null;
+}) {
+  const liveSeconds = useLiveElapsedSeconds(anchorAt, Boolean(live));
+  const displaySeconds = live ? liveSeconds : finalizedSeconds;
+  if (!live && (displaySeconds == null || displaySeconds <= 0)) return null;
+  if (live && !anchorAt?.trim()) return null;
+
+  return (
+    <span className="mt-2 inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[11px] font-semibold tabular-nums text-amber-900">
+      <Clock size={12} aria-hidden />
+      Waiting{' '}
+      {formatRiderStoreWaitLabel(displaySeconds, { live: Boolean(live) })}
+    </span>
+  );
+}
+
 export function RiderDeliveryPartnerCard({
   riderName,
   riderPhone,
@@ -93,15 +122,27 @@ export function RiderDeliveryPartnerCard({
   onOpenRiderPhoto,
   onUniformFeedback,
   uniformFeedback,
+  storeWaitAnchorAt,
+  storeWaitLive = false,
+  storeWaitFinalizedSeconds,
   showHeader = true,
   className = '',
 }: RiderDeliveryPartnerCardProps) {
   const headline =
-    variant === 'picked_up'
-      ? `${riderName} has picked up your order`
-      : variant === 'on_the_way'
-        ? 'Rider is on the way'
-        : `${riderName} has arrived`;
+    variant === 'delivered'
+      ? 'Order delivered'
+      : variant === 'cancelled'
+        ? 'Delivery cancelled'
+        : variant === 'rto'
+          ? 'Return to origin (RTO)'
+          : variant === 'picked_up'
+            ? `${riderName} is out for delivery`
+            : variant === 'on_the_way'
+              ? `${riderName} is on the way`
+              : `${riderName} has arrived`;
+
+  const isTerminalVariant =
+    variant === 'delivered' || variant === 'cancelled' || variant === 'rto';
 
   const metaChips: ReactNode[] = [];
   if (variant === 'arrived') {
@@ -150,7 +191,8 @@ export function RiderDeliveryPartnerCard({
     }
   }
 
-  const showActions = Boolean(onTrackRider || riderPhone);
+  const showTrackLive = Boolean(onTrackRider) && !isTerminalVariant && variant !== 'picked_up';
+  const showActions = Boolean(showTrackLive || riderPhone);
 
   return (
     <div
@@ -183,7 +225,35 @@ export function RiderDeliveryPartnerCard({
           {variant === 'arrived' && metaChips.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-1.5">{metaChips}</div>
           ) : null}
-          {variant === 'picked_up' && riderPhone ? (
+          {variant === 'arrived' ? (
+            <RiderStoreWaitBadge
+              anchorAt={storeWaitAnchorAt}
+              live={storeWaitLive}
+              finalizedSeconds={storeWaitFinalizedSeconds}
+            />
+          ) : null}
+          {isTerminalVariant ? (
+            <p className="mt-1 text-xs text-gray-600">
+              {variant === 'delivered' ? (
+                <>
+                  Delivered by <span className="font-semibold text-gray-800">{riderName}</span>
+                </>
+              ) : variant === 'cancelled' ? (
+                riderName ? (
+                  <>
+                    Assigned rider: <span className="font-semibold text-gray-800">{riderName}</span>
+                  </>
+                ) : (
+                  'This order was cancelled before delivery.'
+                )
+              ) : riderName ? (
+                <>
+                  Rider: <span className="font-semibold text-gray-800">{riderName}</span>
+                </>
+              ) : null}
+            </p>
+          ) : null}
+          {(variant === 'picked_up' || (isTerminalVariant && riderPhone)) && riderPhone ? (
             <p className="mt-1 text-xs text-gray-600 tabular-nums">{riderPhone}</p>
           ) : null}
         </div>
@@ -191,7 +261,7 @@ export function RiderDeliveryPartnerCard({
 
       {showActions ? (
         <div className="flex gap-2 border-t border-gray-100 px-3 py-2.5">
-          {onTrackRider ? (
+          {showTrackLive ? (
             <button
               type="button"
               onClick={onTrackRider}

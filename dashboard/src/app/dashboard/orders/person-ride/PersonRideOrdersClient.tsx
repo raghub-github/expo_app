@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, RefreshCw, Filter, User, Car } from "lucide-react";
 import { normalizePersonRideSearchType } from "@/lib/orders/person-ride-search";
+import { formatRiderOrderStatusDisplayLabel } from "@/lib/riders/rider-order-status-display";
 import { PersonRideTableRowsSkeleton } from "@/components/skeletons/PersonRideOrdersPageSkeleton";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 
@@ -59,7 +60,7 @@ const STATUS_TABS: StatusTab[] = [
   { value: "reached_store", label: "REACHED PICKUP" },
   { value: "picked_up", label: "PICKED UP" },
   { value: "in_transit", label: "IN TRANSIT" },
-  { value: "delivered", label: "DELIVERED" },
+  { value: "delivered", label: "COMPLETED" },
   { value: "cancelled", label: "CANCELLED" },
 ];
 
@@ -75,7 +76,7 @@ const STATUS_BADGE: Record<string, { bg: string; text: string }> = {
 
 function formatStatus(order: PersonRideOrder): string {
   const raw = order.currentStatus?.trim() || order.status?.trim() || "—";
-  return raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return formatRiderOrderStatusDisplayLabel(raw, "person_ride");
 }
 
 function formatVehicleType(order: PersonRideOrder): string {

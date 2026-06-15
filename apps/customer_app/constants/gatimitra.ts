@@ -112,7 +112,7 @@ export const GatiMitraColors = {
     shadowRadius: 25,
     elevation: 6,
   },
-  /** Checkout & Place Order — primary gradient (Swiggy/Zomato-level CTA) */
+  /** Checkout & Place Order — primary gradient (GatiMitra-level CTA) */
   checkoutGradient: ["#20C997", "#28A745"] as const,
   /** Warning — distance / validation (soft amber) */
   warningAmber: "#F59E0B",

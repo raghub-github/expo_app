@@ -5,6 +5,21 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { OrderDetail, OrderSummary } from "@/services/order.service";
 
+export function seedOrderDetailCache(
+  queryClient: QueryClient,
+  orderId: string,
+  patch: Partial<OrderDetail> & Pick<OrderDetail, "orderId">
+) {
+  queryClient.setQueryData<OrderDetail>(["order", orderId], (prev) => ({
+    ...(prev ?? {
+      orderId,
+      status: patch.status ?? "ORDER_PLACED",
+      createdAt: patch.createdAt ?? new Date().toISOString(),
+    }),
+    ...patch,
+  }));
+}
+
 export function findOrderInListCache(
   queryClient: QueryClient,
   orderId: string

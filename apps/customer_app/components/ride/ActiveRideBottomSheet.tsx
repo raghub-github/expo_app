@@ -4,6 +4,7 @@
 
 import { View, Text, TouchableOpacity, StyleSheet, Image, Platform } from "react-native";
 import { useRouter } from "expo-router";
+import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, {
@@ -18,8 +19,14 @@ import Animated, {
 import { useEffect } from "react";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { OrderSummary } from "@/services/order.service";
-import { getActiveRideTrackLabel } from "@/lib/person-ride-orders";
+import {
+  getActiveRideTrackLabel,
+  resolvePersonRideTrackingNavigation,
+} from "@/lib/person-ride-orders";
+import { normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
 import { MAPBIKE_IMAGE } from "@/lib/customer-map-assets";
+import { orderService } from "@/services/order.service";
+import { formatRideFare, resolveRidePaymentDueAmount } from "@/lib/ride-order-display";
 
 type ActiveRideBottomSheetProps = {
   rides: OrderSummary[];
@@ -57,15 +64,28 @@ export function ActiveRideBottomSheet({
 
   if (!ride) return null;
 
-  const { title, subtitle } = getActiveRideTrackLabel(ride.status);
+  const { title, subtitle } = getActiveRideTrackLabel(ride.status, ride.paymentStatus);
   const orderRef = ride.formattedOrderId ?? ride.orderId;
   const extraCount = rides.length - 1;
+  const paymentDue =
+    String(ride.paymentStatus ?? "").trim().toLowerCase() !== "paid" &&
+    String(ride.paymentStatus ?? "").trim().toLowerCase() !== "completed" &&
+    normalizeCustomerOrderStatus(ride.status) === "DELIVERED";
+
+  const { data: dueOrderDetail } = useQuery({
+    queryKey: ["order", ride.orderId, "due-fare-pill"],
+    queryFn: () => orderService.getOrder(ride.orderId),
+    enabled: paymentDue,
+    staleTime: 5000,
+  });
+
+  const dueFareAmount = dueOrderDetail
+    ? resolveRidePaymentDueAmount(dueOrderDetail)
+    : resolveRidePaymentDueAmount(ride);
 
   const openRide = () => {
-    router.push({
-      pathname: "/home/service/ride-searching",
-      params: { orderId: ride.orderId },
-    });
+    const target = resolvePersonRideTrackingNavigation(ride);
+    router.replace({ pathname: target.pathname, params: target.params });
   };
 
   return (
@@ -98,7 +118,13 @@ export function ActiveRideBottomSheet({
               </Text>
             </View>
             <View style={styles.ctaCol}>
-              <Text style={styles.ctaText}>Track</Text>
+              <Text style={styles.ctaText}>
+                {paymentDue
+                  ? dueFareAmount > 0
+                    ? `Pay ${formatRideFare(dueFareAmount)}`
+                    : "Pay"
+                  : "Track"}
+              </Text>
               <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
             </View>
           </LinearGradient>

@@ -1,5 +1,5 @@
 /**
- * Order placed – success confirmation (Swiggy/Zomato style).
+ * Order placed – success confirmation (GatiMitra style).
  * Shown immediately after payment verification. No auto-reload, no delayed redirect.
  */
 

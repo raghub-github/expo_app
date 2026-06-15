@@ -12,7 +12,7 @@ import {
   loadCoreDbItemsByOrderTextIds,
   resolveOrderItems,
 } from "@/lib/foodOrderItems";
-import { buildOrderPricingSummary } from "@/lib/orderItemsPayload";
+import { buildOrderPricingSummary, type OrderItemLineAmounts } from "@/lib/orderItemsPayload";
 import {
   loadSnapshotsByOrderTexts,
   merchantAddonUnitForLine,
@@ -329,6 +329,7 @@ export async function GET(
       taxPerQuantity: number;
       chargesPerQuantity: number;
       totalPerQuantity: number;
+      customer?: OrderItemLineAmounts;
       lineTotal: number;
       hasImage: boolean;
       imageUrl: string | null;

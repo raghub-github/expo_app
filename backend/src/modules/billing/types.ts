@@ -71,6 +71,15 @@ export type BillContext = {
   donationAmount: number;
   /** User opted into a platform subscription add-on at checkout (SUBSCRIPTION pricing rules). */
   subscriptionOptIn?: boolean;
+  /** Active GMitra Plus (or checkout opt-in) — unlocks subscription-tied platform offers. */
+  customerSubscriptionActive?: boolean;
+  /** Membership free delivery applies on this order (post-pipeline benefit stacks with one promo). */
+  customerSubscriptionFreeDeliveryEligible?: boolean;
+  /**
+   * DB-driven customer plan from Super Admin. When set, generic SUBSCRIPTION pricing
+   * rules are skipped — charges come from customer-subscription-billing only.
+   */
+  subscriptionPlanId?: number;
   /**
    * True when the customer chose "self-pickup" at checkout. The engine must
    * skip every DELIVERY-typed rule AND the delivery-fallback chain, otherwise
