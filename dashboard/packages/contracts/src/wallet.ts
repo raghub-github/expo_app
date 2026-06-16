@@ -1,10 +1,12 @@
 import { z } from "zod";
 
-// Enums (match PostgreSQL enums exactly)
+// ─── Enums (match PostgreSQL enums exactly) ──────────────────────────────────
+
 export const WalletTransactionDirection = z.enum(["CREDIT", "DEBIT"]);
 export type WalletTransactionDirection = z.infer<typeof WalletTransactionDirection>;
 
 export const WalletTransactionCategory = z.enum([
+  // CREDIT categories
   "ORDER_EARNING",
   "ORDER_ADJUSTMENT",
   "REFUND_REVERSAL",
@@ -13,6 +15,7 @@ export const WalletTransactionCategory = z.enum([
   "CASHBACK",
   "MANUAL_CREDIT",
   "SUBSCRIPTION_REFUND",
+  // DEBIT categories
   "WITHDRAWAL",
   "PENALTY",
   "SUBSCRIPTION_FEE",
@@ -21,6 +24,7 @@ export const WalletTransactionCategory = z.enum([
   "REFUND_TO_CUSTOMER",
   "MANUAL_DEBIT",
   "TAX_ADJUSTMENT",
+  // V2 categories (lock/release, reversal, etc.)
   "ORDER_LOCK",
   "ORDER_RELEASE",
   "TDS_DEBIT",
@@ -35,6 +39,10 @@ export const WalletTransactionCategory = z.enum([
   "HOLD_LOCK",
   "HOLD_RELEASE",
   "FAILED_SETTLEMENT_REVERSAL",
+  "SETTLEMENT_REVERSAL",
+  "CHARGEBACK",
+  "PAYOUT_HOLD",
+  "PAYOUT_RELEASE",
   "ONBOARDING_FEE",
   "SUBSCRIPTION_DEBIT",
 ]);
@@ -110,6 +118,8 @@ export type PayoutRequestStatusType = z.infer<typeof PayoutRequestStatusType>;
 export const LedgerEntryStatus = z.enum(["PENDING", "COMPLETED", "FAILED", "REVERSED"]);
 export type LedgerEntryStatus = z.infer<typeof LedgerEntryStatus>;
 
+// ─── Wallet Summary (V2 complete — all three projects must use this) ─────────
+
 export const WalletSummarySchema = z.object({
   wallet_id: z.number(),
   available_balance: z.number(),
@@ -128,8 +138,19 @@ export const WalletSummarySchema = z.object({
   today_earning: z.number(),
   yesterday_earning: z.number(),
   pending_withdrawal_total: z.number(),
+  /** Sum in LOCKED lifecycle (refund window) — same across all merchant portals */
+  locked_settlement_total: z.number().optional(),
+  /** withdrawable = available_balance (after hold rules) */
+  withdrawable_balance: z.number().optional(),
+  /** available + locked + hold + pending (merchant-facing total) */
+  total_balance: z.number().optional(),
+  settlement_paused: z.boolean().optional(),
+  /** Orders with Delivered timeline event today (IST). Home dashboard only. */
+  delivered_today: z.number().optional(),
 });
 export type WalletSummary = z.infer<typeof WalletSummarySchema>;
+
+// ─── Ledger Entry ─────────────────────────────────────────────────────────────
 
 export const LedgerEntrySchema = z.object({
   id: z.number(),
@@ -154,6 +175,8 @@ export const LedgerEntrySchema = z.object({
 });
 export type LedgerEntry = z.infer<typeof LedgerEntrySchema>;
 
+// ─── Ledger Query Options ─────────────────────────────────────────────────────
+
 export const LedgerQueryOptionsSchema = z.object({
   limit: z.number().min(1).max(100).optional().default(50),
   offset: z.number().min(0).optional().default(0),
@@ -165,6 +188,8 @@ export const LedgerQueryOptionsSchema = z.object({
 });
 export type LedgerQueryOptions = z.infer<typeof LedgerQueryOptionsSchema>;
 
+// ─── Payout Quote ─────────────────────────────────────────────────────────────
+
 export const PayoutQuoteSchema = z.object({
   requested_amount: z.number(),
   commission_percentage: z.number(),
@@ -172,6 +197,8 @@ export const PayoutQuoteSchema = z.object({
   net_payout_amount: z.number(),
 });
 export type PayoutQuote = z.infer<typeof PayoutQuoteSchema>;
+
+// ─── Payout Result ────────────────────────────────────────────────────────────
 
 export const PayoutResultSchema = z.object({
   payout_request_id: z.number(),
@@ -184,12 +211,16 @@ export const PayoutResultSchema = z.object({
 });
 export type PayoutResult = z.infer<typeof PayoutResultSchema>;
 
+// ─── Withdrawal Request Input ─────────────────────────────────────────────────
+
 export const CreateWithdrawalRequestSchema = z.object({
   store_id: z.string().or(z.number()),
   amount: z.number().min(100, "Amount must be at least ₹100"),
   bank_account_id: z.number().positive(),
 });
 export type CreateWithdrawalRequest = z.infer<typeof CreateWithdrawalRequestSchema>;
+
+// ─── Reconciliation Report ────────────────────────────────────────────────────
 
 export const ReconciliationReportSchema = z.object({
   wallet_id: z.number(),
@@ -203,6 +234,8 @@ export const ReconciliationReportSchema = z.object({
 });
 export type ReconciliationReport = z.infer<typeof ReconciliationReportSchema>;
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+
 export const WALLET_CONSTANTS = {
   MIN_WITHDRAWAL_AMOUNT: 100,
   MAX_PENDING_WITHDRAWALS: 3,
@@ -211,10 +244,28 @@ export const WALLET_CONSTANTS = {
   DEFAULT_LEDGER_PAGE_SIZE: 50,
 } as const;
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
 export function roundMoney(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
 export function idempotencyKey(prefix: string, ...parts: (string | number)[]): string {
   return [prefix, ...parts].join("_");
+}
+
+/** Unified balance buckets for merchant app, partnersite, and dashboard. */
+export function normalizeMerchantWalletDisplay(summary: WalletSummary) {
+  const available = summary.available_balance;
+  const locked = summary.locked_settlement_total ?? summary.locked_balance;
+  const hold = summary.hold_balance;
+  const pending = summary.pending_balance;
+  return {
+    withdrawable: roundMoney(summary.withdrawable_balance ?? available),
+    locked: roundMoney(locked),
+    hold: roundMoney(hold),
+    pending: roundMoney(pending),
+    total: roundMoney(summary.total_balance ?? available + locked + hold + pending),
+    settlement_paused: summary.settlement_paused ?? false,
+  };
 }
