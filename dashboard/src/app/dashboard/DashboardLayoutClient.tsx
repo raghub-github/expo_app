@@ -340,6 +340,7 @@ function DashboardLayoutContent({
   const searchParams = useSearchParams();
   const currentRouteCtx = useCurrentRoute();
   const filterSidebar = useTicketFilterSidebar();
+  const queryClient = useQueryClient();
   const cleanPathname = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
   const isTicketDetailPage = useMemo(() => isTicketsAppDetailPath(cleanPathname), [cleanPathname]);
   const isTicketsQueueWorkspace = useMemo(

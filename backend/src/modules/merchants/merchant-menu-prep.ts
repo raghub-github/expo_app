@@ -28,7 +28,7 @@ export function resolveStorePrepMinutesForEta(
   if (menuAvgPrep != null && Number.isFinite(menuAvgPrep) && menuAvgPrep > 0) {
     return Math.round(menuAvgPrep);
   }
-  if (storeAvgPrep != null && storeAvgPrep !== "") {
+  if (storeAvgPrep != null && (storeAvgPrep as unknown) !== "") {
     const n = Number(storeAvgPrep);
     if (Number.isFinite(n) && n > 0) return Math.round(n);
   }

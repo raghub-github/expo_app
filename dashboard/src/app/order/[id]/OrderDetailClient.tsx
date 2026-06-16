@@ -1478,7 +1478,7 @@ export default function OrderDetailClient({
         <div className="mt-3 space-y-3">
           {order.orderType === "person_ride" ? (
             <PersonRideOrderSections
-              order={order}
+              order={order as unknown as Parameters<typeof PersonRideOrderSections>[0]["order"]}
               rideDetail={order.rideDetail ?? null}
               displayId={displayId}
               createdLabel={createdLabel}

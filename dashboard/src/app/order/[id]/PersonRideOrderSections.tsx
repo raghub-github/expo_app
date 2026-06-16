@@ -14,7 +14,7 @@ type OrderLike = {
   customerEmail: string | null;
   customerAccountStatus: string | null;
   customerRiskFlag: string | null;
-  customerUserType: string | null;
+  customerUserType?: string | null;
   customerTrustTierLabel: string | null;
   pickupAddressRaw?: string | null;
   pickupAddressNormalized?: string | null;
@@ -203,7 +203,7 @@ export default function PersonRideOrderSections({
             tipAmount: order.tipAmount,
           }}
           displayId={displayId}
-          orderRefunds={orderRefunds}
+          orderRefunds={orderRefunds as Parameters<typeof PaymentDetails>[0]["orderRefunds"]}
           paymentDetail={paymentDetail as Parameters<typeof PaymentDetails>[0]["paymentDetail"]}
           orderItemsPricing={null}
         />

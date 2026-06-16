@@ -152,7 +152,7 @@ function mapLegacyRow(row: OrdersLegacyRow): RiderRecentOrderRow {
     pickupLon: row.pickupLon ?? null,
     dropLat: row.dropLat ?? null,
     dropLon: row.dropLon ?? null,
-    distanceKm: row.distanceKm ?? null,
+    distanceKm: row.distanceKm != null ? Number(row.distanceKm) : null,
     fareAmount: row.fareAmount,
     riderEarning: row.riderEarning,
     createdAt: row.createdAt,

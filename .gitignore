@@ -44,3 +44,6 @@
 /env.development.example
 /env.production.example
 /env.test.example.env.prod
+
+# TypeScript incremental build cache
+*.tsbuildinfo

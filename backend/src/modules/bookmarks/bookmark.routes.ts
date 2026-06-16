@@ -144,7 +144,7 @@ export async function bookmarkRoutes(app: FastifyInstance) {
     }
   );
 
-  app.get<{ Querystring: { storeId: string; menuItemId: string } }>(
+  app.get<{ Querystring: { storeId: string; menuItemId: number } }>(
     "/menu-items/check",
     {
       schema: {

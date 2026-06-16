@@ -83,7 +83,7 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
         reasonText: body.reason_text ?? null,
         removedBy: body.actor_email ?? body.actor_id ?? null,
         actorType: "admin",
-        actorId: body.actor_id ?? body.actor_email ?? null,
+        actorId: body.actor_id ?? body.actor_email ?? undefined,
         mode: "hold",
       });
       return reply.send({ ok: true });
@@ -126,7 +126,7 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
         reasonText: body.reason_text ?? null,
         removedBy: body.actor_email ?? body.actor_id ?? null,
         actorType: "admin",
-        actorId: body.actor_id ?? body.actor_email ?? null,
+        actorId: body.actor_id ?? body.actor_email ?? undefined,
         mode: "reassign",
       });
       return reply.send({ ok: true });

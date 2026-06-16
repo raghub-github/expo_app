@@ -88,7 +88,7 @@ export async function POST(
       WHERE id = ${orderCoreId}
       LIMIT 1
     `;
-    const orderRow = (orderRows as Array<{
+    const orderRow = (orderRows as unknown as Array<{
       id: number;
       riderId: number | null;
       orderType: string | null;
