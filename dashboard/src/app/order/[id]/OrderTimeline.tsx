@@ -49,7 +49,13 @@ function filterOrderProgressEntries(list: OrderTimelineEntry[]): OrderTimelineEn
   );
 }
 
-export default function OrderTimeline({ orderId, initialEntries, currentStatus, orderCreatedAt, etaAt }: OrderTimelineProps) {
+export default function OrderTimeline({
+  orderId,
+  initialEntries,
+  currentStatus,
+  orderCreatedAt,
+  etaAt,
+}: OrderTimelineProps) {
   const [entries, setEntries] = useState<OrderTimelineEntry[]>(() =>
     filterOrderProgressEntries(initialEntries ?? [])
   );
@@ -359,7 +365,7 @@ export default function OrderTimeline({ orderId, initialEntries, currentStatus, 
   const showRedFromBreach = breachActive;
 
   return (
-    <div className="bg-white/95 rounded-lg pl-2.5 pr-2.5 pt-1 pb-0 shadow-[0_1px_2px_rgba(15,23,42,0.06)] border border-slate-200 relative mb-4">
+    <div className="bg-white/95 rounded-lg pl-2.5 pr-2.5 pt-1 pb-0 shadow-[0_1px_2px_rgba(15,23,42,0.06)] border border-slate-200 relative">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5 min-w-0">
         <div className="min-w-0">
           <span className="hidden sm:inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[9px] font-medium text-slate-600 bg-slate-100 border border-slate-200 whitespace-nowrap">

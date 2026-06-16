@@ -16,6 +16,19 @@ export function getGravatarUrl(email: string, size = 256): string {
   return `https://www.gravatar.com/avatar/${hash}?s=${size}&d=mp&r=pg`;
 }
 
+/** Stored or resolved URLs that are not a real user photo. */
+export function isGenericProfileImageUrl(url: string | null | undefined): boolean {
+  if (!url?.trim()) return true;
+  const u = url.trim().toLowerCase();
+  if (u.includes("fallback.png")) return true;
+  if (u.includes("api.unavatar.io/fallback")) return true;
+  // Wrong API usage: /google/ is for domains, not Gmail addresses.
+  if (u.includes("unavatar.io/google/") && u.includes("@")) return true;
+  if (u.includes("gravatar.com/avatar/") && (u.includes("d=mp") || u.includes("d=404"))) return true;
+  if (u.includes("avatars.githubusercontent.com/u/0")) return true;
+  return false;
+}
+
 async function probeImageUrl(url: string): Promise<boolean> {
   try {
     const res = await fetch(url, {
@@ -31,27 +44,44 @@ async function probeImageUrl(url: string): Promise<boolean> {
   }
 }
 
+async function resolveUnavatarJsonUrl(endpoint: string): Promise<string | null> {
+  try {
+    const res = await fetch(endpoint, {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { url?: string };
+    const url = data?.url?.trim();
+    if (!url || isGenericProfileImageUrl(url)) return null;
+    return url;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Resolve a profile photo URL for a verified email.
- * Tries Google (Gmail), unified unavatar, then Gravatar custom avatar.
+ * Order: unavatar (Gravatar → GitHub) → explicit GitHub → Gravatar custom → Gravatar mp.
  */
 export async function resolveEmailAvatarUrl(email: string, size = 256): Promise<string> {
   const normalized = email.trim().toLowerCase();
-  const hash = md5Hex(normalized);
+  const encoded = encodeURIComponent(normalized);
 
-  const candidates: string[] = [];
-  if (isGmailEmail(normalized)) {
-    candidates.push(`https://unavatar.io/google/${encodeURIComponent(normalized)}?fallback=false`);
+  const jsonCandidates = [
+    `https://unavatar.io/${encoded}?json`,
+    `https://unavatar.io/github/${encoded}?json`,
+    `https://unavatar.io/gravatar/${encoded}?json`,
+  ];
+
+  for (const endpoint of jsonCandidates) {
+    const resolved = await resolveUnavatarJsonUrl(endpoint);
+    if (resolved) return resolved;
   }
-  candidates.push(`https://unavatar.io/${encodeURIComponent(normalized)}?fallback=false`);
-  candidates.push(`https://www.gravatar.com/avatar/${hash}?s=${size}&d=404&r=pg`);
 
-  for (const url of candidates) {
-    if (!(await probeImageUrl(url))) continue;
-    if (url.includes("gravatar.com")) {
-      return `https://www.gravatar.com/avatar/${hash}?s=${size}&d=mp&r=pg`;
-    }
-    return url.replace("fallback=false", `size=${size}`);
+  const hash = md5Hex(normalized);
+  const gravatarCustom = `https://www.gravatar.com/avatar/${hash}?s=${size}&d=404&r=pg`;
+  if (await probeImageUrl(gravatarCustom)) {
+    return `https://www.gravatar.com/avatar/${hash}?s=${size}&d=mp&r=pg`;
   }
 
   return getGravatarUrl(normalized, size);

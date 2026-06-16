@@ -80,6 +80,17 @@ export async function fetchExcludedOrderCoreIdsForRider(
   return new Set(rows.map((r) => Number(r.order_core_id)));
 }
 
+export async function fetchExcludedRiderIdsForOrder(orderCoreId: number): Promise<Set<number>> {
+  if (!Number.isFinite(orderCoreId)) return new Set();
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT rider_id
+    FROM order_rider_dispatch_exclusions
+    WHERE order_core_id = ${orderCoreId}
+  `) as Array<{ rider_id: number }>;
+  return new Set(rows.map((r) => Number(r.rider_id)).filter((id) => id > 0));
+}
+
 export async function isRiderExcludedFromOrderDispatch(
   riderId: number,
   orderCoreId: number

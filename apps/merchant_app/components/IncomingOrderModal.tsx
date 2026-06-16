@@ -45,6 +45,7 @@ import { formatPartnerIncomingCustomerLabel } from "@/components/order/orderForm
 import { AnimatedPlacedTime } from "@/components/order/AnimatedPlacedTime";
 import { lineItemHasCustomizations } from "@/lib/merchant-order-food-item-display";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
+import { formatMerchantRs } from "@/lib/merchant-line-total";
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
 import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
 import {
@@ -720,7 +721,7 @@ export default function IncomingOrderModal() {
                     <View style={styles.earningsMain}>
                       <Text style={styles.earningsLabel}>Order value</Text>
                       <Text style={styles.earningsValue}>
-                        ₹{Math.round(order.total).toLocaleString("en-IN")}
+                        {formatMerchantRs(order.total)}
                       </Text>
                     </View>
                     <View style={styles.earningsDivider} />

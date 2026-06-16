@@ -5,6 +5,8 @@ import {
   applyPlatformFeeBucketOffers,
   platformOfferGeoMatches,
   platformOfferMerchantScopeMatches,
+  qualifyingCartFromRem,
+  listEligiblePlatformOffersForCheckout,
 } from "./platformOffersApply.js";
 import type {
   BillContext,
@@ -119,6 +121,70 @@ const baseOffer = (): PlatformOfferRow => ({
   priority: 0,
   isHidden: false,
   conditions: {},
+});
+
+describe("qualifyingCartFromRem", () => {
+  const heavyFees: FeeRem = {
+    items: 250,
+    delivery: 50,
+    platform: 10,
+    packaging: 20,
+    surge: 15,
+    smallOrder: 5,
+    convenience: 3,
+    misc: 2,
+  };
+
+  it("returns item + add-on subtotal only, ignoring fees", () => {
+    assert.equal(qualifyingCartFromRem(299, heavyFees), 299);
+    assert.equal(qualifyingCartFromRem(250, heavyFees), 250);
+  });
+
+  it("min order uses item subtotal — fees do not help qualify", () => {
+    const ctx = baseCtx();
+    ctx.itemSubtotal = 250;
+    const o = baseOffer();
+    o.minOrderAmount = 299;
+    o.discountType = "FIXED";
+    o.valueNumeric = 35;
+    const rem: FeeRem = { ...heavyFees, items: 250 };
+    const state = emptyState();
+    applyPlatformCartOffers(ctx, datasetWithOffers([o]), state, 250, rem);
+    assert.equal(state.discountTotal, 0);
+    assert.equal(rem.items, 250);
+  });
+
+  it("min order passes when item subtotal meets threshold despite low fees-only total elsewhere", () => {
+    const ctx = baseCtx();
+    ctx.itemSubtotal = 299;
+    const o = baseOffer();
+    o.minOrderAmount = 299;
+    o.discountType = "FIXED";
+    o.valueNumeric = 35;
+    const rem: FeeRem = {
+      items: 299,
+      delivery: 0,
+      platform: 0,
+      packaging: 0,
+      surge: 0,
+      smallOrder: 0,
+      convenience: 0,
+      misc: 0,
+    };
+    const state = emptyState();
+    applyPlatformCartOffers(ctx, datasetWithOffers([o]), state, 299, rem);
+    assert.equal(state.discountTotal, 35);
+    assert.equal(rem.items, 264);
+  });
+
+  it("listEligiblePlatformOffersForCheckout mirrors apply-time min-order basis", () => {
+    const ctx = baseCtx();
+    const o = baseOffer();
+    o.minOrderAmount = 299;
+    const ds = datasetWithOffers([o]);
+    assert.equal(listEligiblePlatformOffersForCheckout(ctx, ds, 250).length, 0);
+    assert.equal(listEligiblePlatformOffersForCheckout(ctx, ds, 299).length, 1);
+  });
 });
 
 describe("platformOfferGeoMatches", () => {

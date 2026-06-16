@@ -17,6 +17,11 @@ import { getPrimaryOfferHeadlinesForStores } from "./merchant-offer-headline.js"
 import { getStoreRatingsForStores } from "./merchant-store-ratings.js";
 import { getScheduleTimesForStores } from "./merchant-store-schedule-times.js";
 import { getCompletedOrderCountsForStores } from "./merchant-store-order-stats.js";
+import {
+  averagePrepMinutesFromMenuItemRows,
+  getAverageMenuPrepMinutesForStores,
+  resolveStorePrepMinutesForEta,
+} from "./merchant-menu-prep.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import { previewEtaRange } from "../eta/eta.preview.js";
 import type { MerchantMenuItemRow } from "./merchant.types.js";
@@ -163,6 +168,7 @@ export async function merchantRoutes(app: FastifyInstance) {
                 deliveryTime: z.string().optional(),
                 etaMinMinutes: z.number().optional(),
                 etaMaxMinutes: z.number().optional(),
+                avgPreparationTimeMinutes: z.number().nullable().optional(),
                 cuisines: z.array(z.string()).optional(),
                 isOpen: z.boolean(),
                 liveStatus: z.enum(["OPEN", "CLOSED"]),
@@ -213,11 +219,17 @@ export async function merchantRoutes(app: FastifyInstance) {
           return empty;
         }
       };
-      const [offerHeadlines, ratingSummaries, scheduleTimes, orderCounts] = await Promise.all([
+      const [offerHeadlines, ratingSummaries, scheduleTimes, orderCounts, menuPrepAvgs] =
+        await Promise.all([
         settleEnrichment("offer-headlines", getPrimaryOfferHeadlinesForStores(storeInternalIds), new Map()),
         settleEnrichment("rating-summaries", getStoreRatingsForStores(storeInternalIds), new Map()),
         settleEnrichment("schedule-times", getScheduleTimesForStores(storeInternalIds), new Map()),
         settleEnrichment("order-counts", getCompletedOrderCountsForStores(storeInternalIds), new Map()),
+        settleEnrichment(
+          "menu-prep-averages",
+          getAverageMenuPrepMinutesForStores(storeInternalIds),
+          new Map()
+        ),
       ]);
 
       const body = items.map((s) => {
@@ -235,7 +247,12 @@ export async function merchantRoutes(app: FastifyInstance) {
           .map((u) => toAbsoluteClientMediaUrl(typeof u === "string" ? u : null))
           .filter((u): u is string => Boolean(u))
           .filter((u) => u !== bannerAbs && u !== displayImage);
-        const prepMin = nearby.avg_preparation_time_minutes ?? s.avg_preparation_time_minutes;
+        const storeLevelPrep = nearby.avg_preparation_time_minutes ?? s.avg_preparation_time_minutes;
+        const menuAvgPrep =
+          Number.isFinite(storeInternalId) && storeInternalId > 0
+            ? menuPrepAvgs.get(storeInternalId) ?? null
+            : null;
+        const prepMin = resolveStorePrepMinutesForEta(menuAvgPrep, storeLevelPrep);
         // ETA range: canonical "(prep + distance/18kmh) + 5..10 min buffer"
         // formula stamped server-side so list, merchant detail header, and
         // checkout all show the same numbers for one store.
@@ -268,6 +285,10 @@ export async function merchantRoutes(app: FastifyInstance) {
           deliveryTime: `${etaRange.etaMinMinutes}-${etaRange.etaMaxMinutes} min`,
           etaMinMinutes: etaRange.etaMinMinutes,
           etaMaxMinutes: etaRange.etaMaxMinutes,
+          avgPreparationTimeMinutes:
+            prepMin != null && Number.isFinite(Number(prepMin)) && Number(prepMin) > 0
+              ? Math.round(Number(prepMin))
+              : null,
           cuisines: s.cuisine_types ?? undefined,
           isOpen,
           liveStatus,
@@ -621,6 +642,12 @@ export async function merchantRoutes(app: FastifyInstance) {
         .map((m) => mapCustomerMenuItem(m))
         .filter((row): row is NonNullable<ReturnType<typeof mapCustomerMenuItem>> => row != null);
 
+      const menuAvgPrep = averagePrepMinutesFromMenuItemRows(items);
+      const prepMin = resolveStorePrepMinutesForEta(
+        menuAvgPrep,
+        store.avg_preparation_time_minutes
+      );
+
       const rawLiveStatus = (store as { live_status?: string | null }).live_status;
       const liveStatus =
         rawLiveStatus === "OPEN" || rawLiveStatus === "CLOSED"
@@ -652,7 +679,7 @@ export async function merchantRoutes(app: FastifyInstance) {
         isOpen,
         liveStatus,
         acceptingOrders: store.is_accepting_orders === true,
-        avgPreparationTimeMinutes: store.avg_preparation_time_minutes ?? undefined,
+        avgPreparationTimeMinutes: prepMin ?? undefined,
         city: store.city ?? undefined,
         menu,
         cuisines: store.cuisine_types ?? undefined,

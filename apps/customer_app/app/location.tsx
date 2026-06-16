@@ -12,7 +12,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Platform,
   LayoutAnimation,
   Alert,
   Share,
@@ -34,32 +33,168 @@ import {
   type EnrichedPlaceResult,
   MAPBOX_SEARCH_DEBOUNCE_MS,
 } from "@/services/location.service";
+import { mapboxSearchSuggest } from "@/services/mapboxSearch.service";
 import { isValidMapCoordinate } from "@/lib/map-coordinates";
 import { reverseGeocode } from "@/services/location.service";
 import { addressService, type Address, type LocalSuggestionResult } from "@/services/address.service";
 import { profileService } from "@/services/profile.service";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { BrandingFooter } from "@/components/BrandingFooter";
+import { AddressOptionsBottomSheet } from "@/components/address/AddressOptionsBottomSheet";
+import { AddressConfirmBottomSheet } from "@/components/address/AddressConfirmBottomSheet";
+import { NearbyLocationConfirmBottomSheet } from "@/components/address/NearbyLocationConfirmBottomSheet";
+import { LocationWeatherBanner, WeatherDetailsSheet } from "@/components/weather";
+import { useLocationWeather } from "@/hooks/useLocationWeather";
+import { useAddresses, useActiveLocation } from "@/hooks/useAddresses";
+import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
+import { GatiMitraColors } from "@/constants/gatimitra";
 
-const BG = "#F5F7FA";
+const BG = "#FAFAFA";
 const CARD_BG = "#FFFFFF";
-const TITLE_DARK = "#1A1A1A";
+const TITLE_DARK = "#111827";
 const TEXT_GRAY = "#6B7280";
-const BORDER = "#E5E7EB";
-const TEAL = "#14b8a6";
-const TEAL_LIGHT = "#E0F2F1";
-const SHADOW = Platform.select({
-  ios: {
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-  },
-  android: { elevation: 3 },
-});
+const TEXT_MUTED = "#9CA3AF";
+const BORDER = "#EEEEEE";
+const BORDER_SUBTLE = "rgba(0, 0, 0, 0.08)";
+const DIVIDER = "#F3F4F6";
+const BRAND = "#14B8A6";
+const BRAND_LIGHT = GatiMitraColors.mintSoft;
 
 const SEARCH_DEBOUNCE_MS = MAPBOX_SEARCH_DEBOUNCE_MS;
 const NEAR_SAVED_RADIUS_METERS = 500;
+const INITIAL_SAVED_VISIBLE = 3;
+const NEARBY_PLACES_LIMIT = 6;
+const NEARBY_MIN_DISTANCE_M = 30;
+const NEARBY_MAX_DISTANCE_M = 25_000;
+
+function savedAddressIcon(saved: Address): { name: keyof typeof Ionicons.glyphMap; color: string } {
+  const label = (saved.label ?? "").trim().toLowerCase();
+  if (label === "current location") {
+    return { name: "locate", color: BRAND };
+  }
+  if (label === "home") {
+    return { name: "home-outline", color: "#374151" };
+  }
+  if (label === "work" || label === "office") {
+    return { name: "briefcase-outline", color: "#374151" };
+  }
+  return { name: "location-outline", color: "#374151" };
+}
+
+function formatDistanceAway(m: number): string {
+  if (m < 50) return "0 m away";
+  if (m < 1000) return `${Math.round(m)} m away`;
+  return `${(m / 1000).toFixed(1)} km away`;
+}
+
+function localSuggestionToEnriched(item: LocalSuggestionResult): EnrichedPlaceResult {
+  return {
+    primary: item.primary,
+    secondary: item.secondary,
+    fullAddress: item.fullAddress,
+    latitude: item.latitude,
+    longitude: item.longitude,
+    confidenceScore: 0.75,
+    source: "local",
+    city: item.city,
+    area: item.area,
+  };
+}
+
+async function fetchNearbyPlacesForAnchor(
+  latitude: number,
+  longitude: number
+): Promise<EnrichedPlaceResult[]> {
+  const rg = await reverseGeocode(longitude, latitude);
+
+  const cityCandidates = [
+    rg.city,
+    rg.primary,
+    rg.secondary?.split(",")[0]?.trim(),
+    ...rg.fullAddress.split(",").map((p) => p.trim()),
+  ].filter(
+    (q): q is string =>
+      !!q &&
+      q.trim().length >= 2 &&
+      q.toLowerCase() !== "india" &&
+      !/^\d{6}$/.test(q.trim())
+  );
+
+  const queryCandidates = [
+    rg.primary,
+    rg.secondary?.split(",")[0]?.trim(),
+    rg.city,
+    cityCandidates.find((c) => c.length >= 3),
+    "market",
+  ].filter((q): q is string => !!q && q.trim().length >= 2);
+
+  const uniqueQueries = [...new Set(queryCandidates.map((q) => q.trim().slice(0, 28)))].slice(0, 4);
+  const uniqueCities = [...new Set(cityCandidates.map((c) => c.trim().slice(0, 40)))].slice(0, 3);
+
+  const [mapboxBatches, cityAreaBatches, searchBatches] = await Promise.all([
+    Promise.all(
+      uniqueQueries.map((q) =>
+        mapboxSearchSuggest(q, {
+          proximity: { longitude, latitude },
+          limit: 8,
+          sessionContext: "location-picker",
+        }).catch(() => [] as EnrichedPlaceResult[])
+      )
+    ),
+    Promise.all(
+      uniqueCities.map((city) =>
+        addressService.getCityAreaSuggestions(city, 10).catch(() => [] as LocalSuggestionResult[])
+      )
+    ),
+    Promise.all(
+      uniqueCities.slice(0, 2).map((city) =>
+        addressService.getLocationSearchSuggestions(city, 8).catch(() => [] as LocalSuggestionResult[])
+      )
+    ),
+  ]);
+
+  const merged: EnrichedPlaceResult[] = [];
+  const seen = new Set<string>();
+  const push = (item: EnrichedPlaceResult) => {
+    if (!isValidMapCoordinate(item.latitude, item.longitude)) return;
+    const key = `${Math.round(item.latitude * 10000)}_${Math.round(item.longitude * 10000)}`;
+    if (seen.has(key)) return;
+    const distM = distanceMeters(latitude, longitude, item.latitude, item.longitude);
+    if (distM < NEARBY_MIN_DISTANCE_M || distM > NEARBY_MAX_DISTANCE_M) return;
+    seen.add(key);
+    merged.push({
+      ...item,
+      distanceKm: distM / 1000,
+    });
+  };
+
+  const rawMapbox = mapboxBatches.flat();
+  let retrieveCount = 0;
+  for (const place of rawMapbox) {
+    if (retrieveCount >= 12) break;
+    try {
+      const candidate =
+        place.pendingRetrieve && place.mapboxSuggestion
+          ? await resolveMapboxEnrichedPlace(place, "location-picker")
+          : place;
+      if (place.pendingRetrieve) retrieveCount += 1;
+      push(candidate);
+    } catch {
+      // skip failed retrieve
+    }
+  }
+
+  for (const batch of cityAreaBatches) {
+    for (const area of batch) push(localSuggestionToEnriched(area));
+  }
+  for (const batch of searchBatches) {
+    for (const item of batch) push(localSuggestionToEnriched(item));
+  }
+
+  return merged
+    .sort((a, b) => (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity))
+    .slice(0, NEARBY_PLACES_LIMIT);
+}
 
 function toRad(deg: number) {
   return (deg * Math.PI) / 180;
@@ -92,12 +227,85 @@ function highlightSegments(text: string, query: string): { text: string; match: 
   ].filter((s) => s.text.length > 0);
 }
 
-function addressIcon(label: string | null): "home" | "briefcase" | "location" {
-  if (!label) return "location";
-  const l = label.toLowerCase();
-  if (l === "home") return "home";
-  if (l === "work") return "briefcase";
-  return "location";
+function formatDistanceMeters(m: number): string {
+  if (m < 50) return "0 m";
+  if (m < 1000) return `${Math.round(m)} m`;
+  return `${(m / 1000).toFixed(1)} km`;
+}
+
+function formatLocationPreviewUpper(preview: string): string {
+  return preview.trim().toUpperCase();
+}
+
+function isPlaceholderLocationText(value?: string | null): boolean {
+  if (!value?.trim()) return true;
+  const trimmed = value.trim();
+  const lower = trimmed.toLowerCase();
+  return (
+    trimmed === "—" ||
+    trimmed === "-" ||
+    lower === "n/a" ||
+    lower === "na" ||
+    lower === "unknown" ||
+    lower === "current location"
+  );
+}
+
+function parseCityFromFullAddress(fullAddress?: string | null): string | null {
+  if (!fullAddress?.trim()) return null;
+  const parts = fullAddress
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .filter((p) => p.toLowerCase() !== "india" && !/^\d{6}$/.test(p));
+  if (parts.length >= 2) return parts[1];
+  return parts[0] ?? null;
+}
+
+function extractWeatherAreaLabel(
+  currentLocationPreview: string,
+  saved: Address | null | undefined
+): string | null {
+  if (saved?.city && !isPlaceholderLocationText(saved.city)) return saved.city.trim();
+
+  const fromAddress = parseCityFromFullAddress(saved?.fullAddress);
+  if (fromAddress && !isPlaceholderLocationText(fromAddress)) return fromAddress;
+
+  const label = (saved?.label ?? "").trim().toLowerCase();
+  if (label && !isPlaceholderLocationText(label) && label !== "home" && label !== "work" && label !== "office") {
+    return saved!.label!.trim();
+  }
+
+  if (!isPlaceholderLocationText(currentLocationPreview)) {
+    const first = currentLocationPreview.split(",")[0]?.trim();
+    if (first && !isPlaceholderLocationText(first)) return first;
+  }
+
+  return null;
+}
+
+function formatPhoneLine(mobile: string | null | undefined): string | null {
+  if (!mobile?.trim()) return null;
+  const digits = mobile.replace(/\D/g, "");
+  if (!digits) return null;
+  const local = digits.length > 10 ? digits.slice(-10) : digits;
+  return `Phone number: +91-${local}`;
+}
+
+function buildShareMessage(saved: Address): string {
+  const parts: string[] = [];
+  const label = saved.label ?? "Address";
+  const name = saved.contactName ? ` – ${saved.contactName}` : "";
+  parts.push(`${label}${name}`);
+  parts.push(saved.fullAddress);
+  const phone = formatPhoneLine(saved.contactMobile);
+  if (phone) parts.push(phone);
+  if (saved.latitude && saved.longitude) {
+    parts.push(`Location: https://maps.google.com/?q=${saved.latitude},${saved.longitude}`);
+  }
+  parts.push("");
+  parts.push("GatiMitra – order food, rides & parcels. Download the app to order now.");
+  return parts.join("\n");
 }
 
 export default function SelectLocationScreen() {
@@ -127,7 +335,10 @@ export default function SelectLocationScreen() {
   const [searchFailsafe, setSearchFailsafe] = useState(false);
   const [savedAddressLoading, setSavedAddressLoading] = useState<number | null>(null);
   const [confirmAddress, setConfirmAddress] = useState<Address | null>(null);
-  const [menuForId, setMenuForId] = useState<number | null>(null);
+  const [pendingNearbyPlace, setPendingNearbyPlace] = useState<EnrichedPlaceResult | null>(null);
+  const [optionsAddress, setOptionsAddress] = useState<Address | null>(null);
+  const [weatherSheetVisible, setWeatherSheetVisible] = useState(false);
+  const [savedExpanded, setSavedExpanded] = useState(false);
   const [currentLocationPreview, setCurrentLocationPreview] = useState("Current location");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
@@ -159,22 +370,14 @@ export default function SelectLocationScreen() {
   }, [hydrateRecentLocations]);
 
   const {
-    data: savedAddresses = [],
-    isLoading: addressesLoading,
+    data: savedAddressesData,
+    isPending: addressesPending,
     isError: addressesError,
     refetch: refetchAddresses,
-  } = useQuery({
-    queryKey: ["addresses"],
-    queryFn: () => addressService.getAddresses(),
-    retry: false,
-  });
+  } = useAddresses();
+  const savedAddresses = savedAddressesData ?? [];
 
-  const { data: activeLocation, refetch: refetchActiveLocation } = useQuery({
-    queryKey: ["active-location"],
-    queryFn: () => addressService.getActiveLocation(),
-    staleTime: 0,
-    retry: false,
-  });
+  const { data: activeLocation, refetch: refetchActiveLocation } = useActiveLocation();
 
   const [listRefreshing, setListRefreshing] = useState(false);
 
@@ -219,8 +422,6 @@ export default function SelectLocationScreen() {
     return activeAddressId;
   }, [locationSource, coords, savedAddresses, activeAddressId]);
 
-  const showSelectedOnCurrentLocationRow = locationSource === "current";
-
   // One entry per location (rounded to 4 decimals ~11m); Current location first, then default, then last used
   const dedupedAndSortedAddresses = useMemo(() => {
     const round4 = (n: number) => Math.round(n * 10000) / 10000;
@@ -255,6 +456,57 @@ export default function SelectLocationScreen() {
           ),
     [dedupedAndSortedAddresses, searchQuery]
   );
+
+  const visibleSavedAddresses = useMemo(
+    () => (savedExpanded ? filteredSaved : filteredSaved.slice(0, INITIAL_SAVED_VISIBLE)),
+    [filteredSaved, savedExpanded]
+  );
+  const hasMoreSaved = filteredSaved.length > INITIAL_SAVED_VISIBLE;
+
+  /** Reference point for distances + nearby POIs — follows selected/active location. */
+  const referenceCoords = useMemo(() => {
+    if (locationSource === "selected" && coords?.latitude != null && coords?.longitude != null) {
+      return { latitude: coords.latitude, longitude: coords.longitude };
+    }
+    if (
+      activeLocation?.latitude != null &&
+      activeLocation?.longitude != null &&
+      Number.isFinite(activeLocation.latitude) &&
+      Number.isFinite(activeLocation.longitude)
+    ) {
+      return { latitude: activeLocation.latitude, longitude: activeLocation.longitude };
+    }
+    if (coords?.latitude != null && coords?.longitude != null) {
+      return { latitude: coords.latitude, longitude: coords.longitude };
+    }
+    return null;
+  }, [locationSource, coords, activeLocation]);
+
+  const selectedSavedForWeather = useMemo(() => {
+    if (matchedSavedIdForPill == null) return null;
+    return dedupedAndSortedAddresses.find((a) => a.id === matchedSavedIdForPill) ?? null;
+  }, [matchedSavedIdForPill, dedupedAndSortedAddresses]);
+
+  const weatherAreaLabel = useMemo(
+    () => extractWeatherAreaLabel(currentLocationPreview, selectedSavedForWeather),
+    [currentLocationPreview, selectedSavedForWeather]
+  );
+
+  const { data: weather } = useLocationWeather({
+    lat: referenceCoords?.latitude ?? coords?.latitude,
+    lng: referenceCoords?.longitude ?? coords?.longitude,
+    city: weatherAreaLabel,
+    area: weatherAreaLabel,
+  });
+
+  const { data: nearbyPlaces = [], isLoading: nearbyLoading } = useQuery({
+    queryKey: ["nearby-places", referenceCoords?.latitude, referenceCoords?.longitude],
+    queryFn: () =>
+      fetchNearbyPlacesForAnchor(referenceCoords!.latitude, referenceCoords!.longitude),
+    enabled: !!referenceCoords && !searchQuery.trim(),
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  });
 
   const formatLocationLine = (fullAddress?: string | null, secondary?: string | null, primary?: string | null, state?: string | null) => {
     const isPincode = (value?: string | null) => !!value && /^\d{6}$/.test(value.trim());
@@ -579,6 +831,69 @@ export default function SelectLocationScreen() {
     }
   };
 
+  /** Nearby list: show confirm sheet, then apply location — no map / address edit form. */
+  const applyNearbyPlace = async (place: EnrichedPlaceResult) => {
+    if (resolvingSearchPlace) return;
+    setResolvingSearchPlace(true);
+    try {
+      let resolved = place;
+      if (place.pendingRetrieve || !isValidMapCoordinate(place.latitude, place.longitude)) {
+        resolved = await resolveMapboxEnrichedPlace(place, "food-delivery");
+        if (!isValidMapCoordinate(resolved.latitude, resolved.longitude)) {
+          const geocoded = await geocodeAddressToCoord(resolved.fullAddress || resolved.primary);
+          if (geocoded && isValidMapCoordinate(geocoded.latitude, geocoded.longitude)) {
+            resolved = {
+              ...resolved,
+              latitude: geocoded.latitude,
+              longitude: geocoded.longitude,
+              pendingRetrieve: false,
+            };
+          }
+        }
+      }
+      if (!isValidMapCoordinate(resolved.latitude, resolved.longitude)) {
+        Alert.alert(
+          "Location unavailable",
+          "Could not load coordinates for this place. Try another nearby location."
+        );
+        return;
+      }
+
+      const fullAddress = resolved.fullAddress || resolved.primary;
+      addRecentLocation({
+        latitude: resolved.latitude,
+        longitude: resolved.longitude,
+        primary: resolved.primary,
+        fullAddress,
+      });
+      await addressService.setActiveLocation({
+        latitude: resolved.latitude,
+        longitude: resolved.longitude,
+        address: fullAddress,
+      });
+      setAddressAndCoords(
+        {
+          primary: resolved.primary,
+          secondary: fullAddress.slice(0, 80),
+          fullAddress,
+        },
+        { latitude: resolved.latitude, longitude: resolved.longitude },
+        { source: "selected" }
+      );
+      queryClient.invalidateQueries({ queryKey: ["addresses"] });
+      queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      setPendingNearbyPlace(null);
+      safeBack();
+    } finally {
+      setResolvingSearchPlace(false);
+    }
+  };
+
+  const handleSelectNearbyPlace = (place: EnrichedPlaceResult) => {
+    if (resolvingSearchPlace) return;
+    setPendingNearbyPlace(place);
+  };
+
   const applySavedAddress = async (addr: Address) => {
     setSavedAddressLoading(addr.id);
     try {
@@ -620,8 +935,7 @@ export default function SelectLocationScreen() {
   };
 
   const handleSelectSaved = (addr: Address) => {
-    // Tapping the three-dot menu should not trigger selection
-    if (menuForId === addr.id) return;
+    // Options menu uses AddressOptionsBottomSheet — no separate menuForId state.
     if (activeAddressId != null && activeAddressId !== addr.id) {
       setConfirmAddress(addr);
       return;
@@ -665,17 +979,17 @@ export default function SelectLocationScreen() {
       <View style={styles.container}>
         <StatusBar style="dark" backgroundColor="#FFFFFF" />
       {/* Header with integrated search – minimal gap below status bar */}
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: STATUS_BAR_TO_HEADER_GAP }]}>
         <View style={styles.headerRow}>
           <TouchableOpacity onPress={safeBack} style={styles.backBtn} hitSlop={12}>
-            <Ionicons name="arrow-back" size={24} color={TITLE_DARK} />
+            <Ionicons name="chevron-back" size={24} color={TITLE_DARK} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Select a location</Text>
           <View style={styles.headerRight} />
         </View>
         <View style={styles.searchBarWrap}>
-          <View style={[styles.searchBar, SHADOW]}>
-            <Ionicons name="search" size={20} color={TEAL} />
+          <View style={styles.searchBar}>
+            <Ionicons name="search" size={20} color={BRAND} />
             <TextInput
               style={styles.searchInput}
               placeholder="Search for area, street name..."
@@ -704,21 +1018,21 @@ export default function SelectLocationScreen() {
           <RefreshControl
             refreshing={listRefreshing}
             onRefresh={onPullRefresh}
-            tintColor={TEAL}
-            colors={[TEAL]}
+            tintColor={BRAND}
+            colors={[BRAND]}
           />
         }
       >
         {/* Search results from API */}
         {showSearchSection && (
           <View style={[styles.sectionHeadRow, { marginTop: 0 }]}>
-            <Ionicons name="search" size={14} color={TEAL} />
+            <Ionicons name="search" size={14} color={BRAND} />
             <Text style={styles.sectionHeading}>SEARCH RESULTS</Text>
           </View>
         )}
         {showSearchSection && searchLoading && (
           <View style={[styles.searchLoadingWrap, styles.sectionBox]}>
-            <ActivityIndicator size="small" color={TEAL} />
+            <ActivityIndicator size="small" color={BRAND} />
             <Text style={styles.searchLoadingText}>Searching for places...</Text>
           </View>
         )}
@@ -726,21 +1040,21 @@ export default function SelectLocationScreen() {
           <View style={[styles.searchResultsWrap, styles.sectionBox]}>
             {resolvingSearchPlace ? (
               <View style={styles.searchLoadingWrap}>
-                <ActivityIndicator size="small" color={TEAL} />
+                <ActivityIndicator size="small" color={BRAND} />
                 <Text style={styles.searchLoadingText}>Loading map location…</Text>
               </View>
             ) : null}
             {searchResults.map((place, index) => (
               <TouchableOpacity
                 key={`${place.mapboxSuggestion?.mapbox_id ?? place.primary}-${index}`}
-                style={[styles.addressCard, styles.addressCardBorder, SHADOW]}
+                style={[styles.addressCard, styles.addressCardBorder]}
                 onPress={() => void handleSelectSearchResult(place)}
                 disabled={resolvingSearchPlace}
                 activeOpacity={0.85}
               >
                 <View style={styles.addressCardLeft}>
-                  <View style={[styles.addressIconWrap, { backgroundColor: TEAL_LIGHT }]}>
-                    <Ionicons name="location" size={22} color={TEAL} />
+                  <View style={[styles.addressIconWrap, { backgroundColor: BRAND_LIGHT }]}>
+                    <Ionicons name="location" size={22} color={BRAND} />
                   </View>
                   <View style={styles.addressCardContent}>
                     {/* Rule 3: Pincode format — Area, City / Pincode: XXXXX / State */}
@@ -793,7 +1107,7 @@ export default function SelectLocationScreen() {
                   </View>
                 </View>
                 <View style={styles.chevronWrap}>
-                  <Ionicons name="chevron-forward" size={20} color={TEAL} />
+                  <Ionicons name="chevron-forward" size={20} color={BRAND} />
                 </View>
               </TouchableOpacity>
             ))}
@@ -803,7 +1117,7 @@ export default function SelectLocationScreen() {
           <View style={styles.emptySaved}>
             {searchFailsafe || searchLoading ? (
               <>
-                <ActivityIndicator size="small" color={TEAL} />
+                <ActivityIndicator size="small" color={BRAND} />
                 <Text style={[styles.emptySavedText, { marginTop: 12 }]}>
                   Searching nearby known places…
                 </Text>
@@ -839,22 +1153,17 @@ export default function SelectLocationScreen() {
             disabled={loading}
           >
             <View style={styles.actionLeft}>
-              <Ionicons name="locate" size={20} color={TEAL} />
+              <Ionicons name="locate" size={22} color={BRAND} />
               <View style={styles.optionTextWrap}>
                 <Text style={styles.actionTitle}>Use current location</Text>
                 <Text style={styles.optionSub} numberOfLines={1}>
-                  {loading ? "Getting location..." : currentLocationPreview}
+                  {loading ? "Getting location..." : formatLocationPreviewUpper(currentLocationPreview)}
                 </Text>
               </View>
             </View>
             <View style={styles.actionRowRight}>
-              {showSelectedOnCurrentLocationRow ? (
-                <View style={styles.selectedPillAction}>
-                  <Text style={styles.selectedPillRightText}>SELECTED</Text>
-                </View>
-              ) : null}
               {loading ? (
-                <ActivityIndicator size="small" color={TEAL} />
+                <ActivityIndicator size="small" color={BRAND} />
               ) : (
                 <Ionicons name="chevron-forward" size={18} color={TEXT_GRAY} />
               )}
@@ -868,21 +1177,25 @@ export default function SelectLocationScreen() {
             activeOpacity={0.85}
           >
             <View style={styles.actionLeft}>
-              <Ionicons name="add" size={22} color={TEAL} />
+              <Ionicons name="add" size={22} color={BRAND} />
               <Text style={styles.actionTitle}>Add Address</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={TEXT_GRAY} />
           </TouchableOpacity>
         </View>
 
+        <LocationWeatherBanner
+          weather={weather}
+          onPress={() => setWeatherSheetVisible(true)}
+        />
+
         {/* SAVED ADDRESSES */}
-        <View style={[styles.sectionHeadRow, styles.sectionHeadRowBorder]}>
-          <Ionicons name="bookmark" size={14} color={TEAL} />
+        <View style={styles.sectionHeadRow}>
           <Text style={styles.sectionHeading}>SAVED ADDRESSES</Text>
         </View>
-        {addressesLoading ? (
+        {addressesPending && savedAddressesData === undefined ? (
           <View style={styles.emptySaved}>
-            <ActivityIndicator size="small" color={TEAL} />
+            <ActivityIndicator size="small" color={BRAND} />
             <Text style={[styles.emptySavedText, { marginTop: 12 }]}>Loading saved addresses...</Text>
           </View>
         ) : addressesError ? (
@@ -909,144 +1222,173 @@ export default function SelectLocationScreen() {
             )}
           </View>
         ) : (
-          filteredSaved.map((saved) => (
-            <View key={saved.id} style={[styles.addressCard, styles.addressCardBorder]}>
+          <>
+            {visibleSavedAddresses.map((saved) => {
+              const distM =
+                referenceCoords != null
+                  ? distanceMeters(
+                      referenceCoords.latitude,
+                      referenceCoords.longitude,
+                      saved.latitude,
+                      saved.longitude
+                    )
+                  : null;
+              const phoneLine = formatPhoneLine(saved.contactMobile);
+              const icon = savedAddressIcon(saved);
+              const isSelected = saved.id === matchedSavedIdForPill;
+              const openEdit = () => {
+                router.push({
+                  pathname: "/location-address",
+                  params: {
+                    latitude: String(saved.latitude),
+                    longitude: String(saved.longitude),
+                    addressId: String(saved.id),
+                    primary: saved.label ?? saved.fullAddress.slice(0, 40),
+                    ...forwardParams,
+                  },
+                });
+              };
+              return (
+                <View key={saved.id} style={styles.savedCard}>
+                  <View style={styles.savedCardTop}>
+                    <View style={styles.savedCardLeftCol}>
+                      <Ionicons name={icon.name} size={24} color={icon.color} />
+                      {distM != null ? (
+                        <Text style={styles.savedDistance}>{formatDistanceMeters(distM)}</Text>
+                      ) : null}
+                    </View>
+                    <View style={styles.savedCardBody}>
+                      <TouchableOpacity
+                        onPress={() => handleSelectSaved(saved)}
+                        disabled={savedAddressLoading !== null}
+                        activeOpacity={0.85}
+                      >
+                        <View style={styles.addressLabelRow}>
+                          <Text style={styles.savedAddressTitle}>{saved.label ?? "Address"}</Text>
+                          {isSelected ? (
+                            <View style={styles.selectedPillRight}>
+                              <Text style={styles.selectedPillRightText}>SELECTED</Text>
+                            </View>
+                          ) : (
+                            <View style={styles.unselectedRadio} />
+                          )}
+                        </View>
+                        <Text style={styles.savedAddressLine} numberOfLines={3}>
+                          {saved.fullAddress}
+                        </Text>
+                        {phoneLine ? (
+                          <Text style={styles.savedPhoneLine} numberOfLines={1}>
+                            {phoneLine}
+                          </Text>
+                        ) : null}
+                      </TouchableOpacity>
+                      <View style={styles.savedActionsRow}>
+                        {savedAddressLoading === saved.id ? (
+                          <ActivityIndicator size="small" color={BRAND} style={{ marginRight: 4 }} />
+                        ) : null}
+                        <TouchableOpacity
+                          style={styles.savedActionBtn}
+                          onPress={() => setOptionsAddress(saved)}
+                          hitSlop={8}
+                          activeOpacity={0.85}
+                        >
+                          <Ionicons name="ellipsis-horizontal" size={13} color={BRAND} />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.savedActionBtn}
+                          onPress={async () => {
+                            try {
+                              await Share.share({ message: buildShareMessage(saved) });
+                            } catch {
+                              // ignore
+                            }
+                          }}
+                          hitSlop={8}
+                          activeOpacity={0.85}
+                        >
+                          <Ionicons name="arrow-redo-outline" size={13} color={BRAND} />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.savedActionBtn}
+                          onPress={openEdit}
+                          hitSlop={8}
+                          activeOpacity={0.85}
+                        >
+                          <Ionicons name="camera-outline" size={13} color={BRAND} />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  </View>
+                </View>
+              );
+            })}
+            {hasMoreSaved ? (
               <TouchableOpacity
-                style={styles.addressCardLeft}
-                onPress={() => handleSelectSaved(saved)}
-                disabled={savedAddressLoading !== null}
+                style={styles.seeMoreBtn}
+                onPress={() => setSavedExpanded((v) => !v)}
                 activeOpacity={0.85}
               >
-                <View style={[styles.addressIconWrap, { backgroundColor: "#F8FAFC" }]}>
-                  <Ionicons name={addressIcon(saved.label)} size={22} color="#667085" />
-                </View>
-                <View style={styles.addressCardContent}>
-                  <View style={styles.addressLabelRow}>
-                    <Text style={styles.addressLabel}>{saved.label ?? "Address"}</Text>
-                  </View>
-                  {saved.contactName ? (
-                    <Text style={styles.addressLine} numberOfLines={1}>
-                      {saved.contactName}
-                      {saved.contactMobile ? ` • ${saved.contactMobile}` : ""}
-                    </Text>
-                  ) : null}
-                  <Text style={styles.addressLine} numberOfLines={2}>
-                    {saved.fullAddress}
-                  </Text>
-                </View>
+                <Text style={styles.seeMoreText}>{savedExpanded ? "see less" : "see more"}</Text>
+                <Ionicons
+                  name={savedExpanded ? "chevron-up" : "chevron-down"}
+                  size={16}
+                  color={TEXT_GRAY}
+                />
               </TouchableOpacity>
-              <View style={styles.cardRight}>
-                {saved.id === matchedSavedIdForPill && (
-                  <View style={styles.selectedPillRight}>
-                    <Text style={styles.selectedPillRightText}>SELECTED</Text>
-                  </View>
-                )}
-                <TouchableOpacity
-                  hitSlop={12}
-                  style={styles.moreBtn}
-                  onPress={() => setMenuForId((id) => (id === saved.id ? null : saved.id))}
-                >
-                  <Ionicons name="ellipsis-vertical" size={18} color={TEXT_GRAY} />
-                </TouchableOpacity>
-                {savedAddressLoading === saved.id && (
-                  <ActivityIndicator size="small" color={TEAL} />
-                )}
-                {menuForId === saved.id && (
-                  <View style={styles.moreMenu}>
-                    <TouchableOpacity
-                      style={styles.moreMenuItem}
-                      onPress={() => {
-                        setMenuForId(null);
-                        router.push({
-                          pathname: "/location-address",
-                          params: {
-                            latitude: String(saved.latitude),
-                            longitude: String(saved.longitude),
-                            addressId: String(saved.id),
-                            primary: saved.label ?? saved.fullAddress.slice(0, 40),
-                            ...forwardParams,
-                          },
-                        });
-                      }}
-                    >
-                      <Ionicons name="create-outline" size={16} color="#F9FAFB" />
-                      <Text style={styles.moreMenuText}>Edit</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.moreMenuItem}
-                      onPress={async () => {
-                        setMenuForId(null);
-                        // Share same as profile screen
-                        const parts: string[] = [];
-                        const label = saved.label ?? "Address";
-                        const name = saved.contactName ? ` – ${saved.contactName}` : "";
-                        parts.push(`${label}${name}`);
-                        parts.push(saved.fullAddress);
-                        if (saved.contactMobile) {
-                          parts.push(`Mobile: ${saved.contactMobile}`);
-                        }
-                        if (saved.latitude && saved.longitude) {
-                          parts.push(
-                            `Location: https://maps.google.com/?q=${saved.latitude},${saved.longitude}`
-                          );
-                        }
-                        parts.push("");
-                        parts.push(
-                          "GatiMitra – order food, rides & parcels. Download the app to order now."
-                        );
-                        const message = parts.join("\n");
-                        try {
-                          await Share.share({ message });
-                        } catch {
-                          // ignore
-                        }
-                      }}
-                    >
-                      <Ionicons name="share-social-outline" size={16} color="#F9FAFB" />
-                      <Text style={styles.moreMenuText}>Share</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.moreMenuItem, styles.moreMenuItemDestructive]}
-                      onPress={() => {
-                        setMenuForId(null);
-                        Alert.alert(
-                          "Delete address?",
-                          "Remove this saved address?",
-                          [
-                            { text: "Cancel", style: "cancel" },
-                            {
-                              text: "Delete",
-                              style: "destructive",
-                              onPress: async () => {
-                                try {
-                                  await addressService.deleteAddress(saved.id);
-                                  queryClient.invalidateQueries({ queryKey: ["addresses"] });
-                                } catch {
-                                  // ignore
-                                }
-                              },
-                            },
-                          ]
-                        );
-                      }}
-                    >
-                      <Ionicons name="trash-outline" size={16} color="#FCA5A5" />
-                      <Text style={[styles.moreMenuText, styles.moreMenuTextDestructive]}>
-                        Delete
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
-              </View>
-            </View>
-          ))
+            ) : null}
+          </>
         )}
+
+        {!searchQuery.trim() && referenceCoords && !nearbyLoading && nearbyPlaces.length > 0 ? (
+          <>
+            <View style={styles.sectionDividerRow}>
+              <Text style={styles.sectionHeading}>NEARBY LOCATIONS</Text>
+              <View style={styles.sectionDividerLine} />
+            </View>
+            <View style={styles.nearbyList}>
+              {nearbyPlaces.map((place, index) => {
+                const distM =
+                  place.latitude != null && place.longitude != null
+                    ? distanceMeters(
+                        referenceCoords.latitude,
+                        referenceCoords.longitude,
+                        place.latitude,
+                        place.longitude
+                      )
+                    : null;
+                return (
+                  <TouchableOpacity
+                    key={`${place.primary}-${place.latitude}-${index}`}
+                    style={[
+                      styles.nearbyRow,
+                      index === nearbyPlaces.length - 1 && styles.nearbyRowLast,
+                    ]}
+                    onPress={() => handleSelectNearbyPlace(place)}
+                    disabled={resolvingSearchPlace}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="location" size={22} color={BRAND} style={styles.nearbyPin} />
+                    <View style={styles.nearbyTextWrap}>
+                      <Text style={styles.nearbySubtitle} numberOfLines={2}>
+                        {place.fullAddress || place.primary}
+                      </Text>
+                      {distM != null ? (
+                        <Text style={styles.nearbyAwaySubtext}>{formatDistanceAway(distM)}</Text>
+                      ) : null}
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={TEXT_GRAY} />
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </>
+        ) : null}
 
         {showRecentSearches && (
           <>
             <View style={[styles.sectionHeadRow, { justifyContent: "space-between" }]}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                <Ionicons name="time-outline" size={14} color={TEAL} />
+                <Ionicons name="time-outline" size={14} color={BRAND} />
                 <Text style={styles.sectionHeading}>RECENT SEARCHES</Text>
               </View>
               <TouchableOpacity onPress={clearRecentLocations} hitSlop={8}>
@@ -1085,39 +1427,73 @@ export default function SelectLocationScreen() {
         <BrandingFooter />
       </ScrollView>
       </View>
-      {confirmAddress && (
-        <View style={styles.confirmOverlay}>
-          <View style={styles.confirmCard}>
-            <Text style={styles.confirmTitle}>Are you sure about this address?</Text>
-            <Text style={styles.confirmSubtitle}>
-              You’re switching to \"{confirmAddress.label ?? "Address"}\". Use this as your delivery
-              location?
-            </Text>
-            <View style={styles.confirmAddressBox}>
-              <Text style={styles.confirmAddressLabel}>{confirmAddress.label ?? "Address"}</Text>
-              <Text style={styles.confirmAddressText} numberOfLines={2}>
-                {confirmAddress.fullAddress}
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={styles.confirmPrimaryBtn}
-              onPress={async () => {
-                const addr = confirmAddress;
-                setConfirmAddress(null);
-                await applySavedAddress(addr);
-              }}
-            >
-              <Text style={styles.confirmPrimaryText}>Yes, continue with this address</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.confirmSecondaryBtn}
-              onPress={() => setConfirmAddress(null)}
-            >
-              <Text style={styles.confirmSecondaryText}>No, change address</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
+      <WeatherDetailsSheet
+        visible={weatherSheetVisible}
+        weather={weather}
+        onClose={() => setWeatherSheetVisible(false)}
+      />
+      <AddressOptionsBottomSheet
+        visible={optionsAddress != null}
+        onClose={() => setOptionsAddress(null)}
+        onEdit={() => {
+          if (!optionsAddress) return;
+          const saved = optionsAddress;
+          setOptionsAddress(null);
+          router.push({
+            pathname: "/location-address",
+            params: {
+              latitude: String(saved.latitude),
+              longitude: String(saved.longitude),
+              addressId: String(saved.id),
+              primary: saved.label ?? saved.fullAddress.slice(0, 40),
+              ...forwardParams,
+            },
+          });
+        }}
+        onDelete={() => {
+          const saved = optionsAddress;
+          if (!saved) return;
+          setOptionsAddress(null);
+          Alert.alert("Delete address?", "Remove this saved address?", [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Delete",
+              style: "destructive",
+              onPress: async () => {
+                try {
+                  await addressService.deleteAddress(saved.id);
+                  await queryClient.invalidateQueries({ queryKey: ["addresses"] });
+                  await queryClient.invalidateQueries({ queryKey: ["active-location"] });
+                } catch {
+                  Alert.alert("Could not delete", "Please try again.");
+                }
+              },
+            },
+          ]);
+        }}
+      />
+      <AddressConfirmBottomSheet
+        visible={!!confirmAddress}
+        address={confirmAddress}
+        onConfirm={async () => {
+          const addr = confirmAddress;
+          if (!addr) return;
+          setConfirmAddress(null);
+          await applySavedAddress(addr);
+        }}
+        onCancel={() => setConfirmAddress(null)}
+      />
+      <NearbyLocationConfirmBottomSheet
+        visible={!!pendingNearbyPlace}
+        place={pendingNearbyPlace}
+        loading={resolvingSearchPlace}
+        onConfirm={() => {
+          const place = pendingNearbyPlace;
+          if (!place) return;
+          void applyNearbyPlace(place);
+        }}
+        onCancel={() => setPendingNearbyPlace(null)}
+      />
     </>
   );
 }
@@ -1126,9 +1502,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
   header: {
     backgroundColor: CARD_BG,
-    borderBottomWidth: 1,
-    borderBottomColor: BORDER,
-    paddingHorizontal: 12,
+    paddingHorizontal: 16,
     paddingBottom: 12,
   },
   headerRow: {
@@ -1136,19 +1510,26 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 10,
+    minHeight: 28,
   },
-  backBtn: { padding: 4 },
-  headerTitle: { fontSize: 18, fontWeight: "700", color: TITLE_DARK },
-  headerRight: { width: 36 },
+  backBtn: { width: 32, height: 32, alignItems: "flex-start", justifyContent: "center" },
+  headerTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: TITLE_DARK,
+    letterSpacing: -0.2,
+  },
+  headerRight: { width: 32 },
   searchBarWrap: { paddingHorizontal: 0 },
   searchBar: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: BG,
+    backgroundColor: CARD_BG,
     borderRadius: 12,
     paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderWidth: 0,
+    paddingVertical: 13,
+    borderWidth: 1,
+    borderColor: BORDER_SUBTLE,
   },
   searchInput: {
     flex: 1,
@@ -1157,8 +1538,8 @@ const styles = StyleSheet.create({
     color: TITLE_DARK,
     paddingVertical: 0,
   },
-  scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: 16, paddingTop: 16 },
+  scroll: { flex: 1, backgroundColor: BG },
+  scrollContent: { paddingHorizontal: 16, paddingTop: 12 },
   sectionBox: {
     borderWidth: 1,
     borderColor: BORDER,
@@ -1173,47 +1554,198 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
   actionPanel: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 14,
+    backgroundColor: CARD_BG,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: BORDER,
-    marginBottom: 12,
+    marginBottom: 10,
     overflow: "hidden",
   },
   actionRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 14,
-    paddingVertical: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: BORDER,
+    borderBottomColor: DIVIDER,
   },
   actionRowLast: { borderBottomWidth: 0 },
   actionRowRight: { flexDirection: "row", alignItems: "center", gap: 8 },
   actionLeft: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1, marginRight: 10 },
   selectedPillAction: {
-    backgroundColor: TEAL,
+    backgroundColor: BRAND,
     borderRadius: 999,
     paddingHorizontal: 8,
     paddingVertical: 4,
   },
-  actionTitle: { fontSize: 18, fontWeight: "600", color: TEAL },
+  actionTitle: { fontSize: 15, fontWeight: "700", color: TITLE_DARK, lineHeight: 20 },
   optionTextWrap: { flex: 1, marginLeft: 0 },
-  optionSub: { fontSize: 13, color: TEXT_GRAY, marginTop: 2 },
+  optionSub: {
+    fontSize: 11,
+    color: TEXT_MUTED,
+    marginTop: 3,
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+    lineHeight: 14,
+  },
   chevronWrap: { padding: 4 },
   sectionHeadRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 20,
-    marginBottom: 12,
-    gap: 6,
+    marginTop: 4,
+    marginBottom: 10,
   },
   sectionHeading: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "700",
+    color: TEXT_MUTED,
+    letterSpacing: 0.9,
+  },
+  sectionDividerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 16,
+    marginBottom: 10,
+    gap: 12,
+  },
+  sectionDividerLine: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: BORDER,
+  },
+  savedCard: {
+    backgroundColor: CARD_BG,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  savedCardTop: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+  },
+  savedCardLeftCol: {
+    width: 44,
+    alignItems: "center",
+    marginRight: 12,
+    paddingTop: 2,
+  },
+  savedDistance: {
+    fontSize: 10,
+    fontWeight: "600",
     color: TEXT_GRAY,
-    letterSpacing: 0.5,
+    marginTop: 6,
+    textAlign: "center",
+    lineHeight: 13,
+  },
+  savedCardBody: {
+    flex: 1,
+    minWidth: 0,
+  },
+  savedAddressTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: TITLE_DARK,
+    flex: 1,
+    lineHeight: 20,
+  },
+  savedAddressLine: {
+    fontSize: 13,
+    color: TEXT_GRAY,
+    marginTop: 4,
+    lineHeight: 18,
+  },
+  savedPhoneLine: {
+    fontSize: 12,
+    color: TEXT_GRAY,
+    marginTop: 8,
+    lineHeight: 16,
+  },
+  savedActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    gap: 8,
+    marginTop: 12,
+  },
+  savedActionBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: BORDER_SUBTLE,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: CARD_BG,
+  },
+  unselectedRadio: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    borderColor: "#D1D5DB",
+    backgroundColor: CARD_BG,
+  },
+  seeMoreBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    paddingVertical: 12,
+    marginBottom: 4,
+    borderWidth: 1,
+    borderColor: BORDER_SUBTLE,
+    borderRadius: 12,
+    backgroundColor: CARD_BG,
+  },
+  seeMoreText: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: TEXT_GRAY,
+    textTransform: "lowercase",
+  },
+  nearbyLoadingWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 16,
+    paddingHorizontal: 4,
+  },
+  nearbyLoadingText: { fontSize: 13, color: TEXT_GRAY },
+  nearbyEmptyText: {
+    fontSize: 13,
+    color: TEXT_GRAY,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+  },
+  nearbyList: {
+    marginBottom: 12,
+  },
+  nearbyRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: DIVIDER,
+  },
+  nearbyRowLast: { borderBottomWidth: 0 },
+  nearbyPin: {
+    marginRight: 12,
+  },
+  nearbyTextWrap: { flex: 1, minWidth: 0, marginRight: 8 },
+  nearbyAwaySubtext: {
+    fontSize: 12,
+    color: TEXT_GRAY,
+    marginTop: 2,
+  },
+  nearbySubtitle: {
+    fontSize: 14,
+    color: TITLE_DARK,
+    lineHeight: 20,
   },
   addressCard: {
     flexDirection: "row",
@@ -1239,22 +1771,26 @@ const styles = StyleSheet.create({
   addressCardContent: { flex: 1, marginLeft: 14 },
   addressMetaRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2, flexWrap: "wrap" },
   addressMeta: { fontSize: 12, color: TEXT_GRAY },
-  distanceBadge: { fontSize: 12, color: TEAL, fontWeight: "600" },
+  distanceBadge: { fontSize: 12, color: BRAND, fontWeight: "600" },
   distanceRow: { flexDirection: "row", alignItems: "center", gap: 4, marginBottom: 4 },
-  addressDistance: { fontSize: 12, color: TEAL, fontWeight: "600" },
+  addressDistance: { fontSize: 12, color: BRAND, fontWeight: "600" },
   addressLabel: { fontSize: 16, fontWeight: "600", color: TITLE_DARK },
   addressLabelRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
   cardRight: { alignItems: "flex-end", justifyContent: "flex-start", marginLeft: 8, minWidth: 34 },
   moreBtn: { padding: 2 },
   selectedPillRight: {
-    backgroundColor: TEAL,
-    borderRadius: 999,
-    paddingHorizontal: 8,
+    backgroundColor: BRAND,
+    borderRadius: 6,
+    paddingHorizontal: 10,
     paddingVertical: 4,
-    marginBottom: 8,
   },
-  selectedPillRightText: { color: "#FFFFFF", fontSize: 10, fontWeight: "700", letterSpacing: 0.4 },
-  addressLabelMatch: { color: TEAL, textDecorationLine: "underline" },
+  selectedPillRightText: {
+    color: "#FFFFFF",
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+  },
+  addressLabelMatch: { color: BRAND, textDecorationLine: "underline" },
   addressLine: { fontSize: 13, color: TEXT_GRAY, marginTop: 2, lineHeight: 18 },
   phoneRow: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 6 },
   addressPhone: { fontSize: 12, color: TEXT_GRAY },
@@ -1270,8 +1806,8 @@ const styles = StyleSheet.create({
   emptySaved: { paddingVertical: 32, alignItems: "center" },
   emptyIconWrap: { marginBottom: 12 },
   emptySavedText: { fontSize: 14, color: TEXT_GRAY, textAlign: "center" },
-  addAddressLink: { fontSize: 15, color: TEAL, fontWeight: "600", marginTop: 10 },
-  clearAllText: { fontSize: 12, fontWeight: "700", color: TEAL },
+  addAddressLink: { fontSize: 15, color: BRAND, fontWeight: "600", marginTop: 10 },
+  clearAllText: { fontSize: 12, fontWeight: "700", color: BRAND },
   recentSearchList: {
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
@@ -1294,46 +1830,4 @@ const styles = StyleSheet.create({
   recentSearchTextWrap: { marginLeft: 10, flex: 1 },
   recentSearchTitle: { fontSize: 14, fontWeight: "700", color: "#111827" },
   recentSearchSubtitle: { fontSize: 12, color: "#334155", marginTop: 2 },
-  confirmOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(15, 23, 42, 0.45)",
-    alignItems: "center",
-    justifyContent: "flex-end",
-  },
-  confirmCard: {
-    width: "100%",
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 26,
-    backgroundColor: "#FFFFFF",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-  },
-  confirmTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: TITLE_DARK,
-    marginBottom: 6,
-  },
-  confirmSubtitle: { fontSize: 14, color: TEXT_GRAY, marginBottom: 16 },
-  confirmAddressBox: {
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: BORDER,
-    padding: 12,
-    backgroundColor: "#F9FAFB",
-    marginBottom: 16,
-  },
-  confirmAddressLabel: { fontSize: 14, fontWeight: "600", color: TITLE_DARK, marginBottom: 4 },
-  confirmAddressText: { fontSize: 13, color: TEXT_GRAY },
-  confirmPrimaryBtn: {
-    backgroundColor: TEAL,
-    borderRadius: 999,
-    paddingVertical: 13,
-    alignItems: "center",
-    marginBottom: 10,
-  },
-  confirmPrimaryText: { color: "#FFFFFF", fontSize: 15, fontWeight: "600" },
-  confirmSecondaryBtn: { borderRadius: 999, paddingVertical: 11, alignItems: "center" },
-  confirmSecondaryText: { color: TITLE_DARK, fontSize: 15, fontWeight: "500" },
 });

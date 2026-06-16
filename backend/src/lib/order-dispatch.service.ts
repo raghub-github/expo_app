@@ -23,6 +23,12 @@ import { notifyEligibleRidersDispatchOffer } from "./rider-dispatch-notify.js";
 
 export type DispatchSessionStatus = "active" | "accepted" | "expired" | "cancelled";
 
+/** postgres.js bind params must be string/number — not raw Date objects. */
+function toTimestamptzParam(value: Date | string | number): string {
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : new Date().toISOString();
+}
+
 function parseCoord(value: unknown): number {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
@@ -199,7 +205,7 @@ export async function startOrderDispatch(orderCoreId: number): Promise<void> {
 
   const waveSettings = await fetchDispatchWaveSettings(target.serviceType);
   const nextWaveAt = waveSettings.enabled
-    ? new Date(Date.now() + waveSettings.waveIntervalSeconds * 1000)
+    ? toTimestamptzParam(Date.now() + waveSettings.waveIntervalSeconds * 1000)
     : null;
 
   const inserted = (await sql`
@@ -339,7 +345,7 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
 
   const nextWave = currentWave + 1;
   const waveSettings = await fetchDispatchWaveSettings(serviceType);
-  const nextWaveAt = new Date(Date.now() + waveSettings.waveIntervalSeconds * 1000);
+  const nextWaveAt = toTimestamptzParam(Date.now() + waveSettings.waveIntervalSeconds * 1000);
 
   await sql`
     UPDATE order_dispatch_sessions
@@ -365,7 +371,7 @@ export async function restartOrderDispatch(orderCoreId: number): Promise<void> {
 
   const waveSettings = await fetchDispatchWaveSettings(target.serviceType);
   const nextWaveAt = waveSettings.enabled
-    ? new Date(Date.now() + waveSettings.waveIntervalSeconds * 1000)
+    ? toTimestamptzParam(Date.now() + waveSettings.waveIntervalSeconds * 1000)
     : null;
 
   const reactivated = (await sql`

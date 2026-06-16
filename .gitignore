@@ -11,6 +11,9 @@
 /private
 /config
 
+# Expo local state (all apps)
+**/.expo/
+
 # Next.js / Turbo (monorepo)
 **/.next/
 **/out/
@@ -41,3 +44,6 @@
 /env.development.example
 /env.production.example
 /env.test.example.env.prod
+
+# TypeScript incremental build cache
+*.tsbuildinfo

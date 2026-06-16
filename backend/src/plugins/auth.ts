@@ -95,8 +95,8 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
         }
       }
 
-      // Merchant sessions: ensure this device session is still active and bump last_active.
-      if (role === "merchant") {
+      // Merchant + rider sessions: ensure this device session is still active and bump last_active.
+      if (role === "merchant" || role === "rider") {
         const deviceId = typeof (payload as any).device_id === "string" ? (payload as any).device_id : undefined;
         if (deviceId) {
           const sql = getSql();

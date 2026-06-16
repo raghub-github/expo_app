@@ -84,7 +84,48 @@ export function prefetchDashboardSection(queryClient: QueryClient, href: string)
     return;
   }
 
-  if (path === "/dashboard/orders" || path.startsWith("/dashboard/orders")) {
+  if (path === "/dashboard/orders" || path.startsWith("/dashboard/orders/food")) {
+    queryClient.prefetchQuery({
+      queryKey: queryKeys.ordersCore.foodList(
+        defaultFoodOrdersFilters as unknown as Record<string, unknown>
+      ),
+      queryFn: () => fetchFoodOrders(defaultFoodOrdersFilters),
+    });
+    return;
+  }
+
+  if (path.startsWith("/dashboard/orders/person-ride")) {
+    void import("@/app/dashboard/orders/person-ride/PersonRideOrdersClient").then(({ fetchPersonRideOrders }) =>
+      queryClient.prefetchQuery({
+        queryKey: [
+          "person-ride-orders",
+          {
+            page: 1,
+            limit: 20,
+            status: "",
+            dateFrom: "",
+            dateTo: "",
+            search: "",
+            searchType: "Order Id",
+          },
+        ],
+        queryFn: () =>
+          fetchPersonRideOrders({
+            page: 1,
+            limit: 20,
+            status: "",
+            dateFrom: "",
+            dateTo: "",
+            search: "",
+            searchType: "Order Id",
+          }),
+        staleTime: 30_000,
+      })
+    );
+    return;
+  }
+
+  if (path.startsWith("/dashboard/orders")) {
     queryClient.prefetchQuery({
       queryKey: queryKeys.ordersCore.foodList(
         defaultFoodOrdersFilters as unknown as Record<string, unknown>

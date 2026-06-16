@@ -7,11 +7,13 @@ import { getDb } from "../../db/client.js";
 import {
   customers,
   ordersCore,
+  ordersCoreItems,
   ordersFood,
   ordersParcel,
   ordersRide,
   riders,
 } from "../../db/schema.js";
+import { buildCustomerOrderDetailItemsFromJson } from "../../lib/customer-order-detail-items.js";
 import { appendOrderTimeline } from "../../lib/order-placement-timeline.js";
 import { isMerchantFoodOrderReady } from "../../lib/food-order-ready.js";
 import {
@@ -67,6 +69,11 @@ import {
   recordRideRiderUnassign,
   recordRiderOrderAccepted,
 } from "../../lib/rider-ride-assignment.js";
+import {
+  barcodeMatchesPickupToken,
+  type FoodPickupVerificationMethod,
+} from "../../lib/food-pickup-verification.js";
+import { loadFoodPickupVerificationSettings } from "../../lib/food-pickup-verification-settings.js";
 
 export const RIDER_ACCEPT_WINDOW_SEC = 60;
 export { RIDER_DISPATCH_LOCATION_MAX_AGE_MINUTES } from "../../lib/order-assignment-engine.js";
@@ -115,12 +122,52 @@ export type RiderOrderSummary = {
   foodOrderStatus?: string | null;
   /** True when merchant marked ready (READY_FOR_PICKUP+). */
   merchantOrderReady?: boolean;
+  /** ISO timestamp when rider marked reached pickup — persists across app restarts. */
+  pickupWaitStartedAt?: string | null;
+  /** Seconds waited at store until merchant ready. NULL while still waiting; 0 if pre-ready. */
+  pickupWaitSeconds?: number | null;
+  /** True when pickup_wait_seconds is persisted (waiting phase ended). */
+  pickupWaitFinalized?: boolean;
+  /** ISO timestamp when merchant marked order ready (orders_food.prepared_at). */
+  preparedAt?: string | null;
+  /** ISO timestamp when 3-minute pickup window started. */
+  pickupTimerStartedAt?: string | null;
+  /** Pickup window budget in seconds (default 180). */
+  pickupTimerBudgetSeconds?: number;
+  /** Seconds from pickup window start to picked up (set on pickup). */
+  pickupDurationSeconds?: number | null;
+  /** Kitchen prep deadline + delay inputs for rider delay UI. */
+  prepReadyByAt?: string | null;
+  acceptedAt?: string | null;
+  preparingAt?: string | null;
+  preparationTimeMinutes?: number | null;
+  prepDelayMinutes?: number | null;
   /** True when rider marked reached customer (drop). */
   atCustomer?: boolean;
   customerName?: string | null;
   customerPhone?: string | null;
   pickupAddressGeocoded?: string;
   dropAddressGeocoded?: string;
+  /** Line items for pickup verification screen. */
+  foodItems?: RiderFoodOrderItem[];
+  deliveryInstructions?: string | null;
+  requiresUtensils?: boolean;
+  restaurantPhone?: string | null;
+  /** True when rider submitted or skipped merchant pickup feedback. */
+  merchantFeedbackSubmitted?: boolean;
+  /** True when rider submitted or skipped customer delivery feedback. */
+  customerFeedbackSubmitted?: boolean;
+  /** orders_core.payment_method — online, cod, upi, etc. */
+  paymentMethod?: string | null;
+  /** orders_core.payment_status — paid, pending, etc. */
+  paymentStatus?: string | null;
+};
+
+export type RiderFoodOrderItem = {
+  name: string;
+  quantity: number;
+  variantName?: string | null;
+  customization?: string | null;
 };
 
 export type RiderGpsPayload = { lat?: number; lng?: number };
@@ -346,9 +393,32 @@ type FoodRow = {
   foodItemsCount: number | null;
   customerName: string | null;
   customerPhone: string | null;
+  paymentMethod?: string | null;
+  paymentStatus?: string | null;
 };
 
+function resolveFoodPaymentFields(row: {
+  paymentMethod?: string | null;
+  paymentStatus?: string | null;
+  billingSnapshot?: unknown;
+}): { paymentMethod: string | null; paymentStatus: string | null } {
+  let paymentMethod = row.paymentMethod?.trim() || null;
+  let paymentStatus = row.paymentStatus?.trim() || null;
+  if (!paymentMethod && row.billingSnapshot && typeof row.billingSnapshot === "object") {
+    const snap = row.billingSnapshot as Record<string, unknown>;
+    const fromSnap =
+      typeof snap.paymentMethod === "string"
+        ? snap.paymentMethod
+        : typeof snap.payment_method === "string"
+          ? snap.payment_method
+          : null;
+    if (fromSnap?.trim()) paymentMethod = fromSnap.trim();
+  }
+  return { paymentMethod, paymentStatus };
+}
+
 function mapFoodRow(row: FoodRow): RiderOrderSummary {
+  const payment = resolveFoodPaymentFields(row);
   const deliveryFee = resolveRiderDeliveryFee(row);
   const tipRounded = resolveCustomerTipAmount(row.tipAmount);
   const totalEarning = deliveryFee + tipRounded;
@@ -384,6 +454,10 @@ function mapFoodRow(row: FoodRow): RiderOrderSummary {
     formattedOrderId: row.formattedOrderId,
     customerName: row.customerName,
     customerPhone: row.customerPhone,
+    pickupAddressGeocoded: row.pickupAddressGeocoded?.trim() || undefined,
+    dropAddressGeocoded: row.dropAddressGeocoded?.trim() || undefined,
+    paymentMethod: payment.paymentMethod,
+    paymentStatus: payment.paymentStatus,
   };
 }
 
@@ -391,7 +465,151 @@ type FoodRowWithStatus = FoodRow & {
   status?: string | null;
   currentStatus?: string | null;
   foodStatus?: string | null;
+  riderReachedPickupAt?: Date | string | null;
+  pickupWaitSeconds?: number | null;
+  pickupTimerStartedAt?: Date | string | null;
+  pickupDurationSeconds?: number | null;
+  preparedAt?: Date | string | null;
+  acceptedAt?: Date | string | null;
+  preparingAt?: Date | string | null;
+  prepReadyByAt?: Date | string | null;
+  preparationTimeMinutes?: number | null;
+  prepDelayMinutes?: number | null;
 };
+
+function toIsoOrNull(value: Date | string | null | undefined): string | null {
+  if (value == null) return null;
+  if (value instanceof Date) return value.toISOString();
+  const t = new Date(String(value)).getTime();
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
+
+function attachFoodPrepTiming(
+  summary: RiderOrderSummary,
+  row: Pick<
+    FoodRowWithStatus,
+    | "acceptedAt"
+    | "preparingAt"
+    | "prepReadyByAt"
+    | "preparationTimeMinutes"
+    | "prepDelayMinutes"
+  >
+): RiderOrderSummary {
+  return {
+    ...summary,
+    acceptedAt: toIsoOrNull(row.acceptedAt),
+    preparingAt: toIsoOrNull(row.preparingAt),
+    prepReadyByAt: toIsoOrNull(row.prepReadyByAt),
+    preparationTimeMinutes:
+      row.preparationTimeMinutes != null ? Number(row.preparationTimeMinutes) : null,
+    prepDelayMinutes: row.prepDelayMinutes != null ? Number(row.prepDelayMinutes) : null,
+  };
+}
+
+const FOOD_PICKUP_TIMER_BUDGET_SECONDS = 180;
+
+function resolvePickupTimerStartedAtIso(
+  riderReachedAt: string | null,
+  preparedAt: Date | string | null | undefined,
+  storedTimerStartedAt: Date | string | null | undefined,
+  merchantReady: boolean
+): string | null {
+  const stored = toIsoOrNull(storedTimerStartedAt);
+  if (stored) return stored;
+  if (!merchantReady || !riderReachedAt) return null;
+  const reachedMs = new Date(riderReachedAt).getTime();
+  if (!Number.isFinite(reachedMs)) return null;
+  const preparedIso = toIsoOrNull(preparedAt);
+  const preparedMs = preparedIso ? new Date(preparedIso).getTime() : reachedMs;
+  const startMs = Math.max(
+    reachedMs,
+    Number.isFinite(preparedMs) ? preparedMs : reachedMs
+  );
+  return new Date(startMs).toISOString();
+}
+
+function attachFoodPickupWait(
+  summary: RiderOrderSummary,
+  riderReachedPickupAt?: Date | string | null,
+  storedPickupWaitSeconds?: number | null,
+  pickupTimerStartedAt?: Date | string | null,
+  pickupDurationSeconds?: number | null,
+  preparedAt?: Date | string | null
+): RiderOrderSummary {
+  const startedAt = toIsoOrNull(riderReachedPickupAt);
+  const preparedIso = toIsoOrNull(preparedAt);
+  const timerStartedAt = resolvePickupTimerStartedAtIso(
+    startedAt,
+    preparedAt,
+    pickupTimerStartedAt,
+    !!summary.merchantOrderReady
+  );
+
+  if (!startedAt) {
+    return {
+      ...summary,
+      ...(preparedIso ? { preparedAt: preparedIso } : {}),
+    };
+  }
+
+  const waitFinalized = storedPickupWaitSeconds != null;
+  const stillWaiting =
+    !waitFinalized && !timerStartedAt && !summary.merchantOrderReady;
+
+  return {
+    ...summary,
+    ...(preparedIso ? { preparedAt: preparedIso } : {}),
+    pickupWaitStartedAt: startedAt,
+    pickupWaitSeconds: waitFinalized
+      ? Math.max(0, Number(storedPickupWaitSeconds) || 0)
+      : stillWaiting
+        ? null
+        : storedPickupWaitSeconds,
+    pickupWaitFinalized: waitFinalized,
+    ...(timerStartedAt
+      ? {
+          pickupTimerStartedAt: timerStartedAt,
+          pickupTimerBudgetSeconds: FOOD_PICKUP_TIMER_BUDGET_SECONDS,
+        }
+      : {}),
+    ...(pickupDurationSeconds != null
+      ? { pickupDurationSeconds: Math.max(0, Number(pickupDurationSeconds) || 0) }
+      : {}),
+  };
+}
+
+async function loadRiderFoodOrderItems(
+  db: ReturnType<typeof getDb>,
+  coreOrderPk: number,
+  itemsJson: unknown
+): Promise<RiderFoodOrderItem[]> {
+  const coreItems = await db
+    .select({
+      itemName: ordersCoreItems.itemName,
+      quantity: ordersCoreItems.quantity,
+      variantName: ordersCoreItems.variantName,
+    })
+    .from(ordersCoreItems)
+    .where(eq(ordersCoreItems.orderId, String(coreOrderPk)));
+
+  if (coreItems.length > 0) {
+    return coreItems.map((i) => ({
+      name: i.itemName?.trim() || "Item",
+      quantity: Math.max(1, Number(i.quantity) || 1),
+      variantName: i.variantName?.trim() || null,
+    }));
+  }
+
+  const fromJson = buildCustomerOrderDetailItemsFromJson(
+    Array.isArray(itemsJson) ? (itemsJson as Parameters<typeof buildCustomerOrderDetailItemsFromJson>[0]) : null
+  );
+  return fromJson.map((i) => ({
+    name: i.name,
+    quantity: i.quantity,
+    variantName: i.variantName,
+    customization: i.customization,
+  }));
+}
 
 function mapFoodRowWithStatus(row: FoodRowWithStatus): RiderOrderSummary {
   const base = mapFoodRow(row);
@@ -416,15 +634,25 @@ function mapFoodRowWithStatus(row: FoodRowWithStatus): RiderOrderSummary {
     status = "cancelled";
   }
   const merchantOrderReady = isMerchantFoodOrderReady(foodSt);
-  return {
-    ...base,
-    atPickup,
-    rideStarted,
-    atCustomer,
-    status,
-    foodOrderStatus: foodSt || null,
-    merchantOrderReady,
-  };
+  return attachFoodPrepTiming(
+    attachFoodPickupWait(
+      {
+        ...base,
+        atPickup,
+        rideStarted,
+        atCustomer,
+        status,
+        foodOrderStatus: foodSt || null,
+        merchantOrderReady,
+      },
+      row.riderReachedPickupAt,
+      row.pickupWaitSeconds,
+      row.pickupTimerStartedAt,
+      row.pickupDurationSeconds,
+      row.preparedAt
+    ),
+    row
+  );
 }
 
 type ParcelRowWithStatus = ParcelRow & {
@@ -679,6 +907,16 @@ export async function getActiveOrdersForRider(riderId: number): Promise<RiderOrd
         status: ordersCore.status,
         currentStatus: ordersCore.currentStatus,
         foodStatus: ordersFood.orderStatus,
+        riderReachedPickupAt: ordersFood.riderReachedPickupAt,
+        pickupWaitSeconds: ordersFood.pickupWaitSeconds,
+        pickupTimerStartedAt: ordersFood.pickupTimerStartedAt,
+        pickupDurationSeconds: ordersFood.pickupDurationSeconds,
+        preparedAt: ordersFood.preparedAt,
+        acceptedAt: ordersFood.acceptedAt,
+        preparingAt: ordersFood.preparingAt,
+        prepReadyByAt: ordersFood.prepReadyByAt,
+        preparationTimeMinutes: ordersFood.preparationTimeMinutes,
+        prepDelayMinutes: ordersFood.prepDelayMinutes,
         restaurantName: ordersFood.restaurantName,
         foodItemsCount: ordersFood.foodItemsCount,
         customerName: ordersFood.customerName,
@@ -1729,6 +1967,7 @@ export async function getFoodOrderForRider(
   const db = getDb();
   const [row] = await db
     .select({
+      coreId: ordersCore.id,
       orderId: ordersCore.orderId,
       formattedOrderId: ordersCore.formattedOrderId,
       pickupAddressRaw: ordersCore.pickupAddressRaw,
@@ -1745,12 +1984,28 @@ export async function getFoodOrderForRider(
       grandTotal: ordersCore.grandTotal,
       tipAmount: ordersCore.tipAmount,
       billingSnapshot: ordersCore.billingSnapshot,
+      paymentMethod: ordersCore.paymentMethod,
+      paymentStatus: ordersCore.paymentStatus,
       createdAt: ordersCore.createdAt,
       status: ordersCore.status,
       currentStatus: ordersCore.currentStatus,
       foodStatus: ordersFood.orderStatus,
+      riderReachedPickupAt: ordersFood.riderReachedPickupAt,
+      pickupWaitSeconds: ordersFood.pickupWaitSeconds,
+      pickupTimerStartedAt: ordersFood.pickupTimerStartedAt,
+      pickupDurationSeconds: ordersFood.pickupDurationSeconds,
+      preparedAt: ordersFood.preparedAt,
+      acceptedAt: ordersFood.acceptedAt,
+      preparingAt: ordersFood.preparingAt,
+      prepReadyByAt: ordersFood.prepReadyByAt,
+      preparationTimeMinutes: ordersFood.preparationTimeMinutes,
+      prepDelayMinutes: ordersFood.prepDelayMinutes,
       restaurantName: ordersFood.restaurantName,
+      restaurantPhone: ordersFood.restaurantPhone,
       foodItemsCount: ordersFood.foodItemsCount,
+      foodItemsJson: ordersFood.items,
+      deliveryInstructions: ordersFood.deliveryInstructions,
+      requiresUtensils: ordersFood.requiresUtensils,
       customerName: ordersFood.customerName,
       customerPhone: ordersFood.customerPhone,
     })
@@ -1769,7 +2024,27 @@ export async function getFoodOrderForRider(
     throw Object.assign(new Error("Food order not found"), { statusCode: 404 });
   }
 
-  return mapFoodRowWithStatus(row);
+  const summary = mapFoodRowWithStatus(row);
+  const foodItems = await loadRiderFoodOrderItems(db, row.coreId, row.foodItemsJson);
+  const merchantFeedbackSubmitted = await loadRiderMerchantFeedbackSubmitted(
+    db,
+    riderId,
+    row.orderId.trim()
+  );
+  const customerFeedbackSubmitted = await loadRiderCustomerFeedbackSubmitted(
+    db,
+    riderId,
+    row.coreId
+  );
+  return {
+    ...summary,
+    foodItems,
+    deliveryInstructions: row.deliveryInstructions?.trim() || null,
+    requiresUtensils: row.requiresUtensils === true,
+    restaurantPhone: row.restaurantPhone?.trim() || null,
+    merchantFeedbackSubmitted,
+    customerFeedbackSubmitted,
+  };
 }
 
 export async function getParcelOrderForRider(
@@ -1871,7 +2146,7 @@ export async function verifyPickupOtpForRider(
   riderId: number,
   orderRef: string,
   otpInput: string,
-  gps?: RiderGpsPayload
+  gps?: RiderGpsPayload & { deviceTimestamp?: string }
 ): Promise<RiderOrderSummary> {
   const db = getDb();
   const [meta] = await db
@@ -1881,7 +2156,13 @@ export async function verifyPickupOtpForRider(
     .limit(1);
 
   if (meta?.orderType === "food") {
-    return verifyFoodPickupOtpForRider(riderId, orderRef, otpInput, gps);
+    return verifyFoodPickupOtpForRider(
+      riderId,
+      orderRef,
+      otpInput,
+      gps,
+      gps?.deviceTimestamp
+    );
   }
 
   const now = new Date();
@@ -2300,10 +2581,22 @@ async function selectFoodOrderRowForRider(
       grandTotal: ordersCore.grandTotal,
       tipAmount: ordersCore.tipAmount,
       billingSnapshot: ordersCore.billingSnapshot,
+      paymentMethod: ordersCore.paymentMethod,
+      paymentStatus: ordersCore.paymentStatus,
       createdAt: ordersCore.createdAt,
       status: ordersCore.status,
       currentStatus: ordersCore.currentStatus,
       foodStatus: ordersFood.orderStatus,
+      riderReachedPickupAt: ordersFood.riderReachedPickupAt,
+      pickupWaitSeconds: ordersFood.pickupWaitSeconds,
+      pickupTimerStartedAt: ordersFood.pickupTimerStartedAt,
+      pickupDurationSeconds: ordersFood.pickupDurationSeconds,
+      preparedAt: ordersFood.preparedAt,
+      acceptedAt: ordersFood.acceptedAt,
+      preparingAt: ordersFood.preparingAt,
+      prepReadyByAt: ordersFood.prepReadyByAt,
+      preparationTimeMinutes: ordersFood.preparationTimeMinutes,
+      prepDelayMinutes: ordersFood.prepDelayMinutes,
       restaurantName: ordersFood.restaurantName,
       foodItemsCount: ordersFood.foodItemsCount,
       customerName: ordersFood.customerName,
@@ -2397,6 +2690,18 @@ async function markReachedFoodPickupForRider(
       throw Object.assign(new Error("Could not update food order status"), { statusCode: 409 });
     }
 
+    const [foodPickupRow] = await tx
+      .select({ reachedAt: ordersFood.riderReachedPickupAt })
+      .from(ordersFood)
+      .where(eq(ordersFood.orderId, existing.id))
+      .limit(1);
+    if (!foodPickupRow?.reachedAt) {
+      await tx
+        .update(ordersFood)
+        .set({ riderReachedPickupAt: now, updatedAt: now })
+        .where(eq(ordersFood.orderId, existing.id));
+    }
+
     const orderIdText = existing.orderId?.trim();
     const distance = await riderDistanceAtMilestone(riderId, row.id, gps);
     if (orderIdText) {
@@ -2420,48 +2725,300 @@ async function markReachedFoodPickupForRider(
     return mapFoodRowWithStatus(full);
   });
 
-  return updated;
+  const merchantFeedbackSubmitted = await loadRiderMerchantFeedbackSubmitted(
+    db,
+    riderId,
+    updated.id
+  );
+  return { ...updated, merchantFeedbackSubmitted };
+}
+
+type FoodPickupVerificationAudit = {
+  method?: FoodPickupVerificationMethod;
+  barcodeValue?: string | null;
+  otpVerified?: boolean;
+  deviceTimestamp?: string | null;
+};
+
+async function finalizeFoodPickupVerificationForRider(
+  tx: Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0],
+  riderId: number,
+  existing: {
+    id: number;
+    orderId: string | null;
+    foodStatus: string | null;
+  },
+  gps: RiderGpsPayload | undefined,
+  audit: FoodPickupVerificationAudit
+): Promise<FoodRowWithStatus> {
+  const now = new Date();
+  const foodSt = String(existing.foodStatus ?? "").trim().toUpperCase();
+  const existingOrderId = (existing.orderId ?? "").trim();
+  if (!existingOrderId) {
+    throw Object.assign(new Error("Order id missing"), { statusCode: 500 });
+  }
+
+  if (foodSt === "OUT_FOR_DELIVERY" || foodSt === "DELIVERED") {
+    throw Object.assign(new Error("Food order already picked up"), { statusCode: 409 });
+  }
+
+  if (!isMerchantFoodOrderReady(foodSt)) {
+    throw Object.assign(
+      new Error("Order is not ready yet. Wait for the restaurant to mark it ready."),
+      { statusCode: 409 }
+    );
+  }
+
+  if (audit.method) {
+    const deviceTs =
+      audit.deviceTimestamp && !Number.isNaN(Date.parse(audit.deviceTimestamp))
+        ? new Date(audit.deviceTimestamp)
+        : null;
+
+    try {
+      await tx.execute(sql`
+        INSERT INTO food_order_pickup_verifications (
+          order_core_id,
+          order_id_text,
+          rider_id,
+          verification_method,
+          verification_time,
+          device_timestamp,
+          barcode_value,
+          otp_verified
+        )
+        VALUES (
+          ${existing.id},
+          ${existingOrderId},
+          ${riderId},
+          ${audit.method},
+          ${now.toISOString()}::timestamptz,
+          ${deviceTs ? deviceTs.toISOString() : null},
+          ${audit.barcodeValue ?? null},
+          ${audit.otpVerified ?? null}
+        )
+      `);
+    } catch (auditErr) {
+      console.warn(
+        "[finalizeFoodPickupVerificationForRider] pickup verification audit insert failed:",
+        auditErr
+      );
+    }
+  }
+
+  const [row] = await tx
+    .update(ordersCore)
+    .set({
+      status: "picked_up",
+      currentStatus: "OUT_FOR_DELIVERY",
+      actualPickupTime: now,
+      updatedAt: now,
+    })
+    .where(and(eq(ordersCore.id, existing.id), eq(ordersCore.riderId, riderId)))
+    .returning({ id: ordersCore.id });
+
+  if (!row?.id) {
+    throw Object.assign(new Error("Could not confirm food pickup"), { statusCode: 409 });
+  }
+
+  const [foodPickupMeta] = await tx
+    .select({
+      pickupTimerStartedAt: ordersFood.pickupTimerStartedAt,
+      pickupDurationSeconds: ordersFood.pickupDurationSeconds,
+    })
+    .from(ordersFood)
+    .where(eq(ordersFood.orderId, row.id))
+    .limit(1);
+
+  const timerStarted = foodPickupMeta?.pickupTimerStartedAt;
+  const pickupDurationSeconds =
+    foodPickupMeta?.pickupDurationSeconds != null
+      ? Number(foodPickupMeta.pickupDurationSeconds)
+      : timerStarted instanceof Date
+        ? Math.max(0, Math.floor((now.getTime() - timerStarted.getTime()) / 1000))
+        : timerStarted
+          ? Math.max(0, Math.floor((now.getTime() - new Date(String(timerStarted)).getTime()) / 1000))
+          : null;
+
+  await tx
+    .update(ordersFood)
+    .set({
+      orderStatus: "OUT_FOR_DELIVERY",
+      dispatchedAt: now,
+      updatedAt: now,
+      ...(pickupDurationSeconds != null ? { pickupDurationSeconds } : {}),
+    })
+    .where(eq(ordersFood.orderId, row.id));
+
+  await tx.execute(sql`
+    UPDATE delivery_assignments
+    SET
+      assignment_status = 'PICKED_UP',
+      picked_up_at = COALESCE(picked_up_at, ${now.toISOString()}::timestamptz),
+      updated_at = ${now.toISOString()}::timestamptz
+    WHERE order_id = ${existingOrderId} AND rider_id = ${riderId}
+  `);
+
+  const [riderProfile] = await tx
+    .select({ name: riders.name })
+    .from(riders)
+    .where(eq(riders.id, riderId))
+    .limit(1);
+
+  const riderName = riderProfile?.name ?? null;
+  const distance = await riderDistanceAtMilestone(riderId, row.id, gps);
+
+  await recordRiderPickedUpTimelineTx(tx, {
+    orderCorePk: row.id,
+    pickedUpAt: now,
+    riderId,
+    riderName,
+  });
+
+  await recordDispatchedTimelineTx(tx, {
+    orderCorePk: row.id,
+    dispatchedAt: now,
+    riderId,
+    riderName,
+  });
+
+  await recordRiderAssignmentMilestone(tx, {
+    orderCorePk: row.id,
+    orderIdText: existingOrderId,
+    riderId,
+    eventType: "picked_up",
+    occurredAt: now,
+    distance,
+    statusMessage: "Order Picked Up",
+  });
+
+  const full = await selectFoodOrderRowForRider(tx, row.id);
+  if (!full?.orderId) throw new Error("Food order missing after pickup verification");
+  return full;
+}
+
+async function loadFoodOrderAwaitingPickupVerification(
+  tx: Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0],
+  riderId: number,
+  orderRef: string
+) {
+  const [existing] = await tx
+    .select({
+      id: ordersCore.id,
+      orderId: ordersCore.orderId,
+      formattedOrderId: ordersCore.formattedOrderId,
+      corePickupOtp: ordersCore.pickupOtp,
+      foodPickupOtp: ordersFood.pickupOtp,
+      foodStatus: ordersFood.orderStatus,
+    })
+    .from(ordersCore)
+    .innerJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
+    .where(
+      and(
+        orderRefWhere(orderRef),
+        eq(ordersCore.riderId, riderId),
+        eq(ordersCore.orderType, "food"),
+        inArray(ordersCore.status, [...FOOD_REACH_STORE_CORE_STATUSES])
+      )
+    )
+    .limit(1);
+
+  if (!existing?.id || !existing.orderId) {
+    throw Object.assign(new Error("Food order not ready for pickup verification"), {
+      statusCode: 409,
+    });
+  }
+
+  let pickupVerificationToken: string | null = null;
+  let foodFormattedOrderId = existing.formattedOrderId;
+  try {
+    const tokenRows = await tx.execute<{
+      pickup_verification_token: string | null;
+      formatted_order_id: string | null;
+    }>(sql`
+      SELECT pickup_verification_token, formatted_order_id
+      FROM orders_food
+      WHERE order_id = ${existing.id}
+      LIMIT 1
+    `);
+    const tokenMeta = (tokenRows as {
+      pickup_verification_token: string | null;
+      formatted_order_id: string | null;
+    }[])[0];
+    pickupVerificationToken = tokenMeta?.pickup_verification_token ?? null;
+    foodFormattedOrderId = tokenMeta?.formatted_order_id ?? existing.formattedOrderId;
+  } catch (tokenErr) {
+    console.warn(
+      "[loadFoodOrderAwaitingPickupVerification] pickup_verification_token unavailable:",
+      tokenErr
+    );
+  }
+
+  return {
+    ...existing,
+    pickupVerificationToken,
+    foodFormattedOrderId,
+  };
+}
+
+export async function markFoodPickupWithoutVerificationForRider(
+  riderId: number,
+  orderRef: string,
+  gps?: RiderGpsPayload,
+  deviceTimestamp?: string
+): Promise<RiderOrderSummary> {
+  const settings = await loadFoodPickupVerificationSettings();
+  if (settings.verificationRequired) {
+    throw Object.assign(new Error("Pickup verification is required for this order"), {
+      statusCode: 409,
+    });
+  }
+
+  const db = getDb();
+  const updated = await db.transaction(async (tx) => {
+    const existing = await loadFoodOrderAwaitingPickupVerification(tx, riderId, orderRef);
+
+    await assertRiderMilestoneGeoFence({
+      riderId,
+      orderCorePk: existing.id,
+      serviceType: "food",
+      milestoneKey: "mark_picked_up",
+      gps,
+    });
+
+    return finalizeFoodPickupVerificationForRider(tx, riderId, existing, gps, {
+      deviceTimestamp: deviceTimestamp ?? null,
+    });
+  });
+
+  const merchantFeedbackSubmitted = await loadRiderMerchantFeedbackSubmitted(
+    db,
+    riderId,
+    (updated.orderId ?? "").trim()
+  );
+  return { ...mapFoodRowWithStatus(updated), merchantFeedbackSubmitted };
 }
 
 async function verifyFoodPickupOtpForRider(
   riderId: number,
   orderRef: string,
   otpInput: string,
-  gps?: RiderGpsPayload
+  gps?: RiderGpsPayload,
+  deviceTimestamp?: string
 ): Promise<RiderOrderSummary> {
+  const settings = await loadFoodPickupVerificationSettings();
+  if (!settings.otpEnabled) {
+    throw Object.assign(new Error("OTP pickup verification is disabled"), { statusCode: 409 });
+  }
+
   const db = getDb();
-  const now = new Date();
   const normalizedOtp = String(otpInput ?? "").trim().replace(/\D/g, "");
-  if (normalizedOtp.length !== 4) {
-    throw Object.assign(new Error("Enter the 4-digit pickup OTP"), { statusCode: 400 });
+  if (normalizedOtp.length !== 4 && normalizedOtp.length !== 6) {
+    throw Object.assign(new Error("Enter the pickup OTP"), { statusCode: 400 });
   }
 
   const updated = await db.transaction(async (tx) => {
-    const [existing] = await tx
-      .select({
-        id: ordersCore.id,
-        orderId: ordersCore.orderId,
-        status: ordersCore.status,
-        currentStatus: ordersCore.currentStatus,
-        corePickupOtp: ordersCore.pickupOtp,
-        foodPickupOtp: ordersFood.pickupOtp,
-        foodStatus: ordersFood.orderStatus,
-      })
-      .from(ordersCore)
-      .innerJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
-      .where(
-        and(
-          orderRefWhere(orderRef),
-          eq(ordersCore.riderId, riderId),
-          eq(ordersCore.orderType, "food"),
-          inArray(ordersCore.status, [...FOOD_REACH_STORE_CORE_STATUSES])
-        )
-      )
-      .limit(1);
-
-    if (!existing?.id || !existing.orderId) {
-      throw Object.assign(new Error("Food order not ready for pickup OTP"), { statusCode: 409 });
-    }
+    const existing = await loadFoodOrderAwaitingPickupVerification(tx, riderId, orderRef);
 
     await assertRiderMilestoneGeoFence({
       riderId,
@@ -2476,115 +3033,76 @@ async function verifyFoodPickupOtpForRider(
       throw Object.assign(new Error("Incorrect pickup OTP"), { statusCode: 403 });
     }
 
-    const foodSt = String(existing.foodStatus ?? "").trim().toUpperCase();
-    if (!isMerchantFoodOrderReady(foodSt)) {
+    return finalizeFoodPickupVerificationForRider(tx, riderId, existing, gps, {
+      method: "otp",
+      otpVerified: true,
+      deviceTimestamp: deviceTimestamp ?? null,
+    });
+  });
+
+  const merchantFeedbackSubmitted = await loadRiderMerchantFeedbackSubmitted(
+    db,
+    riderId,
+    (updated.orderId ?? "").trim()
+  );
+  return { ...mapFoodRowWithStatus(updated), merchantFeedbackSubmitted };
+}
+
+export async function verifyFoodPickupBarcodeForRider(
+  riderId: number,
+  orderRef: string,
+  barcodeInput: string,
+  gps?: RiderGpsPayload,
+  deviceTimestamp?: string
+): Promise<RiderOrderSummary> {
+  const settings = await loadFoodPickupVerificationSettings();
+  if (!settings.barcodeEnabled) {
+    throw Object.assign(new Error("Barcode pickup verification is disabled"), { statusCode: 409 });
+  }
+
+  const db = getDb();
+  const scanned = String(barcodeInput ?? "").trim();
+  if (!scanned) {
+    throw Object.assign(new Error("Scan a valid barcode or QR code"), { statusCode: 400 });
+  }
+
+  const updated = await db.transaction(async (tx) => {
+    const existing = await loadFoodOrderAwaitingPickupVerification(tx, riderId, orderRef);
+
+    await assertRiderMilestoneGeoFence({
+      riderId,
+      orderCorePk: existing.id,
+      serviceType: "food",
+      milestoneKey: "mark_picked_up",
+      gps,
+    });
+
+    const matches = barcodeMatchesPickupToken(scanned, {
+      pickupVerificationToken: existing.pickupVerificationToken,
+      formattedOrderId: existing.foodFormattedOrderId ?? existing.formattedOrderId,
+      orderIdText: existing.orderId,
+    });
+
+    if (!matches) {
       throw Object.assign(
-        new Error("Order is not ready yet. Wait for the restaurant to mark it ready."),
-        { statusCode: 409 }
+        new Error("Barcode does not match this order. Scan the bill or merchant QR code."),
+        { statusCode: 403 }
       );
     }
 
-    const [row] = await tx
-      .update(ordersCore)
-      .set({
-        status: "in_transit",
-        currentStatus: "OUT_FOR_DELIVERY",
-        actualPickupTime: now,
-        updatedAt: now,
-      })
-      .where(and(eq(ordersCore.id, existing.id), eq(ordersCore.riderId, riderId)))
-      .returning({ id: ordersCore.id });
-
-    if (!row?.id) {
-      throw Object.assign(new Error("Could not confirm food pickup"), { statusCode: 409 });
-    }
-
-    await tx
-      .update(ordersFood)
-      .set({
-        orderStatus: "OUT_FOR_DELIVERY",
-        dispatchedAt: now,
-        updatedAt: now,
-      })
-      .where(eq(ordersFood.orderId, row.id));
-
-    await tx.execute(sql`
-      UPDATE delivery_assignments
-      SET
-        assignment_status = 'PICKED_UP',
-        picked_up_at = COALESCE(picked_up_at, ${now.toISOString()}::timestamptz),
-        updated_at = ${now.toISOString()}::timestamptz
-      WHERE order_id = ${existing.orderId.trim()} AND rider_id = ${riderId}
-    `);
-
-    const [riderProfile] = await tx
-      .select({ name: riders.name })
-      .from(riders)
-      .where(eq(riders.id, riderId))
-      .limit(1);
-
-    const riderName = riderProfile?.name ?? null;
-    const distance = await riderDistanceAtMilestone(riderId, row.id, gps);
-
-    await recordRiderPickedUpTimelineTx(tx, {
-      orderCorePk: row.id,
-      pickedUpAt: now,
-      riderId,
-      riderName,
+    return finalizeFoodPickupVerificationForRider(tx, riderId, existing, gps, {
+      method: "barcode",
+      barcodeValue: scanned,
+      deviceTimestamp: deviceTimestamp ?? null,
     });
-
-    await recordDispatchedTimelineTx(tx, {
-      orderCorePk: row.id,
-      dispatchedAt: now,
-      riderId,
-      riderName,
-    });
-
-    await recordRiderAssignmentMilestone(tx, {
-      orderCorePk: row.id,
-      orderIdText: existing.orderId.trim(),
-      riderId,
-      eventType: "picked_up",
-      occurredAt: now,
-      distance,
-      statusMessage: "Order Picked Up",
-    });
-
-    const [full] = await tx
-      .select({
-        orderId: ordersCore.orderId,
-        formattedOrderId: ordersCore.formattedOrderId,
-        pickupAddressRaw: ordersCore.pickupAddressRaw,
-        pickupLat: ordersCore.pickupLat,
-        pickupLon: ordersCore.pickupLon,
-        dropAddressRaw: ordersCore.dropAddressRaw,
-        dropLat: ordersCore.dropLat,
-        dropLon: ordersCore.dropLon,
-        distanceKm: ordersCore.distanceKm,
-        riderEarning: ordersCore.riderEarning,
-        fareAmount: ordersCore.fareAmount,
-        grandTotal: ordersCore.grandTotal,
-        tipAmount: ordersCore.tipAmount,
-        billingSnapshot: ordersCore.billingSnapshot,
-        createdAt: ordersCore.createdAt,
-        status: ordersCore.status,
-        currentStatus: ordersCore.currentStatus,
-        foodStatus: ordersFood.orderStatus,
-        restaurantName: ordersFood.restaurantName,
-        foodItemsCount: ordersFood.foodItemsCount,
-        customerName: ordersFood.customerName,
-        customerPhone: ordersFood.customerPhone,
-      })
-      .from(ordersCore)
-      .innerJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
-      .where(eq(ordersCore.id, row.id))
-      .limit(1);
-
-    if (!full?.orderId) throw new Error("Food order missing after OTP verify");
-    return mapFoodRowWithStatus(full);
   });
 
-  return updated;
+  const merchantFeedbackSubmitted = await loadRiderMerchantFeedbackSubmitted(
+    db,
+    riderId,
+    (updated.orderId ?? "").trim()
+  );
+  return { ...mapFoodRowWithStatus(updated), merchantFeedbackSubmitted };
 }
 
 async function markReachedFoodCustomerForRider(
@@ -2875,20 +3393,6 @@ function runFoodDeliveryPostCommitEffects(input: {
     }
 
     await Promise.allSettled(sideTasks);
-
-    try {
-      await db.transaction(async (tx) => {
-        await recordOrderDeliveryProofImageTx(tx, {
-          orderCorePk,
-          riderId,
-          imageUrl: proofUrl,
-          r2Key: proofKey || null,
-          takenAt,
-        });
-      });
-    } catch (imgErr) {
-      console.warn("[verifyFoodDeliveryOtpForRider] delivery image save failed:", imgErr);
-    }
   })().catch((err) => {
     console.warn("[verifyFoodDeliveryOtpForRider] post-commit effects failed:", err);
   });
@@ -3056,6 +3560,25 @@ async function verifyFoodDeliveryOtpForRider(
         /* ignore */
       }
       console.warn("[verifyFoodDeliveryOtpForRider] rider milestone skipped:", milestoneErr);
+    }
+
+    try {
+      await tx.execute(sql`SAVEPOINT rider_delivery_proof`);
+      await recordOrderDeliveryProofImageTx(tx, {
+        orderCorePk: row.id,
+        riderId,
+        imageUrl: proofUrl,
+        r2Key: proofKey || null,
+        takenAt: now,
+      });
+      await tx.execute(sql`RELEASE SAVEPOINT rider_delivery_proof`);
+    } catch (imgErr) {
+      try {
+        await tx.execute(sql`ROLLBACK TO SAVEPOINT rider_delivery_proof`);
+      } catch {
+        /* ignore */
+      }
+      console.warn("[verifyFoodDeliveryOtpForRider] delivery image save skipped:", imgErr);
     }
 
     const [full] = await tx
@@ -3520,6 +4043,318 @@ export async function cancelAssignedRideForRider(
   });
 
   return { ok: true };
+}
+
+const RIDER_MERCHANT_PICKUP_FEEDBACK_TAGS = new Set([
+  "order_given_on_time",
+  "merchant_was_nice",
+  "easy_to_find",
+  "pickup_experience_good",
+  "waiting_time_ok",
+  "waiting_time_long",
+  "long_wait_time",
+  "order_not_ready",
+  "rude_behavior",
+  "wrong_items",
+]);
+
+export type RiderMerchantPickupFeedbackPayload = {
+  rating?: number;
+  tags?: string[];
+  skipped?: boolean;
+};
+
+async function loadRiderMerchantFeedbackSubmitted(
+  db: ReturnType<typeof getDb>,
+  riderId: number,
+  orderRef: string | number
+): Promise<boolean> {
+  const orderRefText = String(orderRef ?? "").trim();
+  if (!orderRefText) return false;
+  const { isNumericId, orderIdNum } = parseOrderRefParam(orderRefText);
+  const coreIdMatch = isNumericId ? orderIdNum : -1;
+  try {
+    const rows = await db.execute<{ submitted: boolean }>(sql`
+      SELECT
+        (
+          ora.rider_merchant_feedback_at IS NOT NULL
+          OR ora.rider_merchant_feedback_skipped = TRUE
+        ) AS submitted
+      FROM order_rider_assignments ora
+      INNER JOIN orders_core oc ON oc.id = ora.order_core_id
+      WHERE ora.rider_id = ${riderId}
+        AND ora.is_active = TRUE
+        AND (
+          oc.order_id = ${orderRefText}
+          OR oc.formatted_order_id = ${orderRefText}
+          OR oc.id = ${coreIdMatch}
+        )
+      ORDER BY ora.id DESC
+      LIMIT 1
+    `);
+    return (rows as { submitted: boolean }[])[0]?.submitted === true;
+  } catch (err) {
+    console.warn("[loadRiderMerchantFeedbackSubmitted] lookup failed:", err);
+    return false;
+  }
+}
+
+export async function submitRiderMerchantPickupFeedback(
+  riderId: number,
+  orderRef: string,
+  payload: RiderMerchantPickupFeedbackPayload
+): Promise<RiderOrderSummary> {
+  const db = getDb();
+  const now = new Date();
+  const skipped = payload.skipped === true;
+
+  const [meta] = await db
+    .select({
+      coreId: ordersCore.id,
+      orderId: ordersCore.orderId,
+      orderType: ordersCore.orderType,
+      riderId: ordersCore.riderId,
+      status: ordersCore.status,
+      currentStatus: ordersCore.currentStatus,
+      foodStatus: ordersFood.orderStatus,
+    })
+    .from(ordersCore)
+    .leftJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
+    .where(orderRefWhere(orderRef))
+    .limit(1);
+
+  if (!meta?.coreId || !meta.orderId) {
+    throw Object.assign(new Error("Order not found"), { statusCode: 404 });
+  }
+  if (meta.orderType !== "food") {
+    throw Object.assign(new Error("Merchant feedback is only for food orders"), { statusCode: 409 });
+  }
+  if (meta.riderId !== riderId) {
+    throw Object.assign(new Error("Order not assigned to you"), { statusCode: 403 });
+  }
+
+  const coreSt = String(meta.status ?? "").trim();
+  const currentSt = String(meta.currentStatus ?? "").trim().toUpperCase();
+  const foodSt = String(meta.foodStatus ?? "").trim().toUpperCase();
+  const pickupVerified =
+    foodSt === "OUT_FOR_DELIVERY" ||
+    currentSt === "OUT_FOR_DELIVERY" ||
+    coreSt === "picked_up" ||
+    coreSt === "in_transit";
+  if (!pickupVerified) {
+    throw Object.assign(new Error("Complete pickup verification before submitting feedback"), {
+      statusCode: 409,
+    });
+  }
+
+  const alreadySubmitted = await loadRiderMerchantFeedbackSubmitted(db, riderId, meta.orderId.trim());
+  if (alreadySubmitted) {
+    return getFoodOrderForRider(riderId, orderRef);
+  }
+
+  let rating: number | null = null;
+  let tagsJson: string | null = null;
+
+  if (!skipped) {
+    const ratingNum = Number(payload.rating);
+    if (!Number.isInteger(ratingNum) || ratingNum < 1 || ratingNum > 5) {
+      throw Object.assign(new Error("Select a rating from 1 to 5"), { statusCode: 400 });
+    }
+    rating = ratingNum;
+    const rawTags = Array.isArray(payload.tags) ? payload.tags : [];
+    const normalizedTags = [
+      ...new Set(
+        rawTags
+          .map((t) => String(t ?? "").trim())
+          .filter((t) => RIDER_MERCHANT_PICKUP_FEEDBACK_TAGS.has(t))
+      ),
+    ];
+    tagsJson = JSON.stringify(normalizedTags);
+  }
+
+  const feedbackAt = skipped ? sql`NULL` : sql`${now.toISOString()}::timestamptz`;
+  const feedbackTags =
+    skipped || tagsJson == null ? sql`NULL` : sql`${tagsJson}::jsonb`;
+
+  const updateResult = await db.execute<{ id: number }>(sql`
+    UPDATE order_rider_assignments
+    SET
+      rider_merchant_rating = ${skipped ? null : rating},
+      rider_merchant_feedback_tags = ${feedbackTags},
+      rider_merchant_feedback_at = ${feedbackAt},
+      rider_merchant_feedback_skipped = ${skipped},
+      updated_at = ${now.toISOString()}::timestamptz
+    WHERE order_core_id = ${meta.coreId}
+      AND rider_id = ${riderId}
+      AND is_active = TRUE
+    RETURNING id
+  `);
+
+  if (!(updateResult as { id: number }[])[0]?.id) {
+    throw Object.assign(new Error("No active rider assignment found for this order"), {
+      statusCode: 404,
+    });
+  }
+
+  return getFoodOrderForRider(riderId, orderRef);
+}
+
+const RIDER_CUSTOMER_DELIVERY_FEEDBACK_TAGS = new Set([
+  "polite_customer",
+  "clear_instructions",
+  "easy_to_find",
+  "quick_handover",
+  "long_wait_at_door",
+  "hard_to_find",
+  "rude_customer",
+  "wrong_address",
+  "customer_unreachable",
+]);
+
+export type RiderCustomerDeliveryFeedbackPayload = {
+  rating?: number;
+  tags?: string[];
+  comment?: string;
+  skipped?: boolean;
+};
+
+async function loadRiderCustomerFeedbackSubmitted(
+  db: ReturnType<typeof getDb>,
+  riderId: number,
+  orderCorePk: number
+): Promise<boolean> {
+  try {
+    const rows = await db.execute<{ submitted: boolean }>(sql`
+      SELECT (skipped = TRUE OR submitted_at IS NOT NULL) AS submitted
+      FROM rider_customer_delivery_feedback
+      WHERE order_core_id = ${orderCorePk}
+        AND rider_id = ${riderId}
+      LIMIT 1
+    `);
+    return (rows as { submitted: boolean }[])[0]?.submitted === true;
+  } catch (err) {
+    console.warn("[loadRiderCustomerFeedbackSubmitted] lookup failed:", err);
+    return false;
+  }
+}
+
+export async function submitRiderCustomerDeliveryFeedback(
+  riderId: number,
+  orderRef: string,
+  payload: RiderCustomerDeliveryFeedbackPayload
+): Promise<RiderOrderSummary> {
+  const db = getDb();
+  const now = new Date();
+  const skipped = payload.skipped === true;
+
+  const [meta] = await db
+    .select({
+      coreId: ordersCore.id,
+      orderId: ordersCore.orderId,
+      orderType: ordersCore.orderType,
+      riderId: ordersCore.riderId,
+      status: ordersCore.status,
+      currentStatus: ordersCore.currentStatus,
+      foodStatus: ordersFood.orderStatus,
+    })
+    .from(ordersCore)
+    .leftJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
+    .where(orderRefWhere(orderRef))
+    .limit(1);
+
+  if (!meta?.coreId || !meta.orderId) {
+    throw Object.assign(new Error("Order not found"), { statusCode: 404 });
+  }
+  if (meta.orderType !== "food") {
+    throw Object.assign(new Error("Customer feedback is only for food orders"), {
+      statusCode: 409,
+    });
+  }
+  if (meta.riderId !== riderId) {
+    throw Object.assign(new Error("Order not assigned to you"), { statusCode: 403 });
+  }
+
+  const coreSt = String(meta.status ?? "").trim();
+  const foodSt = String(meta.foodStatus ?? "").trim().toUpperCase();
+  const delivered =
+    coreSt === "delivered" || foodSt === "DELIVERED" || foodSt === "COMPLETED";
+  if (!delivered) {
+    throw Object.assign(new Error("Complete delivery before submitting customer feedback"), {
+      statusCode: 409,
+    });
+  }
+
+  const alreadySubmitted = await loadRiderCustomerFeedbackSubmitted(
+    db,
+    riderId,
+    meta.coreId
+  );
+  if (alreadySubmitted) {
+    return getFoodOrderForRider(riderId, orderRef);
+  }
+
+  let rating: number | null = null;
+  let tagsJson: string | null = null;
+  let commentText: string | null = null;
+
+  if (!skipped) {
+    const ratingNum = Number(payload.rating);
+    if (!Number.isInteger(ratingNum) || ratingNum < 1 || ratingNum > 5) {
+      throw Object.assign(new Error("Select a rating from 1 to 5"), { statusCode: 400 });
+    }
+    rating = ratingNum;
+    const rawTags = Array.isArray(payload.tags) ? payload.tags : [];
+    const normalizedTags = [
+      ...new Set(
+        rawTags
+          .map((t) => String(t ?? "").trim())
+          .filter((t) => RIDER_CUSTOMER_DELIVERY_FEEDBACK_TAGS.has(t))
+      ),
+    ];
+    tagsJson = JSON.stringify(normalizedTags);
+    const comment = String(payload.comment ?? "").trim();
+    commentText = comment.length > 0 ? comment.slice(0, 2000) : null;
+  }
+
+  const orderIdText = meta.orderId.trim();
+  const submittedAt = skipped ? null : now.toISOString();
+  const tagsParam =
+    skipped || tagsJson == null ? sql`NULL` : sql`${tagsJson}::jsonb`;
+
+  await db.execute(sql`
+    INSERT INTO rider_customer_delivery_feedback (
+      order_core_id,
+      rider_id,
+      order_id_text,
+      rating,
+      feedback_tags,
+      comment_text,
+      skipped,
+      submitted_at,
+      created_at,
+      updated_at
+    ) VALUES (
+      ${meta.coreId},
+      ${riderId},
+      ${orderIdText},
+      ${skipped ? null : rating},
+      ${tagsParam},
+      ${skipped ? null : commentText},
+      ${skipped},
+      ${submittedAt != null ? sql`${submittedAt}::timestamptz` : sql`NULL`},
+      ${now.toISOString()}::timestamptz,
+      ${now.toISOString()}::timestamptz
+    )
+    ON CONFLICT (order_core_id, rider_id) DO UPDATE SET
+      rating = EXCLUDED.rating,
+      feedback_tags = EXCLUDED.feedback_tags,
+      comment_text = EXCLUDED.comment_text,
+      skipped = EXCLUDED.skipped,
+      submitted_at = EXCLUDED.submitted_at,
+      updated_at = EXCLUDED.updated_at
+  `);
+
+  return getFoodOrderForRider(riderId, orderRef);
 }
 
 export async function getMilestoneGeoFenceForRiderOrder(

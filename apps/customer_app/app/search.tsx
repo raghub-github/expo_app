@@ -41,7 +41,6 @@ import {
   fetchUserAppCategories,
   type UserAppCategoryItem,
 } from "@/services/userAppCategory.service";
-import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { HEADER_PADDING_TOP, HEADER_VERTICAL_PADDING } from "@/constants/layout";
 import { useRecentSearchStore } from "@/store/recentSearchStore";
 import { useLocationStore } from "@/store/locationStore";
@@ -50,6 +49,12 @@ import { VoiceInputButton } from "@/components/VoiceInputButton";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { RestaurantListSkeleton } from "@/components/ShimmerSkeleton";
+import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
+import {
+  prefetchUserAppCategoryImages,
+  USER_APP_CATEGORIES_QUERY_OPTIONS,
+  userAppCategoriesQueryKey,
+} from "@/lib/userAppCategoryCache";
 import {
   SEARCH_CATEGORY_IMAGES,
   MOCK_DISHES,
@@ -69,7 +74,6 @@ const PLACEHOLDER = "Restaurant name or a dish...";
 const ACCENT_RED = "#dc2626";
 
 const EMPTY_IMAGE = require("../public/img/wrong.png");
-const DEFAULT_CATEGORY_IMAGE = require("../public/img/ndf.png");
 
 function dedupeUserAppCategories(rows: UserAppCategoryItem[]): UserAppCategoryItem[] {
   const byId = new Map<number, UserAppCategoryItem>();
@@ -90,25 +94,6 @@ function dedupeUserAppCategories(rows: UserAppCategoryItem[]): UserAppCategoryIt
 }
 
 type MindGridRow = { id: string; name: string; slug: string; imageUrl: string | null };
-
-function MindGridCategoryImage({ imageUrl }: { imageUrl: string | null }) {
-  const [failed, setFailed] = React.useState(false);
-  const uri = imageUrl ? (toAbsoluteImageUrl(imageUrl) ?? imageUrl) : null;
-  React.useEffect(() => {
-    setFailed(false);
-  }, [imageUrl]);
-  if (uri && !failed) {
-    return (
-      <Image
-        source={{ uri }}
-        style={styles.gridImage}
-        resizeMode="contain"
-        onError={() => setFailed(true)}
-      />
-    );
-  }
-  return <Image source={DEFAULT_CATEGORY_IMAGE} style={styles.gridImage} resizeMode="contain" />;
-}
 
 function normalizeSearchParam(raw: string | string[] | undefined): string {
   if (typeof raw === "string") return raw;
@@ -151,11 +136,17 @@ export default function SearchScreen() {
   }, [hydrate]);
 
   const { data: apiMindCategories = [], isPending: mindCategoriesPending } = useQuery({
-    queryKey: ["userAppCategories", SEARCH_CATEGORY_STORE_TYPE, "searchMindGrid"],
+    queryKey: userAppCategoriesQueryKey(SEARCH_CATEGORY_STORE_TYPE),
     queryFn: () => fetchUserAppCategories({ storeType: SEARCH_CATEGORY_STORE_TYPE }),
-    staleTime: 10 * 60 * 1000,
-    retry: 1,
+    ...USER_APP_CATEGORIES_QUERY_OPTIONS,
+    placeholderData: (previousData) => previousData,
   });
+
+  React.useEffect(() => {
+    if (apiMindCategories.length > 0) {
+      prefetchUserAppCategoryImages(apiMindCategories);
+    }
+  }, [apiMindCategories]);
 
   const mindGridData = useMemo((): MindGridRow[] => {
     const deduped = dedupeUserAppCategories(apiMindCategories ?? []);
@@ -316,7 +307,11 @@ export default function SearchScreen() {
                 activeOpacity={0.85}
               >
                 <View style={styles.gridImageWrap}>
-                  <MindGridCategoryImage imageUrl={cat.imageUrl} />
+                  <UserAppCategoryImage
+                    imageUrl={cat.imageUrl}
+                    cacheKey={`category-${cat.id}`}
+                    style={styles.gridImage}
+                  />
                 </View>
                 <Text style={styles.gridLabel} numberOfLines={2}>
                   {cat.name}

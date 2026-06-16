@@ -520,7 +520,7 @@ function formatPlatformOfferLockReason(reason: string, grossCart: number): strin
     const min = Number(minMatch[1]);
     if (Number.isFinite(min) && min > 0) {
       const gap = Math.ceil(Math.max(0, min - grossCart));
-      if (gap > 0) return `Add eligible items worth ₹${gap} more to unlock`;
+      if (gap > 0) return `Add ₹${gap} more to unlock this offer`;
       return `Minimum order value ₹${Math.round(min)} required`;
     }
   }
@@ -564,7 +564,7 @@ export async function listCheckoutBillOffers(
     livePincode?: string | null;
     liveState?: string | null;
     liveCity?: string | null;
-    /** Items + addons + delivery + packaging (same basis as bill apply). */
+    /** @deprecated Ignored — eligibility uses cartSubtotal (items + add-ons) only. */
     qualifyingCartTotal?: number | null;
   }
 ): Promise<
@@ -671,20 +671,11 @@ export async function listCheckoutBillOffers(
 
   const rates = await getStoreBillingRates(resolved.merchantStoreId);
   const itemPlusAddon = Math.max(0, input.cartSubtotal);
+  /** Min-order gates use item + add-on subtotal only — never fees or taxes. */
+  const grossCart = itemPlusAddon;
 
   const deliveryDefaultBaseInr = env.DELIVERY_DEFAULT_BASE_INR ?? 25;
   const deliveryDefaultPerKmInr = env.DELIVERY_DEFAULT_PER_KM_INR ?? 5;
-
-  const estimatedDelivery = Math.max(0, deliveryDefaultBaseInr + distanceKm * deliveryDefaultPerKmInr);
-  const estimatedPackaging = Math.max(0, rates?.packagingChargeAmount ?? 0);
-  const grossCartFromClient =
-    input.qualifyingCartTotal != null && Number.isFinite(input.qualifyingCartTotal)
-      ? Math.max(0, input.qualifyingCartTotal)
-      : null;
-  const grossCart =
-    grossCartFromClient != null && grossCartFromClient > 0
-      ? grossCartFromClient
-      : itemPlusAddon + estimatedDelivery + estimatedPackaging;
 
   const ctx: BillContext = {
     itemSubtotal: itemPlusAddon,

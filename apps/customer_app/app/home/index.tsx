@@ -12,7 +12,6 @@ import {
   StyleSheet,
   Platform,
   ScrollView,
-  Image,
   Modal,
   Pressable,
   RefreshControl,
@@ -26,37 +25,45 @@ import { useRouter } from "expo-router";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { merchantService } from "@/services/merchant.service";
+import { prefetchMerchantBanners } from "@/lib/prefetchMerchantBanners";
 import { addressService } from "@/services/address.service";
 import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
 import {
   fetchUserAppCategories,
   type UserAppCategoryItem,
 } from "@/services/userAppCategory.service";
-import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useLocationStore } from "@/store/locationStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useDebouncedCoords } from "@/hooks/useDebouncedCoords";
+import { useLocationWeather } from "@/hooks/useLocationWeather";
+import { useStoreBookmarks } from "@/hooks/useStoreBookmarks";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import {
   CategoryRailSkeleton,
-  HomeOfferBannerSkeleton,
   LovedMerchantsGridSkeleton,
   RestaurantListSkeleton,
 } from "@/components/ShimmerSkeleton";
-import { HomeFeaturedOfferCard } from "@/components/home/HomeFeaturedOfferCard";
+import { HomePromoCarousel } from "@/components/home/HomePromoCarousel";
 import { MerchantGridCard } from "@/components/home/MerchantGridCard";
 import { pickLovedByCustomersMerchants } from "@/lib/lovedByCustomers";
+import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
+import {
+  prefetchUserAppCategoryImages,
+  USER_APP_CATEGORIES_QUERY_OPTIONS,
+  userAppCategoriesQueryKey,
+} from "@/lib/userAppCategoryCache";
 import { GMHeader } from "@/components/GMHeader";
 import { HEADER_TOP_PADDING_NONE } from "@/constants/layout";
 import { GMSearchBar } from "@/components/GMSearchBar";
 import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
 import { GMEmptyState } from "@/components/GMEmptyState";
+import { NON_SERVICEABLE_STATUS_BAR_BG } from "@/store/screenChromeStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
   filterAndSortMerchants,
   merchantListingStoreCountLabel,
 } from "@/lib/merchantListing";
-import { offersService } from "@/services/offers.service";
+import { useFeaturedOffersHome } from "@/hooks/useFeaturedOffersHome";
 
 const AnimatedScrollView = createAnimatedComponent(ScrollView);
 
@@ -69,7 +76,7 @@ const RAIL_ROW_GAP = 10;
 const CATEGORY_RAIL_TARGET_COLUMNS = 4;
 
 const OFFERS_SECTION_PAD = 10;
-const OFFER_CARD_HEIGHT = 148;
+const OFFER_CARD_HEIGHT = 136;
 const OFFER_GAP = 12;
 
 type SortOption = "default" | "rating" | "distance";
@@ -86,8 +93,6 @@ const CUISINE_OPTIONS = ["North Indian", "South Indian", "Chinese", "Fast Food",
 
 const HOME_CATEGORY_STORE_TYPE = "FOOD";
 
-const DEFAULT_CATEGORY_GRID_IMAGE = require("../../public/img/ndf.png");
-
 function dedupeUserAppCategories(rows: UserAppCategoryItem[]): UserAppCategoryItem[] {
   const byId = new Map<number, UserAppCategoryItem>();
   for (const r of rows) {
@@ -103,30 +108,6 @@ function dedupeUserAppCategories(rows: UserAppCategoryItem[]): UserAppCategoryIt
   }
   return [...byName.values()].sort(
     (a, b) => a.displayOrder - b.displayOrder || a.id - b.id
-  );
-}
-
-function HomeCategoryGridImage({ imageUrl, size }: { imageUrl: string | null; size: number }) {
-  const [failed, setFailed] = useState(false);
-  const uri = useMemo(
-    () => (imageUrl ? (toAbsoluteImageUrl(imageUrl) ?? imageUrl) : null),
-    [imageUrl]
-  );
-  useEffect(() => {
-    setFailed(false);
-  }, [uri]);
-  if (uri && !failed) {
-    return (
-      <Image
-        source={{ uri }}
-        style={{ width: size, height: size }}
-        resizeMode="contain"
-        onError={() => setFailed(true)}
-      />
-    );
-  }
-  return (
-    <Image source={DEFAULT_CATEGORY_GRID_IMAGE} style={{ width: size, height: size }} resizeMode="contain" />
   );
 }
 
@@ -237,6 +218,13 @@ export default function FoodMerchantsScreen() {
     activeLocation?.longitude,
   ]);
 
+  const { data: weather } = useLocationWeather({
+    lat: merchantsAnchorCoords?.latitude,
+    lng: merchantsAnchorCoords?.longitude,
+  });
+  const weatherDelayMinutes = weather?.etaDelayMinutes ?? 0;
+  const { bookmarkSet, refetch: refetchBookmarks } = useStoreBookmarks();
+
   const [vegOnly, setVegOnly] = useState(false);
   const [openNow, setOpenNow] = useState(true);
   const [sortBy, setSortBy] = useState<SortOption>("default");
@@ -274,37 +262,25 @@ export default function FoodMerchantsScreen() {
     const pincode = address?.pincode?.trim() || undefined;
     const state = address?.state?.trim() || undefined;
     const city = address?.city?.trim() || undefined;
-    return { pincode, state, city };
-  }, [address?.pincode, address?.state, address?.city]);
+    return {
+      pincode,
+      state,
+      city,
+      lat: merchantsAnchorCoords?.latitude,
+      lng: merchantsAnchorCoords?.longitude,
+    };
+  }, [
+    address?.pincode,
+    address?.state,
+    address?.city,
+    merchantsAnchorCoords?.latitude,
+    merchantsAnchorCoords?.longitude,
+  ]);
 
-  const {
-    data: featuredOffersData,
-    isLoading: featuredOffersLoading,
-    refetch: refetchFeaturedOffers,
-  } = useQuery({
-    queryKey: [
-      "featured-offers-home",
-      merchantsAnchorCoords?.latitude,
-      merchantsAnchorCoords?.longitude,
-      offerLocationParams.pincode,
-      offerLocationParams.state,
-      offerLocationParams.city,
-    ],
-    queryFn: () =>
-      offersService.getFeaturedOffers({
-        pincode: offerLocationParams.pincode,
-        state: offerLocationParams.state,
-        city: offerLocationParams.city,
-        lat: merchantsAnchorCoords?.latitude,
-        lng: merchantsAnchorCoords?.longitude,
-        serviceType: "FOOD",
-        limit: 6,
-      }),
-    enabled:
-      merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null,
-    staleTime: 2 * 60 * 1000,
-    retry: 1,
-  });
+  const { data: featuredOffersData, refetch: refetchFeaturedOffers } = useFeaturedOffersHome(
+    offerLocationParams,
+    merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null
+  );
 
   const homeFeaturedOffers = featuredOffersData?.offers ?? [];
 
@@ -314,11 +290,17 @@ export default function FoodMerchantsScreen() {
     isLoading: homeCategoriesLoading,
     refetch: refetchHomeCategories,
   } = useQuery({
-    queryKey: ["userAppCategories", HOME_CATEGORY_STORE_TYPE],
+    queryKey: userAppCategoriesQueryKey(HOME_CATEGORY_STORE_TYPE),
     queryFn: () => fetchUserAppCategories({ storeType: HOME_CATEGORY_STORE_TYPE }),
-    staleTime: 10 * 60 * 1000,
-    retry: 1,
+    ...USER_APP_CATEGORIES_QUERY_OPTIONS,
+    placeholderData: (previousData) => previousData,
   });
+
+  useEffect(() => {
+    if (apiHomeCategories.length > 0) {
+      prefetchUserAppCategoryImages(apiHomeCategories);
+    }
+  }, [apiHomeCategories]);
 
   const homeCategoryRailItems = useMemo(() => {
     if (!homeCategoriesReady) return [];
@@ -341,14 +323,9 @@ export default function FoodMerchantsScreen() {
     [windowWidth, insets.right]
   );
 
-  /** Full-bleed offer banners (same width as restaurant cards). */
+  /** Offer carousel — same UI as home tab; merchant banner image or default art. */
   const offerCardWidth = windowWidth - PAGE_PAD * 2;
   const restaurantCardWidth = offerCardWidth;
-
-  const offersQueryEnabled =
-    merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null;
-  const showOfferSkeleton = offersQueryEnabled && featuredOffersLoading;
-  const showOffersBlock = showOfferSkeleton || homeFeaturedOffers.length > 0;
 
   const merchants = Array.isArray(merchantsData) ? merchantsData : [];
   /** Only block the list on first load — background refetch must not swap cards for skeleton. */
@@ -397,6 +374,10 @@ export default function FoodMerchantsScreen() {
       if (liveStatus) setStatusFromApi(m.id, liveStatus === "OPEN", liveStatus);
     });
   }, [merchants, setStatusFromApi]);
+
+  useEffect(() => {
+    if (merchants.length > 0) prefetchMerchantBanners(merchants);
+  }, [merchants]);
 
   const filteredAndSortedMerchants = useMemo(
     () =>
@@ -450,6 +431,7 @@ export default function FoodMerchantsScreen() {
     try {
       await Promise.all([
         refetch(),
+        refetchBookmarks(),
         refetchHomeCategories(),
         refetchFeaturedOffers(),
         permissionStatus === "granted" && locationSource !== "selected" ? refetchLocation() : Promise.resolve(),
@@ -495,17 +477,19 @@ export default function FoodMerchantsScreen() {
   // No-service: only when there are zero stores listed for this location (not when all are closed).
   if (!hasStoresInArea && !showSkeleton) {
     return (
-      <View style={styles.container}>
-        <StatusBar style="dark" />
-        <GMHeader
-          topInset={HEADER_TOP_PADDING_NONE}
-          onBack={handleBack}
-          minimal
-          locationLabel={selectedLocationLabel}
+      <View style={[styles.container, styles.nonServiceableContainer]}>
+        <StatusBar style="dark" backgroundColor={NON_SERVICEABLE_STATUS_BAR_BG} />
+        <GMEmptyState
+          header={
+            <GMHeader
+              topInset={HEADER_TOP_PADDING_NONE}
+              onBack={handleBack}
+              minimal
+              blendBackground
+              locationLabel={selectedLocationLabel}
+            />
+          }
         />
-        <View style={styles.nonServiceableContent}>
-          <GMEmptyState />
-        </View>
       </View>
     );
   }
@@ -542,49 +526,15 @@ export default function FoodMerchantsScreen() {
             />
           }
         >
-          {showOffersBlock ? (
-            <>
-              <View style={styles.offersSection}>
-                {showOfferSkeleton ? (
-                  <HomeOfferBannerSkeleton width={offerCardWidth} height={OFFER_CARD_HEIGHT} />
-                ) : (
-                  <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.offersScrollContent}
-                    snapToInterval={offerCardWidth + OFFER_GAP}
-                    snapToAlignment="start"
-                    decelerationRate="fast"
-                  >
-                    {homeFeaturedOffers.map((o) => (
-                      <TouchableOpacity
-                        key={o.id}
-                        style={[styles.offerCardWrap, { width: offerCardWidth }]}
-                        activeOpacity={0.92}
-                        onPress={() =>
-                          router.push({ pathname: "/home/merchant/[id]", params: { id: o.store_id } })
-                        }
-                      >
-                        <HomeFeaturedOfferCard
-                          title={o.title}
-                          sub={o.sub}
-                          storeName={o.store_name}
-                          couponCode={o.coupon_code}
-                          minOrderAmount={o.min_order_amount}
-                          maxDiscountAmount={o.max_discount_amount}
-                          offerType={o.offer_type}
-                          kind={o.kind}
-                          width={offerCardWidth}
-                          height={OFFER_CARD_HEIGHT}
-                        />
-                      </TouchableOpacity>
-                    ))}
-                  </ScrollView>
-                )}
-              </View>
-              <View style={styles.sectionGap} />
-            </>
-          ) : null}
+          <View style={styles.offersSection}>
+            <HomePromoCarousel
+              offers={homeFeaturedOffers}
+              cardHeight={OFFER_CARD_HEIGHT}
+              mode="food"
+              showDefaultWhenEmpty
+            />
+          </View>
+          <View style={styles.sectionGap} />
 
           {/* Category rail – all user_app_category (FOOD), horizontal scroll by display_order */}
           <View
@@ -647,9 +597,10 @@ export default function FoodMerchantsScreen() {
                             },
                           ]}
                         >
-                          <HomeCategoryGridImage
+                          <UserAppCategoryImage
                             imageUrl={cat.imageUrl}
-                            size={categoryRailLayout.imgSize}
+                            cacheKey={`category-${cat.id}`}
+                            style={{ width: categoryRailLayout.imgSize, height: categoryRailLayout.imgSize }}
                           />
                         </View>
                         <Text
@@ -707,18 +658,19 @@ export default function FoodMerchantsScreen() {
             <Text style={styles.filterStoreCount}>{storeCountLabel}</Text>
           </View>
 
-          {/* Loved by Customers — 2-col grid (Swiggy-style); same stores also in list below */}
+          {/* Loved by Customers — 3-col compact grid (Swiggy Recommended-style) */}
           {(showSkeleton || lovedByCustomers.length > 0) && (
             <View style={styles.lovedSection}>
               <Text style={styles.sectionHeading}>LOVED BY CUSTOMERS</Text>
               {showSkeleton ? (
-                <LovedMerchantsGridSkeleton count={4} />
+                <LovedMerchantsGridSkeleton count={6} />
               ) : (
                 <View style={styles.merchantGrid}>
                   {lovedByCustomers.map((m) => (
                     <MerchantGridCard
                       key={`loved-${m.id}`}
                       merchant={m}
+                      weatherDelayMinutes={weatherDelayMinutes}
                       onPress={() =>
                         router.push({ pathname: "/home/merchant/[id]", params: { id: m.id } })
                       }
@@ -738,7 +690,12 @@ export default function FoodMerchantsScreen() {
               <Text style={styles.restaurantEmptyHint}>No restaurants match your filters.</Text>
             ) : (
               filteredAndSortedMerchants.map((m) => (
-                <GMRestaurantCardV2 key={`near-${m.id}`} merchant={m} />
+                <GMRestaurantCardV2
+                  key={`near-${m.id}`}
+                  merchant={m}
+                  initialSaved={bookmarkSet.has(m.id)}
+                  weatherDelayMinutes={weatherDelayMinutes}
+                />
               ))
             )}
           </View>
@@ -906,6 +863,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: GatiMitraColors.softBackground,
   },
+  nonServiceableContainer: {
+    backgroundColor: NON_SERVICEABLE_STATUS_BAR_BG,
+  },
   contentWrap: {
     flex: 1,
     position: "relative",
@@ -923,7 +883,6 @@ const styles = StyleSheet.create({
   },
   offersSection: {
     paddingVertical: OFFERS_SECTION_PAD,
-    paddingHorizontal: PAGE_PAD,
     marginBottom: 4,
   },
   offersScrollContent: {
@@ -1045,12 +1004,14 @@ const styles = StyleSheet.create({
   },
   lovedSection: {
     marginBottom: SECTION_GAP,
+    overflow: "visible",
   },
   merchantGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
     paddingHorizontal: 16,
-    gap: 12,
+    gap: 10,
+    overflow: "visible",
   },
   sectionHeading: {
     fontSize: 12,

@@ -18,6 +18,7 @@ import { LeftSidebarMobileProvider, useLeftSidebarMobile } from "@/context/LeftS
 import { TicketFilterSidebarProvider, useTicketFilterSidebar } from "@/context/TicketFilterSidebarContext";
 import { getCurrentDashboard, getCurrentDashboardSubRoutes } from "@/lib/navigation/dashboard-routes";
 import { queryKeys } from "@/lib/queryKeys";
+import { prefetchDashboardSection } from "@/lib/dashboard-prefetch";
 import { TicketFilters } from "@/components/tickets/TicketFilters";
 import { GatiSpinner } from "@/components/ui/GatiSpinner";
 import { CurrentRouteProvider, useCurrentRoute } from "@/context/CurrentRouteContext";
@@ -339,6 +340,7 @@ function DashboardLayoutContent({
   const searchParams = useSearchParams();
   const currentRouteCtx = useCurrentRoute();
   const filterSidebar = useTicketFilterSidebar();
+  const queryClient = useQueryClient();
   const cleanPathname = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
   const isTicketDetailPage = useMemo(() => isTicketsAppDetailPath(cleanPathname), [cleanPathname]);
   const isTicketsQueueWorkspace = useMemo(
@@ -583,6 +585,16 @@ function DashboardLayoutContent({
                 cleanTarget.startsWith("/dashboard/tickets")
               ) {
                 return;
+              }
+              // Orders list uses its own skeleton + cached React Query data; avoid full-page white overlay.
+              if (
+                cleanPathname.startsWith("/dashboard/orders") &&
+                cleanTarget.startsWith("/dashboard/orders")
+              ) {
+                return;
+              }
+              if (cleanTarget.startsWith("/dashboard/orders")) {
+                prefetchDashboardSection(queryClient, cleanTarget);
               }
               setPendingNavHref(cleanTarget);
               currentRouteCtx?.setCurrentRoute(cleanTarget);

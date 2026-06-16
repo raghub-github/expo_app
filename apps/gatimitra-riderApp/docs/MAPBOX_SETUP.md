@@ -77,9 +77,9 @@ Look for the debug panel on the orders screen.
 **Issue:** "Token not configured"
 - **Solution:** Make sure `.env` file exists and has `EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN=...`
 
-**Issue:** "Mapbox module not available"
+**Issue:** "Mapbox module not available" / "Development build required"
 - **Solution:** Make sure `@rnmapbox/maps` is installed: `npm install @rnmapbox/maps`
-- **Note:** Mapbox requires a native build. In Expo Go, maps won't work. You need a development build.
+- **Note:** Maps use **native @rnmapbox/maps only**. Expo Go is not supported. You must use a development build (`npx expo run:android`) or an EAS build.
 
 **Issue:** Map shows but is blank/gray
 - **Solution:** Check your Mapbox account has active billing/quota

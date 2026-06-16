@@ -108,6 +108,14 @@ export type StoreQuoteResult =
          * surface the exact reason so ops can fix the offending rate card immediately.
          */
         slab_validation_error?: { code: string; message: string } | null;
+        /** Base route duration before weather messaging adjustment. */
+        base_duration_min?: number;
+        weather_delay_minutes?: number;
+        weather_adjusted_duration_min?: number;
+        weather_impact_label?: string | null;
+        weather_severity?: string | null;
+        weather_chip_label?: string | null;
+        weather_show_impact?: boolean;
       };
     }
   | { ok: false; code: string; message: string };
@@ -462,13 +470,43 @@ export async function resolveStoreDeliveryQuote(
   const deliveryGst = gstPct > 0 ? round2(deliveryFee * (gstPct / 100)) : 0;
   const finalDeliveryFee = round2(deliveryFee + deliveryGst);
 
+  let weatherDelayMinutes = 0;
+  let weatherImpactLabel: string | null = null;
+  let weatherSeverity: string | null = null;
+  let weatherChipLabel: string | null = null;
+  let weatherShowImpact = false;
+  try {
+    const { resolveZoneWeather } = await import("../weather/weather.service.js");
+    const weather = await resolveZoneWeather({
+      lat: drop.lat,
+      lng: drop.lng,
+      cityHint: drop.city,
+    });
+    weatherDelayMinutes = weather.etaDelayMinutes;
+    weatherImpactLabel = weather.etaImpactLabel;
+    weatherSeverity = weather.severity;
+    weatherChipLabel = weather.chipLabel;
+    weatherShowImpact = weather.etaDelayMinutes > 0;
+  } catch {
+    // non-blocking — quote still valid without weather
+  }
+
+  const adjustedDurationMin = round2(durationMin + weatherDelayMinutes);
+
   return {
     ok: true,
     quote: {
       store_id: store.storeId,
       actor,
       distance_km: round2(distanceKm),
-      duration_min: round2(durationMin),
+      duration_min: adjustedDurationMin,
+      base_duration_min: round2(durationMin),
+      weather_delay_minutes: weatherDelayMinutes,
+      weather_adjusted_duration_min: adjustedDurationMin,
+      weather_impact_label: weatherImpactLabel,
+      weather_severity: weatherSeverity,
+      weather_chip_label: weatherChipLabel,
+      weather_show_impact: weatherShowImpact,
       delivery_fee: deliveryFee,
       delivery_gst: deliveryGst,
       final_delivery_fee: finalDeliveryFee,

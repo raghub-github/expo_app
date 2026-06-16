@@ -6,8 +6,9 @@ import {
   isPrepCountdownExpired,
   prepReadyCountdownLabel,
   canUseNeedMoreTime,
-  prepOverdueMinutes,
+  prepOverdueSeconds,
   formatPrepDelayedBannerLabel,
+  formatPrepDelayedBannerLabelFromMinutes,
 } from '@/lib/order-prep-time';
 import type { OrdersFoodRow } from '@/lib/types/food-orders';
 
@@ -22,15 +23,15 @@ export function OrderPrepDelayedBanner({
   order: OrdersFoodRow;
   nowMs: number;
 }) {
-  const overdueMins = prepOverdueMinutes(order, nowMs);
-  const label = formatPrepDelayedBannerLabel(overdueMins);
+  const overdueSec = prepOverdueSeconds(order, nowMs);
+  const label = formatPrepDelayedBannerLabel(overdueSec);
 
   return <OrderDelayTopBanner label={label} />;
 }
 
 /** Top banner on ready / picked-up cards — frozen delay from when order was marked ready. */
 export function OrderPreparedLateTopBanner({ lateMinutes }: { lateMinutes: number }) {
-  return <OrderDelayTopBanner label={formatPrepDelayedBannerLabel(lateMinutes)} />;
+  return <OrderDelayTopBanner label={formatPrepDelayedBannerLabelFromMinutes(lateMinutes)} />;
 }
 
 function OrderDelayTopBanner({ label }: { label: string }) {

@@ -7,7 +7,7 @@ import {
   foodOrderAddonRows,
   foodOrderVariantLabel,
 } from "@/lib/merchant-order-food-item-display";
-import { merchantLineTotalForFoodItem } from "@/lib/merchant-line-total";
+import { merchantLineTotalForFoodItem, formatMerchantRs } from "@/lib/merchant-line-total";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
 
 function lineItemToApiItem(item: LineItem): ApiFoodOrderItem {
@@ -26,10 +26,6 @@ function lineItemToApiItem(item: LineItem): ApiFoodOrderItem {
     captured_addon_amount: item.captured_addon_amount,
     has_customizations: item.has_customizations,
   };
-}
-
-function formatRs(amount: number): string {
-  return `₹${Math.round(Number(amount) || 0).toLocaleString("en-IN")}`;
 }
 
 type Props = {
@@ -74,7 +70,7 @@ export function IncomingOrderCustomizationSheet({
             <Text style={styles.itemQtyName} numberOfLines={3}>
               {qty} × {item.name}
             </Text>
-            <Text style={styles.itemLinePrice}>{formatRs(item.price)}</Text>
+            <Text style={styles.itemLinePrice}>{formatMerchantRs(item.price)}</Text>
           </View>
         </View>
 
@@ -99,7 +95,7 @@ export function IncomingOrderCustomizationSheet({
                 >
                   <Text style={styles.custLabel}>{row.label}</Text>
                   <Text style={styles.custAmount}>
-                    {row.amount != null && row.amount > 0 ? formatRs(row.amount) : "—"}
+                    {row.amount != null && row.amount > 0 ? formatMerchantRs(row.amount) : "—"}
                   </Text>
                 </View>
               ))}
@@ -112,13 +108,13 @@ export function IncomingOrderCustomizationSheet({
         {custTotal > 0 ? (
           <View style={styles.summaryRow}>
             <Text style={styles.summaryLabel}>Add-ons total</Text>
-            <Text style={styles.summaryAmount}>{formatRs(custTotal)}</Text>
+            <Text style={styles.summaryAmount}>{formatMerchantRs(custTotal)}</Text>
           </View>
         ) : null}
 
         <View style={styles.lineTotalRow}>
           <Text style={styles.lineTotalLabel}>Line total</Text>
-          <Text style={styles.lineTotalAmount}>{formatRs(lineTotal)}</Text>
+          <Text style={styles.lineTotalAmount}>{formatMerchantRs(lineTotal)}</Text>
         </View>
       </ScrollView>
 

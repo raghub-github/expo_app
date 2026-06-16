@@ -42,7 +42,7 @@ import { usePastRidersEligibility } from '@/hooks/usePastRidersEligibility';
 import { PageSkeletonOrders } from '@/components/PageSkeleton';
 import { fetchStoreById } from '@/lib/database';
 import { MerchantStore } from '@/lib/merchantStore';
-import { DEMO_RESTAURANT_ID } from '@/lib/constants';
+import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import { createClient } from '@/lib/supabase/client';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 import { FoodOrdersEmptyState } from '@/components/FoodOrdersEmptyState';
@@ -64,7 +64,7 @@ import type { NormalizedOrderLineItem } from '@/lib/orderLineItems';
 import { OrderRidersHistorySidesheet } from '@/components/orders/OrderRidersHistorySidesheet';
 import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
 import { GatiMitraOrderPrintBill } from '@/components/orders/GatiMitraOrderPrintBill';
-import { prefetchOrderTimeline } from '@/lib/orderTimelineCache';
+import { prefetchMerchantOrderTimelineBundle } from '@/lib/merchantTimelineEnrichmentCache';
 import { OrderCustomerSidesheet } from '@/components/orders/OrderCustomerSidesheet';
 import { OrderTimelineModal } from '@/components/orders/OrderTimelineModal';
 import { OrderRiderTrackingModal } from '@/components/orders/OrderRiderTrackingModal';
@@ -75,6 +75,7 @@ import { RejectFollowUpHost, useRejectFollowUp } from '@/components/orders/Rejec
 import { rejectReasonNeedsFollowUp } from '@/lib/merchantCancellationReasons';
 import { OrderCancellationBanner } from '@/components/orders/OrderCancellationBanner';
 import { OrderOtpSection } from '@/components/orders/OrderOtpSection';
+import { MerchantWeatherBanner } from '@/components/merchant/MerchantWeatherBanner';
 import { resolveOrderOtps, type CachedOrderOtps } from '@/lib/orderOtps';
 import type { OrderPricingBreakdown } from '@/lib/orderLineItems';
 import {
@@ -411,12 +412,12 @@ function OrdersPageContent() {
     setSelectedOrder(order);
     setRightPanelOpen(true);
     updateUrlParams({ orderId: String(order.order_id || order.id) });
-    prefetchOrderTimeline(order.id);
-  }, [updateUrlParams]);
+    prefetchMerchantOrderTimelineBundle(order.id, storeId);
+  }, [updateUrlParams, storeId]);
 
   useEffect(() => {
-    if (selectedOrder?.id) prefetchOrderTimeline(selectedOrder.id);
-  }, [selectedOrder?.id]);
+    if (selectedOrder?.id) prefetchMerchantOrderTimelineBundle(selectedOrder.id, storeId);
+  }, [selectedOrder?.id, storeId]);
 
   const closeOrderPanel = useCallback(() => {
     setRightPanelOpen(false);
@@ -434,8 +435,8 @@ function OrdersPageContent() {
   useEffect(() => {
     let id = searchParams?.get('storeId') || searchParams?.get('store_id');
     if (!id && typeof window !== 'undefined') id = localStorage.getItem('selectedStoreId');
-    if (!id) id = DEMO_RESTAURANT_ID;
-    setStoreId(id);
+    const trimmed = (id || '').trim();
+    setStoreId(isValidPartnerStoreId(trimmed) ? trimmed : null);
   }, [searchParams]);
 
   useEffect(() => {
@@ -1431,6 +1432,7 @@ function OrdersPageContent() {
     <>
     <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''} mobileMenuExtra={mobileStatsExtra}>
       <PartnerPageHeader title="Orders" subtitle={store?.store_name || undefined} />
+      <MerchantWeatherBanner storeId={storeId || null} />
       <div className="flex h-full min-h-0 overflow-hidden bg-gray-50 relative flex-col">
         <header id="food-orders-header" className="shrink-0 z-20 bg-white">
           <div className="mx-shell-header !px-3 sm:!px-4 md:!px-4 lg:!px-6">
@@ -1631,7 +1633,12 @@ function OrdersPageContent() {
                             setBillSheetAllItemsOnly(true);
                             setBillSheetOpen(true);
                           }}
-                          onOpenTimeline={() => setTimelineModalOpen(true)}
+                          onOpenTimeline={() => {
+                            if (selectedOrder) {
+                              prefetchMerchantOrderTimelineBundle(selectedOrder.id, storeId);
+                            }
+                            setTimelineModalOpen(true);
+                          }}
                           onPrintBill={() => setPrintBillOpen(true)}
                           onClose={closeOrderPanel}
                           onViewPastRiders={() => {
@@ -1755,7 +1762,12 @@ function OrdersPageContent() {
                       setBillSheetAllItemsOnly(true);
                       setBillSheetOpen(true);
                     }}
-                    onOpenTimeline={() => setTimelineModalOpen(true)}
+                    onOpenTimeline={() => {
+                      if (selectedOrder) {
+                        prefetchMerchantOrderTimelineBundle(selectedOrder.id, storeId);
+                      }
+                      setTimelineModalOpen(true);
+                    }}
                     onPrintBill={() => setPrintBillOpen(true)}
                   />
                 </div>

@@ -1,217 +1,219 @@
-import React, { useMemo } from "react";
+import React from "react";
 import { View, Text, StyleSheet, Pressable, Platform } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useDutyStore } from "@/src/stores/dutyStore";
-import { FoodNavigationManeuverBanner } from "@/src/components/orders/FoodNavigationManeuverBanner";
 import { NavigationMapRightControls } from "@/src/components/orders/NavigationMapRightControls";
-import type { ActiveManeuverDisplay } from "@/src/lib/navigation-maneuver";
+/** Reference-matched navigation header tokens */
+const HEADER_BG = "#FFFFFF";
+const HEADER_TITLE_COLOR = "#000000";
+const EMERGENCY_PINK = "#E91E8C";
+const SIDE_PAD = 16;
+const ROW_HEIGHT = 48;
+const CHEVRON_SIZE = 22;
+const TITLE_GAP = 20;
+const TITLE_SIZE = 18;
+const RIGHT_GAP = 14;
+const SIREN_SIZE = 24;
+const DIRECTIONS_SIZE = 30;
+const HELP_HEIGHT = 30;
 
-/** Matches navigation banner + speedo (teal / nav green). */
-const NAV_TEAL = "#0F766E";
-const NAV_GREEN = "#0B5D30";
-const NAV_FAB_BG = "#FFFFFF";
-const fabShadow = Platform.select({
+const headerShadow = Platform.select({
   ios: {
-    shadowColor: NAV_GREEN,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
   },
-  android: { elevation: 6 },
+  android: { elevation: 2 },
   default: {},
 });
 
 type Props = {
-  maneuver: ActiveManeuverDisplay | null;
-  speedKmh?: number | null;
-  /** Distance from bottom of map stage to floating controls (map no longer overlaps sheet). */
+  headerTitle: string;
   mapControlsBottom?: number;
-  maneuverTop?: number;
-  onMenuPress: () => void;
-  onSafetyPress: () => void;
+  onBackPress: () => void;
+  onEmergencyPress: () => void;
+  onDirectionsPress: () => void;
+  onHelpPress: () => void;
   onRecenter: () => void;
   onZoomIn?: () => void;
   onZoomOut?: () => void;
-  onMutePress?: () => void;
-  mapViewMode?: import("@/src/lib/map-assets").NavMapViewMode;
-  onToggleMapView?: () => void;
   onRouteOverviewLongPress?: () => void;
-  muted?: boolean;
 };
 
 export function FoodNavigationMapChrome({
-  maneuver,
-  speedKmh,
+  headerTitle,
   mapControlsBottom = 20,
-  maneuverTop = 96,
-  onMenuPress,
-  onSafetyPress,
+  onBackPress,
+  onEmergencyPress,
+  onDirectionsPress,
+  onHelpPress,
   onRecenter,
   onZoomIn,
   onZoomOut,
-  onMutePress,
-  mapViewMode = "navigation",
-  onToggleMapView,
   onRouteOverviewLongPress,
-  muted = false,
 }: Props) {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
-  const isOnDuty = useDutyStore((s) => s.isOnDuty);
-
-  const speedLabel = useMemo(() => {
-    if (speedKmh == null || !Number.isFinite(speedKmh) || speedKmh < 1) return "—";
-    return `${Math.round(speedKmh)}`;
-  }, [speedKmh]);
-
-  const fabBottom = mapControlsBottom;
 
   return (
     <>
-      <View style={[styles.topBar, { paddingTop: insets.top + 4 }]} pointerEvents="box-none">
-        <Pressable
-          onPress={onMenuPress}
-          style={({ pressed }) => [styles.roundBtn, pressed && styles.roundBtnPressed]}
-          accessibilityRole="button"
-          accessibilityLabel="Menu"
-        >
-          <Ionicons name="menu" size={22} color="#111827" />
-        </Pressable>
+      <View
+        style={[styles.headerBar, { paddingTop: insets.top }, headerShadow]}
+        pointerEvents="box-none"
+      >
+        <View style={styles.headerRow}>
+          <View style={styles.headerLeft}>
+            <Pressable
+              onPress={onBackPress}
+              style={({ pressed }) => [styles.chevronHit, pressed && styles.hitPressed]}
+              accessibilityRole="button"
+              accessibilityLabel={t("common.back", "Back")}
+            >
+              <Ionicons name="chevron-down" size={CHEVRON_SIZE} color={HEADER_TITLE_COLOR} />
+            </Pressable>
+            <View style={styles.titleGap} />
+            <Text style={styles.headerTitle} numberOfLines={1}>
+              {headerTitle}
+            </Text>
+          </View>
 
-        <View style={styles.onlinePill}>
-          <View style={[styles.onlineDot, { backgroundColor: isOnDuty ? "#22C55E" : "#9CA3AF" }]} />
-          <Text style={styles.onlineText}>
-            {isOnDuty ? t("topbar.online", "Online") : t("topbar.offline", "Offline")}
-          </Text>
+          <View style={styles.headerSpacer} />
+
+          <View style={styles.headerRight}>
+            <Pressable
+              onPress={onEmergencyPress}
+              style={({ pressed }) => [styles.emergencyHit, pressed && styles.hitPressed]}
+              accessibilityRole="button"
+              accessibilityLabel={t("orders.activeFood.emergency", "Emergency")}
+            >
+              <MaterialCommunityIcons name="alarm-light" size={SIREN_SIZE} color={EMERGENCY_PINK} />
+            </Pressable>
+
+            <Pressable
+              onPress={onDirectionsPress}
+              style={({ pressed }) => [
+                styles.directionsBtn,
+                pressed && styles.hitPressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={t("orders.activeFood.openDirections", "Open directions")}
+            >
+              <Ionicons name="arrow-forward" size={16} color="#ffffff" />
+            </Pressable>
+
+            <Pressable
+              onPress={onHelpPress}
+              style={({ pressed }) => [styles.helpBtn, pressed && styles.helpBtnPressed]}
+              accessibilityRole="button"
+              accessibilityLabel={t("orders.activeFood.help", "Help")}
+            >
+              <Text style={styles.helpText}>{t("orders.activeFood.helpLabel", "HELP")}</Text>
+            </Pressable>
+          </View>
         </View>
-
-        <Pressable
-          onPress={onSafetyPress}
-          style={({ pressed }) => [styles.roundBtn, pressed && styles.roundBtnPressed]}
-          accessibilityRole="button"
-          accessibilityLabel="Safety"
-        >
-          <Ionicons name="shield-checkmark" size={22} color="#111827" />
-        </Pressable>
-      </View>
-
-      {maneuver ? (
-        <View style={[styles.maneuverWrap, { top: maneuverTop }]} pointerEvents="none">
-          <FoodNavigationManeuverBanner maneuver={maneuver} />
-        </View>
-      ) : null}
-
-      <View style={[styles.speedo, { bottom: fabBottom }]} pointerEvents="none">
-        <Text style={styles.speedValue}>{speedLabel}</Text>
-        <Text style={styles.speedUnit}>km/h</Text>
       </View>
 
       <NavigationMapRightControls
-        bottom={fabBottom}
-        mapViewMode={mapViewMode}
+        variant="compact"
+        bottom={mapControlsBottom}
         onRecenter={onRecenter}
         onRecenterLongPress={onRouteOverviewLongPress}
-        onToggleMapView={onToggleMapView ?? (() => {})}
         onZoomIn={onZoomIn ?? (() => {})}
         onZoomOut={onZoomOut ?? (() => {})}
-        onMutePress={onMutePress}
-        muted={muted}
       />
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  topBar: {
+  headerBar: {
     position: "absolute",
     top: 0,
     left: 0,
     right: 0,
     zIndex: 30,
+    backgroundColor: HEADER_BG,
+  },
+  headerRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 14,
-    paddingBottom: 8,
+    height: ROW_HEIGHT,
+    paddingHorizontal: SIDE_PAD,
   },
-  roundBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: NAV_FAB_BG,
-    borderWidth: 2,
-    borderColor: NAV_TEAL,
+  headerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexShrink: 1,
+    minWidth: 0,
+    maxWidth: "58%",
+  },
+  chevronHit: {
+    width: 24,
+    height: ROW_HEIGHT,
     alignItems: "center",
     justifyContent: "center",
-    ...fabShadow,
   },
-  roundBtnPressed: {
-    opacity: 0.88,
+  titleGap: {
+    width: TITLE_GAP,
+    height: 1,
+    flexShrink: 0,
   },
-  onlinePill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: NAV_FAB_BG,
-    borderWidth: 1.5,
-    borderColor: "rgba(15, 118, 110, 0.35)",
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    ...fabShadow,
-  },
-  onlineDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  onlineText: {
-    fontSize: 14,
+  headerTitle: {
+    fontSize: TITLE_SIZE,
     fontWeight: "700",
-    color: "#111827",
-  },
-  maneuverWrap: {
-    position: "absolute",
-    top: 96,
-    left: 0,
-    right: 0,
-    zIndex: 25,
-  },
-  speedo: {
-    position: "absolute",
-    left: 16,
-    zIndex: 15,
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: "rgba(255,255,255,0.98)",
-    borderWidth: 3,
-    borderColor: NAV_TEAL,
-    alignItems: "center",
-    justifyContent: "center",
-    ...Platform.select({
-      ios: {
-        shadowColor: "#0f766e",
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.18,
-        shadowRadius: 10,
-      },
-      android: { elevation: 6 },
-      default: {},
-    }),
-  },
-  speedValue: {
-    fontSize: 20,
-    fontWeight: "800",
-    color: NAV_TEAL,
+    color: HEADER_TITLE_COLOR,
+    letterSpacing: 0,
     lineHeight: 22,
+    flexShrink: 1,
   },
-  speedUnit: {
-    fontSize: 10,
+  headerSpacer: {
+    flex: 1,
+    minWidth: 8,
+  },
+  headerRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexShrink: 0,
+  },
+  emergencyHit: {
+    width: 28,
+    height: ROW_HEIGHT,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: RIGHT_GAP,
+  },
+  directionsBtn: {
+    width: DIRECTIONS_SIZE,
+    height: DIRECTIONS_SIZE,
+    borderRadius: DIRECTIONS_SIZE / 2,
+    backgroundColor: "#000000",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: RIGHT_GAP,
+  },
+  helpBtn: {
+    height: HELP_HEIGHT,
+    minWidth: 48,
+    paddingHorizontal: 10,
+    borderWidth: 1.5,
+    borderColor: "#000000",
+    borderRadius: 5,
+    backgroundColor: HEADER_BG,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  helpBtnPressed: {
+    backgroundColor: "#F5F5F5",
+  },
+  helpText: {
+    fontSize: 11,
     fontWeight: "700",
-    color: "#64748B",
-    letterSpacing: 0.4,
+    color: "#000000",
+    letterSpacing: 0.6,
+  },
+  hitPressed: {
+    opacity: 0.7,
   },
 });

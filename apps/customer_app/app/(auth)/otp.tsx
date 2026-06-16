@@ -22,6 +22,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { authService } from "@/services/auth.service";
 import { profileService } from "@/services/profile.service";
+import { writeCachedProfile } from "@/lib/profileCache";
 import { useAuthStore } from "@/store/authStore";
 import { getDeviceIdAsync } from "@/utils/deviceId";
 import { OTP_LENGTH } from "@/constants";
@@ -99,6 +100,7 @@ export default function OtpScreen() {
       await setSession(session);
       try {
         const profile = await profileService.getProfile();
+        await writeCachedProfile(profile);
         if (profile?.profile_completed === true) {
           router.replace("/(tabs)/");
           return;

@@ -7,26 +7,15 @@
 import { useEffect } from "react";
 import { BackHandler, Platform } from "react-native";
 import { useRouter } from "expo-router";
-import { useNavigation } from "@react-navigation/native";
-
-function getRootNavigation(navigation: ReturnType<typeof useNavigation>): ReturnType<typeof useNavigation> {
-  let root = navigation;
-  while (typeof (root as any).getParent === "function" && (root as any).getParent()) {
-    root = (root as any).getParent();
-  }
-  return root;
-}
 
 export function AndroidBackHandler() {
   const router = useRouter();
-  const navigation = useNavigation();
-  const root = getRootNavigation(navigation);
 
   useEffect(() => {
     if (Platform.OS !== "android") return;
 
     const onHardwareBack = () => {
-      if (typeof root.canGoBack === "function" && root.canGoBack()) {
+      if (typeof router.canGoBack === "function" && router.canGoBack()) {
         router.back();
         return true;
       }
@@ -35,7 +24,7 @@ export function AndroidBackHandler() {
 
     const sub = BackHandler.addEventListener("hardwareBackPress", onHardwareBack);
     return () => sub.remove();
-  }, [root, router]);
+  }, [router]);
 
   return null;
 }

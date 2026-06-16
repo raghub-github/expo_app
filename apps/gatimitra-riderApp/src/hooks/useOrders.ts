@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { riderApi } from "@/src/services/api/riderApi";
+import { riderApi, type RiderOrderSummary } from "@/src/services/api/riderApi";
 import { useDutyStore } from "@/src/stores/dutyStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
 
@@ -128,6 +128,52 @@ export function useReachedPickup() {
   });
 }
 
+export function useSubmitMerchantPickupFeedback() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (args: {
+      orderId: string;
+      rating?: number;
+      tags?: string[];
+      skipped?: boolean;
+    }) =>
+      riderApi.submitMerchantPickupFeedback(args.orderId, {
+        rating: args.rating,
+        tags: args.tags,
+        skipped: args.skipped,
+      }),
+    onSuccess: (data, { orderId }) => {
+      queryClient.setQueryData(["rider", "orders", "detail", orderId], data);
+      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+    },
+  });
+}
+
+export function useSubmitCustomerDeliveryFeedback() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (args: {
+      orderId: string;
+      rating?: number;
+      tags?: string[];
+      comment?: string;
+      skipped?: boolean;
+    }) =>
+      riderApi.submitCustomerDeliveryFeedback(args.orderId, {
+        rating: args.rating,
+        tags: args.tags,
+        comment: args.comment,
+        skipped: args.skipped,
+      }),
+    onSuccess: (data, { orderId }) => {
+      queryClient.setQueryData(["rider", "orders", "detail", orderId], data);
+      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+    },
+  });
+}
+
 export function useReachedCustomer() {
   const queryClient = useQueryClient();
 
@@ -156,16 +202,55 @@ export function useCancelAssignedRide() {
   });
 }
 
-export function useVerifyPickupOtp() {
-  const queryClient = useQueryClient();
+export function syncRiderOrderDetailCache(
+  queryClient: ReturnType<typeof useQueryClient>,
+  orderId: string,
+  data: RiderOrderSummary
+) {
+  queryClient.setQueryData(["rider", "orders", "detail", orderId], data);
+  void queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+}
 
+export function useVerifyPickupOtp() {
   return useMutation({
-    mutationFn: (args: { orderId: string; otp: string; lat?: number; lng?: number }) =>
-      riderApi.verifyPickupOtp(args.orderId, args),
-    onSuccess: (data, { orderId }) => {
-      queryClient.setQueryData(["rider", "orders", "detail", orderId], data);
-      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
-    },
+    mutationFn: (args: {
+      orderId: string;
+      otp: string;
+      lat?: number;
+      lng?: number;
+      deviceTimestamp?: string;
+    }) => riderApi.verifyPickupOtp(args.orderId, args),
+  });
+}
+
+export function useFoodPickupVerificationSettings() {
+  return useQuery({
+    queryKey: ["rider", "food-pickup-verification-settings"],
+    queryFn: () => riderApi.getFoodPickupVerificationSettings(),
+    staleTime: 60_000,
+  });
+}
+
+export function useMarkFoodPickup() {
+  return useMutation({
+    mutationFn: (args: {
+      orderId: string;
+      lat?: number;
+      lng?: number;
+      deviceTimestamp?: string;
+    }) => riderApi.markFoodPickup(args.orderId, args),
+  });
+}
+
+export function useVerifyPickupBarcode() {
+  return useMutation({
+    mutationFn: (args: {
+      orderId: string;
+      barcode: string;
+      lat?: number;
+      lng?: number;
+      deviceTimestamp?: string;
+    }) => riderApi.verifyPickupBarcode(args.orderId, args),
   });
 }
 

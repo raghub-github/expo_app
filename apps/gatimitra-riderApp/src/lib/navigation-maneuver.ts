@@ -18,6 +18,13 @@ export function formatDistanceAhead(meters?: number): string | undefined {
   return `${Math.max(10, Math.round(meters / 10) * 10)} m ahead`;
 }
 
+/** Short distance label for Zomato-style nav banner (e.g. "750 m"). */
+export function formatDistanceShort(meters?: number): string | undefined {
+  if (meters == null || !Number.isFinite(meters)) return undefined;
+  if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km`;
+  return `${Math.max(10, Math.round(meters / 10) * 10)} m`;
+}
+
 function maneuverTitle(instruction: string): string {
   const t = cleanInstruction(instruction);
   const prefix = t.match(

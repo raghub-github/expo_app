@@ -13,7 +13,7 @@ interface MXHeaderProps {
 
 export const MXHeader: React.FC<MXHeaderProps> = ({
   restaurantName = 'Your Store',
-  restaurantId = 'GMM0001',
+  restaurantId = '',
   unreadCount = 0,
 }) => {
   const router = useRouter()

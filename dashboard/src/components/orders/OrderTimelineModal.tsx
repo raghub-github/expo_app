@@ -11,6 +11,11 @@ import {
   prefetchOrderTimeline,
 } from '@/lib/orderTimelineCache';
 import {
+  fetchMerchantTimelineEnrichmentCached,
+  getCachedMerchantTimelineEnrichment,
+  prefetchMerchantOrderTimelineBundle,
+} from '@/lib/merchantTimelineEnrichmentCache';
+import {
   merchantOrderTimelineApiId,
   merchantOrderTimelineFallbackUrls,
 } from '@/lib/merchantOrderApiId';
@@ -94,10 +99,18 @@ export function OrderTimelineModal({
     return merchantOrderTimelineFallbackUrls(storeId, order);
   }, [timelineUrl, order, storeId]);
 
+  const cachedEnrichment = useMemo(() => {
+    if (!open || !order || apiOrderId <= 0) return null;
+    return getCachedMerchantTimelineEnrichment(storeId, apiOrderId) ?? null;
+  }, [open, order, apiOrderId, storeId]);
+
+  const effectiveRiderReachedAt = riderReachedAt ?? cachedEnrichment?.riderReachedAt ?? null;
+  const effectiveActions = actions.length > 0 ? actions : (cachedEnrichment?.actions ?? []);
+
   const merchantSteps = useMemo(() => {
     if (!order || !isMerchant) return [];
-    return buildMerchantVisibleTimeline(order, { riderReachedAt });
-  }, [order, isMerchant, riderReachedAt]);
+    return buildMerchantVisibleTimeline(order, { riderReachedAt: effectiveRiderReachedAt });
+  }, [order, isMerchant, effectiveRiderReachedAt]);
 
   useEffect(() => {
     if (!open) return;
@@ -111,8 +124,12 @@ export function OrderTimelineModal({
   useEffect(() => {
     if (!isMerchant) {
       for (const url of resolvedTimelineUrls) prefetchOrderTimeline(url);
+      return;
     }
-  }, [resolvedTimelineUrls, isMerchant]);
+    if (apiOrderId > 0 && resolvedTimelineUrls[0]) {
+      prefetchMerchantOrderTimelineBundle(storeId, apiOrderId, resolvedTimelineUrls[0]);
+    }
+  }, [resolvedTimelineUrls, isMerchant, storeId, apiOrderId]);
 
   useEffect(() => {
     if (!open || !isMerchant || !order || apiOrderId <= 0) {
@@ -121,29 +138,18 @@ export function OrderTimelineModal({
       return;
     }
 
+    const cached = getCachedMerchantTimelineEnrichment(storeId, apiOrderId);
+    if (cached) {
+      setRiderReachedAt(cached.riderReachedAt);
+      setActions(cached.actions);
+    }
+
     let cancelled = false;
-    const base = `/api/merchant/stores/${storeId}/orders/${apiOrderId}`;
-
-    void fetch(`${base}/riders-log`, { credentials: 'include' })
-      .then((r) => (r.ok ? r.json() : { riders: [] }))
-      .then((data: { riders?: Array<{ reached_merchant_at?: string | null }> }) => {
-        if (cancelled) return;
-        const reached =
-          (data.riders ?? []).find((r) => r.reached_merchant_at)?.reached_merchant_at ?? null;
-        setRiderReachedAt(reached);
-      })
-      .catch(() => {
-        if (!cancelled) setRiderReachedAt(null);
-      });
-
-    void fetch(`${base}/activity`, { credentials: 'include' })
-      .then((r) => (r.ok ? r.json() : { actions: [] }))
-      .then((data: { actions?: MerchantOrderActionForTimeline[] }) => {
-        if (!cancelled) setActions(data.actions ?? []);
-      })
-      .catch(() => {
-        if (!cancelled) setActions([]);
-      });
+    void fetchMerchantTimelineEnrichmentCached(storeId, apiOrderId).then((enrichment) => {
+      if (cancelled) return;
+      setRiderReachedAt(enrichment.riderReachedAt);
+      setActions(enrichment.actions);
+    });
 
     return () => {
       cancelled = true;
@@ -214,10 +220,10 @@ export function OrderTimelineModal({
   const handleView = (action: 'accepted' | 'ready') => {
     if (!order) return;
     if (action === 'accepted') {
-      const act = findActionForStep(actions, ['ACCEPTED']);
+      const act = findActionForStep(effectiveActions, ['ACCEPTED']);
       setActorDetail(parseActorDetailFromAction(act, order.accepted_by_label));
     } else {
-      const act = findActionForStep(actions, ['READY_FOR_PICKUP', 'READY', 'PREPARED']);
+      const act = findActionForStep(effectiveActions, ['READY_FOR_PICKUP', 'READY', 'PREPARED']);
       setActorDetail(parseActorDetailFromAction(act));
     }
     setActorOpen(true);

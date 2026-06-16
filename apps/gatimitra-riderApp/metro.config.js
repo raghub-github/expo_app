@@ -17,28 +17,47 @@ for (const dir of [metroCacheDir, metroFileMapDir]) {
 }
 
 /** @type {import('expo/metro-config').MetroConfig} */
-const config = getDefaultConfig(projectRoot);
+const defaultConfig = getDefaultConfig(projectRoot);
+const config = defaultConfig;
 
+// Keep Metro file cache outside OneDrive (invalid option fileMapCacheDirectory removed for expo-doctor).
 config.cacheStores = ({ FileStore }) => [
   new FileStore({ root: metroCacheDir }),
 ];
-config.fileMapCacheDirectory = metroFileMapDir;
 
-// Watch app + shared packages only (full-repo watch on OneDrive/Windows often misses HMR file events).
+const packagesFolder = path.resolve(workspaceRoot, 'packages');
+const gatimitraWorkspacePackages = ['contracts', 'sdk', 'expo-push-kit'];
+
 config.watchFolders = [
-  projectRoot,
-  path.resolve(workspaceRoot, 'packages'),
-].filter((p, i, arr) => arr.indexOf(p) === i);
+  ...new Set([...(defaultConfig.watchFolders ?? []), packagesFolder]),
+];
 config.resolver.nodeModulesPaths = [
   path.resolve(projectRoot, 'node_modules'),
   path.resolve(workspaceRoot, 'node_modules'),
 ];
-config.resolver.disableHierarchicalLookup = true;
+config.resolver.disableHierarchicalLookup = false;
+config.resolver.extraNodeModules = {
+  ...(config.resolver.extraNodeModules ?? {}),
+  ...Object.fromEntries(
+    gatimitraWorkspacePackages.map((pkg) => [
+      `@gatimitra/${pkg}`,
+      path.resolve(packagesFolder, pkg),
+    ]),
+  ),
+};
 
 // Configure resolver to handle mapbox-gl imports on web
 const defaultResolver = config.resolver.resolveRequest;
 
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  // Supabase realtime-js imports Node `ws` → use RN global WebSocket instead.
+  if (platform !== 'web' && moduleName === 'ws') {
+    return {
+      filePath: path.resolve(projectRoot, 'metro-ws-shim.js'),
+      type: 'sourceFile',
+    };
+  }
+
   // Ignore mapbox-gl imports on web (they're not needed for React Native web)
   if (platform === 'web') {
     if (moduleName && (

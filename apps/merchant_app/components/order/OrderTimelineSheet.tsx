@@ -4,17 +4,18 @@ import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 import type { OrderRecord } from "@/hooks/useOrders";
-import {
-  fetchFoodOrderActions,
-  fetchFoodOrderRidersLog,
-  type MerchantOrderActionForTimeline,
-} from "@/services/ordersApi";
+import type { MerchantOrderActionForTimeline } from "@/services/ordersApi";
 import { orderRecordToTimelineOrder } from "@/lib/merchantVisibleTimeline";
 import {
   fetchOrderTimelineCached,
   getCachedOrderTimeline,
   prefetchOrderTimeline,
 } from "@/lib/orderTimelineCache";
+import {
+  fetchMerchantTimelineEnrichmentCached,
+  getCachedMerchantTimelineEnrichment,
+  prefetchMerchantTimelineEnrichment,
+} from "@/lib/merchantTimelineEnrichmentCache";
 import { MerchantOrderVerticalTimeline } from "@/components/order/MerchantOrderVerticalTimeline";
 import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
 import { MerchantOrderIdRow } from "@/components/order/MerchantOrderCardToolbar";
@@ -58,15 +59,25 @@ export function OrderTimelineSheet({ visible, order, onClose }: Props) {
     [order]
   );
 
+  const cachedTimelineEntries =
+    foodId != null && storeId
+      ? (getCachedOrderTimeline(storeId, foodId)?.map((e) => ({
+          status: e.status,
+          occurred_at: e.occurred_at,
+          status_message: e.status_message,
+        })) ?? [])
+      : [];
+
   const [timelineEntries, setTimelineEntries] = useState<
     Array<{ status: string; occurred_at: string; status_message?: string | null }>
-  >([]);
+  >(() => cachedTimelineEntries);
   const [actions, setActions] = useState<MerchantOrderActionForTimeline[]>([]);
   const [riderReachedAt, setRiderReachedAt] = useState<string | null>(null);
 
   useEffect(() => {
     if (foodId == null || !storeId || !token) return;
     prefetchOrderTimeline(storeId, foodId, token);
+    prefetchMerchantTimelineEnrichment(storeId, foodId, token);
   }, [foodId, storeId, token]);
 
   useEffect(() => {
@@ -103,6 +114,14 @@ export function OrderTimelineSheet({ visible, order, onClose }: Props) {
     };
   }, [visible, foodId, storeId, token]);
 
+  const cachedEnrichment =
+    visible && foodId != null && storeId
+      ? getCachedMerchantTimelineEnrichment(storeId, foodId)
+      : undefined;
+
+  const effectiveRiderReachedAt = riderReachedAt ?? cachedEnrichment?.riderReachedAt ?? null;
+  const effectiveActions = actions.length > 0 ? actions : (cachedEnrichment?.actions ?? []);
+
   useEffect(() => {
     if (!visible || foodId == null || !storeId || !token) {
       if (!visible) {
@@ -112,24 +131,18 @@ export function OrderTimelineSheet({ visible, order, onClose }: Props) {
       return;
     }
 
+    const cached = getCachedMerchantTimelineEnrichment(storeId, foodId);
+    if (cached) {
+      setRiderReachedAt(cached.riderReachedAt);
+      setActions(cached.actions);
+    }
+
     let cancelled = false;
-
-    void fetchFoodOrderRidersLog(storeId, foodId, token)
-      .then((riders) => {
-        if (cancelled) return;
-        setRiderReachedAt(riders.find((r) => r.reached_merchant_at)?.reached_merchant_at ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setRiderReachedAt(null);
-      });
-
-    void fetchFoodOrderActions(storeId, foodId, token)
-      .then((acts) => {
-        if (!cancelled) setActions(acts);
-      })
-      .catch(() => {
-        if (!cancelled) setActions([]);
-      });
+    void fetchMerchantTimelineEnrichmentCached(storeId, foodId, token).then((enrichment) => {
+      if (cancelled) return;
+      setRiderReachedAt(enrichment.riderReachedAt);
+      setActions(enrichment.actions);
+    });
 
     return () => {
       cancelled = true;
@@ -166,9 +179,11 @@ export function OrderTimelineSheet({ visible, order, onClose }: Props) {
           {timelineOrder ? (
             <MerchantOrderVerticalTimeline
               order={timelineOrder}
-              timelineEntries={timelineEntries}
-              actions={actions}
-              riderReachedAt={riderReachedAt}
+              timelineEntries={
+                timelineEntries.length > 0 ? timelineEntries : cachedTimelineEntries
+              }
+              actions={effectiveActions}
+              riderReachedAt={effectiveRiderReachedAt}
             />
           ) : (
             <Text style={styles.empty}>Timeline unavailable for this order.</Text>

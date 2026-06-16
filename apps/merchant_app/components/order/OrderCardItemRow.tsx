@@ -2,7 +2,9 @@ import { View, Text, StyleSheet, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { ItemVegMark } from "@/components/order/ItemVegMark";
 import type { LineItem } from "@/hooks/useOrders";
+import type { ApiFoodOrderItem } from "@/services/ordersApi";
 import { lineItemHasCustomizations } from "@/lib/merchant-order-food-item-display";
+import { formatMerchantRs, merchantLineTotalForFoodItem } from "@/lib/merchant-line-total";
 
 type Props = {
   item: LineItem;
@@ -52,7 +54,11 @@ export function OrderCardItemRow({
       {expandable ? (
         <Ionicons name="chevron-down" size={18} color="#0F766E" style={styles.chevron} />
       ) : null}
-      {showPrice ? <Text style={styles.price}>₹{item.price}</Text> : null}
+      {showPrice ? (
+        <Text style={styles.price}>
+          {formatMerchantRs(merchantLineTotalForFoodItem(item as ApiFoodOrderItem))}
+        </Text>
+      ) : null}
     </Pressable>
   );
 }

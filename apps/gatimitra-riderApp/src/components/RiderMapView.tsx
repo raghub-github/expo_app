@@ -1,9 +1,8 @@
 import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback, useMemo } from "react";
 import { View, Text, StyleSheet, Platform } from "react-native";
 import { getMapboxModule, isMapboxAvailable } from "@/src/services/maps/mapbox";
-import { canUseMapboxWeb, shouldUseMapboxWebFallback } from "@/src/lib/mapbox-runtime";
+import { resolveMapboxPublicToken } from "@/src/lib/mapbox-env";
 import { MapboxUnavailablePanel } from "@/src/components/maps/MapboxUnavailablePanel";
-import { MapboxWebRiderMap } from "@/src/components/maps/MapboxWebRiderMap";
 import { YouRiderMarker } from "@/src/components/home/YouRiderMarker";
 import { RiderRadarPulse } from "@/src/components/home/RiderRadarPulse";
 import { isOrderPinAwayFromRider } from "@/src/lib/geo-distance";
@@ -59,20 +58,17 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
   { riderLocation, orders, onOrderPress, style, showRadar = false },
   ref
 ) {
-  const webMapRef = useRef<{ recenter: () => void } | null>(null);
   const cameraRef = useRef<{ setCamera: (opts: object) => void } | null>(null);
   const [mapReady, setMapReady] = useState(false);
 
-  const useWebMap = shouldUseMapboxWebFallback();
-
   const Mapbox = useMemo(() => {
-    if (Platform.OS === "web" || useWebMap) return null;
+    if (Platform.OS === "web") return null;
     try {
       return getMapboxModule();
     } catch {
       return null;
     }
-  }, [useWebMap]);
+  }, []);
 
   const currentLocation = riderLocation || DEFAULT;
   const lat = formatCoordinate(currentLocation.lat);
@@ -89,7 +85,7 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
     [orders, lat, lng]
   );
 
-  const recenterNative = useCallback(() => {
+  const recenter = useCallback(() => {
     if (!cameraRef.current) return;
     const target = riderLocation || DEFAULT;
     try {
@@ -104,26 +100,18 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
     }
   }, [riderLocation]);
 
-  const recenter = useCallback(() => {
-    if (useWebMap) {
-      webMapRef.current?.recenter();
-      return;
-    }
-    recenterNative();
-  }, [useWebMap, recenterNative]);
-
   useImperativeHandle(ref, () => ({ recenter }), [recenter]);
 
   useEffect(() => {
-    if (useWebMap || !Mapbox || !riderLocation || !cameraRef.current || !mapReady) return;
-    recenterNative();
-  }, [useWebMap, riderLocation?.lat, riderLocation?.lng, mapReady, Mapbox, recenterNative]);
+    if (!Mapbox || !riderLocation || !cameraRef.current || !mapReady) return;
+    recenter();
+  }, [riderLocation?.lat, riderLocation?.lng, mapReady, Mapbox, recenter]);
 
   if (Platform.OS === "web") {
     return <View style={[styles.container, style, { backgroundColor: "#ECECEC" }]} />;
   }
 
-  if (!canUseMapboxWeb()) {
+  if (!resolveMapboxPublicToken()) {
     return (
       <View style={[styles.container, style]}>
         <MapboxUnavailablePanel context="home" missingToken />
@@ -131,25 +119,10 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
     );
   }
 
-  if (useWebMap) {
-    return (
-      <View style={[styles.container, style]}>
-        <MapboxWebRiderMap
-          ref={webMapRef}
-          lat={lat}
-          lng={lng}
-          orders={visibleOrders}
-          style={styles.map}
-          showRadar={showRadar}
-        />
-      </View>
-    );
-  }
-
   if (!Mapbox || !isMapboxAvailable()) {
     return (
       <View style={[styles.container, style]}>
-        <MapboxUnavailablePanel context="home" />
+        <MapboxUnavailablePanel context="home" needsDevBuild />
       </View>
     );
   }
@@ -185,6 +158,10 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
         attributionEnabled={false}
         compassEnabled={false}
         scaleBarEnabled={false}
+        scrollEnabled
+        zoomEnabled
+        pitchEnabled
+        rotateEnabled
         onDidFinishLoadingMap={() => setMapReady(true)}
       >
         <Mapbox.Camera

@@ -241,15 +241,14 @@ export function CategoryRailSkeleton({
   );
 }
 
-const LOVED_GRID_PAD = 16;
-const LOVED_GRID_GAP = 12;
-const LOVED_GRID_COLS = 2;
-const LOVED_GRID_CARD_W = Math.floor(
-  (SCREEN_WIDTH - LOVED_GRID_PAD * 2 - LOVED_GRID_GAP * (LOVED_GRID_COLS - 1)) / LOVED_GRID_COLS
-);
+import { MERCHANT_GRID_CARD_W } from "@/components/home/MerchantGridCard";
 
-/** 2-column grid skeleton for Loved by Customers. */
-export function LovedMerchantsGridSkeleton({ count = 4 }: { count?: number }) {
+const LOVED_GRID_PAD = 16;
+const LOVED_GRID_GAP = 10;
+
+/** 3-column grid skeleton for Loved by Customers. */
+export function LovedMerchantsGridSkeleton({ count = 6 }: { count?: number }) {
+  const imageSize = MERCHANT_GRID_CARD_W;
   return (
     <View
       style={{
@@ -260,10 +259,10 @@ export function LovedMerchantsGridSkeleton({ count = 4 }: { count?: number }) {
       }}
     >
       {Array.from({ length: count }).map((_, i) => (
-        <View key={i} style={{ width: LOVED_GRID_CARD_W }}>
-          <GMSkeleton style={{ width: "100%", height: 132, borderRadius: 12 }} />
-          <GMSkeleton style={{ height: 14, width: "90%", marginTop: 8, borderRadius: 6 }} />
-          <GMSkeleton style={{ height: 12, width: "65%", marginTop: 6, marginBottom: 8, borderRadius: 6 }} />
+        <View key={i} style={{ width: MERCHANT_GRID_CARD_W }}>
+          <GMSkeleton style={{ width: imageSize, height: imageSize, borderRadius: 12 }} />
+          <GMSkeleton style={{ height: 13, width: "88%", marginTop: 6, borderRadius: 6 }} />
+          <GMSkeleton style={{ height: 11, width: "60%", marginTop: 4, marginBottom: 6, borderRadius: 6 }} />
         </View>
       ))}
     </View>
@@ -281,54 +280,301 @@ export function HomeOfferBannerSkeleton({
   return <GMSkeleton style={[offerBannerSkeletonStyles.wrap, { width, height, borderRadius: 12 }]} />;
 }
 
-const menuSkeletonStyles = StyleSheet.create({
-  card: {
-    flexDirection: "row",
-    backgroundColor: "#FFF",
-    borderRadius: 18,
-    marginHorizontal: 24,
-    marginBottom: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: "#E8E8E8",
+const MERCHANT_HEADER_IMAGE_H = 196;
+const MERCHANT_MENU_IMAGE_SIZE = 118;
+const MERCHANT_FILTER_BAR_H = 52;
+
+const merchantDetailSkeletonStyles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: "#FFFFFF",
   },
-  imagePlc: { width: 96, height: 96, borderRadius: 14 },
-  body: { flex: 1, marginLeft: 14, justifyContent: "center" },
-  lineA: { height: 14, borderRadius: 4, width: "80%", marginBottom: 8 },
-  lineB: { height: 12, borderRadius: 4, width: "60%", marginBottom: 8 },
-  lineC: { height: 12, borderRadius: 4, width: "35%" },
+  bannerWrap: {
+    height: MERCHANT_HEADER_IMAGE_H,
+    width: "100%",
+    position: "relative",
+  },
+  banner: {
+    width: "100%",
+    height: MERCHANT_HEADER_IMAGE_H,
+    borderRadius: 0,
+  },
+  bannerLogo: {
+    position: "absolute",
+    top: 52,
+    left: (SCREEN_WIDTH - 44) / 2,
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+  },
+  headerControls: {
+    position: "absolute",
+    top: 8,
+    left: 12,
+    right: 12,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  headerControlsRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  circleBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+  },
+  searchPill: {
+    width: 88,
+    height: 34,
+    borderRadius: 18,
+  },
+  infoCard: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    marginTop: -20,
+    paddingHorizontal: 16,
+    paddingTop: 18,
+    paddingBottom: 12,
+  },
+  infoTopRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+    marginBottom: 10,
+  },
+  infoNameBlock: {
+    flex: 1,
+    gap: 8,
+  },
+  infoNameLine1: { height: 22, borderRadius: 8, width: "92%" },
+  infoNameLine2: { height: 22, borderRadius: 8, width: "68%" },
+  ratingPill: { width: 52, height: 28, borderRadius: 8 },
+  metaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 6,
+  },
+  metaIcon: { width: 15, height: 15, borderRadius: 4 },
+  metaLine: { flex: 1, height: 14, borderRadius: 6 },
+  metaChevron: { width: 14, height: 14, borderRadius: 4 },
+  infoDivider: {
+    height: 1,
+    backgroundColor: "#E8E8E8",
+    marginVertical: 10,
+  },
+  offerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  offerIcon: { width: 24, height: 24, borderRadius: 12 },
+  offerLine: { flex: 1, height: 14, borderRadius: 6 },
+  offerCount: { width: 72, height: 14, borderRadius: 6 },
+  filterBar: {
+    height: MERCHANT_FILTER_BAR_H,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E8E8E8",
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  filterChip: {
+    width: 72,
+    height: 34,
+    borderRadius: 8,
+  },
+  filterChipWide: {
+    width: 88,
+    height: 34,
+    borderRadius: 8,
+  },
+  sectionHeader: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E8E8E8",
+  },
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  sectionTitleBlock: { flex: 1, gap: 6 },
+  sectionTitle: { height: 18, borderRadius: 6, width: "72%" },
+  sectionSub: { height: 12, borderRadius: 6, width: "58%" },
+  sectionChevron: { width: 18, height: 18, borderRadius: 4, marginTop: 2 },
 });
 
-/** Single menu item row skeleton. */
-export function MenuItemRowSkeleton() {
+const storeMenuRowSkeletonStyles = StyleSheet.create({
+  wrap: {
+    paddingHorizontal: 16,
+    paddingTop: 18,
+    paddingBottom: 4,
+    minHeight: 172,
+    backgroundColor: "#FFFFFF",
+  },
+  row: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  leftCol: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: 4,
+    gap: 8,
+  },
+  titleLine: { height: 16, borderRadius: 6, width: "88%" },
+  titleLineShort: { height: 16, borderRadius: 6, width: "62%" },
+  statusLine: { height: 12, borderRadius: 6, width: "54%" },
+  priceLine: { height: 14, borderRadius: 6, width: "36%" },
+  iconRow: { flexDirection: "row", gap: 8, marginTop: 4 },
+  iconBtn: { width: 32, height: 32, borderRadius: 16 },
+  rightCol: {
+    width: MERCHANT_MENU_IMAGE_SIZE,
+    alignItems: "center",
+  },
+  image: {
+    width: MERCHANT_MENU_IMAGE_SIZE,
+    height: MERCHANT_MENU_IMAGE_SIZE,
+    borderRadius: 12,
+  },
+  addBtn: {
+    width: MERCHANT_MENU_IMAGE_SIZE,
+    height: 32,
+    borderRadius: 8,
+    marginTop: 8,
+  },
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#E8E8E8",
+    marginTop: 16,
+  },
+});
+
+/** Single store menu row — text left, image + ADD right (matches StoreMenuItemRow). */
+export function StoreMenuItemRowSkeleton({ showDivider = true }: { showDivider?: boolean }) {
   return (
-    <View style={menuSkeletonStyles.card}>
-      <GMSkeleton style={menuSkeletonStyles.imagePlc} />
-      <View style={menuSkeletonStyles.body}>
-        <GMSkeleton style={menuSkeletonStyles.lineA} />
-        <GMSkeleton style={menuSkeletonStyles.lineB} />
-        <GMSkeleton style={menuSkeletonStyles.lineC} />
+    <View style={storeMenuRowSkeletonStyles.wrap}>
+      <View style={storeMenuRowSkeletonStyles.row}>
+        <View style={storeMenuRowSkeletonStyles.leftCol}>
+          <GMSkeleton style={storeMenuRowSkeletonStyles.titleLine} />
+          <GMSkeleton style={storeMenuRowSkeletonStyles.titleLineShort} />
+          <GMSkeleton style={storeMenuRowSkeletonStyles.statusLine} />
+          <GMSkeleton style={storeMenuRowSkeletonStyles.priceLine} />
+          <View style={storeMenuRowSkeletonStyles.iconRow}>
+            <GMSkeleton style={storeMenuRowSkeletonStyles.iconBtn} />
+            <GMSkeleton style={storeMenuRowSkeletonStyles.iconBtn} />
+          </View>
+        </View>
+        <View style={storeMenuRowSkeletonStyles.rightCol}>
+          <GMSkeleton style={storeMenuRowSkeletonStyles.image} />
+          <GMSkeleton style={storeMenuRowSkeletonStyles.addBtn} />
+        </View>
       </View>
+      {showDivider ? <View style={storeMenuRowSkeletonStyles.divider} /> : null}
     </View>
   );
 }
 
-/** List of menu item skeletons. */
+/** Full merchant inner page skeleton — banner, info card, filters, section header, menu rows. */
+export function MerchantDetailSkeleton({ menuRowCount = 5 }: { menuRowCount?: number }) {
+  return (
+    <View style={merchantDetailSkeletonStyles.screen}>
+      <View style={merchantDetailSkeletonStyles.bannerWrap}>
+        <GMSkeleton style={merchantDetailSkeletonStyles.banner} />
+        <GMSkeleton style={merchantDetailSkeletonStyles.bannerLogo} />
+        <View style={merchantDetailSkeletonStyles.headerControls} pointerEvents="none">
+          <GMSkeleton style={merchantDetailSkeletonStyles.circleBtn} />
+          <View style={merchantDetailSkeletonStyles.headerControlsRight}>
+            <GMSkeleton style={merchantDetailSkeletonStyles.searchPill} />
+            <GMSkeleton style={merchantDetailSkeletonStyles.circleBtn} />
+            <GMSkeleton style={merchantDetailSkeletonStyles.circleBtn} />
+          </View>
+        </View>
+      </View>
+
+      <View style={merchantDetailSkeletonStyles.infoCard}>
+        <View style={merchantDetailSkeletonStyles.infoTopRow}>
+          <View style={merchantDetailSkeletonStyles.infoNameBlock}>
+            <GMSkeleton style={merchantDetailSkeletonStyles.infoNameLine1} />
+            <GMSkeleton style={merchantDetailSkeletonStyles.infoNameLine2} />
+          </View>
+          <GMSkeleton style={merchantDetailSkeletonStyles.ratingPill} />
+        </View>
+        <View style={merchantDetailSkeletonStyles.metaRow}>
+          <GMSkeleton style={merchantDetailSkeletonStyles.metaIcon} />
+          <GMSkeleton style={merchantDetailSkeletonStyles.metaLine} />
+          <GMSkeleton style={merchantDetailSkeletonStyles.metaChevron} />
+        </View>
+        <View style={merchantDetailSkeletonStyles.metaRow}>
+          <GMSkeleton style={merchantDetailSkeletonStyles.metaIcon} />
+          <GMSkeleton style={merchantDetailSkeletonStyles.metaLine} />
+          <GMSkeleton style={merchantDetailSkeletonStyles.metaChevron} />
+        </View>
+        <View style={merchantDetailSkeletonStyles.infoDivider} />
+        <View style={merchantDetailSkeletonStyles.offerRow}>
+          <GMSkeleton style={merchantDetailSkeletonStyles.offerIcon} />
+          <GMSkeleton style={merchantDetailSkeletonStyles.offerLine} />
+          <GMSkeleton style={merchantDetailSkeletonStyles.offerCount} />
+        </View>
+      </View>
+
+      <View style={merchantDetailSkeletonStyles.filterBar}>
+        <GMSkeleton style={merchantDetailSkeletonStyles.filterChipWide} />
+        <GMSkeleton style={merchantDetailSkeletonStyles.filterChip} />
+        <GMSkeleton style={merchantDetailSkeletonStyles.filterChip} />
+        <GMSkeleton style={merchantDetailSkeletonStyles.filterChip} />
+      </View>
+
+      <View style={merchantDetailSkeletonStyles.sectionHeader}>
+        <View style={merchantDetailSkeletonStyles.sectionHeaderRow}>
+          <View style={merchantDetailSkeletonStyles.sectionTitleBlock}>
+            <GMSkeleton style={merchantDetailSkeletonStyles.sectionTitle} />
+            <GMSkeleton style={merchantDetailSkeletonStyles.sectionSub} />
+          </View>
+          <GMSkeleton style={merchantDetailSkeletonStyles.sectionChevron} />
+        </View>
+      </View>
+
+      {Array.from({ length: menuRowCount }).map((_, i) => (
+        <StoreMenuItemRowSkeleton key={i} showDivider={i < menuRowCount - 1} />
+      ))}
+    </View>
+  );
+}
+
+/** @deprecated Prefer StoreMenuItemRowSkeleton — old left-image card layout. */
+export function MenuItemRowSkeleton() {
+  return <StoreMenuItemRowSkeleton />;
+}
+
+/** List of store menu row skeletons. */
 export function MenuListSkeleton({ count = 6 }: { count?: number }) {
   return (
     <>
       {Array.from({ length: count }).map((_, i) => (
-        <MenuItemRowSkeleton key={i} />
+        <StoreMenuItemRowSkeleton key={i} showDivider={i < count - 1} />
       ))}
     </>
   );
 }
 
 const headerSkeletonStyles = StyleSheet.create({
-  wrap: { height: 220, width: "100%" },
+  wrap: { height: MERCHANT_HEADER_IMAGE_H, width: "100%" },
 });
 
-/** Merchant header / banner skeleton. */
+/** Merchant banner only — prefer MerchantDetailSkeleton for the full inner page. */
 export function MerchantHeaderSkeleton() {
   return <GMSkeleton style={headerSkeletonStyles.wrap} />;
 }

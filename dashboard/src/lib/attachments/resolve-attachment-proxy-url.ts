@@ -1,3 +1,5 @@
+import { normalizeR2ObjectKey } from "@/lib/r2-proxy-url";
+
 const R2_PUBLIC_BASE = process.env.NEXT_PUBLIC_MERCHANT_R2_BASE_URL?.replace(/\/$/, "") ?? "";
 
 /**
@@ -29,7 +31,7 @@ export function resolveAttachmentProxyUrl(value: unknown): string {
         return `/api/attachments/proxy${u.search}`;
       }
       if (R2_PUBLIC_BASE && resolved.startsWith(R2_PUBLIC_BASE + "/")) {
-        const objectKey = resolved.slice(R2_PUBLIC_BASE.length + 1);
+        const objectKey = normalizeR2ObjectKey(resolved.slice(R2_PUBLIC_BASE.length + 1));
         if (objectKey) {
           return `/api/attachments/proxy?key=${encodeURIComponent(objectKey)}`;
         }
@@ -40,10 +42,27 @@ export function resolveAttachmentProxyUrl(value: unknown): string {
     return resolved;
   }
 
-  if (resolved.startsWith("/api/attachments/proxy")) return resolved;
+  if (resolved.startsWith("/api/attachments/proxy")) {
+    try {
+      const u = new URL(resolved, "https://local.invalid");
+      const key = u.searchParams.get("key");
+      if (key) {
+        const normalized = normalizeR2ObjectKey(decodeURIComponent(key));
+        if (normalized) {
+          return `/api/attachments/proxy?key=${encodeURIComponent(normalized)}`;
+        }
+      }
+    } catch {
+      // keep as-is
+    }
+    return resolved;
+  }
 
   if (!resolved.includes("://") && !resolved.startsWith("/")) {
-    return `/api/attachments/proxy?key=${encodeURIComponent(resolved.replace(/^\/+/, ""))}`;
+    const objectKey = normalizeR2ObjectKey(resolved);
+    if (objectKey) {
+      return `/api/attachments/proxy?key=${encodeURIComponent(objectKey)}`;
+    }
   }
 
   return resolved;

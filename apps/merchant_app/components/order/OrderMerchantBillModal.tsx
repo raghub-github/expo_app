@@ -8,6 +8,7 @@ import type { ApiFoodOrder, ApiFoodOrderItem } from "@/services/ordersApi";
 import {
   merchantBillPartsFromFoodItems,
   merchantItemLineParts,
+  formatMerchantRs,
 } from "@/lib/merchant-line-total";
 import { GatiMitraMerchant, CARD_RADIUS, H_PADDING } from "@/constants/theme";
 import {
@@ -16,12 +17,6 @@ import {
 } from "@/lib/merchant-order-food-item-display";
 import { ItemVegMark } from "@/components/order/ItemVegMark";
 import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
-
-function formatRs(amount: number, decimals = 2): string {
-  const n = Number.isFinite(amount) ? amount : 0;
-  if (decimals === 0) return `₹${Math.round(n)}`;
-  return `₹${n.toFixed(decimals)}`;
-}
 
 function isPaidOrder(order: ApiFoodOrder): boolean {
   const st = (order.payment_status ?? "").trim().toUpperCase();
@@ -66,18 +61,18 @@ function BillItemRow({
             </View>
           ) : null}
         </View>
-        <Text style={styles.itemLineTotal}>{formatRs(parts.total, 2)}</Text>
+        <Text style={styles.itemLineTotal}>{formatMerchantRs(parts.total)}</Text>
       </View>
 
       {showValueSplit ? (
         <>
           <View style={styles.splitRow}>
             <Text style={styles.splitLabel}>Item value</Text>
-            <Text style={styles.splitAmount}>{formatRs(parts.base, 2)}</Text>
+            <Text style={styles.splitAmount}>{formatMerchantRs(parts.base)}</Text>
           </View>
           <View style={styles.splitRow}>
             <Text style={styles.splitLabelCust}>Customization value</Text>
-            <Text style={styles.splitAmountCust}>{formatRs(parts.customizations, 2)}</Text>
+            <Text style={styles.splitAmountCust}>{formatMerchantRs(parts.customizations)}</Text>
           </View>
         </>
       ) : null}
@@ -88,7 +83,7 @@ function BillItemRow({
             ↳ {row.label}
           </Text>
           {row.amount != null ? (
-            <Text style={styles.addonAmount}>{formatRs(row.amount, 2)}</Text>
+            <Text style={styles.addonAmount}>{formatMerchantRs(row.amount)}</Text>
           ) : (
             <View style={styles.addonSpacer} />
           )}
@@ -119,7 +114,7 @@ function SummaryRow({
           bold && styles.summaryAmountBold,
         ]}
       >
-        {discount ? `−${formatRs(amount, 2)}` : formatRs(amount, bold ? 2 : 2)}
+        {discount ? `−${formatMerchantRs(amount)}` : formatMerchantRs(amount)}
       </Text>
     </View>
   );
@@ -142,7 +137,7 @@ export function OrderMerchantBillModal({ visible, onClose, order }: Props) {
         <View style={styles.footer}>
           <View style={styles.footerRow}>
             <Text style={styles.footerLabel}>Total bill</Text>
-            <Text style={styles.footerAmount}>{formatRs(displayTotal, 2)}</Text>
+            <Text style={styles.footerAmount}>{formatMerchantRs(displayTotal)}</Text>
           </View>
         </View>
       }

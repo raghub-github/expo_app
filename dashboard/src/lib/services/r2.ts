@@ -3,7 +3,13 @@
  * Handles Cloudflare R2 operations for document uploads
  */
 
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+  ListObjectsV2Command,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 let r2Client: S3Client | null = null;
@@ -84,17 +90,49 @@ export async function uploadWithKey(
  * Get object from R2 by key (for proxy/serving).
  * Returns buffer and contentType for use in NextResponse.
  */
+/** List object keys under an R2 prefix (e.g. orders/GM10000092/delivery-proof/). */
+export async function listR2KeysByPrefix(
+  prefix: string,
+  maxKeys = 50
+): Promise<string[]> {
+  const client = getR2Client();
+  const bucket = getBucketName();
+  const normalizedPrefix = prefix.trim().replace(/^\/+/, "");
+  const keys: string[] = [];
+  let continuationToken: string | undefined;
+
+  do {
+    const response = await client.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: normalizedPrefix,
+        MaxKeys: Math.min(maxKeys - keys.length, 1000),
+        ContinuationToken: continuationToken,
+      })
+    );
+    for (const obj of response.Contents ?? []) {
+      if (obj.Key) keys.push(obj.Key);
+    }
+    continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+  } while (continuationToken && keys.length < maxKeys);
+
+  return keys;
+}
+
 export async function getObjectByKey(
   r2Key: string
 ): Promise<{ buffer: Buffer; contentType?: string } | null> {
   const client = getR2Client();
   const bucket = getBucketName();
+  const { normalizeR2ObjectKey } = await import("@/lib/r2-proxy-url");
+  const key = normalizeR2ObjectKey(r2Key);
+  if (!key) return null;
 
   try {
     const response = await client.send(
       new GetObjectCommand({
         Bucket: bucket,
-        Key: r2Key,
+        Key: key,
       })
     );
     if (!response.Body) return null;
@@ -192,13 +230,18 @@ export async function getSignedUrlFromKey(
 ): Promise<string> {
   const client = getR2Client();
   const bucket = getBucketName();
+  const { normalizeR2ObjectKey } = await import("@/lib/r2-proxy-url");
+  const key = normalizeR2ObjectKey(r2Key);
+  if (!key) {
+    throw new Error("Invalid R2 key");
+  }
 
   try {
     const signedUrl = await getSignedUrl(
       client as unknown as Parameters<typeof getSignedUrl>[0],
       new GetObjectCommand({
         Bucket: bucket,
-        Key: r2Key,
+        Key: key,
       }),
       { expiresIn }
     );

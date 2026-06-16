@@ -2,30 +2,25 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { fetchStoreById } from '@/lib/database';
-import { DEMO_RESTAURANT_ID } from '@/lib/constants';
+import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
+
+export { isValidPartnerStoreId };
 
 export const PARTNER_SELECTED_STORE_CHANGED = 'partner-selected-store-changed';
 export const PARTNER_INCOMING_MODAL_OPEN = 'partner-incoming-order-modal-open';
 export const PARTNER_INCOMING_MODAL_CLOSED = 'partner-incoming-order-modal-closed';
 export const PARTNER_PENDING_ORDERS_REFRESH = 'partner-pending-orders-refresh';
-
-import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
-
-export { isValidPartnerStoreId };
-
-const INVALID = new Set(['', 'no id', 'loading...', 'unknown store', '—', '-']);
-
 export function readPartnerSelectedStoreId(prop?: string): string {
   const raw = (prop || '').trim();
-  const lower = raw.toLowerCase();
-  if (raw && !INVALID.has(lower)) return raw;
+  if (isValidPartnerStoreId(raw)) return raw;
   if (typeof window !== 'undefined') {
     const ls = (localStorage.getItem('selectedStoreId') || '').trim();
-    if (ls) return ls;
+    if (isValidPartnerStoreId(ls)) return ls;
+    if (ls) localStorage.removeItem('selectedStoreId');
     const url = new URLSearchParams(window.location.search).get('storeId')?.trim();
-    if (url) return url;
+    if (isValidPartnerStoreId(url)) return url!;
   }
-  return DEMO_RESTAURANT_ID;
+  return '';
 }
 
 /** Call after writing `selectedStoreId` to localStorage (same-tab listeners). */
@@ -37,7 +32,7 @@ export function notifyPartnerSelectedStoreChanged(storeId: string): void {
 }
 
 export function persistPartnerSelectedStoreId(storeId: string): void {
-  if (typeof window === 'undefined' || !storeId.trim()) return;
+  if (typeof window === 'undefined' || !isValidPartnerStoreId(storeId)) return;
   localStorage.setItem('selectedStoreId', storeId.trim());
   notifyPartnerSelectedStoreChanged(storeId.trim());
 }
@@ -57,7 +52,7 @@ export function usePartnerSelectedStore(restaurantIdProp?: string): PartnerSelec
   const [ready, setReady] = useState(false);
 
   const resolve = useCallback(async (raw: string) => {
-    if (!raw) {
+    if (!raw || !isValidPartnerStoreId(raw)) {
       setStoreId(null);
       setStoreInternalId(null);
       setReady(true);

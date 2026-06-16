@@ -10,6 +10,7 @@ import {
   PARTNER_INCOMING_MODAL_OPEN,
   PARTNER_PENDING_ORDERS_REFRESH,
   PARTNER_SELECTED_STORE_CHANGED,
+  isValidPartnerStoreId,
   readPartnerSelectedStoreId,
   usePartnerSelectedStore,
 } from '@/lib/partner-selected-store';
@@ -48,7 +49,7 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
 
   const loadPending = useCallback(async () => {
     const sid = readPartnerSelectedStoreId(restaurantId);
-    if (!sid) return;
+    if (!isValidPartnerStoreId(sid)) return;
     try {
       const res = await fetch(
         `/api/merchant/pending-new-orders-count?store_id=${encodeURIComponent(sid)}`
@@ -62,7 +63,7 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
 
   const loadFloatingSetting = useCallback(async () => {
     const sid = readPartnerSelectedStoreId(restaurantId);
-    if (!sid) return;
+    if (!isValidPartnerStoreId(sid)) return;
     try {
       const res = await fetch(`/api/merchant/store-settings?storeId=${encodeURIComponent(sid)}`, {
         credentials: 'include',

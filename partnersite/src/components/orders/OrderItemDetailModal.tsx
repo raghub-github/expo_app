@@ -26,7 +26,7 @@ function VegMark({ vegNonveg }: { vegNonveg?: string | null }) {
 }
 
 function formatMoney(n: number) {
-  return `₹${n.toFixed(2)}`;
+  return `₹${Math.round(Number(n))}`;
 }
 
 export type OrderItemDetailModalProps = {

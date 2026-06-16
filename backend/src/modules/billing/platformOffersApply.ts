@@ -14,22 +14,11 @@ function num(v: unknown): number {
 }
 
 /**
- * Compute the qualifying cart total against which offer.min_order_amount is checked.
- * This is the FULL pre-discount payable amount — items + addons + packaging + delivery
- * + all fees — so a cart with items=189 + delivery=45 + packaging=11 = 245 qualifies
- * for an offer with min_order_amount=199. Item subtotal alone would be too strict.
+ * Offer min-order eligibility: sum of eligible item values (items + add-ons) only.
+ * Delivery, platform/packaging fees, taxes, surge, tips, and other charges are excluded.
  */
-export function qualifyingCartFromRem(itemPlusAddon: number, rem: FeeRem): number {
-  return (
-    Math.max(0, itemPlusAddon) +
-    Math.max(0, rem.delivery) +
-    Math.max(0, rem.platform) +
-    Math.max(0, rem.packaging) +
-    Math.max(0, rem.surge) +
-    Math.max(0, rem.smallOrder) +
-    Math.max(0, rem.convenience) +
-    Math.max(0, rem.misc)
-  );
+export function qualifyingCartFromRem(itemPlusAddon: number, _rem: FeeRem): number {
+  return Math.max(0, itemPlusAddon);
 }
 
 function nowInWindow(now: Date, startsAt: Date | null, endsAt: Date | null): boolean {
@@ -144,9 +133,7 @@ export function platformOfferMerchantScopeMatches(ctx: BillContext, o: PlatformO
 
 function platformOfferMinCartMeetsThreshold(o: PlatformOfferRow, grossCart: number): boolean {
   const minAmt = effectiveMinOrderAmount(o);
-  // grossCart here is the full PRE-DISCOUNT payable cart total (items + addons +
-  // packaging + delivery + all fees) — this matches what the customer sees as
-  // their cart total in the bill summary. Item subtotal alone would be too strict.
+  // grossCart is item + add-on subtotal only (eligible item values); fees and taxes excluded.
   if (minAmt > 0 && grossCart < minAmt) return false;
   return true;
 }
@@ -230,7 +217,7 @@ function hasStandardCartDiscount(o: PlatformOfferRow): boolean {
  * Falls back to priority-based 0 for kinds whose value is hard to estimate without
  * the full apply pipeline (BUY_X_GET_Y, FREE_MENU_ITEM, BUNDLE_DISCOUNT, etc.).
  */
-function estimateOfferDiscountValue(o: PlatformOfferRow, ctx: BillContext, rem: FeeRem): number {
+export function estimateOfferDiscountValue(o: PlatformOfferRow, ctx: BillContext, rem: FeeRem): number {
   const k = String(o.offerKind ?? "DISCOUNT").toUpperCase();
   const value = num(o.valueNumeric);
   const cap = num(o.maxDiscountAmount);
@@ -396,8 +383,6 @@ export function applyPlatformCartOffers(
   itemPlusAddon: number,
   rem: FeeRem
 ): void {
-  // Use full pre-discount cart total for min order amount check, but the actual
-  // cart-side discount is still computed against rem.items (the line that gets discounted).
   const grossCart = qualifyingCartFromRem(itemPlusAddon, rem);
 
   const winner = pickPlatformOfferWinner(ctx, dataset, grossCart, (o) => {

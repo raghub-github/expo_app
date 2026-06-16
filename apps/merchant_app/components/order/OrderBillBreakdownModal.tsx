@@ -10,12 +10,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { MerchantBillBreakdownModal } from "@/lib/merchantBillBreakdown";
 import { GatiMitraMerchant, CARD_RADIUS, H_PADDING } from "@/constants/theme";
-
-function formatRs(amount: number): string {
-  const n = Number.isFinite(amount) ? amount : 0;
-  if (Math.abs(n - Math.round(n)) < 0.005) return `₹${Math.round(n)}`;
-  return `₹${n.toFixed(2)}`;
-}
+import { formatMerchantRs } from "@/lib/merchant-line-total";
 
 type Props = {
   visible: boolean;
@@ -69,7 +64,7 @@ export function OrderBillBreakdownModal({ visible, onClose, breakdown }: Props) 
                       line.kind === "discount" && styles.discountAmount,
                     ]}
                   >
-                    {line.kind === "discount" ? `−${formatRs(line.amount)}` : formatRs(line.amount)}
+                    {line.kind === "discount" ? `−${formatMerchantRs(line.amount)}` : formatMerchantRs(line.amount)}
                   </Text>
                 </View>
               ))
@@ -78,7 +73,7 @@ export function OrderBillBreakdownModal({ visible, onClose, breakdown }: Props) 
             <View style={styles.divider} />
             <View style={styles.totalRow}>
               <Text style={styles.totalLabel}>Total paid by customer</Text>
-              <Text style={styles.totalAmount}>{formatRs(breakdown.finalAmount)}</Text>
+              <Text style={styles.totalAmount}>{formatMerchantRs(breakdown.finalAmount)}</Text>
             </View>
           </ScrollView>
         </Pressable>

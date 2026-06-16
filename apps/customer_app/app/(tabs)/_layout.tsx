@@ -22,10 +22,25 @@ export default function TabsLayout() {
           }}
         />
         <Tabs.Screen
+          name="food"
+          options={{
+            title: "Food",
+            headerShown: false,
+          }}
+        />
+        <Tabs.Screen
           name="orders"
           options={{
             title: "Orders",
             headerShown: false,
+          }}
+        />
+        <Tabs.Screen
+          name="offers"
+          options={{
+            title: "Offers",
+            headerShown: false,
+            href: null,
           }}
         />
         <Tabs.Screen

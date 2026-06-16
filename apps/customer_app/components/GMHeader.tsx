@@ -32,6 +32,8 @@ export type GMHeaderProps = {
   searchElement?: React.ReactNode;
   /** Minimal header for no-service: only Back + location label. Hides search, veg, cart. */
   minimal?: boolean;
+  /** Transparent header on mint ambient screens (no-service empty state). */
+  blendBackground?: boolean;
   /** Location line for minimal header (e.g. "Current location" or address.primary) */
   locationLabel?: string;
   /** Tighter vertical padding (food home — root already reserves status bar). */
@@ -50,20 +52,37 @@ export function GMHeader({
   onCartPress,
   searchElement,
   minimal = false,
+  blendBackground = false,
   locationLabel = "Current location",
   compact = false,
 }: GMHeaderProps) {
   const bottomPad = compact ? 8 : HEADER_VERTICAL_PADDING;
   if (minimal) {
     return (
-      <View style={[styles.wrap, styles.wrapInFlow, { paddingTop: topInset + HEADER_PADDING_TOP, paddingBottom: 6 }]}>
+      <View
+        style={[
+          styles.wrap,
+          styles.wrapInFlow,
+          blendBackground && styles.wrapBlend,
+          { paddingTop: topInset + HEADER_PADDING_TOP, paddingBottom: 10 },
+        ]}
+      >
         <View style={styles.innerMinimal}>
-          <TouchableOpacity onPress={onBack} style={styles.backBtn} hitSlop={12}>
-            <Ionicons name="arrow-back" size={22} color={GatiMitraColors.textPrimaryNew} />
+          <TouchableOpacity
+            onPress={onBack}
+            style={[styles.backBtnCircle, blendBackground && styles.backBtnCircleBlend]}
+            hitSlop={12}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="chevron-back" size={21} color={GatiMitraColors.textPrimaryNew} />
           </TouchableOpacity>
-          <Text style={styles.locationLabel} numberOfLines={1}>
+          <Text
+            style={[styles.locationLabelMinimal, blendBackground && styles.locationLabelBlend]}
+            numberOfLines={1}
+          >
             {locationLabel}
           </Text>
+          <View style={styles.headerSpacer} />
         </View>
       </View>
     );
@@ -124,6 +143,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#ffffff",
     zIndex: 1000,
   },
+  wrapBlend: {
+    backgroundColor: "transparent",
+    zIndex: 2,
+  },
   wrapInFlow: {},
   inner: {
     flexDirection: "row",
@@ -147,8 +170,8 @@ const styles = StyleSheet.create({
   innerMinimal: {
     flexDirection: "row",
     alignItems: "center",
-    height: GM_MINIMAL_HEADER_HEIGHT,
-    paddingHorizontal: 2,
+    minHeight: GM_MINIMAL_HEADER_HEIGHT,
+    paddingHorizontal: 0,
   },
   locationLabel: {
     flex: 1,
@@ -157,9 +180,54 @@ const styles = StyleSheet.create({
     color: GatiMitraColors.textPrimaryNew,
     marginLeft: 6,
   },
+  locationLabelMinimal: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#374151",
+    textAlign: "center",
+    letterSpacing: -0.12,
+    paddingHorizontal: 4,
+  },
+  locationLabelBlend: {
+    color: "#1F2937",
+    fontWeight: "600",
+  },
+  headerSpacer: {
+    width: 40,
+    height: 40,
+    flexShrink: 0,
+  },
   backBtn: {
     padding: 6,
     flexShrink: 0,
+  },
+  backBtnCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    ...(Platform.OS === "ios" && {
+      shadowColor: "#000",
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.1,
+      shadowRadius: 6,
+    }),
+    elevation: 3,
+  },
+  backBtnCircleBlend: {
+    backgroundColor: "rgba(255,255,255,0.92)",
+    borderWidth: 1,
+    borderColor: "rgba(167,243,208,0.45)",
+    ...(Platform.OS === "ios" && {
+      shadowColor: "#16A34A",
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.12,
+      shadowRadius: 8,
+    }),
   },
   centerSlot: {
     flex: 1,

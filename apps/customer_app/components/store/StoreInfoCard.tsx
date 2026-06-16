@@ -9,12 +9,13 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
+import { MerchantRatingBadge } from "@/components/home/MerchantRatingBadge";
 
 export type StoreInfoCardProps = {
   name: string;
   logoUrl?: string | null;
-  rating?: string | null;
-  reviewCountLabel?: string | null;
+  avgRating?: number | null;
+  totalReviews?: number | null;
   distanceKm?: number | null;
   areaLabel?: string | null;
   etaLabel?: string | null;
@@ -81,8 +82,8 @@ function OfferTicker({
 
 export function StoreInfoCard({
   name,
-  rating,
-  reviewCountLabel,
+  avgRating,
+  totalReviews,
   distanceKm,
   areaLabel,
   etaLabel,
@@ -115,17 +116,12 @@ export function StoreInfoCard({
             <Ionicons name="information-circle-outline" size={18} color={StoreTheme.textSecondary} />
           </TouchableOpacity>
         </View>
-        {rating ? (
-          <View style={styles.ratingBlock}>
-            <View style={styles.ratingPill}>
-              <Ionicons name="star" size={11} color="#fff" />
-              <Text style={styles.ratingText}>{rating}</Text>
-            </View>
-            {reviewCountLabel ? (
-              <Text style={styles.reviewCount}>By {reviewCountLabel}</Text>
-            ) : null}
-          </View>
-        ) : null}
+        <MerchantRatingBadge
+          rating={avgRating}
+          totalReviews={totalReviews}
+          showReviewHint
+          size="md"
+        />
       </View>
 
       {locationText ? (
@@ -248,30 +244,6 @@ const styles = StyleSheet.create({
   },
   infoBtn: {
     marginTop: 4,
-  },
-  ratingBlock: {
-    alignItems: "flex-end",
-  },
-  ratingPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 3,
-    backgroundColor: StoreTheme.ratingGreenBg,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  ratingText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#fff",
-  },
-  reviewCount: {
-    fontSize: 11,
-    color: StoreTheme.textSecondary,
-    marginTop: 3,
-    textDecorationLine: "underline",
-    textDecorationStyle: "dashed",
   },
   metaRow: {
     flexDirection: "row",

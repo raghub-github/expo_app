@@ -2,7 +2,7 @@ import React from "react";
 import { View, Text, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { ActiveManeuverDisplay } from "@/src/lib/navigation-maneuver";
-
+import { formatDistanceShort } from "@/src/lib/navigation-maneuver";
 type Props = {
   maneuver: ActiveManeuverDisplay;
 };
@@ -35,14 +35,22 @@ function ManeuverIcon({ icon }: { icon: ActiveManeuverDisplay["icon"] }) {
 export function NavigationManeuverBanner({ maneuver }: Props) {
   const wrongWay = maneuver.title === "Wrong way";
   const headline = wrongWay ? maneuver.primary : (maneuver.title ?? maneuver.primary);
+  const distance = formatDistanceShort(maneuver.distanceAheadM);
 
   return (
     <View style={[styles.wrap, wrongWay && styles.wrapWrongWay]}>
       <View style={[styles.primaryRow, wrongWay && styles.primaryRowWrongWay]}>
         <ManeuverIcon icon={maneuver.icon} />
-        <Text style={styles.primaryText} numberOfLines={2}>
-          {headline}
-        </Text>
+        <View style={styles.textCol}>
+          {distance ? (
+            <Text style={styles.distanceText} numberOfLines={1}>
+              {distance}
+            </Text>
+          ) : null}
+          <Text style={styles.primaryText} numberOfLines={2}>
+            {headline}
+          </Text>
+        </View>
       </View>
       {maneuver.secondary ? (
         <View style={[styles.thenRow, wrongWay && styles.thenRowWrongWay]}>
@@ -98,12 +106,22 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  primaryText: {
+  textCol: {
     flex: 1,
-    fontSize: 22,
-    fontWeight: "700",
+    minWidth: 0,
+    paddingRight: 8,
+  },
+  distanceText: {
+    fontSize: 26,
+    fontWeight: "800",
     color: "#ffffff",
-    letterSpacing: 0.2,
+    lineHeight: 30,
+  },
+  primaryText: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "rgba(255,255,255,0.95)",
+    letterSpacing: 0.1,
   },
   thenRow: {
     flexDirection: "row",

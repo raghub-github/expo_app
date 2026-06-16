@@ -10,6 +10,7 @@ import { OrderCardItemRow } from "@/components/order/OrderCardItemRow";
 import { OrderCardMerchantInstructions } from "@/components/order/OrderCardMerchantInstructions";
 import { sliceOrderLineItems } from "@/lib/orderCardDisplay";
 import { formatOrderCardCustomerLabel } from "@/components/order/orderFormatters";
+import { formatMerchantRs } from "@/lib/merchant-line-total";
 import { merchantOrderCardLayoutStyles as styles } from "@/components/order/merchantOrderCardLayoutStyles";
 
 export type MerchantOrderCardLayoutProps = {
@@ -159,7 +160,7 @@ export function MerchantOrderCardLayout({
           <Pressable onPress={() => setBillOpen((v) => !v)} style={styles.sectionHead}>
             <Ionicons name="receipt-outline" size={18} color="#444444" />
             <Text style={styles.sectionTitle}>Total bill</Text>
-            <Text style={styles.billAmount}>₹{Math.round(order.total)}</Text>
+            <Text style={styles.billAmount}>{formatMerchantRs(order.total)}</Text>
             <Ionicons
               name={billOpen ? "chevron-up" : "chevron-down"}
               size={18}

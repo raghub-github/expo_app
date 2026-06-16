@@ -2,7 +2,8 @@ import { View, Text, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import {
   formatPrepDelayedBannerLabel,
-  prepOverdueMinutes,
+  formatPrepDelayedBannerLabelFromMinutes,
+  prepOverdueSeconds,
   type PrepCountdownOrder,
 } from "@/lib/order-prep-time";
 
@@ -15,15 +16,15 @@ type Props = {
 
 /** Top-of-card banner — live overdue minutes vs prep_ready_by_at (KPT + need-more-time). */
 export function OrderPrepDelayedBanner({ order, nowMs }: Props) {
-  const overdueMins = prepOverdueMinutes(order, nowMs);
-  const label = formatPrepDelayedBannerLabel(overdueMins);
+  const overdueSec = prepOverdueSeconds(order, nowMs);
+  const label = formatPrepDelayedBannerLabel(overdueSec);
 
   return <OrderDelayTopBanner label={label} />;
 }
 
 /** Top banner on ready / picked-up cards — frozen delay from when order was marked ready. */
 export function OrderPreparedLateTopBanner({ lateMinutes }: { lateMinutes: number }) {
-  return <OrderDelayTopBanner label={formatPrepDelayedBannerLabel(lateMinutes)} />;
+  return <OrderDelayTopBanner label={formatPrepDelayedBannerLabelFromMinutes(lateMinutes)} />;
 }
 
 function OrderDelayTopBanner({ label }: { label: string }) {

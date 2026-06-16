@@ -1,14 +1,24 @@
 /**
- * Food rider unassign orchestration — clears assignment, preserves merchant status, restarts dispatch.
+ * Food rider unassign orchestration — clears assignment, preserves merchant status.
  */
 
 import { and, eq } from "drizzle-orm";
+import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { getDb } from "../db/client.js";
+
+type DbTx = PostgresJsDatabase<Record<string, unknown>>;
 import { ordersCore, ordersFood } from "../db/schema.js";
-import { restartOrderDispatch } from "./order-dispatch.service.js";
+import {
+  completeOrderDispatch,
+  restartOrderDispatch,
+  startOrderDispatch,
+} from "./order-dispatch.service.js";
 import { recordDispatchAssignmentAudit } from "./rider-dispatch-assignment-audit.js";
 import { recordRiderDispatchExclusion } from "./rider-dispatch-order-exclusion.js";
-import { recordFoodRiderUnassigned } from "./rider-ride-assignment.js";
+import {
+  recordFoodRiderAdminCancelled,
+  recordFoodRiderUnassigned,
+} from "./rider-ride-assignment.js";
 
 export type UnassignFoodRiderInput = {
   orderCorePk: number;
@@ -21,20 +31,26 @@ export type UnassignFoodRiderInput = {
   actorId?: string;
 };
 
+export type AdminCancelFoodRiderMode = "hold" | "reassign";
+
+export type AdminCancelFoodRiderInput = UnassignFoodRiderInput & {
+  mode: AdminCancelFoodRiderMode;
+};
+
 function coreStatusAfterFoodUnassign(foodStatus: string): string {
   const st = foodStatus.trim().toUpperCase();
   if (st === "CREATED" || st === "NEW") return "CREATED";
   return st;
 }
 
-/** Unassign rider from food order and restart rider matching. Merchant acceptance unchanged. */
-export async function unassignFoodRiderAndRestartDispatch(
-  input: UnassignFoodRiderInput
-): Promise<void> {
+async function clearFoodRiderAssignment(
+  input: UnassignFoodRiderInput,
+  recordFn: (tx: DbTx, foodStatus: string, now: Date) => Promise<void>
+): Promise<string> {
   const db = getDb();
   const now = new Date();
 
-  const foodStatus = await db.transaction(async (tx) => {
+  return db.transaction(async (tx) => {
     const [row] = await tx
       .select({
         foodStatus: ordersFood.orderStatus,
@@ -52,6 +68,10 @@ export async function unassignFoodRiderAndRestartDispatch(
     }
 
     const foodSt = String(row.foodStatus).trim().toUpperCase();
+    if (foodSt === "DELIVERED" || foodSt === "CANCELLED") {
+      throw new Error("Cannot cancel rider on a delivered or cancelled order");
+    }
+
     const nextCoreStatus = coreStatusAfterFoodUnassign(foodSt);
 
     await tx
@@ -69,6 +89,78 @@ export async function unassignFoodRiderAndRestartDispatch(
       .set({ riderId: null, updatedAt: now })
       .where(eq(ordersFood.orderId, input.orderCorePk));
 
+    await recordFn(tx, foodSt, now);
+
+    return foodSt;
+  });
+}
+
+/** Agent cancels assigned rider — hold for manual assign or instantly re-dispatch. */
+export async function adminCancelFoodRiderFromOrder(
+  input: AdminCancelFoodRiderInput
+): Promise<void> {
+  const now = new Date();
+  const foodStatus = await clearFoodRiderAssignment(input, async (tx, foodSt, occurredAt) => {
+    await recordFoodRiderAdminCancelled(tx, {
+      orderCorePk: input.orderCorePk,
+      orderIdText: input.orderIdText,
+      riderId: input.riderId,
+      reasonCode: input.reasonCode,
+      reasonText: input.reasonText,
+      removedBy: input.removedBy,
+      actorType: input.actorType ?? "admin",
+      actorId: input.actorId,
+      cancelledBy: input.removedBy ?? input.actorId ?? null,
+      foodStatus: foodSt,
+      occurredAt,
+    });
+  });
+
+  await recordRiderDispatchExclusion({
+    orderCoreId: input.orderCorePk,
+    orderId: input.orderIdText,
+    riderId: input.riderId,
+    exclusionSource: "admin_unassign",
+    reasonCode: input.reasonCode,
+    reasonText: input.reasonText ?? input.reasonCode,
+    actorType: input.actorType ?? "admin",
+    actorId: input.actorId ?? input.removedBy ?? null,
+    metadata: { foodStatus, serviceType: "food", mode: input.mode },
+  });
+
+  await recordDispatchAssignmentAudit({
+    orderCoreId: input.orderCorePk,
+    orderId: input.orderIdText,
+    riderId: input.riderId,
+    eventType: "cancelled",
+    unassignedAt: now,
+    removedBy: input.removedBy ?? input.actorId ?? null,
+    removalReason: input.reasonText ?? input.reasonCode,
+    actorType: input.actorType ?? "admin",
+    actorId: input.actorId ?? input.removedBy ?? null,
+    metadata: {
+      foodStatus,
+      serviceType: "food",
+      reasonCode: input.reasonCode,
+      mode: input.mode,
+    },
+    occurredAt: now,
+  });
+
+  if (input.mode === "reassign") {
+    await restartOrderDispatch(input.orderCorePk);
+  } else {
+    await completeOrderDispatch(input.orderCorePk, "cancelled");
+  }
+}
+
+/** Unassign rider from food order and restart rider matching. Merchant acceptance unchanged. */
+export async function unassignFoodRiderAndRestartDispatch(
+  input: UnassignFoodRiderInput
+): Promise<void> {
+  const now = new Date();
+
+  const foodStatus = await clearFoodRiderAssignment(input, async (tx, foodSt, occurredAt) => {
     await recordFoodRiderUnassigned(tx, {
       orderCorePk: input.orderCorePk,
       orderIdText: input.orderIdText,
@@ -79,10 +171,8 @@ export async function unassignFoodRiderAndRestartDispatch(
       actorType: input.actorType,
       actorId: input.actorId,
       foodStatus: foodSt,
-      occurredAt: now,
+      occurredAt,
     });
-
-    return foodSt;
   });
 
   const exclusionSource =
@@ -115,4 +205,12 @@ export async function unassignFoodRiderAndRestartDispatch(
   });
 
   await restartOrderDispatch(input.orderCorePk);
+}
+
+/** Manual assign — run eligibility engine and send offers (excludes prior cancelled riders). */
+export async function manualAssignRiderForFoodOrder(orderCorePk: number): Promise<{
+  started: boolean;
+}> {
+  await startOrderDispatch(orderCorePk);
+  return { started: true };
 }

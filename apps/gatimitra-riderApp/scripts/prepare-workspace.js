@@ -48,17 +48,22 @@ console.log('📦 Project root:', PROJECT_ROOT);
 console.log('📱 App directory:', APP_DIR);
 console.log('📁 Packages directory:', PACKAGES_DIR);
 
-// Check if packages already exist (from previous run)
-const contractsExist = fs.existsSync(path.join(NODE_MODULES_DIR, 'contracts'));
-const sdkExist = fs.existsSync(path.join(NODE_MODULES_DIR, 'sdk'));
+function packageIsReady(packageName) {
+  const packageJsonPath = path.join(NODE_MODULES_DIR, packageName, 'package.json');
+  return fs.existsSync(packageJsonPath);
+}
+
+const workspacePackages = ['contracts', 'sdk', 'expo-push-kit'];
+const packagesReady = Object.fromEntries(
+  workspacePackages.map((pkg) => [pkg, packageIsReady(pkg)])
+);
 
 log('INFO', 'Checking existing packages', {
-  contractsExist,
-  sdkExist,
+  packagesReady,
   nodeModulesDir: NODE_MODULES_DIR
 });
 
-if (contractsExist && sdkExist) {
+if (workspacePackages.every((pkg) => packagesReady[pkg])) {
   log('INFO', 'Packages already exist, skipping', {});
   console.log('✅ Workspace packages already prepared, skipping...');
   process.exit(0);
@@ -76,23 +81,25 @@ if (!fs.existsSync(NODE_MODULES_DIR)) {
 }
 
 // Try to find packages in multiple locations
-let contractsSource = null;
-let sdkSource = null;
+const packageSources = {};
 
 log('INFO', 'Searching for packages', {
   packagesDir: PACKAGES_DIR,
   packagesDirExists: fs.existsSync(PACKAGES_DIR)
 });
 
+function resolvePackageSources(packagesDir) {
+  for (const pkg of workspacePackages) {
+    packageSources[pkg] = path.join(packagesDir, pkg);
+  }
+}
+
 // Location 1: Standard monorepo structure
 if (fs.existsSync(PACKAGES_DIR)) {
-  contractsSource = path.join(PACKAGES_DIR, 'contracts');
-  sdkSource = path.join(PACKAGES_DIR, 'sdk');
+  resolvePackageSources(PACKAGES_DIR);
   log('INFO', 'Found packages at standard location', {
-    contractsSource,
-    sdkSource,
-    contractsExists: fs.existsSync(contractsSource),
-    sdkExists: fs.existsSync(sdkSource)
+    packageSources,
+    packagesDir: PACKAGES_DIR,
   });
   console.log('✅ Found packages directory at standard location');
 } else {
@@ -104,13 +111,10 @@ if (fs.existsSync(PACKAGES_DIR)) {
   });
   
   if (fs.existsSync(altPackagesDir)) {
-    contractsSource = path.join(altPackagesDir, 'contracts');
-    sdkSource = path.join(altPackagesDir, 'sdk');
+    resolvePackageSources(altPackagesDir);
     log('INFO', 'Found packages at alternative location', {
-      contractsSource,
-      sdkSource,
-      contractsExists: fs.existsSync(contractsSource),
-      sdkExists: fs.existsSync(sdkSource)
+      packageSources,
+      packagesDir: altPackagesDir,
     });
     console.log('✅ Found packages directory at alternative location');
   } else {
@@ -125,59 +129,46 @@ if (fs.existsSync(PACKAGES_DIR)) {
   }
 }
 
-// Copy contracts package
-const contractsDest = path.join(NODE_MODULES_DIR, 'contracts');
-if (contractsSource && fs.existsSync(contractsSource)) {
-  log('INFO', 'Copying contracts package', {
-    source: contractsSource,
-    dest: contractsDest,
-    sourceExists: fs.existsSync(contractsSource)
-  });
-  console.log('📋 Copying @gatimitra/contracts...');
-  if (fs.existsSync(contractsDest)) {
-    fs.rmSync(contractsDest, { recursive: true, force: true });
-  }
-  copyDirectory(contractsSource, contractsDest);
-  log('INFO', 'Contracts package copied successfully', {
-    destExists: fs.existsSync(contractsDest)
-  });
-  console.log('✅ @gatimitra/contracts copied');
-} else {
-  log('WARN', 'Contracts package not found', {
-    contractsSource,
-    exists: contractsSource ? fs.existsSync(contractsSource) : false
-  });
-  console.log('⚠️  packages/contracts not found');
-}
+for (const pkg of workspacePackages) {
+  const source = packageSources[pkg];
+  const dest = path.join(NODE_MODULES_DIR, pkg);
 
-// Copy sdk package
-const sdkDest = path.join(NODE_MODULES_DIR, 'sdk');
-if (sdkSource && fs.existsSync(sdkSource)) {
-  log('INFO', 'Copying sdk package', {
-    source: sdkSource,
-    dest: sdkDest,
-    sourceExists: fs.existsSync(sdkSource)
-  });
-  console.log('📋 Copying @gatimitra/sdk...');
-  if (fs.existsSync(sdkDest)) {
-    fs.rmSync(sdkDest, { recursive: true, force: true });
+  if (packagesReady[pkg]) {
+    console.log(`✅ @gatimitra/${pkg} already prepared`);
+    continue;
   }
-  copyDirectory(sdkSource, sdkDest);
-  log('INFO', 'SDK package copied successfully', {
-    destExists: fs.existsSync(sdkDest)
-  });
-  console.log('✅ @gatimitra/sdk copied');
-} else {
-  log('WARN', 'SDK package not found', {
-    sdkSource,
-    exists: sdkSource ? fs.existsSync(sdkSource) : false
-  });
-  console.log('⚠️  packages/sdk not found');
+
+  if (source && fs.existsSync(source)) {
+    log('INFO', `Copying ${pkg} package`, {
+      source,
+      dest,
+      sourceExists: fs.existsSync(source),
+    });
+    console.log(`📋 Copying @gatimitra/${pkg}...`);
+    if (fs.existsSync(dest)) {
+      fs.rmSync(dest, { recursive: true, force: true });
+    }
+    copyDirectory(source, dest);
+    log('INFO', `${pkg} package copied successfully`, {
+      destExists: fs.existsSync(dest),
+    });
+    console.log(`✅ @gatimitra/${pkg} copied`);
+  } else {
+    log('WARN', `${pkg} package not found`, {
+      source,
+      exists: source ? fs.existsSync(source) : false,
+    });
+    console.log(`⚠️  packages/${pkg} not found`);
+  }
 }
 
 log('INFO', 'Workspace preparation complete', {
-  contractsCopied: contractsSource && fs.existsSync(contractsDest),
-  sdkCopied: sdkSource && fs.existsSync(sdkDest)
+  packagesCopied: Object.fromEntries(
+    workspacePackages.map((pkg) => [
+      pkg,
+      Boolean(packageSources[pkg] && fs.existsSync(path.join(NODE_MODULES_DIR, pkg, 'package.json'))),
+    ]),
+  ),
 });
 console.log('✅ Monorepo workspace preparation complete!');
 

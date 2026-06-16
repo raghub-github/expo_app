@@ -22,6 +22,11 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/** Whole-rupee menu price as merchants set in menu (₹150, not ₹149.60). */
+export function merchantMenuRupee(n: number): number {
+  return Math.round(Number.isFinite(n) ? n : 0);
+}
+
 function normName(s: string): string {
   return s.trim().toLowerCase().replace(/\s+/g, ' ');
 }
@@ -162,7 +167,7 @@ export function applyMerchantBaseToOrderItems<
     let newBaseLine = oldBase > 0.005 ? oldBase : round2(oldLineTotal - oldCust);
     if (snap) {
       used.add(snap.orderItemId);
-      newBaseLine = round2(snap.merchantBasePerUnit * qty);
+      newBaseLine = merchantMenuRupee(snap.merchantBasePerUnit) * qty;
     } else if (
       commissionPercent != null &&
       Number.isFinite(commissionPercent) &&
@@ -170,15 +175,15 @@ export function applyMerchantBaseToOrderItems<
       commissionPercent < 100
     ) {
       const unit = (oldBase > 0.005 ? oldBase : oldLineTotal) / qty;
-      newBaseLine = round2(((unit * (100 - commissionPercent)) / 100) * qty);
+      newBaseLine = merchantMenuRupee((unit * (100 - commissionPercent)) / 100) * qty;
     }
 
     let newCust = oldCust;
     if (oldCust > 0.005 && oldBase > 0.005 && newBaseLine > 0) {
-      newCust = round2(oldCust * (newBaseLine / oldBase));
+      newCust = merchantMenuRupee(oldCust * (newBaseLine / oldBase));
     }
 
-    const lineTotal = round2(newBaseLine + newCust);
+    const lineTotal = merchantMenuRupee(newBaseLine + newCust);
     subtotal += lineTotal;
     out.push({
       ...item,
@@ -189,7 +194,7 @@ export function applyMerchantBaseToOrderItems<
     } as T);
   }
 
-  return { items: out, merchantSubtotal: round2(subtotal) };
+  return { items: out, merchantSubtotal: merchantMenuRupee(subtotal) };
 }
 
 export function merchantOrderTotalFromBilling(

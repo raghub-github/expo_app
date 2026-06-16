@@ -4,6 +4,16 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+function menuRupee(n: number): number {
+  return Math.round(Number.isFinite(n) ? n : 0);
+}
+
+/** Merchant-facing money — whole rupees matching menu table prices. */
+export function formatMerchantRs(amount: number): string {
+  const n = Number.isFinite(amount) ? amount : 0;
+  return `₹${Math.round(n)}`;
+}
+
 function addonTotal(item: ApiFoodOrderItem): number {
   const fromField = Number(item.customizations_total) || 0;
   if (fromField > 0.005) return fromField;
@@ -37,18 +47,18 @@ function baseTotal(item: ApiFoodOrderItem): number {
 /** Line total from API (merchant-partner); fallback base + add-ons when price missing. */
 export function merchantLineTotalForFoodItem(item: ApiFoodOrderItem): number {
   const fromApi = round2(Number(item.price) || 0);
-  if (fromApi > 0.005) return fromApi;
+  if (fromApi > 0.005) return menuRupee(fromApi);
 
   const base = baseTotal(item);
   const cust = addonTotal(item);
-  if (base > 0.005 || cust > 0.005) return round2(base + cust);
+  if (base > 0.005 || cust > 0.005) return menuRupee(base + cust);
   return 0;
 }
 
 export function merchantItemLineParts(item: ApiFoodOrderItem) {
   const total = merchantLineTotalForFoodItem(item);
-  const base = baseTotal(item);
-  const customizations = addonTotal(item);
+  const base = menuRupee(baseTotal(item));
+  const customizations = menuRupee(addonTotal(item));
   return {
     base,
     customizations,
@@ -74,11 +84,11 @@ export function merchantBillPartsFromFoodItems(
   }
   const packaging = pricing.packaging ?? 0;
   const discount = pricing.discount ?? 0;
-  const total = round2(Math.max(0, itemsSubtotal + packaging - discount));
+  const total = menuRupee(Math.max(0, itemsSubtotal + packaging - discount));
   return {
-    itemsSubtotal: round2(itemsSubtotal),
-    itemBaseTotal: round2(itemBaseTotal),
-    customizationsTotal: round2(customizationsTotal),
+    itemsSubtotal: menuRupee(itemsSubtotal),
+    itemBaseTotal: menuRupee(itemBaseTotal),
+    customizationsTotal: menuRupee(customizationsTotal),
     showCustomizations: customizationsTotal > 0.005,
     packaging,
     discount,
@@ -95,9 +105,9 @@ export function merchantOrderBillTotal(
   }
 ): number {
   const pTotal = Number(order.pricing?.total);
-  if (Number.isFinite(pTotal) && pTotal > 0) return round2(pTotal);
+  if (Number.isFinite(pTotal) && pTotal > 0) return menuRupee(pTotal);
   const grand = Number(order.grand_total);
-  if (Number.isFinite(grand) && grand > 0) return round2(grand);
+  if (Number.isFinite(grand) && grand > 0) return menuRupee(grand);
   const items = order.items ?? [];
   return merchantBillPartsFromFoodItems(items, {
     packaging: order.pricing?.packaging ?? 0,
@@ -123,10 +133,10 @@ export function merchantBasePriceForLineItem(item: {
   customization_lines?: ApiFoodOrderItem["customization_lines"];
 }): number {
   const base = Number(item.base_amount) || 0;
-  if (base > 0.005) return Math.round(base);
+  if (base > 0.005) return menuRupee(base);
 
   const captured = Number(item.captured_base_amount) || 0;
-  if (captured > 0.005) return Math.round(captured);
+  if (captured > 0.005) return menuRupee(captured);
 
   const fromField = Number(item.customizations_total) || 0;
   let cust = fromField;
@@ -138,6 +148,6 @@ export function merchantBasePriceForLineItem(item: {
   }
 
   const stored = Number(item.price) || 0;
-  if (stored > cust + 0.005) return Math.round(stored - cust);
-  return stored > 0.005 ? Math.round(stored) : 0;
+  if (stored > cust + 0.005) return menuRupee(stored - cust);
+  return stored > 0.005 ? menuRupee(stored) : 0;
 }

@@ -39,10 +39,39 @@ const OrderSummarySchema = z.object({
   atCustomer: z.boolean().optional(),
   foodOrderStatus: z.string().nullable().optional(),
   merchantOrderReady: z.boolean().optional(),
+  pickupWaitStartedAt: z.string().nullable().optional(),
+  pickupWaitSeconds: z.number().nullable().optional(),
+  pickupWaitFinalized: z.boolean().optional(),
+  preparedAt: z.string().nullable().optional(),
+  pickupTimerStartedAt: z.string().nullable().optional(),
+  pickupTimerBudgetSeconds: z.number().nullable().optional(),
+  pickupDurationSeconds: z.number().nullable().optional(),
+  prepReadyByAt: z.string().nullable().optional(),
+  acceptedAt: z.string().nullable().optional(),
+  preparingAt: z.string().nullable().optional(),
+  preparationTimeMinutes: z.number().nullable().optional(),
+  prepDelayMinutes: z.number().nullable().optional(),
   customerName: z.string().nullable().optional(),
   customerPhone: z.string().nullable().optional(),
   pickupAddressGeocoded: z.string().optional(),
   dropAddressGeocoded: z.string().optional(),
+  foodItems: z
+    .array(
+      z.object({
+        name: z.string(),
+        quantity: z.number(),
+        variantName: z.string().nullable().optional(),
+        customization: z.string().nullable().optional(),
+      })
+    )
+    .optional(),
+  deliveryInstructions: z.string().nullable().optional(),
+  requiresUtensils: z.boolean().optional(),
+  restaurantPhone: z.string().nullable().optional(),
+  merchantFeedbackSubmitted: z.boolean().optional(),
+  customerFeedbackSubmitted: z.boolean().optional(),
+  paymentMethod: z.string().nullable().optional(),
+  paymentStatus: z.string().nullable().optional(),
 });
 
 const EarningsSummarySchema = z.object({
@@ -250,6 +279,62 @@ export const riderApi = {
     });
   },
 
+  async getFoodPickupVerificationSettings() {
+    const client = createApiClient();
+    return client.request<{
+      barcodeEnabled: boolean;
+      otpEnabled: boolean;
+      verificationRequired: boolean;
+    }>("/v1/rider/food-pickup-verification-settings", {
+      method: "GET",
+    });
+  },
+
+  async markFoodPickup(
+    orderId: string,
+    gps?: { lat?: number; lng?: number; deviceTimestamp?: string }
+  ) {
+    const client = createApiClient();
+    return client.request<RiderOrderSummary>(`/v1/rider/orders/${orderId}/mark-food-pickup`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(gps ?? {}),
+      responseSchema: OrderSummarySchema,
+    });
+  },
+
+  async submitMerchantPickupFeedback(
+    orderId: string,
+    payload: { rating?: number; tags?: string[]; skipped?: boolean }
+  ) {
+    const client = createApiClient();
+    return client.request<RiderOrderSummary>(
+      `/v1/rider/orders/${orderId}/merchant-pickup-feedback`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+        responseSchema: OrderSummarySchema,
+      }
+    );
+  },
+
+  async submitCustomerDeliveryFeedback(
+    orderId: string,
+    payload: { rating?: number; tags?: string[]; comment?: string; skipped?: boolean }
+  ) {
+    const client = createApiClient();
+    return client.request<RiderOrderSummary>(
+      `/v1/rider/orders/${orderId}/customer-delivery-feedback`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+        responseSchema: OrderSummarySchema,
+      }
+    );
+  },
+
   async markReachedPickup(
     orderId: string,
     gps?: { lat?: number; lng?: number }
@@ -296,7 +381,7 @@ export const riderApi = {
 
   async verifyPickupOtp(
     orderId: string,
-    payload: { otp: string; lat?: number; lng?: number }
+    payload: { otp: string; lat?: number; lng?: number; deviceTimestamp?: string }
   ) {
     const client = createApiClient();
     return client.request<RiderOrderSummary>(`/v1/rider/orders/${orderId}/verify-pickup-otp`, {
@@ -305,6 +390,22 @@ export const riderApi = {
       body: JSON.stringify(payload),
       responseSchema: OrderSummarySchema,
     });
+  },
+
+  async verifyPickupBarcode(
+    orderId: string,
+    payload: { barcode: string; lat?: number; lng?: number; deviceTimestamp?: string }
+  ) {
+    const client = createApiClient();
+    return client.request<RiderOrderSummary>(
+      `/v1/rider/orders/${orderId}/verify-pickup-barcode`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+        responseSchema: OrderSummarySchema,
+      }
+    );
   },
 
   async completeRide(orderId: string, gps?: { lat?: number; lng?: number }) {

@@ -8,6 +8,7 @@ import ItemsRefundModal from "./ItemsRefundModal";
 import type { OrderItemsPayload } from "@/lib/orderItemsPayload";
 import { computeOrderItemQuantityCount } from "@/lib/merchantOrderFoodActions";
 import {
+  formatDurationSecondsLabel,
   formatFirstEtaAt,
   formatKptMinutes,
   formatMerchantExtraPrepMinutes,
@@ -16,6 +17,7 @@ import {
   formatScheduledOrderLabel,
   shouldShowMerchantUpdatedKpt,
 } from "@/lib/orders/order-detail-display";
+import { useLiveElapsedSeconds } from "@/hooks/useLiveElapsedSeconds";
 import { formatRtoOtpDisplay } from "@/lib/orderOtps";
 import {
   formatCancelledByType,
@@ -28,6 +30,14 @@ import {
   rejectionTimesMatch,
   type OrderCancellationInfo,
 } from "@/lib/merchant-cancellation-display";
+import {
+  mapNotificationsFromApi,
+  mapReconsFromApi,
+  mapRemarksFromApi,
+  type SidebarCxNotification,
+  type SidebarRecon,
+  type SidebarRemark,
+} from "@/lib/orders/order-sidebar-activity";
 
 interface OrderRightSidebarProps {
   order: {
@@ -71,12 +81,23 @@ interface OrderRightSidebarProps {
     pickupOtp?: string | null;
     rtoOtp?: string | null;
     cancellationInfo?: OrderCancellationInfo | null;
+    storePrepDelaySeconds?: number | null;
+    storePrepDelayLive?: boolean;
+    storePrepDelayAnchorAt?: string | null;
+    storePrepDelayWasLate?: boolean;
   };
   /** Line-item count (prefetched items or API enrichment). */
   itemCount?: number;
   /** Counts from order API so "See all (N)" shows instantly without waiting for list fetch. */
   initialRemarksCount?: number;
   initialReconsCount?: number;
+  initialNotificationsCount?: number;
+  /** Prefetched lists from /api/orders/core or parent refresh — shown immediately on page load. */
+  initialRemarks?: SidebarRemark[];
+  initialNotifications?: SidebarCxNotification[];
+  initialRecons?: SidebarRecon[];
+  /** Bumps when parent refetches order so embedded activity re-seeds. */
+  activityRefreshKey?: number;
   /** Notify parent when latest remark agent email changes so "Routed To" updates instantly. */
   onRoutedToChange?: (email: string | null) => void;
   /** Refunds for this order (from GET /api/orders/[id]/refunds). Shown in Rejection Info. */
@@ -97,19 +118,7 @@ interface OrderRightSidebarProps {
   onPrefetchOrderItems?: () => void;
 }
 
-interface Remark {
-  id: string;
-  type: string;
-  content: string;
-  time: string;
-  actorType?: string | null;
-  actorName?: string | null;
-  actorEmail?: string | null;
-  canEdit?: boolean;
-  editedAtIso?: string | null;
-  editedTimeLabel?: string | null;
-  createdAtIso?: string;
-}
+type Remark = SidebarRemark;
 
 interface RemarkEditHistoryEntry {
   id: number;
@@ -132,20 +141,7 @@ interface AssignedRiderOption {
   providerName: string | null;
 }
 
-interface Recon {
-  id: string;
-  rider: string;
-  providerName?: string | null;
-  riderName?: string | null;
-  riderMobile?: string | null;
-  reason: string;
-  reasonCategory: string | null;
-  comment: string | null;
-  time: string;
-  actorEmail?: string | null;
-  actorName?: string | null;
-  actorRole?: string | null;
-}
+type Recon = SidebarRecon;
 
 const RECON_REASON_SEP = " !!!!!! ";
 
@@ -527,13 +523,30 @@ function ReconInlineField({
   );
 }
 
-interface CxNotification {
-  id: string;
-  message: string;
-  time: string;
-  actorType: string | null;
-  actorName: string | null;
-  actorEmail: string | null;
+type CxNotification = SidebarCxNotification;
+
+function SidebarLatestPreview({
+  label,
+  body,
+  meta,
+  onOpen,
+}: {
+  label: string;
+  body: string;
+  meta: string;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="mb-2 w-full rounded-lg border border-emerald-100 bg-emerald-50/60 px-2.5 py-2 text-left transition hover:bg-emerald-50 cursor-pointer"
+    >
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">{label}</p>
+      <p className="mt-0.5 line-clamp-3 text-[11px] leading-snug text-slate-800">{body}</p>
+      <p className="mt-1 text-[10px] text-slate-500">{meta}</p>
+    </button>
+  );
 }
 
 export default function OrderRightSidebar({
@@ -541,6 +554,11 @@ export default function OrderRightSidebar({
   itemCount: itemCountProp,
   initialRemarksCount = 0,
   initialReconsCount = 0,
+  initialNotificationsCount = 0,
+  initialRemarks,
+  initialNotifications,
+  initialRecons,
+  activityRefreshKey = 0,
   onRoutedToChange,
   orderRefunds = [],
   prefetchedOrderItems = null,
@@ -549,7 +567,7 @@ export default function OrderRightSidebar({
 }: OrderRightSidebarProps) {
   const auth = useAuthOptional();
   const userEmail = auth?.user?.email ?? null;
-  const [remarks, setRemarks] = useState<Remark[]>([]);
+  const [remarks, setRemarks] = useState<Remark[]>(initialRemarks ?? []);
   const [remarkType, setRemarkType] = useState<string>("CUSTOMER");
   const [remarkPreset, setRemarkPreset] = useState<string>("");
   const [remarkText, setRemarkText] = useState("");
@@ -557,13 +575,15 @@ export default function OrderRightSidebar({
   const [isSavingRemark, setIsSavingRemark] = useState(false);
   const [showRemarksModal, setShowRemarksModal] = useState(false);
 
-  const [notifications, setNotifications] = useState<CxNotification[]>([]);
+  const [notifications, setNotifications] = useState<CxNotification[]>(
+    initialNotifications ?? []
+  );
   const [notificationText, setNotificationText] = useState("");
   const [isLoadingNotifications, setIsLoadingNotifications] = useState(false);
   const [isSavingNotification, setIsSavingNotification] = useState(false);
   const [showNotificationsModal, setShowNotificationsModal] = useState(false);
 
-  const [recons, setRecons] = useState<Recon[]>([]);
+  const [recons, setRecons] = useState<Recon[]>(initialRecons ?? []);
   const [assignedRiders, setAssignedRiders] = useState<AssignedRiderOption[]>([]);
   const [reconRider, setReconRider] = useState<string>("");
   const [reconReason, setReconReason] = useState<string>("");
@@ -591,6 +611,28 @@ export default function OrderRightSidebar({
   useEffect(() => {
     if (order?.id != null) onPrefetchOrderItems?.();
   }, [order?.id, onPrefetchOrderItems]);
+
+  useEffect(() => {
+    if (initialRemarks) setRemarks(initialRemarks);
+    if (initialNotifications) setNotifications(initialNotifications);
+    if (initialRecons) setRecons(initialRecons);
+  }, [order.id, activityRefreshKey, initialRemarks, initialNotifications, initialRecons]);
+
+  const remarksCountDisplay = Math.max(
+    remarks.length,
+    initialRemarksCount,
+    initialRemarks?.length ?? 0
+  );
+  const notificationsCountDisplay = Math.max(
+    notifications.length,
+    initialNotificationsCount,
+    initialNotifications?.length ?? 0
+  );
+  const reconsCountDisplay = Math.max(
+    recons.length,
+    initialReconsCount,
+    initialRecons?.length ?? 0
+  );
 
   const prefetchedQtyCount =
     prefetchedOrderItems?.items && prefetchedOrderItems.items.length > 0
@@ -621,6 +663,17 @@ export default function OrderRightSidebar({
       ? Math.round(order.merchantExtraPrepMinutes)
       : null;
   const showMerchantExtraPrep = merchantExtraPrepMinutes != null;
+  const storePrepDelayLive = Boolean(order.storePrepDelayLive);
+  const liveStorePrepDelaySeconds = useLiveElapsedSeconds(
+    order.storePrepDelayAnchorAt,
+    storePrepDelayLive
+  );
+  const storePrepDelayDisplaySeconds = storePrepDelayLive
+    ? liveStorePrepDelaySeconds
+    : order.storePrepDelaySeconds;
+  const showStorePrepDelay =
+    storePrepDelayLive ||
+    (order.storePrepDelaySeconds != null && Number.isFinite(order.storePrepDelaySeconds));
   const orderStatusForOtp = (order.currentStatus || order.status || "").toString();
   const pickupOtpDisplay = order.pickupOtp?.trim() || "—";
   const rtoOtpDisplay =
@@ -712,7 +765,7 @@ export default function OrderRightSidebar({
   const loadRemarks = async () => {
     try {
       setIsLoadingRemarks(true);
-      const res = await fetch(`/api/orders/${order.id}/remarks`);
+      const res = await fetch(`/api/orders/${order.id}/remarks`, { credentials: "include" });
       if (!res.ok) {
         // eslint-disable-next-line no-console
         console.error("Failed to load remarks", await res.text());
@@ -720,67 +773,9 @@ export default function OrderRightSidebar({
       }
       const json = await res.json();
       const items =
-        (json?.data as Array<{
-          id: number;
-          remark: string;
-          remarkCategory: string | null;
-          actorType?: string | null;
-          actorName?: string | null;
-          remarkMetadata?: { actorEmail?: string | null } | null;
-          createdAt?: string;
-          lastEditedAt?: string | null;
-        }> | null) ?? [];
+        (json?.data as Parameters<typeof mapRemarksFromApi>[0] | null) ?? [];
 
-      const nowMs = Date.now();
-      const FIFTEEN_MIN_MS = 15 * 60 * 1000;
-
-      const mapped: Remark[] = items.map((r) => {
-        const created = r.createdAt ? new Date(r.createdAt) : new Date();
-        const edited = r.lastEditedAt ? new Date(r.lastEditedAt) : null;
-        const actorEmail =
-          typeof r.remarkMetadata?.actorEmail === "string"
-            ? r.remarkMetadata.actorEmail
-            : null;
-
-        const withinWindow = nowMs - created.getTime() <= FIFTEEN_MIN_MS;
-
-        const canEdit =
-          !!actorEmail &&
-          !!userEmail &&
-          actorEmail.toLowerCase() === userEmail.toLowerCase() &&
-          !edited &&
-          withinWindow;
-
-        return {
-          id: String(r.id),
-          type: r.remarkCategory ?? "OTHER",
-          content: r.remark,
-          actorType: r.actorType ?? null,
-          actorName: r.actorName ?? null,
-          actorEmail,
-          canEdit,
-          createdAtIso: r.createdAt ?? created.toISOString(),
-          editedAtIso: edited ? edited.toISOString() : null,
-          editedTimeLabel: edited
-            ? edited.toLocaleString("en-IN", {
-                day: "2-digit",
-                month: "2-digit",
-                year: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-                hour12: true,
-              })
-            : null,
-          time: created.toLocaleString("en-IN", {
-            day: "2-digit",
-            month: "2-digit",
-            year: "2-digit",
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: true,
-          }),
-        };
-      });
+      const mapped = mapRemarksFromApi(items, userEmail);
 
       setRemarks(mapped);
 
@@ -839,41 +834,18 @@ export default function OrderRightSidebar({
   const loadNotifications = async () => {
     try {
       setIsLoadingNotifications(true);
-      const res = await fetch(`/api/orders/${order.id}/notifications`);
+      const res = await fetch(`/api/orders/${order.id}/notifications`, {
+        credentials: "include",
+      });
       if (!res.ok) {
         console.error("Failed to load notifications", await res.text());
         return;
       }
       const json = await res.json();
       const items =
-        (json?.data as Array<{
-          id: number;
-          message: string;
-          sentByEmail?: string | null;
-          sentByName?: string | null;
-          sentByRole?: string | null;
-          sentAt?: string;
-        }> | null) ?? [];
+        (json?.data as Parameters<typeof mapNotificationsFromApi>[0] | null) ?? [];
 
-      const mapped: CxNotification[] = items.map((n) => {
-        const sent = n.sentAt ? new Date(n.sentAt) : new Date();
-        return {
-          id: String(n.id),
-          message: n.message,
-          actorType: n.sentByRole ?? null,
-          actorName: n.sentByName ?? null,
-          actorEmail: n.sentByEmail ?? null,
-          time: sent.toLocaleString("en-IN", {
-            day: "2-digit",
-            month: "2-digit",
-            year: "2-digit",
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: true,
-          }),
-        };
-      });
-      setNotifications(mapped);
+      setNotifications(mapNotificationsFromApi(items));
     } catch (error) {
       console.error("Error loading notifications", error);
     } finally {
@@ -888,7 +860,9 @@ export default function OrderRightSidebar({
 
     const loadAssignments = async () => {
       try {
-        const res = await fetch(`/api/orders/${order.id}/rider-assignments`);
+        const res = await fetch(`/api/orders/${order.id}/rider-assignments`, {
+          credentials: "include",
+        });
         if (!res.ok) return;
         const json = await res.json();
         const items =
@@ -919,53 +893,16 @@ export default function OrderRightSidebar({
     const loadRecons = async () => {
       try {
         setIsLoadingRecons(true);
-        const res = await fetch(`/api/orders/${order.id}/recons`);
+        const res = await fetch(`/api/orders/${order.id}/recons`, { credentials: "include" });
         if (!res.ok) {
           // eslint-disable-next-line no-console
           console.error("Failed to load recons", await res.text());
           return;
         }
         const json = await res.json();
-        const items =
-          (json?.data as Array<{
-            id: number;
-            riderId?: number | null;
-            providerName: string | null;
-            trackingId: string | null;
-            riderName: string | null;
-            riderMobile: string | null;
-            actorEmail?: string | null;
-            actorRole?: string | null;
-            reconReason: string;
-            reconReasonCategory?: string | null;
-            reconAt: string | Date;
-          }> | null) ?? [];
+        const items = (json?.data as Parameters<typeof mapReconsFromApi>[0] | null) ?? [];
 
-        const mapped: Recon[] = items.map((r) => {
-          const created =
-            r.reconAt instanceof Date ? r.reconAt : new Date(r.reconAt);
-          const { reasonCategory, comment } = parseReconReasonFields(
-            r.reconReason,
-            r.reconReasonCategory
-          );
-          return {
-            id: String(r.id),
-            providerName: r.providerName,
-            riderName: r.riderName,
-            riderMobile: r.riderMobile,
-            rider: buildReconRiderLabel({
-              providerName: normalizeProviderName(r.providerName) ?? r.providerName,
-              riderName: r.riderName,
-              riderMobile: r.riderMobile,
-            }),
-            reason: r.reconReason,
-            reasonCategory,
-            comment,
-            time: formatReconDisplayTime(created),
-            actorEmail: r.actorEmail ?? null,
-            actorRole: r.actorRole ?? null,
-          };
-        });
+        const mapped = mapReconsFromApi(items);
 
         setRecons(mapped);
 
@@ -1600,6 +1537,24 @@ export default function OrderRightSidebar({
               </dd>
             </div>
           ) : null}
+          {showStorePrepDelay ? (
+            <div className="flex items-center justify-between gap-2">
+              <dt
+                className="shrink-0"
+                title="Time merchant was late marking ready after committed KPT deadline"
+              >
+                Mx preparation Delay
+              </dt>
+              <dd>
+                <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-800 ring-1 ring-red-200">
+                  {formatDurationSecondsLabel(storePrepDelayDisplaySeconds, {
+                    live: storePrepDelayLive,
+                    onTimeLabel: "0:00:00",
+                  })}
+                </span>
+              </dd>
+            </div>
+          ) : null}
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">Contactless:</dt>
             <dd>
@@ -1697,7 +1652,7 @@ export default function OrderRightSidebar({
             }}
           >
             <i className="bi bi-list-check" />
-            See all ({remarks.length > 0 || !isLoadingRemarks ? remarks.length : initialRemarksCount})
+            See all ({remarksCountDisplay})
           </button>
         </div>
         <div className="space-y-2">
@@ -1769,9 +1724,17 @@ export default function OrderRightSidebar({
             onClick={() => setShowNotificationsModal(true)}
           >
             <i className="bi bi-list-check" />
-            See all ({notifications.length > 0 || !isLoadingNotifications ? notifications.length : 0})
+            See all ({notificationsCountDisplay})
           </button>
         </div>
+        {notifications[0] ? (
+          <SidebarLatestPreview
+            label="Latest notification"
+            body={notifications[0].message}
+            meta={`${notifications[0].actorName ?? notifications[0].actorEmail ?? "Agent"} · ${notifications[0].time}`}
+            onOpen={() => setShowNotificationsModal(true)}
+          />
+        ) : null}
         <div className="space-y-2">
           <textarea
             value={notificationText}
@@ -1812,9 +1775,21 @@ export default function OrderRightSidebar({
             className="text-xs text-emerald-700 hover:text-emerald-800 cursor-pointer underline-offset-2 hover:underline"
             onClick={() => setShowReconsModal(true)}
           >
-            See all ({recons.length > 0 || !isLoadingRecons ? recons.length : initialReconsCount})
+            See all ({reconsCountDisplay})
           </button>
         </div>
+        {lastRecon ? (
+          <SidebarLatestPreview
+            label="Latest recon"
+            body={
+              lastRecon.reasonCategory
+                ? `${lastRecon.reasonCategory}${lastRecon.comment ? ` — ${lastRecon.comment}` : ""}`
+                : lastRecon.comment ?? lastRecon.reason
+            }
+            meta={`${lastRecon.rider} · ${lastRecon.time}`}
+            onOpen={() => setShowReconsModal(true)}
+          />
+        ) : null}
         <div className="space-y-2">
           <select
             value={reconRider}

@@ -9,7 +9,7 @@ import { usePathname } from "next/navigation";
 import { useAuthOptional } from "@/providers/AuthProvider";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 
-async function fetchRiderSummary(
+export async function fetchRiderSummary(
   riderId: number,
   params: RiderSummaryParams,
   signal?: AbortSignal
@@ -66,15 +66,14 @@ export function useRiderSummaryQuery(
   const auth = useAuthOptional();
   const authReady = auth?.authReady ?? false;
   const sessionUser = auth?.user;
-  const permissions = auth?.permissions;
 
   const isOnRidersRoute = pathname === "/dashboard/riders";
-  const enabled = isOnRidersRoute && riderId != null && riderId > 0 && Boolean(authReady && sessionUser && permissions);
+  const enabled = isOnRidersRoute && riderId != null && riderId > 0 && Boolean(authReady && sessionUser);
 
   const SNAPSHOT_TTL_MS = 10_000;
   const snapshotKey = useMemo(() => {
     if (!enabled) return null;
-    return `dashboard_snapshot:rider_summary:${pathname}:${riderId}:${JSON.stringify(params)}`;
+    return `dashboard_snapshot:rider_summary_v2:${pathname}:${riderId}:${JSON.stringify(params)}`;
   }, [enabled, pathname, riderId, params]);
 
   const initialSnapshot = useMemo(() => {

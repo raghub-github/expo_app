@@ -47,6 +47,7 @@ import { formatStoreActionSourceLabel } from '@/lib/storeActionSource'
 
 import { PageSkeletonDashboard } from '@/components/PageSkeleton';
 import { MerchantMarketInsightsCard } from '@/components/merchant/MerchantMarketInsightsCard';
+import { MerchantWeatherBanner } from '@/components/merchant/MerchantWeatherBanner';
 import { LivePreviewInsightsPanel, mapInsightsDatePreset } from '@/components/merchant/LivePreviewInsightsPanel';
 import { BusinessReportsPanel } from '@/components/merchant/BusinessReportsPanel';
 import { prefetchGrowthInsights } from '@/lib/merchant-growth/growth-insights-cache';
@@ -572,7 +573,7 @@ function DashboardContent() {
   const filterZoneOptions = [{ id: 'z1', label: 'South Chennai (1)' }] as const
   const filterSubzoneOptions = [{ id: 'sz1', label: 'Thiruporur, South Chennai (1)' }] as const
 
-  // Resolve store id (URL param, localStorage, or demo)
+  // Resolve store id (URL param or localStorage — no demo placeholder)
   useEffect(() => {
     const getStoreId = async () => {
       let id = searchParams?.get('storeId') ?? null
@@ -581,14 +582,16 @@ function DashboardContent() {
         id = typeof window !== 'undefined' ? localStorage.getItem('selectedStoreId') : null
       }
 
-      if (!id) {
-        id = DEMO_STORE_ID
+      const trimmed = (id || '').trim()
+      if (!trimmed || trimmed.toLowerCase() === DEMO_STORE_ID.toLowerCase()) {
+        setStoreId(null)
+        return
       }
 
-      setStoreId(id)
-      if (typeof window !== 'undefined' && id) {
-        localStorage.setItem('selectedStoreId', id)
-        void import('@/lib/partner-selected-store').then((m) => m.notifyPartnerSelectedStoreChanged(id))
+      setStoreId(trimmed)
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('selectedStoreId', trimmed)
+        void import('@/lib/partner-selected-store').then((m) => m.notifyPartnerSelectedStoreChanged(trimmed))
       }
     }
 
@@ -1355,13 +1358,14 @@ function DashboardContent() {
       )}
       <MXLayoutWhite
         restaurantName={store?.store_name || 'Dashboard'}
-        restaurantId={storeId || DEMO_STORE_ID}
+        restaurantId={storeId || ''}
       >
         {isLoading ? (
           <PageSkeletonDashboard />
         ) : (
           <>
         <PartnerPageHeader title="Dashboard" subtitle="GatiMitra · Operations command center" />
+        <MerchantWeatherBanner storeId={storeId} />
         <div className="flex-1 flex flex-col min-h-0 bg-[#f8fafc] overflow-hidden w-full">
           <div className="dashboard-scroll hide-scrollbar flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3 sm:px-5 lg:px-8 py-3 sm:py-4">
             <div className="max-w-[1600px] mx-auto">

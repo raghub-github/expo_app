@@ -6,7 +6,7 @@ import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { prefetchDashboardSection } from "@/lib/dashboard-prefetch";
-import { X, ChevronLeft, LogOut } from "lucide-react";
+import { ChevronLeft, LogOut, X } from "lucide-react";
 import { useDashboardAccess } from "@/hooks/useDashboardAccess";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useAuth } from "@/providers/AuthProvider";
@@ -18,6 +18,7 @@ import {
   type MainNavItem,
   type DashboardSubRoute,
 } from "@/lib/navigation/dashboard-routes";
+import { getOrdersNavHref, isOrdersSectionPath } from "@/lib/navigation/orders-nav-href";
 import { useLeftSidebarMobile } from "@/context/LeftSidebarMobileContext";
 import { useLogout } from "@/hooks/queries/useAuthQuery";
 import { getUserInitials } from "@/lib/user-avatar";
@@ -308,11 +309,16 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
             {filteredNavigation.map((item) => {
               const inQueueWorkspace = isTicketsQueueWorkspacePath(cleanPathname);
               const itemHref =
-                item.href === "/dashboard/tickets" && inQueueWorkspace ? TICKETS_QUEUE_HOME_PATH : item.href;
+                item.href === "/dashboard/tickets" && inQueueWorkspace
+                  ? TICKETS_QUEUE_HOME_PATH
+                  : item.dashboardType === "ORDER_FOOD"
+                    ? getOrdersNavHref(accessibleDashboards, effectiveSuperAdmin)
+                    : item.href;
               // Exactly one active: during pending nav only that item is active; otherwise use pathname
               const isRouteActive =
-                cleanPathname === item.href ||
+                cleanPathname === itemHref ||
                 (item.href !== "/dashboard" && cleanPathname.startsWith(item.href + "/")) ||
+                (item.dashboardType === "ORDER_FOOD" && isOrdersSectionPath(cleanPathname)) ||
                 (item.href === "/dashboard/super-admin" && isSuperAdminNavPath(cleanPathname));
               const isActive =
                 pendingNavHref !== null

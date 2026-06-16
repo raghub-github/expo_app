@@ -45,13 +45,17 @@ api.interceptors.response.use(
     const status = err.response?.status;
     const message = err.response?.data?.message ?? err.response?.data?.error ?? err.message ?? "Network Error";
     if (__DEV__) {
-      // Include method + url so you can tell *which* call failed instead of
-      // just "Network Error" with no context. Especially useful when several
-      // parallel requests fan out from one screen. The base URL is appended
-      // so a stale runtime-override is immediately visible in the warning.
       const method = err.config?.method?.toUpperCase() ?? "GET";
       const url = err.config?.url ?? "?";
-      console.warn("[API]", status ?? "network", method, url, "—", message, "→", getConfig().apiBaseUrl);
+      const silent =
+        err.config?.headers?.["X-Silent-Error"] === "1" ||
+        (typeof url === "string" && url.includes("/v1/weather/"));
+      if (!silent) {
+        // Include method + url so you can tell *which* call failed instead of
+        // just "Network Error" with no context. Weather uses getForLocationSafe
+        // and is intentionally quiet when the backend is unreachable.
+        console.warn("[API]", status ?? "network", method, url, "—", message, "→", getConfig().apiBaseUrl);
+      }
     }
     if (status === 401) {
       const errorCode = err.response?.data?.error;
