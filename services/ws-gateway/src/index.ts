@@ -214,7 +214,7 @@ app.register(async (instance) => {
     socket.send(JSON.stringify({ type: "ready", channels: Array.from(sub.channels) }));
 
     socket.on("pong", () => { sub.lastPong = Date.now(); });
-    socket.on("message", (raw) => {
+    socket.on("message", (raw: unknown) => {
       // Inbound is rare today — accept "ping" keepalive and echo, ignore everything else.
       try {
         const msg = JSON.parse(String(raw));
