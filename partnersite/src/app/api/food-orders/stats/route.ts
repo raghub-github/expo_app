@@ -90,7 +90,7 @@ export async function GET(req: NextRequest) {
 
     const { data: foodRows, error: foodErr } = await db
       .from('orders_food')
-      .select('id, order_id, order_status, created_at, delivered_at, food_items_total_value, prepared_at, accepted_at')
+      .select('id, order_id, order_status, created_at, delivered_at, food_items_total_value, prepared_at, accepted_at, rider_picked_up_at')
       .eq('merchant_store_id', storeInternalId)
       .gte('created_at', lookbackStart.toISOString());
 
@@ -117,12 +117,14 @@ export async function GET(req: NextRequest) {
     const effectiveUiForFood = (row: {
       order_id: number;
       order_status?: string | null;
+      rider_picked_up_at?: string | null;
     }) => {
       const core = coreById.get(Number(row.order_id));
       return resolvePartnerPipeline(
         row.order_status ?? null,
         core?.status ?? 'assigned',
-        core?.current_status ?? null
+        core?.current_status ?? null,
+        row.rider_picked_up_at ?? null
       );
     };
 

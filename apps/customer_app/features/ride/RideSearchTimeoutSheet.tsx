@@ -29,6 +29,14 @@ const TIP_OPTIONS = [
 ] as const;
 
 const EXTENSION_MINUTES = 3;
+const TIP_BOOST_DECISION_MINUTES = 1.5;
+
+function formatCountdownMmSs(totalSec: number): string {
+  const safe = Math.max(0, Math.floor(totalSec));
+  const mins = Math.floor(safe / 60);
+  const secs = safe % 60;
+  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
 
 function formatRupee(amount: number): string {
   return `₹${Math.round(amount).toLocaleString("en-IN")}`;
@@ -39,6 +47,8 @@ export type TipBoostLoadingAction = "add_tip" | "continue" | null;
 export type RideTipBoostSheetProps = {
   visible: boolean;
   loadingAction?: TipBoostLoadingAction;
+  /** Seconds left to pick a CTA before auto-cancel (1.5 min decision window). */
+  decisionRemainingSec?: number;
   /** Base ride fare without tips */
   orderTotal: number;
   /** Total tip already on the order (pre-book + search boosts) */
@@ -97,6 +107,7 @@ function NoTipBoostView({
   selectedTip,
   onSelectTip,
   loadingAction,
+  decisionRemainingSec,
   onAddTipAndContinue,
   onContinueWithoutTip,
   onCancelOrder,
@@ -104,6 +115,7 @@ function NoTipBoostView({
   selectedTip: number;
   onSelectTip: (amount: number) => void;
   loadingAction: TipBoostLoadingAction;
+  decisionRemainingSec: number;
   onAddTipAndContinue: (tip: number) => void;
   onContinueWithoutTip: () => void;
   onCancelOrder: () => void;
@@ -114,7 +126,7 @@ function NoTipBoostView({
       <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
         <View style={styles.heroWrap}>
           <Image source={MAPBIKE_IMAGE} style={styles.heroImage} resizeMode="contain" />
-          <TimerBadge label={`0${EXTENSION_MINUTES}:00`} />
+          <TimerBadge label={formatCountdownMmSs(decisionRemainingSec)} />
         </View>
 
         <Text style={styles.title}>Need your order faster?</Text>
@@ -125,7 +137,9 @@ function NoTipBoostView({
         <View style={styles.shieldBanner}>
           <Ionicons name="shield-checkmark" size={18} color={GatiMitraColors.deepMintStart} />
           <Text style={styles.shieldBannerText}>
-            We&apos;ll continue searching for the next{" "}
+            Choose an option within{" "}
+            <Text style={styles.shieldBold}>{TIP_BOOST_DECISION_MINUTES} minutes</Text> or your
+            order will be cancelled. After you continue, we&apos;ll search for another{" "}
             <Text style={styles.shieldBold}>{EXTENSION_MINUTES} minutes.</Text>
           </Text>
         </View>
@@ -193,6 +207,7 @@ function TipAlreadyAddedView({
   onShowIncreaseTip,
   onBackFromIncrease,
   loadingAction,
+  decisionRemainingSec,
   onAddTipAndContinue,
   onContinueWithoutTip,
   onCancelOrder,
@@ -205,6 +220,7 @@ function TipAlreadyAddedView({
   onShowIncreaseTip: () => void;
   onBackFromIncrease: () => void;
   loadingAction: TipBoostLoadingAction;
+  decisionRemainingSec: number;
   onAddTipAndContinue: (tip: number) => void;
   onContinueWithoutTip: () => void;
   onCancelOrder: () => void;
@@ -276,8 +292,8 @@ function TipAlreadyAddedView({
             </Text>
           </View>
           <View style={styles.continuingTimerBox}>
-            <TimerBadge label={`0${EXTENSION_MINUTES}:00`} />
-            <Text style={styles.continuingTimerLabel}>Continuing search</Text>
+            <TimerBadge label={formatCountdownMmSs(decisionRemainingSec)} />
+            <Text style={styles.continuingTimerLabel}>Time left to continue</Text>
           </View>
         </View>
 
@@ -407,6 +423,7 @@ function PriceColumn({
 export function RideTipBoostSheet({
   visible,
   loadingAction = null,
+  decisionRemainingSec = 90,
   orderTotal,
   existingTipAmount,
   onAddTipAndContinue,
@@ -455,6 +472,7 @@ export function RideTipBoostSheet({
               onShowIncreaseTip={() => setShowIncreaseTip(true)}
               onBackFromIncrease={() => setShowIncreaseTip(false)}
               loadingAction={loadingAction}
+              decisionRemainingSec={decisionRemainingSec}
               onAddTipAndContinue={onAddTipAndContinue}
               onContinueWithoutTip={onContinueWithoutTip}
               onCancelOrder={onCancelOrder}
@@ -464,6 +482,7 @@ export function RideTipBoostSheet({
               selectedTip={selectedTip}
               onSelectTip={setSelectedTip}
               loadingAction={loadingAction}
+              decisionRemainingSec={decisionRemainingSec}
               onAddTipAndContinue={onAddTipAndContinue}
               onContinueWithoutTip={onContinueWithoutTip}
               onCancelOrder={onCancelOrder}

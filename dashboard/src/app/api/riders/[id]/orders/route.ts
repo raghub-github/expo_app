@@ -23,6 +23,8 @@ type RiderOrderUiRow = {
   externalRef: string | null;
   earningCreditPending?: boolean;
   paymentStatus?: string | null;
+  riderAssignmentStatus?: string | null;
+  riderRideUnassigned?: boolean;
 };
 
 function mapLegacyOrderRow(row: typeof orders.$inferSelect): RiderOrderUiRow {
@@ -52,6 +54,8 @@ function mapCoreOrderRow(row: {
   externalRef?: string | null;
   earningCreditPending?: boolean;
   paymentStatus?: string | null;
+  riderAssignmentStatus?: string | null;
+  riderRideUnassigned?: boolean;
 }): RiderOrderUiRow {
   const externalRef =
     (row.formattedOrderId?.trim() || null) ||
@@ -72,6 +76,8 @@ function mapCoreOrderRow(row: {
     externalRef,
     earningCreditPending: row.earningCreditPending === true,
     paymentStatus: row.paymentStatus ?? null,
+    riderAssignmentStatus: row.riderAssignmentStatus ?? null,
+    riderRideUnassigned: row.riderRideUnassigned ?? false,
   };
 }
 

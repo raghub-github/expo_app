@@ -55,16 +55,29 @@ export const useOrderStore = create<OrderState>((set) => ({
   setActiveOrder: (order) =>
     set((s) => {
       if (!order) return { activeOrder: null };
-      const exists = s.activeOrders.some((o) => o.orderId === order.orderId);
-      const activeOrders = exists ? s.activeOrders.map((o) => (o.orderId === order.orderId ? order : o)) : [...s.activeOrders, order];
-      return { activeOrder: order, activeOrders };
+      const exists = s.activeOrders.find((o) => o.orderId === order.orderId);
+      const merged =
+        exists && order.etaMinutes <= 0 && exists.etaMinutes > 0
+          ? { ...order, etaMinutes: exists.etaMinutes }
+          : order;
+      const alreadyListed = s.activeOrders.some((o) => o.orderId === order.orderId);
+      const activeOrders = alreadyListed
+        ? s.activeOrders.map((o) => (o.orderId === order.orderId ? merged : o))
+        : [...s.activeOrders, merged];
+      return { activeOrder: merged, activeOrders };
     }),
 
   addActiveOrder: (order) =>
     set((s) => {
-      const exists = s.activeOrders.some((o) => o.orderId === order.orderId);
-      const next = exists ? s.activeOrders.map((o) => (o.orderId === order.orderId ? order : o)) : [...s.activeOrders, order];
-      return { activeOrder: order, activeOrders: next };
+      const exists = s.activeOrders.find((o) => o.orderId === order.orderId);
+      const merged =
+        exists && order.etaMinutes <= 0 && exists.etaMinutes > 0
+          ? { ...order, etaMinutes: exists.etaMinutes }
+          : order;
+      const next = exists
+        ? s.activeOrders.map((o) => (o.orderId === order.orderId ? merged : o))
+        : [...s.activeOrders, merged];
+      return { activeOrder: merged, activeOrders: next };
     }),
 
   removeActiveOrder: (orderId) =>

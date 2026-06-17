@@ -124,3 +124,22 @@ export function filterOrderProgressTimelineEntries<
   );
   return dedupeOrderCancellationTimelineEntries(withoutRiderAssignmentCancel);
 }
+
+/** True when the order progress timeline shows an order-level cancellation (not rider unassign). */
+export function hasOrderCancellationOnProgressTimeline(
+  entries:
+    | Array<{
+        status: string;
+        actorType?: string | null;
+        statusMessage?: string | null;
+        metadata?: unknown;
+        occurredAt?: string | Date | null;
+      }>
+    | null
+    | undefined
+): boolean {
+  if (!entries?.length) return false;
+  return filterOrderProgressTimelineEntries(entries).some((entry) =>
+    isOrderCancellationTimelineStatus(entry.status)
+  );
+}

@@ -254,7 +254,7 @@ export async function lookupOrderContext(orderCoreId: number, sql: Sql = getSql(
   const rows = await sql`
     SELECT c.order_id AS core_order_id, c.grand_total, c.merchant_store_id,
            f.id AS orders_food_id, f.merchant_store_id AS food_store_id,
-           coalesce(f.order_status, c.status) AS order_status
+           coalesce(f.order_status::text, c.status::text) AS order_status
     FROM orders_core c
     LEFT JOIN orders_food f ON f.order_id = c.id OR f.core_order_id = c.order_id
     WHERE c.id = ${orderCoreId}

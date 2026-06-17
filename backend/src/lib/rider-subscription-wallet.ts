@@ -2,7 +2,10 @@
  * Wallet-based GMitra Max subscription: debits, negative balance cap, dispatch restriction.
  */
 
-import { getSql } from "../db/client.js";
+import { eq } from "drizzle-orm";
+import { getDb, getSql } from "../db/client.js";
+import { riderWallet } from "../db/schema.js";
+import { splitWalletNegativeBalance } from "./rider-wallet-balance-split.js";
 
 export const MAX_SUBSCRIPTION_NEGATIVE_BALANCE = 35;
 export const SUBSCRIPTION_INCOME_FREEZE_DAYS = 3;
@@ -29,6 +32,8 @@ function toIsoTimestamp(value: unknown): string | null {
 
 export type RiderSubscriptionDuesSnapshot = {
   walletBalance: number;
+  subscriptionWalletNegative: number;
+  penaltyWalletNegative: number;
   duesOutstanding: number;
   totalDue: number;
   dispatchBlocked: boolean;
@@ -84,8 +89,14 @@ export function buildRiderSubscriptionAlertBanner(
     incomeFreezeDays: SUBSCRIPTION_INCOME_FREEZE_DAYS,
   };
 
-  const { walletBalance, duesOutstanding, totalDue, dispatchBlocked } = snapshot;
-  if (totalDue <= 0 && !dispatchBlocked && walletBalance >= 0) {
+  const {
+    walletBalance,
+    subscriptionWalletNegative,
+    duesOutstanding,
+    totalDue,
+    dispatchBlocked,
+  } = snapshot;
+  if (totalDue <= 0 && !dispatchBlocked && subscriptionWalletNegative <= 0 && duesOutstanding <= 0) {
     return base;
   }
 
@@ -100,10 +111,13 @@ export function buildRiderSubscriptionAlertBanner(
 
   if (dispatchBlocked) {
     let subtitle: string;
-    if (duesOutstanding > 0 && walletBalance <= -MAX_SUBSCRIPTION_NEGATIVE_BALANCE) {
-      subtitle = `Subscription dues ₹${formatInr(totalDue)} pending (wallet ₹${formatInr(walletBalance)}, outstanding ₹${formatInr(duesOutstanding)}). No delivery earnings in ${SUBSCRIPTION_INCOME_FREEZE_DAYS} days — orders are paused.`;
-    } else if (walletBalance <= -MAX_SUBSCRIPTION_NEGATIVE_BALANCE) {
-      subtitle = `Wallet at ₹${formatInr(walletBalance)} (limit −₹${MAX_SUBSCRIPTION_NEGATIVE_BALANCE}). Clear ₹${formatInr(totalDue)} to receive orders again.`;
+    if (
+      duesOutstanding > 0 &&
+      subscriptionWalletNegative >= MAX_SUBSCRIPTION_NEGATIVE_BALANCE
+    ) {
+      subtitle = `Subscription dues ₹${formatInr(totalDue)} pending (subscription wallet −₹${formatInr(subscriptionWalletNegative)}, outstanding ₹${formatInr(duesOutstanding)}). No delivery earnings in ${SUBSCRIPTION_INCOME_FREEZE_DAYS} days — orders are paused.`;
+    } else if (subscriptionWalletNegative >= MAX_SUBSCRIPTION_NEGATIVE_BALANCE) {
+      subtitle = `Subscription wallet at −₹${formatInr(subscriptionWalletNegative)} (limit −₹${MAX_SUBSCRIPTION_NEGATIVE_BALANCE}). Clear ₹${formatInr(totalDue)} to receive orders again.`;
     } else if (duesOutstanding > 0) {
       subtitle = `₹${formatInr(duesOutstanding)} subscription fee outstanding. Clear ₹${formatInr(totalDue)} to resume orders.`;
     } else {
@@ -125,14 +139,14 @@ export function buildRiderSubscriptionAlertBanner(
     };
   }
 
-  if (walletBalance <= -MAX_SUBSCRIPTION_NEGATIVE_BALANCE) {
+  if (subscriptionWalletNegative >= MAX_SUBSCRIPTION_NEGATIVE_BALANCE) {
     return {
       ...base,
       visible: true,
       variant: "warning",
       reasonCode: "negative_limit",
       title: "Wallet limit reached",
-      subtitle: `Balance ₹${formatInr(walletBalance)} (max −₹${MAX_SUBSCRIPTION_NEGATIVE_BALANCE}). Pay ₹${formatInr(totalDue)} to avoid order restrictions after ${SUBSCRIPTION_INCOME_FREEZE_DAYS} days without earnings.`,
+      subtitle: `Subscription balance −₹${formatInr(subscriptionWalletNegative)} (max −₹${MAX_SUBSCRIPTION_NEGATIVE_BALANCE}). Pay ₹${formatInr(totalDue)} to avoid order restrictions after ${SUBSCRIPTION_INCOME_FREEZE_DAYS} days without earnings.`,
       totalDue,
       payableNow,
       payButtonLabel,
@@ -140,11 +154,11 @@ export function buildRiderSubscriptionAlertBanner(
     };
   }
 
-  if (walletBalance < 0) {
+  if (subscriptionWalletNegative > 0) {
     const subtitle =
       duesOutstanding > 0
-        ? `Balance ₹${formatInr(walletBalance)} · Outstanding ₹${formatInr(duesOutstanding)} · Total to clear ₹${formatInr(totalDue)}.`
-        : `Balance ₹${formatInr(walletBalance)} · Pay ₹${formatInr(totalDue)} from wallet to avoid restrictions.`;
+        ? `Subscription wallet −₹${formatInr(subscriptionWalletNegative)} · Outstanding ₹${formatInr(duesOutstanding)} · Total to clear ₹${formatInr(totalDue)}.`
+        : `Subscription wallet −₹${formatInr(subscriptionWalletNegative)} · Pay ₹${formatInr(totalDue)} from wallet to avoid restrictions.`;
 
     return {
       ...base,
@@ -259,23 +273,44 @@ async function readRiderDuesMeta(riderId: number): Promise<{
   }
 }
 
-export function computeTotalSubscriptionDue(balance: number, duesOutstanding: number): number {
-  const negativePart = balance < 0 ? round2(-balance) : 0;
-  return round2(duesOutstanding + negativePart);
+export function computeTotalSubscriptionDue(
+  subscriptionWalletNegative: number,
+  duesOutstanding: number
+): number {
+  return round2(duesOutstanding + Math.max(0, subscriptionWalletNegative));
+}
+
+async function readRiderWalletRowForSplit(riderId: number) {
+  const db = getDb();
+  const [wallet] = await db
+    .select()
+    .from(riderWallet)
+    .where(eq(riderWallet.riderId, riderId))
+    .limit(1);
+  return wallet ?? null;
 }
 
 export async function getRiderSubscriptionDuesSnapshot(
   riderId: number
 ): Promise<RiderSubscriptionDuesSnapshot & { alertBanner: RiderSubscriptionAlertBanner }> {
   await refreshRiderSubscriptionDispatchBlock(riderId);
-  const [walletBalance, meta] = await Promise.all([
+  const [walletBalance, meta, walletRow] = await Promise.all([
     readRiderWalletBalance(riderId),
     readRiderDuesMeta(riderId),
+    readRiderWalletRowForSplit(riderId),
   ]);
+  const split = splitWalletNegativeBalance(walletBalance, walletRow, {
+    subscriptionDuesOutstanding: meta.duesOutstanding,
+  });
   const snapshot: RiderSubscriptionDuesSnapshot = {
     walletBalance,
+    subscriptionWalletNegative: split.subscriptionNegative,
+    penaltyWalletNegative: split.penaltyNegative,
     duesOutstanding: meta.duesOutstanding,
-    totalDue: computeTotalSubscriptionDue(walletBalance, meta.duesOutstanding),
+    totalDue: computeTotalSubscriptionDue(
+      split.subscriptionNegative,
+      meta.duesOutstanding
+    ),
     dispatchBlocked: meta.dispatchBlocked,
     lastIncomeAt: toIsoTimestamp(meta.lastIncomeAt),
   };
@@ -481,9 +516,12 @@ export async function refreshRiderSubscriptionDispatchBlock(riderId: number): Pr
     readRiderDuesMeta(riderId),
   ]);
 
-  const atNegativeLimit = balance <= -MAX_SUBSCRIPTION_NEGATIVE_BALANCE || meta.duesOutstanding > 0;
+  const walletRow = await readRiderWalletRowForSplit(riderId);
+  const split = splitWalletNegativeBalance(balance, walletRow);
+  const atNegativeLimit =
+    split.subscriptionNegative >= MAX_SUBSCRIPTION_NEGATIVE_BALANCE || meta.duesOutstanding > 0;
   const shouldBlock = atNegativeLimit && incomeStale(meta.lastIncomeAt);
-  const totalDue = computeTotalSubscriptionDue(balance, meta.duesOutstanding);
+  const totalDue = computeTotalSubscriptionDue(split.subscriptionNegative, meta.duesOutstanding);
 
   try {
     if (shouldBlock && !meta.dispatchBlocked) {

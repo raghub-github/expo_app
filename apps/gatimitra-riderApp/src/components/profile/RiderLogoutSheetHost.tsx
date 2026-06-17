@@ -4,6 +4,7 @@ import { LogoutReasonBottomSheet } from "@/src/components/profile/LogoutReasonBo
 import { riderApi } from "@/src/services/api/riderApi";
 import { useLogoutSheetStore } from "@/src/stores/logoutSheetStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
+import { useDutyStore } from "@/src/stores/dutyStore";
 import type { RiderLogoutReasonCode } from "@/src/lib/rider-logout-reasons";
 
 export function RiderLogoutSheetHost() {
@@ -20,6 +21,7 @@ export function RiderLogoutSheetHost() {
     } catch (err) {
       console.warn("[RiderLogoutSheetHost] logout reason save failed:", err);
     }
+    await useDutyStore.getState().setDutyStatus(false);
     close();
     await setSession(null);
     router.replace("/(auth)/login");

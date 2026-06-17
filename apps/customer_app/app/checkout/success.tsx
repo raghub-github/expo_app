@@ -1,153 +1,136 @@
 /**
  * Order placed – success confirmation (GatiMitra style).
- * Shown immediately after payment verification. No auto-reload, no delayed redirect.
+ * Shown immediately after payment verification. Auto-redirects to live tracking.
  */
 
-import { useEffect, useMemo } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, ActivityIndicator } from "react-native";
+import { useEffect, useState } from "react";
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  ScrollView,
+} from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useRoute } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
-import { Ionicons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
-import Animated, {
-  FadeInDown,
-  FadeIn,
-  useAnimatedStyle,
-  useSharedValue,
-  withDelay,
-  withSequence,
-  withTiming,
-} from "react-native-reanimated";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import Animated, { FadeInDown, FadeIn } from "react-native-reanimated";
 import { orderService } from "@/services/order.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 const PAD = 20;
-const CARD_RADIUS = 16;
-const ETA_DEFAULT_MINS = 25;
+const CARD_RADIUS = 18;
+const AUTO_REDIRECT_SEC = 4;
+const GREEN = GatiMitraColors.primaryMint;
+const GREEN_DARK = GatiMitraColors.deepMintStart;
 
-const CONFETTI_COLORS = ["#14b8a6", "#0d9488", "#5eead4", "#99f6e4", "#fbbf24", "#f59e0b"];
-const CONFETTI_COUNT = 16;
-
-function ConfettiBurst() {
-  const particles = useMemo(
-    () =>
-      Array.from({ length: CONFETTI_COUNT }, (_, i) => ({
-        id: i,
-        color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
-        angle: (i / CONFETTI_COUNT) * 360,
-        size: 6 + (i % 4),
-        delay: i * 30,
-        x: 50 + (i % 5) * 20 - 40,
-      })),
-    []
-  );
+function OrderInfoRow({
+  icon,
+  label,
+  value,
+  valueColor = GatiMitraColors.textPrimary,
+  isLast = false,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  value: string;
+  valueColor?: string;
+  isLast?: boolean;
+}) {
   return (
-    <View style={confettiStyles.wrap} pointerEvents="none">
-      {particles.map((p) => (
-        <ConfettiDot key={p.id} color={p.color} angle={p.angle} size={p.size} delay={p.delay} startX={p.x} />
-      ))}
+    <View style={[styles.infoRow, !isLast && styles.infoRowBorder]}>
+      <View style={styles.infoLeft}>
+        <View style={styles.infoIconWrap}>
+          <Ionicons name={icon} size={18} color={GREEN} />
+        </View>
+        <Text style={styles.infoLabel}>{label}</Text>
+      </View>
+      <Text style={[styles.infoValue, { color: valueColor }]} numberOfLines={1}>
+        {value}
+      </Text>
     </View>
   );
 }
 
-function ConfettiDot({
-  color,
-  angle,
-  size,
-  delay,
-  startX,
-}: {
-  color: string;
-  angle: number;
-  size: number;
-  delay: number;
-  startX: number;
-}) {
-  const translateY = useSharedValue(0);
-  const translateX = useSharedValue(startX);
-  const opacity = useSharedValue(1);
-  const scale = useSharedValue(1);
-
-  useEffect(() => {
-    const rad = (angle * Math.PI) / 180;
-    const dx = Math.cos(rad) * 80;
-    translateY.value = withDelay(
-      delay,
-      withSequence(
-        withTiming(120, { duration: 600 }),
-        withTiming(200, { duration: 400 })
-      )
-    );
-    translateX.value = withDelay(delay, withTiming(startX + dx, { duration: 800 }));
-    opacity.value = withDelay(delay + 500, withTiming(0, { duration: 400 }));
-    scale.value = withDelay(delay, withSequence(withTiming(1.2, { duration: 200 }), withTiming(0.5, { duration: 600 })));
-  }, []);
-
-  const style = useAnimatedStyle(() => ({
-    transform: [{ translateY: translateY.value }, { translateX: translateX.value }, { scale: scale.value }],
-    opacity: opacity.value,
-  }));
-
+function OrderSuccessFooterArt() {
   return (
-    <Animated.View
-      style={[
-        confettiStyles.dot,
-        { width: size, height: size, borderRadius: size / 2, backgroundColor: color },
-        style,
-      ]}
-    />
+    <View style={styles.footerArt} pointerEvents="none">
+      <View style={styles.footerSkyline}>
+        {[28, 44, 36, 52, 32, 40, 48].map((h, i) => (
+          <View key={i} style={[styles.footerBuilding, { height: h, opacity: 0.35 + (i % 3) * 0.08 }]} />
+        ))}
+      </View>
+      <View style={styles.footerScene}>
+        <View style={styles.footerStore}>
+          <MaterialCommunityIcons name="storefront-outline" size={42} color={GREEN} />
+        </View>
+        <View style={styles.footerBag}>
+          <MaterialCommunityIcons name="shopping" size={28} color={GREEN_DARK} />
+        </View>
+        <View style={styles.footerCup}>
+          <MaterialCommunityIcons name="coffee-outline" size={22} color={GREEN} />
+        </View>
+      </View>
+    </View>
   );
 }
 
-const confettiStyles = StyleSheet.create({
-  wrap: {
-    position: "absolute",
-    top: 40,
-    left: 0,
-    right: 0,
-    height: 220,
-    alignItems: "center",
-    justifyContent: "flex-start",
-  },
-  dot: {},
-});
-
-const AUTO_REDIRECT_SEC = 4;
-
 export default function OrderSuccessScreen() {
-  const { orderId: orderIdParam, formattedOrderId: formattedOrderIdParam, merchantName: paramMerchantName, etaMinutes: paramEtaMinutes } = useLocalSearchParams<{
+  const {
+    orderId: orderIdParam,
+    formattedOrderId: formattedOrderIdParam,
+    merchantName: paramMerchantName,
+    etaMinutes: paramEtaMinutes,
+    deliveryEtaLabel: paramDeliveryEtaLabel,
+  } = useLocalSearchParams<{
     orderId?: string | string[];
     formattedOrderId?: string | string[];
     merchantName?: string;
     etaMinutes?: string | number;
+    deliveryEtaLabel?: string;
   }>();
   const route = useRoute();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const [secondsLeft, setSecondsLeft] = useState(AUTO_REDIRECT_SEC);
+
   const fromUrl = Array.isArray(orderIdParam) ? orderIdParam[0] : orderIdParam;
-  const fromFormattedUrl = Array.isArray(formattedOrderIdParam) ? formattedOrderIdParam[0] : formattedOrderIdParam;
+  const fromFormattedUrl = Array.isArray(formattedOrderIdParam)
+    ? formattedOrderIdParam[0]
+    : formattedOrderIdParam;
   const fromParams = (route.params as { orderId?: string } | undefined)?.orderId;
   const id = (fromUrl ?? fromParams ?? "").toString();
-  const merchantName = (route.params as { merchantName?: string } | undefined)?.merchantName ?? (paramMerchantName as string | undefined);
+  const merchantName =
+    (route.params as { merchantName?: string } | undefined)?.merchantName ??
+    (paramMerchantName as string | undefined);
   const etaFromParams =
     (route.params as { etaMinutes?: number } | undefined)?.etaMinutes ??
     (paramEtaMinutes != null ? Number(paramEtaMinutes) : undefined);
+  const deliveryEtaLabelFromParams =
+    (route.params as { deliveryEtaLabel?: string } | undefined)?.deliveryEtaLabel ??
+    (typeof paramDeliveryEtaLabel === "string" ? paramDeliveryEtaLabel.trim() : "");
 
-  const { data: order, isLoading } = useQuery({
+  const { data: order } = useQuery({
     queryKey: ["order", id],
     queryFn: () => orderService.getOrder(id),
     enabled: !!id,
   });
 
-  // Auto-redirect to tracking after 3–5 seconds (no reload, no home)
   useEffect(() => {
     if (!id) return;
-    const t = setTimeout(() => {
+    setSecondsLeft(AUTO_REDIRECT_SEC);
+    const countdown = setInterval(() => {
+      setSecondsLeft((s) => (s > 0 ? s - 1 : 0));
+    }, 1000);
+    const redirect = setTimeout(() => {
       router.replace(`/orders/${id}` as const);
     }, AUTO_REDIRECT_SEC * 1000);
-    return () => clearTimeout(t);
+    return () => {
+      clearInterval(countdown);
+      clearTimeout(redirect);
+    };
   }, [id, router]);
 
   const goHome = () => {
@@ -169,195 +152,328 @@ export default function OrderSuccessScreen() {
     );
   }
 
-  const displayEta = typeof etaFromParams === "number" && etaFromParams > 0 ? etaFromParams : ETA_DEFAULT_MINS;
+  const displayDeliveryEta =
+    deliveryEtaLabelFromParams ||
+    (typeof etaFromParams === "number" && etaFromParams > 0 ? `${etaFromParams} mins` : null);
   const orderIdDisplay = order?.formattedOrderId ?? fromFormattedUrl ?? order?.orderId ?? id;
-  const displayMerchantName = order?.merchantName ?? merchantName ?? undefined;
-  // Show success UI immediately when we have orderId (from params); optional order fetch for summary/address
-  const showSuccessContent = true;
+  const displayMerchantName = order?.merchantName ?? merchantName ?? "Your restaurant";
+  const deliveryAddress = order?.deliveryAddress?.trim() ?? "";
 
   return (
-    <ScrollView
-      style={styles.scroll}
-      contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 32 }]}
-      showsVerticalScrollIndicator={false}
-    >
-      <ConfettiBurst />
-      <Animated.View entering={FadeInDown.duration(400)} style={styles.successHeader}>
-        <View style={styles.checkWrap}>
-          <LinearGradient
-            colors={GatiMitraColors.deepMintGradient as unknown as [string, string]}
-            style={styles.checkCircle}
-          >
-            <Ionicons name="checkmark" size={48} color="#fff" />
-          </LinearGradient>
-        </View>
-        <Text style={styles.title}>🎉 Order placed successfully!</Text>
-        <Text style={styles.subtitle}>We've received your order and will start preparing it soon.</Text>
-      </Animated.View>
-
-      <Animated.View entering={FadeIn.duration(300).delay(150)} style={styles.card}>
-        <View style={styles.cardRow}>
-          <Text style={styles.cardLabel}>Order ID</Text>
-          <Text style={styles.cardValue}>#{orderIdDisplay}</Text>
-        </View>
-        {displayMerchantName ? (
-          <View style={styles.cardRow}>
-            <Text style={styles.cardLabel}>Restaurant</Text>
-            <Text style={styles.cardValue} numberOfLines={1}>{displayMerchantName}</Text>
+    <View style={styles.screen}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingTop: insets.top + 28, paddingBottom: insets.bottom + 24 },
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
+        <Animated.View entering={FadeInDown.duration(400)} style={styles.successHeader}>
+          <View style={styles.checkCircle}>
+            <Ionicons name="checkmark" size={46} color="#fff" />
           </View>
+          <Text style={styles.title}>🎉 Order placed successfully!</Text>
+          <Text style={styles.subtitle}>
+            We&apos;ve received your order and will start preparing it soon.
+          </Text>
+        </Animated.View>
+
+        <Animated.View entering={FadeIn.duration(300).delay(120)} style={styles.card}>
+          <OrderInfoRow
+            icon="receipt-outline"
+            label="Order ID"
+            value={`#${orderIdDisplay}`}
+            valueColor={GREEN}
+          />
+          <OrderInfoRow
+            icon="restaurant-outline"
+            label="Restaurant"
+            value={displayMerchantName}
+            isLast={!displayDeliveryEta}
+          />
+          {displayDeliveryEta ? (
+            <OrderInfoRow
+              icon="time-outline"
+              label="Estimated delivery"
+              value={displayDeliveryEta}
+              valueColor={GREEN}
+              isLast
+            />
+          ) : null}
+        </Animated.View>
+
+        {deliveryAddress ? (
+          <Animated.View entering={FadeIn.duration(300).delay(200)}>
+            <TouchableOpacity style={styles.addressCard} activeOpacity={0.92}>
+              <View style={styles.addressIconWrap}>
+                <Ionicons name="location" size={20} color={GREEN} />
+              </View>
+              <View style={styles.addressBody}>
+                <Text style={styles.addressLabel}>Delivery address</Text>
+                <Text style={styles.addressText} numberOfLines={2}>
+                  {deliveryAddress}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
+            </TouchableOpacity>
+          </Animated.View>
         ) : null}
-        <View style={[styles.cardRow, styles.etaRow]}>
-          <Ionicons name="time-outline" size={20} color={GatiMitraColors.emerald} />
-          <Text style={styles.etaText}>Estimated delivery in ~{displayEta} mins</Text>
-        </View>
-      </Animated.View>
 
-      {order?.items && order.items.length > 0 && (
-        <Animated.View entering={FadeIn.duration(300).delay(220)} style={styles.card}>
-          <Text style={styles.sectionTitle}>Order summary</Text>
-          {order.items.slice(0, 4).map((item: { name?: string; quantity?: number; price?: number }, i: number) => (
-            <View key={i} style={styles.itemRow}>
-              <Text style={styles.itemName} numberOfLines={1}>
-                {item.name ?? "Item"} × {item.quantity ?? 1}
-              </Text>
-              <Text style={styles.itemPrice}>₹{((item.price ?? 0) * (item.quantity ?? 1)).toFixed(0)}</Text>
-            </View>
-          ))}
-          {order.items.length > 4 && (
-            <Text style={styles.moreItems}>+{order.items.length - 4} more</Text>
-          )}
-          {order.totalAmount != null && (
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>Total</Text>
-              <Text style={styles.totalValue}>₹{Number(order.totalAmount).toFixed(0)}</Text>
-            </View>
-          )}
-        </Animated.View>
-      )}
-
-      {order?.deliveryAddress && (
-        <Animated.View entering={FadeIn.duration(300).delay(280)} style={styles.card}>
-          <View style={styles.addressRow}>
-            <Ionicons name="location" size={20} color={GatiMitraColors.emerald} />
-            <Text style={styles.addressLabel}>Delivery address</Text>
-          </View>
-          <Text style={styles.addressText}>{order?.deliveryAddress}</Text>
-        </Animated.View>
-      )}
-
-      <Animated.View entering={FadeIn.duration(300).delay(340)} style={styles.actions}>
-        <TouchableOpacity onPress={trackOrder} style={styles.trackBtn} activeOpacity={0.85}>
-          <LinearGradient
-            colors={GatiMitraColors.deepMintGradient as unknown as [string, string]}
-            style={styles.trackBtnGradient}
-          >
-            <Ionicons name="navigate" size={22} color="#fff" />
+        <Animated.View entering={FadeIn.duration(300).delay(280)} style={styles.actions}>
+          <TouchableOpacity onPress={trackOrder} style={styles.trackBtn} activeOpacity={0.88}>
+            <Ionicons name="paper-plane" size={20} color="#fff" />
             <Text style={styles.trackBtnText}>Track Order</Text>
-          </LinearGradient>
-        </TouchableOpacity>
-        <Text style={styles.autoRedirectHint}>Opening live tracking in {AUTO_REDIRECT_SEC} seconds…</Text>
-        <TouchableOpacity onPress={goHome} style={styles.homeBtn} activeOpacity={0.85}>
-          <Text style={styles.homeBtnText}>Back to Home</Text>
-        </TouchableOpacity>
-      </Animated.View>
-    </ScrollView>
+          </TouchableOpacity>
+
+          <View style={styles.redirectRow}>
+            <View style={styles.redirectDot} />
+            <Text style={styles.autoRedirectHint}>
+              Opening live tracking in {Math.max(secondsLeft, 0)} second
+              {secondsLeft === 1 ? "" : "s"}…
+            </Text>
+          </View>
+
+          <TouchableOpacity onPress={goHome} style={styles.homeBtn} activeOpacity={0.88}>
+            <Ionicons name="home-outline" size={20} color={GatiMitraColors.textPrimary} />
+            <Text style={styles.homeBtnText}>Back to Home</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      </ScrollView>
+
+      <OrderSuccessFooterArt />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  scroll: { flex: 1, backgroundColor: GatiMitraColors.softBackground },
-  scrollContent: { paddingHorizontal: PAD },
-  center: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: GatiMitraColors.softBackground },
+  screen: {
+    flex: 1,
+    backgroundColor: "#F8FAFB",
+  },
+  scroll: { flex: 1 },
+  scrollContent: { paddingHorizontal: PAD, flexGrow: 1 },
+  center: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#F8FAFB",
+  },
   errText: { fontSize: 16, color: GatiMitraColors.textSecondary, marginBottom: 16 },
-  loadingText: { marginTop: 12, fontSize: 15, color: GatiMitraColors.textSecondary },
   successHeader: {
     alignItems: "center",
     marginBottom: 28,
   },
-  checkWrap: { marginBottom: 16 },
   checkCircle: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
+    width: 92,
+    height: 92,
+    borderRadius: 46,
+    backgroundColor: GREEN,
     alignItems: "center",
     justifyContent: "center",
+    marginBottom: 20,
+    shadowColor: GREEN,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.28,
+    shadowRadius: 16,
+    elevation: 6,
   },
   title: {
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: "800",
     color: GatiMitraColors.textPrimary,
-    marginBottom: 8,
+    marginBottom: 10,
+    textAlign: "center",
   },
   subtitle: {
     fontSize: 15,
     color: GatiMitraColors.textSecondary,
     textAlign: "center",
-    paddingHorizontal: 16,
+    lineHeight: 22,
+    paddingHorizontal: 12,
   },
   card: {
     backgroundColor: "#fff",
     borderRadius: CARD_RADIUS,
-    padding: PAD,
+    paddingHorizontal: 16,
+    paddingVertical: 4,
     marginBottom: 14,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 2,
+    borderWidth: 1,
+    borderColor: "rgba(229,231,235,0.9)",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 3,
   },
-  cardRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
-  cardLabel: { fontSize: 14, color: GatiMitraColors.textSecondary },
-  cardValue: { fontSize: 15, fontWeight: "600", color: GatiMitraColors.textPrimary, maxWidth: "60%" },
-  etaRow: { marginTop: 4, marginBottom: 0 },
-  etaText: { fontSize: 15, fontWeight: "600", color: GatiMitraColors.emerald, marginLeft: 8 },
-  sectionTitle: { fontSize: 16, fontWeight: "700", color: GatiMitraColors.textPrimary, marginBottom: 12 },
-  itemRow: { flexDirection: "row", justifyContent: "space-between", marginBottom: 6 },
-  itemName: { fontSize: 14, color: GatiMitraColors.textPrimary },
-  itemPrice: { fontSize: 14, fontWeight: "600", color: GatiMitraColors.textPrimary },
-  moreItems: { fontSize: 13, color: GatiMitraColors.textSecondary, marginTop: 4 },
-  totalRow: {
+  infoRow: {
     flexDirection: "row",
+    alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: GatiMitraColors.border,
+    paddingVertical: 14,
+    gap: 12,
   },
-  totalLabel: { fontSize: 16, fontWeight: "700", color: GatiMitraColors.textPrimary },
-  totalValue: { fontSize: 16, fontWeight: "800", color: GatiMitraColors.emerald },
-  addressRow: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
-  addressLabel: { fontSize: 14, fontWeight: "600", color: GatiMitraColors.textPrimary, marginLeft: 8 },
-  addressText: { fontSize: 14, color: GatiMitraColors.textSecondary, lineHeight: 20 },
-  actions: { marginTop: 8, gap: 12 },
-  trackBtn: { borderRadius: 14, overflow: "hidden" },
-  trackBtnGradient: {
+  infoRowBorder: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: GatiMitraColors.border,
+  },
+  infoLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    flex: 1,
+    minWidth: 0,
+  },
+  infoIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "rgba(34,197,94,0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  infoLabel: {
+    fontSize: 14,
+    color: GatiMitraColors.textSecondary,
+    fontWeight: "500",
+  },
+  infoValue: {
+    fontSize: 14,
+    fontWeight: "700",
+    maxWidth: "42%",
+    textAlign: "right",
+  },
+  addressCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#fff",
+    borderRadius: CARD_RADIUS,
+    padding: 16,
+    marginBottom: 22,
+    borderWidth: 1,
+    borderColor: "rgba(229,231,235,0.9)",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 3,
+    gap: 12,
+  },
+  addressIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: "rgba(34,197,94,0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  addressBody: { flex: 1, minWidth: 0 },
+  addressLabel: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+    marginBottom: 4,
+  },
+  addressText: {
+    fontSize: 13,
+    color: GatiMitraColors.textSecondary,
+    lineHeight: 19,
+  },
+  actions: { gap: 12, marginTop: 4 },
+  trackBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 16,
     gap: 10,
+    backgroundColor: GREEN,
+    paddingVertical: 16,
+    borderRadius: 14,
+    shadowColor: GREEN,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    elevation: 4,
   },
   trackBtnText: { fontSize: 16, fontWeight: "700", color: "#fff" },
+  redirectRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginTop: 2,
+  },
+  redirectDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: GREEN,
+  },
   autoRedirectHint: {
     fontSize: 13,
     color: GatiMitraColors.textSecondary,
     textAlign: "center",
-    marginTop: 8,
   },
   homeBtn: {
-    backgroundColor: "#fff",
-    paddingVertical: 16,
-    borderRadius: 14,
+    flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#fff",
+    paddingVertical: 15,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: GatiMitraColors.border,
   },
   homeBtnText: { fontSize: 16, fontWeight: "600", color: GatiMitraColors.textPrimary },
   primaryBtn: {
-    backgroundColor: GatiMitraColors.emerald,
+    backgroundColor: GREEN,
     paddingVertical: 14,
     paddingHorizontal: 24,
     borderRadius: 14,
   },
   primaryBtnText: { fontSize: 16, fontWeight: "700", color: "#fff" },
+  footerArt: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 120,
+    overflow: "hidden",
+  },
+  footerSkyline: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 36,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-evenly",
+    paddingHorizontal: 8,
+  },
+  footerBuilding: {
+    width: 22,
+    borderTopLeftRadius: 4,
+    borderTopRightRadius: 4,
+    backgroundColor: GREEN,
+  },
+  footerScene: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 8,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "center",
+    gap: 28,
+    opacity: 0.55,
+  },
+  footerStore: {
+    marginBottom: 2,
+  },
+  footerBag: {
+    marginBottom: 10,
+  },
+  footerCup: {
+    marginBottom: 4,
+  },
 });

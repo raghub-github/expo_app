@@ -2,6 +2,11 @@ import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tansta
 import { riderApi, type RiderOrderSummary } from "@/src/services/api/riderApi";
 import { useDutyStore } from "@/src/stores/dutyStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
+import { useDutyStatus } from "@/src/hooks/useDutyStatus";
+import {
+  isRiderFullyDispatchBlocked,
+  mergeRiderBlockedServices,
+} from "@/src/lib/rider-blocked-services";
 
 export const RIDER_ORDER_DETAIL_QUERY_KEY = (orderId: string) =>
   ["rider", "orders", "detail", orderId] as const;
@@ -49,11 +54,18 @@ export const RIDER_AVAILABLE_ORDERS_QUERY_KEY = ["rider", "orders", "available"]
  */
 export function useAvailableOrders() {
   const isOnDuty = useDutyStore((s) => s.isOnDuty);
+  const { data: dutyStatus } = useDutyStatus();
+  const blockedServices = mergeRiderBlockedServices(dutyStatus?.blockedServiceTypes);
+  const dispatchBlocked = isRiderFullyDispatchBlocked({
+    accountRestricted: dutyStatus?.accountRestricted,
+    allServicesBlacklisted: dutyStatus?.allServicesBlacklisted,
+    blockedServices,
+  });
 
   return useQuery({
     queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY,
     queryFn: () => riderApi.getAvailableOrders(),
-    enabled: isOnDuty,
+    enabled: isOnDuty && !dispatchBlocked,
     refetchInterval: 5000,
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,
@@ -279,6 +291,8 @@ export function useCancelAssignedRide() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      queryClient.invalidateQueries({ queryKey: ["rider", "earnings", "summary"] });
+      queryClient.invalidateQueries({ queryKey: ["rider", "ledger"] });
     },
   });
 }

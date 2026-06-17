@@ -5,6 +5,7 @@
 import api from "./api";
 import { getConfig } from "@/config/env";
 import { ORDER_PLACEMENT_TIMEOUT_MS } from "@/constants";
+import { isRetriableCheckoutError } from "@/utils/networkError";
 
 const PAYMENT_PREFIX = "/v1/payment";
 
@@ -40,6 +41,30 @@ export const paymentService = {
       { timeout: ORDER_PLACEMENT_TIMEOUT_MS }
     );
     return data;
+  },
+
+  /** Razorpay order with retries when LAN to dev backend is flaky. */
+  async createRazorpayOrderWithRetry(
+    params: {
+      amountPaise: number;
+      currency?: string;
+      receipt?: string;
+      pendingId?: string;
+    },
+    opts: { retries?: number; delayMs?: number } = {}
+  ): Promise<CreateRazorpayOrderResponse> {
+    const { retries = 2, delayMs = 1200 } = opts;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await this.createRazorpayOrder(params);
+      } catch (e) {
+        lastErr = e;
+        if (!isRetriableCheckoutError(e) || attempt === retries) throw e;
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+    throw lastErr;
   },
 
   /**

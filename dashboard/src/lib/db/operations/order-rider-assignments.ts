@@ -310,6 +310,9 @@ function resolveActivityUpdatedBy(
     if (adminCancelled || actorType === "admin" || actorType === "agent") {
       return ADMIN_TEAM_UPDATED_BY;
     }
+    if (actorType === "rider" || meta.riderSelfCancelled === true) {
+      return RIDER_APP_UPDATED_BY;
+    }
   }
 
   if (actorType === "rider") {
@@ -353,7 +356,7 @@ function resolveActivityTrackingUrl(metadata: Record<string, unknown> | null | u
 }
 
 
-/** Reason is shown only when a rider assignment was cancelled/rejected/unassigned/timed out. */
+/** Reason is shown only for cancellations/unassignments or admin/agent actions on the rider bucket. */
 function resolveActivityReason(
   eventType: string,
   statusMessage: string | null | undefined,
@@ -361,7 +364,22 @@ function resolveActivityReason(
   metadata?: Record<string, unknown> | null
 ): string | null {
   if (CANCELLATION_EVENT_TYPES.has(eventType)) {
-    return statusMessage?.trim() || cancellationReason?.trim() || null;
+    const meta = metadata ?? {};
+    const reasonText =
+      typeof meta.reason_text === "string" && meta.reason_text.trim()
+        ? meta.reason_text.trim()
+        : null;
+    const reasonCode =
+      typeof meta.reason_code === "string" && meta.reason_code.trim()
+        ? meta.reason_code.trim()
+        : null;
+    return (
+      statusMessage?.trim() ||
+      cancellationReason?.trim() ||
+      reasonText ||
+      reasonCode ||
+      null
+    );
   }
   if (eventType === "reached_merchant_skipped") {
     return statusMessage?.trim() || "Reached store skipped — pickup marked before rider reach";
@@ -371,15 +389,12 @@ function resolveActivityReason(
     const actorType =
       typeof meta.actor_type === "string" ? meta.actor_type.trim().toLowerCase() : "";
     const skipped = meta.reached_merchant_skipped === true;
-    if (actorType === "agent") {
+    if (actorType === "agent" || actorType === "admin") {
       const by =
         typeof meta.updated_by === "string" && meta.updated_by.trim()
           ? meta.updated_by.trim()
           : "GatiMitra team";
       return `${statusMessage?.trim() || "Pickup marked by GatiMitra team"}${skipped ? " · reach skipped" : ""} (${by})`;
-    }
-    if (actorType === "rider") {
-      return statusMessage?.trim() || "Pickup marked by rider (GatiMitra app)";
     }
   }
   return null;

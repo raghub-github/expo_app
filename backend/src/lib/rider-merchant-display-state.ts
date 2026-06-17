@@ -68,7 +68,7 @@ export function resolveRiderDisplayVariant(input: RiderMerchantDisplayInput): Ri
   if (st === "DELIVERED") return "delivered";
   if (st === "CANCELLED") return "cancelled";
   if (st === "RTO") return "rto";
-  if (input.rider_picked_up_at || st === "OUT_FOR_DELIVERY" || st === "PICKED_UP") {
+  if (input.rider_picked_up_at?.trim()) {
     return "picked_up";
   }
   if (hasRiderReachedMerchant(input)) return "arrived";

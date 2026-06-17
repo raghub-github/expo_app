@@ -52,6 +52,8 @@ import { BusinessReportsPanel } from '@/components/merchant/BusinessReportsPanel
 import { prefetchGrowthInsights } from '@/lib/merchant-growth/growth-insights-cache';
 import { createClient } from '@/lib/supabase/client';
 import { useMerchantWallet, useSelfDeliveryRiders, useStoreOperations } from '@/hooks/useMerchantApi';
+import { PlanExpiredWarningModal } from '@/components/merchant/PlanExpiredWarningModal';
+import { shouldShowPlanExpiredWarning } from '@/lib/plan-expired-warning';
 import {
   deriveStoreOperationsUiPatch,
   readCachedStoreOpenFromEngine,
@@ -152,13 +154,31 @@ const FILTER_SHEET_CATEGORIES = [
 
 type FilterCategoryId = (typeof FILTER_SHEET_CATEGORIES)[number]['id']
 
+function resolveStoreIdFromUrl(searchStoreId?: string | null): string | null {
+  const id = (searchStoreId ?? '').trim()
+  if (!id || id.toLowerCase() === DEMO_STORE_ID.toLowerCase()) return null
+  return id
+}
+
+function resolveStoreIdFromClient(searchStoreId?: string | null): string | null {
+  const fromUrl = resolveStoreIdFromUrl(searchStoreId)
+  if (fromUrl) return fromUrl
+  const fromStorage = (localStorage.getItem('selectedStoreId') ?? '').trim()
+  if (!fromStorage || fromStorage.toLowerCase() === DEMO_STORE_ID.toLowerCase()) return null
+  return fromStorage
+}
+
 function DashboardContent() {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
+  const [clientReady, setClientReady] = useState(false)
   const [store, setStore] = useState<MerchantStore | null>(null)
   const [storeId, setStoreId] = useState<string | null>(null)
-  const { data: storeRecord, isLoading: storeQueryLoading } = usePartnerStoreRecord(storeId)
+  const queriesEnabled = clientReady && !!storeId
+  const { data: storeRecord, isLoading: storeQueryLoading } = usePartnerStoreRecord(storeId, {
+    enabled: queriesEnabled,
+  })
   const { approvedStores } = useApprovedPartnerStores()
   const outletList = useMemo(
     () =>
@@ -168,7 +188,8 @@ function DashboardContent() {
       })),
     [approvedStores]
   )
-  const isLoading = storeQueryLoading && !storeRecord
+  const showPageSkeleton =
+    !clientReady || (queriesEnabled && storeQueryLoading && !storeRecord)
   
   // Store Status & Delivery Mode — card follows GET /api/store-operations (same effective OPEN as dashboard); engine for modals + persistence.
   const engine = useLocalStoreStatusEngineStore()
@@ -177,7 +198,8 @@ function DashboardContent() {
     data: storeOpsData,
     refetch: refetchStoreOperations,
     isFetching: storeOpsFetching,
-  } = useStoreOperations(storeId, { refetchInterval: false })
+  } = useStoreOperations(storeId, { enabled: queriesEnabled, refetchInterval: false })
+  const storeOpsReady = storeOpsPainted || !!storeOpsData
   const [isStoreOpen, setIsStoreOpen] = useState(false)
   const [mxDeliveryEnabled, setMxDeliveryEnabled] = useState(false)
   const { data: selfDeliveryRidersData = [], isLoading: selfDeliveryRidersLoading } = useSelfDeliveryRiders(storeId, mxDeliveryEnabled)
@@ -414,13 +436,23 @@ function DashboardContent() {
   const [closeReasonOther, setCloseReasonOther] = useState<string>('')
   const [statusLog, setStatusLog] = useState<{ id: string | number; action: string; action_field?: string | null; restriction_type?: string | null; close_reason?: string | null; performed_by_name: string | null; performed_by_id: string | number | null; performed_by_email: string | null; created_at: string; type?: 'status' | 'settings' }[]>([])
 
-  const { data: walletData, isLoading: walletLoading } = useMerchantWallet(storeId)
+  const { data: walletData, isPending: walletPending } = useMerchantWallet(storeId, {
+    enabled: queriesEnabled,
+  })
   const walletAvailableBalance =
     walletData?.withdrawable_balance ??
-    Number(walletData?.available_balance ?? 0) + Number(walletData?.locked_balance ?? 0)
+    Number(walletData?.available_balance ?? 0)
   const walletTodayEarning = walletData?.today_earning ?? 0
   const walletYesterdayEarning = walletData?.yesterday_earning ?? 0
   const walletPendingBalance = walletData?.pending_balance ?? 0
+
+  const [showPlanExpiredWarning, setShowPlanExpiredWarning] = useState(false)
+  const [expiredPlanMeta, setExpiredPlanMeta] = useState<{
+    planName?: string
+    expiredAt?: string | null
+    subscriptionId?: number | string | null
+    autoRenew?: boolean
+  }>({})
 
   /** Approved outlets (same source as sidebar) for quick switch + filter sheet */
   const [insightsTab, setInsightsTab] = useState<'live' | 'reports'>('live')
@@ -516,30 +548,58 @@ function DashboardContent() {
   const filterZoneOptions = [{ id: 'z1', label: 'South Chennai (1)' }] as const
   const filterSubzoneOptions = [{ id: 'sz1', label: 'Thiruporur, South Chennai (1)' }] as const
 
-  // Resolve store id (URL param or localStorage — no demo placeholder)
+  // Resolve store id after mount (localStorage is client-only — keeps SSR/client HTML in sync).
   useEffect(() => {
-    const getStoreId = async () => {
-      let id = searchParams?.get('storeId') ?? null
-
-      if (!id) {
-        id = typeof window !== 'undefined' ? localStorage.getItem('selectedStoreId') : null
-      }
-
-      const trimmed = (id || '').trim()
-      if (!trimmed || trimmed.toLowerCase() === DEMO_STORE_ID.toLowerCase()) {
-        setStoreId(null)
-        return
-      }
-
-      setStoreId(trimmed)
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('selectedStoreId', trimmed)
-        void import('@/lib/partner-selected-store').then((m) => m.notifyPartnerSelectedStoreChanged(trimmed))
-      }
+    setClientReady(true)
+    const id = resolveStoreIdFromClient(searchParams?.get('storeId'))
+    setStoreId(id)
+    if (id) {
+      localStorage.setItem('selectedStoreId', id)
+      void import('@/lib/partner-selected-store').then((m) => m.notifyPartnerSelectedStoreChanged(id))
     }
-
-    getStoreId()
   }, [searchParams])
+
+  useEffect(() => {
+    if (!storeId) return
+    prefetchGrowthInsights(storeId, mapInsightsDatePreset(appliedDatePreset), mapInsightsDatePreset(appliedDatePreset))
+  }, [storeId, appliedDatePreset])
+
+  useEffect(() => {
+    if (!storeId) return
+    let cancelled = false
+    void fetch(`/api/merchant/subscription?storeId=${encodeURIComponent(storeId)}`, { credentials: 'include' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return
+        const expiredSub = data.expiredSubscription as Record<string, unknown> | null | undefined
+        const plan = (data.plan ?? expiredSub?.merchant_plans) as { plan_name?: string; price?: number } | null
+        const subscriptionId = expiredSub?.id as number | string | undefined
+        const autoRenew = Boolean(expiredSub?.auto_renew)
+        const expiredAt = String(expiredSub?.billing_end_at ?? expiredSub?.expiry_date ?? '')
+        if (
+          shouldShowPlanExpiredWarning({
+            storeId,
+            isActive: data.isActive === true,
+            isExpired: data.isExpired === true,
+            autoRenew,
+            planPrice: Number(plan?.price ?? 0),
+            subscriptionId,
+          })
+        ) {
+          setExpiredPlanMeta({
+            planName: plan?.plan_name,
+            expiredAt: expiredAt || null,
+            subscriptionId,
+            autoRenew,
+          })
+          setShowPlanExpiredWarning(true)
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [storeId])
 
   // Sync store record from shared cache
   useEffect(() => {
@@ -572,10 +632,12 @@ function DashboardContent() {
     if (cachedOpen !== null) {
       setIsStoreOpen(cachedOpen)
       setStoreOpsPainted(true)
-    } else {
-      setStoreOpsPainted(false)
     }
   }, [storeId])
+
+  useEffect(() => {
+    if (storeOpsData) setStoreOpsPainted(true)
+  }, [storeOpsData])
 
   useEffect(() => {
     if (!storeOpsData) return
@@ -1251,7 +1313,7 @@ function DashboardContent() {
         restaurantName={store?.store_name || 'Dashboard'}
         restaurantId={storeId || ''}
       >
-        {isLoading ? (
+        {showPageSkeleton ? (
           <PageSkeletonDashboard />
         ) : (
           <>
@@ -1275,7 +1337,7 @@ function DashboardContent() {
                       </div>
                     </div>
                     <div className="flex-1 flex flex-col justify-center min-h-0">
-                      {walletLoading ? (
+                      {walletPending && !walletData ? (
                         <div className="grid grid-cols-2 gap-2.5">
                           {[1, 2, 3, 4].map((i) => (
                             <div key={i} className="h-9 rounded-md bg-slate-200/50 animate-pulse" />
@@ -1324,7 +1386,7 @@ function DashboardContent() {
                           : 'border-red-500'
                     }`}
                   >
-                    {!storeOpsPainted && storeOpsFetching ? (
+                    {!storeOpsReady && storeOpsFetching ? (
                       <div className="flex flex-1 flex-col gap-3 animate-pulse min-h-[200px]">
                         <div className="flex items-start justify-between gap-2">
                           <div className="space-y-2 flex-1">
@@ -1794,6 +1856,17 @@ function DashboardContent() {
         )}
 
       </MXLayoutWhite>
+
+      {storeId ? (
+        <PlanExpiredWarningModal
+          open={showPlanExpiredWarning}
+          onClose={() => setShowPlanExpiredWarning(false)}
+          storeId={storeId}
+          subscriptionId={expiredPlanMeta.subscriptionId}
+          planName={expiredPlanMeta.planName}
+          expiredAt={expiredPlanMeta.expiredAt}
+        />
+      ) : null}
 
       {filterSheetOpen && (
         <div className="fixed inset-0 z-[220] flex justify-end" role="dialog" aria-modal="true" aria-labelledby="mx-filter-sheet-title">

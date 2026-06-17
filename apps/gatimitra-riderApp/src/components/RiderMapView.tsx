@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef, us
 import { View, Text, StyleSheet, Platform } from "react-native";
 import { getMapboxModule, isMapboxAvailable } from "@/src/services/maps/mapbox";
 import { resolveMapboxPublicToken } from "@/src/lib/mapbox-env";
-import { MapboxUnavailablePanel } from "@/src/components/maps/MapboxUnavailablePanel";
 import { YouRiderMarker } from "@/src/components/home/YouRiderMarker";
 import { RiderRadarPulse } from "@/src/components/home/RiderRadarPulse";
 import { isOrderPinAwayFromRider } from "@/src/lib/geo-distance";
@@ -112,19 +111,11 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
   }
 
   if (!resolveMapboxPublicToken()) {
-    return (
-      <View style={[styles.container, style]}>
-        <MapboxUnavailablePanel context="home" missingToken />
-      </View>
-    );
+    return <View style={[styles.container, styles.placeholder, style]} />;
   }
 
   if (!Mapbox || !isMapboxAvailable()) {
-    return (
-      <View style={[styles.container, style]}>
-        <MapboxUnavailablePanel context="home" needsDevBuild />
-      </View>
-    );
+    return <View style={[styles.container, styles.placeholder, style]} />;
   }
 
   const MarkerView = Mapbox.MarkerView ?? null;
@@ -205,6 +196,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#ECECEC",
+  },
+  placeholder: {
+    backgroundColor: "#E8F4F1",
   },
   map: {
     flex: 1,

@@ -45,6 +45,9 @@ export function ledgerTransactionTitle(entry: RiderLedgerEntry, t: TFunction): s
   const entryType = entry.entryType.toLowerCase();
   const category = ledgerCategoryLabel(entry, t);
 
+  if (entryType === "penalty_reversal") {
+    return t("ledger.titlePenaltyReversal", "Penalty Credited Back");
+  }
   if (entryType === "subscription_fee" || entry.refType?.toLowerCase() === "subscription") {
     return t("ledger.titleSubscription", "GMitra Max Subscription");
   }
@@ -173,13 +176,14 @@ export function ledgerVisualConfig(entry: RiderLedgerEntry): LedgerVisualConfig 
     );
   }
   if (entry.category === "adjustments" || entry.category === "penalties") {
+    const isPenaltyReversal = entry.entryType.toLowerCase() === "penalty_reversal";
     return withFlowStatus(
       {
         kind: "adjustment",
         iconSet: "ionicons",
-        icon: "wallet-outline",
-        iconColor: "#475569",
-        iconBg: "#F1F5F9",
+        icon: isPenaltyReversal ? "checkmark-circle-outline" : "wallet-outline",
+        iconColor: isPenaltyReversal ? "#15803D" : "#475569",
+        iconBg: isPenaltyReversal ? "#DCFCE7" : "#F1F5F9",
         statusBg: entry.flow === "debit" ? "#FEE2E2" : "#DCFCE7",
         statusColor: entry.flow === "debit" ? "#B91C1C" : "#15803D",
       },
@@ -201,14 +205,19 @@ export function ledgerVisualConfig(entry: RiderLedgerEntry): LedgerVisualConfig 
 }
 
 export function ledgerEarningBanner(entry: RiderLedgerEntry, t: TFunction): string {
+  const entryType = entry.entryType.toLowerCase();
   const desc = entry.description?.trim() ?? "";
+
+  if (entryType === "penalty_reversal") {
+    return "";
+  }
+
   const dashSplit = desc.split(/\s*[—–-]\s*/);
   const lead = dashSplit[0]?.trim();
   if (lead && !/^order\b/i.test(lead)) {
     return lead;
   }
 
-  const entryType = entry.entryType.toLowerCase();
   const ref = entry.ref?.toLowerCase() ?? "";
   if (entryType.includes("tip") || ref.includes("tip")) {
     return t("ledger.customerTip", "Customer Tip");
@@ -236,6 +245,9 @@ function isRealOrderRef(ref: string, refType: string): boolean {
 }
 
 export function ledgerOrderId(entry: RiderLedgerEntry): string | null {
+  const fromApi = entry.orderPublicId?.trim();
+  if (fromApi) return fromApi.replace(/[.,]$/, "");
+
   const fromDesc = entry.description?.match(/Order\s#?\s*(\S+)/i)?.[1]?.trim();
   if (fromDesc) return fromDesc.replace(/[.,]$/, "");
 
@@ -247,6 +259,7 @@ export function ledgerOrderId(entry: RiderLedgerEntry): string | null {
 
   if (entryType === "subscription_fee" || refType === "subscription") return null;
   if (ref.startsWith("rider_sub_") || ref.startsWith("subscription_")) return null;
+  if (ref.startsWith("rider_cancel_pen:")) return null;
 
   if (isRealOrderRef(ref, refType)) return ref;
 
@@ -310,6 +323,7 @@ export function matchesLedgerSearch(entry: RiderLedgerEntry, query: string, t: T
     ledgerTransactionTitle(entry, t),
     entry.description,
     entry.ref,
+    entry.orderPublicId,
     entry.entryType,
     entry.category,
   ]

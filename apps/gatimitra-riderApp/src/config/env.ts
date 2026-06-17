@@ -19,9 +19,18 @@ type RiderAppConfig = {
   mapboxToken?: string;
 };
 
-/** Android emulator: localhost -> 10.0.2.2 so backend on host is reachable. */
+/** Android emulator: localhost -> 10.0.2.2; legacy :30000/:4000 -> :3000. */
 function resolveApiBaseUrl(raw: string): string {
-  const trimmed = raw.replace(/\/+$/, "");
+  let trimmed = raw.replace(/\/+$/, "");
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.port === "30000" || parsed.port === "4000") {
+      parsed.port = "3000";
+      trimmed = parsed.toString().replace(/\/$/, "");
+    }
+  } catch {
+    /* ignore */
+  }
   if (
     Platform.OS === "android" &&
     (/^https?:\/\/localhost(\b|:)/.test(trimmed) || /^https?:\/\/127\.0\.0\.1(\b|:)/.test(trimmed))

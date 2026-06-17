@@ -1,4 +1,4 @@
-import { resolvePartnerPipeline } from "./partner-orders-unify.js";
+import { resolvePartnerPipeline, hasRiderMarkedFoodPickup } from "./partner-orders-unify.js";
 
 const CUSTOMER_STATUS_RANK: Record<string, number> = {
   ORDER_PLACED: 0,
@@ -134,11 +134,20 @@ export function resolveCustomerAppOrderStatus(args: {
   foodOrderStatus: string | null | undefined;
   riderId: number | null | undefined;
   riderReachedPickupAt?: string | Date | null;
+  riderPickedUpAt?: string | Date | null;
 }): string {
+  const riderPickedUpIso =
+    args.riderPickedUpAt instanceof Date
+      ? args.riderPickedUpAt.toISOString()
+      : args.riderPickedUpAt != null
+        ? String(args.riderPickedUpAt)
+        : null;
+
   const pipeline = resolvePartnerPipeline(
     args.foodOrderStatus,
     args.coreStatus,
-    args.currentStatus
+    args.currentStatus,
+    riderPickedUpIso
   );
 
   let status = partnerPipelineToCustomer(pipeline);
@@ -169,6 +178,16 @@ export function resolveCustomerAppOrderStatus(args: {
       status = pickHigherCustomerStatus(status, "PREPARING");
     } else if (pipeline === "READY_FOR_PICKUP") {
       status = pickHigherCustomerStatus(status, "READY_FOR_PICKUP");
+    }
+  }
+
+  if (!hasRiderMarkedFoodPickup(riderPickedUpIso) && isCustomerOnTheWay(status)) {
+    if (args.riderReachedPickupAt) {
+      status = "REACHED_STORE";
+    } else if (pipeline === "PREPARING") {
+      status = "PREPARING";
+    } else {
+      status = "READY_FOR_PICKUP";
     }
   }
 

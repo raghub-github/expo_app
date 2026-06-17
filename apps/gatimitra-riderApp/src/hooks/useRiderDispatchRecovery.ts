@@ -7,7 +7,7 @@ import { useDutyStore } from "@/src/stores/dutyStore";
 import { RIDER_AVAILABLE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
 import { riderDispatchLog } from "@/src/lib/rider-dispatch-log";
 
-const DUTY_SYNC_INTERVAL_MS = 5 * 60_000;
+const DUTY_SYNC_INTERVAL_MS = 60_000;
 const FOREGROUND_POLL_INTERVAL_MS = 30_000;
 
 /**

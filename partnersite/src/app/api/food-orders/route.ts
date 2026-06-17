@@ -341,10 +341,15 @@ export async function GET(req: NextRequest) {
         const food = foodByCoreId.get(coreId) ?? null;
         const coreStatus = String(core.status ?? 'assigned');
         const currentSt = (core.current_status as string | null) ?? null;
+        const riderPickedUpAt =
+          (food?.rider_picked_up_at as string | null) ??
+          ((core as Record<string, unknown>).rider_picked_up_at as string | null) ??
+          null;
         const uiStatus = resolvePartnerPipeline(
           food ? (food.order_status as string | null) : null,
           coreStatus,
-          currentSt
+          currentSt,
+          riderPickedUpAt
         );
 
         let items = resolvePartnerOrderItems(core, food, rawItemsByOrderTextId);
@@ -572,11 +577,7 @@ export async function GET(req: NextRequest) {
             (food?.handed_over_to_rider_at as string | null) ??
             ((core as Record<string, unknown>).handed_over_to_rider_at as string | null) ??
             null,
-          rider_picked_up_at:
-            (food?.rider_picked_up_at as string | null) ??
-            ((core as Record<string, unknown>).rider_picked_up_at as string | null) ??
-            ((core as Record<string, unknown>).actual_pickup_time as string | null) ??
-            null,
+          rider_picked_up_at: riderPickedUpAt,
           reached_merchant_at:
             (food?.rider_reached_pickup_at as string | null) ??
             (food?.reached_merchant_at as string | null) ??

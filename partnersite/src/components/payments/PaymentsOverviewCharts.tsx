@@ -77,6 +77,7 @@ type Props = {
   analyticsLoading: boolean;
   payoutData: PayoutRequestsResponse | undefined;
   payoutsLoading: boolean;
+  walletTotalEarned?: number;
 };
 
 export function PaymentsOverviewCharts({
@@ -86,8 +87,11 @@ export function PaymentsOverviewCharts({
   analyticsLoading,
   payoutData,
   payoutsLoading,
+  walletTotalEarned = 0,
 }: Props) {
   const chartSeries = analytics?.series ?? [];
+  const lifetimeEarned = Math.max(analytics?.total_earned ?? 0, walletTotalEarned ?? 0);
+  const periodEarnings = analytics?.period_total_earnings ?? 0;
   const chartGeom = useMemo(
     () => buildDualLineChart(chartSeries, 280, 160, 30, 10, 20),
     [chartSeries]
@@ -209,7 +213,7 @@ export function PaymentsOverviewCharts({
               <div>
                 <p className="text-xs text-gray-600 font-medium">Period earnings</p>
                 <p className="text-lg font-bold text-gray-900 mt-0.5">
-                  {formatInr(analytics?.period_total_earnings ?? 0)}
+                  {formatInr(periodEarnings)}
                 </p>
               </div>
             </div>
@@ -234,7 +238,7 @@ export function PaymentsOverviewCharts({
                   {analytics?.period_transaction_count ?? 0}
                 </p>
                 <p className="text-[10px] text-gray-500 mt-0.5">
-                  Lifetime {formatInr(analytics?.total_earned ?? 0)} earned
+                  Lifetime {formatInr(lifetimeEarned)} earned
                 </p>
               </div>
             </div>

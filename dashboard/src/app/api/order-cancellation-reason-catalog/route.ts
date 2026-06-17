@@ -32,6 +32,7 @@ export async function GET() {
 
     const { attributes, grouped } = await getCancellationCatalogPayload({
       activeOnly: true,
+      channel: "web",
     });
     return NextResponse.json({ success: true, attributes, grouped });
   } catch (error) {

@@ -7,6 +7,7 @@ import { Store, Mail, Phone, User, Loader2, ArrowRight, CheckCircle, MapPin, Ima
 import { requestEmailOTP, verifyEmailOTP, requestPhoneOTP, verifyPhoneOTP } from "@/lib/auth/supabase-client";
 import { ENABLE_PHONE_OTP_REGISTER } from "@/lib/auth/phone-otp-config";
 import { supabase } from "@/lib/supabase";
+import { ClientMountInput } from "@/components/auth/ClientMountInput";
 
 type Step = 1 | 2 | 3;
 
@@ -415,8 +416,10 @@ export default function RegisterPage() {
                   <label className="block text-sm font-semibold text-slate-700 mb-2">Email address</label>
                   <div className="relative group">
                     <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
-                    <input
+                    <ClientMountInput
                       type="email"
+                      name="email"
+                      autoComplete="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="you@example.com"

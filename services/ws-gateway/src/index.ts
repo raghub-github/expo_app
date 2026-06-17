@@ -119,10 +119,23 @@ subscriber.on("pmessage", (_pattern, channel, message) => {
     }
   }
 });
-// Pattern subscribe so we don't have to subscribe/unsubscribe per client.
-// Three domains: orders, riders, stores. Backend publishes onto these.
-await subscriber.psubscribe("order:*", "rider:*", "store:*");
-app.log.info("redis pattern-subscribed: order:*, rider:*, store:*");
+
+let redisReady = false;
+try {
+  if (subscriber.status === "wait") {
+    await subscriber.connect();
+  }
+  // Pattern subscribe so we don't have to subscribe/unsubscribe per client.
+  // Three domains: orders, riders, stores. Backend publishes onto these.
+  await subscriber.psubscribe("order:*", "rider:*", "store:*");
+  redisReady = true;
+  app.log.info("redis pattern-subscribed: order:*, rider:*, store:*");
+} catch (err) {
+  app.log.error(
+    { err },
+    "redis unavailable — start Redis (REDIS_URL) then restart ws-gateway; sockets will not receive dispatch events until then",
+  );
+}
 
 /* ─── Ticket verification ────────────────────────────────────────── */
 
@@ -156,15 +169,28 @@ async function verifyTicket(ticket: string): Promise<TicketClaims | null> {
  */
 async function burnTicket(jti: string, ttlSec: number): Promise<boolean> {
   if (!jti) return true; // tickets without jti can't be single-use; accept
-  const redis = getRedis();
-  const key = `ws:ticket-burn:${jti}`;
-  const ok = await redis.set(key, "1", "EX", Math.max(ttlSec, 60), "NX");
-  return ok === "OK";
+  if (!redisReady) return false;
+  try {
+    const redis = getRedis();
+    if (redis.status === "wait") {
+      await redis.connect();
+    }
+    const key = `ws:ticket-burn:${jti}`;
+    const ok = await redis.set(key, "1", "EX", Math.max(ttlSec, 60), "NX");
+    return ok === "OK";
+  } catch {
+    return false;
+  }
 }
 
 /* ─── WS endpoint ────────────────────────────────────────────────── */
 
-app.get("/healthz", async () => ({ ok: true, sockets: allSockets.size, channels: channelSubscribers.size }));
+app.get("/healthz", async () => ({
+  ok: redisReady,
+  redis: redisReady,
+  sockets: allSockets.size,
+  channels: channelSubscribers.size,
+}));
 
 app.register(async (instance) => {
   instance.get("/v1/ws", { websocket: true }, async (socket, req) => {

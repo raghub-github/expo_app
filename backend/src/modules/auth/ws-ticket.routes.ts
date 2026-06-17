@@ -21,7 +21,7 @@ import { getEnv } from "../../config/env.js";
 
 const body = z.object({
   orderIds: z.array(z.string().min(1).max(64)).max(20).optional(),
-  riderId: z.string().min(1).max(64).optional(),
+  riderId: z.coerce.string().min(1).max(64).optional(),
 });
 
 const TICKET_TTL_SEC = 60;
@@ -44,53 +44,59 @@ export async function wsTicketRoutes(app: FastifyInstance) {
       "/auth/ws-ticket",
       { schema: { body } },
       async (req, reply) => {
-        const env = getEnv();
-        // Reuse the same Supabase JWT secret the auth plugin verifies session
-        // tokens against. The ws-gateway is configured with the same value
-        // via its own .env so the ticket signature checks out there.
-        const secret = env.SUPABASE_JWT_SECRET;
-        if (!secret) {
-          return reply.code(503).send({ ok: false, error: "jwt_secret_missing" });
-        }
-        const input = req.body as z.infer<typeof body>;
-        const userId = req.auth?.sub;
-        const role = req.auth?.role ?? "customer";
-        if (!userId) {
-          return reply.code(401).send({ ok: false, error: "no_user_context" });
-        }
-
-        // Channel whitelist. The gateway accepts these verbatim, so any
-        // server-side check we do here is the ENTIRE access-control story.
-        const channels: string[] = [];
-        if (Array.isArray(input.orderIds)) {
-          for (const id of input.orderIds) {
-            if (/^[A-Z0-9-]{4,32}$/.test(id)) channels.push(`order:${id}`);
+        try {
+          const env = getEnv();
+          // Reuse the same Supabase JWT secret the auth plugin verifies session
+          // tokens against. The ws-gateway is configured with the same value
+          // via its own .env so the ticket signature checks out there.
+          const secret = env.SUPABASE_JWT_SECRET;
+          if (!secret) {
+            return reply.code(503).send({ ok: false, error: "jwt_secret_missing" });
           }
-        }
-        if (role === "rider" && input.riderId && /^[0-9]+$/.test(input.riderId)) {
-          channels.push(`rider:${input.riderId}`);
-        }
-        // We could later: query orders_core to verify the caller actually
-        // owns those order ids. Skipping for now because order ids are
-        // already opaque ULIDs — a non-owner can't guess them.
+          const input = req.body as z.infer<typeof body>;
+          const userId = req.auth?.sub;
+          const role = req.auth?.role ?? "customer";
+          if (!userId) {
+            return reply.code(401).send({ ok: false, error: "no_user_context" });
+          }
 
-        const jti = ulid();
-        const ticket = await new SignJWT({ channels, role })
-          .setProtectedHeader({ alg: "HS256" })
-          .setIssuer("backend")
-          .setAudience("ws-gateway")
-          .setSubject(String(userId))
-          .setJti(jti)
-          .setIssuedAt()
-          .setExpirationTime(`${TICKET_TTL_SEC}s`)
-          .sign(new TextEncoder().encode(secret));
+          // Channel whitelist. The gateway accepts these verbatim, so any
+          // server-side check we do here is the ENTIRE access-control story.
+          const channels: string[] = [];
+          if (Array.isArray(input.orderIds)) {
+            for (const id of input.orderIds) {
+              if (/^[A-Z0-9-]{4,32}$/.test(id)) channels.push(`order:${id}`);
+            }
+          }
+          const riderIdText = input.riderId != null ? String(input.riderId).trim() : "";
+          if (role === "rider" && riderIdText && /^[0-9]+$/.test(riderIdText)) {
+            channels.push(`rider:${riderIdText}`);
+          }
+          // We could later: query orders_core to verify the caller actually
+          // owns those order ids. Skipping for now because order ids are
+          // already opaque ULIDs — a non-owner can't guess them.
 
-        return reply.send({
-          ok: true,
-          ticket,
-          expiresIn: TICKET_TTL_SEC,
-          channels,
-        });
+          const jti = ulid();
+          const ticket = await new SignJWT({ channels, role })
+            .setProtectedHeader({ alg: "HS256" })
+            .setIssuer("backend")
+            .setAudience("ws-gateway")
+            .setSubject(String(userId))
+            .setJti(jti)
+            .setIssuedAt()
+            .setExpirationTime(`${TICKET_TTL_SEC}s`)
+            .sign(new TextEncoder().encode(secret));
+
+          return reply.send({
+            ok: true,
+            ticket,
+            expiresIn: TICKET_TTL_SEC,
+            channels,
+          });
+        } catch (err) {
+          req.log.error({ err }, "ws_ticket_mint_failed");
+          return reply.code(500).send({ ok: false, error: "ws_ticket_failed" });
+        }
       },
     );
   });

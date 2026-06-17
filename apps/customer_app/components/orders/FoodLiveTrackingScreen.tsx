@@ -313,10 +313,14 @@ export function FoodLiveTrackingScreen({
   const riderPos =
     riderLat != null && riderLng != null ? { latitude: riderLat, longitude: riderLng } : null;
 
-  const mapPhase = getFoodDeliveryMapPhase(orderStatus, order.riderReachedPickupAt);
+  const mapPhase = getFoodDeliveryMapPhase(orderStatus, {
+    riderReachedPickupAt: order.riderReachedPickupAt,
+    riderPickedUpAt: order.riderPickedUpAt,
+  });
   const highlightPickupZone = shouldHighlightFoodPickupZone({
     status: orderStatus,
     riderReachedPickupAt: order.riderReachedPickupAt,
+    riderPickedUpAt: order.riderPickedUpAt,
     riderLat,
     riderLng,
     pickupLat,
@@ -324,6 +328,7 @@ export function FoodLiveTrackingScreen({
   });
   const highlightDropZone = shouldHighlightFoodDropZone({
     status: orderStatus,
+    riderPickedUpAt: order.riderPickedUpAt,
     riderLat,
     riderLng,
     dropLat: deliveryLat,

@@ -8,6 +8,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { ActiveOrder } from "@/store/orderStore";
 import { getFloatingOrderStatusText } from "@/lib/customer-order-status-display";
+import { formatSingleEtaMinutes } from "@/lib/order-eta-display";
 import { PartnerChatUnreadBadge } from "@/components/orders/PartnerChatUnreadBadge";
 
 const MINT = GatiMitraColors.primaryMint;
@@ -26,7 +27,8 @@ export function FloatingOrderTrackingPill({
 }: FloatingOrderTrackingPillProps) {
   const storeLabel = order.storeName?.trim() || "Your order";
   const statusLine = getFloatingOrderStatusText(order.status);
-  const etaMins = order.etaMinutes > 0 ? order.etaMinutes : null;
+  const etaLabel = formatSingleEtaMinutes(order.etaMinutes > 0 ? order.etaMinutes : null);
+  const showEta = order.etaMinutes > 0;
 
   return (
     <TouchableOpacity activeOpacity={0.92} onPress={onPress} style={styles.touchable}>
@@ -54,8 +56,8 @@ export function FloatingOrderTrackingPill({
           end={{ x: 1, y: 1 }}
           style={styles.etaPill}
         >
-          <Text style={styles.etaTop}>arriving in</Text>
-          <Text style={styles.etaBottom}>{etaMins != null ? `${etaMins} mins` : "soon"}</Text>
+          <Text style={styles.etaTop}>{showEta ? "arriving in" : "delivery"}</Text>
+          <Text style={styles.etaBottom}>{showEta ? etaLabel : "Updating…"}</Text>
         </LinearGradient>
       </View>
     </TouchableOpacity>

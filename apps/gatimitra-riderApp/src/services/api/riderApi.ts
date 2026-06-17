@@ -86,6 +86,8 @@ const OrderSummarySchema = z.object({
   walletCreditPending: z.boolean().optional(),
   customerRating: z.number().nullable().optional(),
   passengerRating: z.number().nullable().optional(),
+  cancellationPenaltyApplied: z.boolean().optional(),
+  cancellationPenaltyAmount: z.number().nullable().optional(),
 });
 
 const RiderBankPaymentMethodSchema = z.object({
@@ -102,6 +104,77 @@ const RiderBankPaymentMethodSchema = z.object({
 
 export type RiderBankPaymentMethod = z.infer<typeof RiderBankPaymentMethodSchema>;
 
+function normalizeBlockedServiceName(
+  value: string
+): "food" | "parcel" | "person_ride" | null {
+  const x = (value || "").toLowerCase().trim();
+  if (x === "food") return "food";
+  if (x === "parcel") return "parcel";
+  if (x === "ride" || x === "person_ride") return "person_ride";
+  return null;
+}
+
+const AccountRestrictionsSchema = z
+  .object({
+    accountRestricted: z.boolean().optional(),
+    accountRestrictedReason: z.string().optional(),
+    globalWalletBlock: z.boolean().optional(),
+    blacklistBlockedServices: z.array(z.string()).optional(),
+    negativeWalletBlocks: z
+      .array(z.object({ serviceType: z.string(), reason: z.string() }))
+      .optional(),
+    allServicesBlacklisted: z.boolean().optional(),
+    penaltyDue: z.number().optional(),
+    penaltyDutyStopped: z.boolean().optional(),
+  })
+  .transform((raw) => {
+    const walletBlockServices =
+      raw.globalWalletBlock === true ||
+      (raw.negativeWalletBlocks ?? []).some((b) => b.reason === "global_emergency")
+        ? ["food", "parcel", "person_ride"]
+        : (raw.negativeWalletBlocks ?? [])
+            .filter((b) => b.reason === "negative_wallet" || b.reason === "global_emergency")
+            .map((b) => b.serviceType);
+
+    const blockedSet = new Set<"food" | "parcel" | "person_ride">();
+    for (const name of [...(raw.blacklistBlockedServices ?? []), ...walletBlockServices]) {
+      const norm = normalizeBlockedServiceName(name);
+      if (norm) blockedSet.add(norm);
+    }
+    const blacklistBlockedServices = [...blockedSet];
+    const allServicesBlacklisted =
+      raw.allServicesBlacklisted ??
+      (blacklistBlockedServices.length >= 3 || raw.globalWalletBlock === true);
+    const accountRestricted =
+      raw.accountRestricted ??
+      (blacklistBlockedServices.length > 0 || raw.globalWalletBlock === true);
+    const reason = raw.accountRestrictedReason;
+    const accountRestrictedReason =
+      reason === "service_blacklist" ||
+      reason === "all_services_blacklist" ||
+      reason === "blocked_status"
+        ? reason
+        : allServicesBlacklisted
+          ? "all_services_blacklist"
+          : accountRestricted
+            ? "service_blacklist"
+            : "none";
+
+    return {
+      accountRestricted,
+      accountRestrictedReason: accountRestrictedReason as
+        | "none"
+        | "service_blacklist"
+        | "all_services_blacklist"
+        | "blocked_status",
+      globalWalletBlock: raw.globalWalletBlock ?? false,
+      blacklistBlockedServices,
+      allServicesBlacklisted,
+      penaltyDue: raw.penaltyDue ?? 0,
+      penaltyDutyStopped: raw.penaltyDutyStopped ?? false,
+    };
+  });
+
 const EarningsSummarySchema = z.object({
   totalBalance: z.number(),
   withdrawable: z.number(),
@@ -115,12 +188,25 @@ const EarningsSummarySchema = z.object({
     parcel: z.number(),
     ride: z.number(),
   }),
+  accountRestrictions: AccountRestrictionsSchema.optional().transform((value) =>
+    value ?? {
+      accountRestricted: false,
+      accountRestrictedReason: "none" as const,
+      globalWalletBlock: false,
+      blacklistBlockedServices: [],
+      allServicesBlacklisted: false,
+      penaltyDue: 0,
+      penaltyDutyStopped: false,
+    }
+  ),
 });
 
 const DutyStatusSchema = z.object({
   isOnDuty: z.boolean(),
-  allowedServiceTypes: z.array(z.string()).optional(),
+  allowedServiceTypes: z.array(z.string()).optional().default([]),
   blockedServiceTypes: z.array(z.string()).optional(),
+  accountRestricted: z.boolean().optional(),
+  allServicesBlacklisted: z.boolean().optional(),
   lastUpdated: z.string(),
 });
 
@@ -160,6 +246,7 @@ const RiderLedgerEntrySchema = z.object({
   ref: z.string().nullable(),
   refType: z.string().nullable(),
   serviceType: z.string().nullable(),
+  orderPublicId: z.string().nullable(),
   createdAt: z.string(),
 });
 
@@ -482,16 +569,70 @@ export const riderApi = {
     );
   },
 
+  async getCancellationPenaltyPreview(orderId: string, reasonCode: string) {
+    const client = createApiClient();
+    const params = new URLSearchParams({ reasonCode });
+    const PreviewSchema = z.object({
+      ok: z.literal(true),
+      appliesPenalty: z.boolean(),
+      penaltyAmount: z.coerce.number(),
+      ledgerTitle: z.string(),
+      ledgerDescription: z.string(),
+      scenarioCode: z.string().nullable(),
+      catalogReasonId: z.coerce.number().nullable(),
+      reasonLabel: z.string().nullable(),
+      skipped: z.string().optional(),
+    });
+    const res = await client.request<z.infer<typeof PreviewSchema>>(
+      `/v1/rider/orders/${orderId}/cancellation-penalty-preview?${params.toString()}`,
+      { responseSchema: PreviewSchema }
+    );
+    return {
+      appliesPenalty: res.appliesPenalty,
+      penaltyAmount: res.penaltyAmount,
+      ledgerTitle: res.ledgerTitle,
+      ledgerDescription: res.ledgerDescription,
+      reasonLabel: res.reasonLabel,
+      scenarioCode: res.scenarioCode,
+      skipped: res.skipped,
+    };
+  },
+
   async cancelAssignedRide(
     orderId: string,
     payload: { reasonCode: string; reasonText?: string }
   ) {
     const client = createApiClient();
-    return client.request<{ ok: true }>(`/v1/rider/orders/${orderId}/cancel-assigned`, {
+    return client.request<{ ok: true; penaltyApplied?: boolean; penaltyAmount?: number }>(
+      `/v1/rider/orders/${orderId}/cancel-assigned`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
+  },
+
+  async getCancellationReasons(serviceType?: "food" | "person_ride" | "parcel") {
+    const client = createApiClient();
+    const params = new URLSearchParams();
+    if (serviceType) params.set("serviceType", serviceType);
+    const qs = params.toString();
+    const CancellationReasonSchema = z.object({
+      id: z.coerce.number(),
+      attribute: z.string(),
+      label: z.string(),
+      reasonCode: z.string(),
+      sortOrder: z.coerce.number(),
+      serviceType: z.string().nullable(),
+    });
+    return client.request<{ ok: true; reasons: z.infer<typeof CancellationReasonSchema>[] }>(
+      `/v1/rider/cancellation-reasons${qs ? `?${qs}` : ""}`,
+      {
+        responseSchema: z.object({
+          ok: z.literal(true),
+          reasons: z.array(CancellationReasonSchema),
+        }),
+      }
+    );
   },
 
   async verifyPickupOtp(
@@ -637,14 +778,27 @@ export const riderApi = {
   },
 
   /**
-   * Update duty status
+   * Update duty status (writes to duty_logs for dashboard Activity Logs).
    */
-  async updateDutyStatus(isOnDuty: boolean, serviceTypes?: string[]) {
+  async updateDutyStatus(
+    isOnDuty: boolean,
+    serviceTypes?: string[],
+    opts?: { lat?: number; lon?: number; deviceId?: string }
+  ) {
     const client = createApiClient();
-    const body: { isOnDuty: boolean; serviceTypes?: string[] } = { isOnDuty };
+    const body: {
+      isOnDuty: boolean;
+      serviceTypes?: string[];
+      lat?: number;
+      lon?: number;
+      deviceId?: string;
+    } = { isOnDuty };
     if (serviceTypes?.length) {
       body.serviceTypes = serviceTypes;
     }
+    if (opts?.lat != null) body.lat = opts.lat;
+    if (opts?.lon != null) body.lon = opts.lon;
+    if (opts?.deviceId) body.deviceId = opts.deviceId;
     return client.request<z.infer<typeof DutyStatusSchema>>(
       "/v1/rider/duty",
       {

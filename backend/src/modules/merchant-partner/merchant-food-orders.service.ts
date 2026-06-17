@@ -28,6 +28,7 @@ import {
 import { refundFieldsFromEngineResult } from "../../lib/order-cancellation-refund.js";
 import { recordOrderCancellation } from "../../lib/record-order-cancellation.js";
 import { creditMerchantOrderEarningOnDelivered } from "../../lib/credit-merchant-order-on-delivered.js";
+import { applyMerchantOrderCancellationLedger } from "../../lib/apply-merchant-cancellation-ledger.js";
 import {
   clearMerchantStoreOrderNotifications,
   shouldClearOrderNotifications,
@@ -770,6 +771,7 @@ type ActiveRiderSnapshot = {
   rider_selfie_url: string | null;
   rider_assignment_status: string | null;
   rider_reached_at: string | null;
+  picked_up_at: string | null;
 };
 
 async function loadActiveRidersByCoreIds(
@@ -790,6 +792,7 @@ async function loadActiveRidersByCoreIds(
       assignment_sequence: number | null;
       assigned_at: string | null;
       reached_merchant_at: string | null;
+      picked_up_at: string | null;
       cancelled_at: string | null;
       unassigned_at: string | null;
     }>
@@ -804,6 +807,7 @@ async function loadActiveRidersByCoreIds(
       ora.assignment_sequence,
       ora.assigned_at,
       ora.reached_merchant_at,
+      ora.picked_up_at,
       ora.cancelled_at,
       ora.unassigned_at
     FROM order_rider_assignments ora
@@ -843,6 +847,7 @@ async function loadActiveRidersByCoreIds(
       rider_selfie_url: toAbsoluteClientMediaUrl(rider?.selfie_url ?? null),
       rider_assignment_status: assignment.assignment_status ?? null,
       rider_reached_at: assignment.reached_merchant_at ?? null,
+      picked_up_at: assignment.picked_up_at ?? null,
     });
   }
 
@@ -867,10 +872,26 @@ async function buildOrderDto(
     activeRiderByCoreId: Map<number, ActiveRiderSnapshot>;
   }
 ): Promise<MerchantFoodOrderDto> {
+  const otps = opts.otpByCoreId.get(core.id);
+  const coreOnly = food == null;
+  const tl = opts.timelineSnapByCoreId?.get(core.id);
+  const scheduledMeta = resolveScheduledMeta(core);
+  const activeRider = opts.activeRiderByCoreId.get(core.id);
+  const resolvedRiderId =
+    core.rider_id != null && Number.isFinite(Number(core.rider_id))
+      ? Number(core.rider_id)
+      : activeRider?.rider_id ?? null;
+
+  const riderPickedUpAt =
+    toIsoOrNull(food?.rider_picked_up_at) ??
+    tl?.rider_picked_up_at ??
+    toIsoOrNull(activeRider?.picked_up_at) ??
+    null;
   const pipeline = resolvePartnerPipeline(
     food?.order_status ?? null,
     core.status,
-    core.current_status
+    core.current_status,
+    riderPickedUpAt
   );
   const customerId = resolveCustomerId(core, food);
   const cust = customerId != null ? opts.customerById.get(customerId) : undefined;
@@ -927,17 +948,6 @@ async function buildOrderDto(
     total: merchantTotal,
   };
 
-  const otps = opts.otpByCoreId.get(core.id);
-  const coreOnly = food == null;
-  const tl = opts.timelineSnapByCoreId?.get(core.id);
-  const scheduledMeta = resolveScheduledMeta(core);
-  const activeRider = opts.activeRiderByCoreId.get(core.id);
-  const resolvedRiderId =
-    core.rider_id != null && Number.isFinite(Number(core.rider_id))
-      ? Number(core.rider_id)
-      : activeRider?.rider_id ?? null;
-
-  const riderPickedUpAt = toIsoOrNull(food?.rider_picked_up_at) ?? tl?.rider_picked_up_at ?? null;
   const riderReachedPickupAt = toIsoOrNull(food?.rider_reached_pickup_at);
   const riderDisplayInput = {
     order_status: pipeline,
@@ -1676,7 +1686,7 @@ export async function patchMerchantFoodOrderStatus(
   if (!status) throw new Error("status_required");
 
   const existingRows = await sql`
-    SELECT id, order_id, core_order_id, order_status, merchant_store_id, food_items_total_value
+    SELECT id, order_id, core_order_id, order_status, merchant_store_id, food_items_total_value, rider_picked_up_at
     FROM orders_food
     WHERE id = ${ordersFoodId}
     LIMIT 1
@@ -1689,6 +1699,7 @@ export async function patchMerchantFoodOrderStatus(
         order_status: string | null;
         merchant_store_id: number;
         food_items_total_value: unknown;
+        rider_picked_up_at: string | null;
       }
     | undefined;
   if (!existing) throw new Error("order_not_found");
@@ -1704,7 +1715,12 @@ export async function patchMerchantFoodOrderStatus(
   const core = coreRows[0] as { status?: string; current_status?: string | null } | undefined;
   if (core) {
     currentStatus = normalizeOrderStatusForTransition(
-      resolvePartnerPipeline(existing.order_status, core.status ?? "assigned", core.current_status ?? null)
+      resolvePartnerPipeline(
+        existing.order_status,
+        core.status ?? "assigned",
+        core.current_status ?? null,
+        toIsoOrNull(existing.rider_picked_up_at)
+      )
     );
   }
 
@@ -2104,6 +2120,20 @@ export async function patchMerchantFoodOrderStatus(
     newStatus: status,
     previousStatus: currentStatus,
   });
+
+  if (status === "CANCELLED") {
+    try {
+      await applyMerchantOrderCancellationLedger(
+        {
+          orderCoreId: corePk,
+          source: actionSource === "admin" ? "admin_cancel" : "merchant_cancel",
+        },
+        sql
+      );
+    } catch (ledgerErr) {
+      console.warn("[patchMerchantFoodOrderStatus] cancellation ledger failed:", ledgerErr);
+    }
+  }
 
   if (shouldClearOrderNotifications(status)) {
     try {

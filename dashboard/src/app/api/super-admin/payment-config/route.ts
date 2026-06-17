@@ -8,11 +8,15 @@ import { getSql } from "@/lib/db/client";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/** postgres.js rejects `undefined` bind params — use null so COALESCE keeps the existing column. */
+function sqlOptional<T>(value: T | undefined | null): T | null {
+  return value === undefined ? null : value;
+}
+
 const patchSchema = z.object({
   table: z.enum([
     "payment_settlement_rules",
     "payment_cancellation_rules",
-    "payment_hold_rules",
     "payment_payout_rules",
     "payment_commission_rules",
     "payment_tax_rules",
@@ -68,7 +72,6 @@ export async function PATCH(req: NextRequest) {
       "rule_name", "merchant_gets_payment", "customer_refund_mode", "customer_refund_value",
       "platform_keeps_commission", "is_active", "priority",
     ],
-    payment_hold_rules: ["rule_name", "hold_hours", "auto_release_enabled", "is_active"],
     payment_payout_rules: [
       "rule_name", "min_payout_amount", "requires_admin_approval", "max_retries", "is_active",
     ],
@@ -91,34 +94,26 @@ export async function PATCH(req: NextRequest) {
     if (table === "payment_settlement_rules") {
       await sql`
         UPDATE payment_settlement_rules SET
-          merchant_share_value = COALESCE(${payload.merchant_share_value as number | null}, merchant_share_value),
-          platform_commission_value = COALESCE(${payload.platform_commission_value as number | null}, platform_commission_value),
-          is_active = COALESCE(${payload.is_active as boolean | null}, is_active),
-          updated_at = NOW()
-        WHERE id = ${id}
-      `;
-    } else if (table === "payment_hold_rules") {
-      await sql`
-        UPDATE payment_hold_rules SET
-          hold_hours = COALESCE(${payload.hold_hours as number | null}, hold_hours),
-          is_active = COALESCE(${payload.is_active as boolean | null}, is_active),
+          merchant_share_value = COALESCE(${sqlOptional(payload.merchant_share_value as number | null)}, merchant_share_value),
+          platform_commission_value = COALESCE(${sqlOptional(payload.platform_commission_value as number | null)}, platform_commission_value),
+          is_active = COALESCE(${sqlOptional(payload.is_active as boolean | null)}, is_active),
           updated_at = NOW()
         WHERE id = ${id}
       `;
     } else if (table === "payment_payout_rules") {
       await sql`
         UPDATE payment_payout_rules SET
-          min_payout_amount = COALESCE(${payload.min_payout_amount as number | null}, min_payout_amount),
-          requires_admin_approval = COALESCE(${payload.requires_admin_approval as boolean | null}, requires_admin_approval),
-          is_active = COALESCE(${payload.is_active as boolean | null}, is_active),
+          min_payout_amount = COALESCE(${sqlOptional(payload.min_payout_amount as number | null)}, min_payout_amount),
+          requires_admin_approval = COALESCE(${sqlOptional(payload.requires_admin_approval as boolean | null)}, requires_admin_approval),
+          is_active = COALESCE(${sqlOptional(payload.is_active as boolean | null)}, is_active),
           updated_at = NOW()
         WHERE id = ${id}
       `;
     } else if (table === "payment_commission_rules") {
       await sql`
         UPDATE payment_commission_rules SET
-          commission_value = COALESCE(${payload.commission_value as number | null}, commission_value),
-          is_active = COALESCE(${payload.is_active as boolean | null}, is_active),
+          commission_value = COALESCE(${sqlOptional(payload.commission_value as number | null)}, commission_value),
+          is_active = COALESCE(${sqlOptional(payload.is_active as boolean | null)}, is_active),
           updated_at = NOW()
         WHERE id = ${id}
       `;
@@ -126,7 +121,7 @@ export async function PATCH(req: NextRequest) {
       await sql`
         UPDATE payment_global_settings SET
           setting_value = COALESCE(${JSON.stringify(payload.setting_value ?? {})}::jsonb, setting_value),
-          is_active = COALESCE(${payload.is_active as boolean | null}, is_active),
+          is_active = COALESCE(${sqlOptional(payload.is_active as boolean | null)}, is_active),
           updated_at = NOW()
         WHERE id = ${id}
       `;

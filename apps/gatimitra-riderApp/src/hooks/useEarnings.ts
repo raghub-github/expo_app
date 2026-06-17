@@ -12,6 +12,15 @@ export const DEFAULT_EARNINGS_SUMMARY: EarningsSummary = {
   thisMonth: 0,
   hasBankAccount: false,
   breakdown: { food: 0, parcel: 0, ride: 0 },
+  accountRestrictions: {
+    accountRestricted: false,
+    accountRestrictedReason: "none",
+    globalWalletBlock: false,
+    blacklistBlockedServices: [],
+    allServicesBlacklisted: false,
+    penaltyDue: 0,
+    penaltyDutyStopped: false,
+  },
 };
 
 const EARNINGS_QUERY_KEY = ["rider", "earnings", "summary"] as const;

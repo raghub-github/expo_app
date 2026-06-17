@@ -3,7 +3,8 @@
   "main": "expo-router/entry",
   "version": "1.0.0",
   "scripts": {
-    "start": "expo start -c",
+    "start": "expo start",
+    "start:clean": "node scripts/clear-metro-cache.js && expo start -c",
     "start:no-cache": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",

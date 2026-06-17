@@ -394,6 +394,8 @@ export async function getRiderSubscriptionStatus(riderId: number) {
           dispatchBlocked: false,
           alertBanner: buildRiderSubscriptionAlertBanner({
             walletBalance: 0,
+            subscriptionWalletNegative: 0,
+            penaltyWalletNegative: 0,
             duesOutstanding: 0,
             totalDue: 0,
             dispatchBlocked: false,

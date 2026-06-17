@@ -613,15 +613,14 @@ export default function RiderDetails({
   };
 
   const handleRejectionOptionChange = (value: string) => {
-    const id = Number(value);
-    const row = attributeRejectionOptions.find((r) => r.id === id);
+    const row = findCatalogReasonBySelectValue(attributeRejectionOptions, value);
     if (!row) {
       setCatalogReasonId(null);
       setRejectionOption("");
       setCancelAction("");
       return;
     }
-    setCatalogReasonId(row.id);
+    setCatalogReasonId(normalizeCatalogReasonId(row.id));
     setRejectionOption(row.label);
     setCancelAction("");
   };
@@ -738,6 +737,8 @@ export default function RiderDetails({
         body: JSON.stringify({
           action,
           riderId: order.riderId,
+          catalogReasonId,
+          catalogAttribute: riderAttribute,
           reasonCode: selectedCatalogReason?.reasonCode ?? riderAttribute ?? "AGENT_CANCEL",
           reasonText: rejectionOption,
           catalogReasonCode: selectedCatalogReason?.reasonCode ?? null,
@@ -748,6 +749,12 @@ export default function RiderDetails({
         success?: boolean;
         error?: string;
         waitingForManualAssignment?: boolean;
+        riderPenalty?: {
+          applied?: boolean;
+          amount?: number;
+          ledgerTitle?: string;
+          skipped?: string;
+        };
       };
 
       if (!res.ok || !json.success) {
@@ -761,10 +768,17 @@ export default function RiderDetails({
         return;
       }
 
+      const penaltyMsg =
+        json.riderPenalty?.applied && json.riderPenalty.amount != null
+          ? ` Rider penalty ₹${json.riderPenalty.amount.toFixed(2)} applied.`
+          : json.riderPenalty?.skipped
+            ? ` (Penalty not applied: ${json.riderPenalty.skipped.replace(/_/g, " ")})`
+            : "";
+
       toast(
-        action === "cancel_reassign"
+        (action === "cancel_reassign"
           ? "Rider cancelled and dispatch started for a new rider."
-          : "Rider cancelled. Order is waiting for manual assignment.",
+          : "Rider cancelled. Order is waiting for manual assignment.") + penaltyMsg,
         "success"
       );
       setRiderAttribute("");

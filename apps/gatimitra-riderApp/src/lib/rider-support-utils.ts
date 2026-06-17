@@ -87,6 +87,21 @@ export function findPreLoginHelpGroup(groups: RiderHelpGroup[]): RiderHelpGroup 
   );
 }
 
+/** Gmitra-Non-Order Related → Account Restricted State Affecting Duty Logs. */
+export function isAccountRestrictedDutyLogTopic(section: {
+  title_text?: string | null;
+  title_code?: string | null;
+}): boolean {
+  const code = (section.title_code ?? "").toUpperCase();
+  if (code === "RESTRICTED_ACCOUNT_DUTY_LOG_SYNC_ISSUE") return true;
+  if (code.includes("RESTRICTED_ACCOUNT") && code.includes("DUTY_LOG")) return true;
+
+  const blob = `${section.title_text ?? ""} ${section.title_code ?? ""}`.toLowerCase();
+  if (blob.includes("account_restricted") && blob.includes("duty")) return true;
+  if (blob.includes("restricted_account") && blob.includes("duty")) return true;
+  return blob.includes("account restricted") && blob.includes("duty");
+}
+
 /** Hidden on pre-login flat list (penalty needs order link). */
 export function isPenaltyIssueTopic(section: {
   title_text?: string | null;

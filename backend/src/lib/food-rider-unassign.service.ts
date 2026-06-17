@@ -80,13 +80,21 @@ async function clearFoodRiderAssignment(
         riderId: null,
         status: "assigned",
         currentStatus: nextCoreStatus,
+        actualPickupTime: null,
         updatedAt: now,
       })
       .where(and(eq(ordersCore.id, input.orderCorePk), eq(ordersCore.riderId, input.riderId)));
 
     await tx
       .update(ordersFood)
-      .set({ riderId: null, updatedAt: now })
+      .set({
+        riderId: null,
+        riderReachedPickupAt: null,
+        pickupDurationSeconds: null,
+        pickupTimerStartedAt: null,
+        pickupWaitSeconds: null,
+        updatedAt: now,
+      })
       .where(eq(ordersFood.orderId, input.orderCorePk));
 
     await recordFn(tx, foodSt, now);

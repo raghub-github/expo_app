@@ -56,32 +56,24 @@ import { runCompetitorSnapshotsTick } from "./services/merchant-competitor-snaps
 loadEnv();
 const env = getEnv();
 
-// Configure logger - use pino-pretty only in development if available
-let loggerConfig: any = {
-  level: env.NODE_ENV === "production" ? "info" : "debug",
-  requestIdLogLabel: "requestId",
-};
-
-// Only use pino-pretty in development if available
-if (env.NODE_ENV !== "production") {
-  try {
-    // Try to import pino-pretty - if it fails, use default logger
-    await import("pino-pretty");
-    loggerConfig.transport = {
-      target: "pino-pretty",
-      options: {
-        translateTime: "HH:MM:ss Z",
-        ignore: "pid,hostname",
-      },
-    };
-  } catch {
-    // pino-pretty not available, use default logger
-    loggerConfig.prettyPrint = false;
-  }
-}
-
 const app = Fastify({
-  logger: loggerConfig,
+  logger:
+    env.NODE_ENV === "production"
+      ? { level: "info", requestIdLogLabel: "requestId" }
+      : {
+          level: "debug",
+          requestIdLogLabel: "requestId",
+          transport: {
+            target: "pino-pretty",
+            options: {
+              colorize: true,
+              translateTime: "SYS:standard",
+              ignore: "pid,hostname",
+              singleLine: false,
+              sync: true,
+            },
+          },
+        },
   requestIdLogLabel: "requestId",
   genReqId: () => ulid(),
 }).withTypeProvider<ZodTypeProvider>();
@@ -128,7 +120,7 @@ await app.register(swagger, {
       title: "GatiMitra API",
       version: "v1",
     },
-    servers: [{ url: env.API_BASE_URL ?? "http://localhost:3000" }],
+      servers: [{ url: env.API_BASE_URL ?? "http://localhost:3000" }],
   },
 });
 
@@ -432,6 +424,7 @@ let competitorSnapshotsInterval: ReturnType<typeof setInterval> | null = null;
 let weatherRefreshInterval: ReturnType<typeof setInterval> | null = null;
 let etaLiveTickInterval: ReturnType<typeof setInterval> | null = null;
 let subscriptionRenewalInterval: ReturnType<typeof setInterval> | null = null;
+let merchantSubscriptionRenewalInterval: ReturnType<typeof setInterval> | null = null;
 let shuttingDown = false;
 let inFlightRequests = 0;
 
@@ -476,6 +469,7 @@ const gracefulShutdown = async (signal: string) => {
   if (weatherRefreshInterval) { clearInterval(weatherRefreshInterval); weatherRefreshInterval = null; }
   if (etaLiveTickInterval) { clearInterval(etaLiveTickInterval); etaLiveTickInterval = null; }
   if (subscriptionRenewalInterval) { clearInterval(subscriptionRenewalInterval); subscriptionRenewalInterval = null; }
+  if (merchantSubscriptionRenewalInterval) { clearInterval(merchantSubscriptionRenewalInterval); merchantSubscriptionRenewalInterval = null; }
 
   const drainStart = Date.now();
   while (inFlightRequests > 0 && Date.now() - drainStart < SHUTDOWN_DRAIN_TIMEOUT_MS) {
@@ -712,6 +706,30 @@ try {
       void runSubscriptionRenewalLocked();
     }, subscriptionRenewalIntervalMs);
     app.log.info({ intervalMinutes: 10 }, "rider subscription renewal tick started");
+
+    const merchantSubscriptionRenewalIntervalMs = 10 * 60 * 1000;
+    const merchantSubscriptionRenewalLockMs = 12 * 60 * 1000;
+    const runMerchantSubscriptionRenewalLocked = () =>
+      withLock("tick:merchant-subscription-renewal", merchantSubscriptionRenewalLockMs, async () => {
+        const { processMerchantSubscriptionRenewals } = await import(
+          "./modules/merchant-partner/merchant-subscription.service.js"
+        );
+        return processMerchantSubscriptionRenewals();
+      })
+        .then((result) => {
+          incrCounter(
+            "tick_runs_total",
+            "Polling tick outcomes by lock state",
+            1,
+            { tick: "merchant_subscription_renewal", outcome: result === null ? "skipped" : "ran" },
+          );
+        })
+        .catch((err) => app.log.error({ err }, "merchant_subscription_renewal_tick"));
+    void runMerchantSubscriptionRenewalLocked();
+    merchantSubscriptionRenewalInterval = setInterval(() => {
+      void runMerchantSubscriptionRenewalLocked();
+    }, merchantSubscriptionRenewalIntervalMs);
+    app.log.info({ intervalMinutes: 10 }, "merchant subscription renewal tick started");
   }
 } catch (error) {
   app.log.error({ error }, "Failed to start server");

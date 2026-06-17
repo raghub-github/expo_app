@@ -168,8 +168,18 @@ export function RiderSubscriptionPlansAdmin() {
         {[
           { label: "Active Plans", value: `${stats?.activePlans ?? activeCount} / ${stats?.totalPlans ?? plans.length}`, icon: Layers, iconBg: "bg-violet-100", iconColor: "text-violet-600" },
           { label: "Subscribed Riders", value: String(stats?.subscribedRiders ?? 0), sub: "Live count", icon: Users, iconBg: "bg-blue-100", iconColor: "text-blue-600" },
-          { label: "MRR", value: formatInrCompact(stats?.monthlyRevenueInr ?? 0), sub: "This month", icon: IndianRupee, iconBg: "bg-emerald-100", iconColor: "text-emerald-600" },
-          { label: "Renewal Rate", value: "—", sub: "Soon", icon: TrendingUp, iconBg: "bg-orange-100", iconColor: "text-orange-600" },
+          { label: "Total Collected Amount", value: formatInrCompact(stats?.totalCollectedInr ?? 0), icon: IndianRupee, iconBg: "bg-emerald-100", iconColor: "text-emerald-600" },
+          {
+            label: "Renewal Rate",
+            value: stats?.renewalRatePct != null ? `${stats.renewalRatePct}%` : "—",
+            sub:
+              (stats?.totalEverSubscribed ?? 0) > 0
+                ? `${stats?.ridersRenewed ?? 0} of ${stats?.totalEverSubscribed ?? 0} riders renewed`
+                : "No subscriptions yet",
+            icon: TrendingUp,
+            iconBg: "bg-orange-100",
+            iconColor: "text-orange-600",
+          },
         ].map((s) => (
           <div key={s.label} className="rounded-xl border border-gray-200 bg-white px-3.5 py-3 flex items-center gap-3 shadow-sm">
             <div className={`p-2 rounded-lg ${s.iconBg}`}>

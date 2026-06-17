@@ -1,6 +1,6 @@
 /**
  * POST /api/riders/[id]/penalties/[penaltyId]/revert – Revert (reverse) a penalty
- * Sets penalty status to 'reversed', credits wallet when was paid, adds refund ledger entry.
+ * Sets penalty status to 'reversed', credits rider wallet, adds penalty_reversal ledger entry.
  * Tracks who reverted (reversed_by) and reason (resolutionNotes). All actions audited.
  */
 
@@ -16,6 +16,34 @@ import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger"
 import { syncNegativeWalletBlocks } from "@/lib/rider-negative-wallet-blocks";
 
 export const runtime = "nodejs";
+
+const LEDGER_DESCRIPTION = "Penalty Credited Back";
+
+type Db = ReturnType<typeof getDb>;
+type DbTx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+async function ensureRiderWalletRow(db: Db | DbTx, riderId: number) {
+  let [wallet] = await db.select().from(riderWallet).where(eq(riderWallet.riderId, riderId)).limit(1);
+  if (wallet) return wallet;
+
+  await db.insert(riderWallet).values({
+    riderId,
+    totalBalance: "0",
+    earningsFood: "0",
+    earningsParcel: "0",
+    earningsPersonRide: "0",
+    penaltiesFood: "0",
+    penaltiesParcel: "0",
+    penaltiesPersonRide: "0",
+    totalWithdrawn: "0",
+  });
+
+  [wallet] = await db.select().from(riderWallet).where(eq(riderWallet.riderId, riderId)).limit(1);
+  if (!wallet) {
+    throw new Error("Failed to initialize rider wallet");
+  }
+  return wallet;
+}
 
 export async function POST(
   request: NextRequest,
@@ -79,10 +107,9 @@ export async function POST(
       return NextResponse.json({ success: false, error: "Penalty not found" }, { status: 404 });
     }
 
-    // Normalize serviceType from DB (enum may come as string or driver-specific; handle null/legacy)
     const rawServiceType = penalty.serviceType != null ? String(penalty.serviceType).toLowerCase().trim() : "";
     const validServiceTypes = ["food", "parcel", "person_ride"] as const;
-    const serviceType = validServiceTypes.includes(rawServiceType as any)
+    const serviceType = validServiceTypes.includes(rawServiceType as (typeof validServiceTypes)[number])
       ? (rawServiceType as "food" | "parcel" | "person_ride")
       : "parcel";
     const canRevert =
@@ -100,65 +127,96 @@ export async function POST(
     }
 
     const amount = Number(penalty.amount);
+    if (!(amount > 0)) {
+      return NextResponse.json({ success: false, error: "Invalid penalty amount" }, { status: 400 });
+    }
 
-    await db
-      .update(riderPenalties)
-      .set({
-        status: "reversed",
-        resolvedAt: new Date(),
-        resolutionNotes,
-        reversedBy: systemUser?.id ?? null,
+    const ledgerRef = `pen_revert_${penaltyIdNum}`;
+    const penaltyMetadata =
+      typeof penalty.metadata === "object" && penalty.metadata !== null
+        ? (penalty.metadata as Record<string, unknown>)
+        : {};
+
+    await db.transaction(async (tx) => {
+      const wallet = await ensureRiderWalletRow(tx, riderId);
+      const currentBalance = Number(wallet.totalBalance ?? 0);
+      const balanceAfter = currentBalance + amount;
+
+      const nuf = Number((wallet as { negativeUsedFood?: string }).negativeUsedFood ?? 0);
+      const nup = Number((wallet as { negativeUsedParcel?: string }).negativeUsedParcel ?? 0);
+      const nur = Number((wallet as { negativeUsedPersonRide?: string }).negativeUsedPersonRide ?? 0);
+      const reduceBy = (v: number) => Math.max(0, v - amount);
+      const newNuf = serviceType === "food" ? reduceBy(nuf) : nuf;
+      const newNup = serviceType === "parcel" ? reduceBy(nup) : nup;
+      const newNur = serviceType === "person_ride" ? reduceBy(nur) : nur;
+      const resetNegative = balanceAfter >= 0;
+
+      const pf = Number(wallet.penaltiesFood ?? 0);
+      const pp = Number(wallet.penaltiesParcel ?? 0);
+      const pr = Number(wallet.penaltiesPersonRide ?? 0);
+
+      await tx.insert(walletLedger).values({
+        riderId,
+        entryType: "penalty_reversal",
+        amount: amount.toFixed(2),
+        balance: balanceAfter.toFixed(2),
+        serviceType,
+        ref: ledgerRef,
+        refType: "penalty_revert",
+        description: LEDGER_DESCRIPTION,
         metadata: {
-          ...(typeof penalty.metadata === "object" && penalty.metadata !== null ? penalty.metadata : {}),
-          reverted_at: new Date().toISOString(),
+          penaltyId: penaltyIdNum,
+          revertReason: resolutionNotes,
+          originalReason: penalty.reason,
+          ...(penalty.orderId != null ? { orderId: penalty.orderId } : {}),
+          ...penaltyMetadata,
         },
-      })
-      .where(eq(riderPenalties.id, penaltyIdNum));
+        performedByType: "agent",
+        performedById: systemUser?.id ?? null,
+      });
 
-    const [wallet] = await db.select().from(riderWallet).where(eq(riderWallet.riderId, riderId)).limit(1);
-    const balanceAfter = wallet ? Number(wallet.totalBalance) + amount : amount;
-    const nuf = Number((wallet as { negativeUsedFood?: string })?.negativeUsedFood ?? 0);
-    const nup = Number((wallet as { negativeUsedParcel?: string })?.negativeUsedParcel ?? 0);
-    const nur = Number((wallet as { negativeUsedPersonRide?: string })?.negativeUsedPersonRide ?? 0);
-    const reduceBy = (v: number) => Math.max(0, v - amount);
-    const newNuf = serviceType === "food" ? reduceBy(nuf) : nuf;
-    const newNup = serviceType === "parcel" ? reduceBy(nup) : nup;
-    const newNur = serviceType === "person_ride" ? reduceBy(nur) : nur;
-    const resetNegative = balanceAfter >= 0;
-    await db.insert(walletLedger).values({
-      riderId,
-      entryType: "penalty_reversal",
-      amount: amount.toFixed(2),
-      balance: balanceAfter.toFixed(2),
-      serviceType,
-      ref: `pen_revert_${penaltyIdNum}`,
-      refType: "penalty_revert",
-      description: `Penalty reverted: ${penalty.reason}. ${resolutionNotes}`,
-      metadata: penalty.orderId != null ? { orderId: penalty.orderId } : {},
-      performedByType: "agent",
-      performedById: systemUser?.id ?? null,
+      await tx
+        .update(riderWallet)
+        .set({
+          penaltiesFood:
+            serviceType === "food" ? Math.max(0, pf - amount).toFixed(2) : (wallet.penaltiesFood ?? "0"),
+          penaltiesParcel:
+            serviceType === "parcel" ? Math.max(0, pp - amount).toFixed(2) : (wallet.penaltiesParcel ?? "0"),
+          penaltiesPersonRide:
+            serviceType === "person_ride"
+              ? Math.max(0, pr - amount).toFixed(2)
+              : (wallet.penaltiesPersonRide ?? "0"),
+          negativeUsedFood: (resetNegative ? 0 : newNuf).toFixed(2),
+          negativeUsedParcel: (resetNegative ? 0 : newNup).toFixed(2),
+          negativeUsedPersonRide: (resetNegative ? 0 : newNur).toFixed(2),
+          unblockAllocFood: resetNegative
+            ? "0"
+            : ((wallet as { unblockAllocFood?: string }).unblockAllocFood ?? "0"),
+          unblockAllocParcel: resetNegative
+            ? "0"
+            : ((wallet as { unblockAllocParcel?: string }).unblockAllocParcel ?? "0"),
+          unblockAllocPersonRide: resetNegative
+            ? "0"
+            : ((wallet as { unblockAllocPersonRide?: string }).unblockAllocPersonRide ?? "0"),
+          totalBalance: balanceAfter.toFixed(2),
+          lastUpdatedAt: new Date(),
+        })
+        .where(eq(riderWallet.riderId, riderId));
+
+      await tx
+        .update(riderPenalties)
+        .set({
+          status: "reversed",
+          resolvedAt: new Date(),
+          resolutionNotes,
+          reversedBy: systemUser?.id ?? null,
+          metadata: {
+            ...penaltyMetadata,
+            reverted_at: new Date().toISOString(),
+          },
+        })
+        .where(eq(riderPenalties.id, penaltyIdNum));
     });
-
-    // App is source of truth: decrease penalty and negative_used for this service; if balance >= 0 reset all negative_used and unblock_alloc (RULE 4)
-    const pf = Number(wallet?.penaltiesFood ?? 0);
-    const pp = Number(wallet?.penaltiesParcel ?? 0);
-    const pr = Number(wallet?.penaltiesPersonRide ?? 0);
-    await db
-      .update(riderWallet)
-      .set({
-        penaltiesFood: serviceType === "food" ? Math.max(0, pf - amount).toFixed(2) : (wallet?.penaltiesFood ?? "0"),
-        penaltiesParcel: serviceType === "parcel" ? Math.max(0, pp - amount).toFixed(2) : (wallet?.penaltiesParcel ?? "0"),
-        penaltiesPersonRide: serviceType === "person_ride" ? Math.max(0, pr - amount).toFixed(2) : (wallet?.penaltiesPersonRide ?? "0"),
-        negativeUsedFood: (resetNegative ? 0 : newNuf).toFixed(2),
-        negativeUsedParcel: (resetNegative ? 0 : newNup).toFixed(2),
-        negativeUsedPersonRide: (resetNegative ? 0 : newNur).toFixed(2),
-        unblockAllocFood: resetNegative ? "0" : (wallet as { unblockAllocFood?: string })?.unblockAllocFood ?? "0",
-        unblockAllocParcel: resetNegative ? "0" : (wallet as { unblockAllocParcel?: string })?.unblockAllocParcel ?? "0",
-        unblockAllocPersonRide: resetNegative ? "0" : (wallet as { unblockAllocPersonRide?: string })?.unblockAllocPersonRide ?? "0",
-        totalBalance: balanceAfter.toFixed(2),
-        lastUpdatedAt: new Date(),
-      })
-      .where(eq(riderWallet.riderId, riderId));
 
     await syncNegativeWalletBlocks(riderId);
 
@@ -179,6 +237,7 @@ export async function POST(
           serviceType,
           resolutionNotes,
           revertReason: resolutionNotes,
+          ledgerDescription: LEDGER_DESCRIPTION,
           revertedBy: agentEmail,
           revertedByName: agentName,
         },
@@ -191,7 +250,15 @@ export async function POST(
       }
     );
 
-    return NextResponse.json({ success: true, data: { penaltyId: penaltyIdNum, status: "reversed" } });
+    return NextResponse.json({
+      success: true,
+      data: {
+        penaltyId: penaltyIdNum,
+        status: "reversed",
+        creditedAmount: amount,
+        ledgerDescription: LEDGER_DESCRIPTION,
+      },
+    });
   } catch (error) {
     console.error("[POST /api/riders/[id]/penalties/[penaltyId]/revert] Error:", error);
     return NextResponse.json(

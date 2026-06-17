@@ -9,6 +9,7 @@ import {
   type RiderSubscriptionAlertBanner,
 } from "@/src/hooks/useRiderSubscription";
 import { extractApiErrorMessage } from "@/src/services/http";
+import { BannerPagerIndicators } from "@/src/components/home/HomeAlertBannerCarousel";
 
 function formatRupee(amount: number) {
   return `₹${amount.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
@@ -22,7 +23,7 @@ function resolveBannerCopy(banner: RiderSubscriptionAlertBanner) {
   };
 }
 
-export function SubscriptionDuesBanner() {
+export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolean }) {
   const { t } = useTranslation();
   const { data: status } = useRiderSubscriptionStatus();
   const payDues = useRiderSubscriptionPayDues();
@@ -83,7 +84,13 @@ export function SubscriptionDuesBanner() {
   };
 
   return (
-    <View style={[styles.wrap, isRestricted ? styles.wrapRestricted : styles.wrapWarning]}>
+    <View
+      style={[
+        styles.wrap,
+        isRestricted ? styles.wrapRestricted : styles.wrapWarning,
+        embedded && styles.wrapEmbedded,
+      ]}
+    >
       <View style={styles.icon}>
         <Ionicons name="warning" size={18} color="#ffffff" />
       </View>
@@ -91,30 +98,46 @@ export function SubscriptionDuesBanner() {
         <Text style={styles.title}>{copy.title}</Text>
         <Text style={styles.sub}>{copy.subtitle}</Text>
       </View>
-      <Pressable
-        style={[styles.payBtn, paying && { opacity: 0.7 }]}
-        onPress={handlePay}
-        disabled={paying}
-      >
-        {paying ? (
-          <ActivityIndicator size="small" color={isRestricted ? "#DC2626" : "#111827"} />
-        ) : (
-          <Text style={[styles.payBtnTxt, isRestricted && styles.payBtnTxtRestricted]}>
-            {copy.payLabel}
-          </Text>
-        )}
-      </Pressable>
+      <View style={styles.ctaCol}>
+        <Pressable
+          style={[styles.payBtn, paying && { opacity: 0.7 }]}
+          onPress={handlePay}
+          disabled={paying}
+        >
+          {paying ? (
+            <ActivityIndicator size="small" color={isRestricted ? "#DC2626" : "#111827"} />
+          ) : (
+            <Text style={[styles.payBtnTxt, isRestricted && styles.payBtnTxtRestricted]}>
+              {copy.payLabel}
+            </Text>
+          )}
+        </Pressable>
+        <BannerPagerIndicators />
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   wrap: {
+    flex: 1,
+    alignSelf: "stretch",
+    width: "100%",
+    height: "100%",
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    paddingHorizontal: 12,
+    paddingLeft: 12,
+    paddingRight: 12,
     paddingVertical: 12,
+  },
+  wrapEmbedded: {},
+  ctaCol: {
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    marginRight: 6,
+    marginLeft: 2,
   },
   wrapWarning: {
     backgroundColor: "#D4A017",

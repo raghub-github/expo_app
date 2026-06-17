@@ -57,9 +57,11 @@ export function LedgerTransactionRow({ entry, showDivider = false }: Props) {
         <Text style={styles.title} numberOfLines={1}>
           {title}
         </Text>
-        <Text style={styles.earningBanner} numberOfLines={1}>
-          {earningBanner}
-        </Text>
+        {earningBanner ? (
+          <Text style={styles.earningBanner} numberOfLines={1}>
+            {earningBanner}
+          </Text>
+        ) : null}
         {orderIdLine ? (
           <Text style={styles.orderIdLine} numberOfLines={1}>
             {orderIdLine}

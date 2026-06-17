@@ -27,6 +27,10 @@ import { resolveOrderDeliveryDetails } from "../../lib/order-delivery-details.js
 import { buildDeliveryPromiseComparison } from "../../lib/delivery-promise-comparison.js";
 import { resolveCustomerAppOrderStatus } from "../../lib/customer-order-status-resolve.js";
 import {
+  loadOrdersFoodSummariesByCoreRows,
+  ordersFoodMatchForCoreRow,
+} from "../../lib/food-order-enrichment.js";
+import {
   appendMerchantInstruction,
   canCustomerAppendCookingRequest,
   resolveMerchantInstructionsList,
@@ -220,6 +224,7 @@ const orderDetailResponseSchema = z.object({
   orderType: z.string().optional().nullable(),
   rideType: z.string().optional().nullable(),
   riderReachedPickupAt: z.string().optional().nullable(),
+  riderPickedUpAt: z.string().optional().nullable(),
   pickupOtpVerifiedAt: z.string().optional().nullable(),
   rideStarted: z.boolean().optional(),
   statusHistory: z.array(z.object({ status: z.string(), at: z.string() })).optional(),
@@ -470,6 +475,7 @@ export async function orderRoutes(app: FastifyInstance) {
 
       const pageRows = allRows.slice(offset, offset + limit);
       const pageOrderPks = pageRows.map((r) => r.id);
+      const foodSummaryByCorePk = await loadOrdersFoodSummariesByCoreRows(db, pageRows);
       const customerOrderRatings =
         pageOrderPks.length > 0
           ? await db
@@ -509,20 +515,8 @@ export async function orderRoutes(app: FastifyInstance) {
       const summaries = await Promise.all(
         pageRows.map(async (row) => {
           const orderIdDisplay = row.orderId ?? String(row.id);
-          const [foodRow] = await db
-            .select({
-              restaurantName: ordersFood.restaurantName,
-              foodItemsTotalValue: ordersFood.foodItemsTotalValue,
-              vegNonVeg: ordersFood.vegNonVeg,
-              orderStatus: ordersFood.orderStatus,
-              rejectedReason: ordersFood.rejectedReason,
-              cancelledByLabel: ordersFood.cancelledByLabel,
-            })
-            .from(ordersFood)
-            .where(
-              row.orderId != null ? eq(ordersFood.coreOrderId, row.orderId) : eq(ordersFood.orderId, row.id)
-            )
-            .limit(1);
+          const foodRow =
+            row.orderType === "food" ? foodSummaryByCorePk.get(row.id) : undefined;
           const totalAmount =
             row.grandTotal != null
               ? Number(row.grandTotal)
@@ -1116,14 +1110,11 @@ export async function orderRoutes(app: FastifyInstance) {
           customerPhone: ordersFood.customerPhone,
           deliveryInstructions: ordersFood.deliveryInstructions,
           riderReachedPickupAt: ordersFood.riderReachedPickupAt,
+          riderPickedUpAt: ordersFood.riderPickedUpAt,
           orderStatus: ordersFood.orderStatus,
         })
         .from(ordersFood)
-        .where(
-          coreRow.orderId != null
-            ? eq(ordersFood.coreOrderId, coreRow.orderId)
-            : eq(ordersFood.orderId, coreRow.id)
-        )
+        .where(ordersFoodMatchForCoreRow(coreRow.id, coreRow.orderId))
         .limit(1);
 
       const storePromise =
@@ -1260,6 +1251,12 @@ export async function orderRoutes(app: FastifyInstance) {
         if (raw != null) return String(raw);
         return null;
       })();
+      const riderPickedUpAtResolved = (() => {
+        const raw = foodRow?.riderPickedUpAt ?? null;
+        if (raw instanceof Date) return raw.toISOString();
+        if (raw != null) return String(raw);
+        return null;
+      })();
 
       const appStatus = resolveCustomerAppOrderStatus({
         currentStatus: coreRow.currentStatus,
@@ -1267,6 +1264,7 @@ export async function orderRoutes(app: FastifyInstance) {
         foodOrderStatus: foodRow?.orderStatus ?? null,
         riderId: coreRow.riderId,
         riderReachedPickupAt: riderReachedPickupAtResolved,
+        riderPickedUpAt: riderPickedUpAtResolved,
       });
 
       const rideStartedForCustomer =
@@ -1508,6 +1506,7 @@ export async function orderRoutes(app: FastifyInstance) {
         orderType: coreRow.orderType ?? null,
         rideType: rideMetaRow?.rideType?.trim() || null,
         riderReachedPickupAt: riderReachedPickupAtResolved,
+        riderPickedUpAt: riderPickedUpAtResolved,
         pickupOtpVerifiedAt: pickupOtpVerifiedAtResolved,
         rideStarted: rideStartedForCustomer,
         statusHistory: [{ status: appStatus, at: (createdAt instanceof Date ? createdAt : new Date(createdAt)).toISOString() }],

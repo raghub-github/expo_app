@@ -408,10 +408,12 @@ export async function loadMerchantStoreFoodOrders(
         const food = foodByCoreId.get(coreId) ?? null;
         const coreStatus = String(core.status ?? 'assigned');
         const currentSt = (core.current_status as string | null) ?? null;
+        const riderPickedUpAt = (food?.rider_picked_up_at as string | null) ?? null;
         const uiStatus = resolvePartnerPipeline(
           food ? (food.order_status as string | null) : null,
           coreStatus,
-          currentSt
+          currentSt,
+          riderPickedUpAt
         );
 
         const textOrderId = String(core.order_id ?? '').trim();

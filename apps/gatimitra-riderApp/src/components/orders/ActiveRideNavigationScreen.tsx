@@ -81,6 +81,8 @@ import { usePartnerChatUnread } from "@/src/hooks/usePartnerChatUnread";
 import { useMilestoneGeoFence } from "@/src/hooks/useMilestoneGeoFence";
 import { resolveMilestoneGeoUi } from "@/src/lib/milestone-geo-hint";
 import { RiderRideCancelReasonSheet } from "@/src/components/orders/RiderRideCancelReasonSheet";
+import { RiderCancelPenaltyConfirmSheet } from "@/src/components/orders/RiderCancelPenaltyConfirmSheet";
+import { RiderAdminOrderCancelledSheet } from "@/src/components/orders/RiderAdminOrderCancelledSheet";
 import { PickupUpdatedBanner } from "@/src/components/orders/PickupUpdatedBanner";
 import { PickupOtpBottomSheet } from "@/src/components/orders/PickupOtpBottomSheet";
 import {
@@ -89,9 +91,12 @@ import {
 import { captureDeliveryProofPhoto } from "@/src/lib/capture-delivery-proof-photo";
 import { buildOrderDeliveryProofKey, uploadToR2 } from "@/src/services/storage/cloudflareR2";
 import { useSessionStore } from "@/src/stores/sessionStore";
-import { useRiderToastStore } from "@/src/stores/riderToastStore";
 import { useSmoothedRiderPosition } from "@/src/hooks/useSmoothedRiderPosition";
 import { extractApiErrorMessage, isOrderFetchNotFoundError } from "@/src/services/http";
+import {
+  isRiderOrderCancelled,
+  resolveRiderCancellationPenaltyAmount,
+} from "@/src/lib/rider-order-cancelled";
 import {
   splitRouteProgress,
   etaMinutesFromMeters,
@@ -186,6 +191,10 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const verifyDeliveryOtp = useVerifyDeliveryOtp();
   const queryClient = useQueryClient();
   const [cancelSheetOpen, setCancelSheetOpen] = useState(false);
+  const [penaltySheetOpen, setPenaltySheetOpen] = useState(false);
+  const [pendingCancel, setPendingCancel] = useState<{ reasonCode: string; label: string } | null>(
+    null
+  );
   const [otpSheetOpen, setOtpSheetOpen] = useState(false);
   const [deliveryOtpSheetOpen, setDeliveryOtpSheetOpen] = useState(false);
   /** Delivery photo — uploaded to R2 before OTP sheet; reused on OTP retry. */
@@ -194,27 +203,28 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const session = useSessionStore((s) => s.session);
   const [otpError, setOtpError] = useState<string | null>(null);
   const [otpResetKey, setOtpResetKey] = useState(0);
-  const [reachSliderDone, setReachSliderDone] = useState(false);
+  const [reachSliderPending, setReachSliderPending] = useState(false);
   const [startRideSliderKey, setStartRideSliderKey] = useState(0);
   const [pickOrderSheetDismissed, setPickOrderSheetDismissed] = useState(false);
   const [pickOrderDetailOpen, setPickOrderDetailOpen] = useState(false);
   const [restaurantFeedbackOpen, setRestaurantFeedbackOpen] = useState(false);
+  const [riderFoodPickupConfirmed, setRiderFoodPickupConfirmed] = useState(false);
   const [pickupVerificationOpen, setPickupVerificationOpen] = useState(false);
   const [barcodeScannerOpen, setBarcodeScannerOpen] = useState(false);
   const [barcodeError, setBarcodeError] = useState<string | null>(null);
   const foodPickupOtpFromVerificationRef = useRef(false);
-  const prevFoodPickupMarkedRef = useRef<boolean | null>(null);
+  const prevRiderMarkedPickupRef = useRef<boolean | null>(null);
   const prevReachSliderDoneRef = useRef(false);
   const [dropOrderScreenOpen, setDropOrderScreenOpen] = useState(false);
   const [customerCallConfirmOpen, setCustomerCallConfirmOpen] = useState(false);
   const [customerCallSheetOpen, setCustomerCallSheetOpen] = useState(false);
   const [customerFeedbackOpen, setCustomerFeedbackOpen] = useState(false);
   const [sosSheetOpen, setSosSheetOpen] = useState(false);
-  const [redirectingAfterCancel, setRedirectingAfterCancel] = useState(false);
+  const [adminCancelSheetOpen, setAdminCancelSheetOpen] = useState(false);
+  const [adminCancelPenaltyAmount, setAdminCancelPenaltyAmount] = useState<number | null>(null);
   const [waitTick, setWaitTick] = useState(() => Date.now());
   const hadActiveOrderRef = useRef(false);
   const adminCancelHandledRef = useRef(false);
-  const showRiderToast = useRiderToastStore((s) => s.showToast);
 
   useEffect(() => {
     void queryClient.prefetchQuery({
@@ -231,11 +241,16 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     prevOrderStatusRef.current = undefined;
     hadActiveOrderRef.current = false;
     adminCancelHandledRef.current = false;
-    setRedirectingAfterCancel(false);
+    setAdminCancelSheetOpen(false);
+    setAdminCancelPenaltyAmount(null);
     setDeliveryProof(null);
     setDeliveryOtpSheetOpen(false);
     setDeliveryPhotoUploading(false);
     setOtpError(null);
+    setRestaurantFeedbackOpen(false);
+    setRiderFoodPickupConfirmed(false);
+    prevRiderMarkedPickupRef.current = null;
+    setReachSliderPending(false);
   }, [orderId]);
 
   useEffect(() => {
@@ -245,14 +260,10 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     }
   }, [orderId, queryClient]);
 
-  useEffect(() => {
-    if (!redirectingAfterCancel) return;
-    const t = setTimeout(() => {
-      setRedirectingAfterCancel(false);
-      router.replace("/(tabs)/orders");
-    }, 4000);
-    return () => clearTimeout(t);
-  }, [redirectingAfterCancel]);
+  const handleAdminCancelDismiss = useCallback(() => {
+    setAdminCancelSheetOpen(false);
+    router.replace("/(tabs)/orders");
+  }, []);
 
   useEffect(() => {
     if (order) {
@@ -261,36 +272,50 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, [order]);
 
   useEffect(() => {
-    if (adminCancelHandledRef.current || !hadActiveOrderRef.current || isLoading) return;
+    if (adminCancelHandledRef.current || isLoading) return;
+    if (!hadActiveOrderRef.current && !order) return;
 
-    const unassignedByAdmin =
-      isError && isOrderFetchNotFoundError(error);
-    const cancelledOnOrder = order?.status === "cancelled";
+    const unassignedByAdmin = isError && isOrderFetchNotFoundError(error);
+    const cancelledOnOrder = isRiderOrderCancelled(order);
 
     if (!unassignedByAdmin && !cancelledOnOrder) return;
 
     adminCancelHandledRef.current = true;
-    setRedirectingAfterCancel(true);
     void tracker.stop();
+    setCancelSheetOpen(false);
+    setPenaltySheetOpen(false);
+    setPendingCancel(null);
+    setPickOrderDetailOpen(false);
+    setDropOrderScreenOpen(false);
+    setPickupVerificationOpen(false);
+    setBarcodeScannerOpen(false);
+    setOtpSheetOpen(false);
+    setDeliveryOtpSheetOpen(false);
+    setAdminCancelPenaltyAmount(resolveRiderCancellationPenaltyAmount(order));
+    setAdminCancelSheetOpen(true);
     void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
     queryClient.removeQueries({ queryKey: ["rider", "orders", "detail", orderId] });
-    showRiderToast(
-      t(
-        "orders.activeFood.adminCancelled",
-        "Order cancelled by admin"
-      )
-    );
-    router.replace("/(tabs)/orders");
   }, [
     error,
     isError,
     isLoading,
-    order?.status,
+    order,
     orderId,
     queryClient,
-    showRiderToast,
-    t,
     tracker,
+  ]);
+
+  useEffect(() => {
+    if (!adminCancelSheetOpen) return;
+    const penalty = resolveRiderCancellationPenaltyAmount(order);
+    if (penalty != null) {
+      setAdminCancelPenaltyAmount(penalty);
+    }
+  }, [
+    adminCancelSheetOpen,
+    order?.cancellationPenaltyAmount,
+    order?.cancellationPenaltyApplied,
+    order,
   ]);
 
   const sheetBottomInset = useNavScreenBottomInset();
@@ -330,16 +355,27 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
   const pickup = order?.pickup;
   const delivery = order?.delivery;
-  const pickupConfirmed = isFoodOrder ? !!order?.atPickup : !!order?.pickupOtpVerified;
-  const pickupOtpVerified = !!order?.pickupOtpVerified;
-
-  useEffect(() => {
+  /** Server-driven: reach pickup completed for this assignment (never regress after restart). */
+  const serverReachPickupCompleted = useMemo(() => {
+    if (!order) return false;
     if (isFoodOrder) {
-      setReachSliderDone(!!order?.atPickup);
-    } else if (order?.pickupOtpVerified || order?.pickupWaitStartedAt) {
-      setReachSliderDone(true);
+      return !!(
+        order.atPickup ||
+        order.pickupWaitStartedAt ||
+        order.rideStarted
+      );
     }
-  }, [isFoodOrder, order?.atPickup, order?.pickupOtpVerified, order?.pickupWaitStartedAt]);
+    return !!(
+      order.pickupOtpVerified ||
+      order.pickupWaitStartedAt ||
+      order.rideStarted
+    );
+  }, [order, isFoodOrder]);
+  const reachSliderDone = serverReachPickupCompleted || reachSliderPending;
+  const pickupConfirmed = isFoodOrder
+    ? !!(order?.atPickup || (order?.pickupWaitStartedAt && !order?.rideStarted))
+    : !!order?.pickupOtpVerified;
+  const pickupOtpVerified = !!order?.pickupOtpVerified;
 
   const ridePickupWaitActive =
     !isFoodOrder &&
@@ -360,30 +396,26 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       ? buildRidePickupWaitRiderLabel(order, waitTick)
       : null;
 
-  const foodOrderStatus = (order?.foodOrderStatus ?? "").trim().toUpperCase();
-  const coreOrderStatus = (order?.status ?? "").toLowerCase();
-  const rideStarted = isFoodOrder
-    ? !!order?.rideStarted &&
-      (foodOrderStatus === "OUT_FOR_DELIVERY" ||
-        coreOrderStatus === "in_transit" ||
-        coreOrderStatus === "delivered")
-    : !!order?.rideStarted;
-  /** Food: rider confirmed Mark Pickup (OTP) — not merchant Dispatch Ready alone. */
-  const foodPickupMarked =
+  /** Backend scopes rideStarted to the active rider assignment (picked up), not order-level dispatch. */
+  const rideStarted = !!order?.rideStarted;
+  /** Food: rider explicitly marked pickup (OTP/barcode/mark) — not merchant dispatch alone. */
+  const riderMarkedFoodPickup =
     isFoodOrder &&
-    (coreOrderStatus === "in_transit" ||
-      coreOrderStatus === "picked_up" ||
-      coreOrderStatus === "delivered");
-  const showDropOnMap = isFoodOrder ? foodPickupMarked : rideStarted;
-  const foodDeliveryActive = isFoodOrder ? foodPickupMarked : rideStarted;
+    (riderFoodPickupConfirmed ||
+      (order?.pickupDurationSeconds != null &&
+        Number.isFinite(Number(order.pickupDurationSeconds))));
+  const showDropOnMap = rideStarted;
+  const foodDeliveryActive = rideStarted;
   const atCustomer = !!order?.atCustomer;
   const orderDelivered = order?.status === "delivered";
 
   const showRestaurantFeedbackSheet =
     isFoodOrder &&
     restaurantFeedbackOpen &&
+    riderMarkedFoodPickup &&
     order?.merchantFeedbackSubmitted !== true &&
-    !orderDelivered;
+    !orderDelivered &&
+    !isLoading;
 
   const showFoodPickOrderSheet =
     isFoodOrder &&
@@ -425,15 +457,36 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, [isFoodOrder, atCustomer, orderDelivered]);
 
   useEffect(() => {
-    if (!isFoodOrder || !order || orderDelivered) return;
-    const nowPickedUp = foodPickupMarked;
-    const prev = prevFoodPickupMarkedRef.current;
-    prevFoodPickupMarkedRef.current = nowPickedUp;
-    if (prev === null) return;
-    if (!prev && nowPickedUp && order.merchantFeedbackSubmitted !== true) {
+    if (isFoodOrder && order?.pickupDurationSeconds != null) {
+      setRiderFoodPickupConfirmed(true);
+      prevRiderMarkedPickupRef.current = true;
+    }
+  }, [isFoodOrder, order?.pickupDurationSeconds]);
+
+  useEffect(() => {
+    if (!isFoodOrder || !order || orderDelivered || isLoading) return;
+    if (order.merchantFeedbackSubmitted === true) {
+      setRestaurantFeedbackOpen(false);
+      prevRiderMarkedPickupRef.current = riderMarkedFoodPickup;
+      return;
+    }
+    if (!riderMarkedFoodPickup) {
+      prevRiderMarkedPickupRef.current = false;
+      return;
+    }
+    const prev = prevRiderMarkedPickupRef.current;
+    prevRiderMarkedPickupRef.current = true;
+    // Only auto-open when pickup is marked in this session (false → true), not on app restart.
+    if (prev === false) {
       setRestaurantFeedbackOpen(true);
     }
-  }, [isFoodOrder, order, foodPickupMarked, orderDelivered]);
+  }, [isFoodOrder, order, riderMarkedFoodPickup, orderDelivered, isLoading]);
+
+  useEffect(() => {
+    if (isFoodOrder && restaurantFeedbackOpen && !riderMarkedFoodPickup) {
+      setRestaurantFeedbackOpen(false);
+    }
+  }, [isFoodOrder, restaurantFeedbackOpen, riderMarkedFoodPickup]);
 
   useEffect(() => {
     if (isFoodOrder && reachSliderDone && order?.merchantOrderReady) {
@@ -889,11 +942,14 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     reachedPickup.mutate(
       { orderId, ...gps },
       {
+        onMutate: () => {
+          setReachSliderPending(true);
+        },
         onSuccess: () => {
-          setReachSliderDone(true);
+          setReachSliderPending(false);
         },
         onError: (err) => {
-          setReachSliderDone(false);
+          setReachSliderPending(false);
           Alert.alert(
             t("orders.activeRide.updateFailedTitle", "Update failed"),
             extractApiErrorMessage(
@@ -911,12 +967,15 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     reachedPickup.mutate(
       { orderId, ...gps },
       {
+        onMutate: () => {
+          setReachSliderPending(true);
+        },
         onSuccess: () => {
-          setReachSliderDone(true);
+          setReachSliderPending(false);
           setPickOrderSheetDismissed(false);
         },
         onError: (err) => {
-          setReachSliderDone(false);
+          setReachSliderPending(false);
           Alert.alert(
             t("orders.activeRide.updateFailedTitle", "Update failed"),
             extractApiErrorMessage(
@@ -1056,8 +1115,25 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, [finishCustomerFeedbackAndShowSuccess]);
 
   const handleRestaurantFeedbackSkip = useCallback(() => {
-    closeRestaurantFeedback();
-  }, [closeRestaurantFeedback]);
+    submitMerchantFeedback.mutate(
+      { orderId, skipped: true },
+      {
+        onSuccess: (data) => {
+          syncRiderOrderDetailCache(queryClient, orderId, data);
+          closeRestaurantFeedback();
+        },
+        onError: (err) => {
+          Alert.alert(
+            t("orders.activeRide.updateFailedTitle", "Update failed"),
+            extractApiErrorMessage(
+              err,
+              t("orders.activeFood.feedbackFailed", "Could not save feedback. Try again.")
+            )
+          );
+        },
+      }
+    );
+  }, [orderId, submitMerchantFeedback, queryClient, closeRestaurantFeedback, t]);
 
   const handleRestaurantFeedbackSubmit = useCallback(
     (payload: { rating: number; tags: string[]; messages: string[] }) => {
@@ -1069,7 +1145,10 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           messages: payload.messages,
         },
         {
-          onSuccess: closeRestaurantFeedback,
+          onSuccess: (data) => {
+            syncRiderOrderDetailCache(queryClient, orderId, data);
+            closeRestaurantFeedback();
+          },
           onError: (err) => {
             Alert.alert(
               t("orders.activeRide.updateFailedTitle", "Update failed"),
@@ -1082,7 +1161,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         }
       );
     },
-    [orderId, submitMerchantFeedback, closeRestaurantFeedback, t]
+    [orderId, submitMerchantFeedback, queryClient, closeRestaurantFeedback, t]
   );
 
   const handleCustomerFeedbackSkip = useCallback(() => {
@@ -1148,6 +1227,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       );
       setPickupBannerVisible(true);
       setCameraFitTrigger((n) => n + 1);
+      setRiderFoodPickupConfirmed(true);
       if (data?.merchantFeedbackSubmitted !== true) {
         setRestaurantFeedbackOpen(true);
       }
@@ -1432,7 +1512,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         return;
       }
       if (!pickupConfirmed && !foodDeliveryActive) {
-        setReachSliderDone(false);
+        setReachSliderPending(false);
       }
       return;
     }
@@ -1442,7 +1522,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       return;
     }
     if (!pickupConfirmed && !rideStarted) {
-      setReachSliderDone(false);
+      setReachSliderPending(false);
     }
   }, [
     verifyPickupOtp.isPending,
@@ -1457,59 +1537,52 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
   const handleCancelReason = useCallback(
     (reasonCode: string, label: string) => {
-      Alert.alert(
-        isFoodOrder
-          ? t("orders.activeFood.cancelConfirmTitle", "Cancel this delivery?")
-          : t("orders.activeRide.cancelConfirmTitle", "Cancel this ride?"),
-        isFoodOrder
-          ? t(
-              "orders.activeFood.cancelConfirmMessage",
-              "The order will be offered to other riders. This cannot be undone."
-            )
-          : t(
-              "orders.activeRide.cancelConfirmMessage",
-              "The order will be offered to other riders. This cannot be undone."
-            ),
-        [
-          { text: t("common.back", "Back"), style: "cancel" },
-          {
-            text: isFoodOrder
-              ? t("orders.activeFood.confirmCancel", "Yes, cancel delivery")
-              : t("orders.activeRide.confirmCancel", "Yes, cancel ride"),
-            style: "destructive",
-            onPress: () => {
-              cancelAssigned.mutate(
-                { orderId, reasonCode, reasonText: label },
-                {
-                  onSuccess: () => {
-                    setCancelSheetOpen(false);
-                    router.replace("/(tabs)/orders");
-                  },
-                  onError: () => {
-                    Alert.alert(
-                      isFoodOrder
-                        ? t("orders.activeFood.cancelFailedTitle", "Could not cancel")
-                        : t("orders.activeRide.cancelFailedTitle", "Could not cancel"),
-                      isFoodOrder
-                        ? t(
-                            "orders.activeFood.cancelFailedMessage",
-                            "Please try again or contact support."
-                          )
-                        : t(
-                            "orders.activeRide.cancelFailedMessage",
-                            "Please try again or contact support."
-                          )
-                    );
-                  },
-                }
-              );
-            },
-          },
-        ]
-      );
+      setPendingCancel({ reasonCode, label });
+      setCancelSheetOpen(false);
+      setPenaltySheetOpen(true);
     },
-    [cancelAssigned, orderId, t, isFoodOrder]
+    []
   );
+
+  const handleProceedCancel = useCallback(() => {
+    if (!pendingCancel) return;
+    cancelAssigned.mutate(
+      { orderId, reasonCode: pendingCancel.reasonCode, reasonText: pendingCancel.label },
+      {
+        onSuccess: (res) => {
+          setPenaltySheetOpen(false);
+          setPendingCancel(null);
+          if (res.penaltyApplied && (res.penaltyAmount ?? 0) > 0) {
+            Alert.alert(
+              t("orders.cancel.penaltyDebitedTitle", "Penalty applied"),
+              t(
+                "orders.cancel.penaltyDebitedMessage",
+                "₹{{amount}} has been debited from your wallet as a penalty.",
+                { amount: res.penaltyAmount }
+              )
+            );
+          }
+          router.replace("/(tabs)/orders");
+        },
+        onError: () => {
+          Alert.alert(
+            isFoodOrder
+              ? t("orders.activeFood.cancelFailedTitle", "Could not cancel")
+              : t("orders.activeRide.cancelFailedTitle", "Could not cancel"),
+            isFoodOrder
+              ? t(
+                  "orders.activeFood.cancelFailedMessage",
+                  "Please try again or contact support."
+                )
+              : t(
+                  "orders.activeRide.cancelFailedMessage",
+                  "Please try again or contact support."
+                )
+          );
+        },
+      }
+    );
+  }, [cancelAssigned, orderId, pendingCancel, t, isFoodOrder]);
 
   const handleVerifyOtp = useCallback(
     (otp: string) => {
@@ -1655,7 +1728,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     const deliveryLegActive = isFoodOrder ? foodDeliveryActive : rideStarted;
     if (deliveryLegActive) {
       setOtpSheetOpen(false);
-      setReachSliderDone(true);
     }
   }, [isFoodOrder, foodDeliveryActive, rideStarted]);
 
@@ -1755,16 +1827,24 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     setSosSheetOpen(true);
   }, []);
 
-  if (
-    redirectingAfterCancel ||
+  const shouldShowAdminCancelSheet =
+    adminCancelSheetOpen ||
+    (hadActiveOrderRef.current && isRiderOrderCancelled(order)) ||
     (hadActiveOrderRef.current &&
       isError &&
-      isOrderFetchNotFoundError(error)) ||
-    (hadActiveOrderRef.current && order?.status === "cancelled")
-  ) {
+      isOrderFetchNotFoundError(error) &&
+      adminCancelHandledRef.current);
+
+  if (shouldShowAdminCancelSheet) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator size="large" color={colors.primary[500]} />
+        <StatusBar style="dark" />
+        <RiderAdminOrderCancelledSheet
+          visible
+          orderIdLabel={order?.formattedOrderId?.trim() || orderId}
+          penaltyAmount={adminCancelPenaltyAmount}
+          onDismiss={handleAdminCancelDismiss}
+        />
       </View>
     );
   }
@@ -2192,6 +2272,23 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         onClose={() => setCancelSheetOpen(false)}
         onSelect={handleCancelReason}
       />
+
+      {pendingCancel ? (
+        <RiderCancelPenaltyConfirmSheet
+          visible={penaltySheetOpen}
+          orderId={orderId}
+          reasonCode={pendingCancel.reasonCode}
+          reasonLabel={pendingCancel.label}
+          variant={isFoodOrder ? "food" : "ride"}
+          loading={cancelAssigned.isPending}
+          onClose={() => {
+            setPenaltySheetOpen(false);
+            setPendingCancel(null);
+            setCancelSheetOpen(true);
+          }}
+          onProceed={handleProceedCancel}
+        />
+      ) : null}
 
       {isFoodOrder && order ? (
         <>

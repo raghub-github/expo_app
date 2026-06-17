@@ -247,7 +247,7 @@ export const riderSupportService = {
   },
 
   async createTicket(payload: {
-    ticket_title_id: number;
+    ticket_title_id?: number;
     section_code?: string;
     title_code?: string;
     subject: string;
@@ -260,7 +260,7 @@ export const riderSupportService = {
     raised_by_email?: string;
   }) {
     const body = {
-      ticket_title_id: payload.ticket_title_id,
+      ...(payload.ticket_title_id != null ? { ticket_title_id: payload.ticket_title_id } : {}),
       section_code: payload.section_code,
       title_code: payload.title_code,
       subject: payload.subject,
@@ -285,7 +285,7 @@ export const riderSupportService = {
 
   /** Create ticket, upload photos to R2, and post opening chat message with attachments. */
   async createTicketWithPhotos(payload: {
-    ticket_title_id: number;
+    ticket_title_id?: number;
     section_code?: string;
     title_code?: string;
     subject: string;

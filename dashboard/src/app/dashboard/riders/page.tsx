@@ -15,7 +15,7 @@ import { useRiderAccessQuery } from '@/hooks/queries/useRiderAccessQuery';
 import type { RiderListEntry, RiderSummary } from '@/types/rider-dashboard';
 import { ONBOARDING_STAGE_LABELS } from '@/types/rider-dashboard';
 import { formatRiderOrderDisplayId } from '@/lib/riders/format-rider-order-display-id';
-import { formatRiderOrderStatusDisplayLabel } from '@/lib/riders/rider-order-status-display';
+import { formatRiderOrderStatusDisplayLabel, resolveRiderDashboardOrderStatusKey, resolveRiderDashboardOrderStatusLabel, type RiderDashboardOrderStatusInput } from '@/lib/riders/rider-order-status-display';
 import {
   buildRiderDetailUrl,
   buildRidersHomeUrl,
@@ -1422,7 +1422,12 @@ export default function RidersPage() {
                                   </div>
                                 </td>
                                 <td className="px-3 py-1.5">
-                                  <OrderStatusBadge status={order.status} orderType={order.orderType} />
+                                  <OrderStatusBadge
+                                    status={order.status}
+                                    orderType={order.orderType}
+                                    riderAssignmentStatus={(order as { riderAssignmentStatus?: string | null }).riderAssignmentStatus}
+                                    riderRideUnassigned={(order as { riderRideUnassigned?: boolean }).riderRideUnassigned}
+                                  />
                                 </td>
                                 <td className="px-3 py-1.5 whitespace-nowrap leading-tight">
                                   <span className="text-xs font-bold text-gray-900 tabular-nums">₹{totalAmount.toFixed(2)}</span>
@@ -2026,7 +2031,7 @@ export default function RidersPage() {
                     <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
                       <p className="text-xs font-medium text-amber-900">
                         {(displaySummary as { wallet?: { globalWalletBlock?: boolean } })?.wallet?.globalWalletBlock === true
-                          ? "All services blocked (wallet ≤ -200). Unlock when balance ≥ 0."
+                          ? "All services blocked. Balance below -₹200. Unlock at ₹0."
                           : `Blocked: ${negativeWalletBlocks.map((b: { serviceType: string }) => b.serviceType === "person_ride" ? "Person ride" : b.serviceType?.charAt(0).toUpperCase() + b.serviceType?.slice(1)).join(", ")} — unlocks when balance &gt; -50 per service`}
                       </p>
                     </div>
@@ -2105,14 +2110,15 @@ export default function RidersPage() {
                             <div className="shrink-0 flex flex-col items-end">
                               {isBlockedByNegativeWalletOnly ? (
                                 <>
-                                  <span className="text-[10px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">Blocked</span>
+                                  <span className="text-[10px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">Auto-block</span>
                                   <div
-                                    aria-label={`Blocked – ${serviceLabel}`}
-                                    className="relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-red-400 bg-red-500 cursor-not-allowed opacity-90"
-                                    title="Blocked (negative wallet). Unlocks when balance ≥ 0."
+                                    aria-label={`Auto-blocked – ${serviceLabel}`}
+                                    className="relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-gray-300 bg-gray-200 cursor-not-allowed"
+                                    title="Blocked by wallet balance rule (not an agent blacklist toggle)."
                                   >
-                                    <span className="pointer-events-none inline-block h-4 w-4 transform translate-x-4 rounded-full bg-white shadow ring-0" style={{ marginTop: 2 }} />
+                                    <span className="pointer-events-none inline-block h-4 w-4 transform translate-x-0.5 rounded-full bg-white shadow ring-0" style={{ marginTop: 2 }} />
                                   </div>
+                                  <p className="text-[10px] text-gray-500 mt-1">Wallet rule</p>
                                 </>
                               ) : (isBlocked ? canUnblockForService(service) : canBlockForService(service)) ? (
                                 <>
@@ -2935,9 +2941,20 @@ function OrderTypeIcon({ orderType }: { orderType: string }) {
   );
 }
 
-function OrderStatusBadge({ status, orderType }: { status: string; orderType?: string }) {
-  const key = (status || "").toLowerCase();
-  const label = formatRiderOrderStatusDisplayLabel(status, orderType);
+function OrderStatusBadge({
+  status,
+  orderType,
+  riderAssignmentStatus,
+  riderRideUnassigned,
+}: RiderDashboardOrderStatusInput) {
+  const statusInput: RiderDashboardOrderStatusInput = {
+    status,
+    orderType,
+    riderAssignmentStatus,
+    riderRideUnassigned,
+  };
+  const key = resolveRiderDashboardOrderStatusKey(statusInput);
+  const label = resolveRiderDashboardOrderStatusLabel(statusInput);
 
   type StatusCfg = { bg: string; text: string; border: string; icon: React.ReactNode };
   const configs: Record<string, StatusCfg> = {
@@ -2983,6 +3000,12 @@ function OrderStatusBadge({ status, orderType }: { status: string; orderType?: s
       border: "border-red-200",
       icon: <X className="h-3 w-3 shrink-0" strokeWidth={2.5} />,
     },
+    assignment_cancelled: {
+      bg: "bg-orange-50",
+      text: "text-orange-800",
+      border: "border-orange-200",
+      icon: <X className="h-3 w-3 shrink-0" strokeWidth={2.5} />,
+    },
     failed: {
       bg: "bg-red-50",
       text: "text-red-700",
@@ -3007,7 +3030,19 @@ function OrderStatusBadge({ status, orderType }: { status: string; orderType?: s
 }
 
 function exportOrdersCsv(
-  orders: Array<{ id: number; orderType: string; status: string; riderEarning?: number; createdAt: string; formattedOrderId?: string | null; orderId?: string | null; externalRef?: string | null; displayOrderId?: string | null }>,
+  orders: Array<{
+    id: number;
+    orderType: string;
+    status: string;
+    riderAssignmentStatus?: string | null;
+    riderRideUnassigned?: boolean;
+    riderEarning?: number;
+    createdAt: string;
+    formattedOrderId?: string | null;
+    orderId?: string | null;
+    externalRef?: string | null;
+    displayOrderId?: string | null;
+  }>,
   extraByOrderId: Map<number, number>
 ) {
   const header = ["Order ID", "Type", "Status", "Amount", "Credit/Debit", "Time"];
@@ -3017,7 +3052,12 @@ function exportOrdersCsv(
     return [
       formatRiderOrderDisplayId(o),
       formatOrderTypeLabel(o.orderType),
-      formatRiderOrderStatusDisplayLabel(o.status, o.orderType),
+      resolveRiderDashboardOrderStatusLabel({
+        status: o.status,
+        orderType: o.orderType,
+        riderAssignmentStatus: o.riderAssignmentStatus,
+        riderRideUnassigned: o.riderRideUnassigned,
+      }),
       amount.toFixed(2),
       orderWalletEntryType(o, extra),
       new Date(o.createdAt).toLocaleString(),

@@ -3,17 +3,98 @@ import { View, Text, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
+import { openAccountRestrictedSupportTicket } from "@/src/lib/rider-support-navigation";
 import { colors } from "@/src/theme";
 import { resolveRiderDisplayedEarning } from "@/src/lib/rider-earning-display";
+import { BannerPagerIndicators } from "@/src/components/home/HomeAlertBannerCarousel";
 
 const BRAND = colors.primary[500];
+
+const SERVICE_LABELS: Record<string, string> = {
+  food: "Food",
+  parcel: "Parcel",
+  person_ride: "Person Ride",
+};
+
+function formatBlockedServiceLabels(services: string[], t: (key: string, fallback: string) => string) {
+  return services
+    .map((service) => {
+      if (service === "food") return t("home.serviceFood", SERVICE_LABELS.food);
+      if (service === "parcel") return t("home.serviceParcel", SERVICE_LABELS.parcel);
+      if (service === "person_ride") return t("home.servicePersonRide", SERVICE_LABELS.person_ride);
+      return service;
+    })
+    .join(", ");
+}
+
+type AccountRestrictedBannerProps = {
+  blockedServices?: string[];
+  allServicesBlacklisted?: boolean;
+  globalWalletBlock?: boolean;
+  onSupport?: () => void;
+};
+
+export function AccountRestrictedBanner({
+  blockedServices = [],
+  allServicesBlacklisted = false,
+  globalWalletBlock = false,
+  onSupport,
+}: AccountRestrictedBannerProps) {
+  const { t } = useTranslation();
+
+  const restrictedSub =
+    allServicesBlacklisted || blockedServices.length >= 3
+      ? globalWalletBlock
+        ? t(
+            "home.accountRestrictedWalletAll",
+            "Your account is Restricted for All services. Add balance to wallet to unlock."
+          )
+        : t(
+            "home.accountRestrictedAllServices",
+            "Your account is Restricted for All services. Please contact Support to resolve."
+          )
+      : blockedServices.length > 0
+        ? t(
+            "home.accountRestrictedForServices",
+            "Your account is Restricted for {{services}}. Please contact Support to resolve.",
+            { services: formatBlockedServiceLabels(blockedServices, t) }
+          )
+        : t(
+            "home.accountRestrictedSub",
+            "Please contact Support to request whitelisting or resolve the issue."
+          );
+
+  return (
+    <View style={styles.restrictedWrap}>
+      <View style={styles.restrictedIcon}>
+        <Ionicons name="warning" size={18} color="#ffffff" />
+      </View>
+      <View style={styles.bannerTextCol}>
+        <Text style={styles.restrictedTitle}>
+          {t("home.accountRestrictedTitle", "Account Restricted")}
+        </Text>
+        <Text style={styles.restrictedSub}>{restrictedSub}</Text>
+      </View>
+      <View style={styles.ctaCol}>
+        <Pressable
+          style={styles.supportBtn}
+          onPress={onSupport ?? openAccountRestrictedSupportTicket}
+        >
+          <Text style={styles.supportBtnText}>{t("home.support", "Support")}</Text>
+        </Pressable>
+        <BannerPagerIndicators />
+      </View>
+    </View>
+  );
+}
 
 type PenaltyBannerProps = {
   amount: number;
   onPay?: () => void;
+  paying?: boolean;
 };
 
-export function PenaltyBanner({ amount, onPay }: PenaltyBannerProps) {
+export function PenaltyBanner({ amount, onPay, paying = false }: PenaltyBannerProps) {
   const { t } = useTranslation();
   if (amount <= 0) return null;
 
@@ -30,14 +111,22 @@ export function PenaltyBanner({ amount, onPay }: PenaltyBannerProps) {
           {t("home.penaltySub", "Pay penalty amount to start receiving orders")}
         </Text>
       </View>
-      <Pressable
-        style={styles.payBtn}
-        onPress={onPay ?? (() => router.push("/(tabs)/ledger"))}
-      >
-        <Text style={styles.payBtnText}>
-          {t("home.payPenalty", "Pay ₹{{amount}}", { amount: Math.round(amount) })}
-        </Text>
-      </Pressable>
+      <View style={styles.ctaCol}>
+        <Pressable
+          style={[styles.payBtn, paying && styles.payBtnDisabled]}
+          disabled={paying}
+          onPress={onPay ?? (() => router.push("/(tabs)/earnings"))}
+        >
+          <Text style={styles.payBtnText}>
+            {paying
+              ? t("home.payingPenalty", "Processing…")
+              : t("home.payPenalty", "Pay ₹{{amount}}", {
+                  amount: Number.isInteger(amount) ? amount : amount.toFixed(2),
+                })}
+          </Text>
+        </Pressable>
+        <BannerPagerIndicators />
+      </View>
     </View>
   );
 }
@@ -73,21 +162,24 @@ export function RidePaymentHoldBanner({ hold, onView }: RidePaymentHoldBannerPro
           )}
         </Text>
       </View>
-      <Pressable
-        style={styles.payBtn}
-        onPress={
-          onView ??
-          (() =>
-            router.push({
-              pathname: "/ride-payment-waiting",
-              params: { orderId: hold.orderId, displayId },
-            }))
-        }
-      >
-        <Text style={styles.payBtnText}>
-          {t("home.ridePaymentHoldCta", "View ₹{{amount}}", { amount })}
-        </Text>
-      </Pressable>
+      <View style={styles.ctaCol}>
+        <Pressable
+          style={styles.payBtn}
+          onPress={
+            onView ??
+            (() =>
+              router.push({
+                pathname: "/ride-payment-waiting",
+                params: { orderId: hold.orderId, displayId },
+              }))
+          }
+        >
+          <Text style={styles.payBtnText}>
+            {t("home.ridePaymentHoldCta", "View ₹{{amount}}", { amount })}
+          </Text>
+        </Pressable>
+        <BannerPagerIndicators />
+      </View>
     </View>
   );
 }
@@ -165,12 +257,62 @@ export function MapRecenterFab({
 
 const styles = StyleSheet.create({
   penaltyWrap: {
+    flex: 1,
+    alignSelf: "stretch",
+    width: "100%",
+    height: "100%",
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#D4A017",
-    paddingHorizontal: 12,
+    paddingLeft: 12,
+    paddingRight: 12,
     paddingVertical: 12,
     gap: 10,
+  },
+  restrictedWrap: {
+    flex: 1,
+    alignSelf: "stretch",
+    width: "100%",
+    height: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#DC2626",
+    paddingLeft: 12,
+    paddingRight: 12,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  restrictedIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.45)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  restrictedTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#ffffff",
+  },
+  restrictedSub: {
+    fontSize: 11,
+    color: "rgba(255,255,255,0.92)",
+    marginTop: 2,
+    lineHeight: 15,
+  },
+  supportBtn: {
+    backgroundColor: "#ffffff",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    flexShrink: 0,
+  },
+  supportBtnText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: colors.gray[900],
   },
   penaltyIcon: {
     width: 32,
@@ -196,6 +338,10 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
+    flexShrink: 0,
+  },
+  payBtnDisabled: {
+    opacity: 0.7,
   },
   payBtnText: {
     fontSize: 12,
@@ -242,6 +388,14 @@ const styles = StyleSheet.create({
   },
   bannerTextCol: {
     flex: 1,
+    minWidth: 0,
+  },
+  ctaCol: {
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    marginRight: 6,
+    marginLeft: 2,
   },
   fab: {
     position: "absolute",

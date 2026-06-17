@@ -1464,6 +1464,7 @@ export async function recordOrderCancellation(
   const linkedId = Number(existing[0]?.cancellation_reason_id);
   const latestId = Number(existing[0]?.id);
   if (Number.isFinite(linkedId) && linkedId > 0) {
+    await syncOrderCancellationLedger(input);
     return { cancellationReasonId: linkedId, updated: true };
   }
   if (Number.isFinite(latestId) && latestId > 0) {
@@ -1473,6 +1474,7 @@ export async function recordOrderCancellation(
     await sql`
       UPDATE orders_food SET cancellation_reason_id = ${latestId} WHERE order_id = ${input.orderId}
     `;
+    await syncOrderCancellationLedger(input);
     return { cancellationReasonId: latestId, updated: true };
   }
 
@@ -1522,6 +1524,7 @@ export async function recordOrderCancellation(
           rejected_reason: input.displayReason,
         } as Record<string, unknown>),
     });
+    await syncOrderCancellationLedger(input);
     return { cancellationReasonId, updated: true };
   }
 
@@ -1534,7 +1537,31 @@ export async function recordOrderCancellation(
     cancelledByLabel: input.cancelledByLabel,
     cancellationDetails: input.cancellationDetails,
   });
+  await syncOrderCancellationLedger(input);
   return { cancellationReasonId, updated };
+}
+
+async function syncOrderCancellationLedger(input: RecordOrderCancellationInput): Promise<void> {
+  try {
+    const { applyMerchantOrderCancellationLedger } = await import(
+      "@/lib/orders/apply-merchant-cancellation-debit"
+    );
+    const merchantDebit =
+      typeof input.metadata?.merchantDebit === "string"
+        ? input.metadata.merchantDebit
+        : typeof (input.metadata as { merchant_debit?: string } | undefined)?.merchant_debit ===
+            "string"
+          ? (input.metadata as { merchant_debit: string }).merchant_debit
+          : null;
+    await applyMerchantOrderCancellationLedger({
+      orderCoreId: input.orderId,
+      merchantDebit,
+      actorSystemUserId: input.cancelledById,
+      source: "order_cancellation",
+    });
+  } catch (ledgerErr) {
+    console.warn("[recordOrderCancellation] merchant ledger failed:", ledgerErr);
+  }
 }
 
 export { slugReasonCode };

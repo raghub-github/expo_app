@@ -11,6 +11,7 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { createOrderRefund, listOrderRefunds, type RefundTypeDb } from "@/lib/db/operations/order-refunds";
 import { recordOrderCancellation } from "@/lib/db/operations/orders-core";
+import { getSql } from "@/lib/db/client";
 import {
   executeOrderCancellationFinancials,
   executePartialRefundFinancials,
@@ -19,6 +20,8 @@ import {
 import { refundFieldsFromEngineResult, resolvePaymentCancellationMilestone } from "@gatimitra/financial-rules";
 import { dashboardCancellationFromCatalog } from "@/lib/orders/merchant-cancellation-fields";
 import { resolveCancellationCatalogForOrder } from "@/lib/db/operations/order-cancellation-reason-catalog";
+import { applyRiderCancellationPenalty } from "@/lib/orders/apply-rider-cancellation-penalty";
+import { applyMerchantOrderCancellationLedger } from "@/lib/orders/apply-merchant-cancellation-debit";
 
 export const runtime = "nodejs";
 
@@ -26,6 +29,64 @@ function parseOrderId(param: string | undefined): number | null {
   if (!param) return null;
   const id = Number(param);
   return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+async function maybeApplyMerchantCancellationDebit(args: {
+  orderId: number;
+  merchantDebit: unknown;
+  partialAmount?: number | null;
+  actorSystemUserId: number | null;
+}) {
+  const partialAmount =
+    typeof args.partialAmount === "number" && Number.isFinite(args.partialAmount)
+      ? args.partialAmount
+      : Number(args.partialAmount);
+  return applyMerchantOrderCancellationLedger({
+    orderCoreId: args.orderId,
+    merchantDebit: typeof args.merchantDebit === "string" ? args.merchantDebit : null,
+    partialAmount: Number.isFinite(partialAmount) && partialAmount > 0 ? partialAmount : null,
+    actorSystemUserId: args.actorSystemUserId,
+    source: "order_refund",
+  });
+}
+
+async function maybeApplyRiderCancellationPenalty(args: {
+  orderId: number;
+  catalogRow: { id: number; attribute: string };
+  fault: unknown;
+  cancellationReasonId: number | null;
+  actorSystemUserId: number | null;
+  penaltyRiderId?: number | null;
+}) {
+  const fault = typeof args.fault === "string" ? args.fault.trim().toLowerCase() : "";
+  if (fault !== "3pl_fault" && fault !== "3pl") return null;
+
+  const sql = getSql();
+  let riderId =
+    typeof args.penaltyRiderId === "number" && Number.isFinite(args.penaltyRiderId) && args.penaltyRiderId > 0
+      ? args.penaltyRiderId
+      : NaN;
+
+  if (!Number.isFinite(riderId) || riderId <= 0) {
+    const riderRows = await sql.unsafe<{ rider_id: number | null }[]>(
+      `SELECT rider_id FROM orders_core WHERE id = $1 LIMIT 1`,
+      [args.orderId]
+    );
+    riderId = Number(riderRows[0]?.rider_id);
+  }
+
+  if (!Number.isFinite(riderId) || riderId <= 0) return null;
+
+  return applyRiderCancellationPenalty({
+    orderCoreId: args.orderId,
+    riderId,
+    catalogReasonId: args.catalogRow.id,
+    attribute: args.catalogRow.attribute,
+    fault: fault === "3pl" ? "3pl_fault" : fault || "3pl_fault",
+    cancellationReasonId: args.cancellationReasonId,
+    actorSystemUserId: args.actorSystemUserId,
+    source: "order_refund",
+  });
 }
 
 export async function GET(
@@ -197,7 +258,13 @@ export async function POST(
       reasonCode: catalogRow.reasonCode,
       fault: body?.fault,
       merchantDebit: body?.merchantDebit,
+      penaltyRiderId: body?.penaltyRiderId,
     };
+
+    const penaltyRiderId =
+      typeof body?.penaltyRiderId === "number"
+        ? body.penaltyRiderId
+        : Number(body?.penaltyRiderId);
 
     // "cancel_without_refund" does not create a refund row; only update orders_core with cancellation (refundAmount not required)
     if (refundType === "cancel_without_refund") {
@@ -225,7 +292,7 @@ export async function POST(
         actorSystemUserId: cancelledById,
       });
 
-      await recordOrderCancellation({
+      const cancellation = await recordOrderCancellation({
         orderId,
         cancelledBy,
         cancelledById,
@@ -249,6 +316,25 @@ export async function POST(
         cancelMode: "manual",
         cancellationDetails: merchantCancel.cancellationDetails,
       });
+      const riderPenalty = await maybeApplyRiderCancellationPenalty({
+        orderId,
+        catalogRow,
+        fault: body?.fault,
+        cancellationReasonId: cancellation.cancellationReasonId,
+        actorSystemUserId: cancelledById,
+        penaltyRiderId: Number.isFinite(penaltyRiderId) ? penaltyRiderId : null,
+      });
+      const merchantWalletDebit = await maybeApplyMerchantCancellationDebit({
+        orderId,
+        merchantDebit: body?.merchantDebit,
+        partialAmount:
+          body?.merchantDebit === "partial_debit"
+            ? mxDebitAmount > 0
+              ? mxDebitAmount
+              : null
+            : null,
+        actorSystemUserId: cancelledById,
+      });
       return NextResponse.json({
         success: true,
         data: {
@@ -256,6 +342,8 @@ export async function POST(
           refundId: null,
           engine: engineResult.raw ?? null,
           engine_applied: engineResult.applied,
+          riderPenalty,
+          merchantWalletDebit,
         },
         message: "Order cancelled via Financial Rule Engine (no refund row).",
       });
@@ -304,6 +392,11 @@ export async function POST(
       },
     });
 
+    const resolvedMxDebitAmount =
+      typeof body?.mxDebitAmount === "number" && Number.isFinite(body.mxDebitAmount)
+        ? body.mxDebitAmount
+        : mxDebitAmount;
+
     const record = await createOrderRefund({
       orderId,
       orderPaymentId: null,
@@ -314,7 +407,7 @@ export async function POST(
       refundFee: 0,
       netRefundAmount: refundAmount,
       productType: "order",
-      mxDebitAmount: mxDebitAmount > 0 ? mxDebitAmount : 0,
+      mxDebitAmount: resolvedMxDebitAmount > 0 ? resolvedMxDebitAmount : 0,
       mxDebitReason: mxDebitReason?.trim() ?? null,
       refundInitiatedBy,
       refundInitiatedById,
@@ -331,7 +424,7 @@ export async function POST(
     if (refundType === "refund_with_cancellation") {
       const reasonCode = catalogRow.reasonCode.slice(0, 200);
       const reasonText = (refundDescription ?? catalogRow.label).trim().slice(0, 2000) || null;
-      await recordOrderCancellation({
+      const cancellation = await recordOrderCancellation({
         orderId,
         cancelledBy: refundInitiatedBy,
         cancelledById: refundInitiatedById,
@@ -350,11 +443,47 @@ export async function POST(
         cancelMode: "manual",
         cancellationDetails: merchantCancel.cancellationDetails,
       });
+      const riderPenalty = await maybeApplyRiderCancellationPenalty({
+        orderId,
+        catalogRow,
+        fault: body?.fault,
+        cancellationReasonId: cancellation.cancellationReasonId,
+        actorSystemUserId: refundInitiatedById,
+        penaltyRiderId: Number.isFinite(penaltyRiderId) ? penaltyRiderId : null,
+      });
+      const merchantWalletDebit = await maybeApplyMerchantCancellationDebit({
+        orderId,
+        merchantDebit: body?.merchantDebit,
+        partialAmount:
+          body?.merchantDebit === "partial_debit"
+            ? resolvedMxDebitAmount > 0
+              ? resolvedMxDebitAmount
+              : null
+            : null,
+        actorSystemUserId: refundInitiatedById,
+      });
+      return NextResponse.json({
+        success: true,
+        data: { ...record, riderPenalty, merchantWalletDebit },
+        message: "Refund created successfully.",
+      });
     }
+
+    const merchantWalletDebit = await maybeApplyMerchantCancellationDebit({
+      orderId,
+      merchantDebit: body?.merchantDebit,
+      partialAmount:
+        body?.merchantDebit === "partial_debit"
+          ? resolvedMxDebitAmount > 0
+            ? resolvedMxDebitAmount
+            : null
+          : null,
+      actorSystemUserId: refundInitiatedById,
+    });
 
     return NextResponse.json({
       success: true,
-      data: record,
+      data: { ...record, merchantWalletDebit },
       message: "Refund created successfully.",
     });
   } catch (error) {

@@ -11,6 +11,8 @@ const patchSchema = z.object({
   reasonCode: z.string().min(1).max(120).optional(),
   sortOrder: z.number().int().optional(),
   isActive: z.boolean().optional(),
+  channel: z.enum(["web", "app"]).optional(),
+  serviceType: z.enum(["food", "person_ride", "parcel"]).nullable().optional(),
 });
 
 function parseId(param: string | undefined): number | null {

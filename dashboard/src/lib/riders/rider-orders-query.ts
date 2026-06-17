@@ -8,6 +8,7 @@ import { eq, and, desc, gte, lte, sql, or, ilike } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
 import { formatRiderOrderDisplayId } from "@/lib/riders/format-rider-order-display-id";
 import { enrichRiderOrdersWithEarnings } from "@/lib/riders/rider-order-earnings";
+import { enrichRiderOrdersWithAssignmentStatus } from "@/lib/riders/rider-order-assignment-status";
 
 export { formatRiderOrderDisplayId };
 
@@ -52,6 +53,11 @@ export type RiderRecentOrderRow = {
   adminRiderPaymentClearedAt?: Date | string | null;
   walletCredited?: boolean;
   earningCreditPending?: boolean;
+  riderAssignmentStatus?: string | null;
+  riderRideUnassigned?: boolean;
+  assignmentRiderEarning?: string | number | null;
+  assignmentTipAmount?: string | number | null;
+  acceptPayoutSnapshot?: unknown;
 };
 
 function parseFromBound(from: string): string {
@@ -239,7 +245,10 @@ async function listFromOrdersCore(
     .orderBy(desc(ordersCore.createdAt))
     .limit(filters.limit);
 
-  return enrichRiderOrdersWithEarnings(db, riderId, rows.map(mapCoreRow));
+  return enrichRiderOrdersWithAssignmentStatus(
+    riderId,
+    await enrichRiderOrdersWithEarnings(db, riderId, rows.map(mapCoreRow))
+  );
 }
 
 async function listFromLegacyOrders(
@@ -365,7 +374,10 @@ export async function listRiderOrdersPaginated(
       .offset(args.offset);
 
     return {
-      orders: await enrichRiderOrdersWithEarnings(db, riderId, rows.map(mapCoreRow)),
+      orders: await enrichRiderOrdersWithAssignmentStatus(
+        riderId,
+        await enrichRiderOrdersWithEarnings(db, riderId, rows.map(mapCoreRow))
+      ),
       total: Number(total) ?? 0,
       source: "core",
     };

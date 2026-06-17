@@ -1,6 +1,7 @@
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { ordersCoreItemAddons } from "../../db/schema.js";
 import type { NormalizedOrderAddon } from "../orders/orderNormalizer.js";
+import type { ResolvedCommission } from "./commission.resolver.js";
 import {
   writeOrderAddonCommissionSnapshots,
   type AddonForCommissionSnapshot,
@@ -17,9 +18,10 @@ export async function persistOrderItemAddonsWithSnapshots(
     orderIdNum: number;
     orderItemId: number;
     addons: NormalizedOrderAddon[];
+    storeCommission?: ResolvedCommission | null;
   },
 ): Promise<void> {
-  const { storeId, orderIdNum, orderItemId, addons } = args;
+  const { storeId, orderIdNum, orderItemId, addons, storeCommission } = args;
   if (addons.length === 0) return;
 
   const inserted = await tx
@@ -61,5 +63,6 @@ export async function persistOrderItemAddonsWithSnapshots(
     orderIdNum,
     orderItemId,
     snapshotInputs,
+    storeCommission,
   );
 }

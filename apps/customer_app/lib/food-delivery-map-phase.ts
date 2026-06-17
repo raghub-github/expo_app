@@ -15,30 +15,39 @@ export const FOOD_DELIVERY_GEOFENCE_PROXIMITY_M = 500;
 
 export type FoodDeliveryMapPhase = "rider_to_pickup" | "rider_to_drop";
 
-/** Pre-pickup: rider → store. Post-pickup: rider → customer. */
+function hasRiderMarkedFoodPickup(riderPickedUpAt?: string | null): boolean {
+  const t = String(riderPickedUpAt ?? "").trim();
+  if (!t) return false;
+  return Number.isFinite(Date.parse(t));
+}
+
+/** Pre-pickup: rider → store. Post-pickup: rider → customer (requires rider pickup timestamp). */
 export function getFoodDeliveryMapPhase(
   status: string,
-  _riderReachedPickupAt?: string | null
+  options?: { riderReachedPickupAt?: string | null; riderPickedUpAt?: string | null }
 ): FoodDeliveryMapPhase {
-  const s = normalizeCustomerOrderStatus(status);
-  if (isCustomerOrderOnTheWayStatus(s) || isRiderAtCustomerStatus(s)) {
+  if (hasRiderMarkedFoodPickup(options?.riderPickedUpAt)) {
     return "rider_to_drop";
   }
+  const s = normalizeCustomerOrderStatus(status);
+  if (isRiderAtCustomerStatus(s)) return "rider_to_drop";
   return "rider_to_pickup";
 }
 
 export function shouldHighlightFoodPickupZone(args: {
   status: string;
   riderReachedPickupAt?: string | null;
+  riderPickedUpAt?: string | null;
   riderLat?: number | null;
   riderLng?: number | null;
   pickupLat: number;
   pickupLng: number;
 }): boolean {
   const s = normalizeCustomerOrderStatus(args.status);
+  if (hasRiderMarkedFoodPickup(args.riderPickedUpAt)) return false;
   if (isRiderAtStoreStatus(s) || args.riderReachedPickupAt) return true;
   if (args.riderLat == null || args.riderLng == null) return false;
-  if (getFoodDeliveryMapPhase(s, args.riderReachedPickupAt) !== "rider_to_pickup") return false;
+  if (getFoodDeliveryMapPhase(s, args) !== "rider_to_pickup") return false;
   return (
     haversineMeters(args.riderLat, args.riderLng, args.pickupLat, args.pickupLng) <=
     FOOD_DELIVERY_GEOFENCE_PROXIMITY_M
@@ -47,12 +56,16 @@ export function shouldHighlightFoodPickupZone(args: {
 
 export function shouldHighlightFoodDropZone(args: {
   status: string;
+  riderPickedUpAt?: string | null;
   riderLat?: number | null;
   riderLng?: number | null;
   dropLat: number;
   dropLng: number;
 }): boolean {
   const s = normalizeCustomerOrderStatus(args.status);
+  if (!hasRiderMarkedFoodPickup(args.riderPickedUpAt) && !isRiderAtCustomerStatus(s)) {
+    return false;
+  }
   if (isRiderAtCustomerStatus(s)) return true;
   if (!isCustomerOrderOnTheWayStatus(s)) return false;
   if (args.riderLat == null || args.riderLng == null) return false;

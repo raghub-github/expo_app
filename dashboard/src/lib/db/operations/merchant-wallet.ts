@@ -39,30 +39,15 @@ async function getOrCreateWalletId(storeId: number): Promise<number> {
 export async function getWalletSummary(storeId: number): Promise<WalletSummary> {
   const sql = getSql();
   const walletId = await getOrCreateWalletId(storeId);
-  let wr: Record<string, unknown>;
-  try {
-    const [w] = await sql`
-      SELECT available_balance, pending_balance, hold_balance, reserve_balance,
-             COALESCE(locked_balance, 0) AS locked_balance,
-             COALESCE(pending_settlement, 0) AS pending_settlement,
-             COALESCE(lifetime_credit, 0) AS lifetime_credit,
-             COALESCE(lifetime_debit, 0) AS lifetime_debit,
-             total_earned, total_withdrawn, total_penalty, total_commission_deducted, status
-      FROM merchant_wallet WHERE id = ${walletId}
-    `;
-    wr = (w ?? {}) as Record<string, unknown>;
-  } catch {
-    const [w] = await sql`
-      SELECT available_balance, pending_balance, hold_balance, reserve_balance,
-             total_earned, total_withdrawn, total_penalty, total_commission_deducted, status
-      FROM merchant_wallet WHERE id = ${walletId}
-    `;
-    wr = (w ?? {}) as Record<string, unknown>;
-    wr.locked_balance = 0;
-    wr.pending_settlement = 0;
-    wr.lifetime_credit = 0;
-    wr.lifetime_debit = 0;
-  }
+  const [w] = await sql`
+    SELECT available_balance, pending_balance, hold_balance, reserve_balance,
+           COALESCE(pending_settlement, 0) AS pending_settlement,
+           COALESCE(lifetime_credit, 0) AS lifetime_credit,
+           COALESCE(lifetime_debit, 0) AS lifetime_debit,
+           total_earned, total_withdrawn, total_penalty, total_commission_deducted, status
+    FROM merchant_wallet WHERE id = ${walletId}
+  `;
+  const wr = (w ?? {}) as Record<string, unknown>;
   const now = new Date();
   const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const todayEnd = new Date(todayStart); todayEnd.setUTCDate(todayEnd.getUTCDate() + 1);
@@ -104,7 +89,7 @@ export async function getWalletSummary(storeId: number): Promise<WalletSummary> 
     pending_balance: roundMoney(Number(wr.pending_balance ?? 0)),
     hold_balance: roundMoney(Number(wr.hold_balance ?? 0)),
     reserve_balance: roundMoney(Number(wr.reserve_balance ?? 0)),
-    locked_balance: roundMoney(Number(wr.locked_balance ?? 0)),
+    locked_balance: 0,
     pending_settlement: roundMoney(Number(wr.pending_settlement ?? 0)),
     lifetime_credit: roundMoney(Number(wr.lifetime_credit ?? 0)),
     lifetime_debit: roundMoney(Number(wr.lifetime_debit ?? 0)),
@@ -206,8 +191,7 @@ export async function reconcileWallet(storeId: number): Promise<ReconciliationRe
   const ledgerNet = roundMoney(creditSum - debitSum);
 
   const [w] = await sql`
-    SELECT available_balance, pending_balance, hold_balance, reserve_balance,
-           COALESCE(locked_balance, 0) AS locked_balance
+    SELECT available_balance, pending_balance, hold_balance, reserve_balance
     FROM merchant_wallet WHERE id = ${walletId}
   `;
   const wr = w as any;
@@ -215,8 +199,7 @@ export async function reconcileWallet(storeId: number): Promise<ReconciliationRe
     Number(wr.available_balance ?? 0) +
     Number(wr.pending_balance ?? 0) +
     Number(wr.hold_balance ?? 0) +
-    Number(wr.reserve_balance ?? 0) +
-    Number(wr.locked_balance ?? 0)
+    Number(wr.reserve_balance ?? 0)
   );
 
   const difference = roundMoney(ledgerNet - walletTotal);

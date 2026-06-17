@@ -156,44 +156,6 @@ function MyOrdersHeader({
   );
 }
 
-function StatsCard({
-  ordersCount,
-  totalEarned,
-}: {
-  ordersCount: number;
-  totalEarned: string;
-}) {
-  const { t } = useTranslation();
-
-  return (
-    <View style={styles.statsCard}>
-      <View style={styles.statHalf}>
-        <View style={styles.statIconWrap}>
-          <Ionicons name="bag-handle-outline" size={18} color={GREEN} />
-        </View>
-        <View style={styles.statTextCol}>
-          <Text style={styles.statValue}>{ordersCount}</Text>
-          <Text style={styles.statLabel}>
-            {t("profile.myOrders.totalOrders", "Total Orders")}
-          </Text>
-        </View>
-      </View>
-      <View style={styles.statDivider} />
-      <View style={styles.statHalf}>
-        <View style={styles.statIconWrap}>
-          <Ionicons name="cash-outline" size={18} color={GREEN} />
-        </View>
-        <View style={styles.statTextCol}>
-          <Text style={[styles.statValue, styles.statValueGreen]}>{totalEarned}</Text>
-          <Text style={styles.statLabel}>
-            {t("profile.myOrders.totalEarned", "Total Earned")}
-          </Text>
-        </View>
-      </View>
-    </View>
-  );
-}
-
 function OrderCard({
   order,
   onPress,
@@ -235,7 +197,10 @@ function OrderCard({
             </Text>
           </View>
           <View style={styles.orderPriceCol}>
-            <Text style={styles.orderPrice} numberOfLines={1}>
+            <Text
+              style={[styles.orderPrice, isCancelled && styles.orderPriceCancelled]}
+              numberOfLines={1}
+            >
               {rideHistoryEarningLabel(order, t)}
             </Text>
             {subtitle ? (
@@ -344,19 +309,9 @@ export function MyRidesScreen() {
     [queryClient]
   );
 
-  const totalEarned = useMemo(() => {
-    const sum = orders.reduce((acc, o) => {
-      if (isOrderEarningCreditPending(o)) return acc;
-      return acc + (o.totalEarning ?? o.estimatedEarning ?? 0);
-    }, 0);
-    if (!sum) return "₹0";
-    return `₹${Math.round(sum).toLocaleString("en-IN")}`;
-  }, [orders]);
-
   const listHeader = useMemo(
     () => (
       <View style={styles.listHead}>
-        <StatsCard ordersCount={orders.length} totalEarned={totalEarned} />
         {hasDateFilter ? (
           <Pressable
             onPress={() => {
@@ -377,7 +332,7 @@ export function MyRidesScreen() {
         </Text>
       </View>
     ),
-    [dateFrom, dateTo, hasDateFilter, orders.length, totalEarned, t]
+    [dateFrom, dateTo, hasDateFilter, orders.length, t]
   );
 
   const renderItem = useCallback(
@@ -558,66 +513,6 @@ const styles = StyleSheet.create({
   listEmpty: { flexGrow: 1 },
   listHead: { paddingTop: 4, paddingBottom: 4 },
 
-  statsCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: SURFACE,
-    borderRadius: 14,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    marginBottom: 12,
-    borderWidth: 1.5,
-    borderColor: CARD_BORDER,
-    overflow: "hidden",
-    ...Platform.select({
-      ios: {
-        shadowColor: "#0F172A",
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.03,
-        shadowRadius: 3,
-      },
-      android: { elevation: 0 },
-      default: {},
-    }),
-  },
-  statHalf: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-  },
-  statTextCol: {
-    minWidth: 0,
-  },
-  statIconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: GREEN_LIGHT,
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-  },
-  statDivider: {
-    width: StyleSheet.hairlineWidth,
-    height: 36,
-    backgroundColor: CARD_BORDER,
-  },
-  statValue: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: INK,
-    letterSpacing: -0.3,
-    lineHeight: 22,
-  },
-  statValueGreen: { color: GREEN },
-  statLabel: {
-    fontSize: 11,
-    fontWeight: "500",
-    color: MUTED,
-    marginTop: 1,
-  },
   dateChip: {
     flexDirection: "row",
     alignItems: "center",
@@ -692,6 +587,10 @@ const styles = StyleSheet.create({
     width: 72,
   },
   orderPrice: { fontSize: 16, fontWeight: "800", color: INK },
+  orderPriceCancelled: {
+    color: MUTED,
+    textDecorationLine: "line-through",
+  },
   orderItems: { fontSize: 12, fontWeight: "500", color: MUTED, marginTop: 2 },
   orderTitle: {
     width: "100%",

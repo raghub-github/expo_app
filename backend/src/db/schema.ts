@@ -1304,6 +1304,11 @@ export const dutyLogs = pgTable(
     status: dutyStatusEnum("status").notNull(),
     serviceTypes: jsonb("service_types").default([]),
     vehicleId: integer("vehicle_id").references((): any => riderVehicles.id, { onDelete: "set null" }),
+    lat: doublePrecision("lat"),
+    lon: doublePrecision("lon"),
+    sessionId: text("session_id"),
+    deviceId: text("device_id"),
+    metadata: jsonb("metadata").default({}),
     timestamp: timestamp("timestamp", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1551,6 +1556,8 @@ export const ordersCore = pgTable(
     estimatedDeliveryTime: timestamp("estimated_delivery_time", { withTimezone: true }),
     actualPickupTime: timestamp("actual_pickup_time", { withTimezone: true }),
     actualDeliveryTime: timestamp("actual_delivery_time", { withTimezone: true }),
+    handedOverToRiderAt: timestamp("handed_over_to_rider_at", { withTimezone: true }),
+    riderPickedUpAt: timestamp("rider_picked_up_at", { withTimezone: true }),
     items: jsonb("items"),
     /** leaveAtDoor, notes, subscriptionOptIn mirror; billing remains in billing_snapshot. */
     checkoutMetadata: jsonb("checkout_metadata"),
@@ -2471,6 +2478,8 @@ export const ordersFood = pgTable(
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
     preparedAt: timestamp("prepared_at", { withTimezone: true }),
     riderReachedPickupAt: timestamp("rider_reached_pickup_at", { withTimezone: true }),
+    handedOverToRiderAt: timestamp("handed_over_to_rider_at", { withTimezone: true }),
+    riderPickedUpAt: timestamp("rider_picked_up_at", { withTimezone: true }),
     pickupWaitSeconds: integer("pickup_wait_seconds"),
     pickupTimerStartedAt: timestamp("pickup_timer_started_at", { withTimezone: true }),
     pickupDurationSeconds: integer("pickup_duration_seconds"),

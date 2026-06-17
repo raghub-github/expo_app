@@ -36,6 +36,18 @@ import {
   showAcceptedByAnotherRiderToast,
   subscribeDispatchOfferWithdrawn,
 } from "@/src/lib/riderDispatchTakenToast";
+import {
+  isOrderCategoryDispatchBlocked,
+  isOrderCategoryInAllowedDutyServices,
+  mergeRiderBlockedServices,
+} from "@/src/lib/rider-blocked-services";
+import { useRiderDutyServiceFilter } from "@/src/hooks/useRiderDutyServiceFilter";
+import { useDutyStatus } from "@/src/hooks/useDutyStatus";
+import {
+  extractRiderAcceptErrorMessage,
+  isOrderNoLongerAvailableError,
+  isOrderTakenByAnotherRiderError,
+} from "@/src/lib/rider-dispatch-accept-errors";
 
 const EMPTY_ORDERS: RiderOrderSummary[] = [];
 
@@ -72,6 +84,12 @@ export function IncomingRideOrderHost() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const isOnDuty = useDutyStore((s) => s.isOnDuty);
+  const { selectedServices: dutySelectedServices } = useRiderDutyServiceFilter();
+  const { data: dutyStatus } = useDutyStatus();
+  const blockedServices = useMemo(
+    () => mergeRiderBlockedServices(dutyStatus?.blockedServiceTypes),
+    [dutyStatus?.blockedServiceTypes]
+  );
   const { data: available } = useAvailableOrders();
   const { data: acceptanceSettings } = useRiderOrderAcceptanceSettings();
   const acceptOrder = useAcceptOrder();
@@ -119,9 +137,24 @@ export function IncomingRideOrderHost() {
     void poolEpoch;
     if (!rejectHydrated) return [];
     return orders.filter(
-      (o) => !rejectedRef.current.has(o.id) && !expiredRef.current.has(o.id)
+      (o) =>
+        !rejectedRef.current.has(o.id) &&
+        !expiredRef.current.has(o.id) &&
+        isOrderCategoryInAllowedDutyServices(o.category, dutySelectedServices) &&
+        !isOrderCategoryDispatchBlocked(
+          o.category,
+          blockedServices,
+          dutyStatus?.allServicesBlacklisted
+        )
     );
-  }, [orders, poolEpoch, rejectHydrated]);
+  }, [
+    orders,
+    poolEpoch,
+    rejectHydrated,
+    blockedServices,
+    dutySelectedServices,
+    dutyStatus?.allServicesBlacklisted,
+  ]);
 
   const poolHeadId = orderPool[0]?.id ?? null;
 
@@ -173,9 +206,10 @@ export function IncomingRideOrderHost() {
         const wasOffered =
           offerShownAtRef.current.has(o.id) || soundPlayedRef.current.has(o.id);
         if (!wasOffered) continue;
-        if (showAcceptedByAnotherRiderToast(o.id)) {
-          dismissTakenOffer(o.id);
-        }
+        // Offer vanished from pool — close modal silently. "Taken by another rider"
+        // is shown only via WS `accepted_by_other_rider` or accept API 409 proof.
+        dismissTakenOffer(o.id);
+        expiredRef.current.add(o.id);
       }
     }
     prevAvailableRef.current = orders;
@@ -363,19 +397,32 @@ export function IncomingRideOrderHost() {
           }
         }
 
-        const payloadObj =
-          err instanceof ApiError && err.payload && typeof err.payload === "object"
-            ? (err.payload as { error?: unknown; message?: unknown })
-            : null;
-        const apiMessage =
-          payloadObj && typeof payloadObj.error === "string"
-            ? payloadObj.error
-            : payloadObj && typeof payloadObj.message === "string"
-              ? payloadObj.message
-              : null;
+        const apiMessage = extractRiderAcceptErrorMessage(err);
 
         if (err instanceof ApiError && err.status === 409) {
-          showAcceptedByAnotherRiderToast(id);
+          if (isOrderTakenByAnotherRiderError(err)) {
+            showAcceptedByAnotherRiderToast(id);
+            expiredRef.current.add(id);
+            offerShownAtRef.current.delete(id);
+            bumpPool();
+            closeModal();
+            setActiveOrderId(null);
+            return;
+          }
+
+          Alert.alert(
+            t("orders.incoming.acceptFailedTitle", "Could not accept"),
+            isOrderNoLongerAvailableError(err)
+              ? t(
+                  "orders.incoming.orderNoLongerAvailable",
+                  "This order is no longer available."
+                )
+              : apiMessage ??
+                  t(
+                    "orders.incoming.acceptUnavailableMessage",
+                    "Could not accept this order. Please try another offer."
+                  )
+          );
           expiredRef.current.add(id);
           offerShownAtRef.current.delete(id);
           bumpPool();
@@ -387,7 +434,10 @@ export function IncomingRideOrderHost() {
         Alert.alert(
           t("orders.incoming.acceptFailedTitle", "Could not accept"),
           apiMessage ??
-            t("orders.incoming.acceptFailedMessage", "This ride may already be taken.")
+            t(
+              "orders.incoming.acceptRetryMessage",
+              "Something went wrong. Check your connection and try again."
+            )
         );
       },
     });

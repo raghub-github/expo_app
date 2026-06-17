@@ -5,7 +5,7 @@ import OrderTimeline, { type OrderTimelineEntry } from "./OrderTimeline";
 import OrderActionBanner from "./OrderActionBanner";
 import OrderRightSidebar from "./OrderRightSidebar";
 import {
-  parseOrderItemsApiResponse,
+  fetchOrderItemsCached,
   type OrderItemsPayload,
 } from "@/lib/orderItemsPayload";
 import { computeOrderItemQuantityCount } from "@/lib/merchantOrderFoodActions";
@@ -61,6 +61,7 @@ import {
   type SidebarRemark,
 } from "@/lib/orders/order-sidebar-activity";
 import { resolveOrderTypeFromPublicId } from "@/lib/orders/resolve-order-type-from-public-id";
+import { hasOrderCancellationOnProgressTimeline } from "@/lib/orders/order-timeline-rider-filter";
 import type { PersonRideOrderDetail } from "@/lib/db/operations/person-ride-order-detail";
 import PersonRideOrderSections from "./PersonRideOrderSections";
 import { formatRiderOrderStatusDisplayLabel } from "@/lib/riders/rider-order-status-display";
@@ -336,6 +337,151 @@ function orderMatchesPublicId(order: OrderDetail, publicId: string): boolean {
   return candidates.some((c) => c != null && normalizeOrderPublicId(String(c)) === target);
 }
 
+function toNumberOrNullFromApi(v: unknown): number | null {
+  if (v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function mapOrderCoreApiRowToDetail(row: Record<string, unknown>): OrderDetail {
+  const toNumberOrNull = toNumberOrNullFromApi;
+  return {
+    id: row.id as number,
+    formattedOrderId: row.formattedOrderId as string | null,
+    orderId: row.orderId as string | null,
+    orderType: (row.orderType as string | undefined) ?? "food",
+    orderSource: (row.orderSource as string | null) ?? null,
+    status: row.status as string,
+    currentStatus: row.currentStatus as string | null,
+    paymentStatus: row.paymentStatus as string | null,
+    paymentMethod: (row.paymentMethod as string | null) ?? null,
+    fareAmount: toNumberOrNull(row.fareAmount),
+    itemTotal: toNumberOrNull(row.itemTotal),
+    addonTotal: toNumberOrNull(row.addonTotal),
+    grandTotal: toNumberOrNull(row.grandTotal),
+    tipAmount: toNumberOrNull(row.tipAmount),
+    totalAmount:
+      toNumberOrNull(row.grandTotal) ?? toNumberOrNull(row.fareAmount) ?? null,
+    routedToEmail: (row.routedToEmail as string | null) ?? null,
+    customerId: (row.customerId as number | null) ?? null,
+    customerExternalId: (row.customerExternalId as string | null) ?? null,
+    customerEmail: (row.customerEmail as string | null) ?? null,
+    customerAccountStatus: (row.customerAccountStatus as string | null) ?? null,
+    customerRiskFlag: (row.customerRiskFlag as string | null) ?? null,
+    customerName: row.customerName as string | null,
+    customerMobile: row.customerMobile as string | null,
+    customerAlternateMobile: (row.customerAlternateMobile as string | null) ?? null,
+    orderAlternateContactPhone: (row.orderAlternateContactPhone as string | null) ?? null,
+    orderDeliveryPrimaryContactPhone:
+      (row.orderDeliveryPrimaryContactPhone as string | null) ?? null,
+    riderId: (row.riderId as number | null) ?? null,
+    riderName: row.riderName as string | null,
+    riderMobile: row.riderMobile as string | null,
+    dropAddressRaw: row.dropAddressRaw as string | null,
+    dropAddressNormalized: (row.dropAddressNormalized as string | null) ?? null,
+    dropAddressGeocoded: (row.dropAddressGeocoded as string | null) ?? null,
+    pickupAddressRaw: (row.pickupAddressRaw as string | null) ?? null,
+    pickupAddressNormalized: (row.pickupAddressNormalized as string | null) ?? null,
+    pickupAddressGeocoded: (row.pickupAddressGeocoded as string | null) ?? null,
+    pickupLat: toNumberOrNull(row.pickupLat),
+    pickupLon: toNumberOrNull(row.pickupLon),
+    dropLat: toNumberOrNull(row.dropLat),
+    dropLon: toNumberOrNull(row.dropLon),
+    pickupAddressDeviationMeters: (row.pickupAddressDeviationMeters as number | null) ?? null,
+    dropAddressDeviationMeters: (row.dropAddressDeviationMeters as number | null) ?? null,
+    distanceMismatchFlagged: Boolean(row.distanceMismatchFlagged),
+    distanceKm: (row.distanceKm as number | null) ?? null,
+    merchantStoreId: row.merchantStoreId as number | null,
+    merchantParentId: row.merchantParentId as number | null,
+    createdAt: row.createdAt as string,
+    updatedAt: row.updatedAt as string,
+    manualStatusUpdatedByEmail: (row.manualStatusUpdatedByEmail as string | null) ?? null,
+    foodOrderStatus: typeof row.foodOrderStatus === "string" ? row.foodOrderStatus : null,
+    dispatchedAt: row.dispatchedAt != null ? String(row.dispatchedAt) : null,
+    riderPickedUpAt: row.riderPickedUpAt != null ? String(row.riderPickedUpAt) : null,
+    deliveryInstructions: (row.deliveryInstructions as string | null) ?? null,
+    etaSeconds: (row.etaSeconds as number | null) ?? null,
+    estimatedDeliveryTime:
+      row.estimatedDeliveryTime != null ? String(row.estimatedDeliveryTime) : null,
+    firstEtaAt: row.firstEtaAt != null ? String(row.firstEtaAt) : null,
+    etaBreachedAt: row.etaBreachedAt != null ? String(row.etaBreachedAt) : null,
+    etaBreachedTimelineId:
+      row.etaBreachedTimelineId != null ? Number(row.etaBreachedTimelineId) : null,
+    orderTimeIso: row.orderTimeIso != null ? String(row.orderTimeIso) : null,
+    orderTimeSource: row.orderTimeSource === "placed_at" ? "placed_at" : "created_at",
+    itemCount: row.itemCount != null ? Number(row.itemCount) : null,
+    systemKptMinutes: row.systemKptMinutes != null ? Number(row.systemKptMinutes) : null,
+    merchantUpdatedKptMinutes:
+      row.merchantUpdatedKptMinutes != null ? Number(row.merchantUpdatedKptMinutes) : null,
+    merchantExtraPrepMinutes:
+      row.merchantExtraPrepMinutes != null ? Number(row.merchantExtraPrepMinutes) : null,
+    isScheduledOrder: Boolean(row.isScheduledOrder),
+    scheduledDeliverySummary:
+      row.scheduledDeliverySummary != null ? String(row.scheduledDeliverySummary) : null,
+    deliveryType: row.deliveryType != null ? String(row.deliveryType) : null,
+    contactlessDelivery:
+      row.contactlessDelivery === true
+        ? true
+        : row.contactlessDelivery === false
+          ? false
+          : null,
+    localityType: row.localityType != null ? String(row.localityType) : null,
+    localityIsSafe:
+      row.localityIsSafe === true ? true : row.localityIsSafe === false ? false : null,
+    deliveredBy: row.deliveredBy != null ? String(row.deliveredBy) : null,
+    deliveryInitiator: row.deliveryInitiator != null ? String(row.deliveryInitiator) : null,
+    customerTrustTierLabel:
+      row.customerTrustTierLabel != null ? String(row.customerTrustTierLabel) : null,
+    customerUserType:
+      row.customerUserType != null
+        ? String(row.customerUserType)
+        : row.customerTrustTierLabel != null
+          ? String(row.customerTrustTierLabel)
+          : null,
+    riderInstructionsList: Array.isArray(row.riderInstructionsList)
+      ? (row.riderInstructionsList as string[])
+      : [],
+    merchantInstructionsList: Array.isArray(row.merchantInstructionsList)
+      ? (row.merchantInstructionsList as string[])
+      : [],
+    cancellationInfo:
+      row.cancellationInfo && typeof row.cancellationInfo === "object"
+        ? (row.cancellationInfo as OrderCancellationInfo)
+        : null,
+    pickupOtp:
+      row.pickupOtp != null && String(row.pickupOtp).trim()
+        ? String(row.pickupOtp).trim()
+        : null,
+    rtoOtp:
+      row.rtoOtp != null && String(row.rtoOtp).trim() ? String(row.rtoOtp).trim() : null,
+    deliveryOtp:
+      row.deliveryOtp != null && String(row.deliveryOtp).trim()
+        ? String(row.deliveryOtp).trim()
+        : null,
+    customerFeedback:
+      row.customerFeedback && typeof row.customerFeedback === "object"
+        ? (row.customerFeedback as OrderCustomerFeedback)
+        : null,
+    storePrepDelaySeconds: toNumberOrNull(row.storePrepDelaySeconds),
+    storePrepDelayLive: Boolean(row.storePrepDelayLive),
+    storePrepDelayAnchorAt:
+      row.storePrepDelayAnchorAt != null ? String(row.storePrepDelayAnchorAt) : null,
+    storePrepDelayWasLate: Boolean(row.storePrepDelayWasLate),
+    riderRestaurantWaitSeconds: toNumberOrNull(row.riderRestaurantWaitSeconds),
+    riderRestaurantWaitLive: Boolean(row.riderRestaurantWaitLive),
+    riderRestaurantWaitAnchorAt:
+      row.riderRestaurantWaitAnchorAt != null
+        ? String(row.riderRestaurantWaitAnchorAt)
+        : null,
+    deliveryProofImageUrl:
+      row.deliveryProofImageUrl != null ? String(row.deliveryProofImageUrl) : null,
+    rideDetail:
+      row.rideDetail && typeof row.rideDetail === "object"
+        ? (row.rideDetail as PersonRideOrderDetail)
+        : null,
+  };
+}
+
 function InfinitySpinner() {
   return (
     <div className="flex flex-col items-center justify-center gap-3">
@@ -391,9 +537,12 @@ export default function OrderDetailClient({
   onNotFoundChange,
 }: OrderDetailClientProps) {
   const isHardReloadRef = useRef(false);
+  const fetchGenerationRef = useRef(0);
+  const orderRef = useRef<OrderDetail | null>(null);
   const [hasHydrated, setHasHydrated] = useState(false);
   const [isHardReload, setIsHardReload] = useState(false);
   const [order, setOrder] = useState<OrderDetail | null>(null);
+  orderRef.current = order;
   const [merchantSummary, setMerchantSummary] = useState<MerchantSummaryFromApi | null>(null);
   const [initialRemarksCount, setInitialRemarksCount] = useState<number>(0);
   const [initialReconsCount, setInitialReconsCount] = useState<number>(0);
@@ -445,14 +594,9 @@ export default function OrderDetailClient({
     if (itemsPrefetchInFlight.current) return;
 
     itemsPrefetchInFlight.current = true;
-    void fetch(`/api/orders/${orderId}/items`, { credentials: "include" })
-      .then((res) => res.json())
-      .then((body) => parseOrderItemsApiResponse(body))
+    void fetchOrderItemsCached(orderId)
       .then((parsed) => {
         if (parsed) setOrderItemsPayload(parsed);
-      })
-      .catch(() => {
-        /* modal may fetch on miss */
       })
       .finally(() => {
         itemsPrefetchInFlight.current = false;
@@ -476,8 +620,9 @@ export default function OrderDetailClient({
   }, [hasHydrated, isHardReload, loading, order, onLoadingChange]);
 
   useEffect(() => {
-    onNotFoundChange?.(!loading && Boolean(error || !order));
-  }, [loading, error, order, onNotFoundChange]);
+    const authPending = !auth?.authReady;
+    onNotFoundChange?.(!loading && !authPending && Boolean(error || !order));
+  }, [loading, error, order, onNotFoundChange, auth?.authReady]);
 
   useEffect(() => {
     if (!order?.id) {
@@ -507,9 +652,9 @@ export default function OrderDetailClient({
 
   useEffect(() => {
     if (!isOrderPage || !pageVisible) return;
-    if (!auth?.authReady) return;
 
     let cancelled = false;
+    const generation = ++fetchGenerationRef.current;
 
     const normalizedPublicId = orderPublicId.trim().replace(/[-\s]/g, "");
 
@@ -521,6 +666,11 @@ export default function OrderDetailClient({
       setOrderItemsPayload(null);
       setError("Invalid order ID.");
       setLoading(false);
+      setIsRefreshing(false);
+      return;
+    }
+
+    if (!auth?.authReady) {
       return;
     }
 
@@ -531,13 +681,15 @@ export default function OrderDetailClient({
       return orderMatchesPublicId(prev, normalizedPublicId) ? prev : null;
     });
 
+    const hasMatchingOrder =
+      orderRef.current != null && orderMatchesPublicId(orderRef.current, normalizedPublicId);
+
     if (refetchTrigger > 0) {
       setIsRefreshing(true);
-    } else if (isHardReloadRef.current) {
+    } else if (isHardReloadRef.current || !hasMatchingOrder) {
       setLoading(true);
       setIsRefreshing(false);
     } else {
-      setLoading(true);
       setIsRefreshing(true);
     }
     setError(null);
@@ -615,11 +767,7 @@ export default function OrderDetailClient({
           const coreOrderId =
             row.id != null && Number.isFinite(Number(row.id)) ? Number(row.id) : null;
           const itemsPromise =
-            coreOrderId != null
-              ? fetch(`/api/orders/${coreOrderId}/items`, { credentials: "include" })
-                  .then((res) => res.json())
-                  .then((itemsBody) => parseOrderItemsApiResponse(itemsBody))
-              : Promise.resolve(null);
+            coreOrderId != null ? fetchOrderItemsCached(coreOrderId) : Promise.resolve(null);
 
           const embedded = body.timeline;
           const timeline = Array.isArray(embedded) ? embedded : [];
@@ -630,11 +778,13 @@ export default function OrderDetailClient({
           const hasEmbeddedRiderTracking = body.riderTracking !== undefined;
           if (cancelled) return;
 
-          const toNumberOrNull = (v: unknown): number | null => {
-            if (v === null || v === undefined) return null;
-            const n = Number(v);
-            return Number.isFinite(n) ? n : null;
-          };
+          setOrder(mapOrderCoreApiRowToDetail(row as Record<string, unknown>));
+          if (fetchGenerationRef.current === generation) {
+            setLoading(false);
+            setIsRefreshing(false);
+          }
+
+          const toNumberOrNull = toNumberOrNullFromApi;
 
           if (body.merchantSummary != null && typeof body.merchantSummary === "object") {
             const raw = body.merchantSummary as MerchantSummaryFromApi;
@@ -765,158 +915,7 @@ export default function OrderDetailClient({
               prefetchPartnerChat(coreOrderId);
             }
           }
-          setOrder({
-            id: row.id,
-            formattedOrderId: row.formattedOrderId,
-            orderId: row.orderId,
-            orderType: row.orderType ?? "food",
-            orderSource: row.orderSource ?? null,
-            status: row.status,
-            currentStatus: row.currentStatus,
-            paymentStatus: row.paymentStatus,
-            paymentMethod: row.paymentMethod ?? null,
-            fareAmount: toNumberOrNull(row.fareAmount),
-            itemTotal: toNumberOrNull(row.itemTotal),
-            addonTotal: toNumberOrNull(row.addonTotal),
-            grandTotal: toNumberOrNull(row.grandTotal),
-            tipAmount: toNumberOrNull(row.tipAmount),
-            totalAmount:
-              toNumberOrNull(row.grandTotal) ??
-              toNumberOrNull(row.fareAmount) ??
-              null,
-            routedToEmail: row.routedToEmail ?? null,
-            customerId: row.customerId ?? null,
-            customerExternalId: row.customerExternalId ?? null,
-            customerEmail: row.customerEmail ?? null,
-            customerAccountStatus: row.customerAccountStatus ?? null,
-            customerRiskFlag: row.customerRiskFlag ?? null,
-            customerName: row.customerName,
-            customerMobile: row.customerMobile,
-            customerAlternateMobile: row.customerAlternateMobile ?? null,
-            orderAlternateContactPhone: row.orderAlternateContactPhone ?? null,
-            orderDeliveryPrimaryContactPhone: row.orderDeliveryPrimaryContactPhone ?? null,
-            riderId: row.riderId ?? null,
-            riderName: row.riderName,
-            riderMobile: row.riderMobile,
-            dropAddressRaw: row.dropAddressRaw,
-            dropAddressNormalized: row.dropAddressNormalized ?? null,
-            dropAddressGeocoded: row.dropAddressGeocoded ?? null,
-            pickupAddressRaw: row.pickupAddressRaw ?? null,
-            pickupAddressNormalized: row.pickupAddressNormalized ?? null,
-            pickupAddressGeocoded: row.pickupAddressGeocoded ?? null,
-            pickupLat: toNumberOrNull(row.pickupLat),
-            pickupLon: toNumberOrNull(row.pickupLon),
-            dropLat: toNumberOrNull(row.dropLat),
-            dropLon: toNumberOrNull(row.dropLon),
-            pickupAddressDeviationMeters: row.pickupAddressDeviationMeters ?? null,
-            dropAddressDeviationMeters: row.dropAddressDeviationMeters ?? null,
-            distanceMismatchFlagged: row.distanceMismatchFlagged ?? false,
-            distanceKm: row.distanceKm ?? null,
-            merchantStoreId: row.merchantStoreId,
-            merchantParentId: row.merchantParentId,
-            createdAt: row.createdAt,
-            updatedAt: row.updatedAt,
-            manualStatusUpdatedByEmail: row.manualStatusUpdatedByEmail ?? null,
-            foodOrderStatus:
-              typeof row.foodOrderStatus === "string" ? row.foodOrderStatus : null,
-            dispatchedAt:
-              row.dispatchedAt != null ? String(row.dispatchedAt) : null,
-            riderPickedUpAt:
-              row.riderPickedUpAt != null ? String(row.riderPickedUpAt) : null,
-            deliveryInstructions: row.deliveryInstructions ?? null,
-            etaSeconds: row.etaSeconds ?? null,
-            estimatedDeliveryTime: row.estimatedDeliveryTime != null ? String(row.estimatedDeliveryTime) : null,
-            firstEtaAt: row.firstEtaAt != null ? String(row.firstEtaAt) : null,
-            etaBreachedAt: row.etaBreachedAt != null ? String(row.etaBreachedAt) : null,
-            etaBreachedTimelineId: row.etaBreachedTimelineId != null ? Number(row.etaBreachedTimelineId) : null,
-            orderTimeIso: row.orderTimeIso != null ? String(row.orderTimeIso) : null,
-            orderTimeSource:
-              row.orderTimeSource === "placed_at" ? "placed_at" : "created_at",
-            itemCount: row.itemCount != null ? Number(row.itemCount) : null,
-            systemKptMinutes:
-              row.systemKptMinutes != null ? Number(row.systemKptMinutes) : null,
-            merchantUpdatedKptMinutes:
-              row.merchantUpdatedKptMinutes != null
-                ? Number(row.merchantUpdatedKptMinutes)
-                : null,
-            merchantExtraPrepMinutes:
-              row.merchantExtraPrepMinutes != null
-                ? Number(row.merchantExtraPrepMinutes)
-                : null,
-            isScheduledOrder: Boolean(row.isScheduledOrder),
-            scheduledDeliverySummary:
-              row.scheduledDeliverySummary != null
-                ? String(row.scheduledDeliverySummary)
-                : null,
-            deliveryType: row.deliveryType != null ? String(row.deliveryType) : null,
-            contactlessDelivery:
-              row.contactlessDelivery === true
-                ? true
-                : row.contactlessDelivery === false
-                  ? false
-                  : null,
-            localityType: row.localityType != null ? String(row.localityType) : null,
-            localityIsSafe:
-              row.localityIsSafe === true ? true : row.localityIsSafe === false ? false : null,
-            deliveredBy: row.deliveredBy != null ? String(row.deliveredBy) : null,
-            deliveryInitiator:
-              row.deliveryInitiator != null ? String(row.deliveryInitiator) : null,
-            customerTrustTierLabel:
-              row.customerTrustTierLabel != null
-                ? String(row.customerTrustTierLabel)
-                : null,
-            customerUserType:
-              row.customerUserType != null
-                ? String(row.customerUserType)
-                : row.customerTrustTierLabel != null
-                  ? String(row.customerTrustTierLabel)
-                  : null,
-            riderInstructionsList: Array.isArray(row.riderInstructionsList)
-              ? (row.riderInstructionsList as string[])
-              : [],
-            merchantInstructionsList: Array.isArray(row.merchantInstructionsList)
-              ? (row.merchantInstructionsList as string[])
-              : [],
-            cancellationInfo:
-              row.cancellationInfo && typeof row.cancellationInfo === "object"
-                ? (row.cancellationInfo as OrderCancellationInfo)
-                : null,
-            pickupOtp:
-              row.pickupOtp != null && String(row.pickupOtp).trim()
-                ? String(row.pickupOtp).trim()
-                : null,
-            rtoOtp:
-              row.rtoOtp != null && String(row.rtoOtp).trim()
-                ? String(row.rtoOtp).trim()
-                : null,
-            deliveryOtp:
-              row.deliveryOtp != null && String(row.deliveryOtp).trim()
-                ? String(row.deliveryOtp).trim()
-                : null,
-            customerFeedback:
-              row.customerFeedback && typeof row.customerFeedback === "object"
-                ? (row.customerFeedback as OrderCustomerFeedback)
-                : null,
-            storePrepDelaySeconds: toNumberOrNull(row.storePrepDelaySeconds),
-            storePrepDelayLive: Boolean(row.storePrepDelayLive),
-            storePrepDelayAnchorAt:
-              row.storePrepDelayAnchorAt != null
-                ? String(row.storePrepDelayAnchorAt)
-                : null,
-            storePrepDelayWasLate: Boolean(row.storePrepDelayWasLate),
-            riderRestaurantWaitSeconds: toNumberOrNull(row.riderRestaurantWaitSeconds),
-            riderRestaurantWaitLive: Boolean(row.riderRestaurantWaitLive),
-            riderRestaurantWaitAnchorAt:
-              row.riderRestaurantWaitAnchorAt != null
-                ? String(row.riderRestaurantWaitAnchorAt)
-                : null,
-            deliveryProofImageUrl:
-              row.deliveryProofImageUrl != null ? String(row.deliveryProofImageUrl) : null,
-            rideDetail:
-              row.rideDetail && typeof row.rideDetail === "object"
-                ? (row.rideDetail as PersonRideOrderDetail)
-                : null,
-          });
+          // Order detail is set immediately after API row parse (see mapOrderCoreApiRowToDetail).
 
           // Refunds + line items load in background so the page renders without extra round trips.
           void (async () => {
@@ -962,15 +961,23 @@ export default function OrderDetailClient({
           setError("Order not found.");
           setOrderRefunds([]);
           setOrderTickets([]);
+          if (fetchGenerationRef.current === generation) {
+            setLoading(false);
+            setIsRefreshing(false);
+          }
         }
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : "";
         setError(msg ? `Failed to load order: ${msg}` : "Failed to load order.");
+        if (fetchGenerationRef.current === generation) {
+          setLoading(false);
+          setIsRefreshing(false);
+        }
       })
       .finally(() => {
-        if (!cancelled) {
+        if (!cancelled && fetchGenerationRef.current === generation) {
           setLoading(false);
           setIsRefreshing(false);
         }
@@ -991,6 +998,11 @@ export default function OrderDetailClient({
         : "open",
     [order?.status, order?.currentStatus, order?.foodOrderStatus]
   );
+
+  const orderCancelledOnTimeline = useMemo(() => {
+    if (hasOrderCancellationOnProgressTimeline(timelineEntries)) return true;
+    return dispatchStage === "cancelled";
+  }, [timelineEntries, dispatchStage]);
 
   const openStatusModal = useCallback(() => {
     if (!order) return;
@@ -1224,7 +1236,8 @@ export default function OrderDetailClient({
     img.src = url;
   }, [riderSelfieUrl]);
 
-  const awaitingOrder = !order && (loading || isRefreshing);
+  const authPending = !auth?.authReady;
+  const awaitingOrder = !order && (loading || authPending);
 
   if (awaitingOrder) {
     return (
@@ -1809,7 +1822,6 @@ export default function OrderDetailClient({
                 pickedUpAt={
                   riderTimelineInitial?.picked_up_at ??
                   order.riderPickedUpAt ??
-                  order.dispatchedAt ??
                   null
                 }
                 reachedMerchantAt={riderTimelineInitial?.reached_merchant_at ?? null}
@@ -1851,6 +1863,7 @@ export default function OrderDetailClient({
           }
           onRefundCreated={() => setRefetchTrigger((t) => t + 1)}
           onPrefetchOrderItems={ensureOrderItemsPrefetch}
+          orderCancelledOnTimeline={orderCancelledOnTimeline}
         />
       </div>
     </div>

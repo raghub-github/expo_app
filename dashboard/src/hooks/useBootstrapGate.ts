@@ -128,20 +128,36 @@ export function useBootstrapGate(queryClient: QueryClient): boolean {
         return;
       }
 
-      if (!bootstrapInFlight) {
-        bootstrapInFlight = fetchBootstrapAndSeedCache(queryClient)
-          .catch(() => false)
-          .then(() => undefined)
-          .finally(() => {
-            bootstrapInFlight = null;
-          });
-      }
-      void bootstrapInFlight.finally(() => {
-        if (!cancelled) {
-          window.__gatiBootstrapDone = true;
-          setAuthReady(true);
+      if (!stored?.data) {
+        if (isStandaloneOrderRoute) {
+          await syncServerSessionCookies();
+          void hydrateBrowserSupabaseFromCookies();
+          if (!bootstrapInFlight) {
+            scheduleBootstrapRevalidate(queryClient);
+          }
+          if (!cancelled) {
+            window.__gatiBootstrapDone = true;
+            setAuthReady(true);
+          }
+          return;
         }
-      });
+
+        if (!bootstrapInFlight) {
+          bootstrapInFlight = fetchBootstrapAndSeedCache(queryClient)
+            .catch(() => false)
+            .then(() => undefined)
+            .finally(() => {
+              bootstrapInFlight = null;
+            });
+        }
+        void bootstrapInFlight.finally(() => {
+          if (!cancelled) {
+            window.__gatiBootstrapDone = true;
+            setAuthReady(true);
+          }
+        });
+        return;
+      }
     };
 
     void run();

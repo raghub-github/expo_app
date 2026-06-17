@@ -8,6 +8,7 @@ import {
   keepPreviousData,
 } from '@tanstack/react-query';
 import { merchantKeys } from '@/lib/query-keys';
+import { readDashboardWalletCache, writeDashboardWalletCache } from '@/lib/partner-dashboard-cache';
 
 // ---------- Types ----------
 export interface WalletSummary {
@@ -167,11 +168,11 @@ async function fetchWallet(storeId: string): Promise<WalletSummary> {
   if (data.error) throw new Error(data.error);
   return {
     available_balance: data.available_balance ?? 0,
-    locked_balance: data.locked_balance ?? 0,
+    locked_balance: 0,
     withdrawable_balance: data.withdrawable_balance ?? data.available_balance ?? 0,
     pending_balance: data.pending_balance ?? 0,
     hold_balance: data.hold_balance ?? 0,
-    locked_settlement_total: data.locked_settlement_total ?? data.locked_balance ?? 0,
+    locked_settlement_total: 0,
     total_balance: data.total_balance,
     settlement_paused: data.settlement_paused === true,
     today_earning: data.today_earning ?? 0,
@@ -307,12 +308,22 @@ async function fetchSelfDeliveryRiders(storeId: string): Promise<SelfDeliveryRid
 /** Wallet summary; shared cache between dashboard and payments. */
 export function useMerchantWallet(storeId: string | null, options?: { enabled?: boolean }) {
   const enabled = (options?.enabled ?? true) && !!storeId;
+  const cached =
+    enabled && typeof window !== 'undefined' && storeId
+      ? readDashboardWalletCache(storeId)
+      : null;
   return useQuery({
     queryKey: merchantKeys.wallet(storeId ?? ''),
-    queryFn: () => fetchWallet(storeId!),
+    queryFn: async () => {
+      const data = await fetchWallet(storeId!);
+      writeDashboardWalletCache(storeId!, data);
+      return data;
+    },
     enabled,
-    staleTime: 30 * 1000,
-    gcTime: 5 * 60 * 1000,
+    staleTime: 2 * 60 * 1000,
+    gcTime: 15 * 60 * 1000,
+    placeholderData: keepPreviousData,
+    ...(cached ? { initialData: cached } : {}),
   });
 }
 
@@ -380,8 +391,8 @@ export function useStoreOperations(
     queryKey: merchantKeys.storeOperations(storeId ?? ''),
     queryFn: () => fetchStoreOperations(storeId!),
     enabled,
-    staleTime: 15 * 1000,
-    gcTime: 5 * 60 * 1000,
+    staleTime: 2 * 60 * 1000,
+    gcTime: 15 * 60 * 1000,
     placeholderData: keepPreviousData,
     refetchInterval: options?.refetchInterval ?? 30 * 1000,
   });

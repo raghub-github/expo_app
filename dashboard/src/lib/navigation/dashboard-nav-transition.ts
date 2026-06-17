@@ -50,5 +50,12 @@ export function shouldShowDashboardNavOverlay(fromPath: string, toHref: string):
   ) {
     return false;
   }
+  // Rider sub-pages share context + per-page loaders; keep sidebars stable.
+  if (
+    cleanPath.startsWith("/dashboard/riders") &&
+    cleanTarget.startsWith("/dashboard/riders")
+  ) {
+    return false;
+  }
   return true;
 }

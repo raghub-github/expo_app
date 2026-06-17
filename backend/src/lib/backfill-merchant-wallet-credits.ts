@@ -79,3 +79,120 @@ export async function backfillMissingDeliveredOrderCredits(
 
   return { credited, skipped };
 }
+
+/**
+ * Record ledger rows for cancelled orders that never got a cancellation entry (e.g. GMF100012).
+ */
+export async function backfillMissingCancelledOrderLedger(
+  sql: Sql,
+  merchantStoreId: number,
+  limit = 40
+): Promise<{ recorded: number; skipped: number }> {
+  const { applyMerchantOrderCancellationLedger } = await import(
+    "./apply-merchant-cancellation-ledger.js"
+  );
+
+  const rows = await sql<
+    Array<{ orders_food_id: number; order_core_id: number }>
+  >`
+    SELECT f.id AS orders_food_id, f.order_id AS order_core_id
+    FROM orders_food f
+    WHERE f.merchant_store_id = ${merchantStoreId}
+      AND UPPER(COALESCE(f.order_status, '')) = 'CANCELLED'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM merchant_wallet_ledger l
+        INNER JOIN merchant_wallet w ON w.id = l.wallet_id
+        WHERE w.merchant_store_id = ${merchantStoreId}
+          AND l.reference_type = 'ORDER'::wallet_reference_type
+          AND l.reference_id = f.id
+          AND (
+            l.idempotency_key = ('merchant_cancel_info:' || f.order_id::text)
+            OR l.idempotency_key LIKE ('merchant_cancel_debit:' || f.order_id::text || ':%')
+            OR (l.metadata->>'entry_type') = 'order_cancellation'
+          )
+      )
+    ORDER BY f.updated_at DESC NULLS LAST, f.id DESC
+    LIMIT ${limit}
+  `;
+
+  let recorded = 0;
+  let skipped = 0;
+
+  for (const row of rows) {
+    const orderCoreId = Number(row.order_core_id);
+    if (!Number.isFinite(orderCoreId) || orderCoreId <= 0) {
+      skipped += 1;
+      continue;
+    }
+    const result = await applyMerchantOrderCancellationLedger(
+      { orderCoreId, source: "backfill_cancelled_ledger" },
+      sql
+    );
+    if (result.recorded || result.applied) recorded += 1;
+    else skipped += 1;
+  }
+
+  return { recorded, skipped };
+}
+
+export async function repairCancellationLedgerWithdrawableMetadata(
+  sql: Sql,
+  walletId: number
+): Promise<{ repaired: number }> {
+  const bucketRows = await sql<
+    {
+      id: number;
+      balance_type: string | null;
+      balance_after: string | number | null;
+      created_at: Date | string;
+      metadata: Record<string, unknown> | null;
+    }[]
+  >`
+    SELECT id, balance_type, balance_after, amount, direction, created_at, metadata
+    FROM merchant_wallet_ledger
+    WHERE wallet_id = ${walletId}
+    ORDER BY created_at ASC, id ASC
+    LIMIT 5000
+  `;
+
+  if (!bucketRows.length) return { repaired: 0 };
+
+  const { buildWithdrawableBalanceByLedgerId } = await import("./merchant-wallet-ledger-display.js");
+  const withdrawableById = buildWithdrawableBalanceByLedgerId(
+    bucketRows.map((row) => ({
+      id: row.id,
+      balance_type: row.balance_type,
+      balance_after: row.balance_after != null ? Number(row.balance_after) : null,
+      amount: row.amount != null ? Number(row.amount) : null,
+      direction: row.direction,
+      created_at: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+      metadata: row.metadata,
+    }))
+  );
+
+  let repaired = 0;
+  for (const row of bucketRows) {
+    const meta = row.metadata ?? {};
+    if (meta.entry_type !== "order_cancellation" || meta.balance_impact !== "none") continue;
+    if (meta.withdrawable_after != null) continue;
+
+    const withdrawable = withdrawableById.get(row.id);
+    if (withdrawable == null) continue;
+
+    const nextMeta = {
+      ...meta,
+      withdrawable_after: withdrawable,
+      available_snapshot: Number(row.balance_after ?? meta.available_snapshot ?? 0),
+    };
+
+    await sql`
+      UPDATE merchant_wallet_ledger
+      SET metadata = ${JSON.stringify(nextMeta)}::jsonb
+      WHERE id = ${row.id}
+    `;
+    repaired += 1;
+  }
+
+  return { repaired };
+}

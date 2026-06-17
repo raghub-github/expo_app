@@ -5,7 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { canRefundOrder } from "@/lib/permissions/actions";
 import { executeFinancialRule, lookupOrderContext } from "@/lib/financial-rule-executor";
-import { mapActorToTriggeredBy, resolvePaymentCancellationMilestone } from "@gatimitra/financial-rules";
+import { mapActorToTriggeredBy, normalizeEnginePreviewDisplay, resolvePaymentCancellationMilestone } from "@gatimitra/financial-rules";
 import { resolveCancellationCatalogForOrder } from "@/lib/db/operations/order-cancellation-reason-catalog";
 
 export const runtime = "nodejs";
@@ -89,9 +89,11 @@ export async function POST(
       metadata: body?.refundMetadata as Record<string, unknown> | undefined,
     });
 
+    const preview = normalizeEnginePreviewDisplay(result, { scenario, orderMilestone });
+
     return NextResponse.json({
       success: true,
-      preview: result.raw ?? result,
+      preview,
       scenario,
       orderMilestone,
     });

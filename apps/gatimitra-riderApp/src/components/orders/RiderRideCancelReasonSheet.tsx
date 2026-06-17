@@ -8,12 +8,14 @@ import {
   ScrollView,
   ActivityIndicator,
   TouchableOpacity,
+  Platform,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors } from "@/src/theme";
-import { RIDER_RIDE_CANCEL_REASON_OPTIONS } from "@/src/lib/rider-ride-cancel-reasons";
+import { useRiderCancellationReasons } from "@/src/hooks/useRiderCancellationReasons";
+import { useRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { RIDER_CANCEL_REASON_FALLBACK } from "@/src/lib/rider-ride-cancel-reasons";
 
 type Props = {
   visible: boolean;
@@ -31,8 +33,10 @@ export function RiderRideCancelReasonSheet({
   onSelect,
 }: Props) {
   const { t } = useTranslation();
-  const insets = useSafeAreaInsets();
+  const bottomInset = useRiderBottomInset();
   const isFood = variant === "food";
+  const { data: reasons = RIDER_CANCEL_REASON_FALLBACK, isLoading: reasonsLoading } =
+    useRiderCancellationReasons(variant, visible);
 
   const title = isFood
     ? t("orders.activeFood.cancelTitle", "Why are you cancelling this delivery?")
@@ -48,62 +52,80 @@ export function RiderRideCancelReasonSheet({
         "Please cancel only if necessary or in an emergency. Otherwise, penalties may apply to your account."
       );
 
-  const reasonRows = RIDER_RIDE_CANCEL_REASON_OPTIONS.map((opt) => {
-    const label = t(opt.labelKey, opt.defaultLabel);
-    return (
-      <TouchableOpacity
-        key={opt.code}
-        activeOpacity={0.75}
-        disabled={loading}
-        onPress={() => onSelect(opt.code, label)}
-        style={[styles.row, loading ? styles.rowDisabled : null]}
-      >
-        <View style={styles.rowInner}>
-          <Text style={styles.rowText} numberOfLines={2}>
-            {label}
-          </Text>
-          <View style={styles.rowChevronWrap}>
-            <Ionicons name="chevron-forward" size={18} color={colors.gray[400]} />
-          </View>
+  const listLoading = visible && reasonsLoading && reasons.length === 0;
+  const disabled = loading || listLoading;
+
+  const reasonRows = reasons.map((opt, index) => (
+    <TouchableOpacity
+      key={opt.id != null ? String(opt.id) : `${opt.reasonCode}-${index}`}
+      activeOpacity={0.75}
+      disabled={disabled}
+      onPress={() => onSelect(opt.reasonCode, opt.label)}
+      style={[styles.row, disabled ? styles.rowDisabled : null]}
+    >
+      <View style={styles.rowInner}>
+        <Text style={styles.rowText} numberOfLines={2}>
+          {opt.label}
+        </Text>
+        <View style={styles.rowChevronWrap}>
+          <Ionicons name="chevron-forward" size={18} color={colors.gray[400]} />
         </View>
-      </TouchableOpacity>
-    );
-  });
+      </View>
+    </TouchableOpacity>
+  ));
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      statusBarTranslucent
+      presentationStyle="overFullScreen"
+      onRequestClose={onClose}
+    >
       <View style={styles.root}>
         <Pressable
           style={styles.backdrop}
-          onPress={loading ? undefined : onClose}
+          onPress={disabled ? undefined : onClose}
           accessibilityRole="button"
           accessibilityLabel={t("common.close", "Close")}
         />
-        <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-          <View style={styles.handle} />
-          <Text style={styles.title}>{title}</Text>
-          <View style={styles.warningBox}>
-            <Ionicons name="warning-outline" size={18} color={colors.error[600]} />
-            <Text style={styles.warningText}>{warning}</Text>
-          </View>
-
-          <ScrollView
-            style={styles.list}
-            contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
-            bounces={false}
-            keyboardShouldPersistTaps="handled"
-          >{reasonRows}</ScrollView>
-
-          {loading ? (
-            <View style={styles.loadingRow}>
-              <ActivityIndicator color={colors.primary[600]} />
+        <View style={styles.sheet}>
+          <View style={styles.sheetBody}>
+            <View style={styles.handle} />
+            <Text style={styles.title}>{title}</Text>
+            <View style={styles.warningBox}>
+              <Ionicons name="warning-outline" size={18} color={colors.error[600]} />
+              <Text style={styles.warningText}>{warning}</Text>
             </View>
-          ) : (
-            <Pressable onPress={onClose} style={styles.dismissBtn}>
-              <Text style={styles.dismissText}>{t("common.cancel", "Cancel")}</Text>
-            </Pressable>
-          )}
+
+            {listLoading ? (
+              <View style={styles.loadingRow}>
+                <ActivityIndicator color={colors.primary[600]} />
+              </View>
+            ) : (
+              <ScrollView
+                style={styles.list}
+                contentContainerStyle={styles.listContent}
+                showsVerticalScrollIndicator={false}
+                bounces={false}
+                keyboardShouldPersistTaps="handled"
+              >
+                {reasonRows}
+              </ScrollView>
+            )}
+
+            {loading ? (
+              <View style={styles.loadingRow}>
+                <ActivityIndicator color={colors.primary[600]} />
+              </View>
+            ) : (
+              <Pressable onPress={onClose} style={styles.dismissBtn} disabled={disabled}>
+                <Text style={styles.dismissText}>{t("common.cancel", "Cancel")}</Text>
+              </Pressable>
+            )}
+          </View>
+          <View style={[styles.bottomSafeFill, { height: bottomInset }]} />
         </View>
       </View>
     </Modal>
@@ -125,9 +147,21 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
+    maxHeight: "78%",
+    overflow: "hidden",
+    ...Platform.select({
+      android: { elevation: 12 },
+    }),
+  },
+  sheetBody: {
+    width: "100%",
     paddingHorizontal: 16,
     paddingTop: 4,
-    maxHeight: "78%",
+    paddingBottom: 8,
+  },
+  bottomSafeFill: {
+    width: "100%",
+    backgroundColor: "#fff",
   },
   handle: {
     alignSelf: "center",
@@ -209,6 +243,12 @@ const styles = StyleSheet.create({
   loadingRow: {
     alignItems: "center",
     paddingVertical: 12,
+  },
+  emptyText: {
+    textAlign: "center",
+    paddingVertical: 20,
+    fontSize: 14,
+    color: colors.gray[500],
   },
   dismissBtn: {
     alignItems: "center",

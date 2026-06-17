@@ -13,6 +13,7 @@ import {
   Dimensions,
   FlatList,
   ScrollView,
+  Switch,
   NativeSyntheticEvent,
   NativeScrollEvent,
   type ListRenderItemInfo,
@@ -28,6 +29,10 @@ import {
 } from "@/constants/theme";
 import { ACTIVE_PLAN_CODE as FALLBACK_ACTIVE_PLAN_CODE } from "@/lib/activePlan";
 import { fetchSubscription } from "@/services/api";
+import {
+  fetchMerchantSubscriptionDetails,
+  updateSubscriptionAutoRenew,
+} from "@/services/subscriptionPaymentApi";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { Alert } from 'react-native';
 import { useAuth } from "@/context/AuthContext";
@@ -210,6 +215,9 @@ function StackCard({
   total,
   isCurrentPlan,
   onSelect,
+  autoRenew,
+  onAutoRenewChange,
+  autoRenewLoading,
 }: {
   plan: MerchantPlan;
   index: number;
@@ -217,6 +225,9 @@ function StackCard({
   total: number;
   isCurrentPlan: boolean;
   onSelect: () => void;
+  autoRenew?: boolean;
+  onAutoRenewChange?: (value: boolean) => void;
+  autoRenewLoading?: boolean;
 }) {
   const distance = index - currentIndex;
   const isCenter = distance === 0;
@@ -295,6 +306,23 @@ function StackCard({
           ))}
         </ScrollView>
       </View>
+      {isCurrentPlan && plan.price > 0 && onAutoRenewChange && (
+        <View style={[styles.autoRenewRow, isPremium && styles.autoRenewRowPremium]}>
+          <View style={styles.autoRenewTextWrap}>
+            <Text style={[styles.autoRenewTitle, isPremium && styles.textWhite]}>Auto Renew</Text>
+            <Text style={[styles.autoRenewSubtitle, isPremium && styles.textWhite]}>
+              Deduct from wallet on renewal
+            </Text>
+          </View>
+          <Switch
+            value={autoRenew === true}
+            onValueChange={onAutoRenewChange}
+            disabled={autoRenewLoading}
+            trackColor={{ false: "#CBD5E1", true: isPremium ? "rgba(255,255,255,0.45)" : GatiMitraMerchant.primary }}
+            thumbColor={autoRenew ? "#FFFFFF" : "#F8FAFC"}
+          />
+        </View>
+      )}
       {plan.price > 0 && (
         <Pressable
           onPress={onSelect}
@@ -367,6 +395,8 @@ export default function PlansScreen() {
   const [plans, setPlans] = useState<MerchantPlan[]>(DEFAULT_PLANS);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [activePlanCode, setActivePlanCode] = useState(FALLBACK_ACTIVE_PLAN_CODE);
+  const [autoRenew, setAutoRenew] = useState(false);
+  const [autoRenewLoading, setAutoRenewLoading] = useState(false);
 
   const { selectedStore } = useSelectedStore();
   const { token } = useAuth();
@@ -409,6 +439,63 @@ export default function PlansScreen() {
     return () => { cancelled = true; };
   }, [selectedStore?.id]);
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!token || !selectedStore?.id) {
+      setAutoRenew(false);
+      return () => { cancelled = true; };
+    }
+    fetchMerchantSubscriptionDetails(selectedStore.id, token)
+      .then((data) => {
+        if (cancelled) return;
+        setAutoRenew(data.subscription?.autoRenew === true);
+      })
+      .catch(() => {
+        if (!cancelled) setAutoRenew(false);
+      });
+    return () => { cancelled = true; };
+  }, [selectedStore?.id, token]);
+
+  const handleAutoRenewChange = useCallback(
+    async (value: boolean) => {
+      if (!token || !selectedStore?.id) return;
+      if (value && !autoRenew) {
+        Alert.alert(
+          "Enable Auto Renew?",
+          "Your wallet will be debited automatically when the subscription ends.",
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Enable",
+              onPress: async () => {
+                setAutoRenewLoading(true);
+                try {
+                  await updateSubscriptionAutoRenew(selectedStore.id, token, true);
+                  setAutoRenew(true);
+                } catch (e) {
+                  Alert.alert("Error", e instanceof Error ? e.message : "Could not update auto-renew");
+                } finally {
+                  setAutoRenewLoading(false);
+                }
+              },
+            },
+          ]
+        );
+        return;
+      }
+      setAutoRenewLoading(true);
+      try {
+        await updateSubscriptionAutoRenew(selectedStore.id, token, value);
+        setAutoRenew(value);
+      } catch (e) {
+        Alert.alert("Error", e instanceof Error ? e.message : "Could not update auto-renew");
+      } finally {
+        setAutoRenewLoading(false);
+      }
+    },
+    [autoRenew, selectedStore?.id, token]
+  );
+
   const onScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const x = e.nativeEvent.contentOffset.x;
     const rawIndex = Math.round(x / CARD_WIDTH);
@@ -448,11 +535,14 @@ export default function PlansScreen() {
             total={realCount}
             isCurrentPlan={(item.plan_code || "").toUpperCase() === activePlanCode.toUpperCase()}
             onSelect={() => handleUpgrade(item)}
+            autoRenew={autoRenew}
+            onAutoRenewChange={handleAutoRenewChange}
+            autoRenewLoading={autoRenewLoading}
           />
         </View>
       );
     },
-    [currentIndex, activePlanCode, realCount]
+    [currentIndex, activePlanCode, realCount, autoRenew, autoRenewLoading, handleAutoRenewChange]
   );
 
   const handleUpgrade = async (plan: MerchantPlan) => {
@@ -674,5 +764,36 @@ const styles = StyleSheet.create({
     borderRadius: 4.5,
     backgroundColor: GatiMitraMerchant.primary,
     opacity: 1,
+  },
+  autoRenewRow: {
+    marginBottom: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#F8FAFC",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  autoRenewRowPremium: {
+    borderColor: "rgba(255,255,255,0.25)",
+    backgroundColor: "rgba(255,255,255,0.12)",
+  },
+  autoRenewTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  autoRenewTitle: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  autoRenewSubtitle: {
+    fontSize: 10,
+    color: GatiMitraMerchant.textTertiary,
+    marginTop: 2,
   },
 });

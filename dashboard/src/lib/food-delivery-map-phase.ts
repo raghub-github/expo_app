@@ -1,5 +1,7 @@
 /** Dashboard live map — same geofence rules as customer app food tracking. */
 
+import { hasRiderMarkedFoodPickup } from "@/lib/partner-orders-unify";
+
 export const FOOD_DELIVERY_GEOFENCE_RADIUS_M = 200;
 export const FOOD_DELIVERY_GEOFENCE_PROXIMITY_M = 500;
 
@@ -9,23 +11,6 @@ function norm(s: string | null | undefined): string {
     .toUpperCase()
     .replace(/[\s-]+/g, "_");
 }
-
-const DISPATCHED = new Set([
-  "OUT_FOR_DELIVERY",
-  "DISPATCHED",
-  "DESPATCHED",
-  "IN_TRANSIT",
-  "ON_THE_WAY",
-  "PICKED_UP",
-]);
-
-const DISPATCH_READY = new Set([
-  "READY_FOR_PICKUP",
-  "READY",
-  "DISPATCH_READY",
-  "DISPATCHREADY",
-  "DISPATCH_READY_FOR_PICKUP",
-]);
 
 const RIDER_AT_STORE = new Set(["RIDER_AT_PICKUP", "REACHED_STORE", "REACHED_MERCHANT"]);
 
@@ -45,32 +30,21 @@ export function haversineMeters(
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
+/** Post-pickup only when rider explicitly marked food pickup — not merchant dispatch / core in_transit. */
 export function isFoodPostPickupPhase(args: {
   pickedUpAt?: string | null;
   dispatchedAt?: string | null;
   riderPickedUpAt?: string | null;
+  assignmentPickedUpAt?: string | null;
   foodOrderStatus?: string | null;
   coreStatus?: string | null;
   currentStatus?: string | null;
 }): boolean {
-  if (args.pickedUpAt?.trim()) return true;
-  if (args.riderPickedUpAt?.trim()) return true;
-  if (args.dispatchedAt?.trim()) return true;
-
-  const food = norm(args.foodOrderStatus);
-  if (food && DISPATCHED.has(food)) return true;
-
-  const cur = norm(args.currentStatus);
-  if (cur && DISPATCHED.has(cur)) return true;
-  if (cur.includes("DISPATCHED") && !cur.includes("DISPATCH_READY")) return true;
-
-  const core = norm(args.coreStatus).toLowerCase();
-  if (core === "in_transit" || core === "dispatched") return true;
-  if (core === "picked_up" && !DISPATCH_READY.has(cur) && !cur.includes("DISPATCH_READY")) {
-    return false;
-  }
-
-  return false;
+  return (
+    hasRiderMarkedFoodPickup(args.pickedUpAt) ||
+    hasRiderMarkedFoodPickup(args.riderPickedUpAt) ||
+    hasRiderMarkedFoodPickup(args.assignmentPickedUpAt)
+  );
 }
 
 export function shouldHighlightPickupZone(args: {

@@ -11,12 +11,17 @@ import { useOrderStore, type ActiveOrder, type OrderStatus } from "@/store/order
 import { isActiveOrderStatus, normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
 import { isPersonRideOrderSummary } from "@/lib/person-ride-orders";
 
-function toActiveOrder(order: import("@/services/order.service").OrderSummary): ActiveOrder {
+function toActiveOrder(
+  order: import("@/services/order.service").OrderSummary,
+  existing?: ActiveOrder
+): ActiveOrder {
+  const preservedEta =
+    existing?.etaMinutes != null && existing.etaMinutes > 0 ? existing.etaMinutes : 0;
   return {
     orderId: order.orderId,
     formattedOrderId: order.formattedOrderId,
     status: normalizeCustomerOrderStatus(order.status) as OrderStatus,
-    etaMinutes: 25,
+    etaMinutes: preservedEta,
     storeId: order.merchantPublicStoreId ?? null,
     storeName: order.merchantPublicName ?? order.merchantName ?? null,
     placedAt: new Date(order.createdAt).getTime(),
@@ -55,7 +60,8 @@ export function useActiveOrdersHydration() {
     }
 
     for (const order of activeFood) {
-      addActiveOrder(toActiveOrder(order));
+      const existing = stored.find((o) => o.orderId === order.orderId);
+      addActiveOrder(toActiveOrder(order, existing));
     }
   }, [orders, addActiveOrder, removeActiveOrder]);
 }

@@ -574,6 +574,8 @@ export default function CheckoutScreen() {
    */
   const idempotencyKeyRef = useRef<string | null>(null);
   const instructionsHydratedForAddressRef = useRef<number | null>(null);
+  /** Latest checkout ETA preview — read in order-success callbacks (mutations defined above useMemo). */
+  const checkoutDeliveryEtaRef = useRef({ label: "", etaMaxMinutes: 0 });
 
   const { data: addresses = [], isLoading: addressesLoading } = useQuery({
     queryKey: ["addresses"],
@@ -2114,12 +2116,12 @@ export default function CheckoutScreen() {
     onSuccess: (order) => {
       setRazorpayModalVisible(false);
       setRazorpayOrderParams(null);
-      const etaMins = merchant?.avgPreparationTimeMinutes != null ? Math.round(Number(merchant.avgPreparationTimeMinutes)) + 20 : 25;
+      const { label: etaLabel, etaMaxMinutes } = checkoutDeliveryEtaRef.current;
       seedTrackingOrderCache(order.orderId, "ORDER_PLACED");
       setActiveOrder({
         orderId: order.orderId,
         status: "ORDER_PLACED",
-        etaMinutes: etaMins,
+        etaMinutes: etaMaxMinutes,
         storeId: merchantId ?? null,
         storeName: merchantName ?? null,
         placedAt: Date.now(),
@@ -2130,7 +2132,8 @@ export default function CheckoutScreen() {
         params: {
           orderId: order.orderId,
           ...(merchantName ? { merchantName } : {}),
-          etaMinutes: String(etaMins),
+          ...(etaLabel ? { deliveryEtaLabel: etaLabel } : {}),
+          ...(etaMaxMinutes > 0 ? { etaMinutes: String(etaMaxMinutes) } : {}),
         },
       });
       setTimeout(() => {
@@ -2175,24 +2178,26 @@ export default function CheckoutScreen() {
       const orderId = order?.orderId ?? (order as { order_id?: string })?.order_id;
       if (!orderId) {
         console.warn("[checkout] finalize success but no orderId in response", order);
+        const { label: etaLabel } = checkoutDeliveryEtaRef.current;
         router.replace({
           pathname: "/orders/payment-confirming",
           params: {
             pendingId: recoveryPendingId,
             merchantName: merchantName ?? "",
             message: "Payment was received. We are confirming your order now.",
+            ...(etaLabel ? { deliveryEtaLabel: etaLabel } : {}),
           },
         });
         return;
       }
-      const etaMins = merchant?.avgPreparationTimeMinutes != null ? Math.round(Number(merchant.avgPreparationTimeMinutes)) + 20 : 25;
+      const { label: etaLabel, etaMaxMinutes } = checkoutDeliveryEtaRef.current;
       const placedStatus =
         order.status === "PLACED" ? "ORDER_PLACED" : (order.status as import("@/store/orderStore").OrderStatus);
       seedTrackingOrderCache(orderId, placedStatus);
       setActiveOrder({
         orderId,
         status: placedStatus,
-        etaMinutes: etaMins,
+        etaMinutes: etaMaxMinutes,
         storeId: merchantId ?? null,
         storeName: merchantName ?? null,
         placedAt: Date.now(),
@@ -2210,7 +2215,8 @@ export default function CheckoutScreen() {
         params: {
           orderId,
           ...(merchantName ? { merchantName } : {}),
-          etaMinutes: String(etaMins),
+          ...(etaLabel ? { deliveryEtaLabel: etaLabel } : {}),
+          ...(etaMaxMinutes > 0 ? { etaMinutes: String(etaMaxMinutes) } : {}),
         },
       });
       setTimeout(() => {
@@ -2235,12 +2241,14 @@ export default function CheckoutScreen() {
           String(msg).toLowerCase().includes("could not be created"));
 
       if (shouldDeferToRecovery && finalizeArgsRef.current) {
+        const { label: etaLabel } = checkoutDeliveryEtaRef.current;
         router.replace({
           pathname: "/orders/payment-confirming",
           params: {
             pendingId: finalizeArgsRef.current.pendingId,
             merchantName: merchantName ?? "",
             message: "Payment received. We are confirming your order in the background.",
+            ...(etaLabel ? { deliveryEtaLabel: etaLabel } : {}),
           },
         });
       } else {
@@ -2272,11 +2280,11 @@ export default function CheckoutScreen() {
         if (!idempotencyKeyRef.current) {
           idempotencyKeyRef.current = `chk_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
         }
-        const pending = await orderService.createPendingOrder({
+        const pending = await orderService.createPendingOrderWithRetry({
           ...payload,
           idempotencyKey: idempotencyKeyRef.current,
         });
-        const razorpayOrder = await paymentService.createRazorpayOrder({
+        const razorpayOrder = await paymentService.createRazorpayOrderWithRetry({
           amountPaise: pending.amount,
           receipt: pending.pendingId,
           pendingId: pending.pendingId,
@@ -2488,7 +2496,7 @@ export default function CheckoutScreen() {
     area: selectedAddress?.label ?? undefined,
     city: selectedAddress?.city ?? undefined,
   });
-  const deliveryEta = useMemo(() => {
+  const checkoutDeliveryEta = useMemo(() => {
     const base = previewEtaRange({
       distanceKm: serverBill?.distanceKm ?? merchant?.distanceKm ?? null,
       prepMinutes: merchant?.avgPreparationTimeMinutes ?? null,
@@ -2498,13 +2506,18 @@ export default function CheckoutScreen() {
       base.etaMaxMinutes,
       checkoutWeather?.etaDelayMinutes ?? 0
     );
-    return formatEtaRange(adjusted);
+    return {
+      label: formatEtaRange(adjusted),
+      etaMaxMinutes: adjusted.etaMaxMinutes,
+    };
   }, [
     merchant?.avgPreparationTimeMinutes,
     merchant?.distanceKm,
     serverBill?.distanceKm,
     checkoutWeather?.etaDelayMinutes,
   ]);
+  checkoutDeliveryEtaRef.current = checkoutDeliveryEta;
+  const deliveryEta = checkoutDeliveryEta.label;
   const deliveryEtaImpactLabel = checkoutWeather?.etaImpactLabel ?? null;
 
   const scheduleDayTabs = useMemo(() => {

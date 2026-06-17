@@ -5,6 +5,7 @@
 
 import api from "./api";
 import { ORDER_PLACEMENT_TIMEOUT_MS } from "@/constants";
+import { isRetriableCheckoutError } from "@/utils/networkError";
 
 const ORDERS_PREFIX = "/v1/orders";
 
@@ -93,6 +94,8 @@ export type OrderDetail = OrderSummary & {
   rideType?: string | null;
   /** ISO timestamp when assigned rider marked reached pickup. */
   riderReachedPickupAt?: string | null;
+  /** ISO timestamp when rider marked food pickup (OTP/barcode/mark). */
+  riderPickedUpAt?: string | null;
   /** ISO timestamp when rider verified pickup OTP (person_ride). */
   pickupOtpVerifiedAt?: string | null;
   /** Person ride started — captain en route to drop. */
@@ -276,6 +279,25 @@ export const orderService = {
     return data;
   },
 
+  /** Pending order with retries on flaky LAN / slow billing recalc (idempotent via Idempotency-Key). */
+  async createPendingOrderWithRetry(
+    payload: CreatePendingPayload,
+    opts: { retries?: number; delayMs?: number } = {}
+  ): Promise<CreatePendingResponse> {
+    const { retries = 2, delayMs = 1200 } = opts;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await this.createPendingOrder(payload);
+      } catch (e) {
+        lastErr = e;
+        if (!isRetriableCheckoutError(e) || attempt === retries) throw e;
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+    throw lastErr;
+  },
+
   async finalizeOrder(payload: FinalizeOrderPayload): Promise<FinalizeOrderResponse> {
     const { data } = await api.post<FinalizeOrderResponse>(`${ORDERS_PREFIX}/finalize`, payload, {
       timeout: ORDER_PLACEMENT_TIMEOUT_MS,
@@ -288,7 +310,7 @@ export const orderService = {
     return data;
   },
 
-  /** Finalize with retries on network error (idempotent; safe to retry). */
+  /** Finalize with retries on network error or idempotent server failures (safe to retry). */
   async finalizeOrderWithRetry(
     payload: FinalizeOrderPayload,
     opts: { retries?: number; delayMs?: number } = {}
@@ -300,10 +322,7 @@ export const orderService = {
         return await this.finalizeOrder(payload);
       } catch (e) {
         lastErr = e;
-        const isNetwork =
-          (e as { code?: string; message?: string })?.code === "ERR_NETWORK" ||
-          String((e as Error)?.message ?? "").toLowerCase().includes("network error");
-        if (!isNetwork || attempt === retries) throw e;
+        if (!isRetriableCheckoutError(e) || attempt === retries) throw e;
         await new Promise((r) => setTimeout(r, delayMs));
       }
     }

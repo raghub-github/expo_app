@@ -34,7 +34,10 @@ export async function GET(request: NextRequest) {
         activePlans: activeCount,
         totalPlans: plans.length,
         subscribedRiders: riderStats.subscribedRiders,
-        monthlyRevenueInr: riderStats.monthlyRevenueInr,
+        totalCollectedInr: riderStats.totalCollectedInr,
+        renewalRatePct: riderStats.renewalRatePct,
+        ridersRenewed: riderStats.ridersRenewed,
+        totalEverSubscribed: riderStats.totalEverSubscribed,
       };
     }
 

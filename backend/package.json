@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "dev:4000": "cross-env PORT=4000 tsx watch src/index.ts",
+    "dev:30000": "cross-env PORT=3000 tsx watch src/index.ts",
+    "dev:4000": "cross-env PORT=3000 tsx watch src/index.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",

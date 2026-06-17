@@ -29,11 +29,13 @@ export function resolveOrderSidebarPipelineStatus(order: {
   order_status?: string | null;
   core_status?: string | null;
   current_status?: string | null;
+  rider_picked_up_at?: string | null;
 }): string {
   return resolvePartnerPipeline(
     order.order_status,
     order.core_status ?? null,
-    order.current_status ?? null
+    order.current_status ?? null,
+    order.rider_picked_up_at ?? null
   );
 }
 
@@ -54,6 +56,7 @@ export function orderMatchesLiveSidebarFilter(
     order_status?: string | null;
     core_status?: string | null;
     current_status?: string | null;
+    rider_picked_up_at?: string | null;
   },
   filterId: LiveSidebarFilterId | string
 ): boolean {
@@ -83,6 +86,7 @@ export function countLiveSidebarPipelineOrders(
     order_status?: string | null;
     core_status?: string | null;
     current_status?: string | null;
+    rider_picked_up_at?: string | null;
   }>
 ): number {
   return orders.filter((o) =>
@@ -105,8 +109,9 @@ export function liveSidebarFilterCounts(
 export function isLiveSidebarPipelineFromCore(
   foodOrderStatus: string | null | undefined,
   coreStatus: string | null | undefined,
-  currentStatus: string | null | undefined
+  currentStatus: string | null | undefined,
+  riderPickedUpAt?: string | null
 ): boolean {
-  const ui = resolvePartnerPipeline(foodOrderStatus, coreStatus, currentStatus);
+  const ui = resolvePartnerPipeline(foodOrderStatus, coreStatus, currentStatus, riderPickedUpAt);
   return isLiveSidebarPipelineStatus(ui);
 }

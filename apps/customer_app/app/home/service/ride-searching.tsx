@@ -22,7 +22,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { RideSearchingMap } from "@/components/maps/RideSearchingMap";
 import { useRideRouteSnapshot } from "@/hooks/useRideRouteSnapshot";
 import { RideSearchingBottomSheet } from "@/features/ride/RideSearchingBottomSheet";
-import { RIDE_MAX_SEARCH_EXTENSIONS } from "@/lib/ride-search-extensions";
+import { RIDE_MAX_SEARCH_EXTENSIONS, RIDE_TIP_BOOST_DECISION_SEC } from "@/lib/ride-search-extensions";
 import { RideMapToast } from "@/features/ride/RideMapToast";
 import {
   RIDE_CAPTAIN_CANCELLED_TOAST,
@@ -298,6 +298,10 @@ export default function RideSearchingScreen() {
   const searchExtensionsUsedRef = useRef(0);
   const timeoutApologyShownRef = useRef(false);
   const navigatedToLiveRef = useRef(false);
+  const tipBoostExpiresAtRef = useRef<string | null>(null);
+  const [tipBoostDecisionRemainingSec, setTipBoostDecisionRemainingSec] = useState(
+    RIDE_TIP_BOOST_DECISION_SEC
+  );
 
   useEffect(() => {
     if (!isResumeMode) return;
@@ -490,18 +494,26 @@ export default function RideSearchingScreen() {
   );
 
   const autoCancelAfterSearchTimeout = useCallback(
-    async (id: string) => {
+    async (
+      id: string,
+      options?: {
+        reasonCode?: string;
+        reasonText?: string;
+      }
+    ) => {
       if (timeoutApologyShownRef.current) return;
       cancelledRef.current = true;
       clearRideSearchTimer(id);
       setTimeoutSheetVisible(false);
+      tipBoostExpiresAtRef.current = null;
       clearActiveRideOrder(id);
       purgeRideOrderFromClientCaches(queryClient, id);
       try {
         await cancelRideOrder(id, {
           cancelMode: "timeout",
-          reasonCode: "RIDER_SEARCH_TIMEOUT",
-          reasonText: "No rider accepted within the search window",
+          reasonCode: options?.reasonCode ?? "RIDER_SEARCH_TIMEOUT",
+          reasonText:
+            options?.reasonText ?? "No rider accepted within the search window",
         });
       } catch {
         /* server may have cancelled already */
@@ -513,6 +525,16 @@ export default function RideSearchingScreen() {
     },
     [queryClient, showSearchTimeoutApology]
   );
+
+  const beginTipBoostDecision = useCallback((expiresAt: string) => {
+    tipBoostExpiresAtRef.current = expiresAt;
+    setTipBoostDecisionRemainingSec(
+      remainingSecFromExpiresAt(expiresAt, RIDE_TIP_BOOST_DECISION_SEC)
+    );
+    searchWindowEndedRef.current = true;
+    setPhase("tip_boost");
+    setTimeoutSheetVisible(true);
+  }, []);
 
   const returnToRideHome = useCallback(() => {
     router.replace("/home/service/ride");
@@ -587,13 +609,16 @@ export default function RideSearchingScreen() {
     }
 
     if (timeoutSheetVisible) return;
-    searchWindowEndedRef.current = true;
-    setPhase("tip_boost");
-    setTimeoutSheetVisible(true);
     try {
-      await markRideSearchWindowEnded(orderId);
+      const result = await markRideSearchWindowEnded(orderId);
+      const expiresAt =
+        result.searchExpiresAt ??
+        new Date(Date.now() + RIDE_TIP_BOOST_DECISION_SEC * 1000).toISOString();
+      beginTipBoostDecision(expiresAt);
     } catch {
-      /* best-effort */
+      beginTipBoostDecision(
+        new Date(Date.now() + RIDE_TIP_BOOST_DECISION_SEC * 1000).toISOString()
+      );
     }
   }, [
     orderId,
@@ -601,12 +626,13 @@ export default function RideSearchingScreen() {
     tryOpenLiveRideTracking,
     autoCancelAfterSearchTimeout,
     finalizeRideCancelledLocally,
-    queryClient,
+    beginTipBoostDecision,
   ]);
 
   const resumeSearchAfterExtension = useCallback(
     (extensionSec: number, expiresAt: string, dispatchRetryCount: number) => {
       setTimeoutSheetVisible(false);
+      tipBoostExpiresAtRef.current = null;
       searchWindowEndedRef.current = false;
       searchExtensionsUsedRef.current = Math.max(
         searchExtensionsUsedRef.current,
@@ -728,13 +754,25 @@ export default function RideSearchingScreen() {
             void autoCancelAfterSearchTimeout(existingOrderId);
             return;
           }
-          setPhase("tip_boost");
-          setTimeoutSheetVisible(true);
+          const tipBoostExpired =
+            status.searchExpiresAt != null &&
+            remainingSecFromExpiresAt(status.searchExpiresAt, 0) <= 0;
+          if (tipBoostExpired) {
+            void autoCancelAfterSearchTimeout(existingOrderId, {
+              reasonCode: "TIP_BOOST_DECISION_TIMEOUT",
+              reasonText: "No response on search options within 1.5 minutes",
+            });
+            return;
+          }
+          beginTipBoostDecision(
+            status.searchExpiresAt ??
+              new Date(Date.now() + RIDE_TIP_BOOST_DECISION_SEC * 1000).toISOString()
+          );
         } else {
           setPhase("searching");
         }
 
-        if (status.searchExpiresAt) {
+        if (status.searchExpiresAt && !status.awaitingTipBoost) {
           searchExpiresAtRef.current = status.searchExpiresAt;
           const left = remainingSecFromExpiresAt(
             status.searchExpiresAt,
@@ -790,7 +828,7 @@ export default function RideSearchingScreen() {
     cachedSearchTimer,
     autoCancelAfterSearchTimeout,
     finalizeRideCancelledLocally,
-    queryClient,
+    beginTipBoostDecision,
   ]);
 
   useEffect(() => {
@@ -925,6 +963,27 @@ export default function RideSearchingScreen() {
     return () => clearInterval(timer);
   }, [phase, handleSearchWindowEnded]);
 
+  useEffect(() => {
+    if (phase !== "tip_boost" || !timeoutSheetVisible || !orderId) return;
+
+    const syncTipBoostDecision = () => {
+      const expiresAt = tipBoostExpiresAtRef.current;
+      if (!expiresAt) return;
+      const left = remainingSecFromExpiresAt(expiresAt, 0);
+      setTipBoostDecisionRemainingSec(left);
+      if (left <= 0 && !timeoutApologyShownRef.current && !cancelledRef.current) {
+        void autoCancelAfterSearchTimeout(orderId, {
+          reasonCode: "TIP_BOOST_DECISION_TIMEOUT",
+          reasonText: "No response on search options within 1.5 minutes",
+        });
+      }
+    };
+
+    syncTipBoostDecision();
+    const timer = setInterval(syncTipBoostDecision, 1000);
+    return () => clearInterval(timer);
+  }, [phase, timeoutSheetVisible, orderId, autoCancelAfterSearchTimeout]);
+
   const syncRideSearchStatus = useCallback(async () => {
     if (!orderId || navigatedToLiveRef.current || cancelledRef.current) return;
 
@@ -949,10 +1008,38 @@ export default function RideSearchingScreen() {
           void autoCancelAfterSearchTimeout(orderId);
           return;
         }
-        setPhase("tip_boost");
-        setTimeoutSheetVisible(true);
+        const tipBoostExpired =
+          status.searchExpiresAt != null &&
+          remainingSecFromExpiresAt(status.searchExpiresAt, 0) <= 0;
+        if (tipBoostExpired) {
+          void autoCancelAfterSearchTimeout(orderId, {
+            reasonCode: "TIP_BOOST_DECISION_TIMEOUT",
+            reasonText: "No response on search options within 1.5 minutes",
+          });
+          return;
+        }
+        beginTipBoostDecision(
+          status.searchExpiresAt ??
+            new Date(Date.now() + RIDE_TIP_BOOST_DECISION_SEC * 1000).toISOString()
+        );
         if (status.customerTipAmount != null) {
           setActiveTipAmount(status.customerTipAmount);
+        }
+        return;
+      }
+
+      if (status.awaitingTipBoost && timeoutSheetVisible) {
+        if (status.searchExpiresAt) {
+          tipBoostExpiresAtRef.current = status.searchExpiresAt;
+        }
+        const tipBoostExpired =
+          status.searchExpiresAt != null &&
+          remainingSecFromExpiresAt(status.searchExpiresAt, 0) <= 0;
+        if (tipBoostExpired) {
+          void autoCancelAfterSearchTimeout(orderId, {
+            reasonCode: "TIP_BOOST_DECISION_TIMEOUT",
+            reasonText: "No response on search options within 1.5 minutes",
+          });
         }
         return;
       }
@@ -992,7 +1079,7 @@ export default function RideSearchingScreen() {
     searchTimeoutSec,
     autoCancelAfterSearchTimeout,
     finalizeRideCancelledLocally,
-    queryClient,
+    beginTipBoostDecision,
   ]);
 
   useEffect(() => {
@@ -1183,6 +1270,7 @@ export default function RideSearchingScreen() {
       <RideTipBoostSheet
         visible={timeoutSheetVisible}
         loadingAction={tipBoostLoadingAction}
+        decisionRemainingSec={tipBoostDecisionRemainingSec}
         orderTotal={fare}
         existingTipAmount={activeTipAmount}
         onAddTipAndContinue={(tip) => void handleExtendSearch(tip)}

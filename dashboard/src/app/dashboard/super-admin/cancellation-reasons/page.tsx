@@ -21,6 +21,19 @@ import type {
 import { invalidateCancellationCatalogClientCache } from "@/lib/orders/cancellation-catalog-client-cache";
 
 type CatalogRow = CancellationReasonCatalogRow;
+type CatalogChannel = "web" | "app";
+
+const SERVICE_TYPE_OPTIONS = [
+  { value: "", label: "All types" },
+  { value: "food", label: "Food" },
+  { value: "person_ride", label: "Ride" },
+  { value: "parcel", label: "Parcel" },
+] as const;
+
+function serviceTypeLabel(value: string | null | undefined): string {
+  if (!value) return "All";
+  return SERVICE_TYPE_OPTIONS.find((o) => o.value === value)?.label ?? value;
+}
 
 function StatusPill({ active }: { active: boolean }) {
   return (
@@ -37,6 +50,8 @@ function StatusPill({ active }: { active: boolean }) {
 }
 
 export default function SuperAdminCancellationReasonsPage() {
+  const [channel, setChannel] = useState<CatalogChannel>("web");
+  const [filterServiceType, setFilterServiceType] = useState<string>("ALL");
   const [rows, setRows] = useState<CatalogRow[]>([]);
   const [attributes, setAttributes] = useState<CancellationAttributeRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -53,6 +68,7 @@ export default function SuperAdminCancellationReasonsPage() {
   const [newReasonAttr, setNewReasonAttr] = useState("");
   const [newLabel, setNewLabel] = useState("");
   const [newSort, setNewSort] = useState(0);
+  const [newServiceType, setNewServiceType] = useState("");
 
   const [editAttrCode, setEditAttrCode] = useState<string | null>(null);
   const [editAttrLabel, setEditAttrLabel] = useState("");
@@ -65,14 +81,16 @@ export default function SuperAdminCancellationReasonsPage() {
   const [editLabel, setEditLabel] = useState("");
   const [editSort, setEditSort] = useState(0);
   const [editActive, setEditActive] = useState(true);
+  const [editServiceType, setEditServiceType] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
     setMsg(null);
     try {
-      const res = await fetch("/api/super-admin/order-cancellation-reason-catalog", {
-        cache: "no-store",
-      });
+      const res = await fetch(
+        `/api/super-admin/order-cancellation-reason-catalog?channel=${channel}`,
+        { cache: "no-store" }
+      );
       const data = (await res.json().catch(() => ({}))) as {
         success?: boolean;
         rows?: CatalogRow[];
@@ -103,7 +121,7 @@ export default function SuperAdminCancellationReasonsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [channel]);
 
   useEffect(() => {
     void load();
@@ -123,8 +141,11 @@ export default function SuperAdminCancellationReasonsPage() {
     );
     if (!showInactive) list = list.filter((r) => r.isActive);
     if (filterAttr !== "ALL") list = list.filter((r) => r.attribute === filterAttr);
+    if (channel === "app" && filterServiceType !== "ALL") {
+      list = list.filter((r) => (r.serviceType ?? "") === filterServiceType);
+    }
     return list;
-  }, [rows, filterAttr, showInactive]);
+  }, [rows, filterAttr, showInactive, channel, filterServiceType]);
 
   const filteredAttributes = useMemo(() => {
     const list = [...attributes].sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
@@ -246,6 +267,8 @@ export default function SuperAdminCancellationReasonsPage() {
           label,
           sortOrder: newSort,
           isActive: true,
+          channel,
+          serviceType: channel === "app" && newServiceType ? newServiceType : null,
         }),
       });
       const data = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
@@ -255,6 +278,7 @@ export default function SuperAdminCancellationReasonsPage() {
       }
       setNewLabel("");
       setNewSort(0);
+      setNewServiceType("");
       invalidateCancellationCatalogClientCache();
       await load();
     } finally {
@@ -273,6 +297,9 @@ export default function SuperAdminCancellationReasonsPage() {
           label: editLabel.trim(),
           sortOrder: editSort,
           isActive: editActive,
+          channel,
+          serviceType:
+            channel === "app" ? (editServiceType ? editServiceType : null) : undefined,
         }),
       });
       const data = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
@@ -345,7 +372,9 @@ export default function SuperAdminCancellationReasonsPage() {
                   Cancellation reasons
                 </h1>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Attributes & rejection options for order cancel / refund.
+                  {channel === "web"
+                    ? "Dashboard order cancel / refund (web)."
+                    : "Rider, customer & merchant app cancellation options."}
                 </p>
               </div>
             </div>
@@ -362,6 +391,30 @@ export default function SuperAdminCancellationReasonsPage() {
         </div>
 
         <div className="max-w-6xl mx-auto px-4 md:px-6 py-5 space-y-5">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mr-1">
+              Catalog
+            </span>
+            {(["web", "app"] as const).map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => {
+                  setChannel(c);
+                  setFilterServiceType("ALL");
+                  setEditReasonId(null);
+                }}
+                className={`h-9 px-4 rounded-lg text-xs font-semibold transition-colors ${
+                  channel === c
+                    ? "bg-emerald-600 text-white shadow-sm"
+                    : "bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50"
+                }`}
+              >
+                {c === "web" ? "Web Cancellation" : "App Cancellation"}
+              </button>
+            ))}
+          </div>
+
           {msg ? (
             <p
               className={`text-xs px-3 py-2 rounded-lg ${
@@ -602,6 +655,20 @@ export default function SuperAdminCancellationReasonsPage() {
                   </option>
                 ))}
               </select>
+              {channel === "app" ? (
+                <select
+                  value={filterServiceType}
+                  onChange={(e) => setFilterServiceType(e.target.value)}
+                  className="h-7 rounded px-2 text-xs text-slate-800 bg-white/95 border-0"
+                >
+                  <option value="ALL">All service types</option>
+                  {SERVICE_TYPE_OPTIONS.filter((o) => o.value).map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
             </div>
           </div>
 
@@ -624,6 +691,20 @@ export default function SuperAdminCancellationReasonsPage() {
               placeholder="Reason label"
               className={`${inputCls} flex-1 min-w-[200px]`}
             />
+            {channel === "app" ? (
+              <select
+                value={newServiceType}
+                onChange={(e) => setNewServiceType(e.target.value)}
+                className={selectCls}
+                title="Service type (optional)"
+              >
+                {SERVICE_TYPE_OPTIONS.map((o) => (
+                  <option key={o.value || "all"} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            ) : null}
             <input
               type="number"
               value={newSort}
@@ -657,6 +738,9 @@ export default function SuperAdminCancellationReasonsPage() {
                   <tr className="bg-slate-100 text-slate-600 border-b border-slate-200">
                     <th className="text-left px-4 py-2 font-semibold w-24">Attribute</th>
                     <th className="text-left px-4 py-2 font-semibold">Label</th>
+                    {channel === "app" ? (
+                      <th className="text-left px-4 py-2 font-semibold w-24">Service</th>
+                    ) : null}
                     <th className="text-left px-4 py-2 font-semibold">Code</th>
                     <th className="text-left px-4 py-2 font-semibold w-12">Sort</th>
                     <th className="text-left px-4 py-2 font-semibold w-20">Status</th>
@@ -701,6 +785,25 @@ export default function SuperAdminCancellationReasonsPage() {
                           row.label
                         )}
                       </td>
+                      {channel === "app" ? (
+                        <td className="px-3 py-2 text-slate-600">
+                          {editReasonId === row.id ? (
+                            <select
+                              value={editServiceType}
+                              onChange={(e) => setEditServiceType(e.target.value)}
+                              className={selectCls + " w-full"}
+                            >
+                              {SERVICE_TYPE_OPTIONS.map((o) => (
+                                <option key={o.value || "all"} value={o.value}>
+                                  {o.label}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            serviceTypeLabel(row.serviceType)
+                          )}
+                        </td>
+                      ) : null}
                       <td className="px-3 py-2 text-slate-400 font-mono text-[10px] max-w-[180px] truncate">
                         {row.reasonCode}
                       </td>
@@ -760,6 +863,7 @@ export default function SuperAdminCancellationReasonsPage() {
                                 setEditLabel(row.label);
                                 setEditSort(row.sortOrder);
                                 setEditActive(row.isActive);
+                                setEditServiceType(row.serviceType ?? "");
                               }}
                             >
                               <Pencil className="h-3 w-3" />
@@ -788,7 +892,10 @@ export default function SuperAdminCancellationReasonsPage() {
                   ))}
                   {filteredRows.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-3 py-8 text-center text-slate-500 bg-white">
+                      <td
+                        colSpan={channel === "app" ? 7 : 6}
+                        className="px-3 py-8 text-center text-slate-500 bg-white"
+                      >
                         No reasons match this filter.
                       </td>
                     </tr>

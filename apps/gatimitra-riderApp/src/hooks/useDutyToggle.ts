@@ -7,11 +7,8 @@ import {
 } from "@/src/services/http";
 import { riderVehicleQueryKey, type RiderVehicleStatusResponse } from "@/src/hooks/useRiderVehicle";
 import { useVehicleGateStore } from "@/src/stores/vehicleGateStore";
-
-function resolveDutyServiceTypes(cached: RiderVehicleStatusResponse | undefined): string[] | undefined {
-  const fromVehicle = cached?.vehicle?.serviceTypes?.filter(Boolean) ?? [];
-  return fromVehicle.length > 0 ? fromVehicle : undefined;
-}
+import { getOrCreateDeviceId } from "@/src/utils/deviceId";
+import { resolveDutyServiceTypesForToggle } from "@/src/hooks/useRiderDutyServiceFilter";
 
 export function useDutyToggle() {
   const isOnDuty = useDutyStore((s) => s.isOnDuty);
@@ -21,8 +18,16 @@ export function useDutyToggle() {
   const openVerificationModal = useVehicleGateStore((s) => s.openVerificationModal);
 
   const updateDutyMutation = useMutation({
-    mutationFn: ({ status, serviceTypes }: { status: boolean; serviceTypes?: string[] }) =>
-      riderApi.updateDutyStatus(status, serviceTypes),
+    mutationFn: async ({
+      status,
+      serviceTypes,
+    }: {
+      status: boolean;
+      serviceTypes?: string[];
+    }) => {
+      const deviceId = await getOrCreateDeviceId();
+      return riderApi.updateDutyStatus(status, serviceTypes, { deviceId });
+    },
     onSuccess: (data) => {
       void useDutyStore.getState().setDutyStatus(data.isOnDuty);
     },
@@ -48,11 +53,21 @@ export function useDutyToggle() {
         openVerificationModal();
         return;
       }
+      const serviceTypes = resolveDutyServiceTypesForToggle(queryClient);
+      if (!serviceTypes?.length) {
+        return;
+      }
+      await toggleDuty();
+      updateDutyMutation.mutate({
+        status: next,
+        serviceTypes,
+      });
+      return;
     }
     await toggleDuty();
     updateDutyMutation.mutate({
       status: next,
-      serviceTypes: next ? resolveDutyServiceTypes(cached) : undefined,
+      serviceTypes: undefined,
     });
   };
 

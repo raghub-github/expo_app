@@ -296,6 +296,7 @@ export async function creditRiderOrderEarningOnDelivered(
     ordersCoreId: coreId,
     orderIdText,
     displayId,
+    orderPublicId: displayId,
     serviceType,
     source: "order_delivered",
   };

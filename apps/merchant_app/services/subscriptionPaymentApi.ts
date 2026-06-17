@@ -104,3 +104,68 @@ export async function activateFreeSubscription(
     throw new Error(data.error ?? "Could not activate free plan");
   }
 }
+
+export type MerchantSubscriptionDetails = {
+  success: boolean;
+  active: boolean;
+  subscription: {
+    id: number;
+    autoRenew: boolean;
+    subscriptionStatus: string;
+    paymentStatus: string;
+    startDate: string | null;
+    expiryDate: string | null;
+    nextBillingDate: string | null;
+    lastPaymentDate: string | null;
+  } | null;
+  plan: {
+    id: number;
+    planName: string;
+    planCode: string;
+    price: number;
+    gstPercent: number;
+    billingCycle: string;
+  } | null;
+  error?: string;
+};
+
+export async function fetchMerchantSubscriptionDetails(
+  storeId: number,
+  token: string
+): Promise<MerchantSubscriptionDetails> {
+  const res = await authFetch(
+    `${base()}/v1/merchant-partner/stores/${storeId}/subscription`,
+    token,
+    { method: "GET" }
+  );
+  const data = (await res.json()) as MerchantSubscriptionDetails;
+  if (!res.ok) {
+    throw new Error(data.error ?? "Could not load subscription");
+  }
+  return data;
+}
+
+export async function updateSubscriptionAutoRenew(
+  storeId: number,
+  token: string,
+  autoRenew: boolean
+): Promise<{ success: boolean; autoRenew?: boolean; nextBillingDate?: string | null; error?: string }> {
+  const res = await authFetch(
+    `${base()}/v1/merchant-partner/stores/${storeId}/subscription/auto-renew`,
+    token,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ autoRenew }),
+    }
+  );
+  const data = (await res.json()) as {
+    success?: boolean;
+    autoRenew?: boolean;
+    nextBillingDate?: string | null;
+    error?: string;
+  };
+  if (!res.ok || !data.success) {
+    throw new Error(data.error ?? "Failed to update auto-renew");
+  }
+  return { success: true, autoRenew: data.autoRenew, nextBillingDate: data.nextBillingDate };
+}

@@ -203,7 +203,7 @@ function OrderSearchBar() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    setSearchValue(searchParams.get("search") ?? "");
+    setSearchValue((searchParams.get("search") ?? "").toUpperCase());
     if (isPersonRideOrders) {
       setSearchType(normalizePersonRideSearchType(searchParams.get("searchType")));
     } else {
@@ -243,7 +243,7 @@ function OrderSearchBar() {
 
   const handleSearch = useCallback(() => {
     const params = new URLSearchParams(searchParams.toString());
-    const value = searchValue.trim();
+    const value = searchValue.trim().toUpperCase();
     if (value) {
       params.set("search", value);
       params.set("searchType", searchType);
@@ -298,9 +298,9 @@ function OrderSearchBar() {
         ref={inputRef}
         type="text"
         value={searchValue}
-        onChange={(e) => setSearchValue(e.target.value)}
+        onChange={(e) => setSearchValue(e.target.value.toUpperCase())}
         placeholder={isPersonRideOrders ? "GMP10006, passenger, rider…" : "Search here..."}
-        className="min-w-0 flex-1 border-r border-gray-300 bg-white px-3 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none"
+        className="min-w-0 flex-1 border-r border-gray-300 bg-white px-3 text-sm uppercase text-gray-900 placeholder:normal-case placeholder:text-gray-400 focus:outline-none"
         onKeyDown={(e) => {
           if (e.key === "Enter") handleSearch();
         }}

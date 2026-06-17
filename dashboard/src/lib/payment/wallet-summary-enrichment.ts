@@ -9,7 +9,6 @@ export async function enrichWalletSummary(
   summary: WalletSummary
 ): Promise<WalletSummary> {
   let settlementPaused = false;
-  let lockedSettlementTotal = 0;
 
   try {
     const [w] = await sql`
@@ -21,28 +20,16 @@ export async function enrichWalletSummary(
     /* column may not exist pre-0239 */
   }
 
-  try {
-    const lockedRows = await sql`
-      SELECT COALESCE(SUM(merchant_net), 0) AS total
-      FROM payment_order_settlements
-      WHERE wallet_id = ${walletId}
-        AND lifecycle_status IN ('LOCKED', 'HOLD')
-    `;
-    lockedSettlementTotal = Number((lockedRows[0] as { total?: number } | undefined)?.total ?? 0);
-  } catch {
-    lockedSettlementTotal = summary.locked_balance;
-  }
-
   const available = summary.available_balance;
-  const locked = summary.locked_balance;
   const hold = summary.hold_balance;
   const pending = summary.pending_balance;
 
   return {
     ...summary,
-    locked_settlement_total: roundMoney(lockedSettlementTotal),
+    locked_balance: 0,
+    locked_settlement_total: 0,
     withdrawable_balance: roundMoney(available),
-    total_balance: roundMoney(available + locked + hold + pending),
+    total_balance: roundMoney(available + hold + pending),
     settlement_paused: settlementPaused,
   };
 }

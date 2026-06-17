@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
+import { riderSearchMatchesLoadedRider } from "@/lib/riders/resolve-rider-search";
 import { RiderSectionHeader } from "./RiderSectionHeader";
 import { CollapsibleTableFilters } from "./CollapsibleTableFilters";
 import { FilterChips, type FilterChipItem } from "./FilterChips";
@@ -20,7 +21,7 @@ import {
 } from "@/store/api/riderApi";
 import Link from "next/link";
 import { MoreVertical } from "lucide-react";
-import { formatRiderOrderStatusDisplayLabel } from "@/lib/riders/rider-order-status-display";
+import { resolveRiderDashboardOrderStatusLabel } from "@/lib/riders/rider-order-status-display";
 
 interface RiderInfo {
   id: number;
@@ -38,10 +39,17 @@ interface OrderRow {
   externalRef: string | null;
   earningCreditPending?: boolean;
   paymentStatus?: string | null;
+  riderAssignmentStatus?: string | null;
+  riderRideUnassigned?: boolean;
 }
 
 function formatOrderStatusLabel(order: OrderRow): string {
-  const base = formatRiderOrderStatusDisplayLabel(order.status, order.orderType);
+  const base = resolveRiderDashboardOrderStatusLabel({
+    status: order.status,
+    orderType: order.orderType,
+    riderAssignmentStatus: order.riderAssignmentStatus,
+    riderRideUnassigned: order.riderRideUnassigned,
+  });
   if (order.earningCreditPending) {
     return `${base} · payment pending`;
   }
@@ -215,7 +223,14 @@ export function RiderOrdersClient() {
     [searchParams.get("orderId"), searchParams.get("q")]
   );
   useEffect(() => {
-    if (searchValue) resolveRider(searchValue);
+    if (searchValue) {
+      if (riderFromContext && riderSearchMatchesLoadedRider(searchValue, riderFromContext)) {
+        setRider(riderFromContext);
+        setError(null);
+      } else {
+        resolveRider(searchValue);
+      }
+    }
     else if (riderFromContext) {
       setRider(riderFromContext);
       setError(null);

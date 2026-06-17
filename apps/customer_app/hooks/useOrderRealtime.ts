@@ -45,8 +45,12 @@ export function useOrderRealtime() {
               removeActiveOrder(orderId);
               return;
             }
-            const etaMins = resolveLiveEtaMinutes(eta) ?? 25;
-            updateOrderStatus(orderId, status as import("@/store/orderStore").OrderStatus, etaMins);
+            const etaMins = resolveLiveEtaMinutes(eta);
+            updateOrderStatus(
+              orderId,
+              status as import("@/store/orderStore").OrderStatus,
+              etaMins ?? undefined
+            );
 
             const liveReason = eta?.live?.reason ?? "";
             const prevReason = lastEtaReasonRef.current[orderId] ?? "";

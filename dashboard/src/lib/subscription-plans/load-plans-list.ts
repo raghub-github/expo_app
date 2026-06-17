@@ -215,18 +215,46 @@ export async function loadRiderSubscriptionStats() {
       FROM rider_subscriptions
       WHERE status = 'active' AND end_date > NOW()
     `;
-    const [revRow] = await sql`
-      SELECT COALESCE(SUM(amount_paid), 0)::numeric AS total
-      FROM rider_subscriptions
-      WHERE status = 'active'
-        AND end_date > NOW()
-        AND created_at >= date_trunc('month', NOW())
+    const [collectedRow] = await sql`
+      SELECT COALESCE(SUM(amount), 0)::numeric AS total
+      FROM wallet_ledger
+      WHERE entry_type = 'subscription_fee'
     `;
+    const [renewalRow] = await sql`
+      SELECT COUNT(DISTINCT rider_id)::int AS riders_renewed
+      FROM wallet_ledger
+      WHERE entry_type = 'subscription_fee'
+        AND (
+          COALESCE(metadata->>'renewal', 'false') = 'true'
+          OR ref LIKE 'rider_sub_renew:%'
+        )
+    `;
+    const [everSubscribedRow] = await sql`
+      SELECT COUNT(DISTINCT rider_id)::int AS cnt
+      FROM rider_subscriptions
+    `;
+
+    const totalEverSubscribed = Number((everSubscribedRow as { cnt?: number })?.cnt ?? 0);
+    const ridersRenewed = Number((renewalRow as { riders_renewed?: number })?.riders_renewed ?? 0);
+    const renewalRatePct =
+      totalEverSubscribed > 0
+        ? Math.round((ridersRenewed / totalEverSubscribed) * 1000) / 10
+        : null;
+
     return {
       subscribedRiders: Number((subRow as { cnt?: number })?.cnt ?? 0),
-      monthlyRevenueInr: Number((revRow as { total?: number })?.total ?? 0),
+      totalCollectedInr: Number((collectedRow as { total?: number })?.total ?? 0),
+      renewalRatePct,
+      ridersRenewed,
+      totalEverSubscribed,
     };
   } catch {
-    return { subscribedRiders: 0, monthlyRevenueInr: 0 };
+    return {
+      subscribedRiders: 0,
+      totalCollectedInr: 0,
+      renewalRatePct: null,
+      ridersRenewed: 0,
+      totalEverSubscribed: 0,
+    };
   }
 }

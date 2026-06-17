@@ -58,6 +58,25 @@ export function getActiveOrderStatusCopy(order: RiderOrderSummary): {
     };
   }
 
+  if (order.category === "food") {
+    if (order.rideStarted || order.status === "in_transit" || order.status === "picked_up") {
+      return {
+        title: "Delivery in progress",
+        subtitle: "Head to customer drop-off",
+      };
+    }
+    if (order.atPickup) {
+      return {
+        title: "At pickup",
+        subtitle: "Collect order from restaurant",
+      };
+    }
+    return {
+      title: "Active order",
+      subtitle: "Head to pickup location",
+    };
+  }
+
   if (order.status === "picked_up" || order.status === "in_transit") {
     return {
       title: "Delivery in progress",

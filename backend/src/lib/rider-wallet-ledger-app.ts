@@ -58,6 +58,7 @@ export type RiderLedgerEntryDto = {
   ref: string | null;
   refType: string | null;
   serviceType: string | null;
+  orderPublicId: string | null;
   createdAt: string;
 };
 
@@ -72,25 +73,34 @@ export function isCreditEntryType(entryType: string): boolean {
   return CREDIT_ENTRY_TYPES.has(entryType.toLowerCase());
 }
 
-function resolveServiceType(row: LedgerRow): string | null {
+function resolveServiceType(row: LedgerRow, orderTypeByCoreId?: Map<number, string | null>): string | null {
   const direct = row.service_type?.trim();
   if (direct) return direct.toLowerCase();
   const meta = row.metadata ?? {};
-  for (const key of ["serviceType", "service_type", "service"]) {
+  for (const key of ["serviceType", "service_type", "service", "orderType", "order_type"]) {
     const value = meta[key];
     if (typeof value === "string" && value.trim()) return value.trim().toLowerCase();
+  }
+  const coreId = extractOrderCoreIdFromRow(row);
+  if (coreId != null && orderTypeByCoreId) {
+    const orderType = orderTypeByCoreId.get(coreId);
+    if (orderType?.trim()) {
+      const t = orderType.trim().toLowerCase();
+      if (t === "ride") return "person_ride";
+      return t;
+    }
   }
   return null;
 }
 
-function categoryForRow(row: LedgerRow): string {
+function categoryForRow(row: LedgerRow, orderTypeByCoreId?: Map<number, string | null>): string {
   const entryType = row.entry_type.toLowerCase();
   if (entryType === "subscription_fee") return "subscriptions";
-  if (entryType === "penalty") return "penalties";
+  if (entryType === "penalty" || entryType === "penalty_reversal") return "penalties";
   if (ADJUSTMENT_ENTRY_TYPES.has(entryType)) return "adjustments";
   if (INCENTIVE_ENTRY_TYPES.has(entryType)) return "incentives";
 
-  const service = resolveServiceType(row);
+  const service = resolveServiceType(row, orderTypeByCoreId);
   if (service === "food") return "food";
   if (service === "parcel") return "parcel";
   if (service === "person_ride" || service === "ride") return "ride";
@@ -119,6 +129,8 @@ function descriptionForRow(row: LedgerRow): string {
       return "Referral bonus";
     case "penalty":
       return "Penalty deducted";
+    case "penalty_reversal":
+      return "Penalty Credited Back";
     case "refund":
       return "Refund credited";
     case "onboarding_fee":
@@ -252,7 +264,9 @@ function segmentMatchesRow(segment: RiderLedgerSegment, row: LedgerRow): boolean
   const category = categoryForRow(row);
 
   if (segment === "incentives") return INCENTIVE_ENTRY_TYPES.has(entryType);
-  if (segment === "penalties") return entryType === "penalty";
+  if (segment === "penalties") {
+    return entryType === "penalty" || entryType === "penalty_reversal";
+  }
   if (segment === "adjustments") return ADJUSTMENT_ENTRY_TYPES.has(entryType);
   if (segment === "withdrawals") return isWithdrawalRow(row);
   if (segment === "subscriptions") return entryType === "subscription_fee";
@@ -262,22 +276,115 @@ function segmentMatchesRow(segment: RiderLedgerSegment, row: LedgerRow): boolean
   return true;
 }
 
-function mapRow(row: LedgerRow): RiderLedgerEntryDto {
+function extractOrderCoreIdFromRow(row: LedgerRow): number | null {
+  const meta = row.metadata ?? {};
+  for (const key of ["orderId", "ordersCoreId", "order_core_id"]) {
+    const value = meta[key];
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+    if (typeof value === "string" && /^\d+$/.test(value.trim())) return Number(value.trim());
+  }
+
+  const ref = row.ref?.trim() ?? "";
+  const penaltyMatch = ref.match(/^rider_cancel_pen:(\d+):/);
+  if (penaltyMatch) return Number(penaltyMatch[1]);
+
+  const earningMatch = ref.match(/^rider_earn:(?:delivery|tip):(\d+)$/);
+  if (earningMatch) return Number(earningMatch[1]);
+
+  return null;
+}
+
+async function resolveOrderCoreDetails(
+  coreIds: number[],
+): Promise<Map<number, { publicId: string; orderType: string | null }>> {
+  const unique = [...new Set(coreIds.filter((id) => Number.isFinite(id) && id > 0))];
+  const out = new Map<number, { publicId: string; orderType: string | null }>();
+  if (unique.length === 0) return out;
+
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT id, formatted_order_id, order_id, order_type
+    FROM orders_core
+    WHERE id = ANY(${unique}::int[])
+  `) as {
+    id: number;
+    formatted_order_id: string | null;
+    order_id: string | null;
+    order_type: string | null;
+  }[];
+
+  for (const row of rows) {
+    const formatted = row.formatted_order_id?.trim() || null;
+    const business = row.order_id?.trim() || null;
+    const publicId =
+      (formatted && isDisplayableOrderPublicId(formatted) ? formatted : null) ||
+      (business && isDisplayableOrderPublicId(business) ? business : null);
+    out.set(Number(row.id), {
+      publicId: publicId ?? "",
+      orderType: row.order_type?.trim() || null,
+    });
+  }
+  return out;
+}
+
+function mapRow(
+  row: LedgerRow,
+  orderDetails: Map<number, { publicId: string; orderType: string | null }>
+): RiderLedgerEntryDto {
   const entryType = row.entry_type.toLowerCase();
   const amount = Math.abs(Number(row.amount ?? 0));
+  const meta = row.metadata ?? {};
+  const coreId = extractOrderCoreIdFromRow(row);
+  const coreDetails = coreId != null ? orderDetails.get(coreId) : undefined;
+  const orderTypeByCoreId = new Map<number, string | null>();
+  if (coreId != null && coreDetails?.orderType) {
+    orderTypeByCoreId.set(coreId, coreDetails.orderType);
+  }
+  const fromCore =
+    coreDetails?.publicId && isDisplayableOrderPublicId(coreDetails.publicId)
+      ? coreDetails.publicId
+      : null;
+  const resolvedPublicId = fromCore || readMetaOrderPublicId(meta) || null;
+
   return {
     id: Number(row.id),
     entryType,
     flow: isCreditEntryType(entryType) ? "credit" : "debit",
-    category: categoryForRow(row),
+    category: categoryForRow(row, orderTypeByCoreId),
     description: descriptionForRow(row),
     amount,
     balance: row.balance != null ? Number(row.balance) : null,
     ref: row.ref,
     refType: row.ref_type,
-    serviceType: resolveServiceType(row),
+    serviceType: resolveServiceType(row, orderTypeByCoreId),
+    orderPublicId: resolvedPublicId,
     createdAt: new Date(row.created_at).toISOString(),
   };
+}
+
+function isBareCorePkId(value: string): boolean {
+  return /^\d+$/.test(value.trim());
+}
+
+function isDisplayableOrderPublicId(value: string | null | undefined): boolean {
+  const v = value?.trim();
+  if (!v) return false;
+  if (v.startsWith("rider_earn:") || v.startsWith("rider_cancel_pen:")) return false;
+  return !isBareCorePkId(v);
+}
+
+function readMetaOrderPublicId(meta: Record<string, unknown>): string | null {
+  for (const key of ["orderPublicId", "displayId", "orderIdText"]) {
+    const raw = meta[key];
+    const value =
+      typeof raw === "string"
+        ? raw.trim()
+        : typeof raw === "number" && Number.isFinite(raw)
+          ? String(raw)
+          : "";
+    if (isDisplayableOrderPublicId(value)) return value;
+  }
+  return null;
 }
 
 async function fetchLedgerRows(
@@ -487,8 +594,13 @@ export async function getRiderLedgerForApp(args: {
   const slice = filtered.slice(offset, offset + limit);
   const hasMore = offset + limit < total;
 
+  const orderCoreIds = slice
+    .map((row) => extractOrderCoreIdFromRow(row))
+    .filter((id): id is number => id != null);
+  const orderDetails = await resolveOrderCoreDetails(orderCoreIds);
+
   return {
-    entries: slice.map(mapRow),
+    entries: slice.map((row) => mapRow(row, orderDetails)),
     total,
     hasMore,
     periodLabel: label,

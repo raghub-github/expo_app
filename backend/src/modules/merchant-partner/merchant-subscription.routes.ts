@@ -4,6 +4,8 @@ import { getPartnerParentId } from "./merchant-subscription.routes.helpers.js";
 import {
   activateFreeMerchantPlan,
   createMerchantSubscriptionPaymentOrder,
+  getMerchantStoreSubscription,
+  updateMerchantSubscriptionAutoRenew,
   upgradeMerchantSubscription,
   verifyMerchantSubscriptionPayment,
 } from "./merchant-subscription.service.js";
@@ -25,6 +27,10 @@ const upgradeBodySchema = z.object({
   razorpay_payment_id: z.string().optional(),
   razorpay_signature: z.string().optional(),
   skipPayment: z.boolean().optional(),
+});
+
+const autoRenewBodySchema = z.object({
+  autoRenew: z.boolean(),
 });
 
 export function registerMerchantSubscriptionRoutes(protectedApp: FastifyInstance) {
@@ -125,6 +131,55 @@ export function registerMerchantSubscriptionRoutes(protectedApp: FastifyInstance
         storeId,
         parentId,
         planId: body.planId,
+      });
+
+      if (!result.ok) {
+        return reply.code(result.status).send({ success: false, error: result.error });
+      }
+      return reply.send({ success: true, ...result });
+    }
+  );
+
+  protectedApp.get<{ Params: { storeId: string } }>(
+    "/stores/:storeId/subscription",
+    async (req, reply) => {
+      if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+        return reply.code(401).send({ success: false, error: "merchant_required" });
+      }
+      const storeId = Number(req.params.storeId);
+      if (!Number.isInteger(storeId) || storeId < 1) {
+        return reply.code(400).send({ success: false, error: "invalid_store_id" });
+      }
+      const parentId = await getPartnerParentId(req.auth.sub);
+      if (!parentId) return reply.code(403).send({ success: false, error: "merchant_not_found" });
+
+      const result = await getMerchantStoreSubscription({ storeId, parentId });
+      if (!result.ok) {
+        return reply.code(result.status).send({ success: false, error: result.error });
+      }
+      return reply.send({ success: true, ...result });
+    }
+  );
+
+  protectedApp.patch<{ Params: { storeId: string }; Body: unknown }>(
+    "/stores/:storeId/subscription/auto-renew",
+    async (req, reply) => {
+      if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+        return reply.code(401).send({ success: false, error: "merchant_required" });
+      }
+      const storeId = Number(req.params.storeId);
+      if (!Number.isInteger(storeId) || storeId < 1) {
+        return reply.code(400).send({ success: false, error: "invalid_store_id" });
+      }
+      const parentId = await getPartnerParentId(req.auth.sub);
+      if (!parentId) return reply.code(403).send({ success: false, error: "merchant_not_found" });
+
+      const body = autoRenewBodySchema.parse(req.body ?? {});
+      const result = await updateMerchantSubscriptionAutoRenew({
+        storeId,
+        parentId,
+        autoRenew: body.autoRenew,
+        actorUserId: req.auth.sub,
       });
 
       if (!result.ok) {

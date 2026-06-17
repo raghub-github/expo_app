@@ -32,6 +32,7 @@ import {
   resolveOrdersCorePk,
   writeOrderItemCommissionSnapshots,
 } from "../commission/writeOrderCommissionSnapshots.js";
+import { resolveStoreCommission, type ResolvedCommission } from "../commission/commission.resolver.js";
 import { persistOrderItemAddonsWithSnapshots } from "../commission/persistOrderItemAddons.js";
 import { formatAddressLabelEnum } from "../../lib/order-delivery-details.js";
 import { enrichAddonsWithMenuMetadata } from "../commission/resolveMenuAddonMetadata.js";
@@ -630,28 +631,34 @@ export async function createPendingOrder(
   const pickupLat = input.pickupLat ?? storeForOrder?.latitude ?? dropLat;
   const pickupLon = input.pickupLon ?? storeForOrder?.longitude ?? dropLon;
 
-  // Canonical distance: route-based between pickup (store) and selected drop address.
-  // Fallback to Haversine only if routing engine fails.
+  // Reuse route distance from billing snapshot when available — createPending already
+  // ran computeBillForOrder above, which calls the same routing engine. Skipping a
+  // second getRoute here cuts place-order latency and avoids client timeouts.
   let distanceKm = 0;
-  try {
-    const route = await getRoute({
-      origin: { lat: pickupLat, lng: pickupLon },
-      destination: { lat: dropLat, lng: dropLon },
-      profile: "driving",
-      mapboxToken: env.MAPBOX_ACCESS_TOKEN || undefined,
-      osrmBaseUrl: env.OSRM_BASE_URL || undefined,
-    });
-    distanceKm = route.distanceKm;
-  } catch {
-    const toRad = (deg: number) => (deg * Math.PI) / 180;
-    const R = 6371;
-    const dLat = toRad(dropLat - pickupLat);
-    const dLon = toRad(dropLon - pickupLon);
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(toRad(pickupLat)) * Math.cos(toRad(dropLat)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    distanceKm = Math.round(R * c * 100) / 100;
+  const snapDist = billingSnapshot?.distanceKm;
+  if (typeof snapDist === "number" && Number.isFinite(snapDist) && snapDist >= 0) {
+    distanceKm = snapDist;
+  } else {
+    try {
+      const route = await getRoute({
+        origin: { lat: pickupLat, lng: pickupLon },
+        destination: { lat: dropLat, lng: dropLon },
+        profile: "driving",
+        mapboxToken: env.MAPBOX_ACCESS_TOKEN || undefined,
+        osrmBaseUrl: env.OSRM_BASE_URL || undefined,
+      });
+      distanceKm = route.distanceKm;
+    } catch {
+      const toRad = (deg: number) => (deg * Math.PI) / 180;
+      const R = 6371;
+      const dLat = toRad(dropLat - pickupLat);
+      const dLon = toRad(dropLon - pickupLon);
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(toRad(pickupLat)) * Math.cos(toRad(dropLat)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      distanceKm = Math.round(R * c * 100) / 100;
+    }
   }
   const pickupAddressNormalized = sanitizeOptional((storeForOrder?.fullAddress ?? input.pickupAddressRaw ?? dropAddressRaw).trim() || null);
 
@@ -811,6 +818,19 @@ export async function finalizeOrder(
 
   await enrichAddonsWithMenuPk(pending.merchantStoreId, items);
 
+  // Pre-resolve commission outside the placement transaction. resolveStoreCommission
+  // uses a separate pool connection; calling it inside db.transaction() can exhaust
+  // the pool under load and hit statement_timeout, aborting paid orders.
+  let storeCommission: ResolvedCommission | null = null;
+  try {
+    storeCommission = await resolveStoreCommission(pending.merchantStoreId);
+  } catch (e) {
+    console.warn(
+      "[commission] pre-resolve before finalize failed — item snapshots may skip:",
+      (e as Error).message,
+    );
+  }
+
   const pickupRaw = sanitizeStringForDb(pending.pickupAddressNormalized ?? undefined) ?? "";
   const dropRaw = sanitizeStringForDb(pending.deliveryAddress ?? undefined) ?? "";
   const pickupLat = pending.pickupLat != null ? String(pending.pickupLat) : "0";
@@ -922,6 +942,7 @@ export async function finalizeOrder(
             orderIdNum,
             orderItemId: Number(orderItemId),
             addons,
+            storeCommission,
           },
         );
       }
@@ -946,6 +967,7 @@ export async function finalizeOrder(
         pending.merchantStoreId,
         snapshotInputs,
         orderIdNum ?? undefined,
+        storeCommission,
       );
 
       await tx.insert(ordersCorePayments).values({
@@ -1326,6 +1348,16 @@ export async function finalizePendingOrderFromWebhook(
       const items = norm.items;
       await enrichAddonsWithMenuPk(Number(pending.merchant_store_id), items);
 
+      let storeCommissionWebhook: ResolvedCommission | null = null;
+      try {
+        storeCommissionWebhook = await resolveStoreCommission(Number(pending.merchant_store_id));
+      } catch (e) {
+        console.warn(
+          "[commission] pre-resolve before webhook finalize failed — item snapshots may skip:",
+          (e as Error).message,
+        );
+      }
+
       const pickupRaw = sanitizeStringForDb(pending.pickup_address_normalized ?? undefined) ?? "";
       const dropRaw = sanitizeStringForDb(pending.delivery_address ?? undefined) ?? "";
       const pickupLat = pending.pickup_lat != null ? String(pending.pickup_lat) : "0";
@@ -1421,6 +1453,7 @@ export async function finalizePendingOrderFromWebhook(
             orderIdNum: orderIdNumWebhook,
             orderItemId: Number(orderItemId),
             addons,
+            storeCommission: storeCommissionWebhook,
           },
         );
       }
@@ -1443,6 +1476,7 @@ export async function finalizePendingOrderFromWebhook(
         storeIdWebhook,
         snapshotInputs,
         orderIdNumWebhook ?? undefined,
+        storeCommissionWebhook,
       );
 
       await tx.insert(ordersCorePayments).values({

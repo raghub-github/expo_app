@@ -8,6 +8,10 @@ import {
   createRazorpayOrder,
   verifyRazorpaySignature,
 } from "../../services/payment/razorpayService.js";
+import {
+  debitMerchantSubscriptionFee,
+  isInsufficientMerchantWalletError,
+} from "../../lib/merchant-subscription-wallet.js";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_BILLING_DAYS = 30;
@@ -548,4 +552,366 @@ async function insertSubscriptionPayment(
   } catch {
     // subscription_payments table may be absent in some envs
   }
+}
+
+function computeNextBillingEnd(from: Date, billingCycle: string): Date {
+  const end = new Date(from);
+  const cycle = (billingCycle || "MONTHLY").toUpperCase();
+  if (cycle === "YEARLY") {
+    end.setFullYear(end.getFullYear() + 1);
+  } else if (cycle === "QUARTERLY") {
+    end.setMonth(end.getMonth() + 3);
+  } else {
+    end.setMonth(end.getMonth() + 1);
+  }
+  return end;
+}
+
+function parseDbDate(value: unknown): Date | null {
+  if (value == null) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  const parsed = new Date(String(value));
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+type MerchantSubRow = {
+  id: number;
+  merchant_id: number;
+  store_id: number;
+  plan_id: number;
+  auto_renew: boolean;
+  expiry_date: string | null;
+  next_billing_date: string | null;
+  billing_end_at: string | null;
+  plan_name: string;
+  price: number;
+  gst_percent: number;
+  billing_cycle: string;
+};
+
+async function loadDueAutoRenewSubscriptions(
+  sql: ReturnType<typeof getSql>,
+  storeIdFilter?: number
+): Promise<MerchantSubRow[]> {
+  const rows =
+    storeIdFilter != null && storeIdFilter > 0
+      ? await sql`
+          SELECT
+            ms.id,
+            ms.merchant_id,
+            ms.store_id,
+            ms.plan_id,
+            ms.auto_renew,
+            ms.expiry_date,
+            ms.next_billing_date,
+            ms.billing_end_at,
+            p.plan_name,
+            p.price,
+            p.gst_percent,
+            p.billing_cycle
+          FROM merchant_subscriptions ms
+          JOIN merchant_plans p ON p.id = ms.plan_id
+          WHERE ms.subscription_status = 'ACTIVE'
+            AND ms.is_active = true
+            AND ms.auto_renew = true
+            AND ms.store_id = ${storeIdFilter}
+            AND p.price > 0
+            AND COALESCE(ms.next_billing_date, ms.expiry_date, ms.billing_end_at) <= NOW()
+        `
+      : await sql`
+          SELECT
+            ms.id,
+            ms.merchant_id,
+            ms.store_id,
+            ms.plan_id,
+            ms.auto_renew,
+            ms.expiry_date,
+            ms.next_billing_date,
+            ms.billing_end_at,
+            p.plan_name,
+            p.price,
+            p.gst_percent,
+            p.billing_cycle
+          FROM merchant_subscriptions ms
+          JOIN merchant_plans p ON p.id = ms.plan_id
+          WHERE ms.subscription_status = 'ACTIVE'
+            AND ms.is_active = true
+            AND ms.auto_renew = true
+            AND p.price > 0
+            AND COALESCE(ms.next_billing_date, ms.expiry_date, ms.billing_end_at) <= NOW()
+        `;
+  return (Array.isArray(rows) ? rows : []).map((raw) => {
+    const r = raw as Record<string, unknown>;
+    return {
+      id: Number(r.id),
+      merchant_id: Number(r.merchant_id),
+      store_id: Number(r.store_id),
+      plan_id: Number(r.plan_id),
+      auto_renew: Boolean(r.auto_renew),
+      expiry_date: r.expiry_date != null ? String(r.expiry_date) : null,
+      next_billing_date: r.next_billing_date != null ? String(r.next_billing_date) : null,
+      billing_end_at: r.billing_end_at != null ? String(r.billing_end_at) : null,
+      plan_name: String(r.plan_name ?? "Subscription"),
+      price: Number(r.price ?? 0),
+      gst_percent: r.gst_percent != null ? Number(r.gst_percent) : 0,
+      billing_cycle: String(r.billing_cycle ?? "MONTHLY"),
+    };
+  });
+}
+
+export async function getMerchantStoreSubscription(args: {
+  storeId: number;
+  parentId: number;
+}) {
+  const sql = getSql();
+  const store = await loadStore(sql, args.storeId, args.parentId);
+  if (!store) return { ok: false as const, status: 404, error: "Store not found" };
+
+  const rows = await sql`
+    SELECT
+      ms.id,
+      ms.plan_id,
+      ms.subscription_status,
+      ms.payment_status,
+      ms.auto_renew,
+      ms.start_date,
+      ms.expiry_date,
+      ms.next_billing_date,
+      ms.last_payment_date,
+      p.plan_name,
+      p.plan_code,
+      p.price,
+      p.gst_percent,
+      p.billing_cycle
+    FROM merchant_subscriptions ms
+    JOIN merchant_plans p ON p.id = ms.plan_id
+    WHERE ms.merchant_id = ${store.parent_id}
+      AND ms.store_id = ${store.id}
+      AND ms.subscription_status = 'ACTIVE'
+      AND ms.is_active = true
+      AND COALESCE(ms.billing_end_at, ms.expiry_date) >= NOW()
+    ORDER BY ms.created_at DESC
+    LIMIT 1
+  `;
+  const row = (Array.isArray(rows) ? rows[0] : null) as Record<string, unknown> | undefined;
+  if (!row) {
+    return { ok: true as const, active: false, subscription: null, plan: null };
+  }
+
+  return {
+    ok: true as const,
+    active: true,
+    subscription: {
+      id: Number(row.id),
+      autoRenew: Boolean(row.auto_renew),
+      subscriptionStatus: String(row.subscription_status ?? "ACTIVE"),
+      paymentStatus: String(row.payment_status ?? "PAID"),
+      startDate: row.start_date != null ? String(row.start_date) : null,
+      expiryDate: row.expiry_date != null ? String(row.expiry_date) : null,
+      nextBillingDate: row.next_billing_date != null ? String(row.next_billing_date) : null,
+      lastPaymentDate: row.last_payment_date != null ? String(row.last_payment_date) : null,
+    },
+    plan: {
+      id: Number(row.plan_id),
+      planName: String(row.plan_name ?? ""),
+      planCode: String(row.plan_code ?? ""),
+      price: Number(row.price ?? 0),
+      gstPercent: row.gst_percent != null ? Number(row.gst_percent) : 0,
+      billingCycle: String(row.billing_cycle ?? "MONTHLY"),
+    },
+  };
+}
+
+export async function updateMerchantSubscriptionAutoRenew(args: {
+  storeId: number;
+  parentId: number;
+  autoRenew: boolean;
+  actorUserId?: string | null;
+}) {
+  const sql = getSql();
+  const store = await loadStore(sql, args.storeId, args.parentId);
+  if (!store) return { ok: false as const, status: 404, error: "Store not found" };
+
+  const rows = await sql`
+    SELECT
+      id,
+      auto_renew,
+      next_billing_date,
+      expiry_date,
+      billing_end_at
+    FROM merchant_subscriptions
+    WHERE merchant_id = ${store.parent_id}
+      AND store_id = ${store.id}
+      AND subscription_status = 'ACTIVE'
+      AND is_active = true
+    ORDER BY created_at DESC
+    LIMIT 1
+  `;
+  const sub = (Array.isArray(rows) ? rows[0] : null) as Record<string, unknown> | undefined;
+  if (!sub) return { ok: false as const, status: 404, error: "No active subscription" };
+
+  const subId = Number(sub.id);
+  const wasAutoRenew = Boolean(sub.auto_renew);
+  const billingAnchor =
+    parseDbDate(sub.next_billing_date) ??
+    parseDbDate(sub.billing_end_at) ??
+    parseDbDate(sub.expiry_date);
+
+  if (args.autoRenew && !billingAnchor) {
+    return { ok: false as const, status: 400, error: "Cannot enable auto-renew without billing date" };
+  }
+
+  const nowIso = new Date().toISOString();
+  const nextBillingIso = billingAnchor?.toISOString() ?? null;
+
+  if (args.autoRenew) {
+    await sql`
+      UPDATE merchant_subscriptions SET
+        auto_renew = true,
+        next_billing_date = COALESCE(next_billing_date, ${nextBillingIso}),
+        next_auto_pay_date = COALESCE(next_billing_date, ${nextBillingIso}),
+        auto_pay_enabled_at = CASE WHEN ${!wasAutoRenew} THEN ${nowIso}::timestamptz ELSE auto_pay_enabled_at END,
+        auto_pay_enabled_by = CASE WHEN ${!wasAutoRenew} THEN NULL ELSE auto_pay_enabled_by END,
+        auto_pay_disabled_at = NULL,
+        auto_pay_disabled_by = NULL,
+        updated_at = NOW()
+      WHERE id = ${subId}
+    `;
+  } else {
+    await sql`
+      UPDATE merchant_subscriptions SET
+        auto_renew = false,
+        next_auto_pay_date = NULL,
+        auto_pay_disabled_at = CASE WHEN ${wasAutoRenew} THEN ${nowIso}::timestamptz ELSE auto_pay_disabled_at END,
+        auto_pay_disabled_by = CASE WHEN ${wasAutoRenew} THEN NULL ELSE auto_pay_disabled_by END,
+        updated_at = NOW()
+      WHERE id = ${subId}
+    `;
+  }
+
+  return {
+    ok: true as const,
+    autoRenew: args.autoRenew,
+    nextBillingDate: nextBillingIso,
+  };
+}
+
+export async function ensureMerchantSubscriptionRenewalDebited(storeId: number): Promise<void> {
+  if (!Number.isFinite(storeId) || storeId <= 0) return;
+  await processMerchantSubscriptionRenewals(storeId);
+}
+
+export async function processMerchantSubscriptionRenewals(
+  storeIdFilter?: number
+): Promise<{ processed: number; renewed: number; failed: number }> {
+  const sql = getSql();
+  const due = await loadDueAutoRenewSubscriptions(sql, storeIdFilter);
+
+  let renewed = 0;
+  let failed = 0;
+
+  for (const sub of due) {
+    if (!sub.store_id || sub.price <= 0) {
+      failed += 1;
+      continue;
+    }
+
+    const billingEnd =
+      parseDbDate(sub.next_billing_date) ??
+      parseDbDate(sub.billing_end_at) ??
+      parseDbDate(sub.expiry_date) ??
+      new Date();
+    const idempotencySuffix = billingEnd.getTime();
+
+    const { gstPercent, subtotalPaise, gstAmountPaise, totalPaise } = gstBreakdown(
+      sub.price,
+      sub.gst_percent
+    );
+    const totalAmount = totalPaise / 100;
+
+    try {
+      if (totalAmount > 0) {
+        await debitMerchantSubscriptionFee({
+          storeId: sub.store_id,
+          subscriptionId: sub.id,
+          amount: totalAmount,
+          description: `Subscription fee debited — ${sub.plan_name}`,
+          metadata: {
+            subscriptionId: sub.id,
+            planId: sub.plan_id,
+            billingCycle: sub.billing_cycle,
+            renewal: true,
+            gateway: "WALLET",
+          },
+          idempotencySuffix,
+        });
+      }
+
+      const renewedFrom = billingEnd.getTime() <= Date.now() ? billingEnd : new Date();
+      const newExpiry = computeNextBillingEnd(renewedFrom, sub.billing_cycle);
+      const now = new Date();
+
+      await sql`
+        UPDATE merchant_subscriptions SET
+          subscription_status = 'ACTIVE',
+          payment_status = 'PAID',
+          is_active = true,
+          start_date = ${renewedFrom.toISOString()},
+          expiry_date = ${newExpiry.toISOString()},
+          billing_start_at = ${renewedFrom.toISOString()},
+          billing_end_at = ${newExpiry.toISOString()},
+          last_payment_date = ${now.toISOString()},
+          next_billing_date = ${newExpiry.toISOString()},
+          next_auto_pay_date = ${newExpiry.toISOString()},
+          auto_pay_failure_count = 0,
+          last_auto_pay_attempt = ${now.toISOString()},
+          updated_at = NOW()
+        WHERE id = ${sub.id}
+      `;
+
+      await insertSubscriptionPayment(sql, {
+        merchantId: sub.merchant_id,
+        storeId: sub.store_id,
+        subscriptionId: sub.id,
+        planId: sub.plan_id,
+        totalPaise,
+        subtotalPaise,
+        gstPercent,
+        gstAmountPaise,
+        gateway: "WALLET",
+        gatewayId: `wallet_renew_${sub.id}_${idempotencySuffix}`,
+        notes: `Auto-renew from wallet — ${sub.plan_name}`,
+        now,
+        expiry: newExpiry,
+      });
+
+      renewed += 1;
+    } catch (err) {
+      console.warn("[merchant_subscription_renewal]", sub.id, (err as Error).message);
+      const now = new Date();
+      if (isInsufficientMerchantWalletError(err)) {
+        await sql`
+          UPDATE merchant_subscriptions SET
+            subscription_status = 'EXPIRED',
+            is_active = false,
+            payment_status = 'FAILED',
+            last_auto_pay_attempt = ${now.toISOString()},
+            auto_pay_failure_count = COALESCE(auto_pay_failure_count, 0) + 1,
+            updated_at = NOW()
+          WHERE id = ${sub.id}
+        `;
+      } else {
+        await sql`
+          UPDATE merchant_subscriptions SET
+            last_auto_pay_attempt = ${now.toISOString()},
+            auto_pay_failure_count = COALESCE(auto_pay_failure_count, 0) + 1,
+            updated_at = NOW()
+          WHERE id = ${sub.id}
+        `;
+      }
+      failed += 1;
+    }
+  }
+
+  return { processed: due.length, renewed, failed };
 }

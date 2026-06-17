@@ -134,7 +134,9 @@ export async function recordRiderOrderAccepted(
       rider_id = EXCLUDED.rider_id,
       assignment_status = EXCLUDED.assignment_status,
       assigned_at = COALESCE(delivery_assignments.assigned_at, EXCLUDED.assigned_at),
-      accepted_at = COALESCE(delivery_assignments.accepted_at, EXCLUDED.accepted_at),
+      accepted_at = EXCLUDED.accepted_at,
+      picked_up_at = NULL,
+      delivered_at = NULL,
       updated_at = EXCLUDED.updated_at
   `);
 
@@ -189,6 +191,7 @@ export async function recordRideRiderUnassign(
   const now = input.occurredAt ?? new Date();
   const { orderIdText, riderId, orderCorePk, reasonCode } = input;
   const reasonText = input.reasonText?.trim() || null;
+  const statusMessage = reasonText || reasonCode;
 
   await tx.execute(sql`
     INSERT INTO order_rider_ride_unassignments (
@@ -230,6 +233,38 @@ export async function recordRideRiderUnassign(
     },
     occurredAt: now,
   });
+
+  await recordRiderAssignmentMilestone(tx, {
+    orderCorePk,
+    orderIdText,
+    riderId,
+    eventType: "cancelled",
+    occurredAt: now,
+    statusMessage,
+    metadata: {
+      actor_type: "rider",
+      actor_id: "GatiMitra App",
+      reason_code: reasonCode,
+      reason_text: reasonText,
+      riderSelfCancelled: true,
+      serviceType: "person_ride",
+    },
+  });
+
+  await tx.execute(sql`
+    UPDATE order_rider_assignments
+    SET
+      cancellation_reason = ${reasonText},
+      cancellation_reason_code = ${reasonCode},
+      cancelled_by = ${String(riderId)},
+      cancelled_at = COALESCE(cancelled_at, ${now.toISOString()}::timestamptz),
+      assignment_status = 'cancelled'::rider_assignment_status,
+      is_active = FALSE,
+      updated_at = ${now.toISOString()}::timestamptz
+    WHERE order_core_id = ${orderCorePk}
+      AND rider_id = ${riderId}
+      AND is_active = TRUE
+  `);
 
   await tx.execute(sql`
     DELETE FROM order_rider_assignments_current WHERE order_id = ${orderIdText}
@@ -321,6 +356,9 @@ export async function recordFoodRiderAdminCancelled(
       actor_id: "GatimitraTeam",
       updated_by: "GatimitraTeam",
       adminCancelled: true,
+      reason_code: reasonCode,
+      reason_text: reasonText,
+      serviceType: "food",
     },
   });
 
@@ -350,6 +388,9 @@ export async function recordFoodRiderUnassigned(
   const reasonText = input.reasonText?.trim() || null;
   const actorType = input.actorType ?? "system";
   const actorId = input.actorId ?? input.removedBy ?? "system";
+  const isRiderSelfCancel = actorType === "rider";
+  const statusMessage = reasonText || reasonCode || (isRiderSelfCancel ? "Rider cancelled" : "Rider unassigned");
+  const timelineEventType = isRiderSelfCancel ? ("cancelled" as const) : ("unassigned" as const);
 
   await insertAssignmentEvent(tx, {
     orderIdText,
@@ -363,8 +404,10 @@ export async function recordFoodRiderUnassigned(
       serviceType: "food",
       orderCorePk,
       reasonText,
+      reasonCode,
       removedBy: input.removedBy ?? null,
       foodStatus: input.foodStatus,
+      riderSelfCancelled: isRiderSelfCancel,
     },
     occurredAt: now,
   });
@@ -383,8 +426,34 @@ export async function recordFoodRiderUnassigned(
     orderCorePk,
     orderIdText,
     riderId,
-    eventType: "unassigned",
+    eventType: timelineEventType,
     occurredAt: now,
-    statusMessage: reasonText ?? "Rider unassigned",
+    statusMessage,
+    metadata: {
+      actor_type: actorType,
+      actor_id: isRiderSelfCancel ? "GatiMitra App" : actorId,
+      reason_code: reasonCode,
+      reason_text: reasonText,
+      riderSelfCancelled: isRiderSelfCancel,
+      serviceType: "food",
+      foodStatus: input.foodStatus,
+    },
   });
+
+  if (isRiderSelfCancel) {
+    await tx.execute(sql`
+      UPDATE order_rider_assignments
+      SET
+        cancellation_reason = ${reasonText},
+        cancellation_reason_code = ${reasonCode},
+        cancelled_by = ${String(riderId)},
+        cancelled_at = COALESCE(cancelled_at, ${now.toISOString()}::timestamptz),
+        assignment_status = 'cancelled'::rider_assignment_status,
+        is_active = FALSE,
+        updated_at = ${now.toISOString()}::timestamptz
+      WHERE order_core_id = ${orderCorePk}
+        AND rider_id = ${riderId}
+        AND is_active = TRUE
+    `);
+  }
 }

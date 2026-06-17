@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
+import { riderSearchMatchesLoadedRider } from "@/lib/riders/resolve-rider-search";
 import { RiderSectionHeader } from "./RiderSectionHeader";
 import { Gift, Zap } from "lucide-react";
 import Link from "next/link";
@@ -63,7 +64,14 @@ export function RiderIncentivesClient() {
 
   useEffect(() => setSearchInput(searchValue), [searchValue]);
   useEffect(() => {
-    if (searchValue) resolveRider(searchValue);
+    if (searchValue) {
+      if (riderFromContext && riderSearchMatchesLoadedRider(searchValue, riderFromContext)) {
+        setRider(riderFromContext);
+        setError(null);
+      } else {
+        resolveRider(searchValue);
+      }
+    }
     else if (riderFromContext) {
       setRider(riderFromContext);
       setError(null);

@@ -7,6 +7,7 @@ import { walletLedger } from "@/lib/db/schema";
 import type { getDb } from "@/lib/db/client";
 import { and, eq, inArray } from "drizzle-orm";
 import { isRideRiderWalletCreditBlocked } from "@/lib/riders/ride-wallet-credit-pending";
+import { resolveRiderPayoutTotalForDisplay } from "@/lib/riders/rider-payout-snapshot";
 
 type Db = ReturnType<typeof getDb>;
 
@@ -19,6 +20,9 @@ export type EnrichableRiderOrder = {
   grandTotal?: string | number | null;
   tipAmount?: string | number | null;
   billingSnapshot?: unknown;
+  acceptPayoutSnapshot?: unknown;
+  assignmentRiderEarning?: string | number | null;
+  assignmentTipAmount?: string | number | null;
   paymentStatus?: string | null;
   adminRiderPaymentClearedAt?: Date | string | null;
   walletCredited?: boolean;
@@ -46,7 +50,24 @@ export function resolveRiderEarningFromOrderFields(input: {
   grandTotal?: string | number | null;
   tipAmount?: string | number | null;
   billingSnapshot?: unknown;
+  acceptPayoutSnapshot?: unknown;
+  assignmentRiderEarning?: string | number | null;
+  assignmentTipAmount?: string | number | null;
 }): number {
+  const snapTotal = resolveRiderPayoutTotalForDisplay({
+    billingSnapshot: input.billingSnapshot,
+    acceptPayoutSnapshot: input.acceptPayoutSnapshot,
+  });
+  if (snapTotal != null && snapTotal > 0) return snapTotal;
+
+  const assignmentBase = Number(input.assignmentRiderEarning);
+  const assignmentTip = Number(input.assignmentTipAmount);
+  if (Number.isFinite(assignmentBase) && assignmentBase > 0) {
+    const tip =
+      Number.isFinite(assignmentTip) && assignmentTip > 0 ? assignmentTip : 0;
+    return round2(assignmentBase + tip);
+  }
+
   const direct = Number(input.riderEarning);
   if (Number.isFinite(direct) && direct > 0) return round2(direct);
 
@@ -149,6 +170,9 @@ export async function enrichRiderOrdersWithEarnings<T extends EnrichableRiderOrd
             grandTotal: order.grandTotal,
             tipAmount: order.tipAmount,
             billingSnapshot: order.billingSnapshot,
+            acceptPayoutSnapshot: order.acceptPayoutSnapshot,
+            assignmentRiderEarning: order.assignmentRiderEarning,
+            assignmentTipAmount: order.assignmentTipAmount,
           });
 
     return {

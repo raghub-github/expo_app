@@ -23,7 +23,7 @@ npm install
 # Run a single app
 npm run dev:backend          # Fastify on :3000
 npm run dev:dashboard        # Next.js on :3001
-npm run dev:partnersite      # Next.js on :3002
+npm run dev:partnersite      # Next.js on :3000
 npm run dev:customer         # Expo
 npm run dev:merchant         # Expo
 npm run dev:rider            # Expo

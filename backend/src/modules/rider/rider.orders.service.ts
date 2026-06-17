@@ -32,10 +32,14 @@ import {
   publishOrderEvent,
   publishStoreEvent,
 } from "../realtime/publish.js";
-import type { RiderDistanceSnapshot } from "../../lib/order-rider-assignment-history.js";
+import type { ActiveRiderAssignmentMilestones, RiderDistanceSnapshot } from "../../lib/order-rider-assignment-history.js";
 import { resolveRiderOrderDistanceSnapshot, attachRiderOrderDistanceBreakdown } from "../../lib/rider-order-distance-snapshot.js";
 import { recordFoodRiderAssignedTimeline } from "../../lib/food-rider-assigned-timeline.js";
-import { recordRiderAssignmentMilestone } from "../../lib/order-rider-assignment-history.js";
+import {
+  loadActiveRiderAssignmentMilestones,
+  loadActiveRiderAssignmentMilestonesForRider,
+  recordRiderAssignmentMilestone,
+} from "../../lib/order-rider-assignment-history.js";
 import { recordOrderDeliveryProofImageTx } from "../../lib/record-order-delivery-image.js";
 import {
   assertFoodDeliveryOtpMatch,
@@ -206,6 +210,9 @@ export type RiderOrderSummary = {
   customerRating?: number | null;
   /** Person ride: passenger's star rating for this trip (1–5). */
   passengerRating?: number | null;
+  /** Admin/dashboard cancellation penalty debited from rider wallet. */
+  cancellationPenaltyApplied?: boolean;
+  cancellationPenaltyAmount?: number | null;
 };
 
 export type RiderFoodOrderItem = {
@@ -809,34 +816,144 @@ async function loadRiderFoodOrderItems(
   }));
 }
 
+function resolveFoodWorkflowMilestones(
+  activeAssignment: ActiveRiderAssignmentMilestones | null | undefined,
+  row: FoodRowWithStatus,
+  coreSt: string,
+  currentSt: string,
+  foodSt: string
+): {
+  atPickup: boolean;
+  rideStarted: boolean;
+  atCustomer: boolean;
+  delivered: boolean;
+  pickupWaitReachedAt: Date | string | null;
+} {
+  const orderReachedAt = toIsoOrNull(row.riderReachedPickupAt);
+  const reachedMerchant =
+    activeAssignment?.reachedMerchantAt != null ||
+    orderReachedAt != null ||
+    coreSt === "reached_store" ||
+    currentSt === "RIDER_AT_PICKUP";
+
+  const pickedUp =
+    activeAssignment?.pickedUpAt != null ||
+    (row.pickupDurationSeconds != null &&
+      Number.isFinite(Number(row.pickupDurationSeconds)));
+
+  const reachedCustomer =
+    activeAssignment?.reachedCustomerAt != null || currentSt === "REACHED_CUSTOMER";
+  const delivered =
+    activeAssignment?.deliveredAt != null ||
+    coreSt === "delivered" ||
+    foodSt === "DELIVERED";
+
+  const pickupWaitReachedAt =
+    activeAssignment?.reachedMerchantAt ?? row.riderReachedPickupAt ?? null;
+
+  return {
+    atPickup: reachedMerchant && !pickedUp,
+    rideStarted: pickedUp && !delivered,
+    atCustomer: reachedCustomer && !delivered,
+    delivered,
+    pickupWaitReachedAt,
+  };
+}
+
 function mapFoodRowWithStatus(
   row: FoodRowWithStatus,
   ledgerTotal?: number | null,
-  riderAssignmentStatus?: string | null
+  riderAssignmentStatus?: string | null,
+  activeAssignment?: ActiveRiderAssignmentMilestones | null
 ): RiderOrderSummary {
   const base = mapFoodRow(row, ledgerTotal);
   const coreSt = String(row.status ?? "accepted");
   const foodSt = String(row.foodStatus ?? "").trim().toUpperCase();
   const currentSt = String(row.currentStatus ?? "").trim().toUpperCase();
-  const atPickup = coreSt === "reached_store" || currentSt === "RIDER_AT_PICKUP";
-  /** Rider left restaurant with order — not merchant/dashboard "Dispatch Ready" (core may be picked_up while food is still READY_FOR_PICKUP). */
-  const foodPickedUp =
-    foodSt === "OUT_FOR_DELIVERY" ||
-    currentSt === "OUT_FOR_DELIVERY" ||
-    currentSt === "DISPATCHED" ||
-    currentSt === "IN_TRANSIT" ||
-    coreSt === "in_transit";
-  const atCustomer = currentSt === "REACHED_CUSTOMER";
-  const rideStarted =
-    foodPickedUp && coreSt !== "delivered" && foodSt !== "DELIVERED";
-  let status: RiderOrderSummary["status"] = "assigned";
-  if (coreSt === "delivered" || foodSt === "DELIVERED") status = "delivered";
-  else if (rideStarted) status = "in_transit";
-  else if (coreSt === "cancelled" || foodSt === "CANCELLED" || foodSt === "RTO") {
-    status = "cancelled";
-  }
-  status = applyRiderAssignmentHistoryStatus(status, riderAssignmentStatus);
   const merchantOrderReady = isMerchantFoodOrderReady(foodSt);
+
+  let atPickup: boolean;
+  let rideStarted: boolean;
+  let atCustomer: boolean;
+  let status: RiderOrderSummary["status"];
+
+  if (activeAssignment != null) {
+    const workflow = resolveFoodWorkflowMilestones(
+      activeAssignment,
+      row,
+      coreSt,
+      currentSt,
+      foodSt
+    );
+    atPickup = workflow.atPickup;
+    rideStarted = workflow.rideStarted;
+    atCustomer = workflow.atCustomer;
+
+    if (workflow.delivered) {
+      status = "delivered";
+    } else if (
+      coreSt === "cancelled" ||
+      foodSt === "CANCELLED" ||
+      foodSt === "RTO" ||
+      currentSt === "CANCELLED"
+    ) {
+      status = "cancelled";
+    } else if (rideStarted) {
+      status = "in_transit";
+    } else {
+      status = "assigned";
+    }
+  } else {
+    atPickup = coreSt === "reached_store" || currentSt === "RIDER_AT_PICKUP";
+    /** Rider left restaurant with order — not merchant/dashboard "Dispatch Ready" alone. */
+    const foodPickedUp =
+      foodSt === "OUT_FOR_DELIVERY" ||
+      currentSt === "OUT_FOR_DELIVERY" ||
+      currentSt === "DISPATCHED" ||
+      currentSt === "IN_TRANSIT" ||
+      coreSt === "in_transit";
+    atCustomer = currentSt === "REACHED_CUSTOMER";
+    rideStarted =
+      foodPickedUp && coreSt !== "delivered" && foodSt !== "DELIVERED";
+    status = "assigned";
+    if (coreSt === "delivered" || foodSt === "DELIVERED") status = "delivered";
+    else if (
+      coreSt === "cancelled" ||
+      foodSt === "CANCELLED" ||
+      foodSt === "RTO" ||
+      currentSt === "CANCELLED"
+    ) {
+      status = "cancelled";
+    } else if (rideStarted) status = "in_transit";
+  }
+
+  status = applyRiderAssignmentHistoryStatus(
+    status,
+    riderAssignmentStatus ?? activeAssignment?.assignmentStatus
+  );
+
+  const workflowPickupWaitReachedAt =
+    activeAssignment != null
+      ? resolveFoodWorkflowMilestones(activeAssignment, row, coreSt, currentSt, foodSt)
+          .pickupWaitReachedAt
+      : row.riderReachedPickupAt;
+  const pickupWaitReachedAt = workflowPickupWaitReachedAt;
+  const pickupDurationSeconds = activeAssignment
+    ? activeAssignment.pickedUpAt != null
+      ? row.pickupDurationSeconds
+      : null
+    : row.pickupDurationSeconds;
+  const pickupWaitSeconds = activeAssignment
+    ? activeAssignment.pickedUpAt != null
+      ? row.pickupWaitSeconds
+      : null
+    : row.pickupWaitSeconds;
+  const pickupTimerStartedAt = activeAssignment
+    ? activeAssignment.pickedUpAt != null
+      ? null
+      : row.pickupTimerStartedAt
+    : row.pickupTimerStartedAt;
+
   return attachFoodPrepTiming(
     attachFoodPickupWait(
       {
@@ -848,14 +965,29 @@ function mapFoodRowWithStatus(
         foodOrderStatus: foodSt || null,
         merchantOrderReady,
       },
-      row.riderReachedPickupAt,
-      row.pickupWaitSeconds,
-      row.pickupTimerStartedAt,
-      row.pickupDurationSeconds,
+      pickupWaitReachedAt,
+      pickupWaitSeconds,
+      pickupTimerStartedAt,
+      pickupDurationSeconds,
       row.preparedAt
     ),
     row
   );
+}
+
+async function mapFoodRowForActiveRider(
+  dbOrTx: Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0] | ReturnType<typeof getDb>,
+  row: FoodRowWithStatus,
+  riderId: number,
+  orderCorePk: number,
+  ledgerTotal?: number | null
+): Promise<RiderOrderSummary> {
+  const activeAssignment = await loadActiveRiderAssignmentMilestones(
+    dbOrTx,
+    orderCorePk,
+    riderId
+  );
+  return mapFoodRowWithStatus(row, ledgerTotal, null, activeAssignment);
 }
 
 type ParcelRowWithStatus = ParcelRow & {
@@ -875,9 +1007,9 @@ function mapParcelRowWithStatus(
   const rideStarted =
     coreSt === "picked_up" || coreSt === "in_transit" || currentSt === "OUT_FOR_DELIVERY";
   let status: RiderOrderSummary["status"] = "assigned";
-  if (rideStarted) status = "in_transit";
-  else if (coreSt === "delivered") status = "delivered";
+  if (coreSt === "delivered") status = "delivered";
   else if (coreSt === "cancelled") status = "cancelled";
+  else if (rideStarted) status = "in_transit";
   status = applyRiderAssignmentHistoryStatus(status, riderAssignmentStatus);
   return { ...base, atPickup, rideStarted, status };
 }
@@ -1245,6 +1377,7 @@ export async function getActiveOrdersForRider(riderId: number): Promise<RiderOrd
       .limit(5),
     db
       .select({
+        coreId: ordersCore.id,
         orderId: ordersCore.orderId,
         formattedOrderId: ordersCore.formattedOrderId,
         pickupAddressRaw: ordersCore.pickupAddressRaw,
@@ -1344,6 +1477,15 @@ export async function getActiveOrdersForRider(riderId: number): Promise<RiderOrd
     ratingByCustomer = await loadCustomerAverageRatingsMap(foodCustomerIds);
   }
 
+  const foodCoreIds = foodRows
+    .map((r) => Number((r as { coreId?: unknown }).coreId))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  const foodAssignmentMap = await loadActiveRiderAssignmentMilestonesForRider(
+    db,
+    riderId,
+    foodCoreIds
+  );
+
   const rideSummaries = await Promise.all(
     rideRows
       .filter((r) => r.orderId)
@@ -1358,7 +1500,12 @@ export async function getActiveOrdersForRider(riderId: number): Promise<RiderOrd
   const summaries: RiderOrderSummary[] = [
     ...rideSummaries,
     ...foodRows.filter((r) => r.orderId).map((r) => {
-      const summary = mapFoodRowWithStatus(r);
+      const coreId = Number((r as { coreId?: unknown }).coreId);
+      const activeAssignment =
+        Number.isFinite(coreId) && coreId > 0
+          ? (foodAssignmentMap.get(coreId) ?? null)
+          : null;
+      const summary = mapFoodRowWithStatus(r, undefined, null, activeAssignment);
       const customerId = Number((r as { customerId?: unknown }).customerId);
       const rating = customerId > 0 ? ratingByCustomer.get(customerId) : undefined;
       return rating != null ? { ...summary, customerRating: rating } : summary;
@@ -1433,6 +1580,62 @@ function applyRiderAssignmentHistoryStatus(
     return "cancelled";
   }
   return status;
+}
+
+async function attachRiderOrderCancellationPenalty(
+  summary: RiderOrderSummary,
+  orderCorePk: number,
+  riderId: number
+): Promise<RiderOrderSummary> {
+  if (summary.status !== "cancelled") return summary;
+  try {
+    const db = getDb();
+    const ocrRows = await db.execute<{
+      penalty_applied: boolean | null;
+      penalty_amount: string | null;
+    }>(sql`
+      SELECT penalty_applied, penalty_amount::text
+      FROM order_cancellation_reasons
+      WHERE order_id = ${orderCorePk}
+      ORDER BY created_at DESC
+      LIMIT 1
+    `);
+    const ocr = (ocrRows as { penalty_applied: boolean | null; penalty_amount: string | null }[])[0];
+    const fromReason =
+      ocr?.penalty_amount != null && Number.isFinite(Number(ocr.penalty_amount))
+        ? Number(ocr.penalty_amount)
+        : null;
+    if (fromReason != null && fromReason > 0) {
+      return {
+        ...summary,
+        cancellationPenaltyApplied: true,
+        cancellationPenaltyAmount: fromReason,
+      };
+    }
+
+    const ledgerRows = await db.execute<{ total: string | null }>(sql`
+      SELECT COALESCE(SUM(amount), 0)::text AS total
+      FROM wallet_ledger
+      WHERE rider_id = ${riderId}
+        AND direction = 'DEBIT'
+        AND ref LIKE ${`rider_cancel_pen:${orderCorePk}:%`}
+    `);
+    const ledgerTotal = Number((ledgerRows as { total: string | null }[])[0]?.total ?? 0);
+    if (Number.isFinite(ledgerTotal) && ledgerTotal > 0) {
+      return {
+        ...summary,
+        cancellationPenaltyApplied: true,
+        cancellationPenaltyAmount: ledgerTotal,
+      };
+    }
+
+    if (ocr?.penalty_applied === true) {
+      return { ...summary, cancellationPenaltyApplied: true, cancellationPenaltyAmount: null };
+    }
+  } catch {
+    /* optional tables */
+  }
+  return summary;
 }
 
 export function parseRiderOrderHistoryCategory(
@@ -1970,7 +2173,8 @@ async function acceptFoodOrderForRider(
       .set({
         riderId,
         status: "accepted",
-        currentStatus: nextCoreStatus,
+        currentStatus: readyNow ? "RIDER_ASSIGNED" : nextCoreStatus,
+        actualPickupTime: null,
         updatedAt: now,
       })
       .where(and(eq(ordersCore.id, existing.id), isNull(ordersCore.riderId)))
@@ -1987,6 +2191,10 @@ async function acceptFoodOrderForRider(
         riderName: riderProfile?.name ?? null,
         riderPhone: riderProfile?.mobile ?? null,
         orderStatus: nextFoodStatus,
+        riderReachedPickupAt: null,
+        pickupDurationSeconds: null,
+        pickupTimerStartedAt: null,
+        pickupWaitSeconds: null,
         ...(readyNow ? { dispatchedAt: now } : {}),
         updatedAt: now,
       })
@@ -2573,7 +2781,7 @@ export async function rejectOrderForRider(
   riderId: number,
   orderRef: string,
   input: { reasonCode: string; reasonText?: string | null }
-): Promise<{ ok: true }> {
+): Promise<{ ok: true; penaltyApplied?: boolean; penaltyAmount?: number }> {
   const now = new Date();
   const rawCode = String(input.reasonCode ?? "").trim().toUpperCase();
   if (!isValidRiderOrderRejectReasonCode(rawCode)) {
@@ -2777,7 +2985,8 @@ export async function getFoodOrderForRider(
   }
 
   const ledgerTotal = await fetchLedgerEarningForCoreId(riderId, row.coreId);
-  const summary = mapFoodRowWithStatus(row, ledgerTotal);
+  const activeAssignment = await loadActiveRiderAssignmentMilestones(db, row.coreId, riderId);
+  const summary = mapFoodRowWithStatus(row, ledgerTotal, null, activeAssignment);
   const foodItems = await loadRiderFoodOrderItems(db, row.coreId, row.foodItemsJson);
   const merchantFeedbackSubmitted = await loadRiderMerchantFeedbackSubmitted(
     db,
@@ -2797,16 +3006,20 @@ export async function getFoodOrderForRider(
     );
     customerRating = await getCustomerAverageRatingByCustomerId(customerId);
   }
-  return attachRiderOrderDistanceBreakdown(riderId, row.coreId, {
-    ...summary,
-    foodItems,
-    deliveryInstructions: row.deliveryInstructions?.trim() || null,
-    requiresUtensils: row.requiresUtensils === true,
-    restaurantPhone: row.restaurantPhone?.trim() || null,
-    merchantFeedbackSubmitted,
-    customerFeedbackSubmitted,
-    customerRating,
-  });
+  return attachRiderOrderCancellationPenalty(
+    await attachRiderOrderDistanceBreakdown(riderId, row.coreId, {
+      ...summary,
+      foodItems,
+      deliveryInstructions: row.deliveryInstructions?.trim() || null,
+      requiresUtensils: row.requiresUtensils === true,
+      restaurantPhone: row.restaurantPhone?.trim() || null,
+      merchantFeedbackSubmitted,
+      customerFeedbackSubmitted,
+      customerRating,
+    }),
+    row.coreId,
+    riderId
+  );
 }
 
 export async function getParcelOrderForRider(
@@ -2956,7 +3169,9 @@ export async function getRideOrderForRider(
   );
   const enriched = await enrichRideOrderSummary(withDistances, row);
   const passengerRating = await loadPassengerRatingForOrder(db, row.coreId);
-  return passengerRating != null ? { ...enriched, passengerRating } : enriched;
+  const withRating =
+    passengerRating != null ? { ...enriched, passengerRating } : enriched;
+  return attachRiderOrderCancellationPenalty(withRating, row.coreId, riderId);
 }
 
 export async function verifyPickupOtpForRider(
@@ -3520,28 +3735,47 @@ async function markReachedFoodPickupForRider(
 
     const coreSt = String(existing.status ?? "").trim();
     const curSt = String(existing.currentStatus ?? "").trim().toUpperCase();
-    const foodSt = String(existing.foodStatus ?? "").trim().toUpperCase();
+
+    const activeAssignment = await loadActiveRiderAssignmentMilestones(
+      tx,
+      existing.id,
+      riderId
+    );
+
+    if (activeAssignment?.pickedUpAt) {
+      throw Object.assign(new Error("Food order already picked up"), { statusCode: 409 });
+    }
 
     const alreadyAtStore =
-      coreSt === "reached_store" || curSt === "RIDER_AT_PICKUP";
+      activeAssignment?.reachedMerchantAt != null ||
+      coreSt === "reached_store" ||
+      curSt === "RIDER_AT_PICKUP";
 
     if (alreadyAtStore) {
       const full = await selectFoodOrderRowForRider(tx, existing.id);
       if (!full?.orderId) throw new Error("Food order missing after update");
-      return mapFoodRowWithStatus(full);
+      return mapFoodRowForActiveRider(tx, full, riderId, existing.id);
     }
 
-    if (
-      foodSt === "OUT_FOR_DELIVERY" &&
-      (coreSt === "in_transit" || coreSt === "delivered")
-    ) {
-      throw Object.assign(new Error("Food order already picked up"), { statusCode: 409 });
-    }
+    const effectiveCoreSt =
+      coreSt === "in_transit" && !activeAssignment?.pickedUpAt ? "accepted" : coreSt;
 
-    if (!(FOOD_REACH_STORE_CORE_STATUSES as readonly string[]).includes(coreSt)) {
+    if (!(FOOD_REACH_STORE_CORE_STATUSES as readonly string[]).includes(effectiveCoreSt)) {
       throw Object.assign(new Error("Food order not ready for pickup arrival"), {
         statusCode: 409,
       });
+    }
+
+    if (coreSt === "in_transit" && !activeAssignment?.pickedUpAt) {
+      await tx
+        .update(ordersCore)
+        .set({
+          status: "accepted",
+          currentStatus: "RIDER_ASSIGNED",
+          actualPickupTime: null,
+          updatedAt: now,
+        })
+        .where(and(eq(ordersCore.id, existing.id), eq(ordersCore.riderId, riderId)));
     }
 
     await assertRiderMilestoneGeoFence({
@@ -3598,7 +3832,7 @@ async function markReachedFoodPickupForRider(
 
     const full = await selectFoodOrderRowForRider(tx, row.id);
     if (!full?.orderId) throw new Error("Food order missing after update");
-    return mapFoodRowWithStatus(full);
+    return mapFoodRowForActiveRider(tx, full, riderId, row.id);
   });
 
   const merchantFeedbackSubmitted = await loadRiderMerchantFeedbackSubmitted(
@@ -3640,7 +3874,12 @@ async function finalizeFoodPickupVerificationForRider(
   const now = new Date();
   const foodSt = String(existing.foodStatus ?? "").trim().toUpperCase();
 
-  if (foodSt === "OUT_FOR_DELIVERY" || foodSt === "DELIVERED") {
+  const activeAssignment = await loadActiveRiderAssignmentMilestones(
+    tx,
+    existing.id,
+    riderId
+  );
+  if (activeAssignment?.pickedUpAt || foodSt === "DELIVERED") {
     throw Object.assign(new Error("Food order already picked up"), { statusCode: 409 });
   }
 
@@ -3733,6 +3972,12 @@ async function finalizeFoodPickupVerificationForRider(
     .where(eq(ordersFood.orderId, row.id));
 
   await tx.execute(sql`
+    UPDATE orders_food
+    SET rider_picked_up_at = COALESCE(rider_picked_up_at, ${now.toISOString()}::timestamptz)
+    WHERE order_id = ${row.id}
+  `);
+
+  await tx.execute(sql`
     UPDATE delivery_assignments
     SET
       assignment_status = 'PICKED_UP',
@@ -3771,7 +4016,11 @@ async function finalizeFoodPickupVerificationForRider(
     eventType: "picked_up",
     occurredAt: now,
     distance,
-    statusMessage: "Order Picked Up",
+    statusMessage: null,
+    metadata: {
+      actor_type: "rider",
+      actor_id: "GatiMitra App",
+    },
   });
 
   const full = await selectFoodOrderRowForRider(tx, row.id);
@@ -3792,6 +4041,7 @@ async function loadFoodOrderAwaitingPickupVerification(
       corePickupOtp: ordersCore.pickupOtp,
       foodPickupOtp: ordersFood.pickupOtp,
       foodStatus: ordersFood.orderStatus,
+      status: ordersCore.status,
     })
     .from(ordersCore)
     .innerJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
@@ -3800,7 +4050,7 @@ async function loadFoodOrderAwaitingPickupVerification(
         orderRefWhere(orderRef),
         eq(ordersCore.riderId, riderId),
         eq(ordersCore.orderType, "food"),
-        inArray(ordersCore.status, [...FOOD_REACH_STORE_CORE_STATUSES])
+        inArray(ordersCore.status, [...FOOD_REACH_STORE_CORE_STATUSES, "in_transit"])
       )
     )
     .limit(1);
@@ -3809,6 +4059,32 @@ async function loadFoodOrderAwaitingPickupVerification(
     throw Object.assign(new Error("Food order not ready for pickup verification"), {
       statusCode: 409,
     });
+  }
+
+  const activeAssignment = await loadActiveRiderAssignmentMilestones(
+    tx,
+    existing.id,
+    riderId
+  );
+  if (activeAssignment?.pickedUpAt) {
+    throw Object.assign(new Error("Food order already picked up"), { statusCode: 409 });
+  }
+
+  const coreSt = String(existing.status ?? "").trim();
+  if (
+    coreSt === "in_transit" &&
+    !(FOOD_REACH_STORE_CORE_STATUSES as readonly string[]).includes(coreSt)
+  ) {
+    const now = new Date();
+    await tx
+      .update(ordersCore)
+      .set({
+        status: "reached_store",
+        currentStatus: "RIDER_AT_PICKUP",
+        actualPickupTime: null,
+        updatedAt: now,
+      })
+      .where(and(eq(ordersCore.id, existing.id), eq(ordersCore.riderId, riderId)));
   }
 
   let pickupVerificationToken: string | null = null;
@@ -3857,8 +4133,10 @@ export async function markFoodPickupWithoutVerificationForRider(
   }
 
   const db = getDb();
+  let orderCorePk = 0;
   const updated = await db.transaction(async (tx) => {
     const existing = await loadFoodOrderAwaitingPickupVerification(tx, riderId, orderRef);
+    orderCorePk = existing.id;
 
     await assertRiderMilestoneGeoFence({
       riderId,
@@ -3878,7 +4156,8 @@ export async function markFoodPickupWithoutVerificationForRider(
     riderId,
     updated.orderId.trim()
   );
-  return { ...mapFoodRowWithStatus(updated), merchantFeedbackSubmitted };
+  const summary = await mapFoodRowForActiveRider(db, updated, riderId, orderCorePk);
+  return { ...summary, merchantFeedbackSubmitted };
 }
 
 async function verifyFoodPickupOtpForRider(
@@ -3899,8 +4178,10 @@ async function verifyFoodPickupOtpForRider(
     throw Object.assign(new Error("Enter the pickup OTP"), { statusCode: 400 });
   }
 
+  let orderCorePk = 0;
   const updated = await db.transaction(async (tx) => {
     const existing = await loadFoodOrderAwaitingPickupVerification(tx, riderId, orderRef);
+    orderCorePk = existing.id;
 
     await assertRiderMilestoneGeoFence({
       riderId,
@@ -3932,7 +4213,8 @@ async function verifyFoodPickupOtpForRider(
     .then(({ runLiveEtaForOrder }) => runLiveEtaForOrder(updated.orderId.trim(), "RIDER_PICKED_UP"))
     .catch(() => undefined);
 
-  return { ...mapFoodRowWithStatus(updated), merchantFeedbackSubmitted };
+  const summary = await mapFoodRowForActiveRider(db, updated, riderId, orderCorePk);
+  return { ...summary, merchantFeedbackSubmitted };
 }
 
 export async function verifyFoodPickupBarcodeForRider(
@@ -3953,8 +4235,10 @@ export async function verifyFoodPickupBarcodeForRider(
     throw Object.assign(new Error("Scan a valid barcode or QR code"), { statusCode: 400 });
   }
 
+  let orderCorePk = 0;
   const updated = await db.transaction(async (tx) => {
     const existing = await loadFoodOrderAwaitingPickupVerification(tx, riderId, orderRef);
+    orderCorePk = existing.id;
 
     await assertRiderMilestoneGeoFence({
       riderId,
@@ -3989,7 +4273,8 @@ export async function verifyFoodPickupBarcodeForRider(
     riderId,
     updated.orderId.trim()
   );
-  return { ...mapFoodRowWithStatus(updated), merchantFeedbackSubmitted };
+  const summary = await mapFoodRowForActiveRider(db, updated, riderId, orderCorePk);
+  return { ...summary, merchantFeedbackSubmitted };
 }
 
 async function markReachedFoodCustomerForRider(
@@ -4103,7 +4388,7 @@ async function markReachedFoodCustomerForRider(
       .limit(1);
 
     if (!full?.orderId) throw new Error("Food order missing after reach customer");
-    return mapFoodRowWithStatus(full);
+    return mapFoodRowForActiveRider(tx, full, riderId, row.id);
   });
 
   return updated;
@@ -4521,7 +4806,8 @@ async function verifyFoodDeliveryOtpForRider(
       .limit(1);
 
     if (!full?.orderId) throw new Error("Food order missing after delivery");
-    return { summary: mapFoodRowWithStatus(full), orderIdText: existing.orderId.trim() };
+    const summary = await mapFoodRowForActiveRider(tx, full, riderId, row.id);
+    return { summary, orderIdText: existing.orderId.trim() };
   });
 
   if (savedCorePk > 0) {
@@ -4923,11 +5209,32 @@ const RIDER_UNASSIGNABLE_STATUSES = new Set([
   PERSON_RIDE_AT_USER_STATUS,
 ]);
 
+async function applySelfCancelPenaltyForRider(args: {
+  riderId: number;
+  orderCoreId: number;
+  orderType: "food" | "person_ride";
+  reasonCode: string;
+}): Promise<{ penaltyApplied: boolean; penaltyAmount: number }> {
+  const { applyRiderAppCancellationPenalty } = await import(
+    "../../lib/rider-cancellation-penalty.service.js"
+  );
+  const penalty = await applyRiderAppCancellationPenalty({
+    riderId: args.riderId,
+    orderCoreId: args.orderCoreId,
+    orderType: args.orderType,
+    reasonCode: args.reasonCode,
+  });
+  return {
+    penaltyApplied: Boolean(penalty.applied),
+    penaltyAmount: penalty.amount ?? 0,
+  };
+}
+
 export async function cancelAssignedRideForRider(
   riderId: number,
   orderRef: string,
   input: { reasonCode: string; reasonText?: string | null }
-): Promise<{ ok: true }> {
+): Promise<{ ok: true; penaltyApplied?: boolean; penaltyAmount?: number }> {
   const db = getDb();
   const now = new Date();
   const reasonCode = input.reasonCode?.trim();
@@ -4967,13 +5274,24 @@ export async function cancelAssignedRideForRider(
     const orderIdText = existing.orderId.trim();
     const reasonText = input.reasonText?.trim() || null;
 
+    return { orderCoreId: existing.id, orderIdText, reasonText, status: st, currentStatus: existing.currentStatus };
+  });
+
+  const penalty = await applySelfCancelPenaltyForRider({
+    riderId,
+    orderCoreId: cancelled.orderCoreId,
+    orderType: "person_ride",
+    reasonCode,
+  });
+
+  await db.transaction(async (tx) => {
     await recordRideRiderUnassign(tx, {
-      orderCorePk: existing.id,
-      orderIdText,
+      orderCorePk: cancelled.orderCoreId,
+      orderIdText: cancelled.orderIdText,
       riderId,
       reasonCode,
-      reasonText,
-      coreStatusBefore: String(existing.currentStatus ?? st),
+      reasonText: cancelled.reasonText,
+      coreStatusBefore: String(cancelled.currentStatus ?? cancelled.status),
       occurredAt: now,
     });
 
@@ -4985,7 +5303,7 @@ export async function cancelAssignedRideForRider(
         currentStatus: "SEARCHING_RIDER",
         updatedAt: now,
       })
-      .where(and(eq(ordersCore.id, existing.id), eq(ordersCore.riderId, riderId)));
+      .where(and(eq(ordersCore.id, cancelled.orderCoreId), eq(ordersCore.riderId, riderId)));
 
     await tx
       .update(ordersRide)
@@ -4995,25 +5313,25 @@ export async function cancelAssignedRideForRider(
         riderReachedPickupAt: null,
         updatedAt: now,
       })
-      .where(eq(ordersRide.orderId, existing.id));
+      .where(eq(ordersRide.orderId, cancelled.orderCoreId));
 
     await appendOrderTimeline(tx, {
-      orderCorePk: existing.id,
+      orderCorePk: cancelled.orderCoreId,
       status: "SEARCHING_RIDER",
-      previousStatus: String(existing.currentStatus ?? st.toUpperCase()),
+      previousStatus: String(cancelled.currentStatus ?? cancelled.status).toUpperCase(),
       actorType: "rider",
       actorId: riderId,
-      statusMessage: reasonText ?? reasonCode,
+      statusMessage: cancelled.reasonText ?? reasonCode,
       occurredAt: now,
       metadata: {
         riderUnassign: true,
         reasonCode,
-        reasonText,
+        reasonText: cancelled.reasonText,
         serviceType: "person_ride",
+        penaltyApplied: penalty.penaltyApplied,
+        penaltyAmount: penalty.penaltyAmount,
       },
     });
-
-    return { orderCoreId: existing.id, orderIdText, reasonText };
   });
 
   await recordRiderDispatchExclusion({
@@ -5049,14 +5367,18 @@ export async function cancelAssignedRideForRider(
   const { restartOrderDispatch } = await import("../../lib/order-dispatch.service.js");
   void restartOrderDispatch(cancelled.orderCoreId);
 
-  return { ok: true };
+  return {
+    ok: true as const,
+    penaltyApplied: penalty.penaltyApplied,
+    penaltyAmount: penalty.penaltyAmount,
+  };
 }
 
 export async function cancelAssignedFoodForRider(
   riderId: number,
   orderRef: string,
   input: { reasonCode: string; reasonText?: string | null }
-): Promise<{ ok: true }> {
+): Promise<{ ok: true; penaltyApplied?: boolean; penaltyAmount?: number }> {
   const db = getDb();
   const reasonCode = input.reasonCode?.trim();
   if (!reasonCode) {
@@ -5093,6 +5415,13 @@ export async function cancelAssignedFoodForRider(
     });
   }
 
+  const penalty = await applySelfCancelPenaltyForRider({
+    riderId,
+    orderCoreId: existing.id,
+    orderType: "food",
+    reasonCode,
+  });
+
   const { unassignFoodRiderAndRestartDispatch } = await import(
     "../../lib/food-rider-unassign.service.js"
   );
@@ -5108,14 +5437,18 @@ export async function cancelAssignedFoodForRider(
     actorId: String(riderId),
   });
 
-  return { ok: true };
+  return {
+    ok: true as const,
+    penaltyApplied: penalty.penaltyApplied,
+    penaltyAmount: penalty.penaltyAmount,
+  };
 }
 
 export async function cancelAssignedOrderForRider(
   riderId: number,
   orderRef: string,
   input: { reasonCode: string; reasonText?: string | null }
-): Promise<{ ok: true }> {
+): Promise<{ ok: true; penaltyApplied?: boolean; penaltyAmount?: number }> {
   const db = getDb();
   const [existing] = await db
     .select({ orderType: ordersCore.orderType })
@@ -5227,12 +5560,14 @@ async function loadRiderMerchantFeedbackSubmitted(
         ) AS submitted
       FROM order_rider_assignments ora
       INNER JOIN orders_core oc ON oc.id = ora.order_core_id
+      LEFT JOIN orders_food f ON f.order_id = oc.id
       WHERE ora.rider_id = ${riderId}
-        AND ora.is_active = TRUE
         AND (
           oc.order_id = ${orderRefText}
           OR oc.formatted_order_id = ${orderRefText}
           OR oc.id = ${coreIdMatch}
+          OR f.formatted_order_id = ${orderRefText}
+          OR f.core_order_id = ${orderRefText}
         )
       ORDER BY ora.id DESC
       LIMIT 1
@@ -5319,7 +5654,22 @@ export async function submitRiderMerchantPickupFeedback(
 
   const feedbackAt = skipped ? sql`NULL` : sql`${now.toISOString()}::timestamptz`;
 
-  const updateResult = await db.execute<{ id: number }>(sql`
+  const assignmentRow = await db.execute<{ id: number }>(sql`
+    SELECT id
+    FROM order_rider_assignments
+    WHERE order_core_id = ${meta.coreId}
+      AND rider_id = ${riderId}
+    ORDER BY is_active DESC, id DESC
+    LIMIT 1
+  `);
+  const assignmentId = Number((assignmentRow as { id: number }[])[0]?.id ?? 0);
+  if (!assignmentId) {
+    throw Object.assign(new Error("No rider assignment found for this order"), {
+      statusCode: 404,
+    });
+  }
+
+  await db.execute(sql`
     UPDATE order_rider_assignments
     SET
       rider_merchant_rating = ${skipped ? null : rating},
@@ -5334,17 +5684,8 @@ export async function submitRiderMerchantPickupFeedback(
       rider_merchant_feedback_at = ${feedbackAt},
       rider_merchant_feedback_skipped = ${skipped},
       updated_at = ${now.toISOString()}::timestamptz
-    WHERE order_core_id = ${meta.coreId}
-      AND rider_id = ${riderId}
-      AND is_active = TRUE
-    RETURNING id
+    WHERE id = ${assignmentId}
   `);
-
-  if (!(updateResult as { id: number }[])[0]?.id) {
-    throw Object.assign(new Error("No active rider assignment found for this order"), {
-      statusCode: 404,
-    });
-  }
 
   return getFoodOrderForRider(riderId, orderRef);
 }

@@ -14,7 +14,6 @@ import {
   boundsFromPoints,
   navigationEdgePadding,
 } from "@/src/lib/navigation-camera-fit";
-import { MapboxUnavailablePanel } from "@/src/components/maps/MapboxUnavailablePanel";
 import { resolveMapboxPublicToken } from "@/src/lib/mapbox-env";
 import {
   lineStringGeoJson,
@@ -542,19 +541,11 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
       : "";
 
     if (!resolveMapboxPublicToken()) {
-      return (
-        <View style={[styles.container, style]}>
-          <MapboxUnavailablePanel context="navigation" missingToken />
-        </View>
-      );
+      return <View style={[styles.container, styles.mapPlaceholder, style]} />;
     }
 
     if (!Mapbox) {
-      return (
-        <View style={[styles.container, style]}>
-          <MapboxUnavailablePanel context="navigation" needsDevBuild />
-        </View>
-      );
+      return <View style={[styles.container, styles.mapPlaceholder, style]} />;
     }
 
     const RiderMarker = Mapbox.MarkerView ?? null;
@@ -807,6 +798,9 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     zIndex: 1,
     elevation: 0,
+  },
+  mapPlaceholder: {
+    backgroundColor: "#E8F4F1",
   },
   map: {
     flex: 1,

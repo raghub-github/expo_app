@@ -140,8 +140,8 @@ export async function cancelRideOrder(
 
 export async function markRideSearchWindowEnded(
   orderId: string
-): Promise<{ orderId: string; awaitingTipBoost: boolean }> {
-  const { data } = await api.post<{ orderId: string; awaitingTipBoost: boolean }>(
+): Promise<{ orderId: string; awaitingTipBoost: boolean; searchExpiresAt: string }> {
+  const { data } = await api.post<{ orderId: string; awaitingTipBoost: boolean; searchExpiresAt: string }>(
     `${RIDES_PREFIX}/${orderId}/search-window-ended`,
     {}
   );

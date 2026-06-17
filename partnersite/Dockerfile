@@ -69,7 +69,7 @@ FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
-    PORT=3002 \
+    PORT=3000 \
     HOSTNAME=0.0.0.0
 
 RUN apk add --no-cache wget \
@@ -91,9 +91,9 @@ COPY --from=builder --chown=nextjs:nodejs /repo/partnersite/public              
 COPY --from=builder --chown=nextjs:nodejs /repo/partnersite/.next/static           ./partnersite/.next/static
 
 USER nextjs
-EXPOSE 3002
+EXPOSE 3000
 
 HEALTHCHECK --interval=20s --timeout=4s --start-period=15s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:3002/api/health || exit 1
+  CMD wget -qO- http://127.0.0.1:3000/api/health || exit 1
 
 CMD ["node", "partnersite/server.js"]

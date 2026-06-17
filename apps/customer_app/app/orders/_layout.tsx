@@ -19,7 +19,7 @@ export default function OrdersLayout() {
       <Stack.Screen name="raise-ticket" options={{ headerShown: false }} />
       <Stack.Screen name="support-ticket-submit" options={{ headerShown: false }} />
       <Stack.Screen name="payment-success" options={{ headerShown: false, gestureEnabled: false }} />
-      <Stack.Screen name="payment-failure" options={{ title: "Payment", headerBackTitle: "Back" }} />
+      <Stack.Screen name="payment-failure" options={{ headerShown: false, gestureEnabled: false }} />
     </Stack>
     </>
   );

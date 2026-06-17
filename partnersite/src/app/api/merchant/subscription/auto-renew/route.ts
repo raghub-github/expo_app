@@ -13,7 +13,7 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey, {
 /**
  * PATCH /api/merchant/subscription/auto-renew
  * Body: { storeId: string, autoRenew: boolean }
- * Updates auto-renew status for a subscription
+ * Updates auto-renew status for a subscription (wallet auto-pay on billing date).
  */
 export async function PATCH(req: NextRequest) {
   try {
@@ -45,7 +45,6 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    // Get store info
     const { data: store } = await supabase
       .from('merchant_stores')
       .select('id, parent_id')
@@ -56,56 +55,56 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Store not found' }, { status: 404 });
     }
 
-    // Get user ID for tracking who enabled/disabled auto-pay
-    const userId = user.id;
-
-    // Get current subscription to check next_billing_date
     const { data: currentSub } = await supabase
       .from('merchant_subscriptions')
-      .select('next_billing_date, auto_renew')
+      .select('id, next_billing_date, expiry_date, billing_end_at, auto_renew, subscription_status, is_active')
       .eq('merchant_id', store.parent_id)
       .eq('store_id', store.id)
-      .single();
+      .eq('subscription_status', 'ACTIVE')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
     if (!currentSub) {
       return NextResponse.json({ error: 'Subscription not found' }, { status: 404 });
     }
 
-    // Update subscription auto-renew with tracking
-    const updateData: any = {
+    const billingAnchor =
+      currentSub.next_billing_date ??
+      currentSub.billing_end_at ??
+      currentSub.expiry_date;
+
+    if (autoRenew && !billingAnchor) {
+      return NextResponse.json(
+        { error: 'Cannot enable auto-renew without billing date' },
+        { status: 400 }
+      );
+    }
+
+    const now = new Date().toISOString();
+    const updateData: Record<string, unknown> = {
       auto_renew: autoRenew,
-      updated_at: new Date().toISOString(),
+      updated_at: now,
     };
 
-    // Note: Auto-pay tracking fields will be added after migration runs
-    // For now, only update auto_renew flag
-    // TODO: Uncomment after running migration 0023_update_subscriptions_auto_pay.sql
-    /*
-    if (autoRenew && !currentSub.auto_renew) {
-      // Enabling auto-pay (was previously disabled)
-      updateData.auto_pay_enabled_at = new Date().toISOString();
-      updateData.auto_pay_enabled_by = userId;
-      updateData.auto_pay_disabled_at = null;
-      updateData.auto_pay_disabled_by = null;
-      // Set next auto-pay date to next billing date
-      if (currentSub.next_billing_date) {
-        updateData.next_auto_pay_date = currentSub.next_billing_date;
+    if (autoRenew) {
+      updateData.next_billing_date = billingAnchor;
+      updateData.next_auto_pay_date = billingAnchor;
+      if (!currentSub.auto_renew) {
+        updateData.auto_pay_enabled_at = now;
+        updateData.auto_pay_disabled_at = null;
+        updateData.auto_pay_disabled_by = null;
       }
-    } else if (!autoRenew && currentSub.auto_renew) {
-      // Disabling auto-pay (was previously enabled)
-      updateData.auto_pay_disabled_at = new Date().toISOString();
-      updateData.auto_pay_disabled_by = userId;
+    } else if (currentSub.auto_renew) {
       updateData.next_auto_pay_date = null;
+      updateData.auto_pay_disabled_at = now;
     }
-    */
 
-    const { data: subscription, error: updateError } = await supabase
+    const { error: updateError } = await supabase
       .from('merchant_subscriptions')
       .update(updateData)
-      .eq('merchant_id', store.parent_id)
-      .eq('store_id', store.id)
-      .select('id')
-      .single();
+      .eq('id', currentSub.id);
 
     if (updateError) {
       return NextResponse.json({ error: updateError.message }, { status: 500 });
@@ -114,6 +113,7 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({
       success: true,
       autoRenew,
+      nextBillingDate: billingAnchor,
       message: `Auto-renew ${autoRenew ? 'enabled' : 'disabled'}`,
     });
   } catch (e: unknown) {

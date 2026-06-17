@@ -67,7 +67,8 @@ export function useRiderSummaryQuery(
   const authReady = auth?.authReady ?? false;
   const sessionUser = auth?.user;
 
-  const isOnRidersRoute = pathname === "/dashboard/riders";
+  const isOnRidersRoute =
+    pathname === "/dashboard/riders" || pathname.startsWith("/dashboard/riders/");
   const enabled = isOnRidersRoute && riderId != null && riderId > 0 && Boolean(authReady && sessionUser);
 
   const SNAPSHOT_TTL_MS = 10_000;

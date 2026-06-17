@@ -36,6 +36,16 @@ export const en = {
     notificationsEarlier: "Earlier",
     selectLanguage: "Select Language",
     cancel: "Cancel",
+    serviceType: "Service type",
+    serviceAll: "All",
+    serviceFood: "Food",
+    serviceParcel: "Parcel",
+    servicePerson: "Person",
+    servicesSelected: "{{count}} Selected",
+    allSelected: "All Selected",
+    allServices: "All Services",
+    editServices: "Edit",
+    done: "Done",
   },
 
   language: {
@@ -91,7 +101,7 @@ export const en = {
       negative_limit: {
         title: "Wallet limit reached",
         subtitle:
-          "Balance {{walletBalance}} (max −{{negativeLimit}}). Pay {{totalDue}} to avoid order restrictions after {{incomeFreezeDays}} days without earnings.",
+          "Subscription balance {{subscriptionNegative}} (max −{{negativeLimit}}). Pay {{totalDue}} to avoid order restrictions after {{incomeFreezeDays}} days without earnings.",
       },
       dues_outstanding: {
         title: "Subscription fee pending",
@@ -411,6 +421,20 @@ export const en = {
       cxTagUnreachable: "Customer unreachable",
       notFound: "Order not found",
       adminCancelled: "Order cancelled by admin",
+    },
+    cancel: {
+      penaltyDebitedTitle: "Penalty applied",
+      penaltyDebitedMessage: "₹{{amount}} has been debited from your wallet as a penalty.",
+      penaltyHint: "This amount will be debited from your wallet as a penalty.",
+    },
+    adminCancelled: {
+      title: "Order Cancelled by Gatimitra Team",
+      orderId: "Order {{id}}",
+      message:
+        "This order is no longer active. You can accept new orders from the home screen.",
+      penaltyTitle: "Penalty applied",
+      penaltyHint: "This amount has been debited from your wallet as a penalty.",
+      goToOrders: "Go to orders",
     },
     deliverySuccess: {
       title: "Order Delivered!",

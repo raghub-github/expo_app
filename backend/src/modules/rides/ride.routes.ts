@@ -382,6 +382,7 @@ export async function rideRoutes(app: FastifyInstance) {
             200: z.object({
               orderId: z.string(),
               awaitingTipBoost: z.boolean(),
+              searchExpiresAt: z.string(),
             }),
             404: z.object({ error: z.string() }),
             403: z.object({ error: z.string() }),

@@ -117,6 +117,10 @@ function DashboardLayoutClientInner({
     ) {
       return;
     }
+    // Rider dashboard sub-pages: keep rider summary/context when switching tabs.
+    if (cleanPrev.startsWith("/dashboard/riders") && cleanNext.startsWith("/dashboard/riders")) {
+      return;
+    }
     // Order detail ↔ tickets: do not invalidate orders list or ticket caches on cross-nav.
     if (
       (cleanPrev.startsWith("/order") && cleanNext.startsWith("/dashboard/tickets")) ||
@@ -543,11 +547,6 @@ function DashboardLayoutContent({
     hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent) && !isTicketDetailPage;
 
   const showWorkspaceOverlay = isNavigating;
-  const navOverlayLeftClass = isTicketsQueueWorkspace
-    ? "left-0"
-    : isLeftSidebarOpen
-      ? "left-0 lg:left-56"
-      : "left-0 lg:left-16";
 
   const mainLgMarginLeft = isTicketsQueueWorkspace
     ? isRightSidebarOpen
@@ -588,11 +587,8 @@ function DashboardLayoutContent({
             <SyncSidebarsOnMobile />
             <div className="relative flex min-w-0 flex-1 min-h-0">
               <div
-                className={`flex flex-1 flex-col overflow-hidden w-full min-w-0 ${mainLgMarginLeft} ${mainLgMarginRight} ${
-                  showWorkspaceOverlay ? "pointer-events-none select-none" : ""
-                }`}
+                className={`flex flex-1 flex-col overflow-hidden w-full min-w-0 ${mainLgMarginLeft} ${mainLgMarginRight}`}
                 style={{ transition: "margin 0.3s ease-out" }}
-                aria-hidden={showWorkspaceOverlay}
               >
                 <Header />
                 <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden w-full">
@@ -608,15 +604,14 @@ function DashboardLayoutContent({
                     }`}
                   >
                     <div className="w-full max-w-full min-w-0 flex-1 flex flex-col min-h-0 relative">
-                      {showWorkspaceOverlay ? null : children}
+                      {children}
+                      <DashboardNavOverlay visible={showWorkspaceOverlay} scope="main" />
                     </div>
                   </main>
                 </div>
               </div>
 
-              <DashboardNavOverlay visible={showWorkspaceOverlay} leftOffsetClass={navOverlayLeftClass} />
-
-              {effectiveHasRightSidebar && !showWorkspaceOverlay && (
+              {effectiveHasRightSidebar && (
                 <RightSidebar
                   isOpen={isRightSidebarOpen}
                   onToggle={
@@ -637,7 +632,7 @@ function DashboardLayoutContent({
                 style={{ left: -10000, top: 0, width: 520, height: 520 }}
               />
 
-              {isTicketDetailPage && !showWorkspaceOverlay && (
+              {isTicketDetailPage && (
                 <div
                   className="fixed inset-y-0 z-50 overflow-hidden transition-[width] duration-300 ease-out"
                   style={{

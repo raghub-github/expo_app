@@ -21,6 +21,8 @@ export type CancellationReasonCatalogRow = {
   reasonCode: string;
   sortOrder: number;
   isActive: boolean;
+  channel: "web" | "app";
+  serviceType: string | null;
 };
 
 export type CancellationReasonCatalogGrouped = Record<
@@ -78,8 +80,10 @@ function attributesFromCatalogRows(
 
 export async function listCancellationReasonCatalog(args?: {
   activeOnly?: boolean;
+  channel?: "web" | "app";
 }): Promise<CancellationReasonCatalogRow[]> {
   const activeOnly = args?.activeOnly !== false;
+  const channel = args?.channel ?? "web";
   const sql = getSql();
   if (activeOnly) {
     return sql<CancellationReasonCatalogRow[]>`
@@ -89,9 +93,12 @@ export async function listCancellationReasonCatalog(args?: {
         label,
         reason_code AS "reasonCode",
         sort_order AS "sortOrder",
-        is_active AS "isActive"
+        is_active AS "isActive",
+        channel,
+        service_type AS "serviceType"
       FROM order_cancellation_reason_catalog
       WHERE is_active = true
+        AND channel = ${channel}
       ORDER BY attribute ASC, sort_order ASC, id ASC
     `;
   }
@@ -102,8 +109,11 @@ export async function listCancellationReasonCatalog(args?: {
       label,
       reason_code AS "reasonCode",
       sort_order AS "sortOrder",
-      is_active AS "isActive"
+      is_active AS "isActive",
+      channel,
+      service_type AS "serviceType"
     FROM order_cancellation_reason_catalog
+    WHERE channel = ${channel}
     ORDER BY attribute ASC, sort_order ASC, id ASC
   `;
 }
@@ -163,6 +173,7 @@ export async function listCancellationAttributes(args?: {
 
 export async function listCancellationReasonCatalogGrouped(args?: {
   activeOnly?: boolean;
+  channel?: "web" | "app";
 }): Promise<CancellationReasonCatalogGrouped> {
   const rows = await listCancellationReasonCatalog(args);
   const grouped: CancellationReasonCatalogGrouped = {};
@@ -175,6 +186,7 @@ export async function listCancellationReasonCatalogGrouped(args?: {
 
 export async function getCancellationCatalogPayload(args?: {
   activeOnly?: boolean;
+  channel?: "web" | "app";
 }): Promise<CancellationCatalogPayload> {
   let grouped: CancellationReasonCatalogGrouped = {};
   try {
@@ -324,19 +336,47 @@ export async function getCancellationReasonCatalogById(
   id: number
 ): Promise<CancellationReasonCatalogRow | null> {
   const sql = getSql();
-  const rows = await sql<CancellationReasonCatalogRow[]>`
-    SELECT
-      id,
-      attribute,
-      label,
-      reason_code AS "reasonCode",
-      sort_order AS "sortOrder",
-      is_active AS "isActive"
-    FROM order_cancellation_reason_catalog
-    WHERE id = ${id}
-    LIMIT 1
-  `;
-  return rows[0] ?? null;
+  try {
+    const rows = await sql<CancellationReasonCatalogRow[]>`
+      SELECT
+        id,
+        attribute,
+        label,
+        reason_code AS "reasonCode",
+        sort_order AS "sortOrder",
+        is_active AS "isActive",
+        channel,
+        service_type AS "serviceType"
+      FROM order_cancellation_reason_catalog
+      WHERE id = ${id}
+      LIMIT 1
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      ...row,
+      channel: (row.channel as "web" | "app") ?? "web",
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/column .*channel.* does not exist/i.test(msg)) throw e;
+    const rows = await sql<CancellationReasonCatalogRow[]>`
+      SELECT
+        id,
+        attribute,
+        label,
+        reason_code AS "reasonCode",
+        sort_order AS "sortOrder",
+        is_active AS "isActive",
+        'web'::text AS channel,
+        NULL::text AS "serviceType"
+      FROM order_cancellation_reason_catalog
+      WHERE id = ${id}
+      LIMIT 1
+    `;
+    const row = rows[0];
+    return row ? { ...row, channel: "web" as const } : null;
+  }
 }
 
 export function slugifyCancellationReasonCode(label: string): string {
@@ -354,15 +394,19 @@ export async function insertCancellationReasonCatalog(input: {
   reasonCode?: string;
   sortOrder?: number;
   isActive?: boolean;
+  channel?: "web" | "app";
+  serviceType?: string | null;
 }): Promise<CancellationReasonCatalogRow> {
   const attribute = input.attribute.trim().toUpperCase();
   await ensureCancellationAttribute(attribute);
 
   const db = getDb();
   const label = input.label.trim();
+  const channel = input.channel ?? "web";
+  const serviceType = input.serviceType?.trim() || null;
   const reasonCode =
     input.reasonCode?.trim() ||
-    `${attribute.toLowerCase()}__${slugifyCancellationReasonCode(label)}`;
+    `${channel}_${attribute.toLowerCase()}__${slugifyCancellationReasonCode(label)}`;
   const [row] = await db
     .insert(orderCancellationReasonCatalog)
     .values({
@@ -371,6 +415,8 @@ export async function insertCancellationReasonCatalog(input: {
       reasonCode,
       sortOrder: input.sortOrder ?? 0,
       isActive: input.isActive ?? true,
+      channel,
+      serviceType,
       updatedAt: new Date(),
     })
     .returning();
@@ -381,6 +427,8 @@ export async function insertCancellationReasonCatalog(input: {
     reasonCode: row.reasonCode,
     sortOrder: row.sortOrder,
     isActive: row.isActive,
+    channel: (row.channel as "web" | "app") ?? "web",
+    serviceType: row.serviceType ?? null,
   };
 }
 
@@ -392,6 +440,8 @@ export async function updateCancellationReasonCatalog(
     reasonCode?: string;
     sortOrder?: number;
     isActive?: boolean;
+    channel?: "web" | "app";
+    serviceType?: string | null;
   }
 ): Promise<CancellationReasonCatalogRow | null> {
   if (input.attribute != null) {
@@ -407,6 +457,8 @@ export async function updateCancellationReasonCatalog(
   if (input.reasonCode != null) patch.reasonCode = input.reasonCode.trim();
   if (input.sortOrder != null) patch.sortOrder = input.sortOrder;
   if (input.isActive != null) patch.isActive = input.isActive;
+  if (input.channel != null) patch.channel = input.channel;
+  if (input.serviceType !== undefined) patch.serviceType = input.serviceType?.trim() || null;
 
   const [row] = await db
     .update(orderCancellationReasonCatalog)
@@ -421,6 +473,8 @@ export async function updateCancellationReasonCatalog(
     reasonCode: row.reasonCode,
     sortOrder: row.sortOrder,
     isActive: row.isActive,
+    channel: (row.channel as "web" | "app") ?? "web",
+    serviceType: row.serviceType ?? null,
   };
 }
 
@@ -428,33 +482,98 @@ export async function resolveCancellationCatalogForOrder(args: {
   catalogReasonId?: number | null;
   attribute?: string | null;
   rejection?: string | null;
+  reasonCode?: string | null;
+  channel?: "web" | "app";
 }): Promise<CancellationReasonCatalogRow | null> {
+  const channel = args.channel ?? "web";
+
   if (args.catalogReasonId != null && Number.isFinite(args.catalogReasonId)) {
     const row = await getCancellationReasonCatalogById(args.catalogReasonId);
     if (!row?.isActive) return null;
-    if (args.attribute && row.attribute !== args.attribute.trim().toUpperCase()) {
-      return null;
-    }
-    if (args.rejection && row.label !== args.rejection.trim()) {
-      return null;
-    }
+    const rowChannel = row.channel ?? "web";
+    if (rowChannel !== channel) return null;
     return row;
   }
+
+  if (args.reasonCode?.trim()) {
+    const sql = getSql();
+    try {
+      const rows = await sql<CancellationReasonCatalogRow[]>`
+        SELECT
+          id,
+          attribute,
+          label,
+          reason_code AS "reasonCode",
+          sort_order AS "sortOrder",
+          is_active AS "isActive",
+          channel,
+          service_type AS "serviceType"
+        FROM order_cancellation_reason_catalog
+        WHERE reason_code = ${args.reasonCode.trim()}
+          AND is_active = true
+          AND channel = ${channel}
+        LIMIT 1
+      `;
+      if (rows[0]) return rows[0];
+    } catch {
+      /* channel column may be missing */
+    }
+    const legacyRows = await sql<CancellationReasonCatalogRow[]>`
+      SELECT
+        id,
+        attribute,
+        label,
+        reason_code AS "reasonCode",
+        sort_order AS "sortOrder",
+        is_active AS "isActive",
+        'web'::text AS channel,
+        NULL::text AS "serviceType"
+      FROM order_cancellation_reason_catalog
+      WHERE reason_code = ${args.reasonCode.trim()}
+        AND is_active = true
+      LIMIT 1
+    `;
+    if (legacyRows[0]) return { ...legacyRows[0], channel: "web" as const };
+  }
+
   if (!args.attribute?.trim() || !args.rejection?.trim()) return null;
   const sql = getSql();
-  const rows = await sql<CancellationReasonCatalogRow[]>`
-    SELECT
-      id,
-      attribute,
-      label,
-      reason_code AS "reasonCode",
-      sort_order AS "sortOrder",
-      is_active AS "isActive"
-    FROM order_cancellation_reason_catalog
-    WHERE attribute = ${args.attribute.trim().toUpperCase()}
-      AND label = ${args.rejection.trim()}
-      AND is_active = true
-    LIMIT 1
-  `;
-  return rows[0] ?? null;
+  try {
+    const rows = await sql<CancellationReasonCatalogRow[]>`
+      SELECT
+        id,
+        attribute,
+        label,
+        reason_code AS "reasonCode",
+        sort_order AS "sortOrder",
+        is_active AS "isActive",
+        channel,
+        service_type AS "serviceType"
+      FROM order_cancellation_reason_catalog
+      WHERE attribute = ${args.attribute.trim().toUpperCase()}
+        AND label = ${args.rejection.trim()}
+        AND is_active = true
+        AND channel = ${channel}
+      LIMIT 1
+    `;
+    return rows[0] ?? null;
+  } catch {
+    const rows = await sql<CancellationReasonCatalogRow[]>`
+      SELECT
+        id,
+        attribute,
+        label,
+        reason_code AS "reasonCode",
+        sort_order AS "sortOrder",
+        is_active AS "isActive",
+        'web'::text AS channel,
+        NULL::text AS "serviceType"
+      FROM order_cancellation_reason_catalog
+      WHERE attribute = ${args.attribute.trim().toUpperCase()}
+        AND label = ${args.rejection.trim()}
+        AND is_active = true
+      LIMIT 1
+    `;
+    return rows[0] ? { ...rows[0], channel: "web" as const } : null;
+  }
 }

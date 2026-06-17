@@ -14,8 +14,13 @@ import {
   orders,
   walletLedger,
 } from "@/lib/db/schema";
-import { eq, and, gte, lte, desc, sql } from "drizzle-orm";
+import { eq, and, gte, lte, lt, desc } from "drizzle-orm";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import {
+  aggregateDutyLoginByDayService,
+  buildDutySessions,
+  riderActivityDayKey,
+} from "@/lib/riders/aggregate-rider-duty-login";
 
 export const runtime = "nodejs";
 
@@ -120,6 +125,17 @@ export async function GET(
       process.env.USE_ORDERS_CORE === "1";
 
     // --- 1) Duty logs: build sessions (ON -> OFF) and aggregate by day + service
+    const [priorDutyRow] = await db
+      .select({
+        status: dutyLogs.status,
+        serviceTypes: dutyLogs.serviceTypes,
+        timestamp: dutyLogs.timestamp,
+      })
+      .from(dutyLogs)
+      .where(and(eq(dutyLogs.riderId, riderId), lt(dutyLogs.timestamp, fromDate)))
+      .orderBy(desc(dutyLogs.timestamp))
+      .limit(1);
+
     const dutyRows = await db
       .select({
         status: dutyLogs.status,
@@ -136,63 +152,10 @@ export async function GET(
       )
       .orderBy(dutyLogs.timestamp);
 
-    type Session = {
-      start: Date;
-      end: Date | null;
-      services: string[];
-    };
-    const sessions: Session[] = [];
-    let pendingOn: { timestamp: Date; services: string[] } | null = null;
+    const sessions = buildDutySessions(dutyRows, priorDutyRow);
+    const dayLogin = aggregateDutyLoginByDayService(sessions, fromDate, toDate, now);
 
-    for (const row of dutyRows) {
-      const services: string[] = Array.isArray(row.serviceTypes)
-        ? (row.serviceTypes as string[]).filter((s) =>
-            ["food", "parcel", "person_ride"].includes(String(s).toLowerCase())
-          )
-        : [];
-      const ts = row.timestamp instanceof Date ? row.timestamp : new Date(row.timestamp);
-
-      if (row.status === "ON") {
-        pendingOn = { timestamp: ts, services: services.length ? services : ["food", "parcel", "person_ride"] };
-      } else if (
-        (row.status === "OFF" || row.status === "AUTO_OFF") &&
-        pendingOn
-      ) {
-        sessions.push({
-          start: pendingOn.timestamp,
-          end: ts,
-          services: pendingOn.services,
-        });
-        pendingOn = null;
-      }
-    }
-
-    const dayLogin: Record<
-      string,
-      Record<string, { seconds: number; first: Date; last: Date }>
-    > = {};
-    const dayKey = (d: Date) =>
-      d.toISOString().slice(0, 10);
-
-    for (const s of sessions) {
-      const end = s.end || new Date();
-      const sec = Math.max(0, Math.floor((end.getTime() - s.start.getTime()) / 1000));
-      const startDay = dayKey(s.start);
-      for (const svc of s.services) {
-        const key = svc.toLowerCase();
-        if (key !== "food" && key !== "parcel" && key !== "person_ride") continue;
-        if (!dayLogin[startDay]) dayLogin[startDay] = {};
-        if (!dayLogin[startDay][key]) {
-          dayLogin[startDay][key] = { seconds: 0, first: s.start, last: end };
-        } else {
-          dayLogin[startDay][key].seconds += sec;
-          if (s.start < dayLogin[startDay][key].first)
-            dayLogin[startDay][key].first = s.start;
-          if (end > dayLogin[startDay][key].last)
-            dayLogin[startDay][key].last = end;
-        }
-      }
-    }
+    const dayKey = riderActivityDayKey;
 
     // --- 2) Orders: by date + service (orderType) — completed, cancelled, earnings
     const ordersTable = useOrdersCore ? ordersCore : orders;
@@ -202,22 +165,36 @@ export async function GET(
     const statusCol = (ordersTable as typeof ordersCore).status;
     const riderEarningCol = (ordersTable as typeof ordersCore).riderEarning;
 
-    const orderRows = await db
-      .select({
-        createdAt: createdAtCol,
-        orderType: orderTypeCol,
-        status: statusCol,
-        riderEarning: riderEarningCol,
-      })
-      .from(ordersTable)
-      .where(
-        and(
-          eq(riderIdCol, riderId),
-          gte(createdAtCol, fromDate),
-          lte(createdAtCol, toDate)
+    let orderRows: Array<{
+      createdAt: Date | string | null;
+      orderType?: string | null;
+      status?: string | null;
+      riderEarning?: string | number | null;
+    }> = [];
+
+    try {
+      orderRows = await db
+        .select({
+          createdAt: createdAtCol,
+          orderType: orderTypeCol,
+          status: statusCol,
+          riderEarning: riderEarningCol,
+        })
+        .from(ordersTable)
+        .where(
+          and(
+            eq(riderIdCol, riderId),
+            gte(createdAtCol, fromDate),
+            lte(createdAtCol, toDate)
+          )
         )
-      )
-      .orderBy(createdAtCol);
+        .orderBy(createdAtCol);
+    } catch (orderErr) {
+      console.warn(
+        "[GET /api/riders/[id]/activity-logs] Orders query failed:",
+        orderErr
+      );
+    }
 
     const dayOrders: Record<
       string,
@@ -227,6 +204,7 @@ export async function GET(
       >
     > = {};
     for (const row of orderRows) {
+      if (!row.createdAt) continue;
       const day = dayKey(
         row.createdAt instanceof Date ? row.createdAt : new Date(row.createdAt)
       );
@@ -272,6 +250,7 @@ export async function GET(
     const offerTypes = ["bonus", "referral_bonus"];
     const incentiveTypes = ["incentive", "surge"];
     for (const row of ledgerRows) {
+      if (!row.createdAt) continue;
       const day = dayKey(
         row.createdAt instanceof Date ? row.createdAt : new Date(row.createdAt)
       );
@@ -293,9 +272,6 @@ export async function GET(
     for (const d of Object.keys(dayLogin)) daysSet.add(d);
     for (const d of Object.keys(dayOrders)) daysSet.add(d);
     for (const d of Object.keys(dayLedger)) daysSet.add(d);
-    for (let t = fromDate.getTime(); t <= toDate.getTime(); t += 86400000) {
-      daysSet.add(dayKey(new Date(t)));
-    }
 
     const rows: Array<{
       date: string;
@@ -323,9 +299,9 @@ export async function GET(
         const ord = dayOrders[day]?.[svc];
         const led = dayLedger[day]?.[svc];
 
-        const totalLoginSeconds = login?.seconds ?? 0;
-        const firstLoginAt = login?.first?.toISOString() ?? null;
-        const lastLogoutAt = login?.last?.toISOString() ?? null;
+        const totalLoginSeconds = login?.totalLoginSeconds ?? 0;
+        const firstLoginAt = login?.firstLoginAt?.toISOString() ?? null;
+        const lastLogoutAt = login?.lastLogoutAt?.toISOString() ?? null;
         const ordersCompleted = ord?.completed ?? 0;
         const ordersCancelled = ord?.cancelled ?? 0;
         const earningsOrders = ord?.earningsOrders ?? 0;
@@ -353,10 +329,22 @@ export async function GET(
       return a.serviceType.localeCompare(b.serviceType);
     });
 
-    const total = rows.length;
-    const paginatedRows = rows.slice(offset, offset + limit);
+    const activityRows = rows.filter(
+      (r) =>
+        r.totalLoginSeconds > 0 ||
+        r.firstLoginAt != null ||
+        r.lastLogoutAt != null ||
+        r.ordersCompleted > 0 ||
+        r.ordersCancelled > 0 ||
+        r.earningsOrders > 0 ||
+        r.earningsOffers > 0 ||
+        r.earningsIncentives > 0
+    );
 
-    const totals = rows.reduce(
+    const total = activityRows.length;
+    const paginatedRows = activityRows.slice(offset, offset + limit);
+
+    const totals = activityRows.reduce(
       (acc, r) => ({
         loginSeconds: acc.loginSeconds + r.totalLoginSeconds,
         completed: acc.completed + r.ordersCompleted,

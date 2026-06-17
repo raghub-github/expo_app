@@ -117,7 +117,7 @@ export function PersonRideNavigateBottomSheet({
     ? "…"
     : formatNavSheetDistance(routeMeta.metersAway);
   const fullAddress = [locationAddress, locationLandmark].filter(Boolean).join(", ");
-  const showCancel = phase === "pickup" && !rideStarted;
+  const showCancel = !orderDelivered && !!onCancel;
 
   const showReachPickup =
     phase === "pickup" && !pickupOtpVerified && !rideStarted && !reachSliderDone;

@@ -5,6 +5,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { resolveOrderCancellationRefund } from "@/lib/order-cancellation-refund";
+import { applyMerchantOrderCancellationLedger } from "@/lib/orders/apply-merchant-cancellation-debit";
 
 export type OrderCancellationActorType =
   | "store"
@@ -117,6 +118,7 @@ export async function recordOrderCancellation(
         cancellation_details: details,
       })
       .eq("order_id", input.orderCorePk);
+    await syncMerchantCancellationLedger(input);
     return existingReasonId;
   }
 
@@ -212,5 +214,25 @@ export async function recordOrderCancellation(
       .eq("order_id", input.orderCorePk);
   }
 
+  await syncMerchantCancellationLedger(input);
   return cancellationReasonId;
+}
+
+async function syncMerchantCancellationLedger(input: RecordOrderCancellationInput): Promise<void> {
+  try {
+    const merchantDebit =
+      typeof input.metadata?.merchantDebit === "string"
+        ? input.metadata.merchantDebit
+        : typeof (input.metadata as { merchant_debit?: string } | undefined)?.merchant_debit === "string"
+          ? (input.metadata as { merchant_debit: string }).merchant_debit
+          : null;
+    await applyMerchantOrderCancellationLedger({
+      orderCoreId: input.orderCorePk,
+      merchantDebit,
+      actorSystemUserId: input.cancelledById ?? null,
+      source: "merchant_portal_cancel",
+    });
+  } catch (ledgerErr) {
+    console.warn("[recordOrderCancellation] merchant ledger failed:", ledgerErr);
+  }
 }

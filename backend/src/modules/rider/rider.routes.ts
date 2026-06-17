@@ -28,6 +28,18 @@ const RiderMeResponseSchema = z.object({
 });
 import { desc, eq, and, inArray, isNull, sql } from "drizzle-orm";
 import { ulid } from "ulid";
+
+function normalizeDutyServiceTypes(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((s) => String(s)).filter(Boolean);
+}
+
+function toDutyIsoTimestamp(value: Date | string | null | undefined): string {
+  if (value == null) return new Date().toISOString();
+  if (value instanceof Date) return value.toISOString();
+  const t = new Date(String(value)).getTime();
+  return Number.isFinite(t) ? new Date(t).toISOString() : new Date().toISOString();
+}
 import { auth } from "../../plugins/auth.js";
 import { getDb, getSql } from "../../db/client.js";
 import { deactivateRiderDeviceSessions } from "../../lib/rider-app-session.js";
@@ -36,8 +48,6 @@ import {
   riders,
   riderDocuments,
   riderDocumentFiles,
-  blacklistHistory,
-  dutyLogs,
   riderLogoutEvents,
   riderLiveLocations,
   riderLocationHistory,
@@ -45,6 +55,10 @@ import {
   ordersCore,
 } from "../../db/schema.js";
 import { RiderLogoutBodySchema } from "../../lib/rider-logout-reasons.js";
+import {
+  recordRiderDutyLog,
+  recordRiderDutyOffIfOnline,
+} from "../../lib/rider-duty-log.service.js";
 import { scoreLocationPing, type LocationPoint } from "./fraud.js";
 import { getR2SignedUrl, deleteFromR2, extractKeyFromSignedUrl } from "../../services/r2/r2Service.js";
 import { attachmentsProxyUrlFromKey } from "../../utils/attachments-proxy-url.js";
@@ -57,6 +71,8 @@ import { getEnv } from "../../config/env.js";
 import { finalizeMerchantOrderDelivered } from "../../lib/merchant-order-delivered-wallet.js";
 import { unassignFoodRiderAndRestartDispatch } from "../../lib/food-rider-unassign.service.js";
 import { registerRiderSubscriptionRoutes } from "./rider-subscription.routes.js";
+import { registerRiderPenaltyPaymentRoutes } from "./rider-penalty-payment.routes.js";
+import { listRiderAppCancellationReasons } from "../../lib/rider-cancellation-reason-catalog.js";
 import { speedMpsToKmh, upsertRiderLiveLocation } from "../../lib/rider-live-location.js";
 
 function parseRiderIdFromAuth(sub: string): number | null {
@@ -69,6 +85,7 @@ export async function riderRoutes(app: FastifyInstance) {
   await app.register(auth, { required: true });
 
   registerRiderSubscriptionRoutes(app);
+  registerRiderPenaltyPaymentRoutes(app);
 
   app.post(
     "/logout",
@@ -96,6 +113,12 @@ export async function riderRoutes(app: FastifyInstance) {
       const db = getDb();
       const sql = getSql();
       const deviceId = req.auth?.device_id ?? null;
+
+      await recordRiderDutyOffIfOnline(riderId, "logout", {
+        deviceId,
+        source: "rider_app",
+        metadata: { reasonCode: body.reasonCode },
+      });
 
       await db.insert(riderLogoutEvents).values({
         id: `rlogout_${ulid()}`,
@@ -791,6 +814,23 @@ export async function riderRoutes(app: FastifyInstance) {
       parcel: z.number(),
       ride: z.number(),
     }),
+    accountRestrictions: z.object({
+      accountRestricted: z.boolean(),
+      accountRestrictedReason: z.enum([
+        "none",
+        "service_blacklist",
+        "all_services_blacklist",
+        "blocked_status",
+      ]),
+      globalWalletBlock: z.boolean(),
+      blacklistBlockedServices: z.array(z.enum(["food", "parcel", "person_ride"])),
+      negativeWalletBlocks: z
+        .array(z.object({ serviceType: z.string(), reason: z.string() }))
+        .optional(),
+      allServicesBlacklisted: z.boolean(),
+      penaltyDue: z.number(),
+      penaltyDutyStopped: z.boolean(),
+    }),
   });
 
   app.get(
@@ -812,6 +852,15 @@ export async function riderRoutes(app: FastifyInstance) {
           thisMonth: 0,
           hasBankAccount: false,
           breakdown: { food: 0, parcel: 0, ride: 0 },
+          accountRestrictions: {
+            accountRestricted: false,
+            accountRestrictedReason: "none" as const,
+            globalWalletBlock: false,
+            blacklistBlockedServices: [],
+            allServicesBlacklisted: false,
+            penaltyDue: 0,
+            penaltyDutyStopped: false,
+          },
         };
       }
       const { riderWallet } = await import("../../db/schema.js");
@@ -827,10 +876,14 @@ export async function riderRoutes(app: FastifyInstance) {
       const { getRiderPeriodEarningsTotals, getRiderSubscriptionDebitedTotal } = await import(
         "../../lib/rider-wallet-ledger-app.js"
       );
-      const [hasBankAccount, periodTotals, subscriptionDebited] = await Promise.all([
+      const [hasBankAccount, periodTotals, subscriptionDebited, accountRestrictions] =
+        await Promise.all([
         safeRiderHasBankPaymentMethod(riderId),
         getRiderPeriodEarningsTotals(riderId),
         getRiderSubscriptionDebitedTotal(riderId),
+        import("../../lib/rider-account-restrictions.js").then((m) =>
+          m.getRiderAccountRestrictions(riderId)
+        ),
       ]);
       const total = wallet ? Number(wallet.totalBalance ?? 0) : 0;
       const food = wallet ? Number(wallet.earningsFood ?? 0) : 0;
@@ -839,12 +892,25 @@ export async function riderRoutes(app: FastifyInstance) {
       return {
         totalBalance: total,
         withdrawable: Math.max(0, total),
-        locked: 0,
+        locked: accountRestrictions.penaltyDue,
         subscriptionDebited,
         thisWeek: periodTotals.thisWeek,
         thisMonth: periodTotals.thisMonth,
         hasBankAccount,
         breakdown: { food, parcel, ride },
+        accountRestrictions: {
+          accountRestricted: accountRestrictions.accountRestricted,
+          accountRestrictedReason: accountRestrictions.accountRestrictedReason,
+          globalWalletBlock: accountRestrictions.globalWalletBlock,
+          blacklistBlockedServices: accountRestrictions.blacklistBlockedServices.filter(
+            (s): s is "food" | "parcel" | "person_ride" =>
+              s === "food" || s === "parcel" || s === "person_ride"
+          ),
+          negativeWalletBlocks: accountRestrictions.negativeWalletBlocks,
+          allServicesBlacklisted: accountRestrictions.allServicesBlacklisted,
+          penaltyDue: accountRestrictions.penaltyDue,
+          penaltyDutyStopped: accountRestrictions.penaltyDutyStopped,
+        },
       };
     },
   );
@@ -860,6 +926,7 @@ export async function riderRoutes(app: FastifyInstance) {
     ref: z.string().nullable(),
     refType: z.string().nullable(),
     serviceType: z.string().nullable(),
+    orderPublicId: z.string().nullable(),
     createdAt: z.string(),
   });
 
@@ -1038,6 +1105,8 @@ export async function riderRoutes(app: FastifyInstance) {
             isOnDuty: z.boolean(),
             allowedServiceTypes: z.array(z.string()),
             blockedServiceTypes: z.array(z.string()).optional(),
+            accountRestricted: z.boolean().optional(),
+            allServicesBlacklisted: z.boolean().optional(),
             lastUpdated: z.string(),
           }),
         },
@@ -1054,27 +1123,20 @@ export async function riderRoutes(app: FastifyInstance) {
         };
       }
       const riderId = parseInt(riderIdMatch[1]!, 10);
-      const db = getDb();
-      const [latest] = await db
-        .select({
-          status: dutyLogs.status,
-          serviceTypes: dutyLogs.serviceTypes,
-          timestamp: dutyLogs.timestamp,
-        })
-        .from(dutyLogs)
-        .where(eq(dutyLogs.riderId, riderId))
-        .orderBy(desc(dutyLogs.timestamp))
-        .limit(1);
-
-      const isOnDuty = latest?.status === "ON";
-      const allowedServiceTypes = isOnDuty
-        ? (latest?.serviceTypes ?? []).map((s) => String(s)).filter(Boolean)
-        : [];
+      const { syncRiderDutyWithRestrictions } = await import(
+        "../../lib/rider-account-restrictions.js"
+      );
+      const duty = await syncRiderDutyWithRestrictions(riderId);
 
       return {
-        isOnDuty,
-        allowedServiceTypes,
-        lastUpdated: (latest?.timestamp ?? new Date()).toISOString(),
+        isOnDuty: duty.isOnDuty,
+        allowedServiceTypes: duty.allowedServiceTypes,
+        blockedServiceTypes: duty.blockedServiceTypes.length
+          ? duty.blockedServiceTypes
+          : undefined,
+        accountRestricted: duty.accountRestricted,
+        allServicesBlacklisted: duty.allServicesBlacklisted,
+        lastUpdated: duty.lastUpdated,
       };
     }
   );
@@ -1087,6 +1149,9 @@ export async function riderRoutes(app: FastifyInstance) {
         body: z.object({
           isOnDuty: z.boolean(),
           serviceTypes: z.array(z.enum(["food", "parcel", "person_ride"])).optional(),
+          lat: z.number().optional(),
+          lon: z.number().optional(),
+          deviceId: z.string().optional(),
         }),
         response: {
           200: z.object({
@@ -1114,27 +1179,47 @@ export async function riderRoutes(app: FastifyInstance) {
         return reply.status(403).send({ error: "Rider not found" });
       }
 
-      if (rider.status === "BLOCKED") {
+      if (rider.status === "BLOCKED" || rider.status === "BANNED") {
         return reply.status(403).send({
-          error: "You cannot go online. Your account is blocked (permanent blacklist).",
+          error: "ACCOUNT_RESTRICTED",
+          message: "You cannot go online. Your account is restricted.",
         });
       }
 
-      const body = req.body as { isOnDuty: boolean; serviceTypes?: ("food" | "parcel" | "person_ride")[] };
+      const body = req.body as {
+        isOnDuty: boolean;
+        serviceTypes?: ("food" | "parcel" | "person_ride")[];
+        lat?: number;
+        lon?: number;
+        deviceId?: string;
+      };
       const isOnDuty = body.isOnDuty;
       const now = new Date();
+      const deviceId = body.deviceId ?? req.auth?.device_id ?? null;
 
       if (!isOnDuty) {
-        await db.insert(dutyLogs).values({
+        await recordRiderDutyLog({
           riderId,
           status: "OFF",
           serviceTypes: [],
+          source: "rider_app",
+          deviceId,
+          lat: body.lat ?? null,
+          lon: body.lon ?? null,
+          metadata: { trigger: "duty_toggle" },
         });
         return {
           isOnDuty: false,
           allowedServiceTypes: [],
           lastUpdated: now.toISOString(),
         };
+      }
+
+      if (!body.serviceTypes?.length) {
+        return reply.status(400).send({
+          error: "SERVICE_TYPES_REQUIRED",
+          message: "Select at least one service before going online.",
+        });
       }
 
       const { getRiderVehicleStatusForApp } = await import("../../lib/rider-vehicle-app.js");
@@ -1158,62 +1243,68 @@ export async function riderRoutes(app: FastifyInstance) {
         (s): s is "food" | "parcel" | "person_ride" =>
           s === "food" || s === "parcel" || s === "person_ride"
       );
-      const requestedServices =
-        body.serviceTypes?.length && body.serviceTypes.length > 0
-          ? body.serviceTypes.filter((s) => vehicleServices.includes(s))
-          : vehicleServices;
+      const requestedServices = body.serviceTypes.filter((s) => vehicleServices.includes(s));
 
       if (requestedServices.length === 0) {
+        return reply.status(400).send({
+          error: "NO_VALID_SERVICE_TYPES",
+          message: "None of the selected services are enabled for your vehicle.",
+        });
+      }
+
+      const { getRiderActiveVehicleProfile } = await import("../../lib/order-assignment-engine.js");
+      const { filterDispatchServicesForRiderProfile } = await import(
+        "../../lib/rider-dispatch-service-rules.js"
+      );
+      const vehicleProfile = await getRiderActiveVehicleProfile(riderId);
+      const dutyServices = filterDispatchServicesForRiderProfile(
+        requestedServices as ("food" | "parcel" | "person_ride")[],
+        vehicleProfile
+      );
+
+      if (dutyServices.length === 0) {
         return reply.status(403).send({
           error: "NO_VEHICLE_SERVICES",
           message: "Your vehicle is not enabled for any dispatch services.",
         });
       }
 
-      const blacklistEntries = await db
-        .select()
-        .from(blacklistHistory)
-        .where(and(eq(blacklistHistory.riderId, riderId), eq(blacklistHistory.banned, true)))
-        .orderBy(desc(blacklistHistory.createdAt));
-
-      const norm = (s: string) => {
-        const x = (s || "").toLowerCase();
-        return x === "ride" ? "person_ride" : x;
-      };
-      const isActiveBan = (entry: { isPermanent: boolean; expiresAt: Date | null }) =>
-        entry.isPermanent || !entry.expiresAt || new Date(entry.expiresAt) > now;
-
-      const getEffectiveForSlot = (slots: string[]) => {
-        const candidate = blacklistEntries.find((e) =>
-          slots.includes(norm((e.serviceType as string) || "all"))
-        );
-        if (!candidate) return null;
-        return isActiveBan(candidate) ? candidate : null;
-      };
-
-      const allBanned = getEffectiveForSlot(["all"]) != null;
-      const foodBanned = allBanned || getEffectiveForSlot(["food", "all"]) != null;
-      const parcelBanned = allBanned || getEffectiveForSlot(["parcel", "all"]) != null;
-      const personRideBanned = allBanned || getEffectiveForSlot(["person_ride", "all"]) != null;
+      const { getRiderDispatchBlockSnapshot, isDispatchServiceBlocked } = await import(
+        "../../lib/rider-account-restrictions.js"
+      );
+      const restrictionSnapshot = await getRiderDispatchBlockSnapshot(riderId);
 
       const allowed: string[] = [];
       const blocked: string[] = [];
-      if (requestedServices.includes("food")) (foodBanned ? blocked : allowed).push("food");
-      if (requestedServices.includes("parcel")) (parcelBanned ? blocked : allowed).push("parcel");
-      if (requestedServices.includes("person_ride")) (personRideBanned ? blocked : allowed).push("person_ride");
+      for (const service of dutyServices) {
+        if (isDispatchServiceBlocked(service, restrictionSnapshot)) {
+          blocked.push(service);
+        } else {
+          allowed.push(service);
+        }
+      }
 
       if (allowed.length === 0) {
         return reply.status(403).send({
           error: "ALL_SERVICES_BLOCKED",
-          message: "You cannot go online — all requested services are blocked.",
+          message: "You cannot go online — all requested services are restricted.",
           blockedServiceTypes: blocked,
         });
       }
 
-      await db.insert(dutyLogs).values({
+      await recordRiderDutyLog({
         riderId,
         status: "ON",
-        serviceTypes: allowed,
+        serviceTypes: allowed as ("food" | "parcel" | "person_ride")[],
+        source: "rider_app",
+        deviceId,
+        lat: body.lat ?? null,
+        lon: body.lon ?? null,
+        metadata: {
+          trigger: "duty_toggle",
+          requestedServices: dutyServices,
+          blockedServices: blocked,
+        },
       });
 
       return {
@@ -1862,6 +1953,8 @@ export async function riderRoutes(app: FastifyInstance) {
   walletCreditPending: z.boolean().optional(),
   customerRating: z.number().nullable().optional(),
   passengerRating: z.number().nullable().optional(),
+  cancellationPenaltyApplied: z.boolean().optional(),
+  cancellationPenaltyAmount: z.number().nullable().optional(),
 });
 
   app.get(
@@ -2824,17 +2917,125 @@ export async function riderRoutes(app: FastifyInstance) {
     }
   );
 
+  app.get(
+    "/orders/:id/cancellation-penalty-preview",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        querystring: z.object({
+          reasonCode: z.string().min(1).max(120),
+        }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            appliesPenalty: z.boolean(),
+            penaltyAmount: z.coerce.number(),
+            ledgerTitle: z.string(),
+            ledgerDescription: z.string(),
+            scenarioCode: z.string().nullable(),
+            catalogReasonId: z.coerce.number().nullable(),
+            reasonLabel: z.string().nullable(),
+            skipped: z.string().optional(),
+          }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      const qs = req.query as { reasonCode?: string };
+      const reasonCode = qs.reasonCode?.trim() ?? "";
+      if (!reasonCode) {
+        return reply.status(400).send({ error: "reasonCode is required" });
+      }
+      const { previewRiderAppCancellationPenalty } = await import(
+        "../../lib/rider-cancellation-penalty.service.js"
+      );
+      try {
+        const preview = await previewRiderAppCancellationPenalty({
+          riderId,
+          orderRef: id,
+          reasonCode,
+        });
+        return { ok: true as const, ...preview };
+      } catch (e) {
+        req.log.error(e, "cancellation-penalty-preview failed");
+        return {
+          ok: true as const,
+          appliesPenalty: false,
+          penaltyAmount: 0,
+          ledgerTitle: "",
+          ledgerDescription: "",
+          scenarioCode: null,
+          catalogReasonId: null,
+          reasonLabel: null,
+          skipped: "preview_failed",
+        };
+      }
+    }
+  );
+
+  app.get(
+    "/cancellation-reasons",
+    {
+      schema: {
+        querystring: z.object({
+          serviceType: z.enum(["food", "person_ride", "parcel", "ride"]).optional(),
+          attribute: z.string().max(32).optional(),
+        }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            reasons: z.array(
+              z.object({
+                id: z.coerce.number(),
+                attribute: z.string(),
+                label: z.string(),
+                reasonCode: z.string(),
+                sortOrder: z.coerce.number(),
+                serviceType: z.string().nullable(),
+              })
+            ),
+          }),
+          403: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const qs = req.query as { serviceType?: string; attribute?: string };
+      const attribute = qs.attribute?.trim().toUpperCase() || "RIDER";
+      const rows = await listRiderAppCancellationReasons({
+        serviceType: qs.serviceType,
+      });
+      const reasons = rows.filter((r) => r.attribute === attribute);
+      return { ok: true as const, reasons };
+    }
+  );
+
   app.post(
     "/orders/:id/cancel-assigned",
     {
       schema: {
         params: z.object({ id: z.string().min(1) }),
         body: z.object({
-          reasonCode: z.string().min(1).max(64),
+          reasonCode: z.string().min(1).max(120),
           reasonText: z.string().max(500).optional(),
         }),
         response: {
-          200: z.object({ ok: z.literal(true) }),
+          200: z.object({
+            ok: z.literal(true),
+            penaltyApplied: z.boolean().optional(),
+            penaltyAmount: z.number().optional(),
+          }),
           403: z.object({ error: z.string() }),
           404: z.object({ error: z.string() }),
           409: z.object({ error: z.string() }),

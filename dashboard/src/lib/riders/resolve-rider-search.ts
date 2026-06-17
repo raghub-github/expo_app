@@ -14,3 +14,22 @@ export function riderSearchNeedsSupabaseResolve(value: string): boolean {
   if (!trimmed) return false;
   return parseNumericRiderIdFromSearch(trimmed) == null;
 }
+
+function normalizeRiderSearchPhone(value: string): string {
+  return value.replace(/^\+?91/, "").replace(/\D/g, "");
+}
+
+/** True when URL search already matches a rider loaded in dashboard context. */
+export function riderSearchMatchesLoadedRider(
+  search: string,
+  rider: { id: number; mobile: string }
+): boolean {
+  const trimmed = search.trim();
+  if (!trimmed) return false;
+  const parsedId = parseNumericRiderIdFromSearch(trimmed);
+  if (parsedId != null) return rider.id === parsedId;
+  const needle = normalizeRiderSearchPhone(trimmed);
+  if (!needle) return false;
+  const mobile = normalizeRiderSearchPhone(rider.mobile);
+  return mobile === needle || mobile.endsWith(needle);
+}

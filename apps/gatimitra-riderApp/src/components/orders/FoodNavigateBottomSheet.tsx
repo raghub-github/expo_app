@@ -187,7 +187,7 @@ export function FoodNavigateBottomSheet({
   const prepOrder = foodPrepCountdownFromOrder(order);
   const prepDelayed = isFoodPrepDelayed(prepOrder, nowMs, merchantReady);
   const overdueSec = prepDelayed ? prepOverdueSeconds(prepOrder, nowMs) : 0;
-  const showCancel = phase === "pickup" && !rideStarted && !orderDelivered && !!onCancel;
+  const showCancel = !orderDelivered && !!onCancel;
 
   const showReachStore =
     phase === "pickup" && !pickupConfirmed && !rideStarted && !reachSliderDone;
@@ -318,10 +318,31 @@ export function FoodNavigateBottomSheet({
         <View style={styles.detailsBody}>
           {phase === "drop" ? (
             <>
-              <View style={styles.dropBadge}>
-                <Text style={styles.dropBadgeText}>
-                  {t("orders.activeFood.dropBadge", "DROP")}
-                </Text>
+              <View style={styles.dropHeaderRow}>
+                <View style={styles.dropBadge}>
+                  <Text style={styles.dropBadgeText}>
+                    {t("orders.activeFood.dropBadge", "DROP")}
+                  </Text>
+                </View>
+                {showCancel ? (
+                  <Pressable
+                    onPress={onCancel}
+                    disabled={cancelLoading}
+                    style={({ pressed }) => [
+                      styles.cancelTopBtn,
+                      pressed && styles.cancelTopBtnPressed,
+                    ]}
+                    hitSlop={6}
+                  >
+                    {cancelLoading ? (
+                      <ActivityIndicator size="small" color={colors.error[600]} />
+                    ) : (
+                      <Text style={styles.cancelTopBtnText}>
+                        {t("orders.activeRide.cancelShort", "Cancel")}
+                      </Text>
+                    )}
+                  </Pressable>
+                ) : null}
               </View>
 
               <Text style={styles.locationName} numberOfLines={2}>
@@ -731,13 +752,18 @@ const styles = StyleSheet.create({
   locationAddressLast: {
     marginBottom: 8,
   },
+  dropHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
   dropBadge: {
     alignSelf: "flex-start",
     backgroundColor: NAV_SHEET_PHASE_BADGE_DROP_BG,
     borderRadius: 3,
     paddingHorizontal: 7,
     paddingVertical: 2,
-    marginBottom: 8,
   },
   dropBadgeText: {
     fontSize: 10,

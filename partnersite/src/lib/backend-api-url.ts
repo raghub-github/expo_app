@@ -3,6 +3,7 @@ import {
   PARTNERSITE_DEV_PORT,
   normalizeDevBackendUrl,
   readBackendEnvRaw,
+  resolveBackendApiBaseUrlCandidates,
 } from '../../lib/dev-backend-url';
 
 function normalizeBaseUrl(raw: string): string {
@@ -45,4 +46,9 @@ export function resolveBackendApiBaseUrl(): string | null {
   }
 
   return normalizeBaseUrl(trimmed);
+}
+
+/** All backend base URLs to try for server-side fetch (primary first). */
+export function resolveBackendApiBaseUrlList(): string[] {
+  return resolveBackendApiBaseUrlCandidates();
 }

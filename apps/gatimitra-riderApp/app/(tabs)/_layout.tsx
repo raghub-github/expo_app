@@ -8,6 +8,8 @@ import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '@/src/stores/sessionStore';
 import { useOnboardingGate } from '@/src/hooks/useOnboardingGate';
 import { prefetchEarningsSummary } from '@/src/hooks/useEarnings';
+import { RIDER_DUTY_STATUS_QUERY_KEY } from '@/src/hooks/useDutyStatus';
+import { riderApi } from '@/src/services/api/riderApi';
 import { prefetchRiderBankPaymentMethod } from '@/src/hooks/useRiderBankAccount';
 import { prefetchRiderSubscriptionStatus } from '@/src/hooks/useRiderSubscription';
 import { prefetchLedger } from '@/src/hooks/useLedger';
@@ -46,6 +48,11 @@ export default function TabLayout() {
   useEffect(() => {
     if (!session || !canAccessTabs) return;
     void prefetchEarningsSummary(queryClient);
+    void queryClient.prefetchQuery({
+      queryKey: RIDER_DUTY_STATUS_QUERY_KEY,
+      queryFn: () => riderApi.getDutyStatus(),
+      staleTime: 30_000,
+    });
     void prefetchRiderBankPaymentMethod(queryClient);
     void prefetchRiderSubscriptionStatus(queryClient, session.accessToken);
     void prefetchLedger(queryClient);

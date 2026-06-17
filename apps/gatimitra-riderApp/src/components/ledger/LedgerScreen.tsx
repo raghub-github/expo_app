@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -10,7 +10,9 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
+import { useFocusEffect } from "@react-navigation/native";
 import { useLedger } from "@/src/hooks/useLedger";
+import { useEarningsSummary } from "@/src/hooks/useEarnings";
 import type { RiderLedgerPeriod, RiderLedgerSegment } from "@/src/services/api/riderApi";
 import { LedgerFilterPills } from "@/src/components/ledger/LedgerFilterPills";
 import { LedgerEmptyState } from "@/src/components/ledger/LedgerEmptyState";
@@ -44,6 +46,15 @@ export function LedgerScreen() {
     hasNextPage,
     isFetchingNextPage,
   } = useLedger({ segment: selectedSegment, period, limit: 50 });
+
+  const { data: earnings, refetch: refetchEarnings } = useEarningsSummary();
+  const walletBalance = earnings?.totalBalance ?? 0;
+
+  useFocusEffect(
+    useCallback(() => {
+      void refetchEarnings();
+    }, [refetchEarnings]),
+  );
 
   const entries = useMemo(
     () => data?.pages.flatMap((page) => page.entries) ?? [],
@@ -100,7 +111,11 @@ export function LedgerScreen() {
           />
         </View>
 
-        <LedgerMonthlySummaryCard summary={summary} onViewMonthlySummary={cyclePeriod} />
+        <LedgerMonthlySummaryCard
+          summary={summary}
+          walletBalance={walletBalance}
+          onViewMonthlySummary={cyclePeriod}
+        />
 
         {showInitialLoading ? (
           <View style={styles.centerBlock}>

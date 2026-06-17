@@ -12,6 +12,24 @@ const RECONNECT_BASE_MS = 3_000;
 const RECONNECT_MAX_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const STALE_CONNECTION_MS = 75_000;
+const GATEWAY_DOWN_LOG_COOLDOWN_MS = 120_000;
+
+/** ws://host:4100 → http://host:4100/healthz */
+function wsOriginToHealthUrl(wsOrigin: string): string {
+  return `${wsOrigin.replace(/^ws(s)?:/i, "http$1:").replace(/\/+$/, "")}/healthz`;
+}
+
+async function isWsGatewayReachable(wsOrigin: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4_000);
+    const res = await fetch(wsOriginToHealthUrl(wsOrigin), { signal: controller.signal });
+    clearTimeout(timeout);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 
 function parseRiderIdFromSession(userId: string | undefined): string | null {
   const m = userId?.match(/usr_(\d+)/);
@@ -35,6 +53,8 @@ export function RiderDispatchRealtime() {
   const lastActivityRef = useRef(Date.now());
   const cancelledRef = useRef(false);
   const connectGenRef = useRef(0);
+  const connectInFlightRef = useRef(false);
+  const lastGatewayDownLogRef = useRef(0);
 
   useEffect(() => {
     if (!getRiderAppConfig().wsEnabled) return;
@@ -121,7 +141,8 @@ export function RiderDispatchRealtime() {
     };
 
     const connect = async (reason: string) => {
-      if (cancelledRef.current) return;
+      if (cancelledRef.current || connectInFlightRef.current) return;
+      connectInFlightRef.current = true;
       const gen = ++connectGenRef.current;
       const { apiBaseUrl, wsBaseUrl } = getRiderAppConfig();
       const apiUrl = resolveUrlForDevice(apiBaseUrl);
@@ -130,6 +151,21 @@ export function RiderDispatchRealtime() {
       riderDispatchLog(`ws connect attempt (${reason})`);
 
       try {
+        const gatewayUp = await isWsGatewayReachable(wsOrigin);
+        if (!gatewayUp) {
+          failureCountRef.current += 1;
+          const now = Date.now();
+          if (now - lastGatewayDownLogRef.current >= GATEWAY_DOWN_LOG_COOLDOWN_MS) {
+            lastGatewayDownLogRef.current = now;
+            riderDispatchWarn(
+              "ws-gateway unreachable — start it with: npm run dev:ws-gateway (dispatch still works via polling)",
+              { wsOrigin }
+            );
+          }
+          scheduleReconnect("gateway_down");
+          return;
+        }
+
         const ticketRes = await fetch(`${apiUrl}/v1/auth/ws-ticket`, {
           method: "POST",
           headers: {
@@ -140,7 +176,14 @@ export function RiderDispatchRealtime() {
         });
         if (!ticketRes.ok || cancelledRef.current || gen !== connectGenRef.current) {
           failureCountRef.current += 1;
-          riderDispatchWarn("ws ticket failed", { status: ticketRes.status });
+          let ticketError = "";
+          try {
+            const errJson = (await ticketRes.json()) as { error?: string; message?: string };
+            ticketError = errJson.error ?? errJson.message ?? "";
+          } catch {
+            /* ignore */
+          }
+          riderDispatchWarn("ws ticket failed", { status: ticketRes.status, error: ticketError || undefined });
           scheduleReconnect("ticket_failed");
           return;
         }
@@ -211,6 +254,8 @@ export function RiderDispatchRealtime() {
         if (!cancelledRef.current) {
           scheduleReconnect("exception");
         }
+      } finally {
+        connectInFlightRef.current = false;
       }
     };
 

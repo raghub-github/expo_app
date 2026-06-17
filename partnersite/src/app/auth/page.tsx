@@ -44,49 +44,47 @@ export default function AuthHome() {
         <div className="absolute inset-0 backdrop-blur-[2px]" aria-hidden />
 
         {/* Centered container – glassmorphism card */}
-        <div className="relative z-10 w-full max-w-xl mx-auto">
-          <div className="rounded-3xl border border-white/20 bg-white/10 p-6 sm:p-8 md:p-10 shadow-2xl shadow-slate-900/20 backdrop-blur-xl">
-            {/* Logo – larger size, solid background for clear visibility */}
-            <div className="flex justify-center mb-6">
-              <div className="inline-flex h-20 w-28 sm:h-24 sm:w-32 items-center justify-center rounded-xl bg-white shadow-xl ring-2 ring-white/50 px-4 py-3">
-                <img src="/logo.png" alt="GatiMitra" className="h-12 w-auto object-contain sm:h-14" />
+        <div className="relative z-10 w-full max-w-lg mx-auto">
+          <div className="rounded-2xl border border-white/20 bg-white/10 p-5 sm:p-6 shadow-2xl shadow-slate-900/20 backdrop-blur-xl">
+            <div className="flex justify-center mb-4">
+              <div className="inline-flex h-14 w-20 sm:h-16 sm:w-24 items-center justify-center rounded-lg bg-white shadow-lg ring-2 ring-white/50 px-3 py-2">
+                <img src="/logo.png" alt="GatiMitra" className="h-9 w-auto object-contain sm:h-10" />
               </div>
             </div>
-            <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold text-white text-center tracking-tight mb-3 drop-shadow-sm">
+            <h1 className="text-2xl sm:text-3xl font-bold text-white text-center tracking-tight mb-2 drop-shadow-sm">
               Welcome to GatiMitra
             </h1>
-            <p className="text-base sm:text-lg text-white/95 text-center mb-1 max-w-md mx-auto leading-relaxed">
+            <p className="text-sm sm:text-base text-white/95 text-center mb-1 max-w-md mx-auto leading-snug">
               Manage your store and grow your business
             </p>
-            <p className="text-sm sm:text-base text-white/80 text-center mb-8 max-w-md mx-auto">
+            <p className="text-xs sm:text-sm text-white/80 text-center mb-5 max-w-md mx-auto">
               Join thousands of partners – restaurants, pharmacies, grocery, and more
             </p>
 
-            {/* CTAs – elevated, full-width on mobile */}
-            <div className="w-full space-y-4 mb-8">
+            <div className="w-full space-y-3 mb-4">
               <Link
                 href="/auth/register"
-                className="flex w-full items-center justify-between gap-3 rounded-xl bg-blue-600 px-6 py-4 text-base font-semibold text-white shadow-lg shadow-blue-600/30 transition-all duration-300 hover:bg-blue-500 hover:shadow-xl hover:shadow-blue-500/35 hover:-translate-y-1 focus:outline-none focus:ring-2 focus:ring-white/50 focus:ring-offset-2 focus:ring-offset-transparent active:translate-y-0"
+                className="flex w-full items-center justify-between gap-3 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-600/30 transition-all duration-300 hover:bg-blue-500 hover:shadow-xl hover:shadow-blue-500/35 hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-white/50 focus:ring-offset-2 focus:ring-offset-transparent active:translate-y-0"
               >
-                <span className="flex items-center gap-2.5">
-                  <Store className="h-5 w-5" />
+                <span className="flex items-center gap-2">
+                  <Store className="h-4 w-4 shrink-0" />
                   Join GatiMitra as a merchant
                 </span>
-                <ArrowRight className="h-5 w-5 opacity-90" />
+                <ArrowRight className="h-4 w-4 shrink-0 opacity-90" />
               </Link>
               <Link
                 href="/auth/login?redirect=/partners/all-stores"
-                className="flex w-full items-center justify-between gap-3 rounded-xl border-2 border-white/40 bg-white/15 px-6 py-4 text-base font-semibold text-white shadow-lg backdrop-blur-sm transition-all duration-300 hover:bg-white/25 hover:border-white/60 hover:shadow-xl hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-white/50 focus:ring-offset-2 focus:ring-offset-transparent active:translate-y-0"
+                className="flex w-full items-center justify-between gap-3 rounded-xl border-2 border-white/40 bg-white/15 px-5 py-3 text-sm font-semibold text-white shadow-lg backdrop-blur-sm transition-all duration-300 hover:bg-white/25 hover:border-white/60 hover:shadow-xl hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-white/50 focus:ring-offset-2 focus:ring-offset-transparent active:translate-y-0"
               >
-                <span className="flex items-center gap-2.5">
-                  <Store className="h-5 w-5 text-amber-200" />
+                <span className="flex items-center gap-2">
+                  <Store className="h-4 w-4 shrink-0 text-amber-200" />
                   Sign in to your partner account
                 </span>
-                <ArrowRight className="h-5 w-5 text-white/80" />
+                <ArrowRight className="h-4 w-4 shrink-0 text-white/80" />
               </Link>
             </div>
 
-            <p className="text-center text-sm sm:text-base font-semibold text-white/95">
+            <p className="text-center text-xs sm:text-sm font-semibold text-white/95">
               For Partners – Start selling & delivering through GatiMitra
             </p>
           </div>

@@ -8,6 +8,7 @@ import { initI18n } from "../i18n";
 import { useSessionStore } from "../stores/sessionStore";
 import { usePermissionStore } from "../stores/permissionStore";
 import { useDutyStore } from "../stores/dutyStore";
+import { useRiderServiceFilterStore } from "../stores/riderServiceFilterStore";
 import { useOnboardingStore } from "../stores/onboardingStore";
 import { useLanguageStore } from "../stores/languageStore";
 import { colors } from "../theme";
@@ -39,6 +40,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   const sessionHydrated = useSessionStore((s) => s.hydrated);
   const hydratePermissions = usePermissionStore((s) => s.hydrate);
   const hydrateDuty = useDutyStore((s) => s.hydrate);
+  const hydrateServiceFilter = useRiderServiceFilterStore((s) => s.hydrate);
   const syncDutyFromServer = useDutyStore((s) => s.syncFromServer);
   const hydrateOnboarding = useOnboardingStore((s) => s.hydrate);
   const hydrateLanguage = useLanguageStore((s) => s.hydrate);
@@ -48,10 +50,11 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       hydrateSession(),
       hydratePermissions(),
       hydrateDuty(),
+      hydrateServiceFilter(),
       hydrateOnboarding(),
       hydrateLanguage(),
     ]);
-  }, [hydrateSession, hydratePermissions, hydrateDuty, hydrateOnboarding, hydrateLanguage]);
+  }, [hydrateSession, hydratePermissions, hydrateDuty, hydrateServiceFilter, hydrateOnboarding, hydrateLanguage]);
 
   useEffect(() => {
     if (!sessionHydrated || !session) return;

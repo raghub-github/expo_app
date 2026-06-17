@@ -3,17 +3,22 @@
  * Used by next.config.js rewrites and src/lib/backend-api-url.ts (keep in sync).
  *
  * Dev layout:
- * - Fastify backend: http://127.0.0.1:3000  (`npm run dev` in backend/)
- * - Partnersite:     http://127.0.0.1:3002  (`npm run dev` in partnersite/)
+ * - Partnersite:     http://127.0.0.1:3000  (`npm run dev` in partnersite/)
  * - Dashboard:       http://127.0.0.1:3001  (separate app)
+ * - Fastify backend: http://127.0.0.1:3000  (`npm run dev` in backend/)
  */
 
+const fs = require('fs');
+const path = require('path');
+
 const DEV_BACKEND_FALLBACK = 'http://127.0.0.1:3000';
-const PARTNERSITE_DEV_PORT = '3002';
+const PARTNERSITE_DEV_PORT = '3000';
 
 const LEGACY_DEV_BACKEND_URLS = new Set([
   'http://127.0.0.1:4000',
   'http://localhost:4000',
+  'http://127.0.0.1:30000',
+  'http://localhost:30000',
 ]);
 
 function readBackendEnvRaw() {
@@ -27,11 +32,24 @@ function readBackendEnvRaw() {
   );
 }
 
+/** backend/.env API_BASE_URL — optional override when env vars above are unset. */
+function readMonorepoBackendApiBaseUrl() {
+  try {
+    const envPath = path.join(__dirname, '..', '..', 'backend', '.env');
+    const text = fs.readFileSync(envPath, 'utf8');
+    const m = text.match(/^API_BASE_URL=(.+)$/m);
+    if (!m?.[1]) return null;
+    return normalizeBaseUrl(m[1]);
+  } catch {
+    return null;
+  }
+}
+
 function normalizeBaseUrl(raw) {
   return String(raw).trim().replace(/\/+$/, '');
 }
 
-/** Map legacy :4000 dev default → backend on :3000; empty dev env → fallback. */
+/** Map legacy :4000 / :30000 backend URLs → :3000 fallback; empty dev env → fallback. */
 function normalizeDevBackendUrl(raw) {
   const trimmed = normalizeBaseUrl(raw);
   if (!trimmed) {
@@ -56,22 +74,34 @@ function isPartnersiteSelfLoop(url) {
   }
 }
 
-/** Resolved Fastify base URL for partnersite server-side fetch + /v1 rewrites. */
-function resolvePartnersiteBackendBaseUrl() {
-  const normalized = normalizeDevBackendUrl(readBackendEnvRaw());
-  if (!normalized) return null;
+/** Ordered backend base URLs for server-side fetch (first reachable wins). */
+function resolveBackendApiBaseUrlCandidates() {
+  const seen = new Set();
+  const out = [];
 
-  if (isPartnersiteSelfLoop(normalized)) {
-    if (process.env.NODE_ENV === 'development') {
-      console.warn(
-        `[dev-backend-url] Backend URL ${normalized} matches partnersite port (${process.env.PORT || PARTNERSITE_DEV_PORT}); using ${DEV_BACKEND_FALLBACK}.`
-      );
-      return DEV_BACKEND_FALLBACK;
-    }
-    return null;
+  function push(url) {
+    if (!url || isPartnersiteSelfLoop(url)) return;
+    const n = normalizeBaseUrl(url);
+    if (!n || seen.has(n)) return;
+    seen.add(n);
+    out.push(n);
   }
 
-  return normalized;
+  push(normalizeDevBackendUrl(readBackendEnvRaw()));
+  push(process.env.GATIMITRA_BACKEND_API_FALLBACK);
+  if (process.env.NODE_ENV === 'development') {
+    push(readMonorepoBackendApiBaseUrl());
+    push(DEV_BACKEND_FALLBACK);
+  }
+
+  return out;
+}
+
+/** Resolved Fastify base URL for partnersite server-side fetch + /v1 rewrites. */
+function resolvePartnersiteBackendBaseUrl() {
+  const candidates = resolveBackendApiBaseUrlCandidates();
+  if (candidates.length === 0) return null;
+  return candidates[0];
 }
 
 module.exports = {
@@ -80,5 +110,6 @@ module.exports = {
   LEGACY_DEV_BACKEND_URLS,
   readBackendEnvRaw,
   normalizeDevBackendUrl,
+  resolveBackendApiBaseUrlCandidates,
   resolvePartnersiteBackendBaseUrl,
 };

@@ -1680,6 +1680,7 @@ export default function RiderRouteMap({
     Date.now() - new Date(tracking.location.updated_at).getTime() < 90_000;
 
   const canShowRouteSheet = Boolean(routeSheet?.steps.length);
+  const mapPostPickup = isPostPickupPhase(phaseArgsRef.current);
 
   return (
     <div
@@ -1715,12 +1716,14 @@ export default function RiderRouteMap({
           </span>
           Restaurant
         </span>
-        <span className="inline-flex items-center gap-1">
-          <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-violet-600 text-[7px] font-bold text-white">
-            CX
+        {mapPostPickup ? (
+          <span className="inline-flex items-center gap-1">
+            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-violet-600 text-[7px] font-bold text-white">
+              CX
+            </span>
+            Customer (after pickup)
           </span>
-          Customer (after pickup)
-        </span>
+        ) : null}
         <span className="inline-flex items-center gap-1">
           <img src={RIDER_MAP_BIKE_SRC} alt="" className="h-4 w-4 object-contain" />
           Rider (live)

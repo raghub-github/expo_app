@@ -119,6 +119,8 @@ interface OrderRightSidebarProps {
   prefetchedOrderItems?: OrderItemsPayload | null;
   /** Warm items cache before opening the modal (hover / click). */
   onPrefetchOrderItems?: () => void;
+  /** Order progress timeline already has a cancellation — block refund+cancel type. */
+  orderCancelledOnTimeline?: boolean;
 }
 
 type Remark = SidebarRemark;
@@ -576,6 +578,7 @@ export default function OrderRightSidebar({
   orderRefunds = [],
   prefetchedOrderItems = null,
   onPrefetchOrderItems,
+  orderCancelledOnTimeline = false,
   onRefundCreated,
 }: OrderRightSidebarProps) {
   const auth = useAuthOptional();
@@ -2460,6 +2463,7 @@ export default function OrderRightSidebar({
       onToast={(msg) => setToastMessage(msg)}
       orderId={order.id}
       prefetchedOrderItems={prefetchedOrderItems}
+      orderCancelledOnTimeline={orderCancelledOnTimeline}
       onRefundCreated={onRefundCreated}
     />
 
@@ -2537,7 +2541,7 @@ export default function OrderRightSidebar({
     )}
 
     {toastMessage && (
-      <div className="fixed bottom-4 right-4 z-[10003] max-w-sm rounded-lg bg-slate-800 px-4 py-3 text-sm text-white shadow-lg">
+      <div className="fixed top-4 right-4 z-[10003] max-w-sm rounded-lg bg-slate-800 px-4 py-3 text-sm text-white shadow-lg">
         {toastMessage}
       </div>
     )}

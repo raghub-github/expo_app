@@ -1982,6 +1982,8 @@ export const orderCancellationReasonCatalog = pgTable(
     reasonCode: text("reason_code").notNull(),
     sortOrder: integer("sort_order").notNull().default(0),
     isActive: boolean("is_active").notNull().default(true),
+    channel: text("channel").notNull().default("web"),
+    serviceType: text("service_type"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

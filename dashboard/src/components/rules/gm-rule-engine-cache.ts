@@ -75,19 +75,22 @@ export function mergeRuleIntoGmRuleEngineCache(rule: Record<string, unknown>) {
   writeGmRuleEngineCache(rows, cached.catalogs);
 }
 
-export function resolveGmRuleEngineInitial(
-  payload: {
-    migrationRequired: boolean;
-    rows: Record<string, unknown>[];
-    catalogs: GmRuleEngineCachedCatalogs | null;
-    loadError: string | null;
-  }
-) {
-  const cached = readGmRuleEngineCache();
+/** Server-safe initial state — never reads sessionStorage (avoids hydration mismatch). */
+export function resolveGmRuleEngineInitial(payload: {
+  migrationRequired: boolean;
+  rows: Record<string, unknown>[];
+  catalogs: GmRuleEngineCachedCatalogs | null;
+  loadError: string | null;
+}) {
   return {
     migrationRequired: payload.migrationRequired,
-    rows: payload.rows.length > 0 ? payload.rows : (cached?.rows ?? []),
-    catalogs: payload.catalogs ?? cached?.catalogs ?? null,
+    rows: payload.rows,
+    catalogs: payload.catalogs,
     loadError: payload.loadError,
   };
+}
+
+/** Apply session cache after mount only (client-side). */
+export function readGmRuleEngineCacheSnapshot(): GmRuleEngineCache | null {
+  return readGmRuleEngineCache();
 }

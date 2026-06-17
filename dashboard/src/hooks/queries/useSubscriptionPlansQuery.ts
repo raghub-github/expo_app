@@ -9,7 +9,10 @@ export type SubscriptionPlanStats = {
   activePlans: number;
   totalPlans: number;
   subscribedRiders: number;
-  monthlyRevenueInr: number;
+  totalCollectedInr: number;
+  renewalRatePct: number | null;
+  ridersRenewed: number;
+  totalEverSubscribed: number;
 };
 
 type Audience = "RIDER" | "CUSTOMER";

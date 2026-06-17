@@ -8,6 +8,7 @@ import { LEDGER_CARD_RADIUS, LEDGER_TEAL } from "@/src/components/ledger/ledgerU
 
 type Props = {
   summary: RiderLedgerSummary;
+  walletBalance?: number;
   onViewMonthlySummary?: () => void;
 };
 
@@ -31,8 +32,15 @@ function MetricColumn({
   );
 }
 
-export function LedgerMonthlySummaryCard({ summary, onViewMonthlySummary }: Props) {
+export function LedgerMonthlySummaryCard({
+  summary,
+  walletBalance = 0,
+  onViewMonthlySummary,
+}: Props) {
   const { t } = useTranslation();
+  const isWalletNegative = walletBalance < 0;
+  const earningsValueColor = isWalletNegative ? "#DC2626" : "#16A34A";
+  const earningsDotColor = isWalletNegative ? "#EF4444" : "#22C55E";
 
   return (
     <View style={styles.card}>
@@ -52,10 +60,10 @@ export function LedgerMonthlySummaryCard({ summary, onViewMonthlySummary }: Prop
 
       <View style={styles.metricsRow}>
         <MetricColumn
-          label={t("ledger.totalEarnings", "Total Earnings")}
-          value={`₹${formatLedgerAmount(summary.totalEarnings)}`}
-          valueColor="#16A34A"
-          dotColor="#22C55E"
+          label={t("earnings.totalBalance", "Total Balance")}
+          value={`₹${formatLedgerAmount(walletBalance)}`}
+          valueColor={earningsValueColor}
+          dotColor={earningsDotColor}
         />
         <View style={styles.metricDivider} />
         <MetricColumn
