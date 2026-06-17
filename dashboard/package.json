@@ -19,8 +19,8 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.985.0",
     "@aws-sdk/s3-request-presigner": "^3.985.0",
-    "@gatimitra/contracts": "file:./packages/contracts",
-    "@gatimitra/financial-rules": "file:../packages/financial-rules",
+    "@gatimitra/contracts": "*",
+    "@gatimitra/financial-rules": "*",
     "@reduxjs/toolkit": "^2.11.2",
     "@supabase/auth-helpers-nextjs": "^0.15.0",
     "@supabase/ssr": "^0.8.0",
@@ -33,7 +33,6 @@
     "crypto-js": "^4.2.0",
     "csv-parser": "^3.2.0",
     "drizzle-orm": "^0.45.1",
-    "expo-notifications": "^55.0.18",
     "express-rate-limit": "^8.3.1",
     "image-size": "^1.1.1",
     "ioredis": "^5.10.0",
