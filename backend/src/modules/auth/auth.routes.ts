@@ -459,7 +459,8 @@ export async function authRoutes(app: FastifyInstance) {
           // eslint-disable-next-line no-console
           console.warn("\n  [OTP] SMS NOT sent:", delivered.error, "\n");
         }
-        return reply.code(503).send({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).code(503).send({
           error: "sms_delivery_failed",
           message:
             "Could not send OTP by SMS. Check MSG91_AUTH_KEY, template/flow IDs, and sender ID on the API server.",
@@ -1505,7 +1506,7 @@ export async function authRoutes(app: FastifyInstance) {
           });
         } catch (sessErr: unknown) {
           req.log?.error?.({ err: sessErr }, "Rider MSG91 login: device session persist failed");
-          return reply.code(503).send({
+          return (reply as any).code(503).send({
             error: "device_session_unavailable",
             message: "Could not start your session on this device. Please try again.",
           });

@@ -51,7 +51,7 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: Typecheck (turbo affected)
-        run: npx turbo run typecheck --filter='backend' --filter='@gatimitra/*'
+        run: npx turbo run typecheck --filter='@gatimitra/backend' --filter='@gatimitra/*'
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

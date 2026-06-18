@@ -467,27 +467,29 @@ export async function paymentRoutes(app: FastifyInstance) {
       const env = getEnv();
 
       const riderIdInt = parseInt(riderId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rep = reply as any;
       if (isNaN(riderIdInt)) {
-        return reply.code(400).send({ error: "invalid_rider_id", message: "Invalid rider ID" });
+        return rep.code(400).send({ error: "invalid_rider_id", message: "Invalid rider ID" });
       }
 
       const riderRows = await db.select().from(riders).where(eq(riders.id, riderIdInt)).limit(1);
       if (riderRows.length === 0) {
-        return reply.code(404).send({ error: "rider_not_found", message: "Rider not found" });
+        return rep.code(404).send({ error: "rider_not_found", message: "Rider not found" });
       }
 
       const rider = riderRows[0]!;
 
       const paymentReady = await ensureRiderOnboardingStageForPayment(riderIdInt);
       if (!paymentReady.ready) {
-        return reply.code(409).send({
+        return rep.code(409).send({
           error: "documents_required",
           message: paymentReady.message ?? "Please complete document submission first",
         });
       }
 
       if (rider.onboardingStage === "ACTIVE") {
-        return reply.code(409).send({ error: "already_active", message: "Rider already approved" });
+        return rep.code(409).send({ error: "already_active", message: "Rider already approved" });
       }
 
       const existingPayment = await db
@@ -502,7 +504,7 @@ export async function paymentRoutes(app: FastifyInstance) {
         .limit(1);
 
       if (existingPayment.length > 0) {
-        return reply.code(409).send({ error: "payment_completed", message: "Payment already completed" });
+        return rep.code(409).send({ error: "payment_completed", message: "Payment already completed" });
       }
 
       const { getRiderOnboardingCommissionConfig, computeRiderOnboardingCheckoutPaise } =

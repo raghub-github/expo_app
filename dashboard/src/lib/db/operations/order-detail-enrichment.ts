@@ -58,9 +58,12 @@ export type OrderDetailEnrichment = {
   merchantInstructionsList: string[];
   firstEtaAtIso: string | null;
   cancellationInfo: OrderCancellationInfo | null;
+  /** OTP for handover at pickup; null when not yet generated or already redeemed. */
   pickupOtp: string | null;
-  rtoOtp: string | null;
+  /** OTP shown to rider/customer at delivery. */
   deliveryOtp: string | null;
+  /** OTP for return-to-origin flow. */
+  rtoOtp: string | null;
   customerFeedback: OrderCustomerFeedback | null;
   /** Seconds merchant was late marking ready (after prep_ready_by_at). Null if not applicable. */
   storePrepDelaySeconds: number | null;

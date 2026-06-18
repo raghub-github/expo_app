@@ -795,7 +795,7 @@ async function loadRiderFoodOrderItems(
       variantName: ordersCoreItems.variantName,
     })
     .from(ordersCoreItems)
-    .where(eq(ordersCoreItems.orderId, coreOrderPk));
+    .where(eq(ordersCoreItems.orderId, String(coreOrderPk)));
 
   if (coreItems.length > 0) {
     return coreItems.map((i) => ({
@@ -3865,7 +3865,7 @@ async function finalizeFoodPickupVerificationForRider(
   riderId: number,
   existing: {
     id: number;
-    orderId: string;
+    orderId: string | null;
     foodStatus: string | null;
   },
   gps: RiderGpsPayload | undefined,
@@ -3873,6 +3873,10 @@ async function finalizeFoodPickupVerificationForRider(
 ): Promise<FoodRowWithStatus> {
   const now = new Date();
   const foodSt = String(existing.foodStatus ?? "").trim().toUpperCase();
+  const existingOrderId = (existing.orderId ?? "").trim();
+  if (!existingOrderId) {
+    throw Object.assign(new Error("Order id missing"), { statusCode: 500 });
+  }
 
   const activeAssignment = await loadActiveRiderAssignmentMilestones(
     tx,
@@ -3910,7 +3914,7 @@ async function finalizeFoodPickupVerificationForRider(
         )
         VALUES (
           ${existing.id},
-          ${existing.orderId.trim()},
+          ${existingOrderId},
           ${riderId},
           ${audit.method},
           ${now.toISOString()}::timestamptz,
@@ -3983,7 +3987,7 @@ async function finalizeFoodPickupVerificationForRider(
       assignment_status = 'PICKED_UP',
       picked_up_at = COALESCE(picked_up_at, ${now.toISOString()}::timestamptz),
       updated_at = ${now.toISOString()}::timestamptz
-    WHERE order_id = ${existing.orderId.trim()} AND rider_id = ${riderId}
+    WHERE order_id = ${existingOrderId} AND rider_id = ${riderId}
   `);
 
   const [riderProfile] = await tx
@@ -4011,7 +4015,7 @@ async function finalizeFoodPickupVerificationForRider(
 
   await recordRiderAssignmentMilestone(tx, {
     orderCorePk: row.id,
-    orderIdText: existing.orderId.trim(),
+    orderIdText: existingOrderId,
     riderId,
     eventType: "picked_up",
     occurredAt: now,
@@ -4154,7 +4158,7 @@ export async function markFoodPickupWithoutVerificationForRider(
   const merchantFeedbackSubmitted = await loadRiderMerchantFeedbackSubmitted(
     db,
     riderId,
-    updated.orderId.trim()
+    (updated.orderId ?? "").trim()
   );
   const summary = await mapFoodRowForActiveRider(db, updated, riderId, orderCorePk);
   return { ...summary, merchantFeedbackSubmitted };
@@ -4206,11 +4210,11 @@ async function verifyFoodPickupOtpForRider(
   const merchantFeedbackSubmitted = await loadRiderMerchantFeedbackSubmitted(
     db,
     riderId,
-    updated.orderId.trim()
+    (updated.orderId ?? "").trim()
   );
 
   void import("../../modules/eta/eta.live-engine.js")
-    .then(({ runLiveEtaForOrder }) => runLiveEtaForOrder(updated.orderId.trim(), "RIDER_PICKED_UP"))
+    .then(({ runLiveEtaForOrder }) => runLiveEtaForOrder((updated.orderId ?? "").trim(), "RIDER_PICKED_UP"))
     .catch(() => undefined);
 
   const summary = await mapFoodRowForActiveRider(db, updated, riderId, orderCorePk);
@@ -4271,7 +4275,7 @@ export async function verifyFoodPickupBarcodeForRider(
   const merchantFeedbackSubmitted = await loadRiderMerchantFeedbackSubmitted(
     db,
     riderId,
-    updated.orderId.trim()
+    (updated.orderId ?? "").trim()
   );
   const summary = await mapFoodRowForActiveRider(db, updated, riderId, orderCorePk);
   return { ...summary, merchantFeedbackSubmitted };

@@ -904,6 +904,7 @@ export async function listCheckoutBillOffers(
         ? String(m.couponCode).trim()
         : null,
     minOrderAmount: m.minOrderAmount != null && m.minOrderAmount > 0 ? m.minOrderAmount : null,
+    estimatedSavingsInr: estimateMerchantOfferSavingsInr(m, grossCart),
     reason: m.reason,
     lockReason: m.lockReason,
   }));
@@ -930,6 +931,7 @@ export async function listCheckoutBillOffers(
         name: o.name ?? null,
         offerKind: String(o.offerKind ?? "DISCOUNT").toUpperCase(),
         summary: describePlatformOfferRow(o),
+        estimatedSavingsInr: estimatePlatformOfferSavingsInr(o, grossCart),
         reason: formatPlatformOfferLockReason(
           rejectionById.get(o.id) ?? "",
           grossCart

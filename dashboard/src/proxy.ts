@@ -215,8 +215,11 @@ export async function proxy(request: NextRequest) {
       }
     }
 
-    // Public routes: login, auth (including callback), and all /api/auth/* so clients always get JSON
-    const publicRoutes = ["/login", "/auth", "/api/auth"];
+    // Public routes: login, auth (including callback), all /api/auth/*, and
+    // /api/health so the Docker healthcheck (`wget -qO- /api/health`) doesn't
+    // get a 401 SESSION_REQUIRED back. Containers were going UNHEALTHY because
+    // the proxy was gating the healthcheck behind a Supabase session.
+    const publicRoutes = ["/login", "/auth", "/api/auth", "/api/health"];
     const isPublicRoute = publicRoutes.some((route) => pathname.startsWith(route));
 
     // If we have auth cookies but couldn't verify in Edge (timeout / "fetch failed"),

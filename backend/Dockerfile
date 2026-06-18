@@ -28,6 +28,7 @@ COPY package.json package-lock.json ./
 COPY backend/package.json                    ./backend/package.json
 COPY packages/contracts/package.json         ./packages/contracts/package.json
 COPY packages/event-contracts/package.json   ./packages/event-contracts/package.json
+COPY packages/financial-rules/package.json   ./packages/financial-rules/package.json
 COPY packages/logger/package.json            ./packages/logger/package.json
 COPY packages/queue/package.json             ./packages/queue/package.json
 COPY packages/redis/package.json             ./packages/redis/package.json
@@ -64,6 +65,7 @@ COPY --from=deps /repo /repo
 COPY backend                  ./backend
 COPY packages/contracts       ./packages/contracts
 COPY packages/event-contracts ./packages/event-contracts
+COPY packages/financial-rules ./packages/financial-rules
 COPY packages/logger          ./packages/logger
 COPY packages/queue           ./packages/queue
 COPY packages/redis           ./packages/redis
@@ -92,6 +94,7 @@ RUN npm run build \
       --workspace=@gatimitra/contracts \
       --workspace=@gatimitra/redis \
       --workspace=@gatimitra/event-contracts \
+      --workspace=@gatimitra/financial-rules \
       --workspace=@gatimitra/logger \
       --workspace=@gatimitra/queue \
       --workspace=@gatimitra/backend

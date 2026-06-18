@@ -59,10 +59,9 @@ const env = getEnv();
 const app = Fastify({
   logger:
     env.NODE_ENV === "production"
-      ? { level: "info", requestIdLogLabel: "requestId" }
+      ? { level: "info" }
       : {
           level: "debug",
-          requestIdLogLabel: "requestId",
           transport: {
             target: "pino-pretty",
             options: {
@@ -330,7 +329,8 @@ const { publicTrackingRoutes } = await import("./modules/trip-share/public-track
 await app.register(publicTrackingRoutes, { prefix: "/v1/public" });
 const { buildLiveTrackPageHtml } = await import("./modules/trip-share/live-track-page.js");
 const { liveTrackPageRouteConfig } = await import("./modules/trip-share/live-track-route-config.js");
-const liveTrackRouteOpts = { config: liveTrackPageRouteConfig() };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const liveTrackRouteOpts = { config: liveTrackPageRouteConfig() } as any;
 app.get<{ Params: { token: string } }>("/trip/:token", liveTrackRouteOpts, async (req, reply) => {
   reply.type("text/html; charset=utf-8").send(buildLiveTrackPageHtml(req.params.token));
 });

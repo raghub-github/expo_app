@@ -32,6 +32,9 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# …but DO commit the example templates so new devs/CI know the shape.
+!.env.example
+!.env.production.example
 
 # vercel
 .vercel

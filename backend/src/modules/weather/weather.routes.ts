@@ -158,7 +158,7 @@ export async function weatherInternalRoutes(app: FastifyInstance) {
     const zoneCount = await countSnapshots().catch(() => null);
     return reply.send(
       getWeatherMonitoringSnapshot({
-        zoneSnapshotCount: zoneCount,
+        zoneSnapshotCount: zoneCount ?? undefined,
         apiKeyConfigured: Boolean(getEnv().OPENWEATHER_API_KEY),
       })
     );

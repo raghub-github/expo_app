@@ -152,7 +152,7 @@ async function dailyOrderCounts(
     ) o ON o.d = gs::date
     ORDER BY gs
   `;
-  const vals = (rows as Array<{ v: number }>).map((r) => Number(r.v) || 0);
+  const vals = (rows as unknown as Array<{ v: number }>).map((r) => Number(r.v) || 0);
   return vals.length <= 10 ? vals : vals.slice(-10);
 }
 
@@ -173,7 +173,7 @@ async function dailyRatingAvg(
     ) r ON r.d = gs::date
     ORDER BY gs
   `;
-  const vals = (rows as Array<{ v: unknown }>).map((r) => num(r.v));
+  const vals = (rows as unknown as Array<{ v: unknown }>).map((r) => num(r.v));
   return vals.length <= 10 ? vals : vals.slice(-10);
 }
 
@@ -414,7 +414,7 @@ async function userSegmentCounts(
   let new_users = 0;
   let repeat_users = 0;
   let lapsed_users = 0;
-  for (const r of rows as Array<{ segment: string; cnt: number }>) {
+  for (const r of rows as unknown as Array<{ segment: string; cnt: number }>) {
     const c = Number(r.cnt) || 0;
     if (r.segment === "repeat") repeat_users += c;
     else if (r.segment === "lapsed") lapsed_users += c;

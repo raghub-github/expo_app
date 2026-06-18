@@ -97,7 +97,7 @@ function registerCustomerSubscriptionRoutes(app: FastifyInstance) {
       return reply.code(result.status).send({ success: false, error: result.error });
     }
     const { ok: _ok, ...payload } = result;
-    return reply.send({ success: true, ...payload });
+    return reply.send({ ...payload, success: true });
   });
 
   app.post("/subscription/verify-payment", async (req, reply) => {
@@ -121,7 +121,7 @@ function registerCustomerSubscriptionRoutes(app: FastifyInstance) {
       return reply.code(result.status).send({ success: false, error: result.error });
     }
     const { ok: _ok, ...payload } = result;
-    return reply.send({ success: true, ...payload });
+    return reply.send({ ...payload, success: true });
   });
 }
 

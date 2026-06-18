@@ -527,9 +527,10 @@ export function validateUpsertRiderVehicleInput(
 
 
   let serviceTypes = normalizeServiceTypes(input.serviceTypes);
-  serviceTypes = filterDispatchServicesForRiderProfile(serviceTypes, {
-    vehicleTypes: [vehicleType],
-  });
+  serviceTypes = filterDispatchServicesForRiderProfile(
+    serviceTypes as Parameters<typeof filterDispatchServicesForRiderProfile>[0],
+    { vehicleTypes: [vehicleType] }
+  );
 
   if (serviceTypes.length < 1) {
     return {
@@ -648,11 +649,14 @@ export function validateUpsertRiderVehicleInput(
 
 
 
-type PersistVehicleData = ReturnType<typeof validateUpsertRiderVehicleInput> extends { ok: true; data: infer D }
-
-  ? D
-
-  : never;
+// Discriminated-union extraction. The bare `extends … infer D` form doesn't
+// distribute over the union returned by `validateUpsertRiderVehicleInput`
+// (success | failure), so D collapsed to `never` and every property access
+// below errored with TS2339 "Property X does not exist on type 'never'".
+type PersistVehicleData = Extract<
+  ReturnType<typeof validateUpsertRiderVehicleInput>,
+  { ok: true }
+>["data"];
 
 
 

@@ -24,6 +24,18 @@ const log = {
   error: (...args: unknown[]) => console.error("[notif]", ...args),
 };
 
+// Startup env validation — fail loud + early instead of crash-looping on
+// `connect ECONNREFUSED` once the worker tries to use Redis.
+function requireEnv(keys: string[]): void {
+  const missing = keys.filter((k) => !process.env[k] || !process.env[k]!.trim());
+  if (missing.length > 0) {
+    console.error(`[notif] missing required env: ${missing.join(", ")}`);
+    console.error("[notif] copy services/notification-worker/.env.example → .env and fill it in");
+    process.exit(2);
+  }
+}
+requireEnv(["REDIS_URL"]);
+
 log.info("notification-worker booting");
 log.info("connecting Redis…", process.env.REDIS_URL ? "(REDIS_URL set)" : "(REDIS_URL missing — will throw)");
 

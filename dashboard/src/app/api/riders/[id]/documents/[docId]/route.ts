@@ -116,7 +116,7 @@ export async function PUT(
       removeImage = formData.get("removeImage") === "true";
       const display = formData.get("displayDocType");
       if (typeof display === "string" && display.trim()) {
-        displayDocType = display.trim();
+        displayDocType = display.trim() as typeof displayDocType;
       }
     } else {
       const body = await request.json();
@@ -124,7 +124,7 @@ export async function PUT(
       docNumberSent = docNumber !== undefined;
       removeImage = Boolean(body.removeImage);
       if (typeof body.displayDocType === "string" && body.displayDocType.trim()) {
-        displayDocType = body.displayDocType.trim();
+        displayDocType = body.displayDocType.trim() as typeof displayDocType;
       }
     }
 

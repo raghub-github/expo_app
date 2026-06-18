@@ -112,14 +112,16 @@ export function calculateRiderPickupDropPayout(args: {
       ? Math.max(0, round2(firstPickup.minCharge))
       : null;
 
-  const pickupLeg = calculateLegProgressiveAmount(pickupKm, sortedPickup, (s) => s.pickupPerKm);
-  if ("ok" in pickupLeg && pickupLeg.ok === false) {
-    return pickupLeg;
+  const pickupLegRaw = calculateLegProgressiveAmount(pickupKm, sortedPickup, (s) => s.pickupPerKm);
+  if ("ok" in pickupLegRaw) {
+    return pickupLegRaw;
   }
-  const dropLeg = calculateLegProgressiveAmount(dropKm, args.dropSlabs, (s) => s.dropPerKm);
-  if ("ok" in dropLeg && dropLeg.ok === false) {
-    return dropLeg;
+  const pickupLeg = pickupLegRaw;
+  const dropLegRaw = calculateLegProgressiveAmount(dropKm, args.dropSlabs, (s) => s.dropPerKm);
+  if ("ok" in dropLegRaw) {
+    return dropLegRaw;
   }
+  const dropLeg = dropLegRaw;
 
   const riderMax = args.riderHasGmitraMax === true;
   const surgeWaitMaxOnly = args.surgeWaitMaxOnly === true;

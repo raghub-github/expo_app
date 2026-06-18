@@ -1403,18 +1403,16 @@ export async function orderRoutes(app: FastifyInstance) {
       let deliveryPromiseComparison = null;
       if (appStatus === "DELIVERED") {
         try {
-          const etaRows = await getSql<
-            Array<{
-              promised_eta_minutes: number | null;
-              placed_at: Date | string | null;
-              actual_delivery_time: Date | string | null;
-            }>
-          >`
+          const etaRows = (await getSql()`
             SELECT promised_eta_minutes, placed_at, actual_delivery_time
             FROM orders_core
             WHERE id = ${coreRow.id}
             LIMIT 1
-          `;
+          `) as unknown as Array<{
+            promised_eta_minutes: number | null;
+            placed_at: Date | string | null;
+            actual_delivery_time: Date | string | null;
+          }>;
           const etaRow = etaRows[0];
           deliveryPromiseComparison = buildDeliveryPromiseComparison({
             promisedEtaMinutes: etaRow?.promised_eta_minutes ?? null,
@@ -2395,9 +2393,9 @@ export async function orderRoutes(app: FastifyInstance) {
       }
 
       await db.insert(merchantStoreRatings).values({
-        storeId,
+        storeId: storeId ?? 0,
         orderId: orderRow.id,
-        customerId: customerPk,
+        customerId: customerPk ?? 0,
         rating: primaryRating,
         foodRating: storeRating ?? undefined,
         serviceRating: deliveryRating ?? undefined,
@@ -3547,7 +3545,8 @@ export async function orderRoutes(app: FastifyInstance) {
         const err = e as Error & { statusCode?: number };
         const status = err.statusCode ?? 500;
         if (status >= 400 && status < 500) {
-          return reply.status(status).send({ error: err.message || "Failed to cancel order" });
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return (reply as any).status(status).send({ error: err.message || "Failed to cancel order" });
         }
         throw e;
       }

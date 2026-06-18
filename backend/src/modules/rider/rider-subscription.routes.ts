@@ -100,7 +100,7 @@ export function registerRiderSubscriptionRoutes(app: FastifyInstance) {
     if (!result.ok) {
       return reply.code(result.status).send({ success: false, error: result.error });
     }
-    return reply.send({ success: true, ...result });
+    return reply.send({ ...result, success: true });
   });
 
   app.post("/subscription/subscribe-wallet", async (req, reply) => {
@@ -119,7 +119,7 @@ export function registerRiderSubscriptionRoutes(app: FastifyInstance) {
       if (!result.ok) {
         return reply.code(result.status).send({ success: false, error: result.error });
       }
-      return reply.send({ success: true, ...result });
+      return reply.send({ ...result, success: true });
     } catch (err) {
       app.log.error({ err }, "POST /rider/subscription/subscribe-wallet failed");
       const message = formatSubscriptionWalletError(err);

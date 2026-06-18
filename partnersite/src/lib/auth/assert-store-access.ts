@@ -93,7 +93,6 @@ export async function assertStoreAccess(storeIdParam: string | null): Promise<As
   if (!validation.isValid) {
     return { ok: false, error: validation.error ?? 'Merchant not found', status: 403 }
   }
-
   const owned = await findStoreOwnedBySessionUser(String(storeIdParam), user)
   if (owned) {
     return { ok: true, storeIdNum: owned.id }

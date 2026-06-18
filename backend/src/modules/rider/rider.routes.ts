@@ -102,12 +102,13 @@ export async function riderRoutes(app: FastifyInstance) {
       const userId = req.auth!.sub;
       const riderId = parseRiderIdFromAuth(userId);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
 
       const body = RiderLogoutBodySchema.parse(req.body);
       if (body.reasonCode === "OTHER" && !body.reasonText?.trim()) {
-        return reply.status(400).send({ error: "reason_text_required" });
+        return (reply as any).status(400).send({ error: "reason_text_required" });
       }
 
       const db = getDb();
@@ -291,7 +292,8 @@ export async function riderRoutes(app: FastifyInstance) {
       const riderIdMatch = String(userId).match(/usr_(\d+)/);
       const riderId = riderIdMatch ? parseInt(riderIdMatch[1]!, 10) : null;
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
 
       const body = req.body as { lat: number; lng: number; order_id?: string; speed?: number; heading?: number; accuracy?: number };
@@ -415,7 +417,7 @@ export async function riderRoutes(app: FastifyInstance) {
                   : null,
               removedBy: body.actor_id ?? null,
               actorType: body.actor_type ?? "system",
-              actorId: body.actor_id ?? null,
+              actorId: body.actor_id ?? undefined,
             });
           } catch (e) {
             return reply.status(400).send({
@@ -541,7 +543,7 @@ export async function riderRoutes(app: FastifyInstance) {
       const userId = req.auth!.sub;
       const riderId = parseRiderIdFromAuth(userId);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
 
       const db = getDb();
@@ -552,7 +554,7 @@ export async function riderRoutes(app: FastifyInstance) {
       );
       const resolved = await resolveRiderOnboardingStatusForApp(riderId);
       if (!resolved) {
-        return reply.status(404).send({ error: "Rider not found" });
+        return (reply as any).status(404).send({ error: "Rider not found" });
       }
 
       const { rider, onboardingStatus, approvalStatus } = resolved;
@@ -629,7 +631,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { getRiderBankPaymentMethod } = await import(
         "../../lib/rider-bank-payment-method.js"
@@ -660,19 +663,24 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { createRiderBankPaymentMethod } = await import(
         "../../lib/rider-bank-payment-method.js"
       );
       try {
-        const paymentMethod = await createRiderBankPaymentMethod(riderId, req.body);
+        const paymentMethod = await createRiderBankPaymentMethod(
+          riderId,
+          req.body as Parameters<typeof createRiderBankPaymentMethod>[1]
+        );
         return reply.status(201).send({ paymentMethod });
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Could not save bank account";
         const status = message === "Bank account already linked" ? 409 : 400;
-        return reply.status(status).send({ error: message });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(status).send({ error: message });
       }
     },
   );
@@ -700,7 +708,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { getRiderEmergencyContacts, INDIA_EMERGENCY_DEFAULTS } = await import(
         "../../lib/rider-emergency-contacts.js"
@@ -737,12 +746,14 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { saveRiderEmergencyContacts } = await import(
         "../../lib/rider-emergency-contacts.js"
       );
-      const contacts = await saveRiderEmergencyContacts(riderId, req.body.contacts);
+      const body = req.body as { contacts: z.infer<typeof RiderEmergencyContactSchema>[] };
+      const contacts = await saveRiderEmergencyContacts(riderId, body.contacts);
       const { INDIA_EMERGENCY_DEFAULTS } = await import(
         "../../lib/rider-emergency-contacts.js"
       );
@@ -793,7 +804,7 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
 
       const { getRiderKycDocumentsForApp } = await import("../../lib/rider-documents-kyc-catalog.js");
@@ -1081,13 +1092,13 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { upsertRiderVehicleForApp, parseVehicleDbError } = await import(
         "../../lib/rider-vehicle-app.js"
       );
       try {
-        return await upsertRiderVehicleForApp(riderId, req.body);
+        return await upsertRiderVehicleForApp(riderId, req.body as Parameters<typeof upsertRiderVehicleForApp>[1]);
       } catch (e) {
         const message = e instanceof Error ? e.message : parseVehicleDbError(e);
         return reply.status(400).send({ error: message });
@@ -1216,7 +1227,8 @@ export async function riderRoutes(app: FastifyInstance) {
       }
 
       if (!body.serviceTypes?.length) {
-        return reply.status(400).send({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(400).send({
           error: "SERVICE_TYPES_REQUIRED",
           message: "Select at least one service before going online.",
         });
@@ -1246,7 +1258,8 @@ export async function riderRoutes(app: FastifyInstance) {
       const requestedServices = body.serviceTypes.filter((s) => vehicleServices.includes(s));
 
       if (requestedServices.length === 0) {
-        return reply.status(400).send({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(400).send({
           error: "NO_VALID_SERVICE_TYPES",
           message: "None of the selected services are enabled for your vehicle.",
         });
@@ -1442,7 +1455,7 @@ export async function riderRoutes(app: FastifyInstance) {
 
       const parsedId = parseInt(riderId, 10);
       if (!Number.isFinite(parsedId) || parsedId <= 0) {
-        return reply.code(400).send({ error: "Invalid rider ID" });
+        return (reply as any).code(400).send({ error: "Invalid rider ID" });
       }
 
       const { resolveRiderOnboardingStatusForApp } = await import(
@@ -1577,7 +1590,7 @@ export async function riderRoutes(app: FastifyInstance) {
         const existing = await db
           .select()
           .from(riderDocuments)
-          .where(and(eq(riderDocuments.riderId, riderId), eq(riderDocuments.docType, docType)))
+          .where(and(eq(riderDocuments.riderId, riderId), eq(riderDocuments.docType, docType as never)))
           .limit(1);
 
         let documentId: number;
@@ -1705,7 +1718,7 @@ export async function riderRoutes(app: FastifyInstance) {
             .insert(riderDocuments)
             .values({
               riderId,
-              docType,
+              docType: docType as never,
               fileUrl: storedFileUrl,
               r2Key: primaryKey || null,
               extractedName: extractedName || null,
@@ -1984,7 +1997,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { loadPlatformOrderAcceptanceSettingsForCategory } = await import(
         "../../lib/merchant-order-acceptance-settings.js"
@@ -2012,7 +2026,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { loadFoodPickupVerificationSettings } = await import(
         "../../lib/food-pickup-verification-settings.js"
@@ -2034,7 +2049,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { getAvailableOrdersForRider } = await import("./rider.orders.service.js");
       try {
@@ -2059,7 +2075,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { getActiveOrdersForRider } = await import("./rider.orders.service.js");
       return getActiveOrdersForRider(riderId);
@@ -2087,7 +2104,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { getRidePaymentHoldsForRider } = await import("./rider.orders.service.js");
       return getRidePaymentHoldsForRider(riderId);
@@ -2118,7 +2136,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const q = req.query as { limit?: number; offset?: number; category?: string };
       const { getOrderHistoryForRider, parseRiderOrderHistoryCategory } = await import(
@@ -2147,7 +2166,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       try {
@@ -2190,7 +2210,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = req.body as { reasonCode: string; reasonText?: string };
@@ -2201,7 +2222,7 @@ export async function riderRoutes(app: FastifyInstance) {
         const err = e as Error & { statusCode?: number };
         const code = err.statusCode ?? 500;
         if (code >= 400 && code < 500) {
-          return reply.status(code).send({ error: err.message || "Reject failed" });
+          return (reply as any).status(code).send({ error: err.message || "Reject failed" });
         }
         throw e;
       }
@@ -2228,7 +2249,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as { reason?: string };
@@ -2239,7 +2261,8 @@ export async function riderRoutes(app: FastifyInstance) {
         const err = e as Error & { statusCode?: number };
         const code = err.statusCode ?? 500;
         if (code >= 400 && code < 500) {
-          return reply.status(code).send({ error: err.message || "Offer missed failed" });
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return (reply as any).status(code).send({ error: err.message || "Offer missed failed" });
         }
         throw e;
       }
@@ -2268,7 +2291,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { getRiderDispatchOfferStats } = await import(
         "../../lib/rider-dispatch-assignment-audit.js"
@@ -2292,7 +2316,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       try {
@@ -2349,7 +2374,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const q = req.query as { lat?: number; lng?: number };
@@ -2387,7 +2413,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as {
@@ -2431,7 +2458,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as {
@@ -2471,7 +2499,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as { lat?: number; lng?: number };
@@ -2508,7 +2537,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = req.body as {
@@ -2550,7 +2580,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as {
@@ -2598,7 +2629,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = req.body as {
@@ -2643,7 +2675,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as { lat?: number; lng?: number };
@@ -2674,7 +2707,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as { lat?: number; lng?: number };
@@ -2705,7 +2739,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as { lat?: number; lng?: number };
@@ -2743,7 +2778,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = req.body as {
@@ -2771,7 +2807,7 @@ export async function riderRoutes(app: FastifyInstance) {
         if (status === 400 || status === 409) {
           return reply.status(status).send({ error: safeMessage });
         }
-        return reply.status(500).send({ error: safeMessage });
+        return (reply as any).status(500).send({ error: safeMessage });
       }
     }
   );
@@ -2813,7 +2849,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       try {
@@ -2852,7 +2889,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const since = (req.query as { since?: string }).since;
@@ -2892,7 +2930,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = partnerChatSendBodySchema.parse(req.body ?? {});
@@ -2945,13 +2984,15 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const qs = req.query as { reasonCode?: string };
       const reasonCode = qs.reasonCode?.trim() ?? "";
       if (!reasonCode) {
-        return reply.status(400).send({ error: "reasonCode is required" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(400).send({ error: "reasonCode is required" });
       }
       const { previewRiderAppCancellationPenalty } = await import(
         "../../lib/rider-cancellation-penalty.service.js"
@@ -3009,7 +3050,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const qs = req.query as { serviceType?: string; attribute?: string };
       const attribute = qs.attribute?.trim().toUpperCase() || "RIDER";
@@ -3045,7 +3087,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = req.body as { reasonCode: string; reasonText?: string };

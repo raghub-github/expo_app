@@ -145,6 +145,8 @@ export async function repairCancellationLedgerWithdrawableMetadata(
       id: number;
       balance_type: string | null;
       balance_after: string | number | null;
+      amount: string | number | null;
+      direction: string | null;
       created_at: Date | string;
       metadata: Record<string, unknown> | null;
     }[]

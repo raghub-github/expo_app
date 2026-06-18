@@ -55,6 +55,12 @@ services:
     networks: [app]
 
   backend:
+    # In prod the VPS pulls a pre-built image from GHCR (pushed by
+    # .github/workflows/backend.yml on every push to main). `build:` is kept
+    # so `docker compose up --build` still works for local-on-VPS rebuilds.
+    # IMAGE_TAG defaults to `latest`; CI rolls deploys by passing a SHA via
+    # the deploy-service.sh script and the per-service workflow.
+    image: ghcr.io/raghub-github/gm-backend:${IMAGE_TAG:-latest}
     build:
       context: ../..
       dockerfile: backend/Dockerfile
@@ -69,6 +75,7 @@ services:
     networks: [app]
 
   notification-worker:
+    image: ghcr.io/raghub-github/gm-notification-worker:${IMAGE_TAG:-latest}
     build:
       context: ../..
       dockerfile: services/notification-worker/Dockerfile
@@ -80,6 +87,7 @@ services:
     networks: [app]
 
   payment-worker:
+    image: ghcr.io/raghub-github/gm-payment-worker:${IMAGE_TAG:-latest}
     build:
       context: ../..
       dockerfile: services/payment-worker/Dockerfile
@@ -94,6 +102,7 @@ services:
     networks: [app]
 
   ws-gateway:
+    image: ghcr.io/raghub-github/gm-ws-gateway:${IMAGE_TAG:-latest}
     build:
       context: ../..
       dockerfile: services/ws-gateway/Dockerfile
@@ -107,6 +116,7 @@ services:
     networks: [app]
 
   eta-worker:
+    image: ghcr.io/raghub-github/gm-eta-worker:${IMAGE_TAG:-latest}
     build:
       context: ../..
       dockerfile: services/eta-worker/Dockerfile
@@ -135,6 +145,7 @@ services:
     networks: [app]
 
   outbox-relay:
+    image: ghcr.io/raghub-github/gm-outbox-relay:${IMAGE_TAG:-latest}
     build:
       context: ../..
       dockerfile: services/outbox-relay/Dockerfile
@@ -146,20 +157,32 @@ services:
     networks: [app]
 
   dashboard:
+    image: ghcr.io/raghub-github/gm-dashboard:${IMAGE_TAG:-latest}
     build:
       context: ../..
       dockerfile: dashboard/Dockerfile
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
+
     restart: unless-stopped
+
     env_file:
       - ../../dashboard/.env.local
+
     environment:
       NODE_ENV: production
       PORT: "3001"
+
     expose:
       - "3001"
-    networks: [app]
+
+    networks:
+      - app
 
   partnersite:
+    image: ghcr.io/raghub-github/gm-partnersite:${IMAGE_TAG:-latest}
     build:
       context: ../..
       dockerfile: partnersite/Dockerfile

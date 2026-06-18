@@ -227,7 +227,7 @@ export async function cancelFoodOrderForCustomer(
       await applyPaymentCancellationPayment({
         orderCoreId: row.coreId,
         ordersFoodId: row.ordersFoodId,
-        merchantStoreId: orderCtx.merchantStoreId ?? row.merchantStoreId,
+        merchantStoreId: orderCtx.merchantStoreId ?? row.merchantStoreId ?? 0,
         previousStatus,
         cancelledByType: "customer",
         orderGross: num(row.grandTotal ?? orderCtx.grandTotal),

@@ -34,7 +34,7 @@ export async function getRiderAverageRating(
     FROM scores
   `;
 
-  const row = (rows as { avg_rating: string | null; rating_count: number }[])[0];
+  const row = (rows as unknown as { avg_rating: string | null; rating_count: number }[])[0];
   const count = Number(row?.rating_count ?? 0);
   if (!count) return null;
 

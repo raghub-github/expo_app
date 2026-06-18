@@ -32,6 +32,14 @@ COPY packages/redis ./packages/redis
 COPY packages/queue ./packages/queue
 COPY services/notification-worker ./services/notification-worker
 
+# @gatimitra/{redis,queue} are consumed via their package.json main: dist/index.js.
+# Without these builds the next CMD (`npx tsx src/index.ts`) crashes with
+# ERR_MODULE_NOT_FOUND when Node resolves the cross-workspace imports.
+# Topological order: redis (no deps) → queue (depends on redis).
+RUN npm run build \
+      --workspace=@gatimitra/redis \
+      --workspace=@gatimitra/queue
+
 # Drop to non-root and lock down the writable surface.
 RUN addgroup -S app && adduser -S app -G app \
   && chown -R app:app /repo

@@ -611,7 +611,7 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
                     periodPreset="today"
                     userInsightsHref={`/dashboard/merchants/stores/${storeId}/user-insights`}
                     paymentsHref={`/dashboard/merchants/stores/${storeId}/payments`}
-                    marketStoreId={storeId}
+                    marketStoreId={Number(storeId)}
                   />
                 </div>
               )}

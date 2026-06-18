@@ -18,5 +18,5 @@ export default async function NewGmRulePage() {
     catalogs = null;
   }
 
-  return <GmRuleEditForm catalogs={catalogs} />;
+  return <GmRuleEditForm catalogs={catalogs as unknown as Parameters<typeof GmRuleEditForm>[0]["catalogs"]} />;
 }

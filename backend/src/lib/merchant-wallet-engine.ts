@@ -372,7 +372,10 @@ export async function createWithdrawalRequest(
 ): Promise<PayoutResult> {
   const sql = getSql();
 
-  let minAmount = WALLET_CONSTANTS.MIN_WITHDRAWAL_AMOUNT;
+  // Explicit `number` widening — the constant is `100 as const` so without
+  // this `let` would infer the literal type 100 and the reassignment below
+  // would fail with TS2322.
+  let minAmount: number = WALLET_CONSTANTS.MIN_WITHDRAWAL_AMOUNT;
   try {
     const payoutRule = await sql`
       SELECT min_payout_amount FROM payment_payout_rules

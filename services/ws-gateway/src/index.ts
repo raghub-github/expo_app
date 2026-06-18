@@ -41,9 +41,21 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const HEARTBEAT_MS = 25_000;
 const STALE_SOCKET_MS = 60_000;
 
+// Startup env validation — fail loud + early. JWT_SECRET_PREVIOUS is
+// intentionally optional (used only during a rotation window).
+function requireEnv(keys: string[]): void {
+  const missing = keys.filter((k) => !process.env[k] || !process.env[k]!.trim());
+  if (missing.length > 0) {
+    console.error(`[ws-gateway] missing required env: ${missing.join(", ")}`);
+    console.error("[ws-gateway] copy services/ws-gateway/.env.example → .env and fill it in");
+    process.exit(2);
+  }
+}
+requireEnv(["JWT_SECRET", "REDIS_URL"]);
 if (!JWT_SECRET) {
-  console.error("[ws-gateway] FATAL: JWT_SECRET not set");
-  process.exit(1);
+  // Unreachable: requireEnv above already exited. Kept for the TS type narrowing
+  // below — `JWT_SECRET` becomes `string | undefined` to TS otherwise.
+  process.exit(2);
 }
 const secretBytes = new TextEncoder().encode(JWT_SECRET);
 // JWT rotation support: optional secondary secret accepted during a rotation
@@ -228,7 +240,7 @@ app.register(async (instance) => {
     socket.send(JSON.stringify({ type: "ready", channels: Array.from(sub.channels) }));
 
     socket.on("pong", () => { sub.lastPong = Date.now(); });
-    socket.on("message", (raw) => {
+    socket.on("message", (raw: unknown) => {
       // Inbound is rare today — accept "ping" keepalive and echo, ignore everything else.
       try {
         const msg = JSON.parse(String(raw));

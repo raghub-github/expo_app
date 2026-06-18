@@ -1913,7 +1913,7 @@ export async function patchMerchantFoodOrderStatus(
         const preparingAt = idRows[0]?.preparing_at ? new Date(idRows[0].preparing_at) : null;
         const actualPrep =
           preparingAt && Number.isFinite(preparingAt.getTime())
-            ? Math.max(1, Math.round((now.getTime() - preparingAt.getTime()) / 60_000))
+            ? Math.max(1, Math.round((new Date(now).getTime() - preparingAt.getTime()) / 60_000))
             : expectedPrep;
 
         void import("../eta/eta.merchant-prep-stats.js")

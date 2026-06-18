@@ -28,7 +28,9 @@ WORKDIR /repo
 # "Cannot find module" because the lockfile expects them all.
 COPY package.json package-lock.json ./
 COPY dashboard/package.json            ./dashboard/package.json
-COPY packages/contracts/package.json   ./packages/contracts/package.json
+COPY packages/contracts/package.json         ./packages/contracts/package.json
+COPY packages/financial-rules/package.json   ./packages/financial-rules/package.json
+COPY packages/shared-config/package.json ./packages/shared-config/package.json
 
 # --ignore-scripts: avoid running lifecycle hooks during install (some
 # native postinstalls fail on Alpine without dev toolchain). Lifecycle for
@@ -51,7 +53,9 @@ COPY --from=deps /repo /repo
 # do NOT `COPY . .` — that would drag partnersite, backend, mobile apps,
 # and their `.next` build artefacts into this image's context.
 COPY dashboard            ./dashboard
-COPY packages/contracts   ./packages/contracts
+COPY packages/contracts         ./packages/contracts
+COPY packages/financial-rules   ./packages/financial-rules
+COPY packages/shared-config ./packages/shared-config
 
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
@@ -81,6 +85,7 @@ ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
 # package.json/main, which has to exist on disk.
 RUN npm run build \
       --workspace=@gatimitra/contracts \
+      --workspace=@gatimitra/financial-rules \
       --workspace=dashboard
 
 # ────────────────────────────────────────────────────────────────────────

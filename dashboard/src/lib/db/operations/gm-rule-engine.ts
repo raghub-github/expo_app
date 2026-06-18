@@ -2,7 +2,7 @@ import { getSql, sqlJsonbParam } from "../client";
 
 /** Empty strings fail Postgres enum CHECK constraints — store NULL instead. */
 function emptyToNull(v: unknown): string | number | boolean | Date | null {
-  if (v === "" || v === undefined) return null;
+  if (v === "" || v === undefined || v === null) return null;
   return v as string | number | boolean | Date;
 }
 

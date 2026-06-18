@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 
 export async function GET() {
   return NextResponse.json(
-    { status: "ok", timestamp: new Date().toISOString() },
+    { status: "ok", service: "dashboard", timestamp: new Date().toISOString() },
     { status: 200 },
   );
 }

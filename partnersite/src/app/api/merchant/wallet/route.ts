@@ -49,15 +49,46 @@ export async function GET(req: NextRequest) {
       console.warn('[merchant/wallet] backfill credits:', backfillErr);
     }
 
-    const { data: wallet, error: walletError } = await db
-      .from('merchant_wallet')
-      .select(`
-        id, available_balance, pending_balance, hold_balance, reserve_balance,
-        pending_settlement, lifetime_credit, lifetime_debit,
-        total_earned, total_withdrawn, total_penalty, total_commission_deducted, status
-      `)
-      .eq('merchant_store_id', merchantStoreId)
-      .single();
+    // V2 select includes locked_balance + lifetime columns. Older prod DBs may
+    // not have those columns yet — Postgres returns code 42703 (undefined_column)
+    // and PostgREST surfaces it as PGRST204. Fall back to V1 column set and
+    // default the missing V2 fields to 0 so the route never 500s on schema drift.
+    let wallet: Record<string, unknown> | null = null;
+    let walletError: { code?: string; message?: string } | null = null;
+    {
+      const v2 = await db
+        .from('merchant_wallet')
+        .select(`
+          id, available_balance, pending_balance, hold_balance, reserve_balance,
+          locked_balance, pending_settlement, lifetime_credit, lifetime_debit,
+          total_earned, total_withdrawn, total_penalty, total_commission_deducted, status
+        `)
+        .eq('merchant_store_id', merchantStoreId)
+        .single();
+      const schemaDrift =
+        v2.error?.code === '42703' ||
+        v2.error?.code === 'PGRST204' ||
+        (v2.error?.message ?? '').includes('does not exist');
+      if (schemaDrift) {
+        console.warn(
+          '[merchant/wallet] V2 columns missing in prod DB, falling back to V1 select:',
+          v2.error?.message
+        );
+        const v1 = await db
+          .from('merchant_wallet')
+          .select(`
+            id, available_balance, pending_balance, hold_balance, reserve_balance,
+            total_earned, total_withdrawn, status
+          `)
+          .eq('merchant_store_id', merchantStoreId)
+          .single();
+        wallet = (v1.data as Record<string, unknown> | null) ?? null;
+        walletError = v1.error ?? null;
+      } else {
+        wallet = (v2.data as Record<string, unknown> | null) ?? null;
+        walletError = v2.error ?? null;
+      }
+    }
 
     if (walletError && walletError.code !== 'PGRST116') {
       console.error('[merchant/wallet]', walletError);

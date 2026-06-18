@@ -125,9 +125,10 @@ export type LogMerchantAuditParams = {
  */
 export async function logMerchantAudit(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  db: { from: (table: string) => { insert: (row: unknown) => any } },
+  db: { from: (table: string) => { insert: (row: never) => any } } | { from: (table: string) => unknown },
   params: LogMerchantAuditParams
 ): Promise<void> {
+  const dbAny = db as { from: (table: string) => { insert: (row: unknown) => unknown } };
   try {
     const {
       entity_type,
@@ -159,7 +160,7 @@ export async function logMerchantAudit(
       user_agent: user_agent ?? null,
       audit_metadata: audit_metadata ?? {},
     };
-    const { error } = await db.from('merchant_audit_logs').insert(row);
+    const { error } = (await dbAny.from('merchant_audit_logs').insert(row)) as { error: unknown };
     if (error) {
       console.error('[audit-merchant] insert failed:', error);
     }

@@ -75,9 +75,7 @@ export function buildCustomerWeatherPresentation(args: {
   };
 
   const trackingMessage =
-    severity !== "CLEAR"
-      ? "🌧 Rain in your area — delivery partners may take longer to reach you."
-      : null;
+    "🌧 Rain in your area — delivery partners may take longer to reach you.";
 
   const etaImpactLabel =
     args.etaDelayMinutes > 0 ? `Includes weather impact (+${args.etaDelayMinutes} mins)` : null;
