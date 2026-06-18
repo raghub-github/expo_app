@@ -48,13 +48,17 @@ export async function runOrderAcceptanceTimeoutTick(log: {
           rejected_reason = ${AUTO_CANCEL_REASON},
           cancelled_by_label = ${AUTO_CANCEL_REASON},
           cancelled_by_type = 'system',
+          -- Explicit ::text casts on the bound params inside jsonb_build_object.
+          -- The function is variadic "any" so PostgreSQL cannot infer a type
+          -- for a bare $N here and aborts with 42P18. Same param above is
+          -- safe because it is assigned to a column with a known text type.
           cancellation_details = jsonb_build_object(
             'version', 1,
             'source', 'system',
             'action_source', 'system',
             'cancel_mode', 'auto',
-            'rejected_reason', ${AUTO_CANCEL_REASON},
-            'cancelled_by_label', ${AUTO_CANCEL_REASON}
+            'rejected_reason', ${AUTO_CANCEL_REASON}::text,
+            'cancelled_by_label', ${AUTO_CANCEL_REASON}::text
           ),
           updated_at = NOW()
         FROM targets t
