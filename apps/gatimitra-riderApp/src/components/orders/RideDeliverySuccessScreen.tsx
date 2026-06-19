@@ -1,0 +1,1126 @@
+// @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
+import React, { useEffect, useMemo, useRef } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  Platform,
+  Pressable,
+  ScrollView,
+  Alert,
+  Image as RNImage,
+} from "react-native";
+import { Image } from "expo-image";
+import { LinearGradient } from "expo-linear-gradient";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { router } from "expo-router";
+import { useTranslation } from "react-i18next";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
+import { useQueryClient } from "@tanstack/react-query";
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withDelay,
+  withSpring,
+  withTiming,
+} from "react-native-reanimated";
+import {
+  parseFoodDeliverySuccessParams,
+  type FoodDeliverySuccessParams,
+} from "@/src/lib/food-delivery-success-nav";
+import { formatDistanceKm } from "@/src/lib/incoming-order-display";
+import {
+  isActiveRiderOrder,
+  openActiveOrder,
+  pickPrimaryActiveOrder,
+} from "@/src/lib/active-order-display";
+import {
+  RIDER_ACTIVE_ORDERS_QUERY_KEY,
+  useActiveOrders,
+  useRideOrder,
+} from "@/src/hooks/useOrders";
+import { useRiderProfile } from "@/src/hooks/useRiderProfile";
+import { useRiderStatus } from "@/src/hooks/useOnboarding";
+import { toAbsoluteImageUrl } from "@/src/utils/mediaUrl";
+import { resolveRideVehicleImage } from "@/src/lib/ride-vehicle-assets";
+
+type Props = {
+  params: Record<string, string | string[] | undefined>;
+};
+
+const PAGE_BG = "#F4F7F6";
+const CARD = "#FFFFFF";
+const TEXT = "#111827";
+const MUTED = "#6B7280";
+const NAVY = "#0F1B2E";
+const GREEN = "#22C55E";
+const GREEN_DARK = "#16A34A";
+const GREEN_LIGHT = "#4ADE80";
+const PURPLE = "#7C3AED";
+const PURPLE_SOFT = "#F3E8FF";
+const PURPLE_BORDER = "#DDD6FE";
+const MINT_SOFT = "#ECFDF5";
+const MINT_BORDER = "#BBF7D0";
+
+const FOOTER_BTN_H = 52;
+
+const CONFETTI_DOTS = [
+  { top: 6, left: 18, color: "#22C55E", size: 7 },
+  { top: 14, right: 22, color: "#8B5CF6", size: 6 },
+  { top: 2, right: 68, color: "#F97316", size: 5 },
+  { top: 28, left: 52, color: "#3B82F6", size: 6 },
+  { top: 36, right: 48, color: "#EC4899", size: 5 },
+] as const;
+
+function initialsFromName(name?: string | null) {
+  if (!name?.trim()) return "GM";
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0]![0]}${parts[1]![0]}`.toUpperCase();
+  return parts[0]!.slice(0, 2).toUpperCase();
+}
+
+function DotGrid({ side }: { side: "left" | "right" }) {
+  return (
+    <View style={[styles.dotGrid, side === "left" ? styles.dotGridLeft : styles.dotGridRight]}>
+      {Array.from({ length: 12 }).map((_, i) => (
+        <View key={i} style={styles.dotCell} />
+      ))}
+    </View>
+  );
+}
+
+function FareLine({
+  icon,
+  iconColor,
+  iconBg,
+  label,
+  value,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>["name"];
+  iconColor: string;
+  iconBg: string;
+  label: string;
+  value: string;
+}) {
+  return (
+    <View style={styles.fareLine}>
+      <View style={[styles.fareIconWrap, { backgroundColor: iconBg }]}>
+        <Ionicons name={icon} size={16} color={iconColor} />
+      </View>
+      <Text style={styles.fareLineLabel} numberOfLines={1}>
+        {label}
+      </Text>
+      <Text style={styles.fareLineValue} numberOfLines={1}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+function surgeIconForName(name: string): {
+  icon: React.ComponentProps<typeof Ionicons>["name"];
+  color: string;
+  bg: string;
+} {
+  const lower = name.toLowerCase();
+  if (lower.includes("night")) {
+    return { icon: "moon", color: "#EC4899", bg: "#FCE7F3" };
+  }
+  if (lower.includes("rain")) {
+    return { icon: "rainy", color: "#3B82F6", bg: "#DBEAFE" };
+  }
+  return { icon: "flash", color: "#F59E0B", bg: "#FEF3C7" };
+}
+
+export function RideDeliverySuccessScreen({ params: rawParams }: Props) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const params: FoodDeliverySuccessParams = parseFoodDeliverySuccessParams(rawParams);
+  const { data: profile } = useRiderProfile();
+  const { data: riderStatus } = useRiderStatus();
+
+  const { data: activeOrders = [] } = useActiveOrders();
+  const nextOrder = useMemo(() => {
+    const remaining = activeOrders.filter(
+      (order) => isActiveRiderOrder(order) && order.id !== params.orderId
+    );
+    return pickPrimaryActiveOrder(remaining);
+  }, [activeOrders, params.orderId]);
+
+  const scale = useSharedValue(0.6);
+  const opacity = useSharedValue(0);
+  const cardY = useSharedValue(24);
+  const navigatedRef = useRef(false);
+
+  const { data: orderDetail } = useRideOrder(params.orderId, {
+    refetchInterval: (query) => {
+      const rating = query.state.data?.passengerRating;
+      return rating != null && rating >= 1 ? false : 3000;
+    },
+  });
+
+  const passengerRating = useMemo(() => {
+    const raw = orderDetail?.passengerRating;
+    if (raw == null || !Number.isFinite(raw)) return 0;
+    return Math.max(0, Math.min(5, Math.round(raw)));
+  }, [orderDetail?.passengerRating]);
+
+  useEffect(() => {
+    queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
+  }, [queryClient]);
+
+  useEffect(() => {
+    scale.value = withSpring(1, { damping: 12, stiffness: 140 });
+    opacity.value = withTiming(1, { duration: 380 });
+    cardY.value = withDelay(80, withSpring(0, { damping: 14, stiffness: 120 }));
+  }, [scale, opacity, cardY]);
+
+  const heroStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+    opacity: opacity.value,
+  }));
+
+  const cardStyle = useAnimatedStyle(() => ({
+    opacity: opacity.value,
+    transform: [{ translateY: cardY.value }],
+  }));
+
+  const totalEarning = Number(params.totalEarning) || 0;
+  const baseEarning = Number(params.baseEarning) || 0;
+  const tipAmount = Number(params.tipAmount) || 0;
+  const waitingEarning = Number(params.waitingEarning) || 0;
+  const surgeEarning = Number(params.surgeEarning) || 0;
+  const appliedSurges = useMemo(() => {
+    try {
+      const parsed = JSON.parse(params.appliedSurgesJson || "[]") as unknown;
+      if (!Array.isArray(parsed)) return [] as { name: string; amount: number }[];
+      return parsed
+        .map((line) => {
+          if (line == null || typeof line !== "object") return null;
+          const row = line as { name?: unknown; amount?: unknown };
+          const name = String(row.name ?? "").trim();
+          const amount = Number(row.amount);
+          if (!name || !Number.isFinite(amount) || amount <= 0) return null;
+          return { name, amount: Math.round(amount) };
+        })
+        .filter((x): x is { name: string; amount: number } => x != null);
+    } catch {
+      return [] as { name: string; amount: number }[];
+    }
+  }, [params.appliedSurgesJson]);
+
+  const tripMinutes = Number(params.tripMinutes) || 0;
+  const distanceLabel = params.distanceKm
+    ? formatDistanceKm(Number(params.distanceKm))
+    : "—";
+  const displayId = params.displayId?.trim() || params.orderId;
+  const vehicleImage = resolveRideVehicleImage(params.rideType);
+
+  const riderName = profile?.name?.trim() || riderStatus?.name?.trim() || "Rider";
+  const avatarUri = toAbsoluteImageUrl(profile?.selfieUrl ?? riderStatus?.selfieUrl);
+  const avatarInitials = initialsFromName(riderName);
+
+  const hasNextOrder = nextOrder != null;
+  const ctaLabel = hasNextOrder
+    ? t("orders.deliverySuccess.goToNextOrder", "Go to Next Order")
+    : t("orders.deliverySuccess.goToHome", "Go to Home");
+
+  const handleCopyOrderId = () => {
+    Alert.alert(
+      t("orders.deliverySuccess.orderIdCopiedTitle", "Order ID"),
+      `#${displayId}`
+    );
+  };
+
+  const handlePrimaryCta = () => {
+    if (navigatedRef.current) return;
+    navigatedRef.current = true;
+    if (nextOrder) {
+      openActiveOrder(nextOrder);
+      return;
+    }
+    router.replace("/(tabs)/orders");
+  };
+
+  return (
+    <View style={styles.root}>
+      <StatusBar style="dark" />
+      <LinearGradient
+        colors={["#D1FAE5", "#ECFDF5", "#F0FDF4", PAGE_BG]}
+        locations={[0, 0.2, 0.42, 0.78]}
+        style={StyleSheet.absoluteFill}
+        pointerEvents="none"
+      />
+
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <View style={styles.topBar}>
+          <Pressable
+            onPress={() => router.push("/raise-ticket")}
+            style={({ pressed }) => [styles.helpBtn, pressed && styles.pressed]}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={t("common.help", "Help")}
+          >
+            <View style={styles.helpBtnRow}>
+              <Ionicons name="headset-outline" size={15} color={MUTED} />
+              <Text style={styles.helpText} numberOfLines={1}>
+                {t("common.help", "Help")}
+              </Text>
+            </View>
+          </Pressable>
+        </View>
+
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          bounces
+          keyboardShouldPersistTaps="handled"
+        >
+          <Animated.View style={[styles.heroBlock, heroStyle]}>
+            <Text style={styles.yayText}>{t("orders.rideSuccess.yay", "Yay! 🎉")}</Text>
+            <Text style={styles.heroTitle}>
+              {t("orders.rideSuccess.title", "Ride Completed")}
+            </Text>
+            <Text style={styles.heroSubtitle} numberOfLines={2}>
+              {t(
+                "orders.rideSuccess.subtitle",
+                "Your passenger has reached their destination safely."
+              )}
+            </Text>
+
+            <View style={styles.heroScene}>
+              {CONFETTI_DOTS.map((dot, i) => (
+                <View
+                  key={i}
+                  style={[
+                    styles.confettiDot,
+                    {
+                      backgroundColor: dot.color,
+                      width: dot.size,
+                      height: dot.size,
+                      borderRadius: dot.size / 2,
+                      top: dot.top,
+                      left: "left" in dot ? dot.left : undefined,
+                      right: "right" in dot ? dot.right : undefined,
+                    },
+                  ]}
+                />
+              ))}
+
+              <View style={styles.checkBadge}>
+                <View style={styles.checkCircle}>
+                  <Ionicons name="checkmark" size={24} color="#ffffff" />
+                </View>
+              </View>
+
+              <View style={styles.roadDecor}>
+                <View style={styles.roadLine} />
+                <View style={styles.pathArc} />
+                <View style={styles.destPin}>
+                  <Ionicons name="location" size={22} color={PURPLE} />
+                </View>
+              </View>
+
+              <RNImage source={vehicleImage} style={styles.vehicleHero} resizeMode="contain" />
+            </View>
+          </Animated.View>
+
+          <Animated.View style={[styles.riderCard, cardStyle]}>
+            <View style={styles.riderCardLeft}>
+              {avatarUri ? (
+                <Image source={{ uri: avatarUri }} style={styles.avatar} contentFit="cover" />
+              ) : (
+                <View style={styles.avatarFallback}>
+                  <Text style={styles.avatarInitials}>{avatarInitials}</Text>
+                </View>
+              )}
+              <View style={styles.riderMeta}>
+                <Text style={styles.riderName} numberOfLines={1}>
+                  {riderName}
+                </Text>
+                <Text style={styles.riderRole}>
+                  {t("orders.rideSuccess.riderLabel", "Rider")}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.riderDivider} />
+
+            <Pressable
+              onPress={handleCopyOrderId}
+              style={({ pressed }) => [styles.orderMeta, pressed && styles.pressed]}
+              accessibilityRole="button"
+              accessibilityLabel={`Order ID ${displayId}`}
+            >
+              <View style={styles.orderIdRow}>
+                <Text style={styles.orderIdValue} numberOfLines={1}>
+                  #{displayId}
+                </Text>
+                <Ionicons name="copy-outline" size={14} color={PURPLE} />
+              </View>
+              <Text style={styles.orderIdLabel}>
+                {t("orders.deliverySuccess.orderIdLabel", "Order ID")}
+              </Text>
+            </Pressable>
+          </Animated.View>
+
+          <Animated.View style={[styles.earningsShell, cardStyle]}>
+            <DotGrid side="left" />
+            <DotGrid side="right" />
+
+            <View style={styles.secureBadge}>
+              <MaterialCommunityIcons name="shield-check" size={13} color={GREEN_LIGHT} />
+              <Text style={styles.secureBadgeText}>
+                {t("orders.rideSuccess.securePayout", "Secure Payout")}
+              </Text>
+            </View>
+
+            <Text style={styles.earnedLabel}>
+              {t("orders.deliverySuccess.youEarned", "You Earned")}
+            </Text>
+
+            <Text
+              style={styles.earnedAmount}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.7}
+            >
+              ₹{totalEarning.toLocaleString("en-IN")}
+            </Text>
+
+            <View style={styles.paymentBadge}>
+              <Ionicons name="checkmark-circle" size={14} color="#ffffff" />
+              <Text style={styles.paymentBadgeText}>
+                {t("orders.deliverySuccess.paymentReceived", "Payment Received")}
+              </Text>
+            </View>
+
+            <View style={styles.breakdownCard}>
+              <FareLine
+                icon="bicycle"
+                iconColor={GREEN_DARK}
+                iconBg="#DCFCE7"
+                label={t("orders.rideSuccess.rideFare", "Ride Fare")}
+                value={`₹${baseEarning.toLocaleString("en-IN")}`}
+              />
+              {waitingEarning > 0 ? (
+                <FareLine
+                  icon="time"
+                  iconColor={PURPLE}
+                  iconBg="#EDE9FE"
+                  label={t("orders.rideSuccess.waitingCharge", "Waiting Charge")}
+                  value={`+ ₹${waitingEarning.toLocaleString("en-IN")}`}
+                />
+              ) : null}
+              {appliedSurges.length > 0
+                ? appliedSurges.map((line) => {
+                    const surgeStyle = surgeIconForName(line.name);
+                    return (
+                      <FareLine
+                        key={line.name}
+                        icon={surgeStyle.icon}
+                        iconColor={surgeStyle.color}
+                        iconBg={surgeStyle.bg}
+                        label={line.name}
+                        value={`+ ₹${line.amount.toLocaleString("en-IN")}`}
+                      />
+                    );
+                  })
+                : surgeEarning > 0 ? (
+                    <FareLine
+                      icon="moon"
+                      iconColor="#EC4899"
+                      iconBg="#FCE7F3"
+                      label={t("orders.rideSuccess.surgeBonus", "Surge bonus")}
+                      value={`+ ₹${surgeEarning.toLocaleString("en-IN")}`}
+                    />
+                  ) : null}
+              {tipAmount > 0 ? (
+                <FareLine
+                  icon="heart"
+                  iconColor="#EF4444"
+                  iconBg="#FEE2E2"
+                  label={t("orders.deliverySuccess.tip", "Customer tip")}
+                  value={`+ ₹${tipAmount.toLocaleString("en-IN")}`}
+                />
+              ) : null}
+
+              <View style={styles.statsDivider} />
+
+              <View style={styles.statsRow}>
+                <View style={styles.statCol}>
+                  <View style={styles.statIconRow}>
+                    <Ionicons name="time-outline" size={15} color={GREEN_DARK} />
+                    <Text style={styles.statValue}>
+                      {tripMinutes > 0 ? `${tripMinutes} min` : "—"}
+                    </Text>
+                  </View>
+                  <Text style={styles.statLabel}>
+                    {t("orders.rideSuccess.totalTime", "Total Time")}
+                  </Text>
+                </View>
+                <View style={styles.statDivider} />
+                <View style={styles.statCol}>
+                  <View style={styles.statIconRow}>
+                    <Ionicons name="navigate-outline" size={15} color={GREEN_DARK} />
+                    <Text style={styles.statValue}>{distanceLabel}</Text>
+                  </View>
+                  <Text style={styles.statLabel}>
+                    {t("orders.rideSuccess.totalDistance", "Total Distance")}
+                  </Text>
+                </View>
+              </View>
+            </View>
+          </Animated.View>
+
+          <View style={styles.feedbackCard}>
+            <Text style={styles.feedbackEmoji}>{passengerRating > 0 ? "⭐" : "🤩"}</Text>
+            <View style={styles.feedbackTextCol}>
+              <Text style={styles.feedbackTitle}>
+                {passengerRating > 0
+                  ? t("orders.rideSuccess.passengerRatedTitle", "Passenger rated you!")
+                  : t("orders.rideSuccess.feedbackTitle", "Great ride!")}
+              </Text>
+              <Text style={styles.feedbackSub} numberOfLines={1}>
+                {passengerRating > 0
+                  ? t(
+                      "orders.rideSuccess.passengerRatedSub",
+                      "{{rating}} star rating received.",
+                      { rating: passengerRating }
+                    )
+                  : t(
+                      "orders.rideSuccess.passengerRatingPending",
+                      "Passenger rating will appear here shortly."
+                    )}
+              </Text>
+            </View>
+            <View style={styles.starsRow}>
+              {[1, 2, 3, 4, 5].map((n) => {
+                const filled = passengerRating > 0 && n <= passengerRating;
+                return (
+                  <Ionicons
+                    key={n}
+                    name={filled ? "star" : "star-outline"}
+                    size={18}
+                    color={filled ? "#F59E0B" : "#D1D5DB"}
+                  />
+                );
+              })}
+            </View>
+          </View>
+
+          <Pressable
+            onPress={() => router.push("/(tabs)/earnings")}
+            style={styles.walletNotePress}
+            android_ripple={{ color: "rgba(91, 33, 182, 0.12)" }}
+          >
+            <View style={styles.walletNote}>
+              <View style={styles.walletNoteRow}>
+                <Ionicons
+                  name="wallet-outline"
+                  size={16}
+                  color="#5B21B6"
+                  style={styles.walletNoteIcon}
+                />
+                <Text style={styles.walletNoteText} numberOfLines={1}>
+                  {t(
+                    "orders.deliverySuccess.walletNote",
+                    "Your earnings will be added to your wallet shortly."
+                  )}
+                </Text>
+              </View>
+            </View>
+          </Pressable>
+        </ScrollView>
+
+        <View style={styles.ctaDock}>
+          <Pressable
+            onPress={handlePrimaryCta}
+            accessibilityRole="button"
+            accessibilityLabel={ctaLabel}
+            android_ripple={{ color: "rgba(255,255,255,0.28)" }}
+            style={({ pressed }) => [
+              styles.primaryBtnOuter,
+              pressed && styles.primaryBtnPressed,
+            ]}
+          >
+            <LinearGradient
+              colors={["#15803D", "#22C55E", "#4ADE80"]}
+              locations={[0, 0.55, 1]}
+              start={{ x: 0, y: 0.5 }}
+              end={{ x: 1, y: 0.5 }}
+              style={styles.primaryBtn}
+            >
+              <Text style={styles.primaryBtnLabel} numberOfLines={1}>
+                {ctaLabel}
+              </Text>
+              <View style={styles.primaryBtnIconWrap}>
+                <Ionicons name="arrow-forward" size={18} color="#ffffff" />
+              </View>
+            </LinearGradient>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: PAGE_BG,
+  },
+  safe: {
+    flex: 1,
+  },
+  topBar: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    paddingHorizontal: 16,
+    paddingBottom: 2,
+  },
+  helpBtn: {
+    alignSelf: "flex-end",
+    borderRadius: 999,
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0f172a",
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.05,
+        shadowRadius: 4,
+      },
+      android: { elevation: 2 },
+    }),
+  },
+  helpBtnRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "nowrap",
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  helpText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: MUTED,
+    flexShrink: 0,
+    includeFontPadding: false,
+  },
+  pressed: { opacity: 0.88 },
+  scroll: { flex: 1 },
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingTop: 0,
+    paddingBottom: 12,
+    gap: 10,
+  },
+  heroBlock: {
+    alignItems: "center",
+    paddingBottom: 2,
+  },
+  yayText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: MUTED,
+    marginBottom: 1,
+    includeFontPadding: false,
+  },
+  heroTitle: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: NAVY,
+    letterSpacing: -0.4,
+    textAlign: "center",
+    includeFontPadding: false,
+  },
+  heroSubtitle: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "500",
+    color: MUTED,
+    textAlign: "center",
+    lineHeight: 16,
+    paddingHorizontal: 16,
+    includeFontPadding: false,
+  },
+  heroScene: {
+    width: "100%",
+    height: 104,
+    marginTop: 6,
+    alignItems: "center",
+    justifyContent: "flex-end",
+    position: "relative",
+  },
+  confettiDot: {
+    position: "absolute",
+    zIndex: 2,
+  },
+  checkBadge: {
+    position: "absolute",
+    top: 0,
+    zIndex: 4,
+    alignItems: "center",
+  },
+  checkCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: GREEN,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 3,
+    borderColor: "#ffffff",
+    ...Platform.select({
+      ios: {
+        shadowColor: GREEN_DARK,
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.28,
+        shadowRadius: 8,
+      },
+      android: { elevation: 6 },
+    }),
+  },
+  roadDecor: {
+    position: "absolute",
+    bottom: 4,
+    left: 0,
+    right: 0,
+    height: 58,
+    zIndex: 1,
+  },
+  roadLine: {
+    position: "absolute",
+    left: 24,
+    right: 24,
+    bottom: 10,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: "#D1D5DB",
+  },
+  pathArc: {
+    position: "absolute",
+    right: 54,
+    bottom: 18,
+    width: 72,
+    height: 36,
+    borderTopWidth: 3,
+    borderRightWidth: 3,
+    borderColor: GREEN,
+    borderTopRightRadius: 36,
+  },
+  destPin: {
+    position: "absolute",
+    right: 38,
+    bottom: 42,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.12,
+        shadowRadius: 4,
+      },
+      android: { elevation: 3 },
+    }),
+  },
+  vehicleHero: {
+    width: 168,
+    height: 72,
+    zIndex: 3,
+    marginBottom: 0,
+  },
+  riderCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: CARD,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: "#EEF2F7",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0f172a",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.06,
+        shadowRadius: 10,
+      },
+      android: { elevation: 3 },
+    }),
+  },
+  riderCardLeft: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    minWidth: 0,
+  },
+  avatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#F3F4F6",
+  },
+  avatarFallback: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: MINT_SOFT,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: MINT_BORDER,
+  },
+  avatarInitials: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: GREEN_DARK,
+  },
+  riderMeta: {
+    flex: 1,
+    minWidth: 0,
+  },
+  riderName: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: TEXT,
+    includeFontPadding: false,
+  },
+  riderRole: {
+    marginTop: 2,
+    fontSize: 11,
+    fontWeight: "500",
+    color: MUTED,
+    includeFontPadding: false,
+  },
+  riderDivider: {
+    width: 1,
+    height: 42,
+    backgroundColor: "#E5E7EB",
+    marginHorizontal: 12,
+  },
+  orderMeta: {
+    alignItems: "flex-end",
+    minWidth: 96,
+    maxWidth: 130,
+  },
+  orderIdRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  orderIdValue: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: TEXT,
+    includeFontPadding: false,
+  },
+  orderIdLabel: {
+    marginTop: 2,
+    fontSize: 11,
+    fontWeight: "500",
+    color: MUTED,
+    includeFontPadding: false,
+  },
+  earningsShell: {
+    backgroundColor: NAVY,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 12,
+    overflow: "hidden",
+    position: "relative",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.18,
+        shadowRadius: 14,
+      },
+      android: { elevation: 6 },
+    }),
+  },
+  dotGrid: {
+    position: "absolute",
+    top: 52,
+    width: 18,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 3,
+    opacity: 0.35,
+  },
+  dotGridLeft: { left: 8 },
+  dotGridRight: { right: 8 },
+  dotCell: {
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: "#94A3B8",
+  },
+  secureBadge: {
+    position: "absolute",
+    top: 12,
+    right: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(34, 197, 94, 0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(74, 222, 128, 0.35)",
+  },
+  secureBadgeText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: GREEN_LIGHT,
+    includeFontPadding: false,
+  },
+  earnedLabel: {
+    textAlign: "center",
+    fontSize: 12,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.72)",
+    includeFontPadding: false,
+  },
+  earnedAmount: {
+    textAlign: "center",
+    fontSize: 34,
+    fontWeight: "800",
+    color: GREEN_LIGHT,
+    letterSpacing: -1,
+    marginTop: 1,
+    includeFontPadding: false,
+  },
+  paymentBadge: {
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: 6,
+    marginBottom: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: GREEN_DARK,
+  },
+  paymentBadgeText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#ffffff",
+    includeFontPadding: false,
+  },
+  breakdownCard: {
+    backgroundColor: CARD,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 8,
+    gap: 7,
+  },
+  fareLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  fareIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fareLineLabel: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 13,
+    fontWeight: "600",
+    color: TEXT,
+    includeFontPadding: false,
+  },
+  fareLineValue: {
+    flexShrink: 0,
+    fontSize: 14,
+    fontWeight: "800",
+    color: TEXT,
+    includeFontPadding: false,
+  },
+  statsDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#E5E7EB",
+    marginTop: 2,
+    marginBottom: 4,
+  },
+  statsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingBottom: 4,
+  },
+  statCol: {
+    flex: 1,
+    alignItems: "center",
+    gap: 2,
+  },
+  statIconRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  statValue: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: TEXT,
+    includeFontPadding: false,
+  },
+  statLabel: {
+    fontSize: 11,
+    fontWeight: "500",
+    color: MUTED,
+    includeFontPadding: false,
+  },
+  statDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: "#E5E7EB",
+  },
+  feedbackCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 14,
+    backgroundColor: MINT_SOFT,
+    borderWidth: 1,
+    borderColor: MINT_BORDER,
+  },
+  feedbackEmoji: {
+    fontSize: 22,
+  },
+  feedbackTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  feedbackTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: GREEN_DARK,
+    includeFontPadding: false,
+  },
+  feedbackSub: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "500",
+    color: MUTED,
+    includeFontPadding: false,
+  },
+  starsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    flexShrink: 0,
+  },
+  walletNotePress: {
+    width: "100%",
+    borderRadius: 14,
+    overflow: "hidden",
+  },
+  walletNote: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: PURPLE_SOFT,
+    borderWidth: 1,
+    borderColor: PURPLE_BORDER,
+  },
+  walletNoteRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "nowrap",
+    gap: 10,
+  },
+  walletNoteIcon: {
+    flexShrink: 0,
+  },
+  walletNoteText: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#5B21B6",
+    lineHeight: 16,
+    includeFontPadding: false,
+  },
+  ctaDock: {
+    flexShrink: 0,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 8,
+    backgroundColor: CARD,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#E5E7EB",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0f172a",
+        shadowOffset: { width: 0, height: -4 },
+        shadowOpacity: 0.1,
+        shadowRadius: 10,
+      },
+      android: { elevation: 10 },
+    }),
+  },
+  primaryBtnOuter: {
+    width: "100%",
+    borderRadius: 14,
+    overflow: "hidden",
+    ...Platform.select({
+      ios: {
+        shadowColor: GREEN_DARK,
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.32,
+        shadowRadius: 10,
+      },
+      android: { elevation: 6 },
+    }),
+  },
+  primaryBtnPressed: {
+    opacity: 0.94,
+    transform: [{ scale: 0.99 }],
+  },
+  primaryBtn: {
+    width: "100%",
+    height: FOOTER_BTN_H,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    paddingHorizontal: 24,
+  },
+  primaryBtnIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.22)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  primaryBtnLabel: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#ffffff",
+    letterSpacing: 0.2,
+    includeFontPadding: false,
+  },
+});

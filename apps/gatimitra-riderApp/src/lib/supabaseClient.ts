@@ -10,24 +10,36 @@ import { getRiderAppConfig } from "@/src/config/env";
 
 let _client: SupabaseClient | null = null;
 
+/** Dev-only diagnostics (no secrets). Same shape as merchant app. */
+export function getSupabaseOtpEnvDebugInfo(): {
+  hasUrl: boolean;
+  hasAnonKey: boolean;
+  urlHost: string | null;
+  phoneOtpUseBackendOnly: boolean;
+} {
+  const { supabaseUrl, supabaseAnonKey, phoneOtpUseBackendOnly } = getRiderAppConfig();
+  let urlHost: string | null = null;
+  if (supabaseUrl) {
+    try {
+      urlHost = new URL(supabaseUrl).host;
+    } catch {
+      urlHost = "(invalid URL)";
+    }
+  }
+  return {
+    hasUrl: Boolean(supabaseUrl),
+    hasAnonKey: Boolean(supabaseAnonKey),
+    urlHost,
+    phoneOtpUseBackendOnly,
+  };
+}
+
 export function getSupabaseAuth(): SupabaseClient | null {
   if (_client) return _client;
   const { supabaseUrl, supabaseAnonKey } = getRiderAppConfig();
   if (!supabaseUrl || !supabaseAnonKey) return null;
   _client = createClient(supabaseUrl, supabaseAnonKey, {
-    auth: {
-      persistSession: false,
-      detectSessionInUrl: false,
-      autoRefreshToken: false,
-    },
+    auth: { persistSession: false },
   });
   return _client;
-}
-
-export function getSupabaseOtpEnvDebugInfo(): { urlSet: boolean; anonKeySet: boolean } {
-  const { supabaseUrl, supabaseAnonKey } = getRiderAppConfig();
-  return {
-    urlSet: Boolean(supabaseUrl),
-    anonKeySet: Boolean(supabaseAnonKey),
-  };
 }

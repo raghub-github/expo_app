@@ -17,6 +17,7 @@ import { LiveSupportTicketProvider } from "@/context/LiveSupportTicketContext";
 import FloatingOrdersManager from "../components/FloatingOrdersManager";
 import { FloatingLiveSupportTicket } from "@/components/FloatingLiveSupportTicket";
 import IncomingOrderModal from "../components/IncomingOrderModal";
+import AcceptanceTimeoutSync from "../components/AcceptanceTimeoutSync";
 import { IncomingOrderSheetProvider } from "@/context/IncomingOrderSheetContext";
 import { SessionRevokedGate } from "@/components/SessionRevokedGate";
 import NotificationSetup from "../components/NotificationSetup";
@@ -57,6 +58,7 @@ export default function RootLayout() {
                               <FloatingOrdersManager />
                               <FloatingLiveSupportTicket />
                               <IncomingOrderModal />
+                              <AcceptanceTimeoutSync />
                               <SessionRevokedGate />
                               <Stack
                               screenOptions={{

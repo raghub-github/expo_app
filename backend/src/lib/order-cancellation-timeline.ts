@@ -8,6 +8,7 @@ export type CancellationTimelineInput = {
   actorType?: "system" | "store" | "customer" | "admin" | "agent";
   cancelMode?: "auto" | "manual";
   statusMessage?: string | null;
+  occurredAt?: Date;
 };
 
 /**
@@ -30,7 +31,9 @@ export async function recordCancellationTimeline(
   const metadata = {
     rejected_reason: reason || (isAuto ? "Auto Cancelled" : null),
     cancel_mode: input.cancelMode ?? (isAuto ? "auto" : "manual"),
+    order_cancellation: true,
   };
+  const occurredAt = input.occurredAt ?? new Date();
 
   await dbSql`
     INSERT INTO order_timelines (
@@ -58,12 +61,12 @@ export async function recordCancellationTimeline(
       ${actorType},
       ${message},
       ${JSON.stringify(metadata)}::jsonb,
-      NOW()
+      ${occurredAt.toISOString()}::timestamptz
     WHERE NOT EXISTS (
       SELECT 1
       FROM order_timelines ot
       WHERE ot.order_id = ${input.orderCorePk}
-        AND ot.status = 'Cancelled'
+        AND lower(trim(ot.status)) IN ('cancelled', 'canceled', 'rejected')
     )
   `;
 

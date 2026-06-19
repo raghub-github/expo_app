@@ -117,7 +117,7 @@ export function MerchantOrderVerticalTimeline({
         const canExpand = step.showView && !!step.actorAction;
         const expanded = canExpand && expandedKey === step.key;
         const detail = canExpand ? actorDetailForStep(step, order, actions) : null;
-        const meta = expanded ? expandedMeta(detail) : null;
+        const meta = expanded && detail ? expandedMeta(detail) : null;
         const timeLabel = step.at ? formatTimelineClock(step.at) : "—";
 
         return (

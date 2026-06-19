@@ -101,6 +101,8 @@ export function calculateProgressiveSlabAmount(args: {
   };
 }
 
+import type { ProgressiveSlabSegment } from "./types.js";
+
 export type SelectedSlabQuote = {
   distanceKm: number;
   slabId: number;
@@ -112,6 +114,10 @@ export type SelectedSlabQuote = {
   preMinChargeTotal: number;
   minCharge: number | null;
   finalAmount: number;
+  /** Progressive geo slabs — distance bands applied for this quote. */
+  segments?: ProgressiveSlabSegment[];
+  /** First-slab included km (from DB `max_km` on the zero/min slab). */
+  includedKm?: number;
 };
 
 /**

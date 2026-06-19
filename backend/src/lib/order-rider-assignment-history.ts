@@ -38,6 +38,92 @@ export type RecordRiderAssignmentHistoryInput = {
   occurredAt?: Date;
 };
 
+/** Per-rider workflow milestones from the active assignment row (not order-level state). */
+export type ActiveRiderAssignmentMilestones = {
+  assignmentStatus: string | null;
+  reachedMerchantAt: Date | string | null;
+  pickedUpAt: Date | string | null;
+  reachedCustomerAt: Date | string | null;
+  deliveredAt: Date | string | null;
+};
+
+type AssignmentMilestoneRow = {
+  assignment_status: string | null;
+  reached_merchant_at: Date | string | null;
+  picked_up_at: Date | string | null;
+  reached_customer_at: Date | string | null;
+  delivered_at: Date | string | null;
+};
+
+function mapAssignmentMilestoneRow(
+  row: AssignmentMilestoneRow | undefined
+): ActiveRiderAssignmentMilestones | null {
+  if (!row) return null;
+  return {
+    assignmentStatus: row.assignment_status?.trim() || null,
+    reachedMerchantAt: row.reached_merchant_at ?? null,
+    pickedUpAt: row.picked_up_at ?? null,
+    reachedCustomerAt: row.reached_customer_at ?? null,
+    deliveredAt: row.delivered_at ?? null,
+  };
+}
+
+/** Active assignment milestones for one order + rider (used for rider app workflow state). */
+export async function loadActiveRiderAssignmentMilestones(
+  dbOrTx: DbTx | ReturnType<typeof getDb>,
+  orderCorePk: number,
+  riderId: number
+): Promise<ActiveRiderAssignmentMilestones | null> {
+  const rows = await dbOrTx.execute<AssignmentMilestoneRow & { order_core_id: number }>(sql`
+    SELECT
+      assignment_status::text AS assignment_status,
+      reached_merchant_at,
+      picked_up_at,
+      reached_customer_at,
+      delivered_at
+    FROM order_rider_assignments
+    WHERE order_core_id = ${orderCorePk}
+      AND rider_id = ${riderId}
+      AND is_active = TRUE
+    LIMIT 1
+  `);
+  return mapAssignmentMilestoneRow((rows as AssignmentMilestoneRow[])[0]);
+}
+
+/** Batch-load active assignment milestones for a rider's active orders. */
+export async function loadActiveRiderAssignmentMilestonesForRider(
+  dbOrTx: DbTx | ReturnType<typeof getDb>,
+  riderId: number,
+  orderCoreIds: number[]
+): Promise<Map<number, ActiveRiderAssignmentMilestones>> {
+  const ids = [...new Set(orderCoreIds.filter((id) => Number.isFinite(id) && id > 0))];
+  const map = new Map<number, ActiveRiderAssignmentMilestones>();
+  if (ids.length === 0) return map;
+
+  const rows = await dbOrTx.execute<AssignmentMilestoneRow & { order_core_id: number }>(sql`
+    SELECT
+      order_core_id,
+      assignment_status::text AS assignment_status,
+      reached_merchant_at,
+      picked_up_at,
+      reached_customer_at,
+      delivered_at
+    FROM order_rider_assignments
+    WHERE rider_id = ${riderId}
+      AND is_active = TRUE
+      AND order_core_id IN (${sql.join(
+        ids.map((id) => sql`${id}`),
+        sql`, `
+      )})
+  `);
+
+  for (const row of rows as (AssignmentMilestoneRow & { order_core_id: number })[]) {
+    const mapped = mapAssignmentMilestoneRow(row);
+    if (mapped) map.set(Number(row.order_core_id), mapped);
+  }
+  return map;
+}
+
 function toTs(value: Date): string {
   return value.toISOString();
 }
@@ -186,7 +272,11 @@ export async function recordRiderAssignmentAccepted(
         service_type = ${serviceType},
         is_active = TRUE,
         assigned_at = COALESCE(assigned_at, ${toTs(now)}::timestamptz),
-        accepted_at = COALESCE(accepted_at, ${toTs(now)}::timestamptz),
+        accepted_at = ${toTs(now)}::timestamptz,
+        reached_merchant_at = NULL,
+        picked_up_at = NULL,
+        reached_customer_at = NULL,
+        delivered_at = NULL,
         distance_to_merchant_km = COALESCE(${distance?.merchantDistanceKm ?? null}, distance_to_merchant_km),
         distance_to_customer_km = COALESCE(${distance?.customerDistanceKm ?? null}, distance_to_customer_km),
         assignment_metadata = assignment_metadata || ${JSON.stringify({ serviceType })}::jsonb,
@@ -310,6 +400,8 @@ async function patchAssignmentRow(
         UPDATE order_rider_assignments
         SET
           picked_up_at = COALESCE(picked_up_at, ${ts}::timestamptz),
+          picked_up_actor_type = COALESCE(picked_up_actor_type, 'rider'),
+          picked_up_actor_label = COALESCE(picked_up_actor_label, 'GatiMitra App'),
           distance_to_merchant_km = COALESCE(distance_to_merchant_km, ${mx}),
           distance_to_customer_km = COALESCE(distance_to_customer_km, ${cx}),
           updated_at = ${ts}::timestamptz
@@ -389,6 +481,7 @@ export async function recordRiderAssignmentMilestone(
     occurredAt?: Date;
     distance?: RiderDistanceSnapshot;
     statusMessage?: string | null;
+    metadata?: Record<string, unknown>;
   }
 ): Promise<void> {
   const now = input.occurredAt ?? new Date();
@@ -420,6 +513,19 @@ export async function recordRiderAssignmentMilestone(
     occurredAt: now,
     distance,
     statusMessage: input.statusMessage,
+    metadata:
+      input.metadata ??
+      (input.eventType === "picked_up"
+        ? {
+            actor_type: "rider",
+            actor_id: "GatiMitra App",
+          }
+        : input.eventType === "reached_merchant"
+          ? {
+              actor_type: "rider",
+              actor_id: "GatiMitra App",
+            }
+          : undefined),
   });
 }
 

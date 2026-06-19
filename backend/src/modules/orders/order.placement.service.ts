@@ -32,13 +32,16 @@ import {
   resolveOrdersCorePk,
   writeOrderItemCommissionSnapshots,
 } from "../commission/writeOrderCommissionSnapshots.js";
+import { resolveStoreCommission, type ResolvedCommission } from "../commission/commission.resolver.js";
 import { persistOrderItemAddonsWithSnapshots } from "../commission/persistOrderItemAddons.js";
+import { formatAddressLabelEnum } from "../../lib/order-delivery-details.js";
 import { enrichAddonsWithMenuMetadata } from "../commission/resolveMenuAddonMetadata.js";
 import { resolveMenuAddonPk } from "../commission/resolveMenuAddonPk.js";
 import type { NormalizedOrderItem } from "./orderNormalizer.js";
 import { freezeEtaForPlacedOrder } from "../eta/eta.placement.js";
 import { vegNonvegForPlacementItem } from "../../lib/order-item-veg.js";
-import { insertPlacedOrderCoreWithTimelines } from "../../lib/order-placement-persist.js";
+import { insertPlacedOrderCoreWithTimelines, runInSavepoint } from "../../lib/order-placement-persist.js";
+import { jsonForSql } from "../../lib/sql-timestamps.js";
 import { getSql } from "../../db/client.js";
 import { notifyMerchantStoreNewOrder } from "../../lib/merchant-new-order-notify.js";
 import { maybeStartOrderDispatch } from "../../lib/order-dispatch.service.js";
@@ -78,7 +81,7 @@ function asNumber(v: unknown): number {
 }
 
 function toJson(v: unknown): string {
-  return JSON.stringify(v ?? {}, (_, val) => (typeof val === "bigint" ? String(val) : val));
+  return jsonForSql(v);
 }
 
 /**
@@ -457,6 +460,8 @@ export type PendingOrderInput = {
   pickupLon?: number;
   couponCode?: string | null;
   subscriptionOptIn?: boolean;
+  subscriptionPlanId?: number;
+  subscriptionBillingCycle?: "weekly" | "monthly" | "yearly";
   /** 'delivery' (default) or 'self_pickup'. Self-pickup waives delivery fee in billing. */
   deliveryType?: "delivery" | "self_pickup";
   checkoutMetadata?: Record<string, unknown> | null;
@@ -493,6 +498,8 @@ export async function createPendingOrder(
     tipAmount = 0,
     donationAmount = 0,
     subscriptionOptIn = false,
+    subscriptionPlanId,
+    subscriptionBillingCycle,
   } = input;
 
   const idemKey = input.idempotencyKey?.trim() || null;
@@ -563,6 +570,11 @@ export async function createPendingOrder(
       postalCode: customerAddresses.postalCode,
       latitude: customerAddresses.latitude,
       longitude: customerAddresses.longitude,
+      label: customerAddresses.label,
+      customLabel: customerAddresses.customLabel,
+      contactName: customerAddresses.contactName,
+      contactMobile: customerAddresses.contactMobile,
+      deliveryInstructionsList: customerAddresses.deliveryInstructionsList,
     })
     .from(customerAddresses)
     .where(
@@ -596,6 +608,8 @@ export async function createPendingOrder(
       pickupLat: input.pickupLat,
       pickupLon: input.pickupLon,
       subscriptionOptIn,
+      subscriptionPlanId,
+      subscriptionBillingCycle,
       deliveryType: input.deliveryType ?? "delivery",
       selectedPlatformOfferId: input.selectedPlatformOfferId ?? null,
       selectedMerchantOfferId: input.selectedMerchantOfferId ?? null,
@@ -617,28 +631,34 @@ export async function createPendingOrder(
   const pickupLat = input.pickupLat ?? storeForOrder?.latitude ?? dropLat;
   const pickupLon = input.pickupLon ?? storeForOrder?.longitude ?? dropLon;
 
-  // Canonical distance: route-based between pickup (store) and selected drop address.
-  // Fallback to Haversine only if routing engine fails.
+  // Reuse route distance from billing snapshot when available — createPending already
+  // ran computeBillForOrder above, which calls the same routing engine. Skipping a
+  // second getRoute here cuts place-order latency and avoids client timeouts.
   let distanceKm = 0;
-  try {
-    const route = await getRoute({
-      origin: { lat: pickupLat, lng: pickupLon },
-      destination: { lat: dropLat, lng: dropLon },
-      profile: "driving",
-      mapboxToken: env.MAPBOX_ACCESS_TOKEN || undefined,
-      osrmBaseUrl: env.OSRM_BASE_URL || undefined,
-    });
-    distanceKm = route.distanceKm;
-  } catch {
-    const toRad = (deg: number) => (deg * Math.PI) / 180;
-    const R = 6371;
-    const dLat = toRad(dropLat - pickupLat);
-    const dLon = toRad(dropLon - pickupLon);
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(toRad(pickupLat)) * Math.cos(toRad(dropLat)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    distanceKm = Math.round(R * c * 100) / 100;
+  const snapDist = billingSnapshot?.distanceKm;
+  if (typeof snapDist === "number" && Number.isFinite(snapDist) && snapDist >= 0) {
+    distanceKm = snapDist;
+  } else {
+    try {
+      const route = await getRoute({
+        origin: { lat: pickupLat, lng: pickupLon },
+        destination: { lat: dropLat, lng: dropLon },
+        profile: "driving",
+        mapboxToken: env.MAPBOX_ACCESS_TOKEN || undefined,
+        osrmBaseUrl: env.OSRM_BASE_URL || undefined,
+      });
+      distanceKm = route.distanceKm;
+    } catch {
+      const toRad = (deg: number) => (deg * Math.PI) / 180;
+      const R = 6371;
+      const dLat = toRad(dropLat - pickupLat);
+      const dLon = toRad(dropLon - pickupLon);
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(toRad(pickupLat)) * Math.cos(toRad(dropLat)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      distanceKm = Math.round(R * c * 100) / 100;
+    }
   }
   const pickupAddressNormalized = sanitizeOptional((storeForOrder?.fullAddress ?? input.pickupAddressRaw ?? dropAddressRaw).trim() || null);
 
@@ -660,6 +680,33 @@ export async function createPendingOrder(
           : true,
     storeKptMinutes: null,
   });
+
+  const checkoutMetadataBase =
+    input.checkoutMetadata && typeof input.checkoutMetadata === "object"
+      ? { ...(input.checkoutMetadata as Record<string, unknown>) }
+      : {};
+  const checkoutMetadata = {
+    ...checkoutMetadataBase,
+    ...(subscriptionOptIn && subscriptionPlanId
+      ? {
+          subscriptionOptIn: true,
+          subscriptionPlanId,
+          subscriptionBillingCycle: subscriptionBillingCycle ?? "monthly",
+        }
+      : {}),
+    addressLabel:
+      checkoutMetadataBase.addressLabel ??
+      formatAddressLabelEnum(String(addrRow.label ?? ""), addrRow.customLabel),
+    receiverContactName:
+      checkoutMetadataBase.receiverContactName ?? addrRow.contactName?.trim() ?? null,
+    receiverContactMobile:
+      checkoutMetadataBase.receiverContactMobile ?? addrRow.contactMobile?.trim() ?? null,
+    ...(Array.isArray(addrRow.deliveryInstructionsList) &&
+    addrRow.deliveryInstructionsList.length > 0 &&
+    !Array.isArray(checkoutMetadataBase.deliveryInstructionsList)
+      ? { deliveryInstructionsList: addrRow.deliveryInstructionsList }
+      : {}),
+  };
 
   await db.insert(pendingOrders).values({
     pendingId,
@@ -686,7 +733,7 @@ export async function createPendingOrder(
     billingSnapshot: billingSnapshot ?? undefined,
     billingRulesetVersion: billingRulesetVersion ?? undefined,
     couponCode: couponStored ?? undefined,
-    checkoutMetadata: input.checkoutMetadata ?? undefined,
+    checkoutMetadata: checkoutMetadata ?? undefined,
     idempotencyKey: idemKey ?? undefined,
     expiresAt,
   });
@@ -771,6 +818,19 @@ export async function finalizeOrder(
 
   await enrichAddonsWithMenuPk(pending.merchantStoreId, items);
 
+  // Pre-resolve commission outside the placement transaction. resolveStoreCommission
+  // uses a separate pool connection; calling it inside db.transaction() can exhaust
+  // the pool under load and hit statement_timeout, aborting paid orders.
+  let storeCommission: ResolvedCommission | null = null;
+  try {
+    storeCommission = await resolveStoreCommission(pending.merchantStoreId);
+  } catch (e) {
+    console.warn(
+      "[commission] pre-resolve before finalize failed — item snapshots may skip:",
+      (e as Error).message,
+    );
+  }
+
   const pickupRaw = sanitizeStringForDb(pending.pickupAddressNormalized ?? undefined) ?? "";
   const dropRaw = sanitizeStringForDb(pending.deliveryAddress ?? undefined) ?? "";
   const pickupLat = pending.pickupLat != null ? String(pending.pickupLat) : "0";
@@ -783,6 +843,13 @@ export async function finalizeOrder(
   const ORDER_SOURCE_INTERNAL = "internal" as const;
   const ORDER_STATUS_ASSIGNED = "assigned" as const;
   const PAYMENT_STATUS_COMPLETED = "completed" as const;
+
+  const dropLatNum = Number(dropLat);
+  const dropLonNum = Number(dropLon);
+  const cityHint =
+    typeof pending.checkoutMetadata === "object" && pending.checkoutMetadata != null
+      ? String((pending.checkoutMetadata as Record<string, unknown>).deliveryCity ?? "").trim() || null
+      : null;
 
   let orderIdText: string | undefined;
   let orderCorePk: number | undefined;
@@ -835,20 +902,6 @@ export async function finalizeOrder(
         finalizedAt: new Date(),
       });
 
-      const dropLatNum = Number(dropLat);
-      const dropLonNum = Number(dropLon);
-      const cityHint =
-        typeof pending.checkoutMetadata === "object" && pending.checkoutMetadata != null
-          ? String((pending.checkoutMetadata as Record<string, unknown>).deliveryCity ?? "").trim() || null
-          : null;
-      await captureOrderWeatherSnapshot(tx, {
-        orderCorePk,
-        orderIdText,
-        dropLat: dropLatNum,
-        dropLon: dropLonNum,
-        cityHint,
-      });
-
       const itemInserts = items.map((i) => {
         const addonPerUnit = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity, 0);
         const lineTotal = i.basePrice * i.quantity + addonPerUnit * i.quantity;
@@ -889,6 +942,7 @@ export async function finalizeOrder(
             orderIdNum,
             orderItemId: Number(orderItemId),
             addons,
+            storeCommission,
           },
         );
       }
@@ -913,6 +967,7 @@ export async function finalizeOrder(
         pending.merchantStoreId,
         snapshotInputs,
         orderIdNum ?? undefined,
+        storeCommission,
       );
 
       await tx.insert(ordersCorePayments).values({
@@ -938,14 +993,20 @@ export async function finalizeOrder(
         .where(eq(pendingOrders.pendingId, pendingId));
 
       if (getEnv().OMS_LEDGER_SHADOW_WRITE) {
-        await persistOmsLedgerArtifacts(tx as unknown as PostgresJsDatabase<Record<string, unknown>>, {
-          orderId: orderIdText,
-          pendingId,
-          pending,
-          razorpayOrderId,
-          razorpayPaymentId,
-          paymentMethodEnum,
-        });
+        await runInSavepoint(
+          tx as unknown as PostgresJsDatabase<Record<string, unknown>>,
+          "oms_ledger_shadow",
+          async () => {
+            await persistOmsLedgerArtifacts(tx as unknown as PostgresJsDatabase<Record<string, unknown>>, {
+              orderId: orderIdText,
+              pendingId,
+              pending,
+              razorpayOrderId,
+              razorpayPaymentId,
+              paymentMethodEnum,
+            });
+          }
+        );
       }
 
       await tx
@@ -983,11 +1044,23 @@ export async function finalizeOrder(
       merchantStoreId: pending.merchantStoreId,
       pickupLat: Number(pickupLat) || 0,
       pickupLon: Number(pickupLon) || 0,
-      dropLat: Number(dropLat) || 0,
-      dropLon: Number(dropLon) || 0,
+      dropLat: dropLatNum || 0,
+      dropLon: dropLonNum || 0,
       precomputedDistanceKm:
         pending.distanceKm != null ? Number(pending.distanceKm) : null,
     });
+
+    if (orderCorePk != null && Number.isFinite(orderCorePk)) {
+      void captureOrderWeatherSnapshot(db, {
+        orderCorePk,
+        orderIdText,
+        dropLat: dropLatNum,
+        dropLon: dropLonNum,
+        cityHint,
+      }).catch((e) => {
+        console.warn("[weather] post-finalize snapshot skipped:", (e as Error).message);
+      });
+    }
   } catch (err: unknown) {
     const e = err as {
       code?: string;
@@ -1031,6 +1104,23 @@ export async function finalizeOrder(
   if (orderCorePk != null && Number.isFinite(orderCorePk)) {
     void maybeStartOrderDispatch(orderCorePk);
   }
+
+  const checkoutMeta =
+    pending.checkoutMetadata && typeof pending.checkoutMetadata === "object"
+      ? (pending.checkoutMetadata as Record<string, unknown>)
+      : null;
+  void import("../subscription/customer-subscription.service.js")
+    .then(({ maybeActivateSubscriptionFromOrderMetadata }) =>
+      maybeActivateSubscriptionFromOrderMetadata({
+        customerId: Number(pending.customerId),
+        checkoutMetadata: checkoutMeta,
+        razorpayOrderId,
+        razorpayPaymentId,
+      })
+    )
+    .catch((e) => {
+      console.error("[customer-subscription] post-finalize activation failed:", e);
+    });
 
   return {
     ok: true,
@@ -1258,6 +1348,16 @@ export async function finalizePendingOrderFromWebhook(
       const items = norm.items;
       await enrichAddonsWithMenuPk(Number(pending.merchant_store_id), items);
 
+      let storeCommissionWebhook: ResolvedCommission | null = null;
+      try {
+        storeCommissionWebhook = await resolveStoreCommission(Number(pending.merchant_store_id));
+      } catch (e) {
+        console.warn(
+          "[commission] pre-resolve before webhook finalize failed — item snapshots may skip:",
+          (e as Error).message,
+        );
+      }
+
       const pickupRaw = sanitizeStringForDb(pending.pickup_address_normalized ?? undefined) ?? "";
       const dropRaw = sanitizeStringForDb(pending.delivery_address ?? undefined) ?? "";
       const pickupLat = pending.pickup_lat != null ? String(pending.pickup_lat) : "0";
@@ -1353,6 +1453,7 @@ export async function finalizePendingOrderFromWebhook(
             orderIdNum: orderIdNumWebhook,
             orderItemId: Number(orderItemId),
             addons,
+            storeCommission: storeCommissionWebhook,
           },
         );
       }
@@ -1375,6 +1476,7 @@ export async function finalizePendingOrderFromWebhook(
         storeIdWebhook,
         snapshotInputs,
         orderIdNumWebhook ?? undefined,
+        storeCommissionWebhook,
       );
 
       await tx.insert(ordersCorePayments).values({
@@ -1414,6 +1516,36 @@ export async function finalizePendingOrderFromWebhook(
 
     if (!result.ok) {
       return { ok: false, code: result.code };
+    }
+
+    if (result.orderId && result.pendingIdValue) {
+      void (async () => {
+        try {
+          const [pendingRow] = await db
+            .select({
+              customerId: pendingOrders.customerId,
+              checkoutMetadata: pendingOrders.checkoutMetadata,
+            })
+            .from(pendingOrders)
+            .where(eq(pendingOrders.pendingId, result.pendingIdValue!))
+            .limit(1);
+          if (!pendingRow) return;
+          const { maybeActivateSubscriptionFromOrderMetadata } = await import(
+            "../subscription/customer-subscription.service.js"
+          );
+          await maybeActivateSubscriptionFromOrderMetadata({
+            customerId: Number(pendingRow.customerId),
+            checkoutMetadata:
+              pendingRow.checkoutMetadata && typeof pendingRow.checkoutMetadata === "object"
+                ? (pendingRow.checkoutMetadata as Record<string, unknown>)
+                : null,
+            razorpayOrderId,
+            razorpayPaymentId,
+          });
+        } catch (e) {
+          console.error("[customer-subscription] webhook post-finalize activation failed:", e);
+        }
+      })();
     }
 
     // See note in finalizeOrder — outbox writes are disabled until the

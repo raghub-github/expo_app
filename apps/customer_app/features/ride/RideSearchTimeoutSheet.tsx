@@ -29,14 +29,26 @@ const TIP_OPTIONS = [
 ] as const;
 
 const EXTENSION_MINUTES = 3;
+const TIP_BOOST_DECISION_MINUTES = 1.5;
+
+function formatCountdownMmSs(totalSec: number): string {
+  const safe = Math.max(0, Math.floor(totalSec));
+  const mins = Math.floor(safe / 60);
+  const secs = safe % 60;
+  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
 
 function formatRupee(amount: number): string {
   return `₹${Math.round(amount).toLocaleString("en-IN")}`;
 }
 
+export type TipBoostLoadingAction = "add_tip" | "continue" | null;
+
 export type RideTipBoostSheetProps = {
   visible: boolean;
-  loading?: boolean;
+  loadingAction?: TipBoostLoadingAction;
+  /** Seconds left to pick a CTA before auto-cancel (1.5 min decision window). */
+  decisionRemainingSec?: number;
   /** Base ride fare without tips */
   orderTotal: number;
   /** Total tip already on the order (pre-book + search boosts) */
@@ -94,24 +106,27 @@ function TipChipRow({
 function NoTipBoostView({
   selectedTip,
   onSelectTip,
-  loading,
+  loadingAction,
+  decisionRemainingSec,
   onAddTipAndContinue,
   onContinueWithoutTip,
   onCancelOrder,
 }: {
   selectedTip: number;
   onSelectTip: (amount: number) => void;
-  loading: boolean;
+  loadingAction: TipBoostLoadingAction;
+  decisionRemainingSec: number;
   onAddTipAndContinue: (tip: number) => void;
   onContinueWithoutTip: () => void;
   onCancelOrder: () => void;
 }) {
+  const busy = loadingAction != null;
   return (
     <>
       <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
         <View style={styles.heroWrap}>
           <Image source={MAPBIKE_IMAGE} style={styles.heroImage} resizeMode="contain" />
-          <TimerBadge label={`0${EXTENSION_MINUTES}:00`} />
+          <TimerBadge label={formatCountdownMmSs(decisionRemainingSec)} />
         </View>
 
         <Text style={styles.title}>Need your order faster?</Text>
@@ -122,7 +137,9 @@ function NoTipBoostView({
         <View style={styles.shieldBanner}>
           <Ionicons name="shield-checkmark" size={18} color={GatiMitraColors.deepMintStart} />
           <Text style={styles.shieldBannerText}>
-            We&apos;ll continue searching for the next{" "}
+            Choose an option within{" "}
+            <Text style={styles.shieldBold}>{TIP_BOOST_DECISION_MINUTES} minutes</Text> or your
+            order will be cancelled. After you continue, we&apos;ll search for another{" "}
             <Text style={styles.shieldBold}>{EXTENSION_MINUTES} minutes.</Text>
           </Text>
         </View>
@@ -132,7 +149,7 @@ function NoTipBoostView({
           <Ionicons name="information-circle-outline" size={18} color="#9CA3AF" />
         </View>
 
-        <TipChipRow selectedTip={selectedTip} onSelect={onSelectTip} disabled={loading} />
+        <TipChipRow selectedTip={selectedTip} onSelect={onSelectTip} disabled={busy} />
 
         <View style={styles.flashBanner}>
           <Ionicons name="flash" size={18} color={GatiMitraColors.deepMintStart} />
@@ -144,12 +161,12 @@ function NoTipBoostView({
       </ScrollView>
 
       <TouchableOpacity
-        style={[styles.primaryBtn, loading && styles.btnDisabled]}
+        style={[styles.primaryBtn, busy && styles.btnDisabled]}
         onPress={() => onAddTipAndContinue(selectedTip)}
         activeOpacity={0.9}
-        disabled={loading}
+        disabled={busy}
       >
-        {loading ? (
+        {loadingAction === "add_tip" ? (
           <ActivityIndicator color="#FFFFFF" />
         ) : (
           <Text style={styles.primaryBtnText}>Add Tip & Continue Searching</Text>
@@ -157,19 +174,23 @@ function NoTipBoostView({
       </TouchableOpacity>
 
       <TouchableOpacity
-        style={[styles.secondaryBtn, loading && styles.btnDisabled]}
+        style={[styles.secondaryBtn, busy && styles.btnDisabled]}
         onPress={onContinueWithoutTip}
         activeOpacity={0.9}
-        disabled={loading}
+        disabled={busy}
       >
-        <Text style={styles.secondaryBtnText}>Keep Searching Without Tip</Text>
+        {loadingAction === "continue" ? (
+          <ActivityIndicator color={GatiMitraColors.deepMintStart} />
+        ) : (
+          <Text style={styles.secondaryBtnText}>Keep Searching Without Tip</Text>
+        )}
       </TouchableOpacity>
 
       <TouchableOpacity
         style={styles.cancelLink}
         onPress={onCancelOrder}
         activeOpacity={0.7}
-        disabled={loading}
+        disabled={busy}
       >
         <Text style={styles.cancelLinkText}>Cancel Order</Text>
       </TouchableOpacity>
@@ -185,7 +206,8 @@ function TipAlreadyAddedView({
   showIncreaseTip,
   onShowIncreaseTip,
   onBackFromIncrease,
-  loading,
+  loadingAction,
+  decisionRemainingSec,
   onAddTipAndContinue,
   onContinueWithoutTip,
   onCancelOrder,
@@ -197,18 +219,20 @@ function TipAlreadyAddedView({
   showIncreaseTip: boolean;
   onShowIncreaseTip: () => void;
   onBackFromIncrease: () => void;
-  loading: boolean;
+  loadingAction: TipBoostLoadingAction;
+  decisionRemainingSec: number;
   onAddTipAndContinue: (tip: number) => void;
   onContinueWithoutTip: () => void;
   onCancelOrder: () => void;
 }) {
+  const busy = loadingAction != null;
   const totalOffer = orderTotal + existingTipAmount + (showIncreaseTip ? selectedTip : 0);
 
   if (showIncreaseTip) {
     return (
       <>
         <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
-          <TouchableOpacity style={styles.backRow} onPress={onBackFromIncrease} disabled={loading}>
+          <TouchableOpacity style={styles.backRow} onPress={onBackFromIncrease} disabled={busy}>
             <Ionicons name="arrow-back" size={20} color="#111827" />
             <Text style={styles.backRowText}>Back</Text>
           </TouchableOpacity>
@@ -222,7 +246,7 @@ function TipAlreadyAddedView({
             <Text style={styles.tipLabel}>Additional tip amount</Text>
           </View>
 
-          <TipChipRow selectedTip={selectedTip} onSelect={onSelectTip} disabled={loading} />
+          <TipChipRow selectedTip={selectedTip} onSelect={onSelectTip} disabled={busy} />
 
           <View style={styles.priceBreakdown}>
             <PriceColumn label="Order Total" amount={orderTotal} icon="bag-handle-outline" />
@@ -239,12 +263,12 @@ function TipAlreadyAddedView({
         </ScrollView>
 
         <TouchableOpacity
-          style={[styles.primaryBtn, loading && styles.btnDisabled]}
+          style={[styles.primaryBtn, busy && styles.btnDisabled]}
           onPress={() => onAddTipAndContinue(selectedTip)}
           activeOpacity={0.9}
-          disabled={loading}
+          disabled={busy}
         >
-          {loading ? (
+          {loadingAction === "add_tip" ? (
             <ActivityIndicator color="#FFFFFF" />
           ) : (
             <Text style={styles.primaryBtnText}>
@@ -268,8 +292,8 @@ function TipAlreadyAddedView({
             </Text>
           </View>
           <View style={styles.continuingTimerBox}>
-            <TimerBadge label={`0${EXTENSION_MINUTES}:00`} />
-            <Text style={styles.continuingTimerLabel}>Continuing search</Text>
+            <TimerBadge label={formatCountdownMmSs(decisionRemainingSec)} />
+            <Text style={styles.continuingTimerLabel}>Time left to continue</Text>
           </View>
         </View>
 
@@ -320,12 +344,12 @@ function TipAlreadyAddedView({
       </ScrollView>
 
       <TouchableOpacity
-        style={[styles.primaryBtn, loading && styles.btnDisabled]}
+        style={[styles.primaryBtn, busy && styles.btnDisabled]}
         onPress={onContinueWithoutTip}
         activeOpacity={0.9}
-        disabled={loading}
+        disabled={busy}
       >
-        {loading ? (
+        {loadingAction === "continue" ? (
           <ActivityIndicator color="#FFFFFF" />
         ) : (
           <Text style={styles.primaryBtnText}>Continue Searching</Text>
@@ -333,10 +357,10 @@ function TipAlreadyAddedView({
       </TouchableOpacity>
 
       <TouchableOpacity
-        style={[styles.secondaryBtn, loading && styles.btnDisabled]}
+        style={[styles.secondaryBtn, busy && styles.btnDisabled]}
         onPress={onShowIncreaseTip}
         activeOpacity={0.9}
-        disabled={loading}
+        disabled={busy}
       >
         <View style={styles.increaseTipRow}>
           <Text style={styles.secondaryBtnText}>Increase Tip Further</Text>
@@ -347,10 +371,10 @@ function TipAlreadyAddedView({
       </TouchableOpacity>
 
       <TouchableOpacity
-        style={[styles.cancelOrderBtn, loading && styles.btnDisabled]}
+        style={[styles.cancelOrderBtn, busy && styles.btnDisabled]}
         onPress={onCancelOrder}
         activeOpacity={0.9}
-        disabled={loading}
+        disabled={busy}
       >
         <Text style={styles.cancelOrderBtnText}>Cancel Order</Text>
       </TouchableOpacity>
@@ -398,7 +422,8 @@ function PriceColumn({
 
 export function RideTipBoostSheet({
   visible,
-  loading = false,
+  loadingAction = null,
+  decisionRemainingSec = 90,
   orderTotal,
   existingTipAmount,
   onAddTipAndContinue,
@@ -446,7 +471,8 @@ export function RideTipBoostSheet({
               showIncreaseTip={showIncreaseTip}
               onShowIncreaseTip={() => setShowIncreaseTip(true)}
               onBackFromIncrease={() => setShowIncreaseTip(false)}
-              loading={loading}
+              loadingAction={loadingAction}
+              decisionRemainingSec={decisionRemainingSec}
               onAddTipAndContinue={onAddTipAndContinue}
               onContinueWithoutTip={onContinueWithoutTip}
               onCancelOrder={onCancelOrder}
@@ -455,7 +481,8 @@ export function RideTipBoostSheet({
             <NoTipBoostView
               selectedTip={selectedTip}
               onSelectTip={setSelectedTip}
-              loading={loading}
+              loadingAction={loadingAction}
+              decisionRemainingSec={decisionRemainingSec}
               onAddTipAndContinue={onAddTipAndContinue}
               onContinueWithoutTip={onContinueWithoutTip}
               onCancelOrder={onCancelOrder}

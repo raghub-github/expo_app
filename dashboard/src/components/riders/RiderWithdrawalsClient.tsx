@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useSearchParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
+import { riderSearchMatchesLoadedRider } from "@/lib/riders/resolve-rider-search";
 import { RiderSectionHeader } from "./RiderSectionHeader";
 import { CollapsibleTableFilters } from "./CollapsibleTableFilters";
 import { FilterChips, type FilterChipItem } from "./FilterChips";
@@ -134,7 +135,14 @@ export function RiderWithdrawalsClient() {
   useEffect(() => setSearchInput(searchValue), [searchValue]);
   useEffect(() => setFilterSearch(searchParams.get("q") || ""), [searchParams.get("q")]);
   useEffect(() => {
-    if (searchValue) resolveRider(searchValue);
+    if (searchValue) {
+      if (riderFromContext && riderSearchMatchesLoadedRider(searchValue, riderFromContext)) {
+        setRider(riderFromContext);
+        setError(null);
+      } else {
+        resolveRider(searchValue);
+      }
+    }
     else if (riderFromContext) {
       setRider(riderFromContext);
       setError(null);

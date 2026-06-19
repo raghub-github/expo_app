@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { roundMoney } from '@/lib/wallet-types';
-import { backfillMissingDeliveredOrderCredits } from '@/lib/backfill-merchant-wallet-credits';
-import {
-  deriveWalletBucketsFromLedger,
-  mergeWalletBuckets,
-} from '@/lib/reconcile-merchant-wallet-balances';
+import { backfillMissingDeliveredOrderCredits, backfillMissingCancelledOrderLedger } from '@/lib/backfill-merchant-wallet-credits';
+import { latestRunningBalanceFromLedgerRows } from '@/lib/merchant-wallet-ledger-display';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -47,6 +44,7 @@ export async function GET(req: NextRequest) {
     // Heal missing ORDER_EARNING rows for orders delivered outside merchant PATCH (e.g. dashboard agent).
     try {
       await backfillMissingDeliveredOrderCredits(db, merchantStoreId);
+      await backfillMissingCancelledOrderLedger(db, merchantStoreId);
     } catch (backfillErr) {
       console.warn('[merchant/wallet] backfill credits:', backfillErr);
     }
@@ -118,7 +116,6 @@ export async function GET(req: NextRequest) {
       pending_balance = Number(wallet.pending_balance ?? 0);
       hold_balance = Number(wallet.hold_balance ?? 0);
       reserve_balance = Number(wallet.reserve_balance ?? 0);
-      locked_balance = Number(wallet.locked_balance ?? 0);
       pending_settlement = Number(wallet.pending_settlement ?? 0);
       lifetime_credit = Number(wallet.lifetime_credit ?? 0);
       lifetime_debit = Number(wallet.lifetime_debit ?? 0);
@@ -141,7 +138,6 @@ export async function GET(req: NextRequest) {
         pending_balance = Number(newWallet.pending_balance ?? 0);
         hold_balance = Number(newWallet.hold_balance ?? 0);
         reserve_balance = Number(newWallet.reserve_balance ?? 0);
-        locked_balance = Number(newWallet.locked_balance ?? 0);
         pending_settlement = Number(newWallet.pending_settlement ?? 0);
         lifetime_credit = Number(newWallet.lifetime_credit ?? 0);
         lifetime_debit = Number(newWallet.lifetime_debit ?? 0);
@@ -153,22 +149,49 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const derivedBuckets = await deriveWalletBucketsFromLedger(db, walletId);
-    const merged = mergeWalletBuckets(
-      {
-        available_balance,
-        locked_balance,
-        pending_balance,
-        hold_balance,
-        reserve_balance,
-      },
-      derivedBuckets
+    const storedAvailableBeforeLedger = available_balance;
+
+    const { data: balanceLedgerRows } = await db
+      .from('merchant_wallet_ledger')
+      .select('id, balance_type, balance_after, amount, direction, created_at, metadata')
+      .eq('wallet_id', walletId)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(5000);
+
+    const ledgerRunningBalance = latestRunningBalanceFromLedgerRows(
+      (balanceLedgerRows ?? []).map((row) => ({
+        id: row.id as number,
+        balance_type: row.balance_type as string | null,
+        balance_after: row.balance_after != null ? Number(row.balance_after) : null,
+        amount: row.amount != null ? Number(row.amount) : null,
+        direction: row.direction as string | null,
+        created_at: row.created_at as string,
+        metadata: row.metadata as Record<string, unknown> | null,
+      }))
     );
-    available_balance = merged.available_balance;
-    locked_balance = merged.locked_balance;
-    pending_balance = merged.pending_balance;
-    hold_balance = merged.hold_balance;
-    reserve_balance = merged.reserve_balance;
+
+    if ((balanceLedgerRows ?? []).length > 0) {
+      available_balance = ledgerRunningBalance;
+    }
+    locked_balance = 0;
+
+    if (
+      (balanceLedgerRows ?? []).length > 0 &&
+      Math.abs(storedAvailableBeforeLedger - ledgerRunningBalance) >= 0.01
+    ) {
+      try {
+        const { client: sql } = await import('@/lib/drizzle');
+        await sql`
+          UPDATE merchant_wallet
+          SET available_balance = ${ledgerRunningBalance},
+              updated_at = NOW()
+          WHERE id = ${walletId}
+        `;
+      } catch (syncErr) {
+        console.warn('[merchant/wallet] sync available from ledger:', syncErr);
+      }
+    }
 
     const now = new Date();
     const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
@@ -214,7 +237,6 @@ export async function GET(req: NextRequest) {
       // Table may not exist or RLS may block
     }
 
-    let locked_settlement_total = locked_balance;
     let settlement_paused = false;
     try {
       const { data: sp } = await db
@@ -226,27 +248,21 @@ export async function GET(req: NextRequest) {
     } catch {
       /* pre-0239 */
     }
-    try {
-      const { data: lockedRows } = await db
-        .from('payment_order_settlements')
-        .select('merchant_net')
-        .eq('wallet_id', walletId)
-        .in('lifecycle_status', ['LOCKED', 'HOLD']);
-      locked_settlement_total = (lockedRows ?? []).reduce(
-        (s, r) => s + Number(r.merchant_net ?? 0),
-        0
-      );
-    } catch {
-      locked_settlement_total = locked_balance;
-    }
-    if (locked_settlement_total <= 0 && locked_balance > 0) {
-      locked_settlement_total = locked_balance;
-    }
 
-    const withdrawable_balance = roundMoney(available_balance + locked_balance);
-    const total_balance = roundMoney(
-      available_balance + locked_balance + hold_balance + pending_balance
-    );
+    const withdrawable_balance = roundMoney(available_balance);
+    const total_balance = withdrawable_balance;
+
+    if (total_earned <= 0) {
+      const { data: earningRows } = await db
+        .from('merchant_wallet_ledger')
+        .select('amount')
+        .eq('wallet_id', walletId)
+        .eq('direction', 'CREDIT')
+        .eq('category', 'ORDER_EARNING');
+      total_earned = roundMoney(
+        (earningRows ?? []).reduce((s, row) => s + Number(row.amount ?? 0), 0)
+      );
+    }
 
     return NextResponse.json({
       success: true,
@@ -256,7 +272,7 @@ export async function GET(req: NextRequest) {
       pending_balance: roundMoney(pending_balance),
       hold_balance: roundMoney(hold_balance),
       reserve_balance: roundMoney(reserve_balance),
-      locked_balance: roundMoney(locked_balance),
+      locked_balance: 0,
       pending_settlement: roundMoney(pending_settlement),
       lifetime_credit: roundMoney(lifetime_credit),
       lifetime_debit: roundMoney(lifetime_debit),
@@ -269,7 +285,7 @@ export async function GET(req: NextRequest) {
       yesterday_earning: roundMoney(yesterday_earning),
       pending_withdrawal_total: roundMoney(pending_withdrawal_total),
       in_process_withdrawal_total: roundMoney(in_process_withdrawal_total),
-      locked_settlement_total: roundMoney(locked_settlement_total),
+      locked_settlement_total: 0,
       withdrawable_balance,
       total_balance,
       settlement_paused,

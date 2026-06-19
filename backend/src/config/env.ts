@@ -165,6 +165,8 @@ const EnvSchema = z.object({
   // Distance / routing (backend-only; shared by Customer, Rider, Merchant apps)
   OSRM_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   MAPBOX_ACCESS_TOKEN: z.preprocess(emptyToUndefined, z.string().min(20).optional()),
+  /** Public live trip share page base, e.g. https://track.gatimitra.com/trip */
+  TRACK_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   REDIS_URL: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
 
   /** OpenWeather — backend-only. Mobile apps must use /v1/weather/* endpoints. */

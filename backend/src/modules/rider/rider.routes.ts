@@ -26,8 +26,20 @@ const RiderMeResponseSchema = z.object({
   accountStatus: z.string(),
   onboardingStatus: z.string(),
 });
-import { desc, eq, and, inArray, sql } from "drizzle-orm";
+import { desc, eq, and, inArray, isNull, sql } from "drizzle-orm";
 import { ulid } from "ulid";
+
+function normalizeDutyServiceTypes(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((s) => String(s)).filter(Boolean);
+}
+
+function toDutyIsoTimestamp(value: Date | string | null | undefined): string {
+  if (value == null) return new Date().toISOString();
+  if (value instanceof Date) return value.toISOString();
+  const t = new Date(String(value)).getTime();
+  return Number.isFinite(t) ? new Date(t).toISOString() : new Date().toISOString();
+}
 import { auth } from "../../plugins/auth.js";
 import { getDb, getSql } from "../../db/client.js";
 import { deactivateRiderDeviceSessions } from "../../lib/rider-app-session.js";
@@ -36,8 +48,6 @@ import {
   riders,
   riderDocuments,
   riderDocumentFiles,
-  blacklistHistory,
-  dutyLogs,
   riderLogoutEvents,
   riderLiveLocations,
   riderLocationHistory,
@@ -45,6 +55,10 @@ import {
   ordersCore,
 } from "../../db/schema.js";
 import { RiderLogoutBodySchema } from "../../lib/rider-logout-reasons.js";
+import {
+  recordRiderDutyLog,
+  recordRiderDutyOffIfOnline,
+} from "../../lib/rider-duty-log.service.js";
 import { scoreLocationPing, type LocationPoint } from "./fraud.js";
 import { getR2SignedUrl, deleteFromR2, extractKeyFromSignedUrl } from "../../services/r2/r2Service.js";
 import { attachmentsProxyUrlFromKey } from "../../utils/attachments-proxy-url.js";
@@ -57,6 +71,8 @@ import { getEnv } from "../../config/env.js";
 import { finalizeMerchantOrderDelivered } from "../../lib/merchant-order-delivered-wallet.js";
 import { unassignFoodRiderAndRestartDispatch } from "../../lib/food-rider-unassign.service.js";
 import { registerRiderSubscriptionRoutes } from "./rider-subscription.routes.js";
+import { registerRiderPenaltyPaymentRoutes } from "./rider-penalty-payment.routes.js";
+import { listRiderAppCancellationReasons } from "../../lib/rider-cancellation-reason-catalog.js";
 import { speedMpsToKmh, upsertRiderLiveLocation } from "../../lib/rider-live-location.js";
 
 function parseRiderIdFromAuth(sub: string): number | null {
@@ -69,6 +85,7 @@ export async function riderRoutes(app: FastifyInstance) {
   await app.register(auth, { required: true });
 
   registerRiderSubscriptionRoutes(app);
+  registerRiderPenaltyPaymentRoutes(app);
 
   app.post(
     "/logout",
@@ -85,7 +102,8 @@ export async function riderRoutes(app: FastifyInstance) {
       const userId = req.auth!.sub;
       const riderId = parseRiderIdFromAuth(userId);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
 
       const body = RiderLogoutBodySchema.parse(req.body);
@@ -96,6 +114,12 @@ export async function riderRoutes(app: FastifyInstance) {
       const db = getDb();
       const sql = getSql();
       const deviceId = req.auth?.device_id ?? null;
+
+      await recordRiderDutyOffIfOnline(riderId, "logout", {
+        deviceId,
+        source: "rider_app",
+        metadata: { reasonCode: body.reasonCode },
+      });
 
       await db.insert(riderLogoutEvents).values({
         id: `rlogout_${ulid()}`,
@@ -268,7 +292,8 @@ export async function riderRoutes(app: FastifyInstance) {
       const riderIdMatch = String(userId).match(/usr_(\d+)/);
       const riderId = riderIdMatch ? parseInt(riderIdMatch[1]!, 10) : null;
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
 
       const body = req.body as { lat: number; lng: number; order_id?: string; speed?: number; heading?: number; accuracy?: number };
@@ -580,6 +605,168 @@ export async function riderRoutes(app: FastifyInstance) {
     },
   );
 
+  const RiderBankPaymentMethodSchema = z.object({
+    id: z.number(),
+    methodType: z.literal("bank"),
+    accountHolderName: z.string(),
+    bankName: z.string().nullable(),
+    ifsc: z.string().nullable(),
+    branch: z.string().nullable(),
+    accountNumberMasked: z.string(),
+    verificationStatus: z.enum(["pending", "verified", "rejected"]),
+    createdAt: z.string(),
+  });
+
+  app.get(
+    "/payment-methods/bank",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            paymentMethod: RiderBankPaymentMethodSchema.nullable(),
+          }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { getRiderBankPaymentMethod } = await import(
+        "../../lib/rider-bank-payment-method.js"
+      );
+      const paymentMethod = await getRiderBankPaymentMethod(riderId);
+      return { paymentMethod };
+    },
+  );
+
+  app.post(
+    "/payment-methods/bank",
+    {
+      schema: {
+        body: z.object({
+          accountHolderName: z.string().min(2).max(80),
+          bankName: z.string().min(2).max(80),
+          ifsc: z.string().min(11).max(11),
+          branch: z.string().max(80).optional(),
+          accountNumber: z.string().regex(/^\d{9,18}$/),
+        }),
+        response: {
+          201: z.object({
+            paymentMethod: RiderBankPaymentMethodSchema,
+          }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { createRiderBankPaymentMethod } = await import(
+        "../../lib/rider-bank-payment-method.js"
+      );
+      try {
+        const paymentMethod = await createRiderBankPaymentMethod(
+          riderId,
+          req.body as Parameters<typeof createRiderBankPaymentMethod>[1]
+        );
+        return reply.status(201).send({ paymentMethod });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Could not save bank account";
+        const status = message === "Bank account already linked" ? 409 : 400;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(status).send({ error: message });
+      }
+    },
+  );
+
+  const RiderEmergencyContactSchema = z.object({
+    label: z.string().min(1).max(40),
+    phone: z.string().min(10).max(15),
+  });
+
+  app.get(
+    "/me/emergency-contacts",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            contacts: z.array(RiderEmergencyContactSchema),
+            defaults: z.object({
+              police: z.string(),
+              ambulance: z.string(),
+            }),
+          }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { getRiderEmergencyContacts, INDIA_EMERGENCY_DEFAULTS } = await import(
+        "../../lib/rider-emergency-contacts.js"
+      );
+      const contacts = await getRiderEmergencyContacts(riderId);
+      return {
+        contacts,
+        defaults: {
+          police: INDIA_EMERGENCY_DEFAULTS.police,
+          ambulance: INDIA_EMERGENCY_DEFAULTS.ambulance,
+        },
+      };
+    }
+  );
+
+  app.put(
+    "/me/emergency-contacts",
+    {
+      schema: {
+        body: z.object({
+          contacts: z.array(RiderEmergencyContactSchema).max(2),
+        }),
+        response: {
+          200: z.object({
+            contacts: z.array(RiderEmergencyContactSchema),
+            defaults: z.object({
+              police: z.string(),
+              ambulance: z.string(),
+            }),
+          }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { saveRiderEmergencyContacts } = await import(
+        "../../lib/rider-emergency-contacts.js"
+      );
+      const body = req.body as { contacts: z.infer<typeof RiderEmergencyContactSchema>[] };
+      const contacts = await saveRiderEmergencyContacts(riderId, body.contacts);
+      const { INDIA_EMERGENCY_DEFAULTS } = await import(
+        "../../lib/rider-emergency-contacts.js"
+      );
+      return {
+        contacts,
+        defaults: {
+          police: INDIA_EMERGENCY_DEFAULTS.police,
+          ambulance: INDIA_EMERGENCY_DEFAULTS.ambulance,
+        },
+      };
+    }
+  );
+
   app.get(
     "/me/documents",
     {
@@ -629,12 +816,31 @@ export async function riderRoutes(app: FastifyInstance) {
     totalBalance: z.number(),
     withdrawable: z.number(),
     locked: z.number(),
+    subscriptionDebited: z.number(),
     thisWeek: z.number(),
     thisMonth: z.number(),
+    hasBankAccount: z.boolean(),
     breakdown: z.object({
       food: z.number(),
       parcel: z.number(),
       ride: z.number(),
+    }),
+    accountRestrictions: z.object({
+      accountRestricted: z.boolean(),
+      accountRestrictedReason: z.enum([
+        "none",
+        "service_blacklist",
+        "all_services_blacklist",
+        "blocked_status",
+      ]),
+      globalWalletBlock: z.boolean(),
+      blacklistBlockedServices: z.array(z.enum(["food", "parcel", "person_ride"])),
+      negativeWalletBlocks: z
+        .array(z.object({ serviceType: z.string(), reason: z.string() }))
+        .optional(),
+      allServicesBlacklisted: z.boolean(),
+      penaltyDue: z.number(),
+      penaltyDutyStopped: z.boolean(),
     }),
   });
 
@@ -652,18 +858,44 @@ export async function riderRoutes(app: FastifyInstance) {
           totalBalance: 0,
           withdrawable: 0,
           locked: 0,
+          subscriptionDebited: 0,
           thisWeek: 0,
           thisMonth: 0,
+          hasBankAccount: false,
           breakdown: { food: 0, parcel: 0, ride: 0 },
+          accountRestrictions: {
+            accountRestricted: false,
+            accountRestrictedReason: "none" as const,
+            globalWalletBlock: false,
+            blacklistBlockedServices: [],
+            allServicesBlacklisted: false,
+            penaltyDue: 0,
+            penaltyDutyStopped: false,
+          },
         };
       }
       const { riderWallet } = await import("../../db/schema.js");
+      const { safeRiderHasBankPaymentMethod } = await import(
+        "../../lib/rider-bank-payment-method.js"
+      );
       const db = getDb();
       const [wallet] = await db
         .select()
         .from(riderWallet)
         .where(eq(riderWallet.riderId, riderId))
         .limit(1);
+      const { getRiderPeriodEarningsTotals, getRiderSubscriptionDebitedTotal } = await import(
+        "../../lib/rider-wallet-ledger-app.js"
+      );
+      const [hasBankAccount, periodTotals, subscriptionDebited, accountRestrictions] =
+        await Promise.all([
+        safeRiderHasBankPaymentMethod(riderId),
+        getRiderPeriodEarningsTotals(riderId),
+        getRiderSubscriptionDebitedTotal(riderId),
+        import("../../lib/rider-account-restrictions.js").then((m) =>
+          m.getRiderAccountRestrictions(riderId)
+        ),
+      ]);
       const total = wallet ? Number(wallet.totalBalance ?? 0) : 0;
       const food = wallet ? Number(wallet.earningsFood ?? 0) : 0;
       const parcel = wallet ? Number(wallet.earningsParcel ?? 0) : 0;
@@ -671,10 +903,25 @@ export async function riderRoutes(app: FastifyInstance) {
       return {
         totalBalance: total,
         withdrawable: Math.max(0, total),
-        locked: 0,
-        thisWeek: 0,
-        thisMonth: 0,
+        locked: accountRestrictions.penaltyDue,
+        subscriptionDebited,
+        thisWeek: periodTotals.thisWeek,
+        thisMonth: periodTotals.thisMonth,
+        hasBankAccount,
         breakdown: { food, parcel, ride },
+        accountRestrictions: {
+          accountRestricted: accountRestrictions.accountRestricted,
+          accountRestrictedReason: accountRestrictions.accountRestrictedReason,
+          globalWalletBlock: accountRestrictions.globalWalletBlock,
+          blacklistBlockedServices: accountRestrictions.blacklistBlockedServices.filter(
+            (s): s is "food" | "parcel" | "person_ride" =>
+              s === "food" || s === "parcel" || s === "person_ride"
+          ),
+          negativeWalletBlocks: accountRestrictions.negativeWalletBlocks,
+          allServicesBlacklisted: accountRestrictions.allServicesBlacklisted,
+          penaltyDue: accountRestrictions.penaltyDue,
+          penaltyDutyStopped: accountRestrictions.penaltyDutyStopped,
+        },
       };
     },
   );
@@ -690,7 +937,15 @@ export async function riderRoutes(app: FastifyInstance) {
     ref: z.string().nullable(),
     refType: z.string().nullable(),
     serviceType: z.string().nullable(),
+    orderPublicId: z.string().nullable(),
     createdAt: z.string(),
+  });
+
+  const RiderLedgerSummarySchema = z.object({
+    totalEarnings: z.number(),
+    totalWithdrawals: z.number(),
+    pendingSettlement: z.number(),
+    monthLabel: z.string(),
   });
 
   const RiderLedgerResponseSchema = z.object({
@@ -698,6 +953,7 @@ export async function riderRoutes(app: FastifyInstance) {
     total: z.number(),
     hasMore: z.boolean(),
     periodLabel: z.string(),
+    summary: RiderLedgerSummarySchema,
   });
 
   app.get(
@@ -706,7 +962,17 @@ export async function riderRoutes(app: FastifyInstance) {
       schema: {
         querystring: z.object({
           segment: z
-            .enum(["all", "food", "parcel", "ride", "incentives", "adjustments", "penalties"])
+            .enum([
+              "all",
+              "food",
+              "parcel",
+              "ride",
+              "incentives",
+              "adjustments",
+              "penalties",
+              "withdrawals",
+              "subscriptions",
+            ])
             .default("all"),
           period: z.enum(["this_month", "last_month", "all"]).default("this_month"),
           limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -718,11 +984,31 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return { entries: [], total: 0, hasMore: false, periodLabel: "This month" };
+        return {
+          entries: [],
+          total: 0,
+          hasMore: false,
+          periodLabel: "This month",
+          summary: {
+            totalEarnings: 0,
+            totalWithdrawals: 0,
+            pendingSettlement: 0,
+            monthLabel: "This Month Summary",
+          },
+        };
       }
 
       const { segment, period, limit, offset } = req.query as {
-        segment: "all" | "food" | "parcel" | "ride" | "incentives" | "adjustments" | "penalties";
+        segment:
+          | "all"
+          | "food"
+          | "parcel"
+          | "ride"
+          | "incentives"
+          | "adjustments"
+          | "penalties"
+          | "withdrawals"
+          | "subscriptions";
         period: "this_month" | "last_month" | "all";
         limit: number;
         offset: number;
@@ -820,6 +1106,52 @@ export async function riderRoutes(app: FastifyInstance) {
     },
   );
 
+  // Read current duty status (source of truth for dispatch eligibility).
+  app.get(
+    "/duty",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            isOnDuty: z.boolean(),
+            allowedServiceTypes: z.array(z.string()),
+            blockedServiceTypes: z.array(z.string()).optional(),
+            accountRestricted: z.boolean().optional(),
+            allServicesBlacklisted: z.boolean().optional(),
+            lastUpdated: z.string(),
+          }),
+        },
+      },
+    },
+    async (req) => {
+      const userId = req.auth!.sub;
+      const riderIdMatch = userId.match(/usr_(\d+)/);
+      if (!riderIdMatch) {
+        return {
+          isOnDuty: false,
+          allowedServiceTypes: [],
+          lastUpdated: new Date().toISOString(),
+        };
+      }
+      const riderId = parseInt(riderIdMatch[1]!, 10);
+      const { syncRiderDutyWithRestrictions } = await import(
+        "../../lib/rider-account-restrictions.js"
+      );
+      const duty = await syncRiderDutyWithRestrictions(riderId);
+
+      return {
+        isOnDuty: duty.isOnDuty,
+        allowedServiceTypes: duty.allowedServiceTypes,
+        blockedServiceTypes: duty.blockedServiceTypes.length
+          ? duty.blockedServiceTypes
+          : undefined,
+        accountRestricted: duty.accountRestricted,
+        allServicesBlacklisted: duty.allServicesBlacklisted,
+        lastUpdated: duty.lastUpdated,
+      };
+    }
+  );
+
   // Update duty status (go online/offline). When going online, blacklisted services are excluded so rider can only be online for required services.
   app.put(
     "/duty",
@@ -828,6 +1160,9 @@ export async function riderRoutes(app: FastifyInstance) {
         body: z.object({
           isOnDuty: z.boolean(),
           serviceTypes: z.array(z.enum(["food", "parcel", "person_ride"])).optional(),
+          lat: z.number().optional(),
+          lon: z.number().optional(),
+          deviceId: z.string().optional(),
         }),
         response: {
           200: z.object({
@@ -855,27 +1190,48 @@ export async function riderRoutes(app: FastifyInstance) {
         return reply.status(403).send({ error: "Rider not found" });
       }
 
-      if (rider.status === "BLOCKED") {
+      if (rider.status === "BLOCKED" || rider.status === "BANNED") {
         return reply.status(403).send({
-          error: "You cannot go online. Your account is blocked (permanent blacklist).",
+          error: "ACCOUNT_RESTRICTED",
+          message: "You cannot go online. Your account is restricted.",
         });
       }
 
-      const body = req.body as { isOnDuty: boolean; serviceTypes?: ("food" | "parcel" | "person_ride")[] };
+      const body = req.body as {
+        isOnDuty: boolean;
+        serviceTypes?: ("food" | "parcel" | "person_ride")[];
+        lat?: number;
+        lon?: number;
+        deviceId?: string;
+      };
       const isOnDuty = body.isOnDuty;
       const now = new Date();
+      const deviceId = body.deviceId ?? req.auth?.device_id ?? null;
 
       if (!isOnDuty) {
-        await db.insert(dutyLogs).values({
+        await recordRiderDutyLog({
           riderId,
           status: "OFF",
           serviceTypes: [],
+          source: "rider_app",
+          deviceId,
+          lat: body.lat ?? null,
+          lon: body.lon ?? null,
+          metadata: { trigger: "duty_toggle" },
         });
         return {
           isOnDuty: false,
           allowedServiceTypes: [],
           lastUpdated: now.toISOString(),
         };
+      }
+
+      if (!body.serviceTypes?.length) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(400).send({
+          error: "SERVICE_TYPES_REQUIRED",
+          message: "Select at least one service before going online.",
+        });
       }
 
       const { getRiderVehicleStatusForApp } = await import("../../lib/rider-vehicle-app.js");
@@ -899,62 +1255,69 @@ export async function riderRoutes(app: FastifyInstance) {
         (s): s is "food" | "parcel" | "person_ride" =>
           s === "food" || s === "parcel" || s === "person_ride"
       );
-      const requestedServices =
-        body.serviceTypes?.length && body.serviceTypes.length > 0
-          ? body.serviceTypes.filter((s) => vehicleServices.includes(s))
-          : vehicleServices;
+      const requestedServices = body.serviceTypes.filter((s) => vehicleServices.includes(s));
 
       if (requestedServices.length === 0) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(400).send({
+          error: "NO_VALID_SERVICE_TYPES",
+          message: "None of the selected services are enabled for your vehicle.",
+        });
+      }
+
+      const { getRiderActiveVehicleProfile } = await import("../../lib/order-assignment-engine.js");
+      const { filterDispatchServicesForRiderProfile } = await import(
+        "../../lib/rider-dispatch-service-rules.js"
+      );
+      const vehicleProfile = await getRiderActiveVehicleProfile(riderId);
+      const dutyServices = filterDispatchServicesForRiderProfile(
+        requestedServices as ("food" | "parcel" | "person_ride")[],
+        vehicleProfile
+      );
+
+      if (dutyServices.length === 0) {
         return reply.status(403).send({
           error: "NO_VEHICLE_SERVICES",
           message: "Your vehicle is not enabled for any dispatch services.",
         });
       }
 
-      const blacklistEntries = await db
-        .select()
-        .from(blacklistHistory)
-        .where(and(eq(blacklistHistory.riderId, riderId), eq(blacklistHistory.banned, true)))
-        .orderBy(desc(blacklistHistory.createdAt));
-
-      const norm = (s: string) => {
-        const x = (s || "").toLowerCase();
-        return x === "ride" ? "person_ride" : x;
-      };
-      const isActiveBan = (entry: { isPermanent: boolean; expiresAt: Date | null }) =>
-        entry.isPermanent || !entry.expiresAt || new Date(entry.expiresAt) > now;
-
-      const getEffectiveForSlot = (slots: string[]) => {
-        const candidate = blacklistEntries.find((e) =>
-          slots.includes(norm((e.serviceType as string) || "all"))
-        );
-        if (!candidate) return null;
-        return isActiveBan(candidate) ? candidate : null;
-      };
-
-      const allBanned = getEffectiveForSlot(["all"]) != null;
-      const foodBanned = allBanned || getEffectiveForSlot(["food", "all"]) != null;
-      const parcelBanned = allBanned || getEffectiveForSlot(["parcel", "all"]) != null;
-      const personRideBanned = allBanned || getEffectiveForSlot(["person_ride", "all"]) != null;
+      const { getRiderDispatchBlockSnapshot, isDispatchServiceBlocked } = await import(
+        "../../lib/rider-account-restrictions.js"
+      );
+      const restrictionSnapshot = await getRiderDispatchBlockSnapshot(riderId);
 
       const allowed: string[] = [];
       const blocked: string[] = [];
-      if (requestedServices.includes("food")) (foodBanned ? blocked : allowed).push("food");
-      if (requestedServices.includes("parcel")) (parcelBanned ? blocked : allowed).push("parcel");
-      if (requestedServices.includes("person_ride")) (personRideBanned ? blocked : allowed).push("person_ride");
+      for (const service of dutyServices) {
+        if (isDispatchServiceBlocked(service, restrictionSnapshot)) {
+          blocked.push(service);
+        } else {
+          allowed.push(service);
+        }
+      }
 
       if (allowed.length === 0) {
         return reply.status(403).send({
           error: "ALL_SERVICES_BLOCKED",
-          message: "You cannot go online — all requested services are blocked.",
+          message: "You cannot go online — all requested services are restricted.",
           blockedServiceTypes: blocked,
         });
       }
 
-      await db.insert(dutyLogs).values({
+      await recordRiderDutyLog({
         riderId,
         status: "ON",
-        serviceTypes: allowed,
+        serviceTypes: allowed as ("food" | "parcel" | "person_ride")[],
+        source: "rider_app",
+        deviceId,
+        lat: body.lat ?? null,
+        lon: body.lon ?? null,
+        metadata: {
+          trigger: "duty_toggle",
+          requestedServices: dutyServices,
+          blockedServices: blocked,
+        },
       });
 
       return {
@@ -1543,6 +1906,11 @@ export async function riderRoutes(app: FastifyInstance) {
     estimatedEarning: z.number(),
     baseEarning: z.number().optional(),
     customerTipAmount: z.number().optional(),
+    waitingEarning: z.number().optional(),
+    surgeEarning: z.number().optional(),
+    appliedSurges: z
+      .array(z.object({ name: z.string(), amount: z.number() }))
+      .optional(),
     totalEarning: z.number().optional(),
     higherDispatchPriority: z.boolean().optional(),
     merchantName: z.string().nullable().optional(),
@@ -1571,6 +1939,10 @@ export async function riderRoutes(app: FastifyInstance) {
     prepDelayMinutes: z.number().nullable().optional(),
     customerName: z.string().nullable().optional(),
     customerPhone: z.string().nullable().optional(),
+    customerPrimaryName: z.string().nullable().optional(),
+    customerPrimaryPhone: z.string().nullable().optional(),
+    customerAlternateName: z.string().nullable().optional(),
+    customerAlternatePhone: z.string().nullable().optional(),
     pickupAddressGeocoded: z.string().optional(),
     dropAddressGeocoded: z.string().optional(),
     foodItems: z
@@ -1588,9 +1960,15 @@ export async function riderRoutes(app: FastifyInstance) {
     restaurantPhone: z.string().nullable().optional(),
     merchantFeedbackSubmitted: z.boolean().optional(),
     customerFeedbackSubmitted: z.boolean().optional(),
-    paymentMethod: z.string().nullable().optional(),
-    paymentStatus: z.string().nullable().optional(),
-  });
+  paymentMethod: z.string().nullable().optional(),
+  paymentStatus: z.string().nullable().optional(),
+  adminRiderPaymentClearedAt: z.string().nullable().optional(),
+  walletCreditPending: z.boolean().optional(),
+  customerRating: z.number().nullable().optional(),
+  passengerRating: z.number().nullable().optional(),
+  cancellationPenaltyApplied: z.boolean().optional(),
+  cancellationPenaltyAmount: z.number().nullable().optional(),
+});
 
   app.get(
     "/order-acceptance-settings",
@@ -1619,7 +1997,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { loadPlatformOrderAcceptanceSettingsForCategory } = await import(
         "../../lib/merchant-order-acceptance-settings.js"
@@ -1647,7 +2026,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { loadFoodPickupVerificationSettings } = await import(
         "../../lib/food-pickup-verification-settings.js"
@@ -1669,7 +2049,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { getAvailableOrdersForRider } = await import("./rider.orders.service.js");
       try {
@@ -1694,10 +2075,40 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { getActiveOrdersForRider } = await import("./rider.orders.service.js");
       return getActiveOrdersForRider(riderId);
+    }
+  );
+
+  app.get(
+    "/orders/ride-payment-holds",
+    {
+      schema: {
+        response: {
+          200: z.array(
+            z.object({
+              orderId: z.string(),
+              formattedOrderId: z.string().nullable(),
+              totalEarning: z.number(),
+              passengerFare: z.number(),
+              completedAt: z.string(),
+            })
+          ),
+          403: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { getRidePaymentHoldsForRider } = await import("./rider.orders.service.js");
+      return getRidePaymentHoldsForRider(riderId);
     }
   );
 
@@ -1725,7 +2136,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const q = req.query as { limit?: number; offset?: number; category?: string };
       const { getOrderHistoryForRider, parseRiderOrderHistoryCategory } = await import(
@@ -1754,7 +2166,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       try {
@@ -1797,7 +2210,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = req.body as { reasonCode: string; reasonText?: string };
@@ -1812,6 +2226,78 @@ export async function riderRoutes(app: FastifyInstance) {
         }
         throw e;
       }
+    }
+  );
+
+  app.post(
+    "/orders/:id/offer-missed",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: z
+          .object({
+            reason: z.string().optional(),
+          })
+          .optional(),
+        response: {
+          200: z.object({ ok: z.literal(true), recorded: z.boolean() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      const body = (req.body ?? {}) as { reason?: string };
+      try {
+        const { missOrderOfferForRider } = await import("./rider.orders.service.js");
+        return await missOrderOfferForRider(riderId, id, { reason: body.reason });
+      } catch (e) {
+        const err = e as Error & { statusCode?: number };
+        const code = err.statusCode ?? 500;
+        if (code >= 400 && code < 500) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return (reply as any).status(code).send({ error: err.message || "Offer missed failed" });
+        }
+        throw e;
+      }
+    }
+  );
+
+  app.get(
+    "/dispatch-offer-stats",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            riderId: z.number(),
+            offersTotal: z.number(),
+            offersAccepted: z.number(),
+            offersRejected: z.number(),
+            offersMissed: z.number(),
+            acceptRate: z.number().nullable(),
+            lastOfferAt: z.string().nullable(),
+            lastAcceptedAt: z.string().nullable(),
+          }),
+          403: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { getRiderDispatchOfferStats } = await import(
+        "../../lib/rider-dispatch-assignment-audit.js"
+      );
+      return getRiderDispatchOfferStats(riderId);
     }
   );
 
@@ -1830,7 +2316,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       try {
@@ -1887,7 +2374,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const q = req.query as { lat?: number; lng?: number };
@@ -1910,6 +2398,7 @@ export async function riderRoutes(app: FastifyInstance) {
         body: z.object({
           rating: z.number().int().min(1).max(5).optional(),
           tags: z.array(z.string().min(1).max(64)).max(12).optional(),
+          messages: z.array(z.string().min(1).max(200)).max(12).optional(),
           skipped: z.boolean().optional(),
         }),
         response: {
@@ -1924,12 +2413,14 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as {
         rating?: number;
         tags?: string[];
+        messages?: string[];
         skipped?: boolean;
       };
       try {
@@ -1951,6 +2442,7 @@ export async function riderRoutes(app: FastifyInstance) {
         body: z.object({
           rating: z.number().int().min(1).max(5).optional(),
           tags: z.array(z.string().min(1).max(64)).max(12).optional(),
+          messages: z.array(z.string().min(1).max(200)).max(12).optional(),
           comment: z.string().max(2000).optional(),
           skipped: z.boolean().optional(),
         }),
@@ -1966,12 +2458,14 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as {
         rating?: number;
         tags?: string[];
+        messages?: string[];
         comment?: string;
         skipped?: boolean;
       };
@@ -1980,6 +2474,9 @@ export async function riderRoutes(app: FastifyInstance) {
         return await submitRiderCustomerDeliveryFeedback(riderId, id, body);
       } catch (e) {
         const err = e as Error & { statusCode?: number };
+        if (!err.statusCode || err.statusCode >= 500) {
+          console.error("[customer-delivery-feedback]", err);
+        }
         const status = err.statusCode ?? 500;
         return reply.status(status as 409).send({ error: err.message || "Update failed" });
       }
@@ -2002,7 +2499,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as { lat?: number; lng?: number };
@@ -2039,7 +2537,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = req.body as {
@@ -2081,7 +2580,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as {
@@ -2129,7 +2629,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = req.body as {
@@ -2174,7 +2675,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as { lat?: number; lng?: number };
@@ -2205,7 +2707,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as { lat?: number; lng?: number };
@@ -2236,7 +2739,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as { lat?: number; lng?: number };
@@ -2274,7 +2778,8 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = req.body as {
@@ -2307,17 +2812,272 @@ export async function riderRoutes(app: FastifyInstance) {
     }
   );
 
+  const partnerChatMessageSchema = z.object({
+    id: z.number(),
+    senderType: z.enum(["CUSTOMER", "RIDER", "SYSTEM"]),
+    body: z.string(),
+    createdAt: z.string(),
+    isMine: z.boolean(),
+  });
+
+  const partnerChatListResponseSchema = z.object({
+    messages: z.array(partnerChatMessageSchema),
+    chatClosed: z.boolean(),
+  });
+
+  const partnerChatSendBodySchema = z.object({
+    body: z.string().trim().min(1).max(500),
+  });
+
+  const partnerChatUnreadResponseSchema = z.object({
+    unreadCount: z.number().int().nonnegative(),
+    chatClosed: z.boolean(),
+  });
+
+  app.get<{ Params: { id: string } }>(
+    "/orders/:id/partner-chat/unread",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: partnerChatUnreadResponseSchema,
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      try {
+        const { getOrderPartnerChatUnreadForRider } = await import(
+          "../../lib/order-partner-chat.service.js"
+        );
+        return await getOrderPartnerChatUnreadForRider(riderId, id);
+      } catch (e) {
+        const err = e as Error & { statusCode?: number };
+        if (err.statusCode === 404) {
+          return reply.status(404).send({ error: err.message || "Order not found" });
+        }
+        const msg = String(e);
+        if (msg.includes("order_partner_chat_messages") && /does not exist|42P01/i.test(msg)) {
+          return reply.send({ unreadCount: 0, chatClosed: false });
+        }
+        throw e;
+      }
+    }
+  );
+
+  app.get<{ Params: { id: string }; Querystring: { since?: string } }>(
+    "/orders/:id/partner-chat/messages",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        querystring: z.object({ since: z.string().optional() }),
+        response: {
+          200: partnerChatListResponseSchema,
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), code: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      const since = (req.query as { since?: string }).since;
+      try {
+        const { listOrderPartnerChatForRider } = await import(
+          "../../lib/order-partner-chat.service.js"
+        );
+        return await listOrderPartnerChatForRider(riderId, id, since);
+      } catch (e) {
+        const err = e as Error & { statusCode?: number; code?: string };
+        if (err.statusCode === 404) {
+          return reply.status(404).send({ error: err.message || "Order not found" });
+        }
+        if (err.statusCode === 409) {
+          return reply.status(409).send({ error: err.message, code: err.code });
+        }
+        throw e;
+      }
+    }
+  );
+
+  app.post<{ Params: { id: string }; Body: z.infer<typeof partnerChatSendBodySchema> }>(
+    "/orders/:id/partner-chat/messages",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: partnerChatSendBodySchema,
+        response: {
+          200: partnerChatMessageSchema,
+          400: z.object({ error: z.string() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), code: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      const body = partnerChatSendBodySchema.parse(req.body ?? {});
+      try {
+        const { sendOrderPartnerChatFromRider } = await import(
+          "../../lib/order-partner-chat.service.js"
+        );
+        return await sendOrderPartnerChatFromRider(riderId, id, body.body);
+      } catch (e) {
+        const err = e as Error & { statusCode?: number; code?: string };
+        if (err.statusCode === 400) {
+          return reply.status(400).send({ error: err.message });
+        }
+        if (err.statusCode === 404) {
+          return reply.status(404).send({ error: err.message || "Order not found" });
+        }
+        if (err.statusCode === 409) {
+          return reply.status(409).send({ error: err.message, code: err.code });
+        }
+        throw e;
+      }
+    }
+  );
+
+  app.get(
+    "/orders/:id/cancellation-penalty-preview",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        querystring: z.object({
+          reasonCode: z.string().min(1).max(120),
+        }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            appliesPenalty: z.boolean(),
+            penaltyAmount: z.coerce.number(),
+            ledgerTitle: z.string(),
+            ledgerDescription: z.string(),
+            scenarioCode: z.string().nullable(),
+            catalogReasonId: z.coerce.number().nullable(),
+            reasonLabel: z.string().nullable(),
+            skipped: z.string().optional(),
+          }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      const qs = req.query as { reasonCode?: string };
+      const reasonCode = qs.reasonCode?.trim() ?? "";
+      if (!reasonCode) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(400).send({ error: "reasonCode is required" });
+      }
+      const { previewRiderAppCancellationPenalty } = await import(
+        "../../lib/rider-cancellation-penalty.service.js"
+      );
+      try {
+        const preview = await previewRiderAppCancellationPenalty({
+          riderId,
+          orderRef: id,
+          reasonCode,
+        });
+        return { ok: true as const, ...preview };
+      } catch (e) {
+        req.log.error(e, "cancellation-penalty-preview failed");
+        return {
+          ok: true as const,
+          appliesPenalty: false,
+          penaltyAmount: 0,
+          ledgerTitle: "",
+          ledgerDescription: "",
+          scenarioCode: null,
+          catalogReasonId: null,
+          reasonLabel: null,
+          skipped: "preview_failed",
+        };
+      }
+    }
+  );
+
+  app.get(
+    "/cancellation-reasons",
+    {
+      schema: {
+        querystring: z.object({
+          serviceType: z.enum(["food", "person_ride", "parcel", "ride"]).optional(),
+          attribute: z.string().max(32).optional(),
+        }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            reasons: z.array(
+              z.object({
+                id: z.coerce.number(),
+                attribute: z.string(),
+                label: z.string(),
+                reasonCode: z.string(),
+                sortOrder: z.coerce.number(),
+                serviceType: z.string().nullable(),
+              })
+            ),
+          }),
+          403: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const qs = req.query as { serviceType?: string; attribute?: string };
+      const attribute = qs.attribute?.trim().toUpperCase() || "RIDER";
+      const rows = await listRiderAppCancellationReasons({
+        serviceType: qs.serviceType,
+      });
+      const reasons = rows.filter((r) => r.attribute === attribute);
+      return { ok: true as const, reasons };
+    }
+  );
+
   app.post(
     "/orders/:id/cancel-assigned",
     {
       schema: {
         params: z.object({ id: z.string().min(1) }),
         body: z.object({
-          reasonCode: z.string().min(1).max(64),
+          reasonCode: z.string().min(1).max(120),
           reasonText: z.string().max(500).optional(),
         }),
         response: {
-          200: z.object({ ok: z.literal(true) }),
+          200: z.object({
+            ok: z.literal(true),
+            penaltyApplied: z.boolean().optional(),
+            penaltyAmount: z.number().optional(),
+          }),
           403: z.object({ error: z.string() }),
           404: z.object({ error: z.string() }),
           409: z.object({ error: z.string() }),
@@ -2327,13 +3087,14 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const riderId = parseRiderIdFromAuth(req.auth!.sub);
       if (riderId == null) {
-        return reply.status(403).send({ error: "Invalid rider session" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
       const body = req.body as { reasonCode: string; reasonText?: string };
       try {
-        const { cancelAssignedRideForRider } = await import("./rider.orders.service.js");
-        return await cancelAssignedRideForRider(riderId, id, body);
+        const { cancelAssignedOrderForRider } = await import("./rider.orders.service.js");
+        return await cancelAssignedOrderForRider(riderId, id, body);
       } catch (e) {
         const err = e as Error & { statusCode?: number };
         const status = err.statusCode ?? 500;

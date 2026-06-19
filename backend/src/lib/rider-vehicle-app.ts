@@ -10,6 +10,7 @@ import {
   mapVehicleTypeFromDb,
   mapVehicleTypeToDb,
 } from "./rider-vehicle-db-map.js";
+import { filterDispatchServicesForRiderProfile } from "./rider-dispatch-service-rules.js";
 
 
 
@@ -525,12 +526,17 @@ export function validateUpsertRiderVehicleInput(
 
 
 
-  const serviceTypes = normalizeServiceTypes(input.serviceTypes);
+  let serviceTypes = normalizeServiceTypes(input.serviceTypes);
+  serviceTypes = filterDispatchServicesForRiderProfile(
+    serviceTypes as Parameters<typeof filterDispatchServicesForRiderProfile>[0],
+    { vehicleTypes: [vehicleType] }
+  );
 
   if (serviceTypes.length < 1) {
-
-    return { ok: false, error: "Select at least one service type" };
-
+    return {
+      ok: false,
+      error: "Food delivery is not available for 3-wheeler and 4-wheeler vehicles.",
+    };
   }
 
 

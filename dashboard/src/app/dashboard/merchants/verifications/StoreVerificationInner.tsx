@@ -35,6 +35,7 @@ import {
   rejectionDetailForDocType,
   rejectionRequiresNewFileUpload,
 } from "@/lib/merchant-store-document-rejection";
+import { dispatchMerchantResubmittedDocsRefresh } from "@/lib/merchants/merchant-resubmitted-docs-refresh";
 import { VerificationPageSkeleton } from "./VerificationPageSkeleton";
 import { Toaster, toast } from "sonner";
 import { MenuReferenceReviewBlock } from "@/components/verification/MenuReferenceReviewBlock";
@@ -915,7 +916,10 @@ function DocVerifyButton({
         body: JSON.stringify({ docType, action: "verify", override: adminOverrideMode }),
       });
       const data = await res.json().catch(() => ({}));
-      if (res.ok && data?.success) onSuccess({ action: "verify", docType });
+      if (res.ok && data?.success) {
+        onSuccess({ action: "verify", docType });
+        dispatchMerchantResubmittedDocsRefresh();
+      }
     } finally {
       setLoading(false);
     }
@@ -4104,6 +4108,7 @@ export function StoreVerificationInner({
   const queryClient = useQueryClient();
   const invalidateMerchantStoresStats = () => {
     void queryClient.invalidateQueries({ queryKey: ["merchant-stores", "stats"], exact: false });
+    dispatchMerchantResubmittedDocsRefresh();
   };
 
   // Keep override for rejected-store review or deep-linked re-verify (e.g. pending doc on approved store).
@@ -4821,6 +4826,7 @@ export function StoreVerificationInner({
     if (!isApproved) return;
     const label = DOC_TYPE_LABELS[docType as (typeof DOC_TYPES)[number]] ?? docType;
     toast.success(`${label} verified — store stays approved`);
+    invalidateMerchantStoresStats();
     if (allStep4DocumentsVerified(documents) && reverifyDeepLink) {
       setTimeout(() => onClose?.(), 500);
     }

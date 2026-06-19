@@ -7,7 +7,7 @@ import { supabaseAdmin } from '@/lib/supabase/server';
 import { ensureMerchantStoreDashboardAccess } from '@/lib/merchant-food-orders/store-access';
 import { loadMerchantStoreFoodOrders } from '@/lib/merchant-food-orders/load-store-food-orders';
 import { resolveMerchantFoodOrder } from '@/lib/merchant-food-orders/resolve-order-food-row';
-import { extendPrepReadyByAtIso, PREP_DELAY_OPTIONS } from '@/lib/order-prep-time';
+import { computeExpectedReadyAtFromNow, PREP_DELAY_OPTIONS } from '@/lib/order-prep-time';
 import { notifyCustomerPrepDelay } from '@/lib/notify-customer-prep-delay';
 
 export const runtime = 'nodejs';
@@ -71,17 +71,14 @@ export async function POST(
     const now = new Date().toISOString();
     const prevDelay = Number(existing.prep_delay_minutes) || 0;
     const newDelayTotal = prevDelay + additional;
-    const newPrepReadyByAt = extendPrepReadyByAtIso(
-      existing.prep_ready_by_at as string | null,
-      additional,
-      now
-    );
+    const newExpectedReadyAt = computeExpectedReadyAtFromNow(additional, now);
 
     const { error: updateErr } = await db
       .from('orders_food')
       .update({
-        prep_ready_by_at: newPrepReadyByAt,
+        expected_ready_at: newExpectedReadyAt,
         prep_delay_minutes: newDelayTotal,
+        last_prep_delay_minutes_added: additional,
         updated_at: now,
       })
       .eq('id', resolved.foodRowId);
@@ -94,7 +91,7 @@ export async function POST(
       await db
         .from('orders_core')
         .update({
-          prep_ready_by_at: newPrepReadyByAt,
+          expected_ready_at: newExpectedReadyAt,
           prep_delay_minutes: newDelayTotal,
           updated_at: now,
         })
@@ -116,7 +113,8 @@ export async function POST(
         metadata: {
           prep_delay_minutes_added: additional,
           prep_delay_minutes_total: newDelayTotal,
-          prep_ready_by_at: newPrepReadyByAt,
+          expected_ready_at: newExpectedReadyAt,
+          prep_ready_by_at: existing.prep_ready_by_at,
         },
       });
     } catch (logErr) {
@@ -139,8 +137,10 @@ export async function POST(
 
     return NextResponse.json({
       order,
-      prep_ready_by_at: newPrepReadyByAt,
+      expected_ready_at: newExpectedReadyAt,
+      prep_ready_by_at: existing.prep_ready_by_at,
       prep_delay_minutes: newDelayTotal,
+      last_prep_delay_minutes_added: additional,
     });
   } catch (e) {
     console.error('[POST prep-delay]', e);

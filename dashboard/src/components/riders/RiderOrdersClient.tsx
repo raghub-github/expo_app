@@ -2,9 +2,10 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
+import { riderSearchMatchesLoadedRider } from "@/lib/riders/resolve-rider-search";
 import { RiderSectionHeader } from "./RiderSectionHeader";
 import { CollapsibleTableFilters } from "./CollapsibleTableFilters";
 import { FilterChips, type FilterChipItem } from "./FilterChips";
@@ -20,6 +21,7 @@ import {
 } from "@/store/api/riderApi";
 import Link from "next/link";
 import { MoreVertical } from "lucide-react";
+import { resolveRiderDashboardOrderStatusLabel } from "@/lib/riders/rider-order-status-display";
 
 interface RiderInfo {
   id: number;
@@ -35,13 +37,42 @@ interface OrderRow {
   riderEarning: string | null;
   createdAt: string;
   externalRef: string | null;
+  earningCreditPending?: boolean;
+  paymentStatus?: string | null;
+  riderAssignmentStatus?: string | null;
+  riderRideUnassigned?: boolean;
+}
+
+function formatOrderStatusLabel(order: OrderRow): string {
+  const base = resolveRiderDashboardOrderStatusLabel({
+    status: order.status,
+    orderType: order.orderType,
+    riderAssignmentStatus: order.riderAssignmentStatus,
+    riderRideUnassigned: order.riderRideUnassigned,
+  });
+  if (order.earningCreditPending) {
+    return `${base} · payment pending`;
+  }
+  return base;
+}
+
+function formatOrderEarningLabel(order: OrderRow): string {
+  if (order.earningCreditPending) return "Pending";
+  if (order.riderEarning == null || order.riderEarning === "" || order.riderEarning === "0") {
+    return "—";
+  }
+  return `₹${order.riderEarning}`;
 }
 
 export function RiderOrdersClient() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const pathname = usePathname();
   const riderContext = useRiderDashboardOptional();
   const searchValue = (searchParams.get("search") || "").trim();
+  const returnTo = searchParams.toString()
+    ? `${pathname}?${searchParams.toString()}`
+    : pathname;
   const [searchInput, setSearchInput] = useState(searchValue);
   const [orderType, setOrderType] = useState(searchParams.get("orderType") || "all");
   const [status, setStatus] = useState(searchParams.get("status") || "all");
@@ -192,7 +223,14 @@ export function RiderOrdersClient() {
     [searchParams.get("orderId"), searchParams.get("q")]
   );
   useEffect(() => {
-    if (searchValue) resolveRider(searchValue);
+    if (searchValue) {
+      if (riderFromContext && riderSearchMatchesLoadedRider(searchValue, riderFromContext)) {
+        setRider(riderFromContext);
+        setError(null);
+      } else {
+        resolveRider(searchValue);
+      }
+    }
     else if (riderFromContext) {
       setRider(riderFromContext);
       setError(null);
@@ -339,6 +377,7 @@ export function RiderOrdersClient() {
         resolveLoading={resolveLoading}
         error={error}
         hasSearch={hasSearch}
+        returnTo={returnTo}
       />
 
       {rider && (
@@ -432,7 +471,7 @@ export function RiderOrdersClient() {
                           <div className="flex justify-between items-start gap-2">
                             <div className="min-w-0 flex-1">
                               <p className="font-semibold text-gray-900">#{o.externalRef || o.id}</p>
-                              <p className="text-sm text-gray-500 capitalize">{o.orderType.replace("_", " ")} • {o.status.replace("_", " ")}</p>
+                              <p className="text-sm text-gray-500 capitalize">{o.orderType.replace("_", " ")} • {formatOrderStatusLabel(o)}</p>
                             </div>
                             <OrderRowMenu
                               orderId={o.id}
@@ -440,7 +479,7 @@ export function RiderOrdersClient() {
                               isOpen={openMenuOrderId === o.id}
                               onToggle={() => setOpenMenuOrderId((id) => (id === o.id ? null : o.id))}
                               onAddPenalty={() => {
-                                const orderValue = parseFloat(o.riderEarning || o.fareAmount || "0") || 0;
+                                const orderValue = parseFloat(o.fareAmount || "0") || 0;
                                 setAddPenaltyForOrder({ orderId: o.id, serviceType: o.orderType, orderValue });
                                 setAddPenaltyForm({ reason: "", penaltyPercent: 100 });
                                 setOpenMenuOrderId(null);
@@ -454,8 +493,8 @@ export function RiderOrdersClient() {
                             />
                           </div>
                           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-                            <span className="text-gray-600">Fare: <span className="font-medium text-gray-900">₹{o.fareAmount ?? "—"}</span></span>
-                            <span className="text-gray-600">Earning: <span className="font-medium text-gray-900">₹{o.riderEarning ?? "—"}</span></span>
+                            <span className="text-gray-600">Order value: <span className="font-medium text-gray-900">₹{o.fareAmount ?? "—"}</span></span>
+                            <span className="text-gray-600">Earning: <span className={`font-medium ${o.earningCreditPending ? "text-amber-700" : "text-gray-900"}`}>{formatOrderEarningLabel(o)}</span></span>
                             {(approvedExtraByOrderId.get(o.id) ?? 0) > 0 && (
                               <span className="inline-flex items-center rounded-md bg-green-50 px-2 py-0.5 text-xs font-semibold text-green-700 border border-green-200">
                                 Extra +₹{(approvedExtraByOrderId.get(o.id) ?? 0).toFixed(2)}
@@ -475,7 +514,7 @@ export function RiderOrdersClient() {
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Order ID</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Type</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Status</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-700 uppercase tracking-wide">Fare</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-700 uppercase tracking-wide">Order value</th>
                       <th className="px-4 py-3 text-right text-xs font-medium text-gray-700 uppercase tracking-wide">Earning</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Date</th>
                       <th className="px-4 py-3 w-10"></th>
@@ -489,11 +528,13 @@ export function RiderOrdersClient() {
                         <tr key={o.id} className="relative hover:bg-gray-50/50">
                           <td className="px-4 py-3 text-sm font-mono font-medium text-gray-900">{o.externalRef || o.id}</td>
                           <td className="px-4 py-3 text-sm text-gray-900 capitalize">{o.orderType.replace("_", " ")}</td>
-                          <td className="px-4 py-3 text-sm text-gray-900 capitalize">{o.status.replace("_", " ")}</td>
+                          <td className="px-4 py-3 text-sm text-gray-900 capitalize">{formatOrderStatusLabel(o)}</td>
                           <td className="px-4 py-3 text-sm text-right text-gray-900">₹{o.fareAmount ?? "—"}</td>
                           <td className="px-4 py-3 text-sm text-right">
                             <div className="flex flex-col items-end leading-tight">
-                              <span className="font-medium text-gray-900">₹{o.riderEarning ?? "—"}</span>
+                              <span className={`font-medium ${o.earningCreditPending ? "text-amber-700" : "text-gray-900"}`}>
+                                {formatOrderEarningLabel(o)}
+                              </span>
                               {(approvedExtraByOrderId.get(o.id) ?? 0) > 0 && (
                                 <span
                                   className="mt-1 inline-flex items-center rounded-md bg-green-50 px-2 py-0.5 text-[11px] font-semibold text-green-700 border border-green-200"
@@ -512,7 +553,7 @@ export function RiderOrdersClient() {
                               isOpen={openMenuOrderId === o.id}
                               onToggle={() => setOpenMenuOrderId((id) => (id === o.id ? null : o.id))}
                               onAddPenalty={() => {
-                                const orderValue = parseFloat(o.riderEarning || o.fareAmount || "0") || 0;
+                                const orderValue = parseFloat(o.fareAmount || "0") || 0;
                                 setAddPenaltyForOrder({ orderId: o.id, serviceType: o.orderType, orderValue });
                                 setAddPenaltyForm({ reason: "", penaltyPercent: 100 });
                                 setOpenMenuOrderId(null);

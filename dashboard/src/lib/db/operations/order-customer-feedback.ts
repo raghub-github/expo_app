@@ -8,6 +8,13 @@ function asNum(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function parseStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean);
+}
+
 /** Latest customer rating for this orders_core.id (merchant + delivery). */
 export async function getOrderCustomerFeedback(
   orderCoreId: number
@@ -22,6 +29,9 @@ export async function getOrderCustomerFeedback(
         r.packaging_rating,
         r.review_text,
         r.review_title,
+        r.rider_review_text,
+        r.store_review_tags,
+        r.rider_review_tags,
         r.created_at,
         c.full_name AS customer_name
       FROM merchant_store_ratings r
@@ -44,6 +54,23 @@ export async function getOrderCustomerFeedback(
           ? String(created)
           : null;
 
+    const legacyRiderTitle =
+      row.review_title != null && String(row.review_title).trim()
+        ? String(row.review_title).trim()
+        : null;
+    const riderReviewText =
+      row.rider_review_text != null && String(row.rider_review_text).trim()
+        ? String(row.rider_review_text).trim()
+        : legacyRiderTitle;
+
+    let riderReviewTags = parseStringArray(row.rider_review_tags);
+    if (riderReviewTags.length === 0 && legacyRiderTitle?.includes(",")) {
+      riderReviewTags = legacyRiderTitle
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean);
+    }
+
     return {
       storeRating,
       foodRating: asNum(row.food_rating),
@@ -53,10 +80,9 @@ export async function getOrderCustomerFeedback(
         row.review_text != null && String(row.review_text).trim()
           ? String(row.review_text).trim()
           : null,
-      riderReviewText:
-        row.review_title != null && String(row.review_title).trim()
-          ? String(row.review_title).trim()
-          : null,
+      riderReviewText,
+      storeReviewTags: parseStringArray(row.store_review_tags),
+      riderReviewTags,
       ratedAtIso,
       customerName:
         row.customer_name != null && String(row.customer_name).trim()

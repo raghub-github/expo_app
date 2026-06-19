@@ -19,6 +19,7 @@ import {
   type EtaRecalcReason,
 } from "./eta.repository.js";
 import { recalcOrderEta } from "./eta.recalc-service.js";
+import { runLiveEtaForOrder } from "./eta.live-engine.js";
 
 const RECALC_REASONS: EtaRecalcReason[] = [
   "RIDER_ASSIGNED",
@@ -41,8 +42,34 @@ export async function etaRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const { orderIdText } = req.params as { orderIdText: string };
-      const view = await getEtaForOrder(orderIdText);
+      let view = await getEtaForOrder(orderIdText);
       if (!view) return reply.code(404).send({ ok: false, error: "Order not found" });
+
+      // Refresh stale live ETA (> 45s) so customers always see current value.
+      try {
+        const sql = (await import("../../db/client.js")).getSql();
+        let updatedAt: Date | string | null | undefined;
+        try {
+          const stale = await sql<Array<{ live_eta_updated_at: Date | string | null }>>`
+            SELECT live_eta_updated_at FROM orders_core WHERE order_id = ${orderIdText} LIMIT 1
+          `;
+          updatedAt = stale[0]?.live_eta_updated_at;
+        } catch {
+          const stale = await sql<Array<{ updated_at: Date | string | null }>>`
+            SELECT updated_at FROM orders_core WHERE order_id = ${orderIdText} LIMIT 1
+          `;
+          updatedAt = stale[0]?.updated_at;
+        }
+        const ageMs =
+          updatedAt != null ? Date.now() - new Date(updatedAt).getTime() : Number.POSITIVE_INFINITY;
+        if (ageMs > 45_000) {
+          await runLiveEtaForOrder(orderIdText, "STATUS_CHANGE");
+          view = (await getEtaForOrder(orderIdText)) ?? view;
+        }
+      } catch {
+        /* non-fatal — return cached view */
+      }
+
       return reply.send({ ok: true, ...view });
     },
   );

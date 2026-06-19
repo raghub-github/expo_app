@@ -307,23 +307,8 @@ export function computeEta(input: EtaInputs): EtaSnapshot {
  * caller has no items list (e.g. menu list cards in the customer app).
  */
 export async function resolveStorePrepMinutes(storeId: number): Promise<number> {
-  const sql = getSql();
-  try {
-    const rows = await sql<Array<{ pt: number | null }>>`
-      SELECT avg_preparation_time_minutes AS pt
-      FROM merchant_stores
-      WHERE id = ${storeId}
-      LIMIT 1
-    `;
-    const n = rows[0]?.pt;
-    if (n != null && Number.isFinite(Number(n)) && Number(n) > 0) return Math.round(Number(n));
-  } catch (e) {
-    console.warn("[eta] resolveStorePrepMinutes lookup failed", {
-      storeId,
-      err: (e as Error).message,
-    });
-  }
-  return DEFAULT_PREP_FALLBACK_MIN;
+  const { resolveBlendedStorePrepMinutes } = await import("./eta.merchant-prep-stats.js");
+  return resolveBlendedStorePrepMinutes(storeId);
 }
 
 /** Re-export resolveWeatherState so callers can import everything from the engine. */

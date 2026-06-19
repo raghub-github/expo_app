@@ -8,21 +8,33 @@ import {
   StyleSheet,
   Pressable,
   Alert,
-  useWindowDimensions,
   BackHandler,
   Platform,
+  AppState,
+  type AppStateStatus,
 } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
+import { useQueryClient } from "@tanstack/react-query";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { RideSearchingMap } from "@/components/maps/RideSearchingMap";
+import { useRideRouteSnapshot } from "@/hooks/useRideRouteSnapshot";
 import { RideSearchingBottomSheet } from "@/features/ride/RideSearchingBottomSheet";
+import { RIDE_MAX_SEARCH_EXTENSIONS, RIDE_TIP_BOOST_DECISION_SEC } from "@/lib/ride-search-extensions";
+import { RideMapToast } from "@/features/ride/RideMapToast";
+import {
+  RIDE_CAPTAIN_CANCELLED_TOAST,
+  RIDE_CUSTOMER_CANCELLED_TOAST,
+} from "@/lib/ride-search-toast-copy";
 import { resolvePlaceDisplayName } from "@/services/location.service";
+import { rideLabelsFromCheckoutMetadata } from "@/lib/ride-address-labels";
 import { resolveRideImage } from "@/features/ride/rideOptionAssets";
 import { RIDE_RIDER_SEARCH_TIMEOUT_SEC } from "@/features/ride/rideOptions";
-import { RideTipBoostSheet } from "@/features/ride/RideSearchTimeoutSheet";
+import { RideTipBoostSheet, type TipBoostLoadingAction } from "@/features/ride/RideSearchTimeoutSheet";
 import { RideSearchingTripDetailsSheet } from "@/features/ride/RideSearchingTripDetailsSheet";
+import { RideTripShareSheet } from "@/components/ride/RideTripShareSheet";
 import { RideCancelReasonSheet } from "@/features/ride/RideCancelReasonSheet";
 import { RideCancelConfirmSheet } from "@/features/ride/RideCancelConfirmSheet";
 import type { RideCancelReason } from "@/lib/ride-cancel-reasons";
@@ -35,6 +47,7 @@ import {
 import {
   placeRideOrder,
   getRideOrderStatus,
+  isRideCaptainAssigned,
   cancelRideOrder,
   markRideSearchWindowEnded,
   extendRideSearch,
@@ -50,14 +63,33 @@ import {
   rememberRideSearchTimer,
   remainingSecFromExpiresAt,
 } from "@/lib/ride-search-timer-cache";
-import { RIDE_MAX_SEARCH_EXTENSIONS } from "@/lib/ride-search-extensions";
+import {
+  parseRideFareDistanceKm,
+  resolveRideFareDistanceKm,
+} from "@/lib/ride-fare-distance";
+import { purgeRideOrderFromClientCaches } from "@/lib/ride-order-query-cache";
+import { useOrderStore } from "@/store/orderStore";
 
-type SearchPhase = "placing" | "searching" | "tip_boost" | "assigned" | "timeout" | "cancelled" | "error";
+function clearActiveRideOrder(orderId: string): void {
+  useOrderStore.getState().removeActiveOrder(orderId);
+}
+
+const SEARCH_TIMEOUT_APOLOGY = {
+  title: "We're sorry",
+  message:
+    "We couldn't find a captain nearby right now. Your ride has been cancelled. Please try again in a few minutes.",
+} as const;
+
+type SearchPhase = "placing" | "searching" | "tip_boost" | "timeout" | "cancelled" | "error";
+
+const RIDE_SEARCH_POLL_MS = 2000;
 type CancelFlowStep = null | "reason" | "confirm";
 
 type TripState = {
   pickupAddress: string;
   dropAddress: string;
+  pickupLabel: string;
+  dropLabel: string;
   pickupLat: number | null;
   pickupLng: number | null;
   dropLat: number | null;
@@ -72,6 +104,8 @@ type TripState = {
 function buildTripStateFromParams(params: {
   pickup?: string;
   drop?: string;
+  pickupLabel?: string;
+  dropLabel?: string;
   pickupLat?: string;
   pickupLng?: string;
   dropLat?: string;
@@ -81,10 +115,22 @@ function buildTripStateFromParams(params: {
   selectedRideImageKey?: string;
   estimatedFare?: string;
   tripKm?: string;
+  routeDistanceKm?: string;
 }): TripState {
+  const fareKm = parseRideFareDistanceKm(params);
+  const pickupFull = String(params.pickup ?? "");
+  const dropFull = String(params.drop ?? "");
   return {
-    pickupAddress: String(params.pickup ?? ""),
-    dropAddress: String(params.drop ?? ""),
+    pickupAddress: pickupFull,
+    dropAddress: dropFull,
+    pickupLabel: resolvePlaceDisplayName({
+      primary: params.pickupLabel,
+      fullAddress: pickupFull,
+    }),
+    dropLabel: resolvePlaceDisplayName({
+      primary: params.dropLabel,
+      fullAddress: dropFull,
+    }),
     pickupLat: params.pickupLat != null ? Number(params.pickupLat) : null,
     pickupLng: params.pickupLng != null ? Number(params.pickupLng) : null,
     dropLat: params.dropLat != null ? Number(params.dropLat) : null,
@@ -93,26 +139,30 @@ function buildTripStateFromParams(params: {
     rideName: String(params.selectedRideName ?? "Ride"),
     rideImageKey: String(params.selectedRideImageKey ?? "bike"),
     fare: params.estimatedFare != null ? Number(params.estimatedFare) : 0,
-    tripKm: params.tripKm != null ? Number(params.tripKm) : undefined,
+    tripKm: fareKm,
   };
 }
 
-function formatCountdown(totalSeconds: number): string {
-  const clamped = Math.max(0, totalSeconds);
+function formatElapsedSec(elapsedSec: number): string {
+  const clamped = Math.max(0, elapsedSec);
   const minutes = Math.floor(clamped / 60);
   const seconds = clamped % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  if (minutes > 0) return `${minutes}m ${seconds}s elapsed`;
+  return `${seconds}s elapsed`;
 }
 
 export default function RideSearchingScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const insets = useSafeAreaInsets();
-  const { height: windowHeight } = useWindowDimensions();
-  const mapBottomPadding = Math.min(520, Math.max(300, Math.round(windowHeight * 0.46)));
+  const isFocused = useIsFocused();
+  const mapBottomPadding = 120;
 
   const params = useLocalSearchParams<{
     pickup?: string;
     drop?: string;
+    pickupLabel?: string;
+    dropLabel?: string;
     pickupLat?: string;
     pickupLng?: string;
     dropLat?: string;
@@ -124,6 +174,7 @@ export default function RideSearchingScreen() {
     estimatedFare?: string;
     tripKm?: string;
     orderId?: string;
+    returnTo?: string;
     bookedForSelf?: string;
     passengerName?: string;
     passengerPhone?: string;
@@ -131,12 +182,19 @@ export default function RideSearchingScreen() {
     farPickupPromptShown?: string;
     farPickupAcknowledged?: string;
     customerTipAmount?: string;
+    pickupPincode?: string;
+    pickupState?: string;
+    captainCancelled?: string;
+    routeDistanceKm?: string;
+    routeEtaMins?: string;
   }>();
 
   const [tripState, setTripState] = useState(() => buildTripStateFromParams(params));
   const {
     pickupAddress,
     dropAddress,
+    pickupLabel: tripPickupLabel,
+    dropLabel: tripDropLabel,
     pickupLat,
     pickupLng,
     dropLat,
@@ -147,6 +205,16 @@ export default function RideSearchingScreen() {
     fare,
     tripKm,
   } = tripState;
+
+  const fareTripKm = useMemo(
+    () =>
+      resolveRideFareDistanceKm({
+        params,
+        tripStateKm: tripKm,
+      }),
+    [params.routeDistanceKm, params.tripKm, tripKm]
+  );
+
   const rideImage = resolveRideImage(rideImageKey);
   const initialTipAmount =
     params.customerTipAmount != null ? Math.max(0, Number(params.customerTipAmount)) : 0;
@@ -154,18 +222,53 @@ export default function RideSearchingScreen() {
   const totalFare = fare + (Number.isFinite(activeTipAmount) ? activeTipAmount : 0);
   const stops = useMemo(() => parseRideStopsParam(params.stops), [params.stops]);
   const stopsForApi = useMemo(() => parseRideStopsForOrder(params.stops), [params.stops]);
-  const shouldHydrateFromOrder = Boolean(params.orderId?.trim() && !params.pickup?.trim());
+  const isResumeMode = Boolean(params.orderId?.trim());
+  const openedFromRideHome = params.returnTo === "ride";
   const resumeOrderId = params.orderId?.trim() ?? "";
   const cachedSearchTimer = resumeOrderId ? readRideSearchTimer(resumeOrderId) : null;
 
-  const pickupLabel = resolvePlaceDisplayName({
-    primary: pickupAddress,
-    fullAddress: pickupAddress,
+  const pickupLabel = tripPickupLabel;
+  const dropLabel = tripDropLabel;
+
+  const pickupPoint = useMemo(
+    () =>
+      pickupLat != null && pickupLng != null
+        ? { latitude: pickupLat, longitude: pickupLng }
+        : null,
+    [pickupLat, pickupLng]
+  );
+  const dropPoint = useMemo(
+    () =>
+      dropLat != null && dropLng != null ? { latitude: dropLat, longitude: dropLng } : null,
+    [dropLat, dropLng]
+  );
+
+  const hasNavRouteSnapshot = useMemo(() => {
+    const km = parseRideFareDistanceKm(params);
+    const eta = params.routeEtaMins != null ? Number(params.routeEtaMins) : null;
+    return (km != null && km > 0) || (eta != null && Number.isFinite(eta) && eta > 0);
+  }, [params.routeDistanceKm, params.tripKm, params.routeEtaMins]);
+
+  const { routeEtaMins: snapshotEtaMins } = useRideRouteSnapshot({
+    pickup: pickupPoint,
+    drop: dropPoint,
+    stops,
+    enabled: isFocused && !hasNavRouteSnapshot,
   });
 
-  const [phase, setPhase] = useState<SearchPhase>(() =>
-    cachedSearchTimer && resumeOrderId ? "searching" : "placing"
-  );
+  const routeEtaMins = useMemo(() => {
+    if (params.routeEtaMins != null) {
+      const parsed = Number(params.routeEtaMins);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    return snapshotEtaMins;
+  }, [params.routeEtaMins, snapshotEtaMins]);
+
+  const [phase, setPhase] = useState<SearchPhase>(() => {
+    if (isResumeMode) return "searching";
+    if (cachedSearchTimer && resumeOrderId) return "searching";
+    return "placing";
+  });
   const [orderId, setOrderId] = useState<string | null>(params.orderId ?? null);
   const searchExpiresAtRef = useRef<string | null>(cachedSearchTimer?.expiresAt ?? null);
   const [searchTimeoutSec, setSearchTimeoutSec] = useState(
@@ -176,20 +279,76 @@ export default function RideSearchingScreen() {
       ? remainingSecFromExpiresAt(cachedSearchTimer.expiresAt, cachedSearchTimer.windowSec)
       : RIDE_RIDER_SEARCH_TIMEOUT_SEC
   );
-  const [timerReady, setTimerReady] = useState(Boolean(cachedSearchTimer) || !shouldHydrateFromOrder);
+  const [timerReady, setTimerReady] = useState(Boolean(cachedSearchTimer) || !isResumeMode);
   const [timeoutSheetVisible, setTimeoutSheetVisible] = useState(false);
-  const [tipBoostLoading, setTipBoostLoading] = useState(false);
+  const [tipBoostLoadingAction, setTipBoostLoadingAction] = useState<TipBoostLoadingAction>(null);
   const [tripDetailsVisible, setTripDetailsVisible] = useState(false);
+  const [shareSheetVisible, setShareSheetVisible] = useState(false);
   const [cancelFlowStep, setCancelFlowStep] = useState<CancelFlowStep>(null);
   const [selectedCancelReason, setSelectedCancelReason] = useState<RideCancelReason | null>(null);
   const [cancelLoading, setCancelLoading] = useState(false);
   const [placementError, setPlacementError] = useState<string | null>(null);
+  const [mapToast, setMapToast] = useState<{ title: string; message?: string } | null>(null);
   const cancelledRef = useRef(false);
+  const mapToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const captainCancelToastShownRef = useRef(false);
   const placingRef = useRef(false);
-  const resumeHydratedRef = useRef(false);
   const searchWindowEndedRef = useRef(false);
+  /** How many post-tip search extensions the customer has already used (synced from API). */
+  const searchExtensionsUsedRef = useRef(0);
+  const timeoutApologyShownRef = useRef(false);
+  const navigatedToLiveRef = useRef(false);
+  const tipBoostExpiresAtRef = useRef<string | null>(null);
+  const [tipBoostDecisionRemainingSec, setTipBoostDecisionRemainingSec] = useState(
+    RIDE_TIP_BOOST_DECISION_SEC
+  );
+
+  useEffect(() => {
+    if (!isResumeMode) return;
+    const inline = buildTripStateFromParams(params);
+    if (!inline.pickupAddress.trim() && inline.fare <= 0) return;
+    setTripState((prev) => ({
+      ...prev,
+      pickupAddress: inline.pickupAddress || prev.pickupAddress,
+      dropAddress: inline.dropAddress || prev.dropAddress,
+      pickupLabel: inline.pickupLabel || prev.pickupLabel,
+      dropLabel: inline.dropLabel || prev.dropLabel,
+      pickupLat: inline.pickupLat ?? prev.pickupLat,
+      pickupLng: inline.pickupLng ?? prev.pickupLng,
+      dropLat: inline.dropLat ?? prev.dropLat,
+      dropLng: inline.dropLng ?? prev.dropLng,
+      rideTypeId: inline.rideTypeId || prev.rideTypeId,
+      rideName: inline.rideName || prev.rideName,
+      rideImageKey: inline.rideImageKey || prev.rideImageKey,
+      fare: inline.fare > 0 ? inline.fare : prev.fare,
+      tripKm: inline.tripKm ?? prev.tripKm,
+    }));
+    if (params.orderId?.trim()) {
+      setOrderId(params.orderId.trim());
+    }
+  }, [
+    isResumeMode,
+    params.orderId,
+    params.pickup,
+    params.drop,
+    params.estimatedFare,
+    params.tripKm,
+    params.routeDistanceKm,
+    params.selectedRideId,
+    params.selectedRideName,
+    params.selectedRideImageKey,
+    params.pickupLat,
+    params.pickupLng,
+    params.dropLat,
+    params.dropLng,
+  ]);
+
+  useEffect(() => {
+    navigatedToLiveRef.current = false;
+  }, [orderId]);
 
   const progress = 1 - remainingSec / Math.max(1, searchTimeoutSec);
+  const elapsedSec = Math.max(0, searchTimeoutSec - remainingSec);
 
   const mapCenter = useMemo(() => {
     if (pickupLat != null && pickupLng != null) {
@@ -198,7 +357,20 @@ export default function RideSearchingScreen() {
     return { latitude: 24.7969, longitude: 84.9914 };
   }, [pickupLat, pickupLng]);
 
-  const { data: availability } = useNearbyRideAvailability(pickupLat, pickupLng);
+  const pickupGeoHints = useMemo(
+    () => ({
+      ...(params.pickupPincode?.trim() ? { pickupPincode: params.pickupPincode.trim() } : {}),
+      ...(params.pickupState?.trim() ? { pickupState: params.pickupState.trim() } : {}),
+    }),
+    [params.pickupPincode, params.pickupState]
+  );
+
+  const { data: availability } = useNearbyRideAvailability(
+    pickupLat,
+    pickupLng,
+    fareTripKm ?? tripKm,
+    pickupGeoHints
+  );
 
   const nearbyRiders = useMemo(() => {
     const all = availability?.riders ?? [];
@@ -210,6 +382,25 @@ export default function RideSearchingScreen() {
       return types.some((type) => allowed.has(type));
     });
   }, [availability, rideTypeId]);
+
+  const selectedRideOption = useMemo(
+    () => availability?.options?.find((o) => o.id === rideTypeId) ?? null,
+    [availability?.options, rideTypeId]
+  );
+
+  const pickupDistanceKm = useMemo(() => {
+    const fromOption = selectedRideOption?.nearestRiderKm;
+    if (fromOption != null && Number.isFinite(fromOption) && fromOption > 0) {
+      return fromOption;
+    }
+    if (params.pickupDistanceFromBookerKm != null) {
+      const parsed = Number(params.pickupDistanceFromBookerKm);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    return null;
+  }, [selectedRideOption?.nearestRiderKm, params.pickupDistanceFromBookerKm]);
+
+  const showFastestTag = rideTypeId === "bike";
 
   const sheetPhase = phase === "error" ? "error" : phase === "tip_boost" ? "tip_boost" : phase === "placing" ? "placing" : "searching";
 
@@ -225,7 +416,9 @@ export default function RideSearchingScreen() {
   const sheetSubtitle =
     phase === "tip_boost"
       ? "Add a tip to help nearby riders notice your order"
-      : "Please wait while we match you with a nearby rider.";
+      : rideName.toLowerCase().includes("bike")
+        ? `Searching nearby ${rideName.toLowerCase()}s for you`
+        : "Searching nearby riders for you";
 
   const returnToRideBook = useCallback(() => {
     const restoreParams: Record<string, string> = {
@@ -244,105 +437,232 @@ export default function RideSearchingScreen() {
     router.replace({ pathname: "/home/service/ride-book", params: restoreParams });
   }, [params, pickupAddress, dropAddress, pickupLat, pickupLng, dropLat, dropLng, rideTypeId, router]);
 
+  const dismissAfterSearchTimeout = useCallback(() => {
+    if (openedFromRideHome) {
+      router.replace("/home/service/ride");
+      return;
+    }
+    returnToRideBook();
+  }, [openedFromRideHome, router, returnToRideBook]);
+
+  const showMapToast = useCallback((title: string, message?: string, durationMs = 4000) => {
+    if (mapToastTimerRef.current) clearTimeout(mapToastTimerRef.current);
+    setMapToast({ title, message });
+    mapToastTimerRef.current = setTimeout(() => {
+      setMapToast(null);
+      mapToastTimerRef.current = null;
+    }, durationMs);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (mapToastTimerRef.current) clearTimeout(mapToastTimerRef.current);
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (params.captainCancelled !== "1" || captainCancelToastShownRef.current) return;
+    captainCancelToastShownRef.current = true;
+    showMapToast(
+      RIDE_CAPTAIN_CANCELLED_TOAST.title,
+      RIDE_CAPTAIN_CANCELLED_TOAST.message,
+      4500
+    );
+  }, [params.captainCancelled, showMapToast]);
+
+  const showSearchTimeoutApology = useCallback(() => {
+    if (timeoutApologyShownRef.current) return;
+    timeoutApologyShownRef.current = true;
+    setPhase("cancelled");
+    setTimeoutSheetVisible(false);
+    setTripDetailsVisible(false);
+    dismissAfterSearchTimeout();
+    Alert.alert(SEARCH_TIMEOUT_APOLOGY.title, SEARCH_TIMEOUT_APOLOGY.message, [{ text: "OK" }]);
+  }, [dismissAfterSearchTimeout]);
+
+  const finalizeRideCancelledLocally = useCallback(
+    (id: string) => {
+      clearActiveRideOrder(id);
+      purgeRideOrderFromClientCaches(queryClient, id);
+      void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      void queryClient.invalidateQueries({ queryKey: ["my-orders", "active-rides"] });
+      void queryClient.invalidateQueries({ queryKey: ["order", id] });
+      showSearchTimeoutApology();
+    },
+    [queryClient, showSearchTimeoutApology]
+  );
+
   const autoCancelAfterSearchTimeout = useCallback(
-    async (id: string) => {
+    async (
+      id: string,
+      options?: {
+        reasonCode?: string;
+        reasonText?: string;
+      }
+    ) => {
+      if (timeoutApologyShownRef.current) return;
       cancelledRef.current = true;
       clearRideSearchTimer(id);
       setTimeoutSheetVisible(false);
+      tipBoostExpiresAtRef.current = null;
+      clearActiveRideOrder(id);
+      purgeRideOrderFromClientCaches(queryClient, id);
       try {
         await cancelRideOrder(id, {
           cancelMode: "timeout",
-          reasonCode: "RIDER_SEARCH_TIMEOUT",
-          reasonText: "No rider accepted within the search window",
+          reasonCode: options?.reasonCode ?? "RIDER_SEARCH_TIMEOUT",
+          reasonText:
+            options?.reasonText ?? "No rider accepted within the search window",
         });
       } catch {
         /* server may have cancelled already */
       }
-      setPhase("cancelled");
-      Alert.alert(
-        "No rider available",
-        "We couldn't find a rider this time. Please try booking again.",
-        [{ text: "OK", onPress: returnToRideBook }]
-      );
+      void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      void queryClient.invalidateQueries({ queryKey: ["my-orders", "active-rides"] });
+      void queryClient.invalidateQueries({ queryKey: ["order", id] });
+      showSearchTimeoutApology();
     },
-    [returnToRideBook]
+    [queryClient, showSearchTimeoutApology]
+  );
+
+  const beginTipBoostDecision = useCallback((expiresAt: string) => {
+    tipBoostExpiresAtRef.current = expiresAt;
+    setTipBoostDecisionRemainingSec(
+      remainingSecFromExpiresAt(expiresAt, RIDE_TIP_BOOST_DECISION_SEC)
+    );
+    searchWindowEndedRef.current = true;
+    setPhase("tip_boost");
+    setTimeoutSheetVisible(true);
+  }, []);
+
+  const returnToRideHome = useCallback(() => {
+    router.replace("/home/service/ride");
+  }, [router]);
+
+  const openLiveRideTracking = useCallback(
+    (assignedOrderId: string) => {
+      const trackingParams: Record<string, string> = { id: assignedOrderId };
+      if (openedFromRideHome) trackingParams.returnTo = "ride";
+      router.replace({
+        pathname: "/orders/[id]",
+        params: trackingParams,
+      });
+    },
+    [router, openedFromRideHome]
+  );
+
+  const tryOpenLiveRideTracking = useCallback(
+    (assignedOrderId: string) => {
+      if (navigatedToLiveRef.current || cancelledRef.current) return;
+      navigatedToLiveRef.current = true;
+      clearRideSearchTimer(assignedOrderId);
+      openLiveRideTracking(assignedOrderId);
+    },
+    [openLiveRideTracking]
   );
 
   const handleSearchWindowEnded = useCallback(async () => {
-    if (cancelledRef.current || searchWindowEndedRef.current) return;
-    if (!orderId) return;
+    if (cancelledRef.current || !orderId) return;
+
+    // After tip-boost extension window ends, always auto-cancel — never re-open tip sheet.
+    if (searchExtensionsUsedRef.current >= RIDE_MAX_SEARCH_EXTENSIONS) {
+      if (!searchWindowEndedRef.current) {
+        searchWindowEndedRef.current = true;
+        setTimeoutSheetVisible(false);
+        await autoCancelAfterSearchTimeout(orderId);
+      }
+      return;
+    }
+
+    if (searchWindowEndedRef.current) return;
 
     try {
       const status = await getRideOrderStatus(orderId);
+      searchExtensionsUsedRef.current = status.dispatchRetryCount ?? searchExtensionsUsedRef.current;
+
       if (status.cancelled) {
         cancelledRef.current = true;
         clearRideSearchTimer(orderId);
         setTimeoutSheetVisible(false);
-        setPhase("cancelled");
-        Alert.alert(
-          "No rider available",
-          "We couldn't find a rider this time. Please try booking again.",
-          [{ text: "OK", onPress: returnToRideBook }]
-        );
+        finalizeRideCancelledLocally(orderId);
         return;
       }
-      if (status.riderAssigned) {
-        clearRideSearchTimer(orderId);
-        setPhase("assigned");
-        router.replace({
-          pathname: "/orders/[id]",
-          params: { id: status.orderId },
-        });
+      if (isRideCaptainAssigned(status)) {
+        tryOpenLiveRideTracking(status.orderId);
         return;
       }
       const retryCount = status.dispatchRetryCount ?? 0;
       if (retryCount >= RIDE_MAX_SEARCH_EXTENSIONS) {
         searchWindowEndedRef.current = true;
+        setTimeoutSheetVisible(false);
         await autoCancelAfterSearchTimeout(orderId);
         return;
       }
     } catch {
-      /* fall through to tip sheet */
+      if (searchExtensionsUsedRef.current >= RIDE_MAX_SEARCH_EXTENSIONS) {
+        searchWindowEndedRef.current = true;
+        setTimeoutSheetVisible(false);
+        await autoCancelAfterSearchTimeout(orderId);
+        return;
+      }
     }
 
     if (timeoutSheetVisible) return;
-    searchWindowEndedRef.current = true;
-    setPhase("tip_boost");
-    setTimeoutSheetVisible(true);
     try {
-      await markRideSearchWindowEnded(orderId);
+      const result = await markRideSearchWindowEnded(orderId);
+      const expiresAt =
+        result.searchExpiresAt ??
+        new Date(Date.now() + RIDE_TIP_BOOST_DECISION_SEC * 1000).toISOString();
+      beginTipBoostDecision(expiresAt);
     } catch {
-      /* best-effort */
+      beginTipBoostDecision(
+        new Date(Date.now() + RIDE_TIP_BOOST_DECISION_SEC * 1000).toISOString()
+      );
     }
   }, [
     orderId,
     timeoutSheetVisible,
-    router,
-    returnToRideBook,
+    tryOpenLiveRideTracking,
     autoCancelAfterSearchTimeout,
+    finalizeRideCancelledLocally,
+    beginTipBoostDecision,
   ]);
 
-  const resumeSearchAfterExtension = useCallback((extensionSec: number, expiresAt: string) => {
-    setTimeoutSheetVisible(false);
-    searchWindowEndedRef.current = false;
-    searchExpiresAtRef.current = expiresAt;
-    setSearchTimeoutSec(extensionSec);
-    setRemainingSec(remainingSecFromExpiresAt(expiresAt, extensionSec));
-    setTimerReady(true);
-    if (orderId) {
-      rememberRideSearchTimer(orderId, expiresAt, extensionSec);
-    }
-    setPhase("searching");
-  }, [orderId]);
+  const resumeSearchAfterExtension = useCallback(
+    (extensionSec: number, expiresAt: string, dispatchRetryCount: number) => {
+      setTimeoutSheetVisible(false);
+      tipBoostExpiresAtRef.current = null;
+      searchWindowEndedRef.current = false;
+      searchExtensionsUsedRef.current = Math.max(
+        searchExtensionsUsedRef.current,
+        dispatchRetryCount
+      );
+      searchExpiresAtRef.current = expiresAt;
+      setSearchTimeoutSec(extensionSec);
+      setRemainingSec(remainingSecFromExpiresAt(expiresAt, extensionSec));
+      setTimerReady(true);
+      if (orderId) {
+        rememberRideSearchTimer(orderId, expiresAt, extensionSec);
+      }
+      setPhase("searching");
+    },
+    [orderId]
+  );
 
   const handleExtendSearch = useCallback(
     async (tipAmount: number) => {
-      if (!orderId || tipBoostLoading) return;
-      setTipBoostLoading(true);
+      if (!orderId || tipBoostLoadingAction) return;
+      const action: TipBoostLoadingAction = tipAmount > 0 ? "add_tip" : "continue";
+      setTipBoostLoadingAction(action);
       try {
         const result = await extendRideSearch(orderId, { tipAmount });
         setActiveTipAmount(result.customerTipAmount);
-        resumeSearchAfterExtension(result.extensionSec, result.searchExpiresAt);
+        resumeSearchAfterExtension(
+          result.extensionSec,
+          result.searchExpiresAt,
+          result.dispatchRetryCount
+        );
       } catch (err: unknown) {
         const message =
           (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
@@ -350,25 +670,20 @@ export default function RideSearchingScreen() {
           "Could not extend search. Please try again.";
         Alert.alert("Something went wrong", message);
       } finally {
-        setTipBoostLoading(false);
+        setTipBoostLoadingAction(null);
       }
     },
-    [orderId, tipBoostLoading, resumeSearchAfterExtension]
+    [orderId, tipBoostLoadingAction, resumeSearchAfterExtension]
   );
 
   const handleContinueWithoutTip = useCallback(() => {
     void handleExtendSearch(0);
   }, [handleExtendSearch]);
 
-  const returnToRideHome = useCallback(() => {
-    router.replace("/home/service/ride");
-  }, [router]);
-
   useEffect(() => {
-    if (!shouldHydrateFromOrder || resumeHydratedRef.current) return;
+    if (!isResumeMode) return;
 
     const existingOrderId = params.orderId!.trim();
-    resumeHydratedRef.current = true;
     let cancelled = false;
 
     Promise.all([orderService.getOrder(existingOrderId), getRideOrderStatus(existingOrderId)])
@@ -385,9 +700,30 @@ export default function RideSearchingScreen() {
             : Math.max(0, Number(order.totalAmount ?? 0) - tipAmount);
         const imageKey = resolveRideCatalogImageKey(order.rideType);
 
+        const quotedKm = resolveRideFareDistanceKm({
+          params,
+          tripStateKm: tripKm,
+          orderDistanceKm:
+            order.distanceKm != null ? Number(order.distanceKm) : null,
+        });
+
+        const resumeLabels = rideLabelsFromCheckoutMetadata(
+          order.checkoutMetadata as Record<string, unknown> | undefined
+        );
+
         setTripState({
           pickupAddress: order.merchantAddress?.trim() || pickupAddress,
           dropAddress: order.deliveryAddress?.trim() || dropAddress,
+          pickupLabel:
+            resumeLabels.pickupLabel ||
+            resolvePlaceDisplayName({
+              fullAddress: order.merchantAddress?.trim() || pickupAddress,
+            }),
+          dropLabel:
+            resumeLabels.dropLabel ||
+            resolvePlaceDisplayName({
+              fullAddress: order.deliveryAddress?.trim() || dropAddress,
+            }),
           pickupLat: order.pickupLat ?? pickupLat,
           pickupLng: order.pickupLng ?? pickupLng,
           dropLat: order.deliveryLat ?? dropLat,
@@ -396,43 +732,47 @@ export default function RideSearchingScreen() {
           rideName: getRideServiceLabel(order.rideType),
           rideImageKey: imageKey,
           fare: baseFare,
-          tripKm:
-            order.distanceKm != null && Number.isFinite(Number(order.distanceKm))
-              ? Number(order.distanceKm)
-              : tripKm,
+          tripKm: quotedKm,
         });
         setActiveTipAmount(tipAmount);
+        searchExtensionsUsedRef.current = status.dispatchRetryCount ?? 0;
 
         if (status.cancelled) {
           clearRideSearchTimer(existingOrderId);
           cancelledRef.current = true;
-          setPhase("cancelled");
-          Alert.alert(
-            "No rider available",
-            "We couldn't find a rider this time. Please try booking again.",
-            [{ text: "OK", onPress: returnToRideHome }]
-          );
+          finalizeRideCancelledLocally(existingOrderId);
           return;
         }
 
-        if (status.riderAssigned) {
-          clearRideSearchTimer(existingOrderId);
-          setPhase("assigned");
-          router.replace({
-            pathname: "/orders/[id]",
-            params: { id: status.orderId },
-          });
+        if (isRideCaptainAssigned(status)) {
+          tryOpenLiveRideTracking(status.orderId);
           return;
         }
 
         if (status.awaitingTipBoost) {
-          setPhase("tip_boost");
-          setTimeoutSheetVisible(true);
+          if (searchExtensionsUsedRef.current >= RIDE_MAX_SEARCH_EXTENSIONS) {
+            void autoCancelAfterSearchTimeout(existingOrderId);
+            return;
+          }
+          const tipBoostExpired =
+            status.searchExpiresAt != null &&
+            remainingSecFromExpiresAt(status.searchExpiresAt, 0) <= 0;
+          if (tipBoostExpired) {
+            void autoCancelAfterSearchTimeout(existingOrderId, {
+              reasonCode: "TIP_BOOST_DECISION_TIMEOUT",
+              reasonText: "No response on search options within 1.5 minutes",
+            });
+            return;
+          }
+          beginTipBoostDecision(
+            status.searchExpiresAt ??
+              new Date(Date.now() + RIDE_TIP_BOOST_DECISION_SEC * 1000).toISOString()
+          );
         } else {
           setPhase("searching");
         }
 
-        if (status.searchExpiresAt) {
+        if (status.searchExpiresAt && !status.awaitingTipBoost) {
           searchExpiresAtRef.current = status.searchExpiresAt;
           const left = remainingSecFromExpiresAt(
             status.searchExpiresAt,
@@ -446,6 +786,15 @@ export default function RideSearchingScreen() {
           setSearchTimeoutSec(windowSec);
           setRemainingSec(left);
           rememberRideSearchTimer(existingOrderId, status.searchExpiresAt, windowSec);
+
+          if (
+            searchExtensionsUsedRef.current >= RIDE_MAX_SEARCH_EXTENSIONS &&
+            left <= 0 &&
+            !isRideCaptainAssigned(status)
+          ) {
+            void autoCancelAfterSearchTimeout(existingOrderId);
+            return;
+          }
         }
         setTimerReady(true);
       })
@@ -463,7 +812,7 @@ export default function RideSearchingScreen() {
       cancelled = true;
     };
   }, [
-    shouldHydrateFromOrder,
+    isResumeMode,
     params.orderId,
     pickupAddress,
     dropAddress,
@@ -475,12 +824,16 @@ export default function RideSearchingScreen() {
     tripKm,
     router,
     returnToRideHome,
+    tryOpenLiveRideTracking,
     cachedSearchTimer,
+    autoCancelAfterSearchTimeout,
+    finalizeRideCancelledLocally,
+    beginTipBoostDecision,
   ]);
 
   useEffect(() => {
     if (placingRef.current || orderId) return;
-    if (shouldHydrateFromOrder) return;
+    if (isResumeMode) return;
 
     const placementErrorMsg = validateRidePlacementCoords({
       pickupLat,
@@ -497,22 +850,37 @@ export default function RideSearchingScreen() {
       return;
     }
 
+    const quotedTripKm = fareTripKm ?? tripKm;
+    if (quotedTripKm == null || !Number.isFinite(quotedTripKm) || quotedTripKm <= 0) {
+      setPlacementError("Route distance is missing. Go back and refresh ride options.");
+      setPhase("error");
+      return;
+    }
+
     placingRef.current = true;
     let cancelled = false;
 
     placeRideOrder({
       pickupAddress: pickupAddress.trim(),
+      pickupLabel: resolvePlaceDisplayName({
+        primary: pickupLabel,
+        fullAddress: pickupAddress,
+      }),
       pickupLat,
       pickupLng,
       dropAddress: dropAddress.trim(),
+      dropLabel: resolvePlaceDisplayName({
+        primary: dropLabel,
+        fullAddress: dropAddress,
+      }),
       dropLat,
       dropLng,
       intermediateStops: stopsForApi.length > 0 ? stopsForApi : undefined,
       rideType: rideTypeId,
       estimatedFare: Number.isFinite(fare) ? fare : 0,
       customerTipAmount: Number.isFinite(initialTipAmount) ? initialTipAmount : 0,
-      tripKm,
-      paymentMethod: "cash",
+      tripKm: quotedTripKm,
+      paymentMethod: "online",
       bookedForSelf: params.bookedForSelf !== "false",
       passengerName: params.passengerName ?? null,
       passengerPhone: params.passengerPhone ?? null,
@@ -523,10 +891,14 @@ export default function RideSearchingScreen() {
       farPickupPromptShown: params.farPickupPromptShown === "true",
       farPickupAcknowledged: params.farPickupAcknowledged === "true",
       searchTimeoutSec: RIDE_RIDER_SEARCH_TIMEOUT_SEC,
+      pickupPincode: params.pickupPincode?.trim() || undefined,
+      pickupState: params.pickupState?.trim() || undefined,
     })
       .then((result) => {
         if (cancelled) return;
         setOrderId(result.orderId);
+        searchExtensionsUsedRef.current = 0;
+        searchWindowEndedRef.current = false;
         searchExpiresAtRef.current = result.searchExpiresAt;
         setSearchTimeoutSec(result.searchTimeoutSec);
         setRemainingSec(
@@ -557,7 +929,7 @@ export default function RideSearchingScreen() {
     dropLng,
     pickupAddress,
     dropAddress,
-    shouldHydrateFromOrder,
+    isResumeMode,
     params.bookedForSelf,
     params.passengerName,
     params.passengerPhone,
@@ -569,6 +941,8 @@ export default function RideSearchingScreen() {
     fare,
     initialTipAmount,
     tripKm,
+    fareTripKm,
+    params.pickupPincode,
   ]);
 
   useEffect(() => {
@@ -590,73 +964,145 @@ export default function RideSearchingScreen() {
   }, [phase, handleSearchWindowEnded]);
 
   useEffect(() => {
-    if ((phase !== "searching" && phase !== "tip_boost") || !orderId) return;
+    if (phase !== "tip_boost" || !timeoutSheetVisible || !orderId) return;
 
-    const poll = setInterval(() => {
-      getRideOrderStatus(orderId)
-        .then((status) => {
-          if (status.awaitingTipBoost && !timeoutSheetVisible) {
-            setPhase("tip_boost");
-            setTimeoutSheetVisible(true);
-            if (status.customerTipAmount != null) {
-              setActiveTipAmount(status.customerTipAmount);
-            }
-            return;
-          }
-          const retryCount = status.dispatchRetryCount ?? 0;
-          if (
-            phase === "searching" &&
-            !status.awaitingTipBoost &&
-            !status.riderAssigned &&
-            !status.cancelled &&
-            status.searchExpiresAt &&
-            remainingSecFromExpiresAt(status.searchExpiresAt, 0) <= 0 &&
-            retryCount >= RIDE_MAX_SEARCH_EXTENSIONS
-          ) {
-            void autoCancelAfterSearchTimeout(orderId);
-            return;
-          }
-          if (status.cancelled) {
-            clearRideSearchTimer(orderId);
-            cancelledRef.current = true;
-            setTimeoutSheetVisible(false);
-            setPhase("cancelled");
-            Alert.alert(
-              "No rider available",
-              "We couldn't find a rider this time. Please try booking again.",
-              [{ text: "OK", onPress: returnToRideBook }]
-            );
-            return;
-          }
-          if (status.riderAssigned) {
-            clearRideSearchTimer(orderId);
-            setPhase("assigned");
-            router.replace({
-              pathname: "/orders/[id]",
-              params: { id: status.orderId },
-            });
-            return;
-          }
-          if (status.searchExpiresAt && phase === "searching") {
-            searchExpiresAtRef.current = status.searchExpiresAt;
-            rememberRideSearchTimer(orderId, status.searchExpiresAt, searchTimeoutSec);
-          }
-        })
-        .catch(() => {
-          /* ignore transient poll errors */
+    const syncTipBoostDecision = () => {
+      const expiresAt = tipBoostExpiresAtRef.current;
+      if (!expiresAt) return;
+      const left = remainingSecFromExpiresAt(expiresAt, 0);
+      setTipBoostDecisionRemainingSec(left);
+      if (left <= 0 && !timeoutApologyShownRef.current && !cancelledRef.current) {
+        void autoCancelAfterSearchTimeout(orderId, {
+          reasonCode: "TIP_BOOST_DECISION_TIMEOUT",
+          reasonText: "No response on search options within 1.5 minutes",
         });
-    }, 5000);
+      }
+    };
 
-    return () => clearInterval(poll);
+    syncTipBoostDecision();
+    const timer = setInterval(syncTipBoostDecision, 1000);
+    return () => clearInterval(timer);
+  }, [phase, timeoutSheetVisible, orderId, autoCancelAfterSearchTimeout]);
+
+  const syncRideSearchStatus = useCallback(async () => {
+    if (!orderId || navigatedToLiveRef.current || cancelledRef.current) return;
+
+    try {
+      const status = await getRideOrderStatus(orderId);
+
+      if (isRideCaptainAssigned(status)) {
+        tryOpenLiveRideTracking(status.orderId);
+        return;
+      }
+
+      if (status.cancelled) {
+        clearRideSearchTimer(orderId);
+        cancelledRef.current = true;
+        setTimeoutSheetVisible(false);
+        finalizeRideCancelledLocally(orderId);
+        return;
+      }
+
+      if (status.awaitingTipBoost && !timeoutSheetVisible) {
+        if (searchExtensionsUsedRef.current >= RIDE_MAX_SEARCH_EXTENSIONS) {
+          void autoCancelAfterSearchTimeout(orderId);
+          return;
+        }
+        const tipBoostExpired =
+          status.searchExpiresAt != null &&
+          remainingSecFromExpiresAt(status.searchExpiresAt, 0) <= 0;
+        if (tipBoostExpired) {
+          void autoCancelAfterSearchTimeout(orderId, {
+            reasonCode: "TIP_BOOST_DECISION_TIMEOUT",
+            reasonText: "No response on search options within 1.5 minutes",
+          });
+          return;
+        }
+        beginTipBoostDecision(
+          status.searchExpiresAt ??
+            new Date(Date.now() + RIDE_TIP_BOOST_DECISION_SEC * 1000).toISOString()
+        );
+        if (status.customerTipAmount != null) {
+          setActiveTipAmount(status.customerTipAmount);
+        }
+        return;
+      }
+
+      if (status.awaitingTipBoost && timeoutSheetVisible) {
+        if (status.searchExpiresAt) {
+          tipBoostExpiresAtRef.current = status.searchExpiresAt;
+        }
+        const tipBoostExpired =
+          status.searchExpiresAt != null &&
+          remainingSecFromExpiresAt(status.searchExpiresAt, 0) <= 0;
+        if (tipBoostExpired) {
+          void autoCancelAfterSearchTimeout(orderId, {
+            reasonCode: "TIP_BOOST_DECISION_TIMEOUT",
+            reasonText: "No response on search options within 1.5 minutes",
+          });
+        }
+        return;
+      }
+
+      searchExtensionsUsedRef.current = status.dispatchRetryCount ?? searchExtensionsUsedRef.current;
+
+      const retryCount = status.dispatchRetryCount ?? 0;
+      const searchExpired =
+        status.searchExpiresAt != null &&
+        remainingSecFromExpiresAt(status.searchExpiresAt, 0) <= 0;
+
+      if (
+        phase === "searching" &&
+        !status.awaitingTipBoost &&
+        !isRideCaptainAssigned(status) &&
+        !status.cancelled &&
+        searchExpired &&
+        (retryCount >= RIDE_MAX_SEARCH_EXTENSIONS ||
+          searchExtensionsUsedRef.current >= RIDE_MAX_SEARCH_EXTENSIONS)
+      ) {
+        void autoCancelAfterSearchTimeout(orderId);
+        return;
+      }
+
+      if (status.searchExpiresAt && phase === "searching") {
+        searchExpiresAtRef.current = status.searchExpiresAt;
+        rememberRideSearchTimer(orderId, status.searchExpiresAt, searchTimeoutSec);
+      }
+    } catch {
+      /* ignore transient poll errors */
+    }
   }, [
-    phase,
     orderId,
-    router,
+    phase,
     timeoutSheetVisible,
-    returnToRideBook,
+    tryOpenLiveRideTracking,
     searchTimeoutSec,
     autoCancelAfterSearchTimeout,
+    finalizeRideCancelledLocally,
+    beginTipBoostDecision,
   ]);
+
+  useEffect(() => {
+    if (!orderId || phase === "placing" || phase === "cancelled" || phase === "error") return;
+
+    void syncRideSearchStatus();
+    const poll = setInterval(() => {
+      void syncRideSearchStatus();
+    }, RIDE_SEARCH_POLL_MS);
+
+    return () => clearInterval(poll);
+  }, [orderId, phase, syncRideSearchStatus]);
+
+  useEffect(() => {
+    if (!orderId || phase === "placing" || phase === "cancelled" || phase === "error") return;
+
+    const sub = AppState.addEventListener("change", (next: AppStateStatus) => {
+      if (next === "active") {
+        void syncRideSearchStatus();
+      }
+    });
+    return () => sub.remove();
+  }, [orderId, phase, syncRideSearchStatus]);
 
   const handleTipBoostCancel = useCallback(() => {
     setTimeoutSheetVisible(false);
@@ -684,6 +1130,7 @@ export default function RideSearchingScreen() {
     closeCancelFlow();
 
     if (orderId) {
+      purgeRideOrderFromClientCaches(queryClient, orderId);
       try {
         await cancelRideOrder(orderId, {
           reasonCode: selectedCancelReason?.id ?? "CUSTOMER_CANCELLED",
@@ -694,9 +1141,19 @@ export default function RideSearchingScreen() {
         /* best-effort */
       }
       clearRideSearchTimer(orderId);
+      clearActiveRideOrder(orderId);
+      void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      void queryClient.invalidateQueries({ queryKey: ["my-orders", "active-rides"] });
     }
+
+    showMapToast(
+      RIDE_CUSTOMER_CANCELLED_TOAST.title,
+      RIDE_CUSTOMER_CANCELLED_TOAST.message,
+      2500
+    );
+    await new Promise((resolve) => setTimeout(resolve, 2200));
     returnToRideHome();
-  }, [cancelLoading, orderId, selectedCancelReason, closeCancelFlow, returnToRideHome]);
+  }, [cancelLoading, orderId, selectedCancelReason, closeCancelFlow, returnToRideHome, showMapToast, queryClient]);
 
   const handleBack = useCallback(() => {
     if (cancelFlowStep != null) {
@@ -707,8 +1164,16 @@ export default function RideSearchingScreen() {
       setTripDetailsVisible(false);
       return;
     }
+    if (shareSheetVisible) {
+      setShareSheetVisible(false);
+      return;
+    }
     if (timeoutSheetVisible) {
       setTimeoutSheetVisible(false);
+      return;
+    }
+    if (openedFromRideHome || isResumeMode) {
+      returnToRideHome();
       return;
     }
     if (router.canGoBack()) {
@@ -719,8 +1184,11 @@ export default function RideSearchingScreen() {
   }, [
     cancelFlowStep,
     tripDetailsVisible,
+    shareSheetVisible,
     timeoutSheetVisible,
     closeCancelFlow,
+    openedFromRideHome,
+    isResumeMode,
     router,
     returnToRideHome,
   ]);
@@ -756,35 +1224,53 @@ export default function RideSearchingScreen() {
         >
           <Ionicons name="arrow-back" size={22} color="#111827" />
         </Pressable>
+
+        <RideMapToast
+          visible={mapToast != null}
+          title={mapToast?.title ?? ""}
+          message={mapToast?.message}
+          topInset={insets.top}
+        />
       </View>
 
       <View style={styles.sheetHost}>
-        <RideSearchingBottomSheet
-        phase={sheetPhase}
-        title={sheetTitle}
-        subtitle={sheetSubtitle}
-        countdownLabel={
-          timerReady && phase !== "error" && phase !== "tip_boost"
-            ? formatCountdown(remainingSec)
-            : undefined
-        }
-        progress={progress}
-        fare={totalFare}
-        rideImage={rideImage}
-        pickupLabel={pickupLabel}
-        tripKm={tripKm}
-        placementError={placementError}
-        bottomInset={insets.bottom}
-        onTripDetails={() => setTripDetailsVisible(true)}
-        onRetry={returnToRideBook}
-        onCancelRide={handleCancelRide}
-        showCancel={phase === "searching" || phase === "tip_boost"}
-        />
+        {phase !== "cancelled" ? (
+          <RideSearchingBottomSheet
+            phase={sheetPhase}
+            title={sheetTitle}
+            subtitle={sheetSubtitle}
+            elapsedLabel={
+              timerReady && phase !== "error" && phase !== "tip_boost"
+                ? formatElapsedSec(elapsedSec)
+                : undefined
+            }
+            progress={progress}
+            fare={totalFare}
+            rideImage={rideImage}
+            rideName={rideName}
+            pickupLabel={pickupLabel}
+            dropLabel={dropLabel}
+            tripKm={fareTripKm ?? tripKm}
+            pickupDistanceKm={pickupDistanceKm}
+            routeEtaMins={routeEtaMins}
+            nearbyRidersCount={nearbyRiders.length}
+            showFastestTag={showFastestTag}
+            placementError={placementError}
+            bottomInset={insets.bottom}
+            onTripDetails={() => setTripDetailsVisible(true)}
+            onShareTrip={() => setShareSheetVisible(true)}
+            shareTripEnabled={Boolean(orderId)}
+            onRetry={returnToRideBook}
+            onCancelRide={handleCancelRide}
+            showCancel={phase === "searching" || phase === "tip_boost"}
+          />
+        ) : null}
       </View>
 
       <RideTipBoostSheet
         visible={timeoutSheetVisible}
-        loading={tipBoostLoading}
+        loadingAction={tipBoostLoadingAction}
+        decisionRemainingSec={tipBoostDecisionRemainingSec}
         orderTotal={fare}
         existingTipAmount={activeTipAmount}
         onAddTipAndContinue={(tip) => void handleExtendSearch(tip)}
@@ -792,16 +1278,21 @@ export default function RideSearchingScreen() {
         onCancelOrder={handleTipBoostCancel}
       />
 
+      <RideTripShareSheet
+        visible={shareSheetVisible}
+        orderId={orderId ?? ""}
+        onClose={() => setShareSheetVisible(false)}
+      />
+
       <RideSearchingTripDetailsSheet
         visible={tripDetailsVisible}
         rideName={rideName}
         rideImage={rideImage}
-        pickupAddress={pickupAddress || "—"}
-        dropAddress={dropAddress || "—"}
+        pickupAddress={pickupLabel || pickupAddress || "—"}
+        dropAddress={dropLabel || dropAddress || "—"}
         stops={stops.map((_, index) => ({ label: `Stop ${index + 1}` }))}
         totalFare={totalFare}
         tipAmount={activeTipAmount}
-        paymentMethod="Cash"
         onBack={() => setTripDetailsVisible(false)}
         onCancelRide={openCancelFlow}
       />
@@ -830,14 +1321,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#FFFFFF",
-    justifyContent: "flex-end",
   },
   mapSection: {
-    ...StyleSheet.absoluteFillObject,
-    minHeight: 220,
+    flex: 1,
+    width: "100%",
+    overflow: "hidden",
     zIndex: 0,
   },
   sheetHost: {
+    width: "100%",
     zIndex: 2,
   },
   backFab: {

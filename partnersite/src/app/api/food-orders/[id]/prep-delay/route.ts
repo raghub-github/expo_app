@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { extendPrepReadyByAtIso, PREP_DELAY_OPTIONS } from '@/lib/order-prep-time';
+import { computeExpectedReadyAtFromNow, PREP_DELAY_OPTIONS } from '@/lib/order-prep-time';
 import { notifyCustomerPrepDelay } from '@/lib/notify-customer-prep-delay';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
@@ -20,6 +20,8 @@ async function resolveStoreId(db: ReturnType<typeof getSupabase>, storeIdParam: 
 /**
  * POST /api/food-orders/[id]/prep-delay?store_id=…
  * Body: { additional_minutes: 5 | 10 | 15 }
+ *
+ * Extends expected_ready_at (customer ETA) without moving prep_ready_by_at (delay analytics anchor).
  */
 export async function POST(
   req: NextRequest,
@@ -87,18 +89,15 @@ export async function POST(
     const prevDelay = Number(existing.prep_delay_minutes) || 0;
     const newDelayTotal = prevDelay + additional;
     const newUseCount = prevUseCount + 1;
-    const newPrepReadyByAt = extendPrepReadyByAtIso(
-      existing.prep_ready_by_at as string | null,
-      additional,
-      now
-    );
+    const newExpectedReadyAt = computeExpectedReadyAtFromNow(additional, now);
 
     const { error: updateErr } = await db
       .from('orders_food')
       .update({
-        prep_ready_by_at: newPrepReadyByAt,
+        expected_ready_at: newExpectedReadyAt,
         prep_delay_minutes: newDelayTotal,
         prep_delay_use_count: newUseCount,
+        last_prep_delay_minutes_added: additional,
         updated_at: now,
       })
       .eq('id', orderIdNum);
@@ -111,7 +110,7 @@ export async function POST(
       await db
         .from('orders_core')
         .update({
-          prep_ready_by_at: newPrepReadyByAt,
+          expected_ready_at: newExpectedReadyAt,
           prep_delay_minutes: newDelayTotal,
           prep_delay_use_count: newUseCount,
           updated_at: now,
@@ -134,7 +133,8 @@ export async function POST(
         metadata: {
           prep_delay_minutes_added: additional,
           prep_delay_minutes_total: newDelayTotal,
-          prep_ready_by_at: newPrepReadyByAt,
+          expected_ready_at: newExpectedReadyAt,
+          prep_ready_by_at: existing.prep_ready_by_at,
         },
       });
     } catch {
@@ -147,9 +147,11 @@ export async function POST(
     });
 
     return NextResponse.json({
-      prep_ready_by_at: newPrepReadyByAt,
+      expected_ready_at: newExpectedReadyAt,
+      prep_ready_by_at: existing.prep_ready_by_at,
       prep_delay_minutes: newDelayTotal,
       prep_delay_use_count: newUseCount,
+      last_prep_delay_minutes_added: additional,
     });
   } catch (err) {
     console.error('[food-orders prep-delay] Error:', err);

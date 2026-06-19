@@ -25,6 +25,11 @@ const OrderSummarySchema = z.object({
   estimatedEarning: z.number(),
   baseEarning: z.number().optional(),
   customerTipAmount: z.number().optional(),
+  waitingEarning: z.number().optional(),
+  surgeEarning: z.number().optional(),
+  appliedSurges: z
+    .array(z.object({ name: z.string(), amount: z.number() }))
+    .optional(),
   totalEarning: z.number().optional(),
   higherDispatchPriority: z.boolean().optional(),
   merchantName: z.string().nullable().optional(),
@@ -46,6 +51,7 @@ const OrderSummarySchema = z.object({
   pickupTimerStartedAt: z.string().nullable().optional(),
   pickupTimerBudgetSeconds: z.number().nullable().optional(),
   pickupDurationSeconds: z.number().nullable().optional(),
+  ridePickupWaitFreeMinutes: z.number().nullable().optional(),
   prepReadyByAt: z.string().nullable().optional(),
   acceptedAt: z.string().nullable().optional(),
   preparingAt: z.string().nullable().optional(),
@@ -53,6 +59,10 @@ const OrderSummarySchema = z.object({
   prepDelayMinutes: z.number().nullable().optional(),
   customerName: z.string().nullable().optional(),
   customerPhone: z.string().nullable().optional(),
+  customerPrimaryName: z.string().nullable().optional(),
+  customerPrimaryPhone: z.string().nullable().optional(),
+  customerAlternateName: z.string().nullable().optional(),
+  customerAlternatePhone: z.string().nullable().optional(),
   pickupAddressGeocoded: z.string().optional(),
   dropAddressGeocoded: z.string().optional(),
   foodItems: z
@@ -72,23 +82,131 @@ const OrderSummarySchema = z.object({
   customerFeedbackSubmitted: z.boolean().optional(),
   paymentMethod: z.string().nullable().optional(),
   paymentStatus: z.string().nullable().optional(),
+  adminRiderPaymentClearedAt: z.string().nullable().optional(),
+  walletCreditPending: z.boolean().optional(),
+  customerRating: z.number().nullable().optional(),
+  passengerRating: z.number().nullable().optional(),
+  cancellationPenaltyApplied: z.boolean().optional(),
+  cancellationPenaltyAmount: z.number().nullable().optional(),
 });
+
+const RiderBankPaymentMethodSchema = z.object({
+  id: z.number(),
+  methodType: z.literal("bank"),
+  accountHolderName: z.string(),
+  bankName: z.string().nullable(),
+  ifsc: z.string().nullable(),
+  branch: z.string().nullable(),
+  accountNumberMasked: z.string(),
+  verificationStatus: z.enum(["pending", "verified", "rejected"]),
+  createdAt: z.string(),
+});
+
+export type RiderBankPaymentMethod = z.infer<typeof RiderBankPaymentMethodSchema>;
+
+function normalizeBlockedServiceName(
+  value: string
+): "food" | "parcel" | "person_ride" | null {
+  const x = (value || "").toLowerCase().trim();
+  if (x === "food") return "food";
+  if (x === "parcel") return "parcel";
+  if (x === "ride" || x === "person_ride") return "person_ride";
+  return null;
+}
+
+const AccountRestrictionsSchema = z
+  .object({
+    accountRestricted: z.boolean().optional(),
+    accountRestrictedReason: z.string().optional(),
+    globalWalletBlock: z.boolean().optional(),
+    blacklistBlockedServices: z.array(z.string()).optional(),
+    negativeWalletBlocks: z
+      .array(z.object({ serviceType: z.string(), reason: z.string() }))
+      .optional(),
+    allServicesBlacklisted: z.boolean().optional(),
+    penaltyDue: z.number().optional(),
+    penaltyDutyStopped: z.boolean().optional(),
+  })
+  .transform((raw) => {
+    const walletBlockServices =
+      raw.globalWalletBlock === true ||
+      (raw.negativeWalletBlocks ?? []).some((b) => b.reason === "global_emergency")
+        ? ["food", "parcel", "person_ride"]
+        : (raw.negativeWalletBlocks ?? [])
+            .filter((b) => b.reason === "negative_wallet" || b.reason === "global_emergency")
+            .map((b) => b.serviceType);
+
+    const blockedSet = new Set<"food" | "parcel" | "person_ride">();
+    for (const name of [...(raw.blacklistBlockedServices ?? []), ...walletBlockServices]) {
+      const norm = normalizeBlockedServiceName(name);
+      if (norm) blockedSet.add(norm);
+    }
+    const blacklistBlockedServices = [...blockedSet];
+    const allServicesBlacklisted =
+      raw.allServicesBlacklisted ??
+      (blacklistBlockedServices.length >= 3 || raw.globalWalletBlock === true);
+    const accountRestricted =
+      raw.accountRestricted ??
+      (blacklistBlockedServices.length > 0 || raw.globalWalletBlock === true);
+    const reason = raw.accountRestrictedReason;
+    const accountRestrictedReason =
+      reason === "service_blacklist" ||
+      reason === "all_services_blacklist" ||
+      reason === "blocked_status"
+        ? reason
+        : allServicesBlacklisted
+          ? "all_services_blacklist"
+          : accountRestricted
+            ? "service_blacklist"
+            : "none";
+
+    return {
+      accountRestricted,
+      accountRestrictedReason: accountRestrictedReason as
+        | "none"
+        | "service_blacklist"
+        | "all_services_blacklist"
+        | "blocked_status",
+      globalWalletBlock: raw.globalWalletBlock ?? false,
+      blacklistBlockedServices,
+      allServicesBlacklisted,
+      penaltyDue: raw.penaltyDue ?? 0,
+      penaltyDutyStopped: raw.penaltyDutyStopped ?? false,
+    };
+  });
 
 const EarningsSummarySchema = z.object({
   totalBalance: z.number(),
   withdrawable: z.number(),
   locked: z.number(),
+  subscriptionDebited: z.number(),
   thisWeek: z.number(),
   thisMonth: z.number(),
+  hasBankAccount: z.boolean(),
   breakdown: z.object({
     food: z.number(),
     parcel: z.number(),
     ride: z.number(),
   }),
+  accountRestrictions: AccountRestrictionsSchema.optional().transform((value) =>
+    value ?? {
+      accountRestricted: false,
+      accountRestrictedReason: "none" as const,
+      globalWalletBlock: false,
+      blacklistBlockedServices: [],
+      allServicesBlacklisted: false,
+      penaltyDue: 0,
+      penaltyDutyStopped: false,
+    }
+  ),
 });
 
 const DutyStatusSchema = z.object({
   isOnDuty: z.boolean(),
+  allowedServiceTypes: z.array(z.string()).optional().default([]),
+  blockedServiceTypes: z.array(z.string()).optional(),
+  accountRestricted: z.boolean().optional(),
+  allServicesBlacklisted: z.boolean().optional(),
   lastUpdated: z.string(),
 });
 
@@ -102,11 +220,20 @@ const RiderLedgerSegmentSchema = z.enum([
   "parcel",
   "ride",
   "incentives",
+  "subscriptions",
   "adjustments",
   "penalties",
+  "withdrawals",
 ]);
 
 const RiderLedgerPeriodSchema = z.enum(["this_month", "last_month", "all"]);
+
+const RiderLedgerSummarySchema = z.object({
+  totalEarnings: z.number(),
+  totalWithdrawals: z.number(),
+  pendingSettlement: z.number(),
+  monthLabel: z.string(),
+});
 
 const RiderLedgerEntrySchema = z.object({
   id: z.number(),
@@ -119,6 +246,7 @@ const RiderLedgerEntrySchema = z.object({
   ref: z.string().nullable(),
   refType: z.string().nullable(),
   serviceType: z.string().nullable(),
+  orderPublicId: z.string().nullable(),
   createdAt: z.string(),
 });
 
@@ -127,11 +255,13 @@ const RiderLedgerResponseSchema = z.object({
   total: z.number(),
   hasMore: z.boolean(),
   periodLabel: z.string(),
+  summary: RiderLedgerSummarySchema,
 });
 
 export type RiderLedgerSegment = z.infer<typeof RiderLedgerSegmentSchema>;
 export type RiderLedgerPeriod = z.infer<typeof RiderLedgerPeriodSchema>;
 export type RiderLedgerEntry = z.infer<typeof RiderLedgerEntrySchema>;
+export type RiderLedgerSummary = z.infer<typeof RiderLedgerSummarySchema>;
 
 export type RiderLedgerFilters = {
   segment?: RiderLedgerSegment;
@@ -141,6 +271,21 @@ export type RiderLedgerFilters = {
 };
 
 export type RiderOrderSummary = z.infer<typeof OrderSummarySchema>;
+
+const EmergencyContactSchema = z.object({
+  label: z.string(),
+  phone: z.string(),
+});
+
+export type RiderEmergencyContact = z.infer<typeof EmergencyContactSchema>;
+
+const EmergencyContactsResponseSchema = z.object({
+  contacts: z.array(EmergencyContactSchema),
+  defaults: z.object({
+    police: z.string(),
+    ambulance: z.string(),
+  }),
+});
 
 // Create API client instance
 function createApiClient(): ApiClient {
@@ -182,6 +327,30 @@ export const riderApi = {
         responseSchema: z.array(OrderSummarySchema),
       }
     );
+  },
+
+  async getRidePaymentHolds() {
+    const client = createApiClient();
+    return client.request<
+      Array<{
+        orderId: string;
+        formattedOrderId: string | null;
+        totalEarning: number;
+        passengerFare: number;
+        completedAt: string;
+      }>
+    >("/v1/rider/orders/ride-payment-holds", {
+      method: "GET",
+      responseSchema: z.array(
+        z.object({
+          orderId: z.string(),
+          formattedOrderId: z.string().nullable(),
+          totalEarning: z.number(),
+          passengerFare: z.number(),
+          completedAt: z.string(),
+        })
+      ),
+    });
   },
 
   async getOrderHistory(opts?: {
@@ -246,6 +415,33 @@ export const riderApi = {
     );
   },
 
+  /** Offer timer expired — rider did not accept in time. */
+  async missOrderOffer(orderId: string, reason?: string) {
+    const client = createApiClient();
+    return client.request<{ ok: true; recorded: boolean }>(
+      `/v1/rider/orders/${orderId}/offer-missed`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(reason ? { reason } : {}),
+      }
+    );
+  },
+
+  async getDispatchOfferStats() {
+    const client = createApiClient();
+    return client.request<{
+      riderId: number;
+      offersTotal: number;
+      offersAccepted: number;
+      offersRejected: number;
+      offersMissed: number;
+      acceptRate: number | null;
+      lastOfferAt: string | null;
+      lastAcceptedAt: string | null;
+    }>(`/v1/rider/dispatch-offer-stats`, { method: "GET" });
+  },
+
   async getRideOrder(orderId: string) {
     const client = createApiClient();
     return client.request<RiderOrderSummary>(`/v1/rider/orders/${orderId}`, {
@@ -305,7 +501,7 @@ export const riderApi = {
 
   async submitMerchantPickupFeedback(
     orderId: string,
-    payload: { rating?: number; tags?: string[]; skipped?: boolean }
+    payload: { rating?: number; tags?: string[]; messages?: string[]; skipped?: boolean }
   ) {
     const client = createApiClient();
     return client.request<RiderOrderSummary>(
@@ -321,7 +517,13 @@ export const riderApi = {
 
   async submitCustomerDeliveryFeedback(
     orderId: string,
-    payload: { rating?: number; tags?: string[]; comment?: string; skipped?: boolean }
+    payload: {
+      rating?: number;
+      tags?: string[];
+      messages?: string[];
+      comment?: string;
+      skipped?: boolean;
+    }
   ) {
     const client = createApiClient();
     return client.request<RiderOrderSummary>(
@@ -367,16 +569,70 @@ export const riderApi = {
     );
   },
 
+  async getCancellationPenaltyPreview(orderId: string, reasonCode: string) {
+    const client = createApiClient();
+    const params = new URLSearchParams({ reasonCode });
+    const PreviewSchema = z.object({
+      ok: z.literal(true),
+      appliesPenalty: z.boolean(),
+      penaltyAmount: z.coerce.number(),
+      ledgerTitle: z.string(),
+      ledgerDescription: z.string(),
+      scenarioCode: z.string().nullable(),
+      catalogReasonId: z.coerce.number().nullable(),
+      reasonLabel: z.string().nullable(),
+      skipped: z.string().optional(),
+    });
+    const res = await client.request<z.infer<typeof PreviewSchema>>(
+      `/v1/rider/orders/${orderId}/cancellation-penalty-preview?${params.toString()}`,
+      { responseSchema: PreviewSchema }
+    );
+    return {
+      appliesPenalty: res.appliesPenalty,
+      penaltyAmount: res.penaltyAmount,
+      ledgerTitle: res.ledgerTitle,
+      ledgerDescription: res.ledgerDescription,
+      reasonLabel: res.reasonLabel,
+      scenarioCode: res.scenarioCode,
+      skipped: res.skipped,
+    };
+  },
+
   async cancelAssignedRide(
     orderId: string,
     payload: { reasonCode: string; reasonText?: string }
   ) {
     const client = createApiClient();
-    return client.request<{ ok: true }>(`/v1/rider/orders/${orderId}/cancel-assigned`, {
+    return client.request<{ ok: true; penaltyApplied?: boolean; penaltyAmount?: number }>(
+      `/v1/rider/orders/${orderId}/cancel-assigned`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
+  },
+
+  async getCancellationReasons(serviceType?: "food" | "person_ride" | "parcel") {
+    const client = createApiClient();
+    const params = new URLSearchParams();
+    if (serviceType) params.set("serviceType", serviceType);
+    const qs = params.toString();
+    const CancellationReasonSchema = z.object({
+      id: z.coerce.number(),
+      attribute: z.string(),
+      label: z.string(),
+      reasonCode: z.string(),
+      sortOrder: z.coerce.number(),
+      serviceType: z.string().nullable(),
+    });
+    return client.request<{ ok: true; reasons: z.infer<typeof CancellationReasonSchema>[] }>(
+      `/v1/rider/cancellation-reasons${qs ? `?${qs}` : ""}`,
+      {
+        responseSchema: z.object({
+          ok: z.literal(true),
+          reasons: z.array(CancellationReasonSchema),
+        }),
+      }
+    );
   },
 
   async verifyPickupOtp(
@@ -461,6 +717,40 @@ export const riderApi = {
     );
   },
 
+  async getBankPaymentMethod() {
+    const client = createApiClient();
+    return client.request<{ paymentMethod: RiderBankPaymentMethod | null }>(
+      "/v1/rider/payment-methods/bank",
+      {
+        method: "GET",
+        responseSchema: z.object({
+          paymentMethod: RiderBankPaymentMethodSchema.nullable(),
+        }),
+      },
+    );
+  },
+
+  async createBankPaymentMethod(payload: {
+    accountHolderName: string;
+    bankName: string;
+    ifsc: string;
+    branch?: string;
+    accountNumber: string;
+  }) {
+    const client = createApiClient();
+    return client.request<{ paymentMethod: RiderBankPaymentMethod }>(
+      "/v1/rider/payment-methods/bank",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+        responseSchema: z.object({
+          paymentMethod: RiderBankPaymentMethodSchema,
+        }),
+      },
+    );
+  },
+
   async getLedger(filters: RiderLedgerFilters = {}) {
     const client = createApiClient();
     const params = new URLSearchParams();
@@ -477,14 +767,38 @@ export const riderApi = {
   },
 
   /**
-   * Update duty status
+   * Read duty status from server (dispatch eligibility source of truth).
    */
-  async updateDutyStatus(isOnDuty: boolean, serviceTypes?: string[]) {
+  async getDutyStatus() {
     const client = createApiClient();
-    const body: { isOnDuty: boolean; serviceTypes?: string[] } = { isOnDuty };
+    return client.request<z.infer<typeof DutyStatusSchema>>("/v1/rider/duty", {
+      method: "GET",
+      responseSchema: DutyStatusSchema,
+    });
+  },
+
+  /**
+   * Update duty status (writes to duty_logs for dashboard Activity Logs).
+   */
+  async updateDutyStatus(
+    isOnDuty: boolean,
+    serviceTypes?: string[],
+    opts?: { lat?: number; lon?: number; deviceId?: string }
+  ) {
+    const client = createApiClient();
+    const body: {
+      isOnDuty: boolean;
+      serviceTypes?: string[];
+      lat?: number;
+      lon?: number;
+      deviceId?: string;
+    } = { isOnDuty };
     if (serviceTypes?.length) {
       body.serviceTypes = serviceTypes;
     }
+    if (opts?.lat != null) body.lat = opts.lat;
+    if (opts?.lon != null) body.lon = opts.lon;
+    if (opts?.deviceId) body.deviceId = opts.deviceId;
     return client.request<z.infer<typeof DutyStatusSchema>>(
       "/v1/rider/duty",
       {
@@ -506,6 +820,30 @@ export const riderApi = {
       body: JSON.stringify(payload),
       responseSchema: LogoutResponseSchema,
     });
+  },
+
+  async getEmergencyContacts() {
+    const client = createApiClient();
+    return client.request<z.infer<typeof EmergencyContactsResponseSchema>>(
+      "/v1/rider/me/emergency-contacts",
+      {
+        method: "GET",
+        responseSchema: EmergencyContactsResponseSchema,
+      }
+    );
+  },
+
+  async saveEmergencyContacts(contacts: RiderEmergencyContact[]) {
+    const client = createApiClient();
+    return client.request<z.infer<typeof EmergencyContactsResponseSchema>>(
+      "/v1/rider/me/emergency-contacts",
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ contacts }),
+        responseSchema: EmergencyContactsResponseSchema,
+      }
+    );
   },
 };
 

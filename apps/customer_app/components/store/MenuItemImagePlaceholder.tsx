@@ -2,7 +2,7 @@ import React from "react";
 import { View, StyleSheet } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
-/** Zomato-style grey cloche placeholder when a menu item has no photo. */
+/** GatiMitra-style grey cloche placeholder when a menu item has no photo. */
 export function MenuItemImagePlaceholder({ size = "md" }: { size?: "xs" | "sm" | "md" | "lg" }) {
   const iconSize = size === "xs" ? 14 : size === "sm" ? 22 : size === "lg" ? 36 : 28;
   return (

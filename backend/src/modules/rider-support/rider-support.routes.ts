@@ -990,7 +990,7 @@ export async function riderSupportRoutes(app: FastifyInstance) {
             last_response_by_id = ${senderId},
             updated_at = NOW(),
             status = CASE
-              WHEN status IN ('RESOLVED','CLOSED')::unified_ticket_status[]
+              WHEN status IN ('RESOLVED'::unified_ticket_status, 'CLOSED'::unified_ticket_status)
                 THEN 'REOPENED'::unified_ticket_status
               ELSE status
             END

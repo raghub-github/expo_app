@@ -68,9 +68,23 @@ function inferLanHostFromExpoBundler(): string | null {
   return null;
 }
 
+/** Map legacy dev ports (30000/4000) to Fastify default 3000. */
+function normalizeLegacyBackendPort(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.port === "30000" || parsed.port === "4000") {
+      parsed.port = "3000";
+      return parsed.toString().replace(/\/$/, "");
+    }
+  } catch {
+    /* ignore */
+  }
+  return url;
+}
+
 /** Replace localhost/127.0.0.1 with Android emulator host so backend on PC is reachable. */
 function resolveApiBaseUrl(raw: string): string {
-  const trimmed = raw.replace(/\/+$/, "");
+  const trimmed = normalizeLegacyBackendPort(raw.replace(/\/+$/, ""));
   if (!isLocalhostApiUrl(trimmed)) return trimmed;
 
   const portMatch = trimmed.match(/:(\d+)(?:\/|$)/);
@@ -94,7 +108,8 @@ function resolveApiBaseUrl(raw: string): string {
 
 /** Backend HTTP port — must match `PORT` in backend/.env (default 3000). */
 function apiDevPort(): string {
-  return asNonEmptyString(process.env.EXPO_PUBLIC_API_PORT) ?? "3000";
+  const raw = asNonEmptyString(process.env.EXPO_PUBLIC_API_PORT) ?? "3000";
+  return raw === "30000" || raw === "4000" ? "3000" : raw;
 }
 
 export function getConfig(): {
@@ -143,9 +158,11 @@ export function getConfig(): {
 
   const mapboxAccessToken =
     asNonEmptyString(process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN) ??
+    asNonEmptyString(process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN) ??
     asNonEmptyString(process.env.MAPBOX_PUBLIC_TOKEN) ??
     asNonEmptyString(process.env.NEXT_PUBLIC_MAPBOX_TOKEN) ??
     asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN as string) ??
+    asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.mapboxAccessToken as string) ??
     asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.MAPBOX_PUBLIC_TOKEN as string) ??
     asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.NEXT_PUBLIC_MAPBOX_TOKEN as string) ??
     null;

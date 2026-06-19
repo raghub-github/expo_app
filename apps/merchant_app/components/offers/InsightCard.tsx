@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet, Pressable, type ReactNode } from "react-native";
+import { View, Text, StyleSheet, Pressable } from "react-native";
+import type { ReactNode } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, CARD_RADIUS } from "@/constants/theme";
 

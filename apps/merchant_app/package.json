@@ -13,6 +13,7 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --offline --web",
+    "build": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

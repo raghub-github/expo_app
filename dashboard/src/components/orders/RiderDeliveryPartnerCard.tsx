@@ -1,7 +1,9 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
-import { Bike, MapPin, Phone } from 'lucide-react';
+import { Bike, Clock, MapPin, Phone } from 'lucide-react';
+import { useLiveElapsedSeconds } from '@/hooks/useLiveElapsedSeconds';
+import { formatDurationSecondsLabel } from '@/lib/orders/order-detail-display';
 
 export type RiderDeliveryPartnerCardProps = {
   riderName: string;
@@ -18,6 +20,9 @@ export type RiderDeliveryPartnerCardProps = {
   onTrackRider?: () => void;
   onUniformFeedback?: (inUniform: boolean) => void;
   uniformFeedback?: boolean | null;
+  storeWaitAnchorAt?: string | null;
+  storeWaitLive?: boolean;
+  storeWaitFinalizedSeconds?: number | null;
   showHeader?: boolean;
   className?: string;
 };
@@ -43,6 +48,28 @@ function RiderAvatar({ selfieUrl, name }: { selfieUrl?: string | null; name: str
   );
 }
 
+function RiderStoreWaitBadge({
+  anchorAt,
+  live,
+  finalizedSeconds,
+}: {
+  anchorAt?: string | null;
+  live?: boolean;
+  finalizedSeconds?: number | null;
+}) {
+  const liveSeconds = useLiveElapsedSeconds(anchorAt, Boolean(live));
+  const displaySeconds = live ? liveSeconds : finalizedSeconds;
+  if (!live && (displaySeconds == null || displaySeconds <= 0)) return null;
+  if (live && !anchorAt?.trim()) return null;
+
+  return (
+    <span className="mt-2 inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[11px] font-semibold tabular-nums text-amber-900">
+      <Clock size={12} aria-hidden />
+      Waiting {formatDurationSecondsLabel(displaySeconds, { live: Boolean(live) })}
+    </span>
+  );
+}
+
 export function RiderDeliveryPartnerCard({
   riderName,
   riderPhone,
@@ -58,6 +85,9 @@ export function RiderDeliveryPartnerCard({
   onTrackRider,
   onUniformFeedback,
   uniformFeedback,
+  storeWaitAnchorAt,
+  storeWaitLive = false,
+  storeWaitFinalizedSeconds,
   showHeader = true,
   className = '',
 }: RiderDeliveryPartnerCardProps) {

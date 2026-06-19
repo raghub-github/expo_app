@@ -114,6 +114,53 @@ function MetricBox({ value, label }: { value: string; label: string }) {
   );
 }
 
+function getOfferImageUrl(offer: Offer): string | null {
+  const withLegacy = offer as Offer & { image_url?: string | null };
+  const url = (offer.offer_image_url ?? withLegacy.image_url ?? "").trim();
+  return url || null;
+}
+
+/** Mini banner preview — matches customer app home promo carousel layout. */
+function OfferCustomerAppPreview({
+  imageUrl,
+  title,
+  subline,
+}: {
+  imageUrl: string;
+  title: string;
+  subline?: string | null;
+}) {
+  return (
+    <div className="flex shrink-0 flex-col items-end">
+      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
+        Customer app preview
+      </p>
+      <div className="relative w-[156px] overflow-hidden rounded-xl border border-gray-200 bg-gray-900 shadow-md sm:w-[172px]">
+        <div className="relative aspect-[16/9] w-full">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={imageUrl}
+            alt="Offer banner preview"
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/20 to-transparent" />
+          <div className="absolute bottom-0 left-0 right-0 p-2">
+            <p className="text-[9px] font-bold leading-tight text-white line-clamp-2 drop-shadow-sm">
+              {title}
+            </p>
+            {subline ? (
+              <p className="mt-0.5 text-[8px] leading-tight text-white/90 line-clamp-1">{subline}</p>
+            ) : null}
+          </div>
+        </div>
+        <div className="absolute left-2 top-2 rounded bg-white/90 px-1.5 py-0.5 text-[7px] font-bold uppercase tracking-wide text-emerald-700">
+          Limited time
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function OfferTrackCard({
   offer,
   storeName,
@@ -142,6 +189,10 @@ export function OfferTrackCard({
   const headline = offerHeadline(offer);
   const dateRange = formatOfferValidityRange(offer);
   const slotSummary = formatOfferSlotSummary(offer);
+  const offerImageUrl = getOfferImageUrl(offer);
+  const previewSubline =
+    offer.offer_description?.trim() ||
+    (offer.min_order_amount ? `on orders above ${formatInr(Number(offer.min_order_amount))}` : null);
   const showStopped = lifecycle.phase === "inactive" && lifecycle.reason === "expired";
   const actorOpts = { ownerDisplayName };
   const createdByDisplay = formatOfferActorDisplay(
@@ -253,25 +304,42 @@ export function OfferTrackCard({
       </div>
 
       {expanded ? (
-        <div className="px-3 sm:px-4 py-2.5 border-t border-gray-100 bg-gray-50/40">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs text-gray-600">
-            {detailRows.map((row, i) => (
-              <p key={i} className="min-w-0 leading-snug">
-                {row.label ? (
-                  <>
-                    <span className="text-gray-500">{row.label}</span> {row.value}
-                  </>
-                ) : (
-                  <span className="text-gray-700 sm:col-span-2 block">{row.value}</span>
-                )}
-              </p>
-            ))}
+        <div className="relative border-t border-gray-100 bg-gray-50/40 px-3 py-2.5 sm:px-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div className="min-w-0 flex-1 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs text-gray-600">
+              {detailRows.map((row, i) => (
+                <p key={i} className="min-w-0 leading-snug">
+                  {row.label ? (
+                    <>
+                      <span className="text-gray-500">{row.label}</span> {row.value}
+                    </>
+                  ) : (
+                    <span className="text-gray-700 sm:col-span-2 block">{row.value}</span>
+                  )}
+                </p>
+              ))}
+            </div>
+            {offerImageUrl ? (
+              <OfferCustomerAppPreview
+                imageUrl={offerImageUrl}
+                title={offer.offer_title || headline}
+                subline={previewSubline}
+              />
+            ) : null}
           </div>
           {offer.offer_description ? (
-            <p className="text-[11px] text-gray-500 mt-2 pt-2 border-t border-gray-100 line-clamp-2">
+            <p className="mt-2 border-t border-gray-100 pt-2 text-[11px] text-gray-500 line-clamp-2 sm:pr-[188px]">
               {offer.offer_description}
             </p>
           ) : null}
+        </div>
+      ) : offerImageUrl ? (
+        <div className="flex justify-end border-t border-gray-100 bg-gray-50/30 px-3 py-2 sm:px-4">
+          <OfferCustomerAppPreview
+            imageUrl={offerImageUrl}
+            title={offer.offer_title || headline}
+            subline={previewSubline}
+          />
         </div>
       ) : null}
 

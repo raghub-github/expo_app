@@ -12,6 +12,7 @@ import {
   TextInput,
   Pressable,
   Platform,
+  type TextStyle,
   ScrollView,
   RefreshControl,
   ActivityIndicator,
@@ -566,8 +567,8 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
       return (
         <TerminalOrderCard
           order={item}
-          formattedOrderId={item.formattedOrderId}
           rejectedReason={item.rejectedReason}
+          storeName={selectedStore?.store_name}
           onPress={() => handleViewDetail(item)}
         />
       );
@@ -814,7 +815,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: GatiMitraMerchant.textPrimary,
     paddingVertical: 0,
-    ...(Platform.OS === "web" ? { outlineStyle: "none" } : {}),
+    ...(Platform.OS === "web" ? ({ outlineStyle: "none" } as unknown as TextStyle) : {}),
   },
   searchRow: {
     flexDirection: "row",
@@ -870,7 +871,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: GatiMitraMerchant.textPrimary,
     paddingVertical: 0,
-    ...(Platform.OS === "web" ? { outlineStyle: "none" } : {}),
+    ...(Platform.OS === "web" ? ({ outlineStyle: "none" } as unknown as TextStyle) : {}),
   },
   tabsOuter: {
     marginBottom: 10,
@@ -1008,7 +1009,6 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     color: GatiMitraMerchant.textPrimary,
-    flex: 1,
     marginRight: 8,
   },
   itemPrice: {

@@ -14,6 +14,7 @@ import {
   View,
   type AppStateStatus,
 } from "react-native";
+import Constants from "expo-constants";
 import { useRouter } from "expo-router";
 import { Image } from "expo-image";
 import {
@@ -38,7 +39,15 @@ function deviceType(): "ios" | "android" | "web" | "unknown" {
   return "unknown";
 }
 
+const isExpoGo = Constants.appOwnership === "expo";
+
 export function PushNotificationBootstrap() {
+  if (isExpoGo) return null;
+
+  return <PushNotificationBootstrapInner />;
+}
+
+function PushNotificationBootstrapInner() {
   const router = useRouter();
   const session = useAuthStore((s) => s.session);
   const hydrated = useAuthStore((s) => s.hydrated);

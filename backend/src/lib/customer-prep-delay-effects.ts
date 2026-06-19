@@ -24,6 +24,7 @@ export async function applyPrepDelayCustomerEffects(
   args: {
     ordersCoreId: number;
     additionalMinutes: number;
+    expectedReadyAt?: string | null;
     storeName?: string | null;
   }
 ): Promise<void> {
@@ -48,10 +49,14 @@ export async function applyPrepDelayCustomerEffects(
   const orderIdText = String(core.order_id);
   const prevPrep = Number(core.prep_time_minutes) || 0;
   const newPrep = prevPrep + args.additionalMinutes;
+  const expectedReadyAt =
+    args.expectedReadyAt?.trim() ||
+    new Date(Date.now() + args.additionalMinutes * 60_000).toISOString();
 
   await sql`
     UPDATE orders_core
     SET prep_time_minutes = ${newPrep},
+        expected_ready_at = ${expectedReadyAt}::timestamptz,
         updated_at = NOW()
     WHERE id = ${args.ordersCoreId}
   `;

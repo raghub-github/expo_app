@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { getRiderAppConfig } from "@/src/config/env";
-import { getJson, postJson } from "@/src/services/http";
+import { getJson, patchJson, postJson } from "@/src/services/http";
 
 const API_BASE = () => getRiderAppConfig().apiBaseUrl;
 
@@ -44,6 +44,36 @@ export type RiderSubscriptionPlan = {
   featuredPrice: FeaturedPrice | null;
 };
 
+export type RiderSubscriptionAlertBanner = {
+  visible: boolean;
+  variant: "warning" | "restricted";
+  reasonCode:
+    | "none"
+    | "negative_wallet"
+    | "dues_outstanding"
+    | "negative_limit"
+    | "dispatch_blocked";
+  title: string;
+  subtitle: string;
+  totalDue: number;
+  payableNow: number;
+  payButtonLabel: string;
+  canPayFromWallet: boolean;
+  walletBalance: number;
+  duesOutstanding: number;
+  dispatchBlocked: boolean;
+  negativeLimit: number;
+  incomeFreezeDays: number;
+};
+
+export type RiderSubscriptionDues = {
+  totalDue: number;
+  duesOutstanding: number;
+  walletBalance: number;
+  dispatchBlocked: boolean;
+  alertBanner?: RiderSubscriptionAlertBanner;
+};
+
 export type RiderSubscriptionStatus = {
   active: boolean;
   plan: {
@@ -55,7 +85,10 @@ export type RiderSubscriptionStatus = {
     autoWalletDeduction: boolean;
     startDate: string;
     expiryDate: string;
+    nextRenewalDate?: string;
+    lastDeductionDate?: string;
   } | null;
+  dues?: RiderSubscriptionDues;
 };
 
 function authHeaders(token: string) {
@@ -86,15 +119,93 @@ export function useRiderSubscriptionStatus() {
   return useQuery({
     queryKey: ["rider", "subscription", "status"],
     queryFn: async () => {
-      const json = await getJson<{ success: boolean; active: boolean; plan: RiderSubscriptionStatus["plan"] }>(
-        `${API_BASE()}/v1/rider/subscription/status`,
-        { headers: authHeaders(session!.accessToken) }
-      );
-      return { active: json.active, plan: json.plan };
+      const json = await getJson<{
+        success: boolean;
+        active: boolean;
+        plan: RiderSubscriptionStatus["plan"];
+        dues?: RiderSubscriptionDues;
+      }>(`${API_BASE()}/v1/rider/subscription/status`, {
+        headers: authHeaders(session!.accessToken),
+      });
+      return {
+        active: json.active,
+        plan: json.plan,
+        dues: json.dues ?? {
+          totalDue: 0,
+          duesOutstanding: 0,
+          walletBalance: 0,
+          dispatchBlocked: false,
+          alertBanner: {
+            visible: false,
+            variant: "warning",
+            reasonCode: "none",
+            title: "",
+            subtitle: "",
+            totalDue: 0,
+            payableNow: 0,
+            payButtonLabel: "",
+            canPayFromWallet: false,
+            walletBalance: 0,
+            duesOutstanding: 0,
+            dispatchBlocked: false,
+            negativeLimit: 35,
+            incomeFreezeDays: 3,
+          },
+        },
+      } satisfies RiderSubscriptionStatus;
     },
     enabled: Boolean(session?.accessToken),
-    staleTime: 30_000,
+    staleTime: 0,
+    refetchOnMount: "always",
+    gcTime: 10 * 60_000,
+    placeholderData: (previous) => previous,
     retry: 2,
+  });
+}
+
+export function prefetchRiderSubscriptionStatus(
+  queryClient: ReturnType<typeof useQueryClient>,
+  accessToken: string
+) {
+  return queryClient.prefetchQuery({
+    queryKey: ["rider", "subscription", "status"],
+    queryFn: async () => {
+      const json = await getJson<{
+        success: boolean;
+        active: boolean;
+        plan: RiderSubscriptionStatus["plan"];
+        dues?: RiderSubscriptionDues;
+      }>(`${API_BASE()}/v1/rider/subscription/status`, {
+        headers: authHeaders(accessToken),
+      });
+      return {
+        active: json.active,
+        plan: json.plan,
+        dues: json.dues ?? {
+          totalDue: 0,
+          duesOutstanding: 0,
+          walletBalance: 0,
+          dispatchBlocked: false,
+          alertBanner: {
+            visible: false,
+            variant: "warning",
+            reasonCode: "none",
+            title: "",
+            subtitle: "",
+            totalDue: 0,
+            payableNow: 0,
+            payButtonLabel: "",
+            canPayFromWallet: false,
+            walletBalance: 0,
+            duesOutstanding: 0,
+            dispatchBlocked: false,
+            negativeLimit: 35,
+            incomeFreezeDays: 3,
+          },
+        },
+      } satisfies RiderSubscriptionStatus;
+    },
+    staleTime: 60_000,
   });
 }
 
@@ -118,13 +229,77 @@ export function billingCycleLabel(cycle: BillingCycle): string {
   }
 }
 
+function useInvalidateSubscription() {
+  const queryClient = useQueryClient();
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: ["rider", "subscription"] });
+    void queryClient.invalidateQueries({ queryKey: ["rider", "ledger"] });
+    void queryClient.invalidateQueries({ queryKey: ["rider", "earnings"] });
+  };
+}
+
+export function useRiderSubscriptionWallet() {
+  const session = useSessionStore((s) => s.session);
+  const invalidate = useInvalidateSubscription();
+
+  const subscribeWallet = useMutation({
+    mutationFn: async (payload: {
+      planId: number;
+      billingCycle?: BillingCycle;
+      autoWalletDeduction?: boolean;
+    }) => {
+      if (!session?.accessToken) throw new Error("Not authenticated");
+      return postJson<{
+        success: boolean;
+        subscriptionId: number;
+        amountPaid: number;
+        autoWalletDeduction: boolean;
+      }>(`${API_BASE()}/v1/rider/subscription/subscribe-wallet`, payload, {
+        headers: authHeaders(session.accessToken),
+      });
+    },
+    onSuccess: invalidate,
+  });
+
+  const setAutoRenewal = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      if (!session?.accessToken) throw new Error("Not authenticated");
+      return patchJson<{ success: boolean; autoWalletDeduction: boolean; nextRenewalDate: string }>(
+        `${API_BASE()}/v1/rider/subscription/auto-renewal`,
+        { enabled },
+        { headers: authHeaders(session.accessToken) }
+      );
+    },
+    onSuccess: invalidate,
+  });
+
+  return { subscribeWallet, setAutoRenewal };
+}
+
+export function useRiderSubscriptionPayDues() {
+  const session = useSessionStore((s) => s.session);
+  const invalidate = useInvalidateSubscription();
+
+  return useMutation({
+    mutationFn: async () => {
+      if (!session?.accessToken) throw new Error("Not authenticated");
+      return postJson<{
+        success: boolean;
+        paidAmount: number;
+        totalDueBefore: number;
+        totalDueAfter: number;
+      }>(`${API_BASE()}/v1/rider/subscription/pay-dues`, {}, {
+        headers: authHeaders(session.accessToken),
+      });
+    },
+    onSuccess: invalidate,
+  });
+}
+
+/** @deprecated Razorpay flow — wallet subscribe is preferred */
 export function useRiderSubscriptionPayment() {
   const session = useSessionStore((s) => s.session);
-  const queryClient = useQueryClient();
-
-  const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: ["rider", "subscription"] });
-  };
+  const invalidate = useInvalidateSubscription();
 
   const createOrder = useMutation({
     mutationFn: async (payload: { planId: number; billingCycle?: BillingCycle }) => {

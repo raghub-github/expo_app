@@ -99,10 +99,10 @@ export function RiderDashboardProvider({ children }: { children: React.ReactNode
     setState((s) => ({ ...s, error }));
   }, []);
   const setHasSearched = useCallback((hasSearched: boolean) => {
-    setState((s) => ({ ...s, hasSearched }));
+    setState((s) => (s.hasSearched === hasSearched ? s : { ...s, hasSearched }));
   }, []);
   const setShowDefault = useCallback((showDefault: boolean) => {
-    setState((s) => ({ ...s, showDefault }));
+    setState((s) => (s.showDefault === showDefault ? s : { ...s, showDefault }));
   }, []);
 
   const setCurrentRiderFromSearch = useCallback(

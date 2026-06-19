@@ -65,6 +65,11 @@ function timeAgo(dateStr: string): string {
   return `${days}d ago`;
 }
 
+function isCancellationNoCreditEntry(entry: LedgerEntry): boolean {
+  const meta = entry.metadata as Record<string, unknown> | null | undefined;
+  return meta?.entry_type === "order_cancellation" && meta?.balance_impact === "none";
+}
+
 export default function EarningsScreen() {
   const scrollBottom = TAB_BAR_SCROLL_CONTENT_PADDING_LOOSE;
   const { selectedStore } = useSelectedStore();
@@ -208,11 +213,6 @@ export default function EarningsScreen() {
               <Text style={s.heroBalance}>
                 {formatCurrency(wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0)}
               </Text>
-              {(wallet?.locked_settlement_total ?? wallet?.locked_balance ?? 0) > 0 ? (
-                <Text style={{ fontSize: 12, color: "#fde68a", marginTop: 4 }}>
-                  In refund window: {formatCurrency(wallet?.locked_settlement_total ?? wallet?.locked_balance ?? 0)}
-                </Text>
-              ) : null}
               <View style={s.heroRow}>
                 <View style={s.heroStat}>
                   <Text style={s.heroStatLabel}>Today</Text>
@@ -283,11 +283,11 @@ export default function EarningsScreen() {
               ledger.map((entry) => (
                 <View key={entry.id} style={s.txCard}>
                   <View style={s.txRow}>
-                    <View style={[s.txIcon, { backgroundColor: entry.direction === "CREDIT" ? "#dcfce7" : "#fee2e2" }]}>
+                    <View style={[s.txIcon, { backgroundColor: isCancellationNoCreditEntry(entry) ? "#fef3c7" : entry.direction === "CREDIT" ? "#dcfce7" : "#fee2e2" }]}>
                       <Ionicons
                         name={(CAT_ICONS[entry.category] ?? (entry.direction === "CREDIT" ? "add-circle-outline" : "remove-circle-outline")) as any}
                         size={18}
-                        color={entry.direction === "CREDIT" ? "#16a34a" : "#dc2626"}
+                        color={isCancellationNoCreditEntry(entry) ? "#d97706" : entry.direction === "CREDIT" ? "#16a34a" : "#dc2626"}
                       />
                     </View>
                     <View style={s.txContent}>
@@ -295,10 +295,14 @@ export default function EarningsScreen() {
                       {entry.description && <Text style={s.txDesc} numberOfLines={2}>{entry.description}</Text>}
                     </View>
                     <View style={s.txAmountCol}>
-                      <Text style={[s.txAmount, { color: entry.direction === "CREDIT" ? "#16a34a" : "#dc2626" }]}>
-                        {entry.direction === "CREDIT" ? "+" : "−"}{formatCurrency(entry.amount)}
+                      <Text style={[s.txAmount, { color: isCancellationNoCreditEntry(entry) ? "#d97706" : entry.direction === "CREDIT" ? "#16a34a" : "#dc2626" }]}>
+                        {isCancellationNoCreditEntry(entry) ? formatCurrency(entry.amount) : `${entry.direction === "CREDIT" ? "+" : "−"}${formatCurrency(entry.amount)}`}
                       </Text>
-                      <Text style={s.txBalance}>Bal: {formatCurrency(entry.balance_after)}</Text>
+                      {isCancellationNoCreditEntry(entry) ? (
+                        <Text style={[s.txBalance, { color: "#d97706" }]}>No credit</Text>
+                      ) : (
+                        <Text style={s.txBalance}>Bal: {formatCurrency(entry.balance_after)}</Text>
+                      )}
                     </View>
                   </View>
                   <Text style={s.txTime}>{timeAgo(entry.created_at)}</Text>

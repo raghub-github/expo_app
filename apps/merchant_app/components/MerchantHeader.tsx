@@ -2022,6 +2022,18 @@ const styles = StyleSheet.create({
     textAlign: "left",
     marginBottom: 12,
   },
+  storeOffScroll: {
+    maxHeight: 420,
+  },
+  closeModeLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+    marginBottom: 4,
+  },
+  closeModeSelect: {
+    marginBottom: 12,
+  },
   closeOptionRow: {
     flexDirection: "row",
     alignItems: "flex-start",

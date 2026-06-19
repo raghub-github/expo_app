@@ -59,7 +59,7 @@ export type OtpRequest = z.infer<typeof OtpRequestSchema>;
 export declare const OtpRequestResponseSchema: z.ZodObject<{
     requestId: z.ZodString;
     expiresInSec: z.ZodNumber;
-    otp: z.ZodOptional<z.ZodString>;
+    smsSent: z.ZodOptional<z.ZodBoolean>;
 }, z.core.$strip>;
 export type OtpRequestResponse = z.infer<typeof OtpRequestResponseSchema>;
 export declare const OtpVerifySchema: z.ZodObject<{

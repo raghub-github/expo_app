@@ -731,11 +731,6 @@ export function StorePaymentsClient({
                     <p className="text-xl font-bold text-gray-900 mt-1">
                       {formatInr(wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0)}
                     </p>
-                    {(wallet?.locked_settlement_total ?? wallet?.locked_balance ?? 0) > 0 ? (
-                      <p className="text-[10px] text-amber-700 mt-1">
-                        In refund window: {formatInr(wallet?.locked_settlement_total ?? wallet?.locked_balance ?? 0)}
-                      </p>
-                    ) : null}
                   </>
                 )}
               </div>

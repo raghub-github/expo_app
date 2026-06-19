@@ -2,42 +2,35 @@ import type { MerchantSummary } from "@/services/merchant.service";
 
 const LOVED_RATING_MIN = 4;
 export const LOVED_GRID_MAX = 6;
-const TOP_BY_ORDERS_SLOTS = 6;
 
-/** Stores with 4+ rating and/or among top order volume nearby — for Loved by Customers. */
+function hasEstablishedCustomerRating(merchant: MerchantSummary): boolean {
+  const ratingRaw = merchant.avgRating;
+  if (ratingRaw == null || !Number.isFinite(Number(ratingRaw))) return false;
+  const rating = Number(ratingRaw);
+  const reviewsRaw = merchant.totalReviews;
+  const reviews =
+    reviewsRaw != null && Number.isFinite(Number(reviewsRaw)) ? Number(reviewsRaw) : 0;
+  return rating >= LOVED_RATING_MIN && reviews > 0;
+}
+
+/** Stores with 4+ rating and at least one review — excludes new / unrated stores. */
 export function pickLovedByCustomersMerchants(merchants: MerchantSummary[]): MerchantSummary[] {
   if (merchants.length === 0) {
     return [];
   }
 
-  const enriched = merchants.map((m) => ({
-    m,
-    orders: Math.max(0, Number(m.completedOrderCount ?? 0)),
-    rating: m.avgRating != null && Number.isFinite(Number(m.avgRating)) ? Number(m.avgRating) : 0,
-  }));
-
-  const topOrderIds = new Set(
-    [...enriched]
-      .filter((x) => x.orders > 0)
-      .sort((a, b) => b.orders - a.orders)
-      .slice(0, TOP_BY_ORDERS_SLOTS)
-      .map((x) => x.m.id)
-  );
-
-  const lovedPool = enriched.filter(
-    (x) => x.rating >= LOVED_RATING_MIN || topOrderIds.has(x.m.id)
-  );
-
-  const loved = [...lovedPool]
+  return merchants
+    .filter(hasEstablishedCustomerRating)
     .sort((a, b) => {
-      if (b.orders !== a.orders) return b.orders - a.orders;
-      if (b.rating !== a.rating) return b.rating - a.rating;
-      return (a.m.distanceKm ?? 999) - (b.m.distanceKm ?? 999);
+      const ordersA = Math.max(0, Number(a.completedOrderCount ?? 0));
+      const ordersB = Math.max(0, Number(b.completedOrderCount ?? 0));
+      if (ordersB !== ordersA) return ordersB - ordersA;
+      const ratingA = Number(a.avgRating ?? 0);
+      const ratingB = Number(b.avgRating ?? 0);
+      if (ratingB !== ratingA) return ratingB - ratingA;
+      return (a.distanceKm ?? 999) - (b.distanceKm ?? 999);
     })
-    .slice(0, LOVED_GRID_MAX)
-    .map((x) => x.m);
-
-  return loved;
+    .slice(0, LOVED_GRID_MAX);
 }
 
 /** @deprecated Use pickLovedByCustomersMerchants — near-you list is the full filtered list. */

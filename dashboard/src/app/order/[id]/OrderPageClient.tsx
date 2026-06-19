@@ -18,9 +18,15 @@ export default function OrderPageClient({ orderPublicId }: OrderPageClientProps)
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC]">
+    <div className="flex h-[100dvh] max-h-[100dvh] flex-col overflow-hidden bg-[#F8FAFC]">
       {!orderNotFound && <OrderHeader />}
-      <main className={orderNotFound ? "" : "px-3 py-3 sm:px-4 md:px-6 md:py-4"}>
+      <main
+        className={
+          orderNotFound
+            ? "flex min-h-0 flex-1 flex-col"
+            : "flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 md:px-6 md:py-4"
+        }
+      >
         <OrderDetailClient
           orderPublicId={orderPublicId}
           onNotFoundChange={setOrderNotFound}

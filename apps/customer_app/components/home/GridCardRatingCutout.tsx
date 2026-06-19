@@ -1,5 +1,5 @@
 /**
- * Swiggy / Zomato grid rating — green pill + white ring straddling image bottom-left.
+ * GatiMitra grid rating — green pill + white ring straddling image bottom-left.
  * Page-colored mask notches the image corner (no floating white box).
  */
 
@@ -23,7 +23,7 @@ export const GRID_RATING_PILL = {
   left: 6,
   width: 42,
   overhang: 9,
-  /** How far the notch bites into the image — keep low (Zomato). */
+  /** How far the notch bites into the image — keep low. */
   maskHeight: 7,
   topRightRadius: 7,
   borderWidth: 2,

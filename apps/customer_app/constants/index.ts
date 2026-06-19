@@ -20,6 +20,10 @@ export const STORAGE_KEYS = {
   PROFILE_OFFLINE: "gm_customer_profile_offline",
   /** Last fetched profile JSON for instant profile tab paint */
   PROFILE_CACHE: "gm_customer_profile_cache_v1",
+  /** Active subscription plans for instant checkout GMitra Plus row */
+  SUBSCRIPTION_PLANS_CACHE: "gm_customer_subscription_plans_cache_v1",
+  /** Default delivery partner tip amount saved from tracking sheet */
+  SAVED_DELIVERY_TIP: "gm_saved_delivery_tip_v1",
 } as const;
 
 export const API_TIMEOUT_MS = 30000;

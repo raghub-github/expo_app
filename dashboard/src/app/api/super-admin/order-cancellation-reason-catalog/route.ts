@@ -16,14 +16,19 @@ const postSchema = z.object({
   reasonCode: z.string().min(1).max(120).optional(),
   sortOrder: z.number().int().optional(),
   isActive: z.boolean().optional(),
+  channel: z.enum(["web", "app"]).optional(),
+  serviceType: z.enum(["food", "person_ride", "parcel"]).nullable().optional(),
 });
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const gate = await requireSuperAdminApi();
   if (!gate.ok) return gate.response;
+  const channelParam = req.nextUrl.searchParams.get("channel");
+  const channel = channelParam === "app" ? "app" : "web";
   try {
     const { attributes, grouped } = await getCancellationCatalogPayload({
       activeOnly: false,
+      channel,
     });
     const rows = Object.values(grouped).flat();
     return NextResponse.json({ success: true, rows, attributes, grouped });
@@ -52,15 +57,18 @@ export async function POST(req: NextRequest) {
   }
   try {
     const attribute = parsed.data.attribute.trim().toUpperCase();
+    const channel = parsed.data.channel ?? "web";
     const reasonCode =
       parsed.data.reasonCode?.trim() ||
-      `${attribute.toLowerCase()}__${slugifyCancellationReasonCode(parsed.data.label)}`;
+      `${channel}_${attribute.toLowerCase()}__${slugifyCancellationReasonCode(parsed.data.label)}`;
     const row = await insertCancellationReasonCatalog({
       attribute,
       label: parsed.data.label,
       reasonCode,
       sortOrder: parsed.data.sortOrder,
       isActive: parsed.data.isActive,
+      channel: parsed.data.channel ?? "web",
+      serviceType: parsed.data.serviceType ?? null,
     });
     return NextResponse.json({ success: true, row });
   } catch (e) {

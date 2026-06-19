@@ -990,6 +990,12 @@ const styles = StyleSheet.create({
   historyListCardFirst: {
     marginTop: 4,
   },
+  chartPlaceholder: {
+    fontSize: 13,
+    color: GatiMitraMerchant.textSecondary,
+    textAlign: "center",
+    paddingVertical: 8,
+  },
   historyList: {
     gap: 10,
   },

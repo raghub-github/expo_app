@@ -624,7 +624,6 @@ export default function GrowthScreen() {
               <Text style={styles.emptyText}>No data</Text>
             )}
           </View>
-          <MerchantMarketInsightsPanel storeId={storeId} />
         </>
       ) : (
         <View style={styles.card}>

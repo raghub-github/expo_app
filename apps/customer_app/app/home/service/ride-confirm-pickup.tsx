@@ -23,6 +23,12 @@ import {
   type PickupSnapPoint,
 } from "@/lib/nearby-pickup-points";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
+import { parseRideStopsParam } from "@/lib/ride-serviceability";
+import {
+  fetchAndStoreRideRoute,
+  rideRouteParamsFromSnapshot,
+} from "@/services/rideRoute.service";
+import { parseRideFareDistanceKm, rideFareDistanceNavParams } from "@/lib/ride-fare-distance";
 
 const GEOCODE_DEBOUNCE_MS = 350;
 const MAP_ZOOM_DELTA = 0.006;
@@ -72,6 +78,8 @@ export default function RideConfirmPickupScreen() {
   const params = useLocalSearchParams<{
     pickup?: string;
     drop?: string;
+    pickupLabel?: string;
+    dropLabel?: string;
     pickupLat?: string;
     pickupLng?: string;
     dropLat?: string;
@@ -85,7 +93,11 @@ export default function RideConfirmPickupScreen() {
     passengerPhone?: string;
     estimatedFare?: string;
     tripKm?: string;
+    routeDistanceKm?: string;
+    routeEtaMins?: string;
     customerTipAmount?: string;
+    pickupPincode?: string;
+    pickupState?: string;
   }>();
 
   const initialLat = params.pickupLat != null ? Number(params.pickupLat) : 24.7969;
@@ -98,7 +110,7 @@ export default function RideConfirmPickupScreen() {
     longitude: initialLng,
   });
   const [address, setAddress] = useState<AddressState>({
-    primary: params.pickup?.trim() || "Pickup point",
+    primary: params.pickupLabel?.trim() || params.pickup?.trim() || "Pickup point",
     fullAddress: params.pickup?.trim() || "",
   });
   const centerCoordRef = useRef(centerCoord);
@@ -107,6 +119,7 @@ export default function RideConfirmPickupScreen() {
   addressRef.current = address;
   const [geocoding, setGeocoding] = useState(false);
   const [locating, setLocating] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [selectedSnapId, setSelectedSnapId] = useState<string | null>(null);
 
   const snapPoints = useMemo(
@@ -243,50 +256,104 @@ export default function RideConfirmPickupScreen() {
     }
   }, [animateToCoord, updateAddressFromCoords]);
 
-  const handleConfirmPickup = useCallback(() => {
-    if (geocoding) return;
+  const handleConfirmPickup = useCallback(async () => {
+    if (geocoding || confirming) return;
 
     const { latitude, longitude } = centerCoordRef.current;
     const { primary, fullAddress } = addressRef.current;
     const resolvedAddress = fullAddress.trim() || primary.trim() || "Pickup point";
-
-    setLastRidePickup({
-      latitude,
-      longitude,
-      primary: primary.trim() || resolvedAddress,
+    const bookingPickupLabel = resolvePlaceDisplayName({
+      primary: params.pickupLabel || primary,
       fullAddress: resolvedAddress,
-      kind: "pickup",
     });
-    addRecentLocation({
-      latitude,
-      longitude,
-      primary: primary.trim() || resolvedAddress,
-      fullAddress: resolvedAddress,
-      kind: "pickup",
+    const bookingDropLabel = resolvePlaceDisplayName({
+      primary: params.dropLabel || String(params.drop ?? ""),
+      fullAddress: String(params.drop ?? ""),
     });
 
-    const navParams: Record<string, string> = {
-      pickup: resolvedAddress,
-      drop: String(params.drop ?? ""),
-      selectedRideId: String(params.selectedRideId ?? ""),
-      selectedRideName: String(params.selectedRideName ?? "Ride"),
-      selectedRideImageKey: String(params.selectedRideImageKey ?? "bike"),
-      pickupLat: String(latitude),
-      pickupLng: String(longitude),
-    };
-    if (params.dropLat) navParams.dropLat = String(params.dropLat);
-    if (params.dropLng) navParams.dropLng = String(params.dropLng);
-    if (params.stops) navParams.stops = String(params.stops);
-    if (params.estimatedFare) navParams.estimatedFare = String(params.estimatedFare);
-    if (params.customerTipAmount) navParams.customerTipAmount = String(params.customerTipAmount);
-    if (params.tripKm) navParams.tripKm = String(params.tripKm);
-    if (params.bookedForSelf) navParams.bookedForSelf = String(params.bookedForSelf);
-    if (params.passengerName) navParams.passengerName = String(params.passengerName);
-    if (params.passengerPhone) navParams.passengerPhone = String(params.passengerPhone);
+    setConfirming(true);
+    try {
+      setLastRidePickup({
+        latitude,
+        longitude,
+        primary: primary.trim() || resolvedAddress,
+        fullAddress: resolvedAddress,
+        kind: "pickup",
+      });
+      addRecentLocation({
+        latitude,
+        longitude,
+        primary: primary.trim() || resolvedAddress,
+        fullAddress: resolvedAddress,
+        kind: "pickup",
+      });
 
-    router.replace({ pathname: "/home/service/ride-searching", params: navParams });
+      const dropLat = params.dropLat != null ? Number(params.dropLat) : null;
+      const dropLng = params.dropLng != null ? Number(params.dropLng) : null;
+      const stopCoords = parseRideStopsParam(params.stops).map((s) => ({
+        latitude: s.latitude,
+        longitude: s.longitude,
+      }));
+
+      let routeParams: Record<string, string> = {};
+      const quotedFareKm = parseRideFareDistanceKm(params);
+
+      if (dropLat != null && dropLng != null && Number.isFinite(dropLat) && Number.isFinite(dropLng)) {
+        const snapshot = await fetchAndStoreRideRoute({
+          pickup: { latitude, longitude },
+          drop: { latitude: dropLat, longitude: dropLng },
+          stops: stopCoords,
+          force: true,
+        });
+        if (quotedFareKm != null) {
+          routeParams = {
+            ...rideFareDistanceNavParams(quotedFareKm),
+            ...(snapshot
+              ? {
+                  routeDurationSeconds: String(snapshot.routeDurationSeconds),
+                  routeEtaMins: String(snapshot.routeEtaMinutes),
+                }
+              : {}),
+          };
+        } else if (snapshot) {
+          routeParams = rideRouteParamsFromSnapshot(snapshot);
+        }
+      } else if (quotedFareKm != null) {
+        routeParams = rideFareDistanceNavParams(quotedFareKm);
+      } else if (params.tripKm) {
+        routeParams.tripKm = String(params.tripKm);
+      }
+
+      const navParams: Record<string, string> = {
+        pickup: resolvedAddress,
+        drop: String(params.drop ?? ""),
+        pickupLabel: bookingPickupLabel,
+        dropLabel: bookingDropLabel,
+        selectedRideId: String(params.selectedRideId ?? ""),
+        selectedRideName: String(params.selectedRideName ?? "Ride"),
+        selectedRideImageKey: String(params.selectedRideImageKey ?? "bike"),
+        pickupLat: String(latitude),
+        pickupLng: String(longitude),
+        ...routeParams,
+      };
+      if (params.dropLat) navParams.dropLat = String(params.dropLat);
+      if (params.dropLng) navParams.dropLng = String(params.dropLng);
+      if (params.stops) navParams.stops = String(params.stops);
+      if (params.estimatedFare) navParams.estimatedFare = String(params.estimatedFare);
+      if (params.customerTipAmount) navParams.customerTipAmount = String(params.customerTipAmount);
+      if (params.pickupPincode) navParams.pickupPincode = String(params.pickupPincode);
+      if (params.pickupState) navParams.pickupState = String(params.pickupState);
+      if (params.bookedForSelf) navParams.bookedForSelf = String(params.bookedForSelf);
+      if (params.passengerName) navParams.passengerName = String(params.passengerName);
+      if (params.passengerPhone) navParams.passengerPhone = String(params.passengerPhone);
+
+      router.replace({ pathname: "/home/service/ride-searching", params: navParams });
+    } finally {
+      setConfirming(false);
+    }
   }, [
     geocoding,
+    confirming,
     setLastRidePickup,
     addRecentLocation,
     params,
@@ -365,12 +432,16 @@ export default function RideConfirmPickupScreen() {
         </View>
 
         <TouchableOpacity
-          style={[styles.confirmBtn, geocoding && styles.confirmBtnDisabled]}
+          style={[styles.confirmBtn, (geocoding || confirming) && styles.confirmBtnDisabled]}
           onPress={handleConfirmPickup}
           activeOpacity={0.9}
-          disabled={geocoding}
+          disabled={geocoding || confirming}
         >
-          <Text style={styles.confirmBtnText}>Confirm pickup</Text>
+          {confirming ? (
+            <ActivityIndicator size="small" color="#FFFFFF" />
+          ) : (
+            <Text style={styles.confirmBtnText}>Confirm pickup</Text>
+          )}
         </TouchableOpacity>
       </View>
     </View>

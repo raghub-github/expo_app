@@ -131,7 +131,7 @@ export default function NotificationSetup() {
         router.push(`/order/${String(data.orderId)}` as never);
         return;
       }
-      navigateFromPushData(router, data);
+      navigateFromPushData({ push: (href) => router.push(href as never) }, data);
     });
     responseSubscriptionRef.current = sub;
     return () => {

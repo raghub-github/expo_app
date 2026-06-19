@@ -31,7 +31,6 @@ export type RideSearchingTripDetailsSheetProps = {
   stops?: StopItem[];
   totalFare: number;
   tipAmount?: number;
-  paymentMethod?: string;
   statusLabel?: string;
   onBack: () => void;
   onCancelRide: () => void;
@@ -91,7 +90,6 @@ export function RideSearchingTripDetailsSheet({
   stops,
   totalFare,
   tipAmount = 0,
-  paymentMethod = "Cash",
   statusLabel = "Searching for below services...",
   onBack,
   onCancelRide,
@@ -137,11 +135,6 @@ export function RideSearchingTripDetailsSheet({
                 <Text style={styles.tipRowValue}>+₹{tipAmount}</Text>
               </View>
             ) : null}
-
-            <View style={styles.paymentRow}>
-              <Ionicons name="cash-outline" size={18} color="#111827" />
-              <Text style={styles.paymentText}>Paying via {paymentMethod.toLowerCase()}</Text>
-            </View>
           </ScrollView>
 
           <TouchableOpacity style={styles.backBtn} onPress={onBack} activeOpacity={0.9}>

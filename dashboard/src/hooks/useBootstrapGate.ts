@@ -100,8 +100,9 @@ export function useBootstrapGate(queryClient: QueryClient): boolean {
         }
       }
 
-      // Order page refresh: use cached bootstrap only — avoid cookie/Supabase sync that can disturb other tabs.
+      // Order page: ensure httpOnly cookies exist before client API calls, without full bootstrap revalidation.
       if (isStandaloneOrderRoute && stored?.data) {
+        await syncServerSessionCookies();
         if (!cancelled) {
           window.__gatiBootstrapDone = true;
           setAuthReady(true);
@@ -109,8 +110,9 @@ export function useBootstrapGate(queryClient: QueryClient): boolean {
         return;
       }
 
-      // Only touch Supabase / cookies when we actually need a network bootstrap.
-      if (!bootstrapFresh) {
+      // Fresh login already POSTed tokens to set-cookie; re-sync would replay stale
+      // localStorage refresh tokens and trigger refresh_token_not_found errors.
+      if (!bootstrapFresh && !forceRefresh) {
         await syncServerSessionCookies();
         void hydrateBrowserSupabaseFromCookies();
       }
@@ -126,20 +128,36 @@ export function useBootstrapGate(queryClient: QueryClient): boolean {
         return;
       }
 
-      if (!bootstrapInFlight) {
-        bootstrapInFlight = fetchBootstrapAndSeedCache(queryClient)
-          .catch(() => false)
-          .then(() => undefined)
-          .finally(() => {
-            bootstrapInFlight = null;
-          });
-      }
-      void bootstrapInFlight.finally(() => {
-        if (!cancelled) {
-          window.__gatiBootstrapDone = true;
-          setAuthReady(true);
+      if (!stored?.data) {
+        if (isStandaloneOrderRoute) {
+          await syncServerSessionCookies();
+          void hydrateBrowserSupabaseFromCookies();
+          if (!bootstrapInFlight) {
+            scheduleBootstrapRevalidate(queryClient);
+          }
+          if (!cancelled) {
+            window.__gatiBootstrapDone = true;
+            setAuthReady(true);
+          }
+          return;
         }
-      });
+
+        if (!bootstrapInFlight) {
+          bootstrapInFlight = fetchBootstrapAndSeedCache(queryClient)
+            .catch(() => false)
+            .then(() => undefined)
+            .finally(() => {
+              bootstrapInFlight = null;
+            });
+        }
+        void bootstrapInFlight.finally(() => {
+          if (!cancelled) {
+            window.__gatiBootstrapDone = true;
+            setAuthReady(true);
+          }
+        });
+        return;
+      }
     };
 
     void run();

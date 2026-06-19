@@ -8,6 +8,7 @@ import {
   cancelRiderOnlyOnBackend,
   manualAssignRiderOnBackend,
 } from "@/lib/orders/rider-management-backend";
+import { applyRiderCancellationPenalty } from "@/lib/orders/apply-rider-cancellation-penalty";
 
 export const runtime = "nodejs";
 
@@ -76,6 +77,10 @@ export async function POST(
         : typeof body.rejectionOption === "string" && body.rejectionOption.trim()
           ? body.rejectionOption.trim()
           : null;
+    const catalogReasonId =
+      body.catalogReasonId != null && Number.isFinite(Number(body.catalogReasonId))
+        ? Number(body.catalogReasonId)
+        : null;
 
     if (!["cancel_only", "cancel_reassign", "assign_rider"].includes(action)) {
       return NextResponse.json({ success: false, error: "Invalid action" }, { status: 400 });
@@ -150,6 +155,22 @@ export async function POST(
       actorId,
     };
 
+    let penaltyResult: Awaited<ReturnType<typeof applyRiderCancellationPenalty>> | null = null;
+    const faultRaw =
+      typeof body.fault === "string" ? body.fault.trim().toLowerCase() : "";
+    const isThreePlFault = faultRaw === "3pl_fault" || faultRaw === "3pl";
+
+    if (isThreePlFault) {
+      penaltyResult = await applyRiderCancellationPenalty({
+        orderCoreId: orderCoreId,
+        riderId: effectiveRiderId,
+        catalogReasonId: catalogReasonId ?? 0,
+        fault: "3pl_fault",
+        actorSystemUserId: systemUser?.id ?? null,
+        source: "rider_management",
+      });
+    }
+
     const result =
       action === "cancel_reassign"
         ? await cancelAndReassignRiderOnBackend(payload)
@@ -163,6 +184,7 @@ export async function POST(
       success: true,
       action,
       waitingForManualAssignment: action === "cancel_only",
+      riderPenalty: penaltyResult,
     });
   } catch (error) {
     console.error("[POST /api/orders/[orderId]/rider-management] Error:", error);

@@ -18,17 +18,15 @@ async function resolveMerchantGrossForWallet(
 ): Promise<number> {
   const db = getSql();
   const rows = await db`
-    SELECT c.total_ctm, f.food_items_total_value
+    SELECT f.food_items_total_value
     FROM orders_core c
     INNER JOIN orders_food f ON f.order_id = c.id
     WHERE c.id = ${ordersCoreId}
       AND f.id = ${ordersFoodId}
     LIMIT 1
   `;
-  const row = rows[0] as { total_ctm?: unknown; food_items_total_value?: unknown } | undefined;
+  const row = rows[0] as { food_items_total_value?: unknown } | undefined;
   if (!row) return 0;
-  const frozen = num(row.total_ctm);
-  if (frozen > 0) return round2(frozen);
   const fromFood = num(row.food_items_total_value);
   if (fromFood > 0) return round2(fromFood);
   return 0;

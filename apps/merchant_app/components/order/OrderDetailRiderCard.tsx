@@ -1,6 +1,9 @@
-import { View, Text, StyleSheet, Pressable, Image, Linking } from "react-native";
+import { View, Text, StyleSheet, Pressable, Linking } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useState } from "react";
 import type { FoodOrderRiderLogEntry } from "@/services/ordersApi";
+import { RiderSelfieAvatar } from "@/components/order/RiderSelfieAvatar";
+import { RiderSelfieViewerModal } from "@/components/order/RiderSelfieViewerModal";
 import { GatiMitraMerchant, CARD_RADIUS, CARD_PADDING, FONT_SECONDARY } from "@/constants/theme";
 
 type Props = {
@@ -22,6 +25,7 @@ function riderStatusLabel(rider: FoodOrderRiderLogEntry | null, reachedAt?: stri
 }
 
 export function OrderDetailRiderCard({ rider, deliveryType, riderReachedAt }: Props) {
+  const [selfieModalOpen, setSelfieModalOpen] = useState(false);
   const isGatiMitra = String(deliveryType).toUpperCase() === "GATIMITRA_RIDER";
   if (!isGatiMitra) return null;
 
@@ -33,15 +37,12 @@ export function OrderDetailRiderCard({ rider, deliveryType, riderReachedAt }: Pr
     <View style={styles.card}>
       <Text style={styles.title}>Delivery partner</Text>
       <View style={styles.row}>
-        <View style={styles.avatarWrap}>
-          {rider?.selfie_url ? (
-            <Image source={{ uri: rider.selfie_url }} style={styles.avatarImage} />
-          ) : (
-            <View style={styles.avatarFallback}>
-              <Ionicons name="bicycle" size={18} color="#64748B" />
-            </View>
-          )}
-        </View>
+        <RiderSelfieAvatar
+          selfieUrl={rider?.selfie_url}
+          riderName={name}
+          size={44}
+          onPress={() => setSelfieModalOpen(true)}
+        />
         <View style={styles.body}>
           <Text style={styles.name} numberOfLines={1}>
             {name}
@@ -58,6 +59,13 @@ export function OrderDetailRiderCard({ rider, deliveryType, riderReachedAt }: Pr
           </Pressable>
         ) : null}
       </View>
+
+      <RiderSelfieViewerModal
+        visible={selfieModalOpen}
+        imageUrl={rider?.selfie_url ?? null}
+        riderName={name}
+        onClose={() => setSelfieModalOpen(false)}
+      />
     </View>
   );
 }
@@ -83,23 +91,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-  },
-  avatarWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    overflow: "hidden",
-    backgroundColor: "#E2E8F0",
-  },
-  avatarImage: {
-    width: 44,
-    height: 44,
-  },
-  avatarFallback: {
-    width: 44,
-    height: 44,
-    alignItems: "center",
-    justifyContent: "center",
   },
   body: { flex: 1, minWidth: 0, gap: 2 },
   name: {

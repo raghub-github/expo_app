@@ -57,10 +57,17 @@ import {
   formatAcceptCountdown,
   releaseAutoCancelFoodOrder,
 } from "@/lib/orderAcceptanceWindow";
+import {
+  clampPrepMinutes,
+  PLATFORM_DEFAULT_PREP_MINUTES,
+  PREP_TIME_MIN,
+  PREP_TIME_MAX,
+} from "@/lib/order-prep-time";
 import * as SecureStore from "expo-secure-store";
 
 const DISMISS_KEY = "merchant_incoming_order_dismissed_v1";
 const MAX_PREVIEW_ITEMS = 3;
+const PREP_STEP_MINUTES = 5;
 
 function isInvalidTransitionError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err ?? "");
@@ -380,13 +387,14 @@ export default function IncomingOrderModal() {
   const storeId = selectedStore?.id ?? null;
 
   const [sheetOrder, setSheetOrder] = useState<OrderRecord | null>(null);
-  const { orders, refetch } = useOrders(sheetOrder ? 4000 : 8000);
+  const { orders, refetch } = useOrders();
   const { settings: acceptanceSettings, acceptanceWindowMinutes } = useOrderAcceptanceSettings();
 
   const [rejectOpen, setRejectOpen] = useState(false);
   const [allItemsOpen, setAllItemsOpen] = useState(false);
   const [customizationItem, setCustomizationItem] = useState<LineItem | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const [prepMinutes, setPrepMinutes] = useState(PLATFORM_DEFAULT_PREP_MINUTES);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [fuseBaselineMs, setFuseBaselineMs] = useState(0);
   const [toast, setToast] = useState({ visible: false, message: "" });
@@ -442,6 +450,11 @@ export default function IncomingOrderModal() {
     },
     []
   );
+
+  useEffect(() => {
+    if (!sheetOrder) return;
+    setPrepMinutes(PLATFORM_DEFAULT_PREP_MINUTES);
+  }, [sheetOrder?.id]);
 
   useEffect(() => {
     registerOpenHandler(openSheetManually);
@@ -559,7 +572,7 @@ export default function IncomingOrderModal() {
   const patchStatus = useCallback(
     async (
       status: "ACCEPTED" | "CANCELLED",
-      extra?: { rejected_reason?: string },
+      extra?: { rejected_reason?: string; preparation_time_minutes?: number },
       mode: "auto" | "manual" = "manual"
     ) => {
       if (!storeId || !token || !sheetOrder || sheetOrder.id.startsWith("core-")) return;
@@ -569,7 +582,12 @@ export default function IncomingOrderModal() {
       try {
         await patchFoodOrderStatus(storeId, foodId, token, status, extra?.rejected_reason, {
           action_source: "app",
-          ...(status === "ACCEPTED" ? { accept_mode: mode } : {}),
+          ...(status === "ACCEPTED"
+            ? {
+                accept_mode: mode,
+                preparation_time_minutes: extra?.preparation_time_minutes ?? prepMinutes,
+              }
+            : {}),
           ...(status === "CANCELLED" ? { cancel_mode: mode } : {}),
         });
         if (status === "CANCELLED" && mode === "auto") {
@@ -587,8 +605,14 @@ export default function IncomingOrderModal() {
         setActionLoading(false);
       }
     },
-    [storeId, token, sheetOrder, dismissSheet, showToast]
+    [storeId, token, sheetOrder, dismissSheet, showToast, prepMinutes]
   );
+
+  const stepPrep = useCallback((delta: number) => {
+    setPrepMinutes((prev) =>
+      clampPrepMinutes(prev + delta, PLATFORM_DEFAULT_PREP_MINUTES)
+    );
+  }, []);
 
   useEffect(() => {
     if (!sheetOrder) return;
@@ -791,6 +815,30 @@ export default function IncomingOrderModal() {
                   ) : null}
                 </ScrollView>
 
+                <View style={styles.prepSection}>
+                  <Text style={styles.prepTitle}>Preparation time</Text>
+                  <Text style={styles.prepHint}>
+                    {PREP_TIME_MIN}–{PREP_TIME_MAX} min · shown to customer
+                  </Text>
+                  <View style={styles.prepRow}>
+                    <Pressable
+                      style={[styles.prepBtn, prepMinutes <= PREP_TIME_MIN && styles.prepBtnDisabled]}
+                      disabled={prepMinutes <= PREP_TIME_MIN || actionLoading}
+                      onPress={() => stepPrep(-PREP_STEP_MINUTES)}
+                    >
+                      <Text style={styles.prepBtnText}>−</Text>
+                    </Pressable>
+                    <Text style={styles.prepValue}>{prepMinutes} mins</Text>
+                    <Pressable
+                      style={[styles.prepBtn, prepMinutes >= PREP_TIME_MAX && styles.prepBtnDisabled]}
+                      disabled={prepMinutes >= PREP_TIME_MAX || actionLoading}
+                      onPress={() => stepPrep(PREP_STEP_MINUTES)}
+                    >
+                      <Text style={styles.prepBtnText}>+</Text>
+                    </Pressable>
+                  </View>
+                </View>
+
                 <View style={[styles.footer, { paddingBottom: insets.bottom }]}>
                   <AcceptOrderSwipeButton
                     loading={actionLoading}
@@ -798,7 +846,9 @@ export default function IncomingOrderModal() {
                     countdown={mmss}
                     timeProgress={fuseProgress}
                     urgent={fuseUrgent}
-                    onPress={() => void patchStatus("ACCEPTED", undefined, "manual")}
+                    onPress={() =>
+                      void patchStatus("ACCEPTED", { preparation_time_minutes: prepMinutes }, "manual")
+                    }
                   />
                 </View>
               </View>
@@ -1202,6 +1252,45 @@ const styles = StyleSheet.create({
   },
   moreRowText: { fontSize: 12, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
   moreRowLink: { fontSize: 12, fontWeight: "800", color: "#2563EB" },
+  prepSection: {
+    paddingHorizontal: H_PADDING,
+    paddingTop: 10,
+    paddingBottom: 4,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: GatiMitraMerchant.border,
+    backgroundColor: "#FFFFFF",
+  },
+  prepTitle: { fontSize: 13, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
+  prepHint: { fontSize: 11, color: GatiMitraMerchant.textSecondary, marginTop: 2 },
+  prepRow: {
+    marginTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    borderRadius: 10,
+    overflow: "hidden",
+  },
+  prepBtn: {
+    width: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 10,
+    backgroundColor: "#FFFFFF",
+  },
+  prepBtnDisabled: { opacity: 0.4 },
+  prepBtnText: { fontSize: 20, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
+  prepValue: {
+    flex: 1,
+    textAlign: "center",
+    fontSize: 15,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    paddingVertical: 10,
+  },
   footer: {
     paddingHorizontal: H_PADDING,
     paddingTop: 12,

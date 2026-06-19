@@ -22,18 +22,36 @@ export function computePrepReadyByAtIso(acceptedAtIso: string, prepMinutes: numb
 /** Minimal order shape for prep countdown UI (partnersite + API). */
 export type PrepCountdownOrder = {
   prep_ready_by_at?: string | null;
+  expected_ready_at?: string | null;
   accepted_at?: string | null;
   preparing_at?: string | null;
   created_at: string;
   preparation_time_minutes?: number | null;
   /** Cumulative minutes added via "Need more time" (used when prep_ready_by_at missing). */
   prep_delay_minutes?: number | null;
+  last_prep_delay_minutes_added?: number | null;
   eta_seconds?: number | null;
   prepared_late_minutes?: number | null;
 };
 
-/** Deadline for "Mark as ready" countdown — prefers committed prep_ready_by_at (includes need-more-time). */
+/** Original KPT deadline — never moved by Need more time; used for delay analytics banner. */
+export function prepPerformanceDeadlineMs(order: PrepCountdownOrder): number {
+  if (order.prep_ready_by_at) {
+    const t = new Date(order.prep_ready_by_at).getTime();
+    if (Number.isFinite(t)) return t;
+  }
+  const base = order.accepted_at || order.preparing_at || order.created_at;
+  const baseMs = new Date(base).getTime();
+  const prepMins = clampPrepMinutes(order.preparation_time_minutes, PLATFORM_DEFAULT_PREP_MINUTES);
+  return baseMs + prepMins * 60_000;
+}
+
+/** Deadline for "Mark as ready" countdown — prefers expected_ready_at after Need more time. */
 export function prepReadyDeadlineMs(order: PrepCountdownOrder): number {
+  if (order.expected_ready_at) {
+    const t = new Date(order.expected_ready_at).getTime();
+    if (Number.isFinite(t)) return t;
+  }
   if (order.prep_ready_by_at) {
     const t = new Date(order.prep_ready_by_at).getTime();
     if (Number.isFinite(t)) return t;
@@ -55,6 +73,10 @@ export function formatCountdownMmSs(secondsLeft: number): string {
 /** Prep window start (for progress bar fill). */
 export function prepReadyWindowStartMs(order: PrepCountdownOrder): number {
   const deadline = prepReadyDeadlineMs(order);
+  if (order.expected_ready_at) {
+    const extMins = Math.max(1, Number(order.last_prep_delay_minutes_added) || 5);
+    return deadline - extMins * 60_000;
+  }
   const mins = clampPrepMinutes(order.preparation_time_minutes, PLATFORM_DEFAULT_PREP_MINUTES);
   if (order.prep_ready_by_at) {
     return deadline - mins * 60_000;
@@ -109,9 +131,14 @@ export function isPrepCountdownExpired(
   return prepReadyCountdownLabel(order, nowMs, opts).secondsLeft <= 0;
 }
 
-/** Seconds past prep deadline (KPT + need-more-time); updates with nowMs each tick. */
+/** True when merchant is past original KPT deadline (delay banner + Need more time eligibility). */
+export function isPrepPerformanceOverdue(order: PrepCountdownOrder, nowMs: number): boolean {
+  return prepOverdueSeconds(order, nowMs) > 0;
+}
+
+/** Seconds past original KPT deadline — never resets on Need more time. */
 export function prepOverdueSeconds(order: PrepCountdownOrder, nowMs: number): number {
-  const deadline = prepReadyDeadlineMs(order);
+  const deadline = prepPerformanceDeadlineMs(order);
   if (!Number.isFinite(deadline) || nowMs <= deadline) return 0;
   return Math.floor((nowMs - deadline) / 1000);
 }
@@ -185,12 +212,32 @@ export function extendPrepReadyByAtIso(
   additionalMinutes: number,
   nowIso = new Date().toISOString()
 ): string {
+  return computeExpectedReadyAtFromNow(additionalMinutes, nowIso);
+}
+
+/** Customer / merchant working ready time after Need more time — now + extension. */
+export function computeExpectedReadyAtFromNow(
+  additionalMinutes: number,
+  nowIso = new Date().toISOString()
+): string {
   const add = clampPrepMinutes(additionalMinutes, 5);
   const nowMs = new Date(nowIso).getTime();
-  const baseMs = currentPrepReadyByAt
-    ? Math.max(nowMs, new Date(currentPrepReadyByAt).getTime())
-    : nowMs;
-  return new Date(baseMs + add * 60_000).toISOString();
+  return new Date(nowMs + add * 60_000).toISOString();
+}
+
+export function formatExtraPrepTimeAddedLabel(
+  lastAddedMinutes: number | null | undefined,
+  totalDelayMinutes?: number | null
+): string | null {
+  const last = Number(lastAddedMinutes);
+  if (Number.isFinite(last) && last > 0) {
+    return `Extra Time Added: +${Math.round(last)} min`;
+  }
+  const total = Number(totalDelayMinutes);
+  if (Number.isFinite(total) && total > 0) {
+    return `Extra Time Added: +${Math.round(total)} min`;
+  }
+  return null;
 }
 
 export function deliveryEtaMinutesLabel(etaSeconds: number | null | undefined): string | null {

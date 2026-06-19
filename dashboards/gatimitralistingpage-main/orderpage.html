@@ -1,0 +1,3479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GatiMitra Order Dashboard</title>
+    <!-- Bootstrap Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <style>
+        /* GatiMitra Custom Fonts */
+        @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;600;700&family=Poppins:wght@600;700&display=swap');
+
+        /* GatiMitra Color Palette */
+        :root {
+            --primary-color: #2E8B57;
+            --primary-light: #3CB371;
+            --primary-dark: #228B22;
+            --primary-super-light: #f0f9f5;
+            --secondary-color: #FF6B6B;
+            --background-color: #F8F9FA;
+            --card-background: #FFFFFF;
+            --text-primary: #333333;
+            --text-secondary: #666666;
+            --text-light: #888888;
+            --border-color: #E0E0E0;
+            --border-light: #f0f0f0;
+            --success-color: #28A745;
+            --warning-color: #FFC107;
+            --error-color: #DC3545;
+            --info-color: #17A2B8;
+            --shadow-medium: rgba(0, 0, 0, 0.12);
+            --radius-sm: 6px;
+            --radius-md: 8px;
+            --radius-lg: 12px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Roboto', sans-serif;
+            background-color: var(--background-color);
+            color: var(--text-primary);
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* Header Styles */
+        .top_header {
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+            background: var(--card-background);
+            box-shadow: 0 2px 12px var(--shadow-light);
+            height: 60px;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 60px;
+        }
+
+        .header-logo {
+            display: flex;
+            align-items: center;
+        }
+
+        .logo {
+            font-family: 'Poppins', sans-serif;
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--primary-color);
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .logo-img {
+            margin-top: 10px;
+            height: 200px;
+            width: auto;
+            margin-left: -280px;
+        }
+
+        .header-login {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .login-list {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+
+        #user_logo {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, var(--primary-color), var(--primary-light));
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 14px;
+            box-shadow: 0 2px 4px var(--shadow-light);
+        }
+
+        #user-name {
+            font-size: 14px;
+            <!DOCTYPE html>
+            color: var(--text-secondary);
+            font-weight: 500;
+            max-width: 200px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Main Layout */
+        .main-container {
+            display: flex;
+            min-height: calc(100vh - 60px);
+            position: relative;
+        }
+
+        .left-container {
+            flex: 1;
+            padding: 24px;
+            background: var(--background-color);
+            overflow-y: auto;
+            position: sticky;
+            top: 60px;
+            height: calc(100vh - 60px);
+        }
+
+        .right-container {
+            width: 400px;
+            min-width: 400px;
+            background: var(--card-background);
+            border-left: 1px solid var(--border-light);
+            padding: 24px;
+            overflow-y: auto;
+            position: sticky;
+            top: 60px;
+            height: calc(100vh - 60px);
+        }
+
+        /* Order Metadata */
+        .order-meta-data {
+            background: var(--card-background);
+            border-radius: var(--radius-md);
+            padding: 20px 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 8px var(--shadow-light);
+            border: 1px solid var(--border-light);
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+
+        .order_id_data {
+            flex: 1;
+        }
+
+        #order_id_data_block {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+
+        #order_id_data_block span {
+            font-size: 20px;
+            font-weight: 600;
+            color: var(--primary-color);
+            font-family: 'Poppins', sans-serif;
+        }
+
+        .order_copy_img {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 20px;
+            height: 20px;
+            color: var(--primary-color);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .order_copy_img:hover {
+            color: var(--primary-dark);
+            transform: scale(1.1);
+        }
+
+        .order_updated_timing_data {
+            font-size: 13px;
+            color: var(--text-light);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .order_data_refresh_block {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 12px;
+        }
+
+        .order_assignee_block {
+            text-align: right;
+        }
+
+        #order_assignee_data {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        #order_assignee_text {
+            font-weight: 600;
+            color: var(--text-primary);
+            background: var(--primary-super-light);
+            padding: 4px 10px;
+            border-radius: var(--radius-sm);
+            border-left: 3px solid var(--primary-color);
+        }
+
+        .order_refresh_block {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .order_refresh_icon {
+            width: 20px;
+            height: 20px;
+            color: var(--primary-color);
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .order_refresh_icon:hover {
+            color: var(--primary-dark);
+            transform: rotate(180deg);
+        }
+
+        /* Order Status Block */
+        .order_status_block {
+            background: var(--card-background);
+            border-radius: var(--radius-md);
+            padding: 20px 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 8px var(--shadow-light);
+            border: 1px solid var(--border-light);
+        }
+
+        .status-section {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+
+        .status-left-group {
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            flex-wrap: wrap;
+        }
+
+        .resolved-badge {
+            background: var(--primary-light);
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .ticket-section {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        .ticket-number {
+            font-weight: 600;
+            color: var(--primary-color);
+            background: var(--primary-super-light);
+            padding: 2px 8px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+        }
+
+        .status-items-row {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: nowrap;
+            margin-top: 8px;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 14px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+
+        .status-value {
+            font-weight: 600;
+            color: var(--text-primary);
+            padding: 4px 10px;
+            background: var(--primary-super-light);
+            border-radius: var(--radius-sm);
+            border-left: 3px solid var(--primary-color);
+        }
+
+        .status-update-section {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            white-space: nowrap;
+            margin-left: auto;
+        }
+
+        .status-update-label {
+            font-size: 14px;
+            color: var(--text-secondary);
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .status-dropdown {
+            min-width: 140px;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: var(--card-background);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .status-dropdown:hover {
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 1px var(--primary-color);
+        }
+
+        .status-current {
+            font-weight: 600;
+            color: var(--text-primary);
+            font-size: 14px;
+        }
+
+        .dropdown-arrow {
+            width: 16px;
+            height: 16px;
+            color: var(--text-light);
+            transition: transform 0.2s ease;
+        }
+
+        .status-dropdown.active .dropdown-arrow {
+            transform: rotate(180deg);
+        }
+
+        /* Dropdown Menu */
+        .status-dropdown-menu {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: var(--card-background);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            box-shadow: 0 4px 16px var(--shadow-medium);
+            z-index: 100;
+            display: none;
+            margin-top: 4px;
+            overflow: hidden;
+        }
+
+        .status-dropdown.active .status-dropdown-menu {
+            display: block;
+        }
+
+        .status-dropdown-item {
+            padding: 10px 12px;
+            font-size: 13px;
+            color: var(--text-primary);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .status-dropdown-item:last-child {
+            border-bottom: none;
+        }
+
+        .status-dropdown-item:hover {
+            background: var(--primary-super-light);
+            color: var(--primary-color);
+        }
+
+        .status-dropdown-item.selected {
+            background: var(--primary-color);
+            color: white;
+            font-weight: 600;
+        }
+
+        /* Timeline Section */
+        .timeline-section {
+            background: var(--card-background);
+            border-radius: var(--radius-md);
+            padding: 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 8px var(--shadow-light);
+            border: 1px solid var(--border-light);
+        }
+
+        .timeline-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 24px;
+            font-size: 16px;
+            color: var(--text-secondary);
+        }
+
+        .timeline-header span {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        /* Parallel Line Timeline */
+        .parallel-timeline {
+            position: relative;
+            margin-top: 30px;
+            padding-bottom: 10px;
+        }
+
+        .timeline-line {
+            position: absolute;
+            top: 0;
+            left: 20px;
+            right: 20px;
+            height: 3px;
+            background: var(--primary-color);
+            z-index: 1;
+            transition: background 0.3s ease;
+        }
+
+        .timeline-line.breached {
+            background: linear-gradient(to right, 
+                var(--primary-color) 0%, 
+                var(--primary-color) var(--breach-percentage, 0%), 
+                var(--error-color) var(--breach-percentage, 0%), 
+                var(--error-color) 100%);
+        }
+
+        .timeline-steps {
+            display: grid;
+            grid-template-columns: repeat(9, 1fr);
+            position: relative;
+            z-index: 2;
+        }
+
+        .timeline-step {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            position: relative;
+        }
+
+        .step-dot {
+            width: 16px;
+            height: 16px;
+            background: var(--primary-color);
+            border: 3px solid white;
+            border-radius: 50%;
+            box-shadow: 0 0 0 2px var(--primary-color);
+            margin-top: -6px;
+            z-index: 3;
+            transition: all 0.3s ease;
+        }
+
+        .step-dot.breached {
+            background: var(--error-color);
+            box-shadow: 0 0 0 2px var(--error-color);
+        }
+
+        .step-connector {
+            width: 1px;
+            height: 20px;
+            background: var(--border-color);
+            margin-top: 5px;
+            transition: background 0.3s ease;
+        }
+
+        .step-connector.breached {
+            background: var(--error-color);
+        }
+
+        .step-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-primary);
+            text-align: center;
+            margin-top: 10px;
+            line-height: 1.2;
+            padding: 0 2px;
+            min-height: 30px;
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+        }
+
+        .step-time {
+            font-size: 12px;
+            color: var(--text-light);
+            text-align: center;
+            margin-top: 4px;
+            font-weight: 500;
+        }
+
+        .step-duration {
+            font-size: 11px;
+            color: var(--primary-color);
+            font-weight: 600;
+            background: var(--primary-super-light);
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-top: 8px;
+            display: inline-block;
+        }
+
+        .eta-breach-tag {
+            background: var(--success-color);
+            color: #fff;
+            padding: 6px 10px;
+            border-radius: 14px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            position: absolute;
+            top: -104px;              
+            left: 50%;
+            transform: translateX(-50%);
+            white-space: nowrap;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+            z-index: 6;
+        }
+
+        .eta-breach-tag::after {
+            content: "";
+            position: absolute;
+            bottom: -6px;
+            left: 50%;
+            transform: translateX(-50%);
+            border-width: 6px 6px 0 6px;
+            border-style: solid;
+            border-color: var(--success-color) transparent transparent transparent;
+        }
+
+        .eta-breach-tag.breached {
+            background: var(--error-color);
+        }
+
+        .eta-breach-tag.breached::after {
+            border-color: var(--error-color) transparent transparent transparent;
+        }
+
+        /* Customer Details Styles - REDUCED HEIGHT */
+        .customer_content_grid {
+            display: grid;
+            gap: 8px;
+        }
+
+        .customer_row {
+            display: grid;
+            grid-template-columns: 140px 1fr;
+            align-items: start;
+            min-height: 28px;
+        }
+
+        .customer_label {
+            font-size: 13px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .customer_value {
+            font-size: 13px;
+            color: var(--text-primary);
+            font-weight: 500;
+            word-break: break-word;
+        }
+
+        .user-type-badge {
+            background: linear-gradient(135deg, var(--primary-color), var(--primary-light));
+            color: white;
+            padding: 3px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        /* Merchant Details Styles - REDUCED HEIGHT */
+        .merchant_content_grid {
+            display: grid;
+            gap: 8px;
+        }
+
+        .merchant_row {
+            display: grid;
+            grid-template-columns: 160px 1fr;
+            align-items: center;
+            min-height: 28px;
+        }
+
+        .merchant_label {
+            font-size: 13px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .merchant_value {
+            font-size: 13px;
+            color: var(--text-primary);
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .copy-icon-small {
+            font-size: 11px;
+            color: var(--primary-color);
+            cursor: pointer;
+            opacity: 0.7;
+            transition: opacity 0.2s ease;
+        }
+
+        .copy-icon-small:hover {
+            opacity: 1;
+        }
+
+        .more-button {
+            background: var(--primary-super-light);
+            color: var(--primary-color);
+            border: 1px solid var(--primary-light);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            margin-left: 6px;
+        }
+
+        .more-button:hover {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .timing-button {
+            background: var(--background-color);
+            border: 1px solid var(--border-color);
+            padding: 3px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-primary);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .timing-button:hover {
+            background: var(--primary-super-light);
+            border-color: var(--primary-light);
+        }
+
+        .open-badge {
+            background: var(--success-color);
+            color: white;
+            padding: 2px 5px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+        }
+
+        /* Payment Details Styles - REDUCED HEIGHT */
+        .payment_content_grid {
+            display: grid;
+            gap: 8px;
+        }
+
+        .payment_row {
+            display: grid;
+            grid-template-columns: 180px 1fr;
+            align-items: center;
+            min-height: 28px;
+        }
+
+        .payment_label {
+            font-size: 13px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .payment_value {
+            font-size: 13px;
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .amount-breakdown {
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-weight: normal;
+            margin-left: 4px;
+        }
+
+        .cashin {
+            color: var(--primary-color);
+            font-weight: 500;
+        }
+
+        .payment-mode-badge {
+            background: var(--primary-color);
+            color: white;
+            padding: 3px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
+        }
+
+        /* Link Button Styles */
+        .link-button {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            color: var(--primary-color);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 12px;
+            transition: color 0.2s ease;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: var(--primary-super-light);
+            border: 1px solid var(--primary-light);
+        }
+
+        .link-button:hover {
+            color: var(--primary-dark);
+            background: var(--primary-color);
+            color: white;
+            text-decoration: none;
+        }
+
+        /* Rider Details - REDUCED HEIGHT */
+        .rider_max_details_block {
+            grid-column: span 2;
+            background: var(--card-background);
+            border-radius: var(--radius-md);
+            padding: 16px;
+            box-shadow: 0 2px 8px var(--shadow-light);
+            border: 1px solid var(--border-light);
+            margin-top: 8px;
+        }
+
+        .rider_detail_header_block {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 2px solid var(--border-light);
+        }
+
+        .rider_details_header_text {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        /* View Rider's Log Button */
+        .view-rider-log {
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: var(--radius-sm);
+            padding: 6px 14px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .view-rider-log:hover {
+            background: var(--primary-dark);
+        }
+
+        .rider_details_content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        /* Left side: Rider Info */
+        .rider_info_section {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .rider_info_grid {
+            display: grid;
+            gap: 12px;
+        }
+
+        .rider_row {
+            display: grid;
+            grid-template-columns: 140px 1fr;
+            align-items: center;
+            min-height: 28px;
+        }
+
+        .rider_label {
+            font-size: 13px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .rider_value {
+            font-size: 13px;
+            color: var(--text-primary);
+            font-weight: 500;
+            word-break: break-word;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .otp-display {
+            font-family: 'Courier New', monospace;
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--primary-color);
+            letter-spacing: 2px;
+            background: var(--primary-super-light);
+            padding: 5px 10px;
+            border-radius: 6px;
+            border: 1px dashed var(--primary-light);
+            display: inline-block;
+        }
+
+        .phone-link {
+            color: var(--primary-color);
+            text-decoration: none;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            font-size: 13px;
+        }
+
+        .phone-link:hover {
+            color: var(--primary-dark);
+            text-decoration: underline;
+        }
+
+        /* Right side: Small Rider Timeline */
+        .rider_timeline_section {
+            background: var(--background-color);
+            border-radius: var(--radius-md);
+            padding: 16px;
+            border: 1px solid var(--border-light);
+        }
+
+        .rider_timeline_header {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        /* Rider Timeline Headers */
+        .timeline_grid {
+            display: grid;
+            width: 100%;
+            margin-bottom: 15px;
+        }
+
+        .timeline_header_row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 0;
+            margin-bottom: 10px;
+        }
+
+        .timeline_cell {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-primary);
+            text-align: center;
+            padding: 0 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Compact Rider Timeline */
+        .rider-timeline-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .rider-timeline-table th {
+            text-align: center;
+            padding: 8px 4px;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-primary);
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .rider-timeline-table td {
+            text-align: center;
+            padding: 6px 4px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .rider-time-cell {
+            color: var(--text-primary);
+            font-weight: 500;
+            font-size: 11px;
+        }
+
+        .rider-distance-cell {
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+
+        /* Rider Parallel Timeline */
+        .rider-parallel-timeline {
+            position: relative;
+            margin: 15px 0;
+            padding: 0 10px;
+        }
+
+        .rider-timeline-line {
+            position: absolute;
+            top: 0;
+            left: 10px;
+            right: 10px;
+            height: 2px;
+            background: var(--primary-color);
+            z-index: 1;
+        }
+
+        .rider-timeline-steps {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            position: relative;
+            z-index: 2;
+        }
+
+        .rider-timeline-step {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            position: relative;
+        }
+
+        .rider-step-dot {
+            width: 10px;
+            height: 10px;
+            background: var(--primary-color);
+            border: 2px solid white;
+            border-radius: 50%;
+            box-shadow: 0 0 0 2px var(--primary-color);
+            margin-top: -4px;
+            z-index: 3;
+        }
+
+        .rider-step-connector {
+            width: 1px;
+            height: 15px;
+            background: var(--border-color);
+            margin-top: 3px;
+        }
+
+        .rider-step-time {
+            font-size: 11px;
+            color: var(--text-primary);
+            text-align: center;
+            margin-top: 6px;
+            font-weight: 500;
+        }
+
+        .rider-step-distance {
+            font-size: 10px;
+            color: var(--text-secondary);
+            text-align: center;
+            margin-top: 2px;
+        }
+
+        /* Cancellation Section */
+        .rider_cancel_section {
+            grid-column: span 2;
+            background: var(--background-color);
+            border-radius: var(--radius-md);
+            padding: 16px;
+            border: 1px solid var(--border-light);
+            margin-top: 12px;
+        }
+
+        .cancel_header {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        /* Parallel line layout for cancellation */
+        .cancel_controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .cancel_row {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .cancel-select {
+            width: 100%;
+            height: 38px;
+            padding: 8px 10px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            font-size: 13px;
+            color: var(--text-primary);
+            background: var(--card-background);
+            transition: border-color 0.2s ease;
+        }
+
+        .cancel-select:focus {
+            outline: none;
+            border-color: var(--primary-color);
+        }
+
+        .cancel-button {
+            height: 38px;
+            padding: 0 14px;
+            background: var(--error-color);
+            color: #fff;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s ease;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+
+        .cancel-button:hover {
+            background: #c82333;
+        }
+
+        /* Main Details Block - REDUCED CARD HEIGHTS */
+        .main_details_inner_block {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 16px;
+            margin-top: 20px;
+        }
+
+        .customer_details_block,
+        .merchant_details_block,
+        .payment_details_block {
+            background: var(--card-background);
+            border-radius: var(--radius-md);
+            padding: 18px;
+            box-shadow: 0 2px 8px var(--shadow-light);
+            border: 1px solid var(--border-light);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .customer_details_block:hover,
+        .merchant_details_block:hover,
+        .payment_details_block:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 16px var(--shadow-medium);
+        }
+
+        .customer_details_header_block,
+        .merchant_detail_header_block,
+        .payment_detail_header_block {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 2px solid var(--border-light);
+        }
+
+        #customer_details_header,
+        .merchant_details_heading,
+        .payment_details_heading {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        #customer_user_id_text {
+            font-size: 13px;
+            color: var(--text-light);
+            font-weight: 400;
+        }
+
+        .user_id_copy_img {
+            color: var(--primary-color);
+            cursor: pointer;
+            width: 16px;
+            height: 16px;
+            transition: all 0.2s ease;
+        }
+
+        .user_id_copy_img:hover {
+            color: var(--primary-dark);
+            transform: scale(1.1);
+        }
+
+        .merchant_more_details,
+        .payment_more_details {
+            margin-top: 12px;
+            color: var(--primary-color);
+            font-weight: 500;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            transition: color 0.2s ease;
+            font-size: 13px;
+        }
+
+        .merchant_more_details:hover,
+        .payment_more_details:hover {
+            color: var(--primary-dark);
+            text-decoration: underline;
+        }
+
+        /* Right Container Styles */
+        .order_details_block,
+        .create_refund_block,
+        .remarks_block,
+        .notification_block,
+        .rider_recon_block {
+            background: var(--card-background);
+            border-radius: var(--radius-md);
+            padding: 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 2px 8px var(--shadow-light);
+            border: 1px solid var(--border-light);
+            transition: transform 0.2s ease;
+        }
+
+        .order_details_block:hover,
+        .remarks_block:hover,
+        .notification_block:hover,
+        .rider_recon_block:hover {
+            transform: translateY(-1px);
+        }
+
+        .order_detail_header_block,
+        .remark_header_block,
+        .notification_header_block,
+        .rider_recon_header_block {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 2px solid var(--border-light);
+        }
+
+        .header_content,
+        .add_remark,
+        .cx_notification_header,
+        .add_recon_text {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .show_remark {
+            background: none;
+            border: none;
+            color: var(--primary-color);
+            font-weight: 500;
+            cursor: pointer;
+            font-size: 13px;
+            transition: color 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .show_remark:hover {
+            color: var(--primary-dark);
+            text-decoration: underline;
+        }
+
+        .order_details_list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+
+        .order_details_list li {
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border-light);
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .order_details_list li:last-child {
+            border-bottom: none;
+        }
+
+        #order_details_text {
+            font-weight: 600;
+            color: var(--text-primary);
+            text-align: right;
+            max-width: 60%;
+            word-break: break-word;
+        }
+
+        #items_view_more,
+        #cx_instructions_view {
+            color: var(--primary-color);
+            font-weight: 500;
+            cursor: pointer;
+            transition: color 0.2s ease;
+            font-size: 13px;
+        }
+
+        #items_view_more:hover,
+        #cx_instructions_view:hover {
+            color: var(--primary-dark);
+            text-decoration: underline;
+        }
+
+        .create_refund_button {
+            width: 100%;
+            padding: 12px;
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s ease;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .create_refund_button:hover {
+            background: var(--primary-dark);
+        }
+
+        textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            font-size: 13px;
+            color: var(--text-primary);
+            background: var(--card-background);
+            resize: vertical;
+            min-height: 70px;
+            font-family: 'Roboto', sans-serif;
+            transition: border-color 0.2s ease;
+            margin-bottom: 10px;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 2px rgba(46, 139, 87, 0.1);
+        }
+
+        .remark_submit,
+        .trigger_cx_notification,
+        .recon_submit {
+            width: 100%;
+            padding: 10px;
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s ease;
+            font-size: 13px;
+            margin-top: 8px;
+        }
+
+        .remark_submit:hover,
+        .trigger_cx_notification:hover,
+        .recon_submit:hover {
+            background: var(--primary-dark);
+        }
+
+        /* Scrollbar Styling */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--background-color);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-light);
+        }
+
+        /* Responsive Design */
+        @media (max-width: 1200px) {
+            .main-container {
+                flex-direction: column;
+            }
+            
+            .right-container {
+                width: 100%;
+                min-width: 100%;
+                border-left: none;
+                border-top: 1px solid var(--border-light);
+                margin-top: 0;
+                height: auto;
+                position: static;
+            }
+            
+            .left-container {
+                height: auto;
+                position: static;
+            }
+            
+            .timeline-steps {
+                grid-template-columns: repeat(5, 1fr);
+            }
+            
+            .rider_info_section {
+                grid-template-columns: 1fr;
+            }
+            
+            .rider-timeline-steps {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 992px) {
+            .status-items-row {
+                flex-wrap: wrap;
+            }
+            
+            .status-update-section {
+                margin-left: 0;
+                margin-top: 12px;
+            }
+            
+            .cancel_controls {
+                grid-template-columns: 1fr;
+            }
+            
+            .timeline-steps {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 0 16px;
+            }
+            
+            .left-container,
+            .right-container {
+                padding: 16px;
+            }
+            
+            .main_details_inner_block {
+                grid-template-columns: 1fr;
+            }
+            
+            .order-meta-data {
+                flex-direction: column;
+                gap: 16px;
+            }
+            
+            .order_data_refresh_block {
+                align-items: flex-start;
+            }
+            
+            .status-section {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 12px;
+            }
+            
+            .status-left-group {
+                width: 100%;
+                justify-content: space-between;
+            }
+            
+            .timeline-steps {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            
+            .rider-timeline-steps {
+                grid-template-columns: 1fr;
+            }
+            
+            .rider_detail_header_block {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 12px;
+            }
+            
+            .view-rider-log {
+                align-self: flex-start;
+            }
+            
+            .rider_details_content {
+                grid-template-columns: 1fr;
+                gap: 16px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .header {
+                flex-direction: column;
+                height: auto;
+                padding: 12px 0;
+                gap: 12px;
+            }
+            
+            .header-login {
+                width: 100%;
+                justify-content: center;
+            }
+            
+            .logo {
+                font-size: 20px;
+            }
+            
+            .order-meta-data,
+            .order_status_block,
+            .timeline-section {
+                padding: 16px;
+            }
+            
+            .customer_details_block,
+            .merchant_details_block,
+            .payment_details_block,
+            .rider_max_details_block {
+                padding: 16px;
+            }
+            
+            .order_details_block,
+            .create_refund_block,
+            .remarks_block,
+            .notification_block,
+            .rider_recon_block {
+                padding: 16px;
+            }
+            
+            .timeline-steps {
+                grid-template-columns: 1fr;
+            }
+            
+            .customer_row,
+            .merchant_row,
+            .payment_row,
+            .rider_row {
+                grid-template-columns: 1fr;
+                gap: 4px;
+            }
+            
+            .status-items-row {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 10px;
+            }
+            
+            .status-update-section {
+                width: 100%;
+            }
+            
+            .cancel_controls {
+                flex-direction: column;
+            }
+            
+            .cancel_row {
+                width: 100%;
+            }
+        }
+
+        /* Utility Classes */
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            font-size: 11px;
+            font-weight: 600;
+            border-radius: 20px;
+            line-height: 1;
+        }
+
+        .badge-success {
+            background: var(--success-color);
+            color: white;
+        }
+
+        .badge-error {
+            background: var(--error-color);
+            color: white;
+        }
+
+        .badge-primary {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .badge-info {
+            background: var(--info-color);
+            color: white;
+        }
+
+        /* Timeline headers row */
+        .timeline-headers {
+            display: grid;
+            grid-template-columns: repeat(9, 1fr);
+            gap: 0;
+            margin-bottom: 30px;
+        }
+
+        .timeline-header-item {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-primary);
+            text-align: center;
+            padding: 0 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Modal Overlay */
+        .gm-modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            padding: 20px;
+        }
+
+        /* Modal */
+        .gm-modal {
+            background: #fff;
+            width: 90%;
+            max-width: 1100px;
+            border-radius: 12px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+            animation: fadeIn 0.3s ease;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        /* Header */
+        .gm-modal-header {
+            padding: 16px 24px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--primary-super-light);
+            border-radius: 12px 12px 0 0;
+        }
+
+        .gm-modal-header h3 {
+            margin: 0;
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .gm-close {
+            font-size: 24px;
+            cursor: pointer;
+            color: var(--text-light);
+            transition: color 0.2s ease;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+        }
+
+        .gm-close:hover {
+            color: var(--error-color);
+            background: var(--background-color);
+        }
+
+        /* Body */
+        .gm-modal-body {
+            padding: 24px;
+        }
+
+        /* Table */
+        .gm-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+            margin-bottom: 24px;
+        }
+
+        .gm-table th,
+        .gm-table td {
+            padding: 12px;
+            border: 1px solid var(--border-color);
+            text-align: center;
+        }
+
+        .gm-table th {
+            background: var(--primary-super-light);
+            font-weight: 600;
+            color: var(--text-primary);
+            font-size: 13px;
+        }
+
+        .gm-table td {
+            color: var(--text-secondary);
+        }
+
+        .gm-id {
+            color: var(--primary-color);
+            font-weight: 600;
+            font-family: 'Courier New', monospace;
+        }
+
+        /* Summary */
+        .gm-summary {
+            margin-top: 16px;
+            max-width: 420px;
+            margin-left: auto;
+            background: var(--background-color);
+            padding: 16px;
+            border-radius: var(--radius-md);
+            border: 1px solid var(--border-light);
+        }
+
+        .gm-summary div {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            font-size: 13px;
+        }
+
+        .gm-total {
+            font-weight: 700;
+            border-top: 1px solid var(--border-color);
+            margin-top: 8px;
+            padding-top: 8px;
+            color: var(--text-primary);
+            font-size: 14px;
+        }
+
+        /* Form */
+        .gm-section-title {
+            margin-top: 30px;
+            margin-bottom: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .gm-form-row {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+
+        .gm-form-row select {
+            padding: 8px 12px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border-color);
+            font-size: 13px;
+            color: var(--text-primary);
+            background: var(--card-background);
+            min-width: 200px;
+        }
+
+        .gm-form-row select:focus {
+            outline: none;
+            border-color: var(--primary-color);
+        }
+
+        /* Radios */
+        .gm-radio-group {
+            margin-top: 16px;
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        .gm-radio-group label {
+            border: 1px solid var(--border-color);
+            padding: 10px 14px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            background: #fff;
+            flex: 1;
+            min-width: 200px;
+            transition: all 0.2s ease;
+            font-size: 13px;
+        }
+
+        .gm-radio-group label:hover {
+            border-color: var(--primary-color);
+            background: var(--primary-super-light);
+        }
+
+        .gm-radio-group input[type="radio"] {
+            margin-right: 8px;
+        }
+
+        /* Button */
+        .gm-submit-btn {
+            margin-top: 20px;
+            padding: 12px 30px;
+            border: none;
+            border-radius: var(--radius-sm);
+            background: var(--primary-color);
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s ease;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .gm-submit-btn:hover {
+            background: var(--primary-dark);
+        }
+
+        /* Animation */
+        @keyframes fadeIn {
+            from { transform: scale(0.95); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+
+        /* Phone Modal Styles */
+        .phone-modal {
+            background: white;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 400px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+            animation: fadeIn 0.3s ease;
+        }
+
+        .phone-modal-header {
+            padding: 16px 24px;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--primary-super-light);
+            border-radius: 12px 12px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .phone-modal-header h3 {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .phone-modal-body {
+            padding: 24px;
+        }
+
+        .phone-number-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+
+        .phone-number-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .phone-number-item:last-child {
+            border-bottom: none;
+        }
+
+        .phone-number {
+            font-size: 15px;
+            font-weight: 500;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .phone-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .phone-action-btn {
+            padding: 6px 12px;
+            border-radius: var(--radius-sm);
+            border: none;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            transition: all 0.2s ease;
+        }
+
+        .phone-action-btn.call {
+            background: var(--success-color);
+            color: white;
+        }
+
+        .phone-action-btn.call:hover {
+            background: #218838;
+        }
+
+        .phone-action-btn.copy {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .phone-action-btn.copy:hover {
+            background: var(--primary-dark);
+        }
+
+        /* Remarks Modal Styles */
+        .remarks-modal {
+            background: white;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 800px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+            animation: fadeIn 0.3s ease;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .remarks-modal-header {
+            padding: 16px 24px;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--primary-super-light);
+            border-radius: 12px 12px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .remarks-modal-header h3 {
+            margin: 0;
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .remarks-modal-body {
+            padding: 24px;
+        }
+
+        .remarks-list {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+        }
+
+        .remark-item {
+            padding: 16px;
+            border-bottom: 1px solid var(--border-light);
+            transition: background 0.2s ease;
+        }
+
+        .remark-item:hover {
+            background: var(--primary-super-light);
+        }
+
+        .remark-item:last-child {
+            border-bottom: none;
+        }
+
+        .remark-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .remark-user {
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .remark-user-type {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            background: var(--background-color);
+            color: var(--text-secondary);
+        }
+
+        .remark-time {
+            font-size: 12px;
+            color: var(--text-light);
+        }
+
+        .remark-content {
+            font-size: 14px;
+            color: var(--text-primary);
+            line-height: 1.5;
+            margin-bottom: 8px;
+        }
+
+        .remark-type {
+            display: inline-block;
+            padding: 2px 8px;
+            background: var(--primary-light);
+            color: white;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        /* Merchant Contacts Modal */
+        .merchant-contacts-modal {
+            background: white;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+            animation: fadeIn 0.3s ease;
+        }
+
+        .merchant-contacts-body {
+            padding: 24px;
+        }
+
+        .merchant-contact-row {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .merchant-contact-row:last-child {
+            border-bottom: none;
+        }
+
+        .merchant-contact-label {
+            min-width: 120px;
+            font-weight: 600;
+            color: var(--text-primary);
+            font-size: 14px;
+        }
+
+        .merchant-contact-number {
+            flex: 1;
+            font-size: 15px;
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        .merchant-contact-actions {
+            display: flex;
+            gap: 8px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Hidden Inputs for Data -->
+    <input type="hidden" id="order_page" value="order_details">
+    <input type="hidden" id="order_id" value="294562867">
+    <input type="hidden" id="user_id" value="39293481">
+    <input type="hidden" id="order_user_name" value="agent@gatimitra.in">
+    
+    <!-- Header -->
+    <header class="top_header">
+        <div class="container">
+            <section class="header">
+                <div class="header-logo">
+                    <div class="logo">
+                        <!-- Replace this with your actual logo.png file -->
+                        <img src="img/logo.png" alt="GatiMitra Logo" class="logo-img">
+                    </div>
+                </div>
+                <div class="header-login">
+                    <ul class="login-list">
+                        <li id="user_logo">G</li>
+                        <li id="user-name">agent@gatimitra.in</li>
+                    </ul>
+                </div>
+            </section>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Left Container -->
+        <div class="left-container">
+            <div class="left-container-main">
+                <!-- Order Metadata -->
+                <div class="order-meta-data">
+                    <div class="order_id_data">
+                        <div id="order_id_data_block">
+                            <i class="bi bi-receipt"></i>
+                            Order #<span id="order_id_text">#GM1001</span>
+                            <i class="bi bi-clipboard order_copy_img" onClick="copyToClipboard('294562867')"></i>
+                        </div>
+                        <div class="order_updated_timing_data">
+                            <i class="bi bi-clock"></i>
+                            <span id="order_id_time">19-12-25 08:25 AM</span>
+                            <span id="thirdPartyType"> • GatiMitra</span>
+                        </div>
+                    </div>
+
+                    <div class="order_data_refresh_block">
+                        <div class="order_assignee_block">
+                            <div id="order_assignee_data">
+                                <i class="bi bi-person-badge"></i>
+                                Routed To: <span id="order_assignee_text">bhimpratap@gatimitra.in</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Order Status Block -->
+                <div class="order_status_block">
+                    <div class="status-section">
+                        <div class="status-left-group">
+                            <span class="resolved-badge">
+                                <i class="bi bi-check-circle"></i>
+                                Resolved
+                            </span>
+                            <div class="ticket-section">
+                                <i class="bi bi-ticket-detailed"></i>
+                                Ticket #<span class="ticket-number">592566 <i class="bi bi-chevron-down"></i></span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="status-items-row">
+                        <div class="status-item">
+                            Order status: <span class="status-value">Delivered</span>
+                        </div>
+                        <div class="status-item">
+                            Order category: <span class="status-value">Catalog</span>
+                        </div>
+                        <div class="status-item">
+                            Order Source: <span class="status-value">Customer app</span>
+                        </div>
+                        
+                        <div class="status-update-section">
+                            <div class="status-update-label">
+                                <i class="bi bi-pencil-square"></i>
+                                Update order status
+                            </div>
+                            <div class="status-dropdown" id="statusDropdown" onclick="toggleStatusUpdate(event)">
+                                <span class="status-current">Delivered</span>
+                                <i class="bi bi-chevron-down dropdown-arrow"></i>
+                                <div class="status-dropdown-menu">
+                                    <div class="status-dropdown-item" onclick="updateStatus('Dispatch Ready')">Dispatch Ready</div>
+                                    <div class="status-dropdown-item" onclick="updateStatus('Dispatched')">Dispatched</div>
+                                    <div class="status-dropdown-item selected" onclick="updateStatus('Delivered')">Delivered</div>
+                                    <div class="status-dropdown-item" onclick="updateStatus('Cancelled')">Cancelled</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Order Progress Timeline -->
+                <div class="timeline-section">
+                    <div class="timeline-header">
+                        <i class="bi bi-graph-up"></i>
+                        <span>Order progress timeline • Delivery, GatiMitra</span>
+                    </div>
+                    <!-- Timeline headers -->
+                    <div class="timeline-headers">
+                        <div class="timeline-header-item">Created</div>
+                        <div class="timeline-header-item">Bill Ready</div>
+                        <div class="timeline-header-item">Paymentinitiated At</div>
+                        <div class="timeline-header-item">Payment Done</div>
+                        <div class="timeline-header-item">Pymt Assign RX</div>
+                        <div class="timeline-header-item">Accepted</div>
+                        <div class="timeline-header-item">Dispatch Ready</div>
+                        <div class="timeline-header-item">Dispatched</div>
+                        <div class="timeline-header-item">Delivered</div>
+                    </div>
+                    <!-- Parallel line timeline -->
+                    <div class="parallel-timeline">
+                        <div class="timeline-line" id="timelineLine"></div>
+                        
+                        <div class="timeline-steps">
+                            <!-- Step 1: Created -->
+                            <div class="timeline-step">
+                                <div class="step-dot" id="stepDot1"></div>
+                                <div class="step-connector" id="stepConnector1"></div>
+                                <div class="step-time">08:12 AM</div>
+                            </div>
+                            
+                            <!-- Step 2: Bill Ready -->
+                            <div class="timeline-step">
+                                <div class="step-dot" id="stepDot2"></div>
+                                <div class="step-connector" id="stepConnector2"></div>
+                                <div class="step-time">08:12 AM</div>
+                            </div>
+                            
+                            <!-- Step 3: Paymentinitiated At -->
+                            <div class="timeline-step">
+                                <div class="step-dot" id="stepDot3"></div>
+                                <div class="step-connector" id="stepConnector3"></div>
+                                <div class="step-time">08:25 AM</div>
+                            </div>
+                            
+                            <!-- Step 4: Payment Done -->
+                            <div class="timeline-step">
+                                <div class="step-dot" id="stepDot4"></div>
+                                <div class="step-connector" id="stepConnector4"></div>
+                                <div class="step-time">08:25 AM</div>
+                            </div>
+                            
+                            <!-- Step 5: Pymt Assign RX -->
+                            <div class="timeline-step">
+                                <div class="step-dot" id="stepDot5"></div>
+                                <div class="step-connector" id="stepConnector5"></div>
+                                <div class="step-time">08:25 AM</div>
+                            </div>
+                            
+                            <!-- Step 6: Accepted -->
+                            <div class="timeline-step">
+                                <div class="step-dot" id="stepDot6"></div>
+                                <div class="step-connector" id="stepConnector6"></div>
+                                <div class="step-time">08:43 AM</div>
+                                <div class="step-duration">17m</div>
+                            </div>
+                            
+                            <!-- Step 7: Dispatch Ready -->
+                            <div class="timeline-step">
+                                <div class="step-dot" id="stepDot7"></div>
+                                <div class="step-connector" id="stepConnector7"></div>
+                                <div class="step-time">09:02 AM</div>
+                                <div class="step-duration">20m</div>
+                            </div>
+                            
+                            <!-- Step 8: Dispatched -->
+                            <div class="timeline-step">
+                                <div class="step-dot" id="stepDot8"></div>
+                                <div class="step-connector" id="stepConnector8"></div>
+                                <div class="step-time">09:02 AM</div>
+                                <div class="step-duration">20m</div>
+                            </div>
+                            
+                            <!-- Step 9: Delivered -->
+                            <div class="timeline-step">
+                                <div class="step-dot" id="stepDot9"></div>
+                                <div class="step-connector" id="stepConnector9"></div>
+                                <div class="step-time">09:19 AM</div>
+                                <div class="step-duration">25m</div>
+                                <!-- ETA Breach Tag -->
+                                <div class="eta-breach-tag" id="etaBreachTag">
+                                    <i class="bi bi-check-circle"></i>
+                                    <span id="etaBreachText">Was Delivered 60 Minutes Before ETA</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Main Details Block -->
+                <div class="order_main_details_block">
+                    <div class="main_details_inner_block">
+                        <!-- Customer Details -->
+                        <div class="customer_details_block">
+                            <div class="customer_details_header_block">
+                                <span id="customer_details_header">
+                                    <i class="bi bi-person-circle"></i>
+                                    Customer Details #39293481
+                                </span>
+                                <a id="user_das_link" href="#" target="_blank" class="link-button">
+                                <i class="bi bi-link-45deg"></i>
+                                  Cx-Das
+                                </a>
+                                
+                            </div>
+                            <div class="customer_content_grid">
+                                <div class="customer_row">
+                                    <div class="customer_label">Name:</div>
+                                    <div class="customer_value">Amarjeet Singh</div>
+                                </div>
+                                <div class="customer_row">
+                                    <div class="customer_label">Mobile:</div>
+                                    <div class="customer_value">
+                                        <a id="mobile_text_link" href="tel:+919810223744" class="phone-link" onclick="showPhoneModal('Customer Phone', '+919810223744')">
+                                            <i class="bi bi-telephone"></i>
+                                            +919810223744
+                                         <i class="bi bi-clipboard copy-icon-small" onClick="copyToClipboard('+919810223744')"></i>
+                                        </a>
+                                    </div>
+                                </div>
+                                <div class="customer_row">
+                                    <div class="customer_label">Email:</div>
+                                    <div class="customer_value">Lalsonsfurnishers@gmail.com</div>
+                                </div>
+                                <div class="customer_row">
+                                    <div class="customer_label">Address:</div>
+                                    <div class="customer_value">
+                                        G 67 4th floor, South city 1 sector 41, Sector 41 Sector 41, Gurugram - 122007
+                                         <i class="bi bi-clipboard copy-icon-small" onClick="copyToClipboard('G 67 4th floor, South city 1 sector 41, Sector 41 Sector 41, Gurugram - 122007')"></i>
+                                        <br>
+                                        <span style="font-size: 12px; color: var(--text-light); margin-top: 4px; display: block;">
+                                            <b>Lat/Lon: 28.456007, 77.064804</b>
+                                        </span>
+                                    </div>
+                                </div>
+                                <div class="customer_row">
+                                    <div class="customer_label"></div>
+                                    <div class="customer_value">
+                                        <a id="map_link" href="#" target="_blank" class="link-button">
+                                            <i class="bi bi-geo-alt"></i>
+                                            View on Map
+                                        </a>
+                                    </div>
+                                </div>
+                                <div class="customer_row">
+                                    <div class="customer_label">Cx Notifications:</div>
+                                    <div class="customer_value">
+                                        <a id="notification_link" href="#" target="_blank" class="link-button">
+                                            <i class="bi bi-link-45deg"></i>
+                                            link
+                                        </a>
+                                    </div>
+                                </div>
+                                <div class="customer_row">
+                                    <div class="customer_label">Wallet Link:</div>
+                                    <div class="customer_value">
+                                        <a id="cx_wallet_link" href="#" target="_blank" class="link-button">
+                                            <i class="bi bi-link-45deg"></i>
+                                            link
+                                        </a>
+                                    </div>
+                                </div>
+                                <div class="customer_row">
+                                    <div class="customer_label">User Type:</div>
+                                    <div class="customer_value">
+                                        <span class="user-type-badge">VERY_GOOD</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Merchant Details -->
+                        <div class="merchant_details_block">
+                            <div class="merchant_detail_header_block">
+                                <div class="merchant_details_heading">
+                                    <i class="bi bi-shop-window"></i>
+                                    <span>Merchant details</span>
+                                </div>
+                            </div>
+                            <div class="merchant_content_grid">
+                                <div class="merchant_row">
+                                    <div class="merchant_label">Parent Merchant Id:</div>
+                                    <div class="merchant_value">
+                                        2186704
+                                        <i class="bi bi-clipboard copy-icon-small" onClick="copyToClipboard('2186704')"></i>
+                                    </div>
+                                </div>
+                                <div class="merchant_row">
+                                    <div class="merchant_label">Parent Name:</div>
+                                    <div class="merchant_value">Om Sweets and Snacks</div>
+
+                                </div>
+                                <div class="merchant_row">
+                                    <div class="merchant_label">Merchant Id:</div>
+                                    <div class="merchant_value">
+                                        75229
+                                        <i class="bi bi-clipboard copy-icon-small" onClick="copyToClipboard('75229')"></i>
+                                    </div>
+                                </div>
+                                <div class="merchant_row">
+                                    <div class="merchant_label">Merchant UserId:</div>
+                                    <div class="merchant_value">
+                                        280944
+                                        <i class="bi bi-clipboard copy-icon-small" onClick="copyToClipboard('280944')"></i>
+                                    </div>
+                                </div>
+                                <div class="merchant_row">
+                                    <div class="merchant_label">Name:</div>
+                                    <div class="merchant_value">
+                                        Om Sweets & Snacks
+                                        <a id="merchant_web_link" href="#" target="_blank" class="link-button">
+                                            <i class="bi bi-link-45deg"></i>
+                                            Web link
+                                        </a>
+                                    </div>
+                                </div>
+                                <div class="merchant_row">
+                                    <div class="merchant_label">Mx Notifications:</div>
+                                    <div class="merchant_value">
+                                        <a id="notification_link" href="#" target="_blank" class="link-button">
+                                            <i class="bi bi-link-45deg"></i>
+                                            link
+                                        </a>
+                                    </div>
+                                </div>
+                                <div class="merchant_row">
+                                    <div class="merchant_label">Mobile:</div>
+                                    <div class="merchant_value">
+                                        +918527497520 (Other contacts)
+                                        <button class="more-button" onClick="showMerchantContacts()">
+                                            <i class="bi bi-three-dots"></i>
+                                            More
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="merchant_row">
+                                    <div class="merchant_label">Timings:</div>
+                                    <div class="merchant_value">
+                                        <button class="timing-button" onClick="showMerchantTimings()">
+                                            <span class="open-badge">Open</span>
+                                            - 08:00:00 To 23:00:00
+                                            <i class="bi bi-chevron-right"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Payment Details -->
+                        <div class="payment_details_block">
+                            <div class="payment_detail_header_block">
+                                <div class="payment_details_heading">
+                                    <i class="bi bi-credit-card"></i>
+                                    <span>Payment details</span>
+                                </div>
+                            </div>
+                            <div class="payment_content_grid">
+                                <div class="payment_row">
+                                    <div class="payment_label">Total Amount:</div>
+                                    <div class="payment_value">
+                                        ₹2646.77
+                                        <span class="amount-breakdown">
+                                            (<span class="cashin">Cashin ₹2526.44</span>
+                                            <span> <b>+ MitraCash ₹33</b></span>
+                                            <span> <b>+ 123.91 </b><i class="bi bi-star-fill" style="color: var(--warning-color);"></i></span>)
+                                        </span>
+                                    </div>
+                                </div>
+                                <div class="payment_row">
+                                    <div class="payment_label">Total CTM:</div>
+                                    <div class="payment_value">₹2500.68</div>
+                                </div>
+                                <div class="payment_row">
+                                    <div class="payment_label">Total Cashback Earned:</div>
+                                    <div class="payment_value">25</div>
+                                </div>
+                                <div class="payment_row">
+                                    <div class="payment_label">Delivery Fee:</div>
+                                    <div class="payment-value">0</div>
+                                </div>
+                                <div class="payment_row">
+                                    <div class="payment_label">Source:</div>
+                                    <div class="payment_value">UPI</div>
+                                </div>
+                                <div class="payment_row">
+                                    <div class="payment_label">PaymentMode:</div>
+                                    <div class="payment_value payment-mode-badge">ONLINE</div>
+                                </div>
+                            </div>
+                            <p class="payment_more_details" onClick="showPaymentDetails()">
+                                <i class="bi bi-chevron-right"></i>
+                                More Details
+                            </p>
+                        </div>
+
+                        <!-- Rider Details -->
+                        <div class="rider_max_details_block">
+                            <div class="rider_detail_header_block">
+                                <div class="rider_details_header_text">
+                                    <i class="bi bi-bicycle"></i>
+                                    <span>Rider details</span>
+                                </div>
+                                <!-- View Rider's Log Button -->
+                                <button class="view-rider-log" onClick="viewRiderLog()">
+                                    <i class="bi bi-eye"></i>
+                                    View Rider's Log
+                                </button>
+                            </div>
+                            <div class="rider_details_content">
+                                <div class="rider_info_section">
+                                    <div class="rider_info_grid">
+                                        <div class="rider_row">
+                                            <div class="rider_label">Rider provider:</div>
+                                            <div class="rider_value">Shiprocket_direct</div>
+                                        </div>
+                                        <div class="rider_row">
+                                            <div class="rider_label">Rider name:</div>
+                                            <div class="rider_value">Ram Yadav</div>
+                                        </div>
+                                        <div class="rider_row">
+                                            <div class="rider_label">Mobile number:</div>
+                                            <div class="rider_value">
+                                                <a id="mobile_text_link" href="tel:+917761970466" class="phone-link" onclick="showPhoneModal('Rider Phone', '+917761970466')">
+                                                    <i class="bi bi-telephone"></i>
+                                                    +917761970466
+                                                    <i class="bi bi-clipboard copy-icon-small" onClick="copyToClipboard('+917761970466')"></i>
+                                                </a>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="rider_info_grid">
+                                        <div class="rider_row">
+                                            <div class="rider_label">Tracking Order Id:</div>
+                                            <div class="rider_value">1086718138                                          <i class="bi bi-clipboard copy-icon-small" onClick="copyToClipboard('1086718138')"></i>
+</div>
+                                        </div>
+                                        <div class="rider_row">
+                                            <div class="rider_label">Tracking URL:</div>
+                                            <div class="rider_value">
+                                                https://shiprocket.co/tracking/694dc2da2952783cc6cb2e28
+                                                <a href="#" target="_blank" class="link-button">
+                                                    <i class="bi bi-box-arrow-up-right"></i>
+                                                    View
+                                                </a>
+                                            </div>
+                                        </div>
+                                        <div class="rider_row">
+                                            <div class="rider_label">OTP:</div>
+                                            <div class="rider_value otp-display">7221</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="rider_timeline_section">
+                                    <div class="rider_timeline_header">
+                                        <i class="bi bi-clock-history"></i>
+                                        Rider timeline
+                                    </div>
+                                    <div class="timeline_grid">
+                                        <div class="timeline_header_row">
+                                            <div class="timeline_cell">Assigned</div>
+                                            <div class="timeline_cell">Reached Merchant</div>
+                                            <div class="timeline_cell">Picked Up</div>
+                                            <div class="timeline_cell">Delivered</div>
+                                        </div>
+                                    </div>
+                                    <!-- Rider parallel line timeline -->
+                                    <div class="rider-parallel-timeline">
+                                        <div class="rider-timeline-line"></div>
+                                        
+                                        <div class="rider-timeline-steps">
+                                            <!-- Step 1: Assigned -->
+                                            <div class="rider-timeline-step">
+                                                <div class="rider-step-dot"></div>
+                                                <div class="rider-step-connector"></div>
+                                                <div class="rider-step-time">08:45 AM</div>
+                                                <div class="rider-step-distance">Mx-1.39km</div>
+                                                <div class="rider-step-distance">Cx-3.57km</div>
+                                            </div>
+                                            
+                                            <!-- Step 2: Reached Merchant -->
+                                            <div class="rider-timeline-step">
+                                                <div class="rider-step-dot"></div>
+                                                <div class="rider-step-connector"></div>
+                                                <div class="rider-step-time">08:51 AM</div>
+                                                <div class="rider-step-distance">Mx-0.05km</div>
+                                                <div class="rider-step-distance">Cx-2.22km</div>
+                                            </div>
+                                            
+                                            <!-- Step 3: Picked Up -->
+                                            <div class="rider-timeline-step">
+                                                <div class="rider-step-dot"></div>
+                                                <div class="rider-step-connector"></div>
+                                                <div class="rider-step-time">09:02 AM</div>
+                                                <div class="rider-step-distance">Mx-0.04km</div>
+                                                <div class="rider-step-distance">Cx-2.23km</div>
+                                            </div>
+                                            
+                                            <!-- Step 4: Delivered -->
+                                            <div class="rider-timeline-step">
+                                                <div class="rider-step-dot"></div>
+                                                <div class="rider-step-connector"></div>
+                                                <div class="rider-step-time">09:19 AM</div>
+                                                <div class="rider-step-distance">Mx-2.38km</div>
+                                                <div class="rider-step-distance">Cx-0.22km</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="rider_cancel_section">
+                                    <div class="cancel_header">
+                                        <i class="bi bi-slash-circle"></i>
+                                        Rider Cancelation
+                                    </div>
+                                    <div class="cancel_controls">
+                                        <div class="cancel_row">
+                                            <select id="rider_attribute_option" class="cancel-select" onchange="updateRejectionOptions('rider')">
+                                                <option value="">Select Attribute</option>
+                                                <option value="CUSTOMER">CUSTOMER</option>
+                                                <option value="RIDER">RIDER</option>
+                                                <option value="MERCHANT">MERCHANT</option>
+                                                <option value="OTHER">OTHER</option>
+                                            </select>
+                                        </div>
+                                        <div class="cancel_row">
+                                            <select id="rider_rejection_option" class="cancel-select">
+                                                <option value="">Select Rejection Option</option>
+                                            </select>
+                                        </div>
+                                        <div class="cancel_row">
+                                            <select id="rider_cancelation_option" class="cancel-select">
+                                                <option value="">Select Option</option>
+                                                <option value="CANCEL">Cancel</option>
+                                                <option value="CANCEL_ASSIGN">Cancel & Assign</option>
+                                            </select>
+                                        </div>
+                                        <div class="cancel_row">
+                                            <button onclick="cancelRider()" id="cancel_rider" class="cancel-button">
+                                                <i class="bi bi-x-circle"></i>
+                                                Cancel
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Container -->
+        <div class="right-container">
+            <div class="right_container_main">
+                <!-- Order Details -->
+                <div class="order_details_block">
+                    <div class="order_detail_header_block">
+                        <div class="header_content">
+                            <i class="bi bi-info-circle"></i>
+                            Order details
+                        </div>
+                    </div>
+                    <div class="order_detail_internal_block">
+                        <ul class="order_details_list">
+                            <li>
+                                Items:
+                                <span id="order_details_text">(2)</span>
+                                <span id="items_view_more" onclick="openItemRefundModal()" style="cursor:pointer;">
+                                    <i class="bi bi-eye"></i>
+                                    View Items
+                                </span>
+                            </li>
+
+                            <li>Assignment before Acceptance:
+                                <span id="order_details_text" class="badge badge-error">False</span>
+                            </li>
+
+                            <li>Distance:
+                                <span id="order_details_text">2.24 KM</span>
+                            </li>
+
+                            <li>Delivery Type:
+                                <span id="order_details_text" class="badge badge-primary">DELIVERY</span>
+                            </li>
+
+                            <li>Delivery Initiator:
+                                <span id="order_details_text">GatiMitra</span>
+                            </li>
+
+                            <li>Locality Type:
+                                <span id="order_details_text" class="badge badge-success">GREEN</span>
+                            </li>
+
+                            <li>Delivered By:
+                                <span id="order_details_text" class="badge badge-info">DELIVERY_PROVIDER</span>
+                            </li>
+
+                            <li>System KPT:
+                                <span id="order_details_text">18 mins</span>
+                            </li>
+
+                            <li>Contactless Delivery:
+                                <span id="order_details_text" class="badge badge-success">True</span>
+                            </li>
+
+                            <li>
+                                Client Order ID:
+                                <span id="client_order_text">
+                                    <i class="bi bi-clipboard copy-icon-small"
+                                       onclick="copyToClipboard('294562645')"></i>
+                                    294562645
+                                </span>
+                            </li>
+
+                            <li>First ETA:
+                                <span id="order_details_text">19-12-2025 09:25:38 AM</span>
+                            </li>
+
+                            <li>
+                                CX Instructions:
+                                <span id="cx_instructions_view" onclick="showCxInstructions()" style="cursor:pointer;">
+                                    <i class="bi bi-chat-left-text"></i>
+                                    View
+                                </span>
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Create Refund -->
+                <div class="create_refund_block">
+                    <button class="create_refund_button" onClick="openItemRefundModal()">
+                        <i class="bi bi-arrow-counterclockwise"></i>
+                        Create refund
+                    </button>
+                </div>
+
+                <!-- Add Remarks -->
+                <div class="remarks_block">
+                    <div class="remark_header_block">
+                        <span class="add_remark">
+                            <i class="bi bi-chat-left-dots"></i>
+                            Add remarks
+                        </span>
+                        <button class="show_remark" onClick="showRemarksModal()">
+                            <i class="bi bi-list-check"></i>
+                            See all (2)
+                        </button>
+                    </div>
+                    <div class="remark_internal_block">
+                        <div class="add_remark_block">
+                            <div id="remark_action">
+                                <select id="remark_option" class="cancel-select" onchange="updateRemarkOptions()">
+                                    <option value="CUSTOMER">CUSTOMER</option>
+                                    <option value="MERCHANT">MERCHANT</option>
+                                    <option value="RIDER">RIDER</option>
+                                    <option value="MERCHANT_CHAT">MERCHANT_CHAT</option>
+                                </select>
+                                <select id="customer_remarks_option" class="cancel-select">
+                                    <option value="">Select Option</option>
+                                    <option value="Customer confirmed the delivery.">Customer confirmed the delivery.</option>
+                                    <option value="Cx still not received the order.">Cx still not received the order.</option>
+                                    <option value="Not able to connect.">Not able to connect.</option>
+                                </select>
+                                <textarea id="remark_box" name="remark_box" autocomplete="off" placeholder="Add your comment here..."></textarea>
+                                <button class="remark_submit" onclick="addRemark()">
+                                    <i class="bi bi-send"></i>
+                                    Submit
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Rider Recon -->
+                <div class="rider_recon_block">
+                    <div class="rider_recon_header_block">
+                        <span class="add_recon_text">
+                            <i class="bi bi-clipboard-check"></i>
+                            Rider Recon
+                        </span>
+                    </div>
+                    <div class="recon_internal_block">
+                        <div class="add_recon_block">
+                            <div id="recon_action">
+                                <select id="recon_rider_option" class="cancel-select">
+                                    <option value="">Select Rider Option</option>
+                                    <option value="1086718138">SHIPROCKET_DIRECT (Ram Yadav [7761970466])</option>
+                                </select>
+                                <select id="recon_rejection_option" class="cancel-select">
+                                    <option value="">Select Rejection Option</option>
+                                    <option value="1">Customer denying order</option>
+                                    <option value="2">LP Assignment Timeout</option>
+                                    <option value="3">Merchant non-responsive</option>
+                                </select>
+                                <textarea id="recon_box" name="recon_box" autocomplete="off" placeholder="Add your recon comment here..."></textarea>
+                                <button class="recon_submit" onclick="addRecon()">
+                                    <i class="bi bi-check-circle"></i>
+                                    Submit Recon
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= ITEMS / REFUND MODAL ================= -->
+    <div class="gm-modal-overlay" id="itemsRefundModal" onclick="outsideClickClose(event, 'itemsRefundModal')">
+        <div class="gm-modal" onclick="event.stopPropagation()">
+            <!-- Header -->
+            <div class="gm-modal-header">
+                <h3><i class="bi bi-box-seam"></i> Items details</h3>
+                <span class="gm-close" onclick="closeItemRefundModal()">×</span>
+            </div>
+
+            <!-- Body -->
+            <div class="gm-modal-body">
+                <!-- Items Table -->
+                <table class="gm-table">
+                    <thead>
+                    <tr>
+                        <th>Id</th>
+                        <th>Status</th>
+                        <th>Name</th>
+                        <th>Customisation</th>
+                        <th>Quantity</th>
+                        <th>Amount</th>
+                        <th>Tax</th>
+                        <th>Charges</th>
+                        <th>Total Price</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <tr>
+                        <td class="gm-id">71150283</td>
+                        <td>AVAILABLE</td>
+                        <td>Schezwan Chicken Rice Bowl</td>
+                        <td>-</td>
+                        <td>1</td>
+                        <td>299</td>
+                        <td>14.95</td>
+                        <td>15.75</td>
+                        <td>329.7</td>
+                    </tr>
+                    <tr>
+                        <td class="gm-id">71150296</td>
+                        <td>AVAILABLE</td>
+                        <td>Singapore Chilli Chicken</td>
+                        <td>-</td>
+                        <td>1</td>
+                        <td>249</td>
+                        <td>12.45</td>
+                        <td>10.5</td>
+                        <td>271.95</td>
+                    </tr>
+                    </tbody>
+                </table>
+
+                <!-- Summary -->
+                <div class="gm-summary">
+                    <div><span>Items Amount Total</span><span>548</span></div>
+                    <div><span>Restaurant Packaging Charges</span><span>25</span></div>
+                    <div><span>Packaging Charges Tax</span><span>1.25</span></div>
+                    <div><span>GST on item total</span><span>27.4</span></div>
+                    <div class="gm-total">
+                        <span>Total Order Amount</span><span>601.65</span>
+                    </div>
+                </div>
+
+                <!-- Create Refund -->
+                <h4 class="gm-section-title"><i class="bi bi-arrow-counterclockwise"></i> Create refund</h4>
+
+                <div class="gm-form-row">
+                    <label>Select refund reason</label>
+                    <select>
+                        <option>Select Attribute</option>
+                    </select>
+                    <select>
+                        <option>Select Rejection Option</option>
+                    </select>
+                </div>
+
+                <div class="gm-radio-group">
+                    <label>
+                        <input type="radio" name="refund" checked>
+                        Cancel order without Customer Refund
+                    </label>
+                    <label>
+                        <input type="radio" name="refund">
+                        Customer Refund with Cancellation
+                    </label>
+                    <label>
+                        <input type="radio" name="refund">
+                        Customer Refund without cancellation
+                    </label>
+                </div>
+
+                <button class="gm-submit-btn">
+                    <i class="bi bi-check-circle"></i>
+                    Submit
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Phone Modal -->
+    <div class="gm-modal-overlay" id="phoneModal" onclick="outsideClickClose(event, 'phoneModal')">
+        <div class="phone-modal" onclick="event.stopPropagation()">
+            <div class="phone-modal-header">
+                <h3><i class="bi bi-telephone"></i> <span id="phoneModalTitle"></span></h3>
+                <span class="gm-close" onclick="closePhoneModal()">×</span>
+            </div>
+            <div class="phone-modal-body">
+                <ul class="phone-number-list" id="phoneNumberList">
+                    <!-- Phone numbers will be dynamically added here -->
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- Merchant Contacts Modal -->
+    <div class="gm-modal-overlay" id="merchantContactsModal" onclick="outsideClickClose(event, 'merchantContactsModal')">
+        <div class="merchant-contacts-modal" onclick="event.stopPropagation()">
+            <div class="phone-modal-header">
+                <h3><i class="bi bi-shop"></i> Merchant Contact Numbers</h3>
+                <span class="gm-close" onclick="closeMerchantContactsModal()">×</span>
+            </div>
+            <div class="merchant-contacts-body">
+                <div class="merchant-contact-row">
+                    <div class="merchant-contact-label">Store Person:</div>
+                    <div class="merchant-contact-number">+918822497520</div>
+                    <div class="merchant-contact-actions">
+                        <button class="phone-action-btn call" onclick="callNumber('+918822497520')">
+                            <i class="bi bi-telephone-outbound"></i>
+                            Call
+                        </button>
+                        <button class="phone-action-btn copy" onclick="copyToClipboard('+918822497520')">
+                            <i class="bi bi-clipboard"></i>
+                            Copy
+                        </button>
+                    </div>
+                </div>
+                <div class="merchant-contact-row">
+                    <div class="merchant-contact-label">Store Manager:</div>
+                    <div class="merchant-contact-number">+919735053220</div>
+                    <div class="merchant-contact-actions">
+                        <button class="phone-action-btn call" onclick="callNumber('+919735053220')">
+                            <i class="bi bi-telephone-outbound"></i>
+                            Call
+                        </button>
+                        <button class="phone-action-btn copy" onclick="copyToClipboard('+919735053220')">
+                            <i class="bi bi-clipboard"></i>
+                            Copy
+                        </button>
+                    </div>
+                </div>
+                <div class="merchant-contact-row">
+                    <div class="merchant-contact-label">Store Owner:</div>
+                    <div class="merchant-contact-number">+919373865361</div>
+                    <div class="merchant-contact-actions">
+                        <button class="phone-action-btn call" onclick="callNumber('+919373865361')">
+                            <i class="bi bi-telephone-outbound"></i>
+                            Call
+                        </button>
+                        <button class="phone-action-btn copy" onclick="copyToClipboard('+919373865361')">
+                            <i class="bi bi-clipboard"></i>
+                            Copy
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Remarks Modal -->
+    <div class="gm-modal-overlay" id="remarksModal" onclick="outsideClickClose(event, 'remarksModal')">
+        <div class="remarks-modal" onclick="event.stopPropagation()">
+            <div class="remarks-modal-header">
+                <h3><i class="bi bi-chat-left-text"></i> All Remarks</h3>
+                <span class="gm-close" onclick="closeRemarksModal()">×</span>
+            </div>
+            <div class="remarks-modal-body">
+                <ul class="remarks-list">
+                    <li class="remark-item">
+                        <div class="remark-header">
+                            <div class="remark-user">
+                                <i class="bi bi-person-circle"></i>
+                                Agent
+                                <span class="remark-user-type">Agent</span>
+                            </div>
+                            <div class="remark-time">19-12-25 06:11 PM</div>
+                        </div>
+                        <div class="remark-content">
+                            Rider is waiting at the store for the parcel. Mx is preparing the order. !!!!! +919373865361
+                        </div>
+                        <div>
+                            <span class="remark-type">RIDER</span>
+                        </div>
+                    </li>
+                    <li class="remark-item">
+                        <div class="remark-header">
+                            <div class="remark-user">
+                                <i class="bi bi-person-circle"></i>
+                                Customer Service
+                                <span class="remark-user-type">Customer</span>
+                            </div>
+                            <div class="remark-time">19-12-25 06:09 PM</div>
+                        </div>
+                        <div class="remark-content">
+                            Name: Pranjal Gupta Mobile: +919096584185 inform Cx about the order status
+                        </div>
+                        <div>
+                            <span class="remark-type">CUSTOMER</span>
+                        </div>
+                    </li>
+                    <li class="remark-item">
+                        <div class="remark-header">
+                            <div class="remark-user">
+                                <i class="bi bi-shop"></i>
+                                Merchant Support
+                                <span class="remark-user-type">Merchant</span>
+                            </div>
+                            <div class="remark-time">19-12-25 06:06 PM</div>
+                        </div>
+                        <div class="remark-content">
+                            7350532200 getting busy - order preparation delayed by 15 minutes.
+                        </div>
+                        <div>
+                            <span class="remark-type">MERCHANT</span>
+                        </div>
+                    </li>
+                    <li class="remark-item">
+                        <div class="remark-header">
+                            <div class="remark-user">
+                                <i class="bi bi-person-circle"></i>
+                                System
+                                <span class="remark-user-type">System</span>
+                            </div>
+                            <div class="remark-time">19-12-25 05:45 PM</div>
+                        </div>
+                        <div class="remark-content">
+                            Order assigned to rider Ram Yadav. Expected delivery time: 09:25 AM
+                        </div>
+                        <div>
+                            <span class="remark-type">SYSTEM</span>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // JavaScript for GatiMitra Dashboard
+        
+        // Timeline stage times (in actual sequence)
+        const timelineStages = [
+            { stage: 'Created', time: new Date('2025-12-19T08:12:00') },
+            { stage: 'Bill Ready', time: new Date('2025-12-19T08:12:00') },
+            { stage: 'Paymentinitiated At', time: new Date('2025-12-19T08:25:00') },
+            { stage: 'Payment Done', time: new Date('2025-12-19T08:25:00') },
+            { stage: 'Pymt Assign RX', time: new Date('2025-12-19T08:25:00') },
+            { stage: 'Accepted', time: new Date('2025-12-19T08:43:00') },
+            { stage: 'Dispatch Ready', time: new Date('2025-12-19T09:02:00') },
+            { stage: 'Dispatched', time: new Date('2025-12-19T09:32:00') },
+            { stage: 'Delivered', time: new Date('2025-12-19T09:40:00') }
+        ];
+        
+        // ETA from order details
+        const ETA_TIME = new Date('2025-12-19T09:25:38'); // First ETA: 09:25:38 AM
+
+        // Utility Functions
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                showToast('Copied to clipboard: ' + text);
+            }).catch(err => {
+                console.error('Failed to copy: ', err);
+                showToast('Failed to copy text');
+            });
+        }
+
+        function showToast(message) {
+            // Create toast element
+            const toast = document.createElement('div');
+            toast.className = 'toast-message';
+            toast.textContent = message;
+            toast.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: var(--primary-color);
+                color: white;
+                padding: 12px 20px;
+                border-radius: var(--radius-sm);
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                z-index: 10000;
+                animation: slideIn 0.3s ease;
+                font-size: 14px;
+                font-weight: 500;
+            `;
+            
+            document.body.appendChild(toast);
+            
+            // Remove toast after 3 seconds
+            setTimeout(() => {
+                toast.style.animation = 'slideOut 0.3s ease';
+                setTimeout(() => {
+                    document.body.removeChild(toast);
+                }, 300);
+            }, 3000);
+        }
+
+        function refreshPage() {
+            const refreshIcon = document.querySelector('.order_refresh_icon');
+            refreshIcon.style.transform = 'rotate(180deg)';
+            
+            setTimeout(() => {
+                showToast('Refreshing order data...');
+                refreshIcon.style.transform = 'rotate(0deg)';
+            }, 300);
+        }
+
+        // Status Update Dropdown
+        function toggleStatusUpdate(event) {
+            event.stopPropagation();
+            const dropdown = document.getElementById('statusDropdown');
+            dropdown.classList.toggle('active');
+        }
+
+        function updateStatus(status) {
+            const statusCurrent = document.querySelector('.status-current');
+            const statusValue = document.querySelector('.status-value');
+            const dropdown = document.getElementById('statusDropdown');
+            
+            // Update displayed status
+            statusCurrent.textContent = status;
+            statusValue.textContent = status;
+            
+            // Update dropdown selection
+            document.querySelectorAll('.status-dropdown-item').forEach(item => {
+                item.classList.remove('selected');
+                if (item.textContent === status) {
+                    item.classList.add('selected');
+                }
+            });
+            
+            // Show toast only for Delivered or Cancelled status
+            if (status === 'Delivered' || status === 'Cancelled') {
+                showToast(`Order status updated to ${status}`);
+            }
+            
+            dropdown.classList.remove('active');
+        }
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', function(event) {
+            const dropdown = document.getElementById('statusDropdown');
+            if (!dropdown.contains(event.target)) {
+                dropdown.classList.remove('active');
+            }
+        });
+
+        // ETA Breach Logic
+        function applyETABreachLogic() {
+            const timelineSteps = document.querySelectorAll('.timeline-step');
+            const timelineLine = document.getElementById('timelineLine');
+            const etaBreachTag = document.getElementById('etaBreachTag');
+            const etaBreachText = document.getElementById('etaBreachText');
+            
+            // Find the stage where ETA was breached
+            let breachedStageIndex = -1;
+            for (let i = 0; i < timelineStages.length; i++) {
+                if (timelineStages[i].time > ETA_TIME) {
+                    breachedStageIndex = i;
+                    break;
+                }
+            }
+            
+            if (breachedStageIndex !== -1) {
+                // ETA was breached at this stage
+                const breachPercentage = (breachedStageIndex / timelineStages.length) * 100;
+                
+                // Update timeline line with gradient
+                timelineLine.style.setProperty('--breach-percentage', `${breachPercentage}%`);
+                timelineLine.classList.add('breached');
+                
+                // Update dots and connectors starting from breached stage
+                for (let i = 0; i < timelineSteps.length; i++) {
+                    const stepDot = document.getElementById(`stepDot${i + 1}`);
+                    const stepConnector = document.getElementById(`stepConnector${i + 1}`);
+                    
+                    if (i >= breachedStageIndex) {
+                        // These stages are after breach - show in red
+                        if (stepDot) stepDot.classList.add('breached');
+                        if (stepConnector) stepConnector.classList.add('breached');
+                    } else {
+                        // These stages are before breach - ensure green
+                        if (stepDot) stepDot.classList.remove('breached');
+                        if (stepConnector) stepConnector.classList.remove('breached');
+                    }
+                }
+                
+                // Update ETA breach tag
+                const breachedStage = timelineStages[breachedStageIndex];
+                const breachMinutes = Math.round((breachedStage.time - ETA_TIME) / (1000 * 60));
+                etaBreachText.textContent = `ETA breached at ${breachedStage.stage} (${breachMinutes} min late)`;
+                etaBreachTag.classList.add('breached');
+                
+            } else {
+                // No breach - all green
+                timelineLine.classList.remove('breached');
+                etaBreachText.textContent = 'Delivered before ETA';
+                etaBreachTag.classList.remove('breached');
+                
+                // Ensure all dots are green
+                for (let i = 0; i < timelineSteps.length; i++) {
+                    const stepDot = document.getElementById(`stepDot${i + 1}`);
+                    const stepConnector = document.getElementById(`stepConnector${i + 1}`);
+                    
+                    if (stepDot) stepDot.classList.remove('breached');
+                    if (stepConnector) stepConnector.classList.remove('breached');
+                }
+            }
+        }
+
+        // Modal Functions
+        function openItemRefundModal() {
+            document.getElementById('itemsRefundModal').style.display = 'flex';
+        }
+
+        function closeItemRefundModal() {
+            document.getElementById('itemsRefundModal').style.display = 'none';
+        }
+
+        function showPhoneModal(title, phoneNumber) {
+            const modal = document.getElementById('phoneModal');
+            const titleElement = document.getElementById('phoneModalTitle');
+            const listElement = document.getElementById('phoneNumberList');
+            
+            // Set title
+            titleElement.textContent = title;
+            
+            // Clear previous list
+            listElement.innerHTML = '';
+            
+            // Create phone number item
+            const li = document.createElement('li');
+            li.className = 'phone-number-item';
+            
+            li.innerHTML = `
+                <div class="phone-number">
+                    <i class="bi bi-telephone-fill"></i>
+                    ${phoneNumber}
+                </div>
+                <div class="phone-actions">
+                    <button class="phone-action-btn call" onclick="callNumber('${phoneNumber}')">
+                        <i class="bi bi-telephone-outbound"></i>
+                        Call
+                    </button>
+                    <button class="phone-action-btn copy" onclick="copyToClipboard('${phoneNumber}'); closePhoneModal()">
+                        <i class="bi bi-clipboard"></i>
+                        Copy
+                    </button>
+                </div>
+            `;
+            
+            listElement.appendChild(li);
+            
+            // Show modal
+            modal.style.display = 'flex';
+        }
+
+        function closePhoneModal() {
+            document.getElementById('phoneModal').style.display = 'none';
+        }
+
+        function showMerchantContacts() {
+            document.getElementById('merchantContactsModal').style.display = 'flex';
+        }
+
+        function closeMerchantContactsModal() {
+            document.getElementById('merchantContactsModal').style.display = 'none';
+        }
+
+        function showRemarksModal() {
+            document.getElementById('remarksModal').style.display = 'flex';
+        }
+
+        function closeRemarksModal() {
+            document.getElementById('remarksModal').style.display = 'none';
+        }
+
+        // Modal close on outside click
+        function outsideClickClose(event, modalId) {
+            const modal = document.getElementById(modalId);
+            if (event.target === modal) {
+                if (modalId === 'itemsRefundModal') {
+                    closeItemRefundModal();
+                } else if (modalId === 'phoneModal') {
+                    closePhoneModal();
+                } else if (modalId === 'merchantContactsModal') {
+                    closeMerchantContactsModal();
+                } else if (modalId === 'remarksModal') {
+                    closeRemarksModal();
+                }
+            }
+        }
+
+        // New function for View Rider's Log
+        function viewRiderLog() {
+            showToast('Opening rider log for Ram Yadav...');
+        }
+
+        function callNumber(phoneNumber) {
+            showToast(`Calling ${phoneNumber}...`);
+            window.location.href = `tel:${phoneNumber}`;
+        }
+
+        // Business Logic Functions
+        function cancelRider() {
+            const attribute = document.getElementById('rider_attribute_option').value;
+            const rejection = document.getElementById('rider_rejection_option').value;
+            const cancelOption = document.getElementById('rider_cancelation_option').value;
+            
+            if (!attribute || !rejection || !cancelOption) {
+                showToast('Please select all options');
+                return;
+            }
+            
+            if (confirm(`Cancel rider with:\nAttribute: ${attribute}\nReason: ${rejection}\nOption: ${cancelOption}`)) {
+                showToast('Rider cancellation initiated...');
+            }
+        }
+
+        function addRemark() {
+            const remarkType = document.getElementById('remark_option').value;
+            const remarkText = document.getElementById('remark_box').value;
+            
+            if (!remarkText) {
+                showToast('Please enter a remark');
+                return;
+            }
+            
+            showToast(`Adding ${remarkType} remark: ${remarkText}`);
+            document.getElementById('remark_box').value = '';
+        }
+
+        function addRecon() {
+            const riderOption = document.getElementById('recon_rider_option').value;
+            const rejectionOption = document.getElementById('recon_rejection_option').value;
+            const reconText = document.getElementById('recon_box').value;
+            
+            if (!riderOption || !rejectionOption || !reconText) {
+                showToast('Please fill all fields');
+                return;
+            }
+            
+            showToast(`Adding recon for rider: ${riderOption}\nReason: ${rejectionOption}\nComment: ${reconText}`);
+            document.getElementById('recon_box').value = '';
+        }
+
+        // Update dropdown options
+        function updateRemarkOptions() {
+            const remarkType = document.getElementById('remark_option').value;
+            const customerOptions = document.getElementById('customer_remarks_option');
+            customerOptions.style.display = remarkType === 'CUSTOMER' ? 'block' : 'none';
+        }
+
+        function updateRejectionOptions(type) {
+            const attribute = document.getElementById(`${type}_attribute_option`).value;
+            const rejectionSelect = document.getElementById(`${type}_rejection_option`);
+            
+            rejectionSelect.innerHTML = '<option value="">Select Rejection Option</option>';
+            
+            const options = {
+                'CUSTOMER': ['Customer denying order', 'Customer non-responsive', 'Wrong user address'],
+                'RIDER': ['Rider not responding', 'Rider denied order', 'Rider late'],
+                'MERCHANT': ['Merchant closed', 'Items out of stock', 'Merchant not responding'],
+                'OTHER': ['Technical issue', 'Weather conditions', 'Other']
+            };
+            
+            if (options[attribute]) {
+                options[attribute].forEach(option => {
+                    const opt = document.createElement('option');
+                    opt.value = option;
+                    opt.textContent = option;
+                    rejectionSelect.appendChild(opt);
+                });
+            }
+        }
+
+        // Show More Details Functions
+        function showMerchantTimings() {
+            showToast('Showing merchant timings...');
+        }
+
+        function showPaymentDetails() {
+            showToast('Showing payment details...');
+        }
+
+        function showCxInstructions() {
+            showToast('Showing customer instructions...');
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            updateRemarkOptions();
+            
+            // Apply ETA breach logic
+            applyETABreachLogic();
+            
+            // Add CSS for toast animations
+            const style = document.createElement('style');
+            style.textContent = `
+                @keyframes slideIn {
+                    from {
+                        transform: translateX(100%);
+                        opacity: 0;
+                    }
+                    to {
+                        transform: translateX(0);
+                        opacity: 1;
+                    }
+                }
+                
+                @keyframes slideOut {
+                    from {
+                        transform: translateX(0);
+                        opacity: 1;
+                    }
+                    to {
+                        transform: translateX(100%);
+                        opacity: 0;
+                    }
+                }
+            `;
+            document.head.appendChild(style);
+            
+            // Close all modals on ESC key
+            document.addEventListener('keydown', function(event) {
+                if (event.key === 'Escape') {
+                    closeItemRefundModal();
+                    closePhoneModal();
+                    closeMerchantContactsModal();
+                    closeRemarksModal();
+                    
+                    // Close status dropdown
+                    const dropdown = document.getElementById('statusDropdown');
+                    if (dropdown) {
+                        dropdown.classList.remove('active');
+                    }
+                }
+            });
+        });
+    </script>
+</body>
+</html>

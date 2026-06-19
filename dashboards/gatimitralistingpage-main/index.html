@@ -1,0 +1,3299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GatiMitra - Operations Dashboard</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<style>
+    :root {
+        --primary-mint: #3FE0C5;
+        --primary-dark: #1A9B85;
+        --primary-light: #E8F9F6;
+        --accent-blue: #4A6FFF;
+        --accent-purple: #9D4EDD;
+        --accent-orange: #FF7B3A;
+        --accent-red: #FF5A7C;
+        --neutral-dark: #1E293B;
+        --neutral-gray: #64748B;
+        --neutral-light: #F1F5F9;
+        --white: #FFFFFF;
+        --shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+        --shadow-hover: 0 8px 30px rgba(0, 0, 0, 0.12);
+        --radius: 12px;
+        --transition: all 0.3s ease;
+        --glass-bg: rgba(255, 255, 255, 0.9);
+        --backdrop: rgba(0, 0, 0, 0.5);
+    }
+
+    * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+        font-family: 'Segoe UI', system-ui, sans-serif;
+    }
+
+    body {
+        background-color: #F8FAFC;
+        color: var(--neutral-dark);
+        line-height: 1.5;
+        overflow-x: hidden;
+    }
+
+    .container {
+        max-width: 100%;
+        padding: 20px;
+        min-height: 100vh;
+    }
+
+    /* Header Styles */
+    .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 25px;
+        padding: 20px;
+        background: var(--white);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        border: 1px solid #E2E8F0;
+        flex-wrap: wrap;
+        gap: 15px;
+    }
+
+    .logo {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 26px;
+        font-weight: 700;
+        color: var(--primary-dark);
+    }
+
+    .logo-icon {
+        background: linear-gradient(135deg, var(--primary-mint), var(--primary-dark));
+        width: 46px;
+        height: 46px;
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-size: 20px;
+    }
+
+    .header-controls {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        flex-wrap: wrap;
+    }
+
+    /* Search Box with Arrow Indicator */
+    .search-box {
+        display: flex;
+        align-items: center;
+        background: var(--white);
+        border: 1px solid #CBD5E1;
+        border-radius: 8px;
+        overflow: hidden;
+        min-width: 620px;
+        transition: var(--transition);
+        position: relative;
+        margin-right: 10px;
+    }
+
+    .search-box:focus-within {
+        border-color: var(--primary-mint);
+        box-shadow: 0 0 0 3px rgba(63, 224, 197, 0.1);
+    }
+
+    .search-type-wrapper {
+        position: relative;
+        background: var(--neutral-light);
+        border-right: 1px solid #CBD5E1;
+        min-width: 140px;
+    }
+
+    .search-type {
+        border: none;
+        background: transparent;
+        padding: 10px 32px 10px 16px;
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--neutral-dark);
+        cursor: pointer;
+        appearance: none;
+        width: 100%;
+        outline: none;
+    }
+
+    .search-type-wrapper::after {
+        content: "▼";
+        position: absolute;
+        right: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 10px;
+        color: var(--neutral-gray);
+        pointer-events: none;
+    }
+
+    .search-input {
+        flex: 1;
+        border: none;
+        padding: 10px 16px;
+        font-size: 14px;
+        color: var(--neutral-dark);
+        outline: none;
+        min-width: 120px;
+    }
+
+    .search-input::placeholder {
+        color: var(--neutral-gray);
+    }
+
+    .search-btn {
+        background: var(--primary-mint);
+        border: none;
+        padding: 10px 18px;
+        color: var(--neutral-dark);
+        cursor: pointer;
+        transition: var(--transition);
+        font-size: 14px;
+        font-weight: 600;
+    }
+
+    .search-btn:hover {
+        background: var(--primary-dark);
+        color: white;
+    }
+
+    /* Dashboard Type with Arrow */
+    .dashboard-type {
+        position: relative;
+    }
+
+    .dashboard-type select {
+        background: var(--white);
+        border: 1px solid #CBD5E1;
+        border-radius: 8px;
+        padding: 10px 40px 10px 16px;
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--neutral-dark);
+        appearance: none;
+        cursor: pointer;
+        transition: var(--transition);
+        min-width: 180px;
+        width: 100%;
+        outline: none;
+    }
+
+    .dashboard-type::after {
+        content: "▼";
+        position: absolute;
+        right: 16px;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 10px;
+        color: var(--neutral-gray);
+        pointer-events: none;
+    }
+
+    /* Premium Profile Dropdown */
+    .profile-dropdown {
+        position: relative;
+    }
+
+    .profile-btn {
+        background: linear-gradient(135deg, var(--primary-mint), var(--primary-dark));
+        border: none;
+        width: 46px;
+        height: 46px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: var(--transition);
+        box-shadow: var(--shadow);
+        position: relative;
+        overflow: hidden;
+    }
+
+    .profile-btn:hover {
+        transform: scale(1.05);
+        box-shadow: var(--shadow-hover);
+    }
+
+    .profile-btn::after {
+        content: '';
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        background: rgba(255, 255, 255, 0.1);
+        top: 0;
+        left: -100%;
+        transition: 0.5s;
+    }
+
+    .profile-btn:hover::after {
+        left: 100%;
+    }
+
+    .profile-btn img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        border-radius: 50%;
+    }
+
+    .profile-menu {
+        position: absolute;
+        top: 100%;
+        right: 0;
+        background: var(--white);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow-hover);
+        min-width: 200px;
+        z-index: 1000;
+        display: none;
+        margin-top: 10px;
+        padding: 10px 0;
+        border: 1px solid #E2E8F0;
+    }
+
+    .profile-dropdown.active .profile-menu {
+        display: block;
+        animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(-10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    .profile-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 20px;
+        color: var(--neutral-dark);
+        text-decoration: none;
+        font-weight: 500;
+        transition: var(--transition);
+        cursor: pointer;
+    }
+
+    .profile-item:hover {
+        background: var(--primary-light);
+        color: var(--primary-dark);
+    }
+
+    .profile-item i {
+        width: 20px;
+        color: var(--neutral-gray);
+    }
+
+    .profile-item:hover i {
+        color: var(--primary-dark);
+    }
+
+    .profile-divider {
+        height: 1px;
+        background: #E2E8F0;
+        margin: 8px 0;
+    }
+
+    /* Modal Overlay */
+    .modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: var(--backdrop);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 2000;
+        backdrop-filter: blur(5px);
+        animation: fadeIn 0.3s ease;
+    }
+
+    .modal-overlay.active {
+        display: flex;
+    }
+
+    /* Selection Modal */
+    .selection-modal {
+        background: var(--white);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow-hover);
+        width: 90%;
+        max-width: 400px;
+        max-height: 90vh;
+        overflow-y: auto;
+        animation: slideUp 0.4s ease;
+    }
+
+    @keyframes slideUp {
+        from { opacity: 0; transform: translateY(50px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    .modal-header {
+        padding: 25px 30px;
+        border-bottom: 1px solid #E2E8F0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background: linear-gradient(to right, var(--primary-light), var(--white));
+    }
+
+    .modal-header h2 {
+        font-size: 20px;
+        font-weight: 700;
+        color: var(--neutral-dark);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+
+    .modal-header h2 i {
+        color: var(--primary-dark);
+        font-size: 20px;
+    }
+
+    .close-modal {
+        background: none;
+        border: none;
+        font-size: 20px;
+        color: var(--neutral-gray);
+        cursor: pointer;
+        transition: var(--transition);
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .close-modal:hover {
+        background: var(--neutral-light);
+        color: var(--neutral-dark);
+    }
+
+    .modal-body {
+        padding: 30px;
+    }
+
+    /* Checkbox List in Modal */
+    .checkbox-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .checkbox-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 15px;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: var(--transition);
+        border: 1px solid #E2E8F0;
+    }
+
+    .checkbox-item:hover {
+        background: var(--primary-light);
+        border-color: var(--primary-mint);
+    }
+
+    .checkbox-item.selected {
+        background: var(--primary-light);
+        border-color: var(--primary-mint);
+    }
+
+    .checkbox {
+        width: 20px;
+        height: 20px;
+        border: 2px solid #CBD5E1;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: var(--transition);
+        flex-shrink: 0;
+    }
+
+    .checkbox-item.selected .checkbox {
+        background: var(--primary-mint);
+        border-color: var(--primary-mint);
+    }
+
+    .checkbox-item.selected .checkbox::after {
+        content: "✓";
+        color: var(--neutral-dark);
+        font-size: 12px;
+        font-weight: bold;
+    }
+
+    .checkbox-label {
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--neutral-dark);
+    }
+
+    /* Modal Actions */
+    .modal-actions {
+        display: flex;
+        gap: 15px;
+        justify-content: flex-end;
+        padding-top: 25px;
+        border-top: 1px solid #E2E8F0;
+        margin-top: 20px;
+    }
+
+    .modal-btn {
+        padding: 12px 28px;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 15px;
+        cursor: pointer;
+        transition: var(--transition);
+        border: none;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .modal-btn.primary {
+        background: var(--primary-mint);
+        color: var(--neutral-dark);
+    }
+
+    .modal-btn.primary:hover {
+        background: var(--primary-dark);
+        color: white;
+    }
+
+    .modal-btn.secondary {
+        background: var(--neutral-light);
+        color: var(--neutral-dark);
+        border: 1px solid #CBD5E1;
+    }
+
+    .modal-btn.secondary:hover {
+        background: #E2E8F0;
+    }
+
+    .modal-btn.danger {
+        background: #FEF2F2;
+        color: #DC2626;
+        border: 1px solid #FCA5A5;
+    }
+
+    .modal-btn.danger:hover {
+        background: #FEE2E2;
+    }
+
+    /* Session Report Modal */
+    .session-modal {
+        background: var(--white);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow-hover);
+        width: 90%;
+        max-width: 700px;
+        max-height: 90vh;
+        overflow-y: auto;
+    }
+
+    /* Performance Grid */
+    .performance-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 20px;
+        margin-bottom: 30px;
+    }
+
+    .performance-card {
+        background: var(--neutral-light);
+        border-radius: var(--radius);
+        padding: 20px;
+        border: 1px solid #E2E8F0;
+        transition: var(--transition);
+    }
+
+    .performance-card:hover {
+        transform: translateY(-5px);
+        box-shadow: var(--shadow);
+    }
+
+    .performance-card .label {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--neutral-gray);
+        margin-bottom: 8px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .performance-card .value {
+        font-size: 28px;
+        font-weight: 700;
+        color: var(--neutral-dark);
+        margin-bottom: 5px;
+        font-family: 'Courier New', monospace;
+    }
+
+    .performance-card .subtext {
+        font-size: 12px;
+        color: var(--neutral-gray);
+        font-weight: 500;
+    }
+
+    .performance-card.good { border-left: 4px solid #10B981; }
+    .performance-card.warning { border-left: 4px solid #F59E0B; }
+    .performance-card.excellent { border-left: 4px solid var(--primary-mint); }
+
+    /* Session Details */
+    .session-details {
+        background: var(--neutral-light);
+        border-radius: var(--radius);
+        padding: 25px;
+        margin-bottom: 30px;
+        border: 1px solid #E2E8F0;
+    }
+
+    .session-details h3 {
+        font-size: 16px;
+        font-weight: 700;
+        color: var(--neutral-dark);
+        margin-bottom: 20px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .details-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 20px;
+    }
+
+    .detail-item {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .detail-label {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--neutral-gray);
+        margin-bottom: 8px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .detail-value {
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--neutral-dark);
+        padding: 12px;
+        background: var(--white);
+        border-radius: 8px;
+        border: 1px solid #E2E8F0;
+        font-family: 'Courier New', monospace;
+    }
+
+    /* Logout Confirmation Modal */
+    .logout-modal {
+        background: var(--white);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow-hover);
+        width: 90%;
+        max-width: 500px;
+    }
+
+    .logout-header {
+        padding: 25px 30px;
+        border-bottom: 1px solid #E2E8F0;
+        background: linear-gradient(to right, #FEF2F2, var(--white));
+    }
+
+    .logout-header h2 {
+        font-size: 22px;
+        font-weight: 700;
+        color: #DC2626;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+
+    .logout-body {
+        padding: 30px;
+        text-align: center;
+    }
+
+    .logout-icon {
+        font-size: 48px;
+        color: #DC2626;
+        margin-bottom: 20px;
+    }
+
+    .logout-message {
+        font-size: 16px;
+        color: var(--neutral-dark);
+        margin-bottom: 25px;
+        line-height: 1.6;
+    }
+
+    .logout-actions {
+        display: flex;
+        gap: 15px;
+        justify-content: center;
+    }
+
+    /* Filter Section - Single Row - UPDATED */
+    .filter-section {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 25px;
+        padding: 20px;
+        background: var(--white);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        border: 1px solid #E2E8F0;
+        flex-wrap: nowrap;
+        gap: 15px;
+        width: 100%;
+        position: relative;
+    }
+
+    .filter-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: nowrap;
+        padding: 4px 0;
+        flex: 1;
+        min-width: 0;
+        /* Remove scrollbar */
+        overflow-x: visible;
+    }
+
+    /* Apply Filter Button with Border - UPDATED */
+    .apply-btn {
+        background: linear-gradient(135deg, #93e8c8, #5fd3b3);
+        color: #0f3d2e;
+        font-weight: 600;
+        padding: 9px 18px;
+        border-radius: 10px;
+        border: 2px solid #1A9B85;
+        cursor: pointer;
+        white-space: nowrap;
+        box-shadow: 0 6px 14px rgba(147, 232, 200, 0.45);
+        transition: all 0.25s ease;
+        position: relative;
+        overflow: hidden;
+        min-width: 120px;
+        flex-shrink: 0;
+        margin-right: 0;
+    }
+
+    .apply-btn:hover {
+        background: linear-gradient(135deg, #04c045, #3fbf9a);
+        color: #060000;
+        transform: translateY(-2px);
+        box-shadow: 0 10px 22px rgba(63, 191, 154, 0.55);
+        border-color: #0f3d2e;
+    }
+
+    .apply-btn:active {
+        transform: translateY(0);
+        box-shadow: 0 4px 10px rgba(63, 191, 154, 0.4);
+    }
+
+    .apply-btn::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: -60%;
+        width: 50%;
+        height: 100%;
+        background: rgba(255, 255, 255, 0.35);
+        transform: skewX(-20deg);
+        transition: left 0.6s ease;
+    }
+
+    .apply-btn:hover::after {
+        left: 130%;
+    }
+
+    /* Applied Filters Tags - Next to Apply Button - UPDATED */
+    .applied-filters {
+        display: flex;
+        gap: 8px;
+        flex-wrap: nowrap;
+        padding: 4px;
+        align-items: center;
+        flex: 1;
+        min-width: 0;
+        margin-left: 0;
+        /* Remove scrollbar */
+        overflow-x: visible;
+        /* Keep 3rem gap from Apply Filter button */
+        padding-left: 3rem;
+    }
+
+    .filter-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: var(--primary-light);
+        color: var(--primary-dark);
+        padding: 6px 12px;
+        border-radius: 16px;
+        font-size: 13px;
+        font-weight: 500;
+        border: 1px solid rgba(63, 224, 197, 0.3);
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+
+    .filter-tag .remove-tag {
+        font-size: 10px;
+        cursor: pointer;
+        padding: 2px;
+        border-radius: 50%;
+        transition: var(--transition);
+    }
+
+    .filter-tag .remove-tag:hover {
+        background: rgba(0, 0, 0, 0.1);
+    }
+
+    /* Delivery Button */
+    .delivery-btn {
+        padding: 8px 30px 8px 16px;
+        border: none;
+        background: var(--white);
+        border: 1px solid #CBD5E1;
+        border-radius: 6px;
+        font-weight: 600;
+        color: var(--neutral-gray);
+        cursor: pointer;
+        transition: var(--transition);
+        font-size: 14px;
+        white-space: nowrap;
+        position: relative;
+        min-width: 120px;
+    }
+
+    .delivery-btn.active {
+        background: var(--primary-mint);
+        color: var(--neutral-dark);
+        border-color: var(--primary-mint);
+    }
+
+    .delivery-btn::after {
+        content: "▼";
+        position: absolute;
+        right: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 10px;
+        color: var(--neutral-gray);
+        pointer-events: none;
+    }
+
+    .delivery-btn.active::after {
+        color: var(--neutral-dark);
+    }
+
+    /* Categories Filter */
+    .categories-filter {
+        display: flex;
+        gap: 8px;
+        background: var(--neutral-light);
+        padding: 6px;
+        border-radius: 8px;
+        flex-wrap: nowrap;
+    }
+
+    .category-btn {
+        padding: 8px 16px;
+        border: none;
+        background: transparent;
+        border-radius: 6px;
+        font-weight: 600;
+        color: var(--neutral-gray);
+        cursor: pointer;
+        transition: var(--transition);
+        font-size: 14px;
+        white-space: nowrap;
+        border: 1px solid transparent;
+    }
+
+    .category-btn:hover {
+        background: var(--white);
+        color: var(--neutral-dark);
+        border-color: #CBD5E1;
+    }
+
+    .category-btn.active {
+        background: var(--primary-mint);
+        color: var(--neutral-dark);
+        border-color: var(--primary-mint);
+    }
+
+    /* User Type Button */
+    .user-type-btn {
+        padding: 8px 30px 8px 16px;
+        border: none;
+        background: var(--white);
+        border: 1px solid #CBD5E1;
+        border-radius: 6px;
+        font-weight: 600;
+        color: var(--neutral-gray);
+        cursor: pointer;
+        transition: var(--transition);
+        font-size: 14px;
+        white-space: nowrap;
+        position: relative;
+        width: auto;
+        min-width: 120px;
+        text-align: left;
+    }
+
+    .user-type-btn.active {
+        background: var(--primary-mint);
+        color: var(--neutral-dark);
+        border-color: var(--primary-mint);
+    }
+
+    .user-type-btn::after {
+        content: "▼";
+        position: absolute;
+        right: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 10px;
+        color: var(--neutral-gray);
+        pointer-events: none;
+    }
+
+    .user-type-btn.active::after {
+        color: var(--neutral-dark);
+    }
+
+    /* NEW: Delivery Type Popup (Dropdown Style) */
+    .delivery-popup {
+        position: absolute;
+        background: var(--white);
+        border-radius: 8px;
+        box-shadow: var(--shadow-hover);
+        min-width: 180px;
+        z-index: 1000;
+        display: none;
+        padding: 8px 0;
+        border: 1px solid #E2E8F0;
+        top: 100%;
+        left: 0;
+        margin-top: 5px;
+        animation: fadeIn 0.2s ease;
+    }
+
+    .delivery-popup.active {
+        display: block;
+    }
+
+    .delivery-popup-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 16px;
+        color: var(--neutral-dark);
+        text-decoration: none;
+        font-weight: 500;
+        transition: var(--transition);
+        cursor: pointer;
+        white-space: nowrap;
+    }
+
+    .delivery-popup-item:hover {
+        background: var(--primary-light);
+        color: var(--primary-dark);
+    }
+
+    .delivery-popup-checkbox {
+        width: 16px;
+        height: 16px;
+        border: 2px solid #CBD5E1;
+        border-radius: 3px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: var(--transition);
+        flex-shrink: 0;
+    }
+
+    .delivery-popup-item.selected .delivery-popup-checkbox {
+        background: var(--primary-mint);
+        border-color: var(--primary-mint);
+    }
+
+    .delivery-popup-item.selected .delivery-popup-checkbox::after {
+        content: "✓";
+        color: var(--neutral-dark);
+        font-size: 10px;
+        font-weight: bold;
+    }
+
+    /* FIXED: Removed delivery-popup-actions class as buttons are removed */
+
+    /* User Type Popup – Compact Dropdown Style */
+    .user-type-popup {
+        position: absolute;
+        background: var(--white);
+        border-radius: 8px;
+        box-shadow: var(--shadow-hover);
+        min-width: 180px;
+        z-index: 1000;
+        display: none;
+        padding: 6px 0;
+        border: 1px solid #E2E8F0;
+        top: 100%;
+        margin-top: 6px;
+        animation: fadeIn 0.2s ease;
+    }
+
+    .user-type-popup.active {
+        display: block;
+    }
+
+    /* Popup Item */
+    .user-type-popup-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 14px;
+        color: var(--neutral-dark);
+        font-weight: 500;
+        cursor: pointer;
+        white-space: nowrap;         /* 🔥 Prevent wrapping */
+        transition: var(--transition);
+    }
+
+    .user-type-popup-item:hover {
+        background: var(--primary-light);
+        color: var(--primary-dark);
+    }
+
+    /* Checkbox */
+    .user-type-popup-checkbox {
+        width: 14px;
+        height: 14px;
+        border: 2px solid #CBD5E1;
+        border-radius: 3px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+    }
+
+    .user-type-popup-item.selected .user-type-popup-checkbox {
+        background: var(--primary-mint);
+        border-color: var(--primary-mint);
+    }
+
+    .user-type-popup-item.selected .user-type-popup-checkbox::after {
+        content: "✓";
+        font-size: 10px;
+        font-weight: bold;
+        color: var(--neutral-dark);
+    }
+
+    /* FIXED: Removed user-type-popup-actions class as buttons are removed */
+
+    /* Session Info */
+    .session-info {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: var(--primary-light);
+        padding: 10px 16px;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--primary-dark);
+        border: 1px solid rgba(63, 224, 197, 0.3);
+        white-space: nowrap;
+    }
+
+    /* Status Tabs */
+    .status-tabs-container {
+        background: var(--white);
+        border-radius: var(--radius);
+        padding: 15px;
+        margin-bottom: 25px;
+        box-shadow: var(--shadow);
+        border: 1px solid #F1F5F9;
+    }
+
+    .status-tabs {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    .status-tab {
+        flex: 1;
+        min-width: 200px;
+        text-align: center;
+        padding: 16px 10px;
+        border-radius: 8px;
+        font-weight: 600;
+        color: var(--neutral-gray);
+        cursor: pointer;
+        transition: var(--transition);
+        font-size: 15px;
+        border: 2px solid transparent;
+        background: var(--neutral-light);
+    }
+
+    .status-tab:hover {
+        background: var(--white);
+        border-color: var(--primary-light);
+        color: var(--neutral-dark);
+    }
+
+    .status-tab.active {
+        background: var(--primary-mint);
+        color: var(--neutral-dark);
+        border-color: var(--primary-mint);
+        box-shadow: 0 4px 12px rgba(63, 224, 197, 0.2);
+    }
+
+    /* Table Styles - FIXED: Text wrap se bachane ke liye */
+    .table-container {
+        background: var(--white);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        margin-bottom: 25px;
+        border: 1px solid #F1F5F9;
+        overflow-x: auto;
+    }
+
+    .table-header {
+        padding: 20px;
+        border-bottom: 1px solid #E2E8F0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background: var(--neutral-light);
+        flex-wrap: wrap;
+        gap: 15px;
+    }
+
+    .table-header h2 {
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--neutral-dark);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .table-header h2 i {
+        color: var(--primary-dark);
+    }
+
+    .table-actions {
+        display: flex;
+        gap: 12px;
+    }
+
+    .table-btn {
+        background: var(--white);
+        border: 1px solid #CBD5E1;
+        border-radius: 6px;
+        padding: 10px 18px;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--neutral-dark);
+        cursor: pointer;
+        transition: var(--transition);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+    }
+
+    .table-btn:hover {
+        background: var(--neutral-light);
+    }
+
+    .table-btn.primary {
+        background: var(--primary-mint);
+        border-color: var(--primary-mint);
+        color: var(--neutral-dark);
+    }
+
+    .table-btn.primary:hover {
+        background: var(--primary-dark);
+        border-color: var(--primary-dark);
+        color: white;
+    }
+
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 1000px;
+        table-layout: fixed; /* FIXED: Table layout ko fixed rakho */
+    }
+
+    thead {
+        background-color: var(--neutral-light);
+        border-bottom: 2px solid #E2E8F0;
+    }
+
+    th {
+        padding: 16px 20px;
+        text-align: left;
+        font-weight: 700;
+        color: var(--neutral-dark);
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        border-bottom: 2px solid #E2E8F0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap; /* FIXED: Header text wrap hone se bachao */
+    }
+
+    tbody tr {
+        border-bottom: 1px solid #F1F5F9;
+        transition: var(--transition);
+    }
+
+    tbody tr:hover {
+        background-color: var(--primary-light);
+    }
+
+    td {
+        padding: 16px 20px;
+        font-size: 14px;
+        color: var(--neutral-dark);
+        font-weight: 500;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap; /* FIXED: Table data wrap hone se bachao */
+        max-width: 0; /* FIXED: Max width set karo */
+    }
+
+    /* Column widths fix - sabhi columns ko proper width do */
+    table th:nth-child(1), table td:nth-child(1) { width: 100px; } /* Order ID */
+    table th:nth-child(2), table td:nth-child(2) { width: 180px; } /* Action */
+    table th:nth-child(3), table td:nth-child(3) { width: 200px; } /* Routed To */
+    table th:nth-child(4), table td:nth-child(4) { width: 150px; } /* Order Time */
+    table th:nth-child(5), table td:nth-child(5) { width: 150px; } /* Updated Time */
+    table th:nth-child(6), table td:nth-child(6) { width: 140px; } /* Customer Name */
+    table th:nth-child(7), table td:nth-child(7) { width: 120px; } /* Customer Mobile */
+    table th:nth-child(8), table td:nth-child(8) { width: 100px; } /* Merchant ID */
+    table th:nth-child(9), table td:nth-child(9) { width: 120px; } /* Merchant Mobile */
+    table th:nth-child(10), table td:nth-child(10) { width: 150px; } /* Merchant Locality */
+    table th:nth-child(11), table td:nth-child(11) { width: 150px; } /* Delivery Provider */
+
+    .status-badge {
+        display: inline-block;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 700;
+        text-align: center;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        cursor: pointer;
+        transition: var(--transition);
+        white-space: nowrap; /* FIXED: Status badge wrap hone se bachao */
+    }
+
+    .status-badge:hover {
+        transform: scale(1.05);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+
+    .status-accepted { background: #DBEAFE; color: #1E40AF; }
+    .status-payment { background: #F3E8FF; color: #6B21A8; }
+    .status-ready { background: #FEF3C7; color: #92400E; }
+    .status-dispatched { background: #DCFCE7; color: #166534; }
+
+    /* Search Results Indicator */
+    .search-results-indicator {
+        background: #E0F2FE;
+        border: 1px solid #7DD3FC;
+        color: #0369A1;
+        padding: 8px 16px;
+        border-radius: 6px;
+        margin-bottom: 15px;
+        font-size: 14px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        display: none;
+    }
+
+    .search-results-indicator.active {
+        display: flex;
+    }
+
+    .clear-search-btn {
+        background: transparent;
+        border: 1px solid #7DD3FC;
+        color: #0369A1;
+        padding: 4px 12px;
+        border-radius: 4px;
+        font-size: 12px;
+        cursor: pointer;
+        transition: var(--transition);
+    }
+
+    .clear-search-btn:hover {
+        background: #BAE6FD;
+    }
+
+    /* Responsive Design */
+    @media (max-width: 1200px) {
+        .status-tab {
+            min-width: calc(50% - 10px);
+        }
+        
+        .applied-filters {
+            padding-left: 1.5rem;
+        }
+    }
+
+    @media (max-width: 992px) {
+        .header {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+        
+        .header-controls {
+            width: 100%;
+            justify-content: space-between;
+        }
+        
+        .filter-section {
+            flex-direction: column;
+            align-items: stretch;
+        }
+        
+        .applied-filters {
+            max-width: 100%;
+            margin-left: 0;
+            margin-top: 10px;
+            justify-content: flex-start;
+            padding-left: 0;
+        }
+        
+        .categories-filter {
+            order: 3;
+            width: 100%;
+            margin-top: 10px;
+            justify-content: center;
+        }
+        
+        .status-tab {
+            min-width: calc(50% - 10px);
+        }
+        
+        .table-header {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+        
+        .table-actions {
+            width: 100%;
+            justify-content: flex-start;
+        }
+        
+        .performance-grid {
+            grid-template-columns: repeat(2, 1fr);
+        }
+        
+        .delivery-popup {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 90%;
+            max-width: 300px;
+        }
+        
+        .user-type-popup {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 90%;
+            max-width: 300px;
+        }
+    }
+
+    @media (max-width: 768px) {
+        .container {
+            padding: 15px;
+        }
+        
+        .header {
+            padding: 15px;
+        }
+        
+        .header-controls {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 10px;
+        }
+        
+        .search-box {
+            min-width: 100%;
+        }
+        
+        .filter-actions {
+            flex-wrap: wrap;
+        }
+        
+        .categories-filter {
+            justify-content: flex-start;
+            overflow-x: auto;
+            padding: 5px;
+        }
+        
+        .category-btn {
+            padding: 8px 12px;
+            font-size: 13px;
+        }
+        
+        .status-tab {
+            min-width: 100%;
+        }
+        
+        .performance-grid {
+            grid-template-columns: 1fr;
+        }
+        
+        .details-grid {
+            grid-template-columns: repeat(2, 1fr);
+        }
+        
+        .logout-actions {
+            flex-direction: column;
+        }
+        
+        .applied-filters {
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+    }
+
+    @media (max-width: 576px) {
+        .container {
+            padding: 10px;
+        }
+        
+        .logo span {
+            font-size: 22px;
+        }
+        
+        .logo-icon {
+            width: 40px;
+            height: 40px;
+            font-size: 18px;
+        }
+        
+        .dashboard-type select {
+            min-width: 140px;
+            padding: 8px 30px 8px 12px;
+        }
+        
+        .session-info {
+            padding: 8px 12px;
+            font-size: 13px;
+        }
+        
+        .details-grid {
+            grid-template-columns: 1fr;
+        }
+        
+        .modal-body {
+            padding: 20px;
+        }
+        
+        .logout-body {
+            padding: 20px;
+        }
+        
+        .apply-btn {
+            min-width: 100px;
+            padding: 8px 12px;
+            font-size: 13px;
+        }
+        
+        .applied-filters {
+            padding-left: 0;
+        }
+    }
+</style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <div class="logo-icon">
+                    <i class="fas fa-shipping-fast"></i>
+                </div>
+                <span>GatiMitra</span>
+            </div>
+
+            <div class="header-controls">
+                <!-- Search Section -->
+                <div class="search-box">
+                    <div class="search-type-wrapper">
+                        <select class="search-type" id="searchType">
+                            <option value="order_id">Order ID</option>
+                            <option value="merchant_id">Merchant ID</option>
+                            <option value="user_no">User Number</option>
+                            <option value="third_party_id">Third Party Order ID</option>
+                        </select>
+                    </div>
+
+                    <input
+                        type="text"
+                        class="search-input"
+                        id="searchInput"
+                        placeholder="Search here..."
+                    />
+
+                    <button class="search-btn" id="searchBtn">
+                        <i class="fas fa-search"></i>
+                    </button>
+                </div>
+
+                <!-- Dashboard Type -->
+                <div class="dashboard-type">
+                    <select id="dashboardType">
+                        <option>Food Management</option>
+                        <option>Parcel Management</option>
+                        <option>Person Management</option>
+                    </select>
+                </div>
+
+                <!-- Session Info -->
+                <div class="session-info">
+                    <i class="fas fa-clock"></i>
+                    <span id="sessionTime">Session Time: 00h 00m</span>
+                </div>
+
+                <!-- Premium Profile Dropdown -->
+                <div class="profile-dropdown" id="profileDropdown">
+                    <button class="profile-btn" id="profileBtn">
+                        <img src="https://i.pravatar.cc/150?img=32" alt="User Profile">
+                    </button>
+
+                    <div class="profile-menu">
+                        <div class="profile-item" id="viewProfile">
+                            <i class="fas fa-user"></i>
+                            <span>View Profile</span>
+                        </div>
+                        <div class="profile-item" id="viewSession">
+                            <i class="fas fa-chart-line"></i>
+                            <span>Session Report</span>
+                        </div>
+                        <div class="profile-divider"></div>
+                        <div class="profile-item" id="logoutOption">
+                            <i class="fas fa-sign-out-alt"></i>
+                            <span>Logout</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Filter Section - Single Row -->
+        <div class="filter-section">
+            <div class="filter-actions">
+                <!-- Delivery / Pickup -->
+                <div class="categories-filter">
+                    <button class="delivery-btn" id="deliveryBtn">
+                        Delivery
+                    </button>
+
+                    <button class="category-btn" id="pickupBtn" data-filter-type="category" data-filter-value="Pickup">Pickup</button>
+                </div>
+
+                <!-- Category Filter -->
+                <div class="categories-filter">
+                    <button class="category-btn" data-filter-type="category" data-filter-value="Food">Food</button>
+                    <button class="category-btn" data-filter-type="category" data-filter-value="Fashion">Fashion</button>
+                    <button class="category-btn" data-filter-type="category" data-filter-value="Grocery">Grocery</button>
+                    <button class="category-btn" data-filter-type="category" data-filter-value="Pharma">Pharma</button>
+                </div>
+
+                <!-- User Type Button -->
+                <button class="user-type-btn" id="userTypeBtn">
+                    User-Type
+                </button>
+
+                <!-- Apply Filter Button -->
+                <button class="apply-btn" id="applyFilter">
+                    Apply Filter
+                </button>
+            </div>
+
+            <!-- Applied Filters Tags -->
+            <div class="applied-filters" id="appliedFilters">
+                <!-- Filter tags will appear here -->
+            </div>
+        </div>
+        
+        <!-- NEW: Delivery Type Popup (Dropdown Style) - FIXED: Removed Save/Cancel buttons -->
+        <div class="delivery-popup" id="deliveryPopup">
+            <div class="delivery-popup-item" data-value="GatiMitra">
+                <div class="delivery-popup-checkbox"></div>
+                <span>GatiMitra</span>
+            </div>
+            <div class="delivery-popup-item" data-value="Merchant">
+                <div class="delivery-popup-checkbox"></div>
+                <span>Merchant</span>
+            </div>
+            <!-- FIXED: Removed delivery-popup-actions section -->
+        </div>
+
+        <!-- NEW: User Type Popup (Dropdown Style) - FIXED: Removed Save/Cancel buttons -->
+        <div class="user-type-popup" id="userTypePopup">
+            <div class="user-type-popup-item" data-value="Premium">
+                <div class="user-type-popup-checkbox"></div>
+                <span>Premium</span>
+            </div>
+            <div class="user-type-popup-item" data-value="Very Good">
+                <div class="user-type-popup-checkbox"></div>
+                <span>Very Good</span>
+            </div>
+            <div class="user-type-popup-item" data-value="Good">
+                <div class="user-type-popup-checkbox"></div>
+                <span>Good</span>
+            </div>
+            <div class="user-type-popup-item" data-value="Bad">
+                <div class="user-type-popup-checkbox"></div>
+                <span>Bad</span>
+            </div>
+            <!-- FIXED: Removed user-type-popup-actions section -->
+        </div>
+        
+        <!-- Search Results Indicator -->
+        <div class="search-results-indicator" id="searchResultsIndicator">
+            <span>Showing search results for : <strong id="searchQueryText"></strong></span>
+            <button class="clear-search-btn" id="clearSearchBtn">Clear Search</button>
+        </div>
+        
+        <!-- Status Tabs -->
+        <div class="status-tabs-container">
+            <div class="status-tabs">
+                <div class="status-tab active" data-status="PAYMENT DONE">PAYMENT DONE</div>
+                <div class="status-tab" data-status="ACCEPTED">ACCEPTED</div>
+                <div class="status-tab" data-status="DESPATCH READY">DESPATCH READY</div>
+                <div class="status-tab" data-status="DESPATCHED">DESPATCHED</div>
+            </div>
+        </div>
+        
+        <!-- Orders Table -->
+        <div class="table-container">
+            <div class="table-header">
+                <h2><i class="fas fa-clipboard-list"></i> <span id="orderCount"> 0 out of 0 - ACCEPTED</span></h2>
+                <div class="table-actions">
+                    <button class="table-btn primary" id="refreshBtn">
+                        <i class="fas fa-sync-alt"></i>
+                        Refresh Data
+                    </button>
+                    <button class="table-btn" id="clearFiltersBtn">
+                        <i class="fas fa-filter"></i>
+                        Clear All Filters
+                    </button>
+                </div>
+            </div>
+            
+            <table id="ordersTable">
+                <thead>
+                    <tr>
+                        <th>Order ID</th>
+                        <th>Action</th>
+                        <th>Routed To</th>
+                        <th>Order Time</th>
+                        <th>User name</th>
+                        <th>Updated Time</th>
+                        <th>User Mobile</th>
+                        <th>Merchant ID</th>
+                        <th>Merchant Mobile</th>
+                        <th>Merchant Locality</th>
+                        <th>Delivery Provider</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody">
+                    <!-- Data will be populated here -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Session Report Modal -->
+    <div class="modal-overlay" id="sessionModal">
+        <div class="session-modal">
+            <div class="modal-header">
+                <h2><i class="fas fa-chart-line"></i> Agent Performance Report</h2>
+                <button class="close-modal" id="closeSessionModal">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="performance-grid">
+                    <div class="performance-card good">
+                        <div class="label">Orders Processed</div>
+                        <div class="value">1,247</div>
+                        <div class="subtext">+12% from last session</div>
+                    </div>
+                    <div class="performance-card excellent">
+                        <div class="label">Success Rate</div>
+                        <div class="value">98.7%</div>
+                        <div class="subtext">Industry average: 95.2%</div>
+                    </div>
+                    <div class="performance-card good">
+                        <div class="label">Avg. Response Time</div>
+                        <div class="value">2.3s</div>
+                        <div class="subtext">Faster than 90% of agents</div>
+                    </div>
+                    <div class="performance-card warning">
+                        <div class="label">Dispute Rate</div>
+                        <div class="value">1.2%</div>
+                        <div class="subtext">Needs improvement</div>
+                    </div>
+                </div>
+
+                <div class="session-details">
+                    <h3><i class="fas fa-clock"></i> Current Session Details</h3>
+                    <div class="details-grid">
+                        <div class="detail-item">
+                            <div class="detail-label">Login Time</div>
+                            <div class="detail-value">10:30:15 AM</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="detail-label">Current Duration</div>
+                            <div class="detail-value">04h 25m 18s</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="detail-label">Session Status</div>
+                            <div class="detail-value" style="color: var(--primary-dark); font-weight: 700;">ACTIVE</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="detail-label">Today's Performance</div>
+                            <div class="detail-value" style="color: #10B981;">EXCELLENT</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-actions">
+                    <button class="modal-btn secondary" id="closeSessionBtn">
+                        <i class="fas fa-times"></i>
+                        Close Report
+                    </button>
+                    <button class="modal-btn danger" id="logoutFromModal">
+                        <i class="fas fa-sign-out-alt"></i>
+                        Logout Session
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Logout Confirmation Modal -->
+    <div class="modal-overlay" id="logoutModal">
+        <div class="logout-modal">
+            <div class="logout-header">
+                <h2><i class="fas fa-exclamation-triangle"></i> Confirm Logout</h2>
+            </div>
+            <div class="logout-body">
+                <div class="logout-icon">
+                    <i class="fas fa-sign-out-alt"></i>
+                </div>
+                <p class="logout-message">
+                    Are you sure you want to logout?<br>
+                    A session report will be generated and sent to your email.
+                </p>
+                <div class="logout-actions">
+                    <button class="modal-btn secondary" id="cancelLogout">
+                        <i class="fas fa-times"></i>
+                        Cancel
+                    </button>
+                    <button class="modal-btn primary" id="sendAndClose">
+                        <i class="fas fa-paper-plane"></i>
+                        Send Report & Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+    // Enhanced sample order data with comprehensive coverage for all filter conditions
+    const orderData = [
+        // Food Category - All delivery types and user types
+        {
+            id: 'GM1001',
+            action: 'Check With the Store & DE',
+            routedto: 'bhimpratap@gatimitra.in',
+            orderTime: '18:12:25 02:17 PM',
+            updatedTime: '18:12:25 02:18 PM',
+            customerName: 'Bhim Pratap',
+            customerMobile: '9113194305',
+            merchantName: '7433577',
+            merchantMobile: '91790251003',
+            merchantLocality: 'Panipat City',
+            deliveryProvider: 'SHIPROCKET_DIRECT',
+            status: 'ACCEPTED',
+            category: 'Food',
+            deliveryType: 'GatiMitra',
+            userType: 'Premium'
+        },
+        {
+            id: 'GM1011',
+            action: 'Verify Payment',
+            routedto: 'raghubhunia@gatimitra.in',
+            orderTime: '18:12:25 11:30 AM',
+            updatedTime: '18:12:25 11:35 AM',
+            customerName: 'Rahul Sharma',
+            customerMobile: '9876543210',
+            merchantName: '8899002',
+            merchantMobile: '91998877664',
+            merchantLocality: 'South Delhi',
+            deliveryProvider: 'GATIMITRA_DIRECT',
+            status: 'PAYMENT DONE',
+            category: 'Food',
+            deliveryType: 'Merchant',
+            userType: 'Very Good'
+        },
+        {
+            id: 'GM1021',
+            action: 'Prepare Order',
+            routedto: 'davidwilson@gatimitra.in',
+            orderTime: '18:12:25 03:45 PM',
+            updatedTime: '18:12:25 03:50 PM',
+            customerName: 'Priya Patel',
+            customerMobile: '8765432109',
+            merchantName: '3344557',
+            merchantMobile: '91988776654',
+            merchantLocality: 'West Mumbai',
+            deliveryProvider: 'DELHIVERY',
+            status: 'DESPATCH READY',
+            category: 'Food',
+            deliveryType: 'GatiMitra',
+            userType: 'Good'
+        },
+        {
+            id: 'GM1031',
+            action: 'Dispatch Order',
+            routedto: 'roberttaylor@gatimitra.in',
+            orderTime: '18:12:25 05:20 PM',
+            updatedTime: '18:12:25 05:25 PM',
+            customerName: 'Ankit Verma',
+            customerMobile: '7654321098',
+            merchantName: '4455668',
+            merchantMobile: '91977665543',
+            merchantLocality: 'East Bangalore',
+            deliveryProvider: 'BLUEDART',
+            status: 'DESPATCHED',
+            category: 'Food',
+            deliveryType: 'Merchant',
+            userType: 'Bad'
+        },
+        
+        // Fashion Category - All delivery types and user types
+        {
+            id: 'GM1002',
+            action: 'Check With the Store & DE',
+            routedto: 'raghubhunia@gatimitra.in',
+            orderTime: '18:12:25 02:28 PM',
+            updatedTime: '18:12:25 02:28 PM',
+            customerName: 'Sembak Kharka',
+            customerMobile: '91600649431',
+            merchantName: '1772577',
+            merchantMobile: '+91970204534',
+            merchantLocality: 'Shawman Corner',
+            deliveryProvider: 'PIDGE_DIRECT',
+            status: 'ACCEPTED',
+            category: 'Fashion',
+            deliveryType: 'Merchant',
+            userType: 'Very Good'
+        },
+        {
+            id: 'GM1012',
+            action: 'Process Payment',
+            routedto: 'jenniferlee@gatimitra.in',
+            orderTime: '18:12:25 10:15 AM',
+            updatedTime: '18:12:25 10:20 AM',
+            customerName: 'Neha Gupta',
+            customerMobile: '9123456789',
+            merchantName: '6677889',
+            merchantMobile: '91966554432',
+            merchantLocality: 'Central Kolkata',
+            deliveryProvider: 'MERCHANT_DIRECT',
+            status: 'PAYMENT DONE',
+            category: 'Fashion',
+            deliveryType: 'GatiMitra',
+            userType: 'Premium'
+        },
+        {
+            id: 'GM1022',
+            action: 'Quality Check',
+            routedto: 'emilyclark@gatimitra.in',
+            orderTime: '18:12:25 01:30 PM',
+            updatedTime: '18:12:25 01:35 PM',
+            customerName: 'Arun Kumar',
+            customerMobile: '9234567890',
+            merchantName: '7788990',
+            merchantMobile: '91955443321',
+            merchantLocality: 'North Chennai',
+            deliveryProvider: 'ONDC_LOGISTICS',
+            status: 'DESPATCH READY',
+            category: 'Fashion',
+            deliveryType: 'Merchant',
+            userType: 'Good'
+        },
+        {
+            id: 'GM1032',
+            action: 'Out for Delivery',
+            routedto: 'jamesanderson@gatimitra.in',
+            orderTime: '18:12:25 04:45 PM',
+            updatedTime: '18:12:25 04:50 PM',
+            customerName: 'Sonia Reddy',
+            customerMobile: '9345678901',
+            merchantName: '8899003',
+            merchantMobile: '91944332210',
+            merchantLocality: 'Hyderabad Central',
+            deliveryProvider: 'SHIPROCKET_DIRECT',
+            status: 'DESPATCHED',
+            category: 'Fashion',
+            deliveryType: 'GatiMitra',
+            userType: 'Bad'
+        },
+        
+        // Grocery Category - All delivery types and user types
+        {
+            id: 'GM1003',
+            action: 'Check With the Store & DE',
+            routedto: 'christopherwhite@gatimitra.in',
+            orderTime: '18:12:25 02:42 PM',
+            updatedTime: '18:12:25 02:42 PM',
+            customerName: 'Babesh Cherry',
+            customerMobile: '91984259849',
+            merchantName: '7660072',
+            merchantMobile: '91967604384',
+            merchantLocality: 'HITTO BA-GABA & BIRYAN',
+            deliveryProvider: 'ONDC_LOGISTICS_BLYER_KETA',
+            status: 'PAYMENT DONE',
+            category: 'Grocery',
+            deliveryType: 'GatiMitra',
+            userType: 'Good'
+        },
+        {
+            id: 'GM1013',
+            action: 'Stock Check',
+            routedto: 'swekshashree@gatimitra.in',
+            orderTime: '18:12:25 09:00 AM',
+            updatedTime: '18:12:25 09:05 AM',
+            customerName: 'Vikram Singh',
+            customerMobile: '9456789012',
+            merchantName: '9900112',
+            merchantMobile: '91933221100',
+            merchantLocality: 'Pune Suburban',
+            deliveryProvider: 'GATIMITRA_DIRECT',
+            status: 'ACCEPTED',
+            category: 'Grocery',
+            deliveryType: 'Merchant',
+            userType: 'Premium'
+        },
+        {
+            id: 'GM1023',
+            action: 'Pack Order',
+            routedto: 'danielthomas@gatimitra.in',
+            orderTime: '18:12:25 12:45 PM',
+            updatedTime: '18:12:25 12:50 PM',
+            customerName: 'Rajesh Nair',
+            customerMobile: '9567890123',
+            merchantName: '1011123',
+            merchantMobile: '91922110099',
+            merchantLocality: 'Ahmedabad West',
+            deliveryProvider: 'DELHIVERY',
+            status: 'DESPATCH READY',
+            category: 'Grocery',
+            deliveryType: 'GatiMitra',
+            userType: 'Very Good'
+        },
+        {
+            id: 'GM1033',
+            action: 'Deliver Order',
+            routedto: 'josephwalker@gatimitra.in',
+            orderTime: '18:12:25 06:30 PM',
+            updatedTime: '18:12:25 06:35 PM',
+            customerName: 'Manish Joshi',
+            customerMobile: '9678901234',
+            merchantName: '1122334',
+            merchantMobile: '91911009988',
+            merchantLocality: 'Lucknow Central',
+            deliveryProvider: 'BLUEDART',
+            status: 'DESPATCHED',
+            category: 'Grocery',
+            deliveryType: 'Merchant',
+            userType: 'Good'
+        },
+        
+        // Pharma Category - All delivery types and user types
+        {
+            id: 'GM1004',
+            action: 'Check With Store',
+            routedto: 'andrewharris@gatimitra.in',
+            orderTime: '18:12:25 03:15 PM',
+            updatedTime: '18:12:25 03:16 PM',
+            customerName: 'John Smith',
+            customerMobile: '91876543210',
+            merchantName: '8899001',
+            merchantMobile: '91998877665',
+            merchantLocality: 'Central Market',
+            deliveryProvider: 'DELHIVERY',
+            status: 'DESPATCH READY',
+            category: 'Pharma',
+            deliveryType: 'Merchant',
+            userType: 'Premium'
+        },
+        {
+            id: 'GM1014',
+            action: 'Verify Prescription',
+            routedto: 'joshuaking@gatimitra.in',
+            orderTime: '18:12:25 08:30 AM',
+            updatedTime: '18:12:25 08:35 AM',
+            customerName: 'Amitabh Roy',
+            customerMobile: '9789012345',
+            merchantName: '2233445',
+            merchantMobile: '91900998877',
+            merchantLocality: 'Chandigarh Sector',
+            deliveryProvider: 'PIDGE_DIRECT',
+            status: 'ACCEPTED',
+            category: 'Pharma',
+            deliveryType: 'GatiMitra',
+            userType: 'Very Good'
+        },
+        {
+            id: 'GM1024',
+            action: 'Process Medicine',
+            routedto: 'ryanwright@gatimitra.in',
+            orderTime: '18:12:25 02:00 PM',
+            updatedTime: '18:12:25 02:05 PM',
+            customerName: 'Deepak Mehta',
+            customerMobile: '9890123456',
+            merchantName: '3344558',
+            merchantMobile: '91999887766',
+            merchantLocality: 'Jaipur Pink City',
+            deliveryProvider: 'MERCHANT_DIRECT',
+            status: 'PAYMENT DONE',
+            category: 'Pharma',
+            deliveryType: 'Merchant',
+            userType: 'Good'
+        },
+        {
+            id: 'GM1034',
+            action: 'Dispatch Medicine',
+            routedto: 'kevinmoore@gatimitra.in',
+            orderTime: '18:12:25 07:15 PM',
+            updatedTime: '18:12:25 07:20 PM',
+            customerName: 'Sanjay Kapoor',
+            customerMobile: '9901234567',
+            merchantName: '4455669',
+            merchantMobile: '91988776655',
+            merchantLocality: 'Indore Central',
+            deliveryProvider: 'ONDC_LOGISTICS',
+            status: 'DESPATCHED',
+            category: 'Pharma',
+            deliveryType: 'GatiMitra',
+            userType: 'Bad'
+        },
+        
+        // Additional orders for better filter coverage
+        {
+            id: 'GM1005',
+            action: 'Verify Payment',
+            routedto: 'brianadams@gatimitra.in',
+            orderTime: '18:12:25 03:45 PM',
+            updatedTime: '18:12:25 03:46 PM',
+            customerName: 'Maria Garcia',
+            customerMobile: '91765432109',
+            merchantName: '3344556',
+            merchantMobile: '91988776655',
+            merchantLocality: 'West End',
+            deliveryProvider: 'BLUEDART',
+            status: 'DESPATCHED',
+            category: 'Food',
+            deliveryType: 'GatiMitra',
+            userType: 'Bad'
+        },
+        {
+            id: 'GM1006',
+            action: 'Process Order',
+            routedto: 'scottphillips@gatimitra.in',
+            orderTime: '18:12:25 04:10 PM',
+            updatedTime: '18:12:25 04:11 PM',
+            customerName: 'Robert Wilson',
+            customerMobile: '91987654321',
+            merchantName: '4455667',
+            merchantMobile: '91977665544',
+            merchantLocality: 'East Side',
+            deliveryProvider: 'GATIMITRA_DIRECT',
+            status: 'ACCEPTED',
+            category: 'Grocery',
+            deliveryType: 'GatiMitra',
+            userType: 'Very Good'
+        },
+        {
+            id: 'GM1007',
+            action: 'Dispatch Order',
+            routedto: 'gregoryturner@gatimitra.in',
+            orderTime: '18:12:25 04:25 PM',
+            updatedTime: '18:12:25 04:26 PM',
+            customerName: 'Bhim Pratap',
+            customerMobile: '7367878981',
+            merchantName: '5566778',
+            merchantMobile: '9113192405',
+            merchantLocality: 'North Point',
+            deliveryProvider: 'MERCHANT_DIRECT',
+            status: 'PAYMENT DONE',
+            category: 'Pharma',
+            deliveryType: 'Merchant',
+            userType: 'Premium'
+        },
+        {
+            id: 'GM1008',
+            action: 'Dispatch Order',
+            routedto: 'patrickcollins@gatimitra.in',
+            orderTime: '18:12:25 04:25 PM',
+            updatedTime: '18:12:25 04:26 PM',
+            customerName: 'Lisa Anderson',
+            customerMobile: '91976543218',
+            merchantName: '5566778',
+            merchantMobile: '91966554433',
+            merchantLocality: 'North Point',
+            deliveryProvider: 'MERCHANT_DIRECT',
+            status: 'PAYMENT DONE',
+            category: 'Fashion',
+            deliveryType: 'Merchant',
+            userType: 'Premium'
+        },
+        
+        // Pickup orders (category = 'Pickup')
+        {
+            id: 'GM2001',
+            action: 'Ready for Pickup',
+            routedto: 'benjaminedwards@gatimitra.in',
+            orderTime: '18:12:25 10:00 AM',
+            updatedTime: '18:12:25 10:05 AM',
+            customerName: 'Ravi Kumar',
+            customerMobile: '9012345678',
+            merchantName: '1234567',
+            merchantMobile: '91990088776',
+            merchantLocality: 'Pickup Zone A',
+            deliveryProvider: 'PICKUP',
+            status: 'ACCEPTED',
+            category: 'Pickup',
+            deliveryType: 'GatiMitra',
+            userType: 'Premium'
+        },
+        {
+            id: 'GM2002',
+            action: 'Pickup Confirmed',
+            routedto: 'samuelmurphy@gatimitra.in',
+            orderTime: '18:12:25 11:30 AM',
+            updatedTime: '18:12:25 11:35 AM',
+            customerName: 'Suresh Menon',
+            customerMobile: '9123456780',
+            merchantName: '2345678',
+            merchantMobile: '91980077665',
+            merchantLocality: 'Pickup Zone B',
+            deliveryProvider: 'PICKUP',
+            status: 'DESPATCH READY',
+            category: 'Pickup',
+            deliveryType: 'Merchant',
+            userType: 'Very Good'
+        },
+        {
+            id: 'GM2003',
+            action: 'Pickup Completed',
+            routedto: 'nathanielbell@gatimitra.in',
+            orderTime: '18:12:25 02:00 PM',
+            updatedTime: '18:12:25 02:05 PM',
+            customerName: 'Gopal Krishnan',
+            customerMobile: '9234567891',
+            merchantName: '3456789',
+            merchantMobile: '91970066554',
+            merchantLocality: 'Pickup Zone C',
+            deliveryProvider: 'PICKUP',
+            status: 'DESPATCHED',
+            category: 'Pickup',
+            deliveryType: 'GatiMitra',
+            userType: 'Good'
+        },
+        
+        // Additional orders for comprehensive coverage
+        {
+            id: 'GM3001',
+            action: 'Quality Inspection',
+            routedto: 'christopherhill@gatimitra.in',
+            orderTime: '18:12:25 09:45 AM',
+            updatedTime: '18:12:25 09:50 AM',
+            customerName: 'Karan Malhotra',
+            customerMobile: '9345678902',
+            merchantName: '4567890',
+            merchantMobile: '91960055443',
+            merchantLocality: 'Premium Market',
+            deliveryProvider: 'GATIMITRA_DIRECT',
+            status: 'ACCEPTED',
+            category: 'Fashion',
+            deliveryType: 'GatiMitra',
+            userType: 'Premium'
+        },
+        {
+            id: 'GM3002',
+            action: 'Final Check',
+            routedto: 'anthonycooper@gatimitra.in',
+            orderTime: '18:12:25 01:15 PM',
+            updatedTime: '18:12:25 01:20 PM',
+            customerName: 'Vishal Desai',
+            customerMobile: '9456789013',
+            merchantName: '5678901',
+            merchantMobile: '91950044332',
+            merchantLocality: 'Business District',
+            deliveryProvider: 'MERCHANT_DIRECT',
+            status: 'PAYMENT DONE',
+            category: 'Grocery',
+            deliveryType: 'Merchant',
+            userType: 'Very Good'
+        },
+        {
+            id: 'GM3003',
+            action: 'Packaging Done',
+            routedto: 'justinrichardson@gatimitra.in',
+            orderTime: '18:12:25 03:30 PM',
+            updatedTime: '18:12:25 03:35 PM',
+            customerName: 'Alok Pandey',
+            customerMobile: '9567890124',
+            merchantName: '6789012',
+            merchantMobile: '91940033221',
+            merchantLocality: 'Residential Area',
+            deliveryProvider: 'DELHIVERY',
+            status: 'DESPATCH READY',
+            category: 'Pharma',
+            deliveryType: 'GatiMitra',
+            userType: 'Good'
+        },
+        {
+            id: 'GM3004',
+            action: 'Out for Delivery',
+            routedto: 'jonathancarter@gatimitra.in',
+            orderTime: '18:12:25 05:45 PM',
+            updatedTime: '18:12:25 05:50 PM',
+            customerName: 'Manoj Tiwari',
+            customerMobile: '9678901235',
+            merchantName: '7890123',
+            merchantMobile: '91930022110',
+            merchantLocality: 'Industrial Zone',
+            deliveryProvider: 'BLUEDART',
+            status: 'DESPATCHED',
+            category: 'Food',
+            deliveryType: 'Merchant',
+            userType: 'Bad'
+        }
+    ];
+
+    document.addEventListener('DOMContentLoaded', function() {
+        // Initialize state with localStorage persistence
+        let selectedFilters = new Map(); // Filters selected but not applied
+        let appliedFilters = new Map(); // Filters that are currently applied
+        let currentStatus = localStorage.getItem('currentStatus') || 'ACCEPTED'; // Persist status
+        let currentSearchTerm = localStorage.getItem('currentSearchTerm') || '';
+        let currentSearchType = localStorage.getItem('currentSearchType') || 'order_id';
+        
+        // NEW: Clear search input from localStorage on page load (fix for requirement #3)
+        localStorage.removeItem('currentSearchTerm');
+        localStorage.removeItem('currentSearchType');
+        
+        // Load applied filters from localStorage
+        function loadAppliedFilters() {
+            const savedFilters = localStorage.getItem('appliedFilters');
+            if (savedFilters) {
+                try {
+                    const filtersArray = JSON.parse(savedFilters);
+                    appliedFilters = new Map(filtersArray);
+                } catch (e) {
+                    console.error('Error loading filters from localStorage:', e);
+                }
+            }
+        }
+        
+        // Save applied filters to localStorage
+        function saveAppliedFilters() {
+            const filtersArray = Array.from(appliedFilters.entries());
+            localStorage.setItem('appliedFilters', JSON.stringify(filtersArray));
+        }
+        
+        // Load selected filters from localStorage
+        function loadSelectedFilters() {
+            const savedSelectedFilters = localStorage.getItem('selectedFilters');
+            if (savedSelectedFilters) {
+                try {
+                    const filtersArray = JSON.parse(savedSelectedFilters);
+                    selectedFilters = new Map(filtersArray);
+                } catch (e) {
+                    console.error('Error loading selected filters from localStorage:', e);
+                }
+            }
+        }
+        
+        // Save selected filters to localStorage
+        function saveSelectedFilters() {
+            const filtersArray = Array.from(selectedFilters.entries());
+            localStorage.setItem('selectedFilters', JSON.stringify(filtersArray));
+        }
+        
+        // Save current status to localStorage
+        function saveCurrentStatus() {
+            localStorage.setItem('currentStatus', currentStatus);
+        }
+        
+        // Save current search term to localStorage
+        function saveCurrentSearchTerm() {
+            localStorage.setItem('currentSearchTerm', currentSearchTerm);
+        }
+        
+        // Save current search type to localStorage
+        function saveCurrentSearchType() {
+            localStorage.setItem('currentSearchType', currentSearchType);
+        }
+        
+        // Load all saved state
+        function loadSavedState() {
+            loadAppliedFilters();
+            loadSelectedFilters();
+            
+            // Clear search input on page load (requirement #3)
+            searchInput.value = '';
+            currentSearchTerm = '';
+            
+            // Update search type dropdown to default
+            searchType.value = 'order_id';
+            currentSearchType = 'order_id';
+            
+            // Hide search results indicator
+            searchResultsIndicator.classList.remove('active');
+        }
+        
+        // DOM Elements
+        const tableBody = document.getElementById('tableBody');
+        const profileDropdown = document.getElementById('profileDropdown');
+        const profileBtn = document.getElementById('profileBtn');
+        const viewSessionBtn = document.getElementById('viewSession');
+        const sessionModal = document.getElementById('sessionModal');
+        const closeSessionModal = document.getElementById('closeSessionModal');
+        const closeSessionBtn = document.getElementById('closeSessionBtn');
+        const logoutFromModal = document.getElementById('logoutFromModal');
+        const logoutOption = document.getElementById('logoutOption');
+        const logoutModal = document.getElementById('logoutModal');
+        const cancelLogout = document.getElementById('cancelLogout');
+        const sendAndClose = document.getElementById('sendAndClose');
+        const statusTabs = document.querySelectorAll('.status-tab');
+        const refreshBtn = document.getElementById('refreshBtn');
+        const searchBtn = document.getElementById('searchBtn');
+        const searchInput = document.getElementById('searchInput');
+        const searchType = document.getElementById('searchType');
+        const applyFilterBtn = document.getElementById('applyFilter');
+        const appliedFiltersContainer = document.getElementById('appliedFilters');
+        const categoryBtns = document.querySelectorAll('.category-btn[data-filter-type]');
+        const pickupBtn = document.getElementById('pickupBtn');
+        const deliveryBtn = document.getElementById('deliveryBtn');
+        const userTypeBtn = document.getElementById('userTypeBtn');
+        const clearFiltersBtn = document.getElementById('clearFiltersBtn');
+        const searchResultsIndicator = document.getElementById('searchResultsIndicator');
+        const searchQueryText = document.getElementById('searchQueryText');
+        const clearSearchBtn = document.getElementById('clearSearchBtn');
+        const dashboardType = document.getElementById('dashboardType');
+        const orderCountElement = document.getElementById('orderCount');
+        
+        // NEW: Popup Elements
+        const deliveryPopup = document.getElementById('deliveryPopup');
+        const deliveryPopupItems = document.querySelectorAll('#deliveryPopup .delivery-popup-item');
+        
+        const userTypePopup = document.getElementById('userTypePopup');
+        const userTypePopupItems = document.querySelectorAll('#userTypePopup .user-type-popup-item');
+
+        // Initialize table with data and saved state
+        function initializeTable() {
+            loadSavedState();
+            updateUIFromSavedState();
+            
+            // Ensure current status tab is active and show its data (requirement #4)
+            renderTable(orderData.filter(order => order.status === currentStatus));
+            updateOrderCount();
+        }
+
+        // Update UI from saved state
+        function updateUIFromSavedState() {
+            // Update status tabs (ensure current status is active)
+            statusTabs.forEach(tab => {
+                if (tab.getAttribute('data-status') === currentStatus) {
+                    tab.classList.add('active');
+                } else {
+                    tab.classList.remove('active');
+                }
+            });
+            
+            // Update category buttons
+            categoryBtns.forEach(btn => {
+                const filterType = btn.getAttribute('data-filter-type');
+                const filterValue = btn.getAttribute('data-filter-value');
+                const filterKey = `${filterType}|${filterValue}`;
+                
+                if (appliedFilters.has(filterKey) || selectedFilters.has(filterKey)) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+            
+            // Update pickup button
+            const pickupKey = 'pickup|Pickup';
+            if (appliedFilters.has(pickupKey) || selectedFilters.has(pickupKey)) {
+                pickupBtn.classList.add('active');
+            } else {
+                pickupBtn.classList.remove('active');
+            }
+            
+            // Update delivery popup checkboxes
+            deliveryPopupItems.forEach(item => {
+                const value = item.getAttribute('data-value');
+                const filterKey = `delivery|${value}`;
+                
+                if (appliedFilters.has(filterKey) || selectedFilters.has(filterKey)) {
+                    item.classList.add('selected');
+                } else {
+                    item.classList.remove('selected');
+                }
+            });
+            
+            // Update user type popup checkboxes
+            userTypePopupItems.forEach(item => {
+                const value = item.getAttribute('data-value');
+                const filterKey = `userType|${value}`;
+                
+                if (appliedFilters.has(filterKey) || selectedFilters.has(filterKey)) {
+                    item.classList.add('selected');
+                } else {
+                    item.classList.remove('selected');
+                }
+            });
+            
+            // Update button states
+            updateButtonStates();
+            renderSelectedFilterTags();
+        }
+
+        // Get search type display name
+        function getSearchTypeDisplayName(searchTypeValue) {
+            const displayNames = {
+                'order_id': 'Order ID',
+                'merchant_id': 'Merchant ID',
+                'user_no': 'User Number',
+                'third_party_id': 'Third Party Order ID'
+            };
+            return displayNames[searchTypeValue] || 'Search';
+        }
+
+        // Update search results display
+        function updateSearchResultsDisplay(searchTerm, searchTypeValue) {
+            const searchTypeName = getSearchTypeDisplayName(searchTypeValue);
+            searchQueryText.textContent = `${searchTypeName}: "${searchTerm}"`;
+        }
+
+        // Render table with data - UPDATED: Order ID को क्लिक करने पर orderpage.html पर redirect करें
+        function renderTable(data) {
+            tableBody.innerHTML = '';
+            
+            if (data.length === 0) {
+                tableBody.innerHTML = `
+                    <tr>
+                        <td colspan="11" style="text-align: center; padding: 40px; color: var(--neutral-gray);">
+                            <i class="fas fa-inbox" style="font-size: 48px; margin-bottom: 15px; display: block;"></i>
+                            No orders found matching your criteria
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+            
+            data.forEach(order => {
+                const statusClass = getStatusClass(order.status);
+                
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>
+                        <a href="orderpage.html" target="_blank" class="status-badge ${statusClass} order-id-link" data-order-id="${order.id}">
+                            ${order.id}
+                        </a>
+                    </td>
+                    <td>${order.action}</td>
+                    <td>${order.routedto}</td>
+                    <td>${order.orderTime}</td>
+                    <td>${order.updatedTime}</td>
+                    <td>${order.customerName}</td>
+                    <td>${order.customerMobile}</td>
+                    <td>${order.merchantName}</td>
+                    <td>${order.merchantMobile}</td>
+                    <td>${order.merchantLocality}</td>
+                    <td>${order.deliveryProvider}</td>
+                `;
+                
+                // Highlight row if it matches current search
+                if (currentSearchTerm && orderMatchesSearch(order, currentSearchTerm)) {
+                    row.style.backgroundColor = 'var(--primary-light)';
+                    row.style.borderLeft = '4px solid var(--primary-mint)';
+                }
+                
+                tableBody.appendChild(row);
+            });
+            
+            // Order ID links के लिए click event add करें
+            document.querySelectorAll('.order-id-link').forEach(link => {
+                link.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    const orderId = this.getAttribute('data-order-id');
+                    const newTab = window.open('orderpage.html', '_blank');
+                    
+                    // Notification show करें
+                    showNotification(`Opening order details for: ${orderId}`, 'info');
+                    
+                    // Optionally, you can pass the order ID as a parameter
+                    setTimeout(() => {
+                        if (newTab) {
+                            // यहाँ आप URL parameters भेज सकते हैं
+                            // newTab.location.href = `orderpage.html?order_id=${orderId}`;
+                        }
+                    }, 100);
+                });
+            });
+            
+            // Add click events to status badges (for old functionality, optional)
+            document.querySelectorAll('.status-badge').forEach(badge => {
+                badge.addEventListener('click', function(e) {
+                    // अब यह event order-id-link द्वारा handle किया जाएगा
+                    // पुराना notification बंद करें
+                    // e.stopPropagation();
+                    // const orderId = this.textContent.trim();
+                    // showNotification(`Checking file for order: ${orderId}`, 'info');
+                });
+            });
+        }
+
+        // Get status class for badge
+        function getStatusClass(status) {
+            switch(status) {
+                case 'PAYMENT DONE': return 'status-payment';
+                case 'ACCEPTED': return 'status-accepted';
+                case 'DESPATCH READY': return 'status-ready';
+                case 'DESPATCHED': return 'status-dispatched';
+                default: return 'status-ready';
+            }
+        }
+
+        // Get total orders across all statuses
+        function getTotalOrders() {
+            return orderData.length;
+        }
+
+        // Get orders count for current status (without filters)
+        function getCurrentStatusCount() {
+            return orderData.filter(order => order.status === currentStatus).length;
+        }
+
+        // Get filtered orders count for current status (with filters applied)
+        function getFilteredOrdersCount() {
+            return applyFilters(orderData).length;
+        }
+
+        // Update order count in table header
+        function updateOrderCount() {
+            const totalOrders = getTotalOrders(); // Total across all statuses
+            
+            // Get count for current status WITHOUT filters
+            const currentStatusCount = getCurrentStatusCount();
+            
+            // Get filtered count for current status (with filters applied)
+            const filteredCount = getFilteredOrdersCount();
+            
+            // Get status short form
+            let statusShort = '';
+            switch(currentStatus) {
+                case 'PAYMENT DONE': statusShort = 'PD'; break;
+                case 'ACCEPTED': statusShort = 'ACC'; break;
+                case 'DESPATCH READY': statusShort = 'DR'; break;
+                case 'DESPATCHED': statusShort = 'DES'; break;
+                default: statusShort = currentStatus;
+            }
+            
+            // NEW FORMAT: "StatusShort - FilteredCount / TotalOrders Overall"
+            orderCountElement.innerHTML = `
+                <i class="fas fa-check-circle" style="color: #10B981; margin-right: 5px;"></i>
+                <span>${statusShort} - ${filteredCount} / Out Of ${totalOrders}  </span>
+            `;
+        }
+
+        // Check if order matches search term across ALL columns
+        function orderMatchesSearch(order, searchTerm) {
+            if (!searchTerm) return true;
+            
+            const lowerSearchTerm = searchTerm.toLowerCase().trim();
+            
+            // Remove # prefix if user typed it
+            const cleanSearchTerm = lowerSearchTerm.startsWith('#') ? 
+                lowerSearchTerm.substring(1) : lowerSearchTerm;
+            
+            // Check all relevant properties of the order
+            const propertiesToSearch = [
+                'id',
+                'action',
+                'routedto',
+                'orderTime',
+                'updatedTime',
+                'customerName',
+                'customerMobile',
+                'merchantName',
+                'merchantMobile',
+                'merchantLocality',
+                'deliveryProvider',
+                'status',
+                'category',
+                'deliveryType',
+                'userType'
+            ];
+            
+            // Check if search term exists in any property
+            for (const prop of propertiesToSearch) {
+                if (order[prop] && String(order[prop]).toLowerCase().includes(cleanSearchTerm)) {
+                    return true;
+                }
+            }
+            
+            return false;
+        }
+
+        // Apply filters to data - FIXED: Search searches entire database
+        function applyFilters(data) {
+            let filteredData = [...data];
+            
+            // Apply search filter if active (searches entire database, ignores current status)
+            if (currentSearchTerm) {
+                filteredData = filteredData.filter(order => 
+                    orderMatchesSearch(order, currentSearchTerm)
+                );
+            } else {
+                // Only apply status filter when NOT searching
+                filteredData = filteredData.filter(order => order.status === currentStatus);
+            }
+            
+            // Group filters by type
+            const categoryFilters = [];
+            const deliveryFilters = [];
+            const userTypeFilters = [];
+            const pickupFilters = [];
+            
+            appliedFilters.forEach((value, key) => {
+                const [type, filterValue] = key.split('|');
+                
+                if (type === 'category') {
+                    categoryFilters.push(filterValue);
+                } else if (type === 'delivery') {
+                    deliveryFilters.push(filterValue);
+                } else if (type === 'userType') {
+                    userTypeFilters.push(filterValue);
+                } else if (type === 'pickup') {
+                    pickupFilters.push(filterValue);
+                }
+            });
+            
+            // Apply category filters with OR logic (multiple categories allowed)
+            if (categoryFilters.length > 0) {
+                filteredData = filteredData.filter(order => 
+                    categoryFilters.includes(order.category)
+                );
+            }
+            
+            // Apply delivery type filters with OR logic (multiple delivery types allowed)
+            if (deliveryFilters.length > 0) {
+                filteredData = filteredData.filter(order => 
+                    deliveryFilters.includes(order.deliveryType)
+                );
+            }
+            
+            // Apply user type filters with OR logic (multiple user types allowed)
+            if (userTypeFilters.length > 0) {
+                filteredData = filteredData.filter(order => 
+                    userTypeFilters.includes(order.userType)
+                );
+            }
+            
+            // Apply pickup filter (special case)
+            if (pickupFilters.length > 0) {
+                filteredData = filteredData.filter(order => 
+                    pickupFilters.includes(order.category)
+                );
+            }
+            
+            return filteredData;
+        }
+
+        // Update table based on current filters
+        function updateTable() {
+            const filteredData = applyFilters(orderData);
+            renderTable(filteredData);
+            updateOrderCount();
+        }
+
+        // Add selected filter (but not applied yet)
+        function addSelectedFilter(type, value) {
+            const filterKey = `${type}|${value}`;
+            
+            if (selectedFilters.has(filterKey)) {
+                selectedFilters.delete(filterKey);
+                renderSelectedFilterTags();
+                updateButtonStates();
+                saveSelectedFilters();
+                showNotification(`Filter removed: ${value}`, 'info');
+                return;
+            }
+            
+            selectedFilters.set(filterKey, { type, value });
+            renderSelectedFilterTags();
+            updateButtonStates();
+            saveSelectedFilters();
+            showNotification(`Filter added: ${value}`, 'info');
+        }
+
+        // Remove selected filter
+        function removeSelectedFilter(filterKey) {
+            // Remove from both selected and applied filters
+            selectedFilters.delete(filterKey);
+            appliedFilters.delete(filterKey);
+            
+            // Save to localStorage
+            saveSelectedFilters();
+            saveAppliedFilters();
+            
+            // Update UI
+            renderSelectedFilterTags();
+            updateButtonStates();
+            updateTable();
+            
+            // Also remove from UI selection
+            const [type, value] = filterKey.split('|');
+            
+            // Update UI for category buttons
+            if (type === 'category') {
+                document.querySelectorAll('.category-btn[data-filter-value="' + value + '"]').forEach(btn => {
+                    btn.classList.remove('active');
+                });
+            }
+            
+            // Update UI for delivery popup checkboxes
+            if (type === 'delivery') {
+                document.querySelectorAll('#deliveryPopup .delivery-popup-item[data-value="' + value + '"]').forEach(item => {
+                    item.classList.remove('selected');
+                });
+            }
+            
+            // Update UI for user type popup checkboxes
+            if (type === 'userType') {
+                document.querySelectorAll('#userTypePopup .user-type-popup-item[data-value="' + value + '"]').forEach(item => {
+                    item.classList.remove('selected');
+                });
+            }
+            
+            // Update UI for pickup button
+            if (type === 'pickup') {
+                pickupBtn.classList.remove('active');
+            }
+            
+            showNotification(`Filter removed: ${value}`, 'info');
+        }
+
+        // Apply all selected filters
+        function applySelectedFilters() {
+            appliedFilters = new Map(selectedFilters);
+            updateTable();
+            renderSelectedFilterTags();
+            saveAppliedFilters();
+            showNotification(`${appliedFilters.size} filter(s) applied`, 'success');
+        }
+
+        // Clear all filters
+        function clearAllFilters() {
+            selectedFilters.clear();
+            appliedFilters.clear();
+            renderSelectedFilterTags();
+            updateTable();
+            resetAllUI();
+            saveSelectedFilters();
+            saveAppliedFilters();
+            showNotification('All filters cleared', 'success');
+        }
+
+        // Render selected filter tags
+        function renderSelectedFilterTags() {
+            appliedFiltersContainer.innerHTML = '';
+            
+            // Combine selected and applied filters for display
+            const allFilters = new Map([...selectedFilters, ...appliedFilters]);
+            
+            if (allFilters.size === 0) {
+                return;
+            }
+            
+            allFilters.forEach((filter, key) => {
+                const isApplied = appliedFilters.has(key);
+                const tag = document.createElement('div');
+                tag.className = 'filter-tag';
+                tag.innerHTML = `
+                    ${filter.value}
+                    <span class="remove-tag" data-key="${key}">
+                        <i class="fas fa-times"></i>
+                    </span>
+                `;
+                
+                // Style applied filters differently
+                if (isApplied) {
+                    tag.style.background = '#10B981';
+                    tag.style.color = 'white';
+                    tag.style.borderColor = '#10B981';
+                }
+                
+                appliedFiltersContainer.appendChild(tag);
+            });
+            
+            // Add click events to remove buttons
+            document.querySelectorAll('.remove-tag').forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    const key = this.getAttribute('data-key');
+                    removeSelectedFilter(key);
+                });
+            });
+        }
+
+    // Reset all UI elements
+        function resetAllUI() {
+            // Reset category buttons (Food, Fashion, Grocery, Pharma)
+            categoryBtns.forEach(btn => {
+                if (btn.id !== 'pickupBtn') {
+                    btn.classList.remove('active');
+                }
+            });
+            
+            // Reset pickup button
+            pickupBtn.classList.remove('active');
+            
+            // Reset delivery button
+            deliveryBtn.classList.remove('active');
+            deliveryBtn.textContent = 'Delivery';
+            
+            // Reset user type button
+            userTypeBtn.classList.remove('active');
+            userTypeBtn.textContent = 'User-Type';
+            
+            // Reset popup checkboxes
+            deliveryPopupItems.forEach(item => {
+                item.classList.remove('selected');
+            });
+            
+            userTypePopupItems.forEach(item => {
+                item.classList.remove('selected');
+            });
+            
+            // Close popups
+            deliveryPopup.classList.remove('active');
+            userTypePopup.classList.remove('active');
+            
+            // Update button states
+            updateButtonStates();
+        }
+
+        // Update button states based on selections
+        function updateButtonStates() {
+            // Get counts for selected filters only (not applied ones)
+            const selectedDeliveryFilters = Array.from(selectedFilters.keys())
+                .filter(key => key.startsWith('delivery|'))
+                .map(key => key.split('|')[1]);
+            
+            const selectedUserTypeFilters = Array.from(selectedFilters.keys())
+                .filter(key => key.startsWith('userType|'))
+                .map(key => key.split('|')[1]);
+            
+            // Update delivery button text if any delivery filters are selected
+            if (selectedDeliveryFilters.length > 0) {
+                deliveryBtn.textContent = `Delivery (${selectedDeliveryFilters.length})`;
+                deliveryBtn.classList.add('active');
+            } else {
+                // Check if any delivery filters are applied
+                const appliedDeliveryFilters = Array.from(appliedFilters.keys())
+                    .filter(key => key.startsWith('delivery|'))
+                    .map(key => key.split('|')[1]);
+                
+                if (appliedDeliveryFilters.length > 0) {
+                    deliveryBtn.textContent = `Delivery (${appliedDeliveryFilters.length})`;
+                    deliveryBtn.classList.add('active');
+                } else {
+                    deliveryBtn.textContent = 'Delivery';
+                    deliveryBtn.classList.remove('active');
+                }
+            }
+            
+            // Update user type button text if any user type filters are selected
+            if (selectedUserTypeFilters.length > 0) {
+                userTypeBtn.textContent = `User-Type (${selectedUserTypeFilters.length})`;
+                userTypeBtn.classList.add('active');
+            } else {
+                // Check if any user type filters are applied
+                const appliedUserTypeFilters = Array.from(appliedFilters.keys())
+                    .filter(key => key.startsWith('userType|'))
+                    .map(key => key.split('|')[1]);
+                
+                if (appliedUserTypeFilters.length > 0) {
+                    userTypeBtn.textContent = `User-Type (${appliedUserTypeFilters.length})`;
+                    userTypeBtn.classList.add('active');
+                } else {
+                    userTypeBtn.textContent = 'User-Type';
+                    userTypeBtn.classList.remove('active');
+                }
+            }
+        }
+
+        // Show notification
+        function showNotification(message, type) {
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                padding: 15px 25px;
+                background: ${type === 'success' ? '#10B981' : type === 'error' ? '#EF4444' : '#3B82F6'};
+                color: white;
+                border-radius: 8px;
+                font-weight: 600;
+                box-shadow: var(--shadow-hover);
+                z-index: 3000;
+                animation: slideIn 0.3s ease;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                min-width: 300px;
+                max-width: 400px;
+            `;
+            
+            const icon = type === 'success' ? 'fa-check-circle' : type === 'error' ? 'fa-exclamation-circle' : 'fa-info-circle';
+            notification.innerHTML = `<i class="fas ${icon}"></i> <span>${message}</span>`;
+            
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.style.animation = 'slideOut 0.3s ease';
+                setTimeout(() => {
+                    if (notification.parentNode) {
+                        document.body.removeChild(notification);
+                    }
+                }, 300);
+            }, 3000);
+        }
+
+        // Add CSS for notification animations
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes slideIn {
+                from { transform: translateX(100%); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+            @keyframes slideOut {
+                from { transform: translateX(0); opacity: 1; }
+                to { transform: translateX(100%); opacity: 0; }
+            }
+            
+            /* Order ID link styling */
+            .order-id-link {
+                text-decoration: none;
+                display: inline-block;
+                cursor: pointer;
+            }
+            
+            .order-id-link:hover {
+                transform: scale(1.05);
+                box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            }
+        `;
+        document.head.appendChild(style);
+
+        // Profile Dropdown Toggle
+        profileBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            profileDropdown.classList.toggle('active');
+        });
+
+        // Delivery Button Click - Open Popup (Attached to button)
+        deliveryBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            
+            // Close other popups
+            userTypePopup.classList.remove('active');
+            profileDropdown.classList.remove('active');
+            
+            // Position the popup relative to the button
+            const rect = this.getBoundingClientRect();
+            const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+            const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+            
+            deliveryPopup.style.left = (rect.left + scrollLeft) + 'px';
+            deliveryPopup.style.top = (rect.bottom + scrollTop) + 'px';
+            
+            // Update popup checkboxes based on current selections
+            deliveryPopupItems.forEach(item => {
+                const value = item.getAttribute('data-value');
+                const filterKey = `delivery|${value}`;
+                
+                if (selectedFilters.has(filterKey) || appliedFilters.has(filterKey)) {
+                    item.classList.add('selected');
+                } else {
+                    item.classList.remove('selected');
+                }
+            });
+            
+            deliveryPopup.classList.toggle('active');
+        });
+
+        // User Type Button Click - Open Popup (Attached to button)
+        userTypeBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            
+            // Close other popups
+            deliveryPopup.classList.remove('active');
+            profileDropdown.classList.remove('active');
+            
+            // Position the popup relative to the userTypeBtn button
+            const rect = this.getBoundingClientRect();
+            const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+            const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+            
+            // Position below the user type button
+            userTypePopup.style.left = (rect.left + scrollLeft) + 'px';
+            userTypePopup.style.top = (rect.bottom + scrollTop) + 'px';
+            
+            // Update popup checkboxes based on current selections
+            userTypePopupItems.forEach(item => {
+                const value = item.getAttribute('data-value');
+                const filterKey = `userType|${value}`;
+                
+                if (selectedFilters.has(filterKey) || appliedFilters.has(filterKey)) {
+                    item.classList.add('selected');
+                } else {
+                    item.classList.remove('selected');
+                }
+            });
+            
+            userTypePopup.classList.toggle('active');
+        });
+
+        // Delivery Popup Item Click - Immediate selection without Save button
+        deliveryPopupItems.forEach(item => {
+            item.addEventListener('click', function() {
+                const value = this.getAttribute('data-value');
+                this.classList.toggle('selected');
+                
+                // Immediately add/remove filter when checkbox is clicked
+                if (this.classList.contains('selected')) {
+                    addSelectedFilter('delivery', value);
+                } else {
+                    removeSelectedFilter(`delivery|${value}`);
+                }
+                
+                // Keep popup open for multiple selections
+            });
+        });
+
+        // User Type Popup Item Click - Immediate selection without Save button
+        userTypePopupItems.forEach(item => {
+            item.addEventListener('click', function() {
+                const value = this.getAttribute('data-value');
+                this.classList.toggle('selected');
+                
+                // Immediately add/remove filter when checkbox is clicked
+                if (this.classList.contains('selected')) {
+                    addSelectedFilter('userType', value);
+                } else {
+                    removeSelectedFilter(`userType|${value}`);
+                }
+                
+                // Keep popup open for multiple selections
+            });
+        });
+
+        // Close popups when clicking outside
+        document.addEventListener('click', function(e) {
+            if (!profileDropdown.contains(e.target)) {
+                profileDropdown.classList.remove('active');
+            }
+            
+            if (!deliveryBtn.contains(e.target) && !deliveryPopup.contains(e.target)) {
+                deliveryPopup.classList.remove('active');
+            }
+            
+            if (!userTypeBtn.contains(e.target) && !userTypePopup.contains(e.target)) {
+                userTypePopup.classList.remove('active');
+            }
+        });
+
+        // Close popups with Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                sessionModal.classList.remove('active');
+                logoutModal.classList.remove('active');
+                deliveryPopup.classList.remove('active');
+                userTypePopup.classList.remove('active');
+                profileDropdown.classList.remove('active');
+                document.body.style.overflow = 'auto';
+            }
+        });
+
+        // Open Session Modal
+        viewSessionBtn.addEventListener('click', function() {
+            profileDropdown.classList.remove('active');
+            sessionModal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        });
+
+        // Close Session Modal
+        closeSessionModal.addEventListener('click', function() {
+            sessionModal.classList.remove('active');
+            document.body.style.overflow = 'auto';
+        });
+
+        closeSessionBtn.addEventListener('click', function() {
+            sessionModal.classList.remove('active');
+            document.body.style.overflow = 'auto';
+        });
+
+        // Logout from Session Modal
+        logoutFromModal.addEventListener('click', function() {
+            sessionModal.classList.remove('active');
+            logoutModal.classList.add('active');
+        });
+
+        // Logout from Profile Dropdown
+        logoutOption.addEventListener('click', function() {
+            profileDropdown.classList.remove('active');
+            logoutModal.classList.add('active');
+        });
+
+        // Logout Confirmation Modal
+        cancelLogout.addEventListener('click', function() {
+            logoutModal.classList.remove('active');
+            document.body.style.overflow = 'auto';
+        });
+
+        sendAndClose.addEventListener('click', function() {
+            logoutModal.classList.remove('active');
+            showNotification('Session report sent to your email. Logging out...', 'info');
+            
+            setTimeout(() => {
+                showNotification('Report sent and session closed successfully!', 'success');
+            }, 2000);
+        });
+
+        // Status tabs interaction
+        statusTabs.forEach(tab => {
+            tab.addEventListener('click', function() {
+                statusTabs.forEach(t => t.classList.remove('active'));
+                this.classList.add('active');
+                
+                currentStatus = this.getAttribute('data-status');
+                saveCurrentStatus();
+                
+                // Clear search when changing status
+                if (currentSearchTerm) {
+                    currentSearchTerm = '';
+                    searchInput.value = '';
+                    searchResultsIndicator.classList.remove('active');
+                }
+                
+                updateTable();
+            });
+        });
+
+        // Refresh button
+        refreshBtn.addEventListener('click', function() {
+            this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Refreshing...';
+            this.disabled = true;
+            
+            setTimeout(() => {
+                this.innerHTML = '<i class="fas fa-sync-alt"></i> Refresh Data';
+                this.disabled = false;
+                
+                // Keep current status and filters
+                updateTable();
+                showNotification('Data refreshed successfully!', 'success');
+            }, 1000);
+        });
+
+        // Search functionality
+        searchBtn.addEventListener('click', performSearch);
+        searchInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                performSearch();
+            }
+        });
+
+        searchInput.addEventListener('input', function() {
+            if (this.value.trim() === '') {
+                clearSearch();
+            }
+        });
+
+        function performSearch() {
+            const searchTerm = searchInput.value.trim();
+            currentSearchType = searchType.value;
+            
+            if (!searchTerm) {
+                showNotification('Please enter a search term', 'error');
+                return;
+            }
+            
+            currentSearchTerm = searchTerm;
+            
+            // Update search results display
+            updateSearchResultsDisplay(searchTerm, currentSearchType);
+            searchResultsIndicator.classList.add('active');
+            
+            searchBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+            searchBtn.disabled = true;
+            
+            setTimeout(() => {
+                searchBtn.innerHTML = '<i class="fas fa-search"></i>';
+                searchBtn.disabled = false;
+                updateTable();
+                
+                const filteredData = applyFilters(orderData);
+                if (filteredData.length > 0) {
+                    showNotification(`Found ${filteredData.length} matching order(s)`, 'success');
+                } else {
+                    showNotification('No results found for your search', 'info');
+                }
+            }, 500);
+        }
+
+        function clearSearch() {
+            currentSearchTerm = '';
+            searchInput.value = '';
+            searchResultsIndicator.classList.remove('active');
+            updateTable();
+            showNotification('Search cleared', 'info');
+        }
+
+        clearSearchBtn.addEventListener('click', clearSearch);
+
+        // Category buttons interaction (Food, Fashion, Grocery, Pharma, Pickup)
+        categoryBtns.forEach(btn => {
+            btn.addEventListener('click', function() {
+                const filterType = this.getAttribute('data-filter-type');
+                const filterValue = this.getAttribute('data-filter-value');
+                
+                // Toggle active state
+                this.classList.toggle('active');
+                
+                if (this.classList.contains('active')) {
+                    addSelectedFilter(filterType, filterValue);
+                } else {
+                    removeSelectedFilter(`${filterType}|${filterValue}`);
+                }
+            });
+        });
+
+        // Pickup button interaction
+        pickupBtn.addEventListener('click', function() {
+            this.classList.toggle('active');
+            
+            if (this.classList.contains('active')) {
+                addSelectedFilter('pickup', 'Pickup');
+            } else {
+                removeSelectedFilter('pickup|Pickup');
+            }
+        });
+
+        // Apply Filter button
+        applyFilterBtn.addEventListener('click', function() {
+            applySelectedFilters();
+        });
+
+        // Clear all filters button
+        clearFiltersBtn.addEventListener('click', clearAllFilters);
+
+        // Dashboard type change
+        dashboardType.addEventListener('change', function() {
+            showNotification(`Dashboard changed to: ${this.value}`, 'info');
+        });
+
+        // View Profile button
+        document.getElementById('viewProfile').addEventListener('click', function() {
+            profileDropdown.classList.remove('active');
+            showNotification('Profile view feature coming soon!', 'info');
+        });
+
+        // Update session time
+        function updateSessionTime() {
+            const sessionTimeElement = document.getElementById('sessionTime');
+            let time = sessionTimeElement.textContent.split(': ')[1];
+            let [hours, minutes] = time.split('h ');
+            minutes = minutes.split('m')[0];
+            
+            minutes = parseInt(minutes) + 1;
+            if (minutes >= 60) {
+                hours = parseInt(hours) + 1;
+                minutes = 0;
+            }
+            
+            sessionTimeElement.textContent = `Session Time: ${hours}h ${minutes}m`;
+        }
+        
+        setInterval(updateSessionTime, 60000);
+
+        // Initialize the table
+        initializeTable();
+    });
+</script>
+</body>
+</html>

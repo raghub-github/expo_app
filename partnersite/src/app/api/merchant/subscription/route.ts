@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Store not found' }, { status: 404 })
     }
 
-    // Get active subscription (store-specific or merchant-level)
+    // Get active subscription (store-specific)
     const { data: subscription } = await supabase
       .from('merchant_subscriptions')
       .select(`
@@ -45,7 +45,7 @@ export async function GET(req: NextRequest) {
         merchant_plans (*)
       `)
       .eq('merchant_id', store.parent_id)
-      .or(`store_id.is.null,store_id.eq.${store.id}`)
+      .eq('store_id', store.id)
       .eq('is_active', true)
       .eq('subscription_status', 'ACTIVE')
       .gt('expiry_date', new Date().toISOString())
@@ -53,27 +53,56 @@ export async function GET(req: NextRequest) {
       .limit(1)
       .maybeSingle()
 
-    if (!subscription) {
-      // Default plan when no active subscription: first active plan by display_order (works with any number of plans)
-      const { data: defaultPlan } = await supabase
-        .from('merchant_plans')
-        .select('*')
-        .eq('is_active', true)
-        .order('display_order', { ascending: true, nullsFirst: false })
-        .limit(1)
-        .maybeSingle()
-
+    if (subscription) {
       return NextResponse.json({
-        subscription: null,
-        plan: defaultPlan ?? null,
-        isActive: false,
+        subscription,
+        plan: subscription.merchant_plans,
+        isActive: true,
+        isExpired: false,
+        expiredSubscription: null,
       })
     }
 
+    const { data: latestSubscription } = await supabase
+      .from('merchant_subscriptions')
+      .select(`
+        *,
+        merchant_plans (*)
+      `)
+      .eq('merchant_id', store.parent_id)
+      .eq('store_id', store.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    const now = Date.now()
+    const expiryRaw = latestSubscription?.billing_end_at ?? latestSubscription?.expiry_date
+    const expiryMs = expiryRaw ? new Date(String(expiryRaw)).getTime() : NaN
+    const isExpired =
+      !!latestSubscription &&
+      (
+        String(latestSubscription.subscription_status ?? '').toUpperCase() === 'EXPIRED' ||
+        String(latestSubscription.subscription_status ?? '').toUpperCase() === 'CANCELLED' ||
+        (Number.isFinite(expiryMs) && expiryMs <= now)
+      )
+
+    // Default plan when no active subscription
+    const { data: defaultPlan } = await supabase
+      .from('merchant_plans')
+      .select('*')
+      .eq('is_active', true)
+      .order('display_order', { ascending: true, nullsFirst: false })
+      .limit(1)
+      .maybeSingle()
+
     return NextResponse.json({
-      subscription,
-      plan: subscription.merchant_plans,
-      isActive: true,
+      subscription: null,
+      expiredSubscription: isExpired ? latestSubscription : null,
+      plan: isExpired
+        ? (latestSubscription?.merchant_plans ?? defaultPlan ?? null)
+        : (defaultPlan ?? null),
+      isActive: false,
+      isExpired,
     })
   } catch (e: unknown) {
     return NextResponse.json(

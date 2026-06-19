@@ -25,6 +25,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import * as WebBrowser from "expo-web-browser";
+import { getConfig } from "@/config/env";
 
 export type RazorpayPaymentResult = {
   razorpayPaymentId: string;
@@ -69,15 +70,7 @@ function normalizeContact(raw: string | null | undefined): string {
 }
 
 function getApiBaseUrl(): string {
-  const explicit = (process.env.EXPO_PUBLIC_API_BASE_URL ?? "").trim();
-  if (explicit) return explicit.replace(/\/+$/, "");
-  const host = (process.env.EXPO_PUBLIC_DEV_HOST ?? "").trim();
-  const port = (process.env.EXPO_PUBLIC_API_PORT ?? "3000").trim();
-  if (host) return `http://${host}:${port}`;
-  // Production safety net: if EAS missed baking in the URL, fall back to the
-  // public domain instead of localhost (which is unreachable from a phone).
-  if (!__DEV__) return "https://api.gatimitra.com";
-  return "http://localhost:3000";
+  return getConfig().apiBaseUrl.replace(/\/+$/, "");
 }
 
 function buildHostedCheckoutUrl(params: {

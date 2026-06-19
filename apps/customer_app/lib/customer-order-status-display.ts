@@ -43,12 +43,64 @@ export function getActiveOrderBadge(status: string): {
 }
 
 /** Short label for history list rows. */
-export function getHistoryOrderStatusLabel(status: string): string {
+export function getHistoryOrderStatusLabel(
+  status: string,
+  options?: { orderType?: string | null }
+): string {
   const s = status.toUpperCase();
   if (s === "CANCELLED") return "Cancelled";
   if (s === "PAYMENT_FAILED" || s === "FAILED") return "Payment failed";
-  if (s === "DELIVERED") return "Delivered";
+  if (s === "DELIVERED") {
+    const type = String(options?.orderType ?? "").trim().toLowerCase();
+    if (type === "person_ride" || type === "ride") return "Completed";
+    return "Delivered";
+  }
   return status.replace(/_/g, " ").toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
+}
+
+const GENERIC_CANCELLATION_REASONS = new Set([
+  "",
+  "order cancelled",
+  "order cancel",
+  "cancelled",
+  "canceled",
+]);
+
+/** Primary cancellation line for history cards and banners. */
+export function getCustomerOrderCancellationDisplayLabel(input: {
+  status: string;
+  paymentStatus?: string | null;
+  cancellationReason?: string | null;
+  cancelledByLabel?: string | null;
+}): string {
+  const statusNorm = normalizeCustomerOrderStatus(input.status);
+  if (statusNorm === "PAYMENT_FAILED" || statusNorm === "FAILED") {
+    return "Payment failed";
+  }
+  if (
+    input.paymentStatus?.trim().toLowerCase() === "failed" &&
+    statusNorm !== "CANCELLED"
+  ) {
+    return "Payment failed";
+  }
+  if (statusNorm !== "CANCELLED") {
+    return getHistoryOrderStatusLabel(input.status);
+  }
+
+  const reason = (input.cancellationReason ?? "").trim();
+  const label = (input.cancelledByLabel ?? "").trim();
+  const reasonIsGeneric = GENERIC_CANCELLATION_REASONS.has(reason.toLowerCase());
+
+  if (reason && !reasonIsGeneric) {
+    if (label === "Cancelled by me") return reason;
+    if (label && !reason.toLowerCase().includes(label.toLowerCase())) {
+      return `${label} · ${reason}`;
+    }
+    return reason;
+  }
+
+  if (label) return label;
+  return "Order cancelled";
 }
 
 /** Statuses where the order is with the rider en route to the customer. */
@@ -63,6 +115,17 @@ export function isCustomerOrderOnTheWayStatus(status: string | null | undefined)
     s === "IN_TRANSIT" ||
     s === "DISPATCHED"
   );
+}
+
+/** Live tracking — show delivery OTP from rider en-route through arrival until delivered. */
+export function shouldShowCustomerDeliveryOtp(
+  status: string | null | undefined,
+  deliveryOtp: string | null | undefined
+): boolean {
+  if (!deliveryOtp?.trim()) return false;
+  const s = normalizeCustomerOrderStatus(status);
+  if (isTerminalOrderStatus(s)) return false;
+  return isCustomerOrderOnTheWayStatus(s) || isRiderAtCustomerStatus(s);
 }
 
 /** Person-ride order (mobility), not food delivery. */
@@ -125,6 +188,25 @@ export function getPersonRideStatusBannerText(
   return "Ride in progress";
 }
 
+/** Person-ride started — captain en route to drop (post pickup OTP / start ride). */
+export function isPersonRideInProgressStatus(status: string | null | undefined): boolean {
+  const s = normalizeCustomerOrderStatus(status);
+  return (
+    s === "RIDE_IN_PROGRESS" ||
+    isCustomerOrderOnTheWayStatus(s) ||
+    isRiderAtCustomerStatus(s)
+  );
+}
+
+/** Customer should see drop-leg UI (map nav, drop address, no pickup PIN). */
+export function isPersonRideOnDropLeg(input: {
+  status: string | null | undefined;
+  rideStarted?: boolean | null;
+}): boolean {
+  if (input.rideStarted === true) return true;
+  return isPersonRideInProgressStatus(input.status);
+}
+
 /** Rider assigned but customer not picked up yet — show pre-trip tracking UI. */
 export function isRideAwaitingPickupStatus(status: string | null | undefined): boolean {
   const s = (status ?? "").trim().toUpperCase();
@@ -137,6 +219,163 @@ export function isRideAwaitingPickupStatus(status: string | null | undefined): b
     s === "ACCEPTED" ||
     s === "ASSIGNED"
   );
+}
+
+/** Statuses where the rider is at the merchant / picking up the order. */
+export function isRiderAtStoreStatus(status: string | null | undefined): boolean {
+  const s = normalizeCustomerOrderStatus(status);
+  return (
+    s === "REACHED_STORE" ||
+    s === "RIDER_AT_PICKUP" ||
+    s === "REACHED_MERCHANT" ||
+    s === "RIDER_AT_MERCHANT" ||
+    s === "REACHED_PICKUP" ||
+    s === "AT_PICKUP"
+  );
+}
+
+/** Rider marked arrived at customer drop — before OTP / handoff. */
+export function isRiderAtCustomerStatus(status: string | null | undefined): boolean {
+  const s = normalizeCustomerOrderStatus(status);
+  return s === "REACHED_CUSTOMER" || s === "RIDER_AT_DROP" || s === "AT_CUSTOMER";
+}
+
+/** Merchant accepted — kitchen prep in progress (no rider leg yet). */
+export function isMerchantPreparingStatus(status: string | null | undefined): boolean {
+  const s = normalizeCustomerOrderStatus(status);
+  return (
+    s === "ACCEPTED" ||
+    s === "PREPARING" ||
+    s === "READY_FOR_PICKUP" ||
+    s === "READY"
+  );
+}
+
+/** Large headline on the live food tracking screen (GatiMitra-style). */
+export function getCustomerOrderLiveHeadline(
+  status: string,
+  hasRider: boolean,
+  options?: {
+    merchantDelayed?: boolean;
+    etaContextLabel?: string | null;
+    riderReachedPickupAt?: string | null;
+  }
+): string {
+  const s = normalizeCustomerOrderStatus(status);
+
+  if (s === "DELIVERED") return "Delivered";
+  if (s === "CANCELLED") return "Order was cancelled";
+
+  if (isRiderAtCustomerStatus(s)) {
+    return "Rider has arrived";
+  }
+
+  if (isCustomerOrderOnTheWayStatus(s)) {
+    return "Order is on the way";
+  }
+
+  if (
+    isRiderAtStoreStatus(s) ||
+    (options?.riderReachedPickupAt && !isCustomerOrderOnTheWayStatus(s))
+  ) {
+    return "Picking up your order";
+  }
+
+  if (s === "RIDER_ASSIGNED" || s === "ASSIGNED") {
+    return "Rider heading to store";
+  }
+
+  if (
+    hasRider &&
+    !isRiderAtStoreStatus(s) &&
+    !options?.riderReachedPickupAt &&
+    (s === "ACCEPTED" || s === "PREPARING" || s === "ORDER_PLACED" || s === "CREATED")
+  ) {
+    return "Rider heading to store";
+  }
+
+  if (s === "SEARCHING_RIDER") {
+    return "Finding a delivery partner";
+  }
+
+  if (s === "READY_FOR_PICKUP" || s === "READY") {
+    return hasRider ? "Order is ready — rider on the way" : "Order is ready for pickup";
+  }
+
+  if (s === "PREPARING") {
+    if (options?.merchantDelayed) return "Restaurant is taking longer than expected";
+    return "Restaurant is preparing your order";
+  }
+
+  if (s === "ACCEPTED") {
+    if (options?.merchantDelayed) return "Restaurant is taking longer than expected";
+    return "Order accepted by restaurant";
+  }
+
+  if (isMerchantPreparingStatus(s)) {
+    if (options?.merchantDelayed) return "Restaurant is taking longer than expected";
+    return "Order Accepted & Being Prepared";
+  }
+
+  if (s === "ORDER_PLACED" || s === "PLACED" || s === "CREATED") {
+    return "Order placed successfully";
+  }
+
+  if (options?.merchantDelayed && options?.etaContextLabel) {
+    return options.etaContextLabel;
+  }
+
+  return "Order in progress";
+}
+
+/** ETA pill on the live tracking header — single minute value only. */
+export function getCustomerOrderEtaPillText(
+  etaMinutes: number | null | undefined,
+  options?: { merchantDelayed?: boolean; etaUpdated?: boolean; riderArrived?: boolean }
+): string {
+  if (options?.riderArrived) {
+    return "Reached your location";
+  }
+  if (etaMinutes != null && etaMinutes > 0) {
+    const mins = Math.round(etaMinutes);
+    const minLabel = mins === 1 ? "min" : "mins";
+    if (options?.merchantDelayed) {
+      return `Arriving in ${mins} ${minLabel} • Updated estimate`;
+    }
+    if (options?.etaUpdated) {
+      return `Arriving in ${mins} ${minLabel} • Updated estimate`;
+    }
+    return `Arriving in ${mins} ${minLabel} • On time`;
+  }
+  return "Updating ETA…";
+}
+
+/** Subtitle on the floating order tracking pill (GatiMitra-style). */
+export function getFloatingOrderStatusText(
+  status: string | null | undefined,
+  hasRider = false
+): string {
+  const s = normalizeCustomerOrderStatus(status);
+  if (isRiderAtCustomerStatus(s)) return "Rider has arrived";
+  if (isCustomerOrderOnTheWayStatus(s)) return "Order is on the way";
+  if (isRiderAtStoreStatus(s)) return "Picking up your order";
+  if (s === "RIDER_ASSIGNED" || s === "ASSIGNED") return "Rider heading to store";
+  if (
+    hasRider &&
+    !isRiderAtStoreStatus(s) &&
+    (s === "ACCEPTED" || s === "PREPARING" || s === "ORDER_PLACED" || s === "CREATED")
+  ) {
+    return "Rider heading to store";
+  }
+  if (s === "READY_FOR_PICKUP" || s === "READY") {
+    return hasRider ? "Order is ready — rider on the way" : "Order ready for pickup";
+  }
+  if (s === "PREPARING") return "Restaurant is preparing your order";
+  if (s === "ACCEPTED") return "Order accepted by restaurant";
+  if (isMerchantPreparingStatus(s)) return "Order accepted & being prepared";
+  if (s === "ORDER_PLACED" || s === "PLACED" || s === "CREATED") return "Order confirmed";
+  if (s === "SEARCHING_RIDER") return "Finding a delivery partner";
+  return "Order in progress";
 }
 
 /** Primary banner line on the order details screen. */

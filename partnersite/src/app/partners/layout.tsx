@@ -3,6 +3,8 @@
 import { Suspense } from "react";
 import { PartnerPendingNewOrdersBar } from "@/components/PartnerPendingNewOrdersBar";
 import { PartnerIncomingOrderModal } from "@/components/PartnerIncomingOrderModal";
+import { PartnerAcceptanceTimeoutSync } from "@/components/PartnerAcceptanceTimeoutSync";
+import { PartnerShellWarmup } from "@/components/PartnerShellWarmup";
 import { GlobalToaster } from "@/components/GlobalToaster";
 
 /**
@@ -20,6 +22,8 @@ export default function PartnersLayout({ children }: { children: React.ReactNode
         {children}
       </div>
       <GlobalToaster />
+      <PartnerShellWarmup />
+      <PartnerAcceptanceTimeoutSync />
       <Suspense fallback={null}>
         <PartnerPendingNewOrdersBar />
       </Suspense>

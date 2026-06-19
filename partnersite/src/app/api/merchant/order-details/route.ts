@@ -45,7 +45,7 @@ export async function GET(req: NextRequest) {
     // 1) Prefer orders_food (food orders: order_id = orders_core.id) for items + rider
     const { data: food } = await db
       .from('orders_food')
-      .select('id, order_id, merchant_store_id, items, rider_id, rider_name, rider_phone, dispatched_at, delivered_at')
+      .select('id, order_id, merchant_store_id, items, rider_id, rider_name, rider_phone, dispatched_at, delivered_at, rider_picked_up_at')
       .eq('order_id', orderIdNum)
       .maybeSingle();
 
@@ -120,7 +120,7 @@ export async function GET(req: NextRequest) {
           accepted_at: null,
           rejected_at: null,
           reached_merchant_at: null,
-          picked_up_at: food.dispatched_at as string | null ?? null,
+          picked_up_at: (food.rider_picked_up_at as string | null) ?? null,
           delivered_at: food.delivered_at as string | null ?? null,
           cancelled_at: null,
         });

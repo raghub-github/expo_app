@@ -4,6 +4,7 @@ import { Hourglass } from 'lucide-react';
 import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
 import {
   isPrepCountdownExpired,
+  isPrepPerformanceOverdue,
   prepReadyCountdownLabel,
   canUseNeedMoreTime,
   prepOverdueSeconds,
@@ -15,7 +16,7 @@ import type { OrdersFoodRow } from '@/lib/types/food-orders';
 const BLOOD_RED = '#8B0000';
 const ORDER_READY_PREFIX = 'Order Ready';
 
-/** Top banner — live overdue minutes vs prep_ready_by_at (KPT + need-more-time). */
+/** Top banner — live overdue minutes vs prep_ready_by_at (KPT anchor; never reset on Need more time). */
 export function OrderPrepDelayedBanner({
   order,
   nowMs,
@@ -46,11 +47,17 @@ function OrderDelayTopBanner({ label }: { label: string }) {
   );
 }
 
-export function computePrepExpired(order: OrdersFoodRow, nowMs: number): boolean {
+export function ExtraPrepTimeAddedBanner({ label }: { label: string }) {
   return (
-    isPrepCountdownExpired(order, nowMs, { prefix: ORDER_READY_PREFIX }) ||
-    !prepReadyCountdownLabel(order, nowMs, { prefix: ORDER_READY_PREFIX }).label.includes('(')
+    <div className="flex items-center justify-center border-b border-orange-200 bg-orange-50 px-3 py-1.5">
+      <span className="text-xs font-extrabold tracking-normal text-orange-900">{label}</span>
+    </div>
   );
+}
+
+/** True when merchant is past original KPT deadline (delay banner visibility). */
+export function computePrepExpired(order: OrdersFoodRow, nowMs: number): boolean {
+  return isPrepPerformanceOverdue(order, nowMs);
 }
 
 export type MerchantPreparingOrderActionsProps = {
@@ -63,7 +70,7 @@ export type MerchantPreparingOrderActionsProps = {
   className?: string;
 };
 
-/** Footer actions for preparing orders — no delayed flash; banner shows live overdue time. */
+/** Footer actions for preparing orders — delay banner uses prep_ready_by_at; countdown uses expected_ready_at. */
 export function MerchantPreparingOrderActions({
   order,
   nowMs,
@@ -73,9 +80,13 @@ export function MerchantPreparingOrderActions({
   compact,
   className = '',
 }: MerchantPreparingOrderActionsProps) {
-  const prepExpired = computePrepExpired(order, nowMs);
+  const performanceOverdue = computePrepExpired(order, nowMs);
+  const countdownExpired =
+    isPrepCountdownExpired(order, nowMs, { prefix: ORDER_READY_PREFIX }) ||
+    !prepReadyCountdownLabel(order, nowMs, { prefix: ORDER_READY_PREFIX }).label.includes('(');
   const canNeedMore =
-    prepExpired &&
+    performanceOverdue &&
+    countdownExpired &&
     !!onNeedMoreTime &&
     canUseNeedMoreTime(
       order.prep_delay_use_count,
@@ -103,7 +114,7 @@ export function MerchantPreparingOrderActions({
     />
   );
 
-  if (!prepExpired) {
+  if (!performanceOverdue) {
     return <div className={`w-full ${className}`}>{readyBtn}</div>;
   }
 

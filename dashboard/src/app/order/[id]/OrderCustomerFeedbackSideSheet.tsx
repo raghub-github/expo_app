@@ -40,6 +40,48 @@ function formatRatedAt(iso: string | null | undefined): string {
   }
 }
 
+function FeedbackTags({ tags }: { tags: string[] }) {
+  if (!tags.length) return null;
+  return (
+    <div className="flex flex-wrap gap-2">
+      {tags.map((tag) => (
+        <span
+          key={tag}
+          className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700"
+        >
+          {tag}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function CustomerFeedbackBody({
+  tags,
+  reviewText,
+}: {
+  tags: string[];
+  reviewText: string | null;
+}) {
+  const hasTags = tags.length > 0;
+  const hasText = !!reviewText?.trim();
+
+  if (!hasTags && !hasText) {
+    return <p className="text-slate-500 italic">No feedback provided</p>;
+  }
+
+  return (
+    <div className="space-y-2">
+      {hasTags ? <FeedbackTags tags={tags} /> : null}
+      {hasText ? (
+        <p className="rounded-lg border border-slate-200 bg-white p-3 leading-relaxed whitespace-pre-wrap">
+          {reviewText}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function OrderCustomerFeedbackSideSheet({
   target,
   feedback,
@@ -157,15 +199,12 @@ export function OrderCustomerFeedbackSideSheet({
 
               <div>
                 <p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide mb-1.5">
-                  Customer message
+                  Customer feedback
                 </p>
-                {feedback.storeReviewText ? (
-                  <p className="rounded-lg border border-slate-200 bg-white p-3 leading-relaxed whitespace-pre-wrap">
-                    {feedback.storeReviewText}
-                  </p>
-                ) : (
-                  <p className="text-slate-500 italic">No written review</p>
-                )}
+                <CustomerFeedbackBody
+                  tags={feedback.storeReviewTags}
+                  reviewText={feedback.storeReviewText}
+                />
               </div>
             </>
           ) : (
@@ -190,15 +229,12 @@ export function OrderCustomerFeedbackSideSheet({
 
               <div>
                 <p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide mb-1.5">
-                  Customer message
+                  Customer feedback
                 </p>
-                {feedback.riderReviewText ? (
-                  <p className="rounded-lg border border-slate-200 bg-white p-3 leading-relaxed whitespace-pre-wrap">
-                    {feedback.riderReviewText}
-                  </p>
-                ) : (
-                  <p className="text-slate-500 italic">No written review</p>
-                )}
+                <CustomerFeedbackBody
+                  tags={feedback.riderReviewTags}
+                  reviewText={feedback.riderReviewText}
+                />
               </div>
             </>
           )}

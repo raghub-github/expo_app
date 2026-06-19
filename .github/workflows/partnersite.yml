@@ -87,4 +87,4 @@ jobs:
             git fetch --depth 1 origin main
             git reset --hard origin/main
             chmod +x infra/scripts/deploy-service.sh
-            infra/scripts/deploy-service.sh partnersite http://localhost:3002/api/health 90
+            infra/scripts/deploy-service.sh partnersite http://localhost:3000/api/health 90

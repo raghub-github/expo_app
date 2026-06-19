@@ -27,6 +27,7 @@ import {
   releaseAutoCancelFoodOrder,
 } from "@/lib/orderAcceptanceWindow";
 import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
+import { useMerchantOrdersRealtime } from "@/hooks/useMerchantOrdersRealtime";
 import {
   apiStatusToStage,
   mapApiOrder,
@@ -35,6 +36,7 @@ import {
   type OrderRecord,
   type OrderStage,
 } from "@/hooks/useOrders";
+import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
 
 const POLL_FAST_MS = 3_000;
 const POLL_NORMAL_MS = 5_000;
@@ -132,8 +134,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
           const foodId = parseInt(row.id, 10);
           if (Number.isFinite(foodId)) {
             prefetchOrderTimeline(storeId, foodId, token);
-            const stage = apiStatusToStage(row.order_status);
-            if (stage !== "delivered" && stage !== "cancelled" && stage !== "rto") {
+            if (row.status !== "delivered" && row.status !== "rejected" && row.status !== "rto") {
               prefetchMerchantTimelineEnrichment(storeId, foodId, token);
             }
           }
@@ -193,7 +194,21 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     [orders]
   );
 
-  const pollIntervalMs = hasPendingAccept ? POLL_FAST_MS : POLL_NORMAL_MS;
+  const hasActivePipeline = useMemo(
+    () => orders.some((o) => isActiveMerchantOrderStage(o.status)),
+    [orders]
+  );
+
+  const pollIntervalMs =
+    hasPendingAccept || hasActivePipeline ? POLL_FAST_MS : POLL_NORMAL_MS;
+
+  useMerchantOrdersRealtime({
+    storeId,
+    enabled: Boolean(token && storeId),
+    onOrdersStale: () => {
+      void refetch();
+    },
+  });
 
   useEffect(() => {
     const id = setInterval(() => {

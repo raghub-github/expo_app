@@ -1,8 +1,8 @@
 /**
- * Order Details – delivered / cancelled / live tracking (reference UI + GatiMitra green).
+ * Order Details – live tracking, post-delivery success (default), or history bill view (`view=history`).
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -27,7 +27,12 @@ import { orderService } from "@/services/order.service";
 import { etaService } from "@/services/eta.service";
 import { useLocationWeather } from "@/hooks/useLocationWeather";
 import { WeatherStatusChip } from "@/components/weather";
-import { resolveLiveEtaMinutes } from "@/lib/order-eta-display";
+import {
+  resolveLiveEtaMinutes,
+  resolveCustomerEtaContextLabel,
+  isMerchantEtaDelayed,
+  isEtaUpdatedFromPromise,
+} from "@/lib/order-eta-display";
 import { PrepDelayMarqueeBanner } from "@/components/orders/PrepDelayMarqueeBanner";
 import { getRouteCoordinates } from "@/services/directions.service";
 import { useOrderStore } from "@/store/orderStore";
@@ -43,17 +48,32 @@ import { OrderDeliveryRatingSheet } from "@/components/orders/OrderDeliveryRatin
 import {
   getCustomerOrderStatusBannerText,
   getPersonRideStatusBannerText,
+  isPersonRideInProgressStatus,
   isPersonRideOrder,
   isPersonRideSearchingStatus,
+  isRideAwaitingPickupStatus,
   isTerminalOrderStatus,
   normalizeCustomerOrderStatus,
 } from "@/lib/customer-order-status-display";
+import {
+  customerSupportChatTopicsQueryKey,
+  fetchCustomerSupportChatTopics,
+} from "@/lib/customer-support-chat-topics";
 import { RideAcceptedTrackingScreen } from "@/components/ride/RideAcceptedTrackingScreen";
 import { RideOrderDetailsScreen } from "@/components/ride/RideOrderDetailsScreen";
+import { RideOrderDeliveredScreen } from "@/components/ride/RideOrderDeliveredScreen";
+import { RideFarePaymentPendingScreen } from "@/components/ride/RideFarePaymentPendingScreen";
+import { isRideFarePaymentPending } from "@/lib/ride-fare-gate";
+import { FoodLiveTrackingScreen } from "@/components/orders/FoodLiveTrackingScreen";
+import { FoodOrderDeliveredScreen } from "@/components/orders/FoodOrderDeliveredScreen";
+import { InvoiceDownloadingToast } from "@/components/orders/InvoiceDownloadingToast";
 import {
   orderItemHasCustomizations,
   type OrderDetailLineItem,
 } from "@/lib/order-item-customization-display";
+import { safeRouterBack, HOME_TAB_FALLBACK, RIDE_HOME_FALLBACK } from "@/lib/safeRouterBack";
+import { buildRideSearchingResumeParams } from "@/lib/person-ride-orders";
+import { getRideOrderStatus, isRideCaptainAssigned } from "@/services/rideBooking.service";
 
 const GREEN = GatiMitraColors.primaryMint;
 const LINK_BLUE = "#2563EB";
@@ -107,34 +127,63 @@ function formatMoney(value: number) {
 export default function OrderDetailsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const handleBack = useCallback(() => {
+    safeRouterBack(router);
+  }, [router]);
   const queryClient = useQueryClient();
-  const { id, rate } = useLocalSearchParams<{ id: string; rate?: string }>();
+  const { id, rate, view, returnTo } = useLocalSearchParams<{
+    id: string;
+    rate?: string;
+    view?: string;
+    returnTo?: string;
+  }>();
+  const openedFromRideHome = returnTo === "ride";
+  const handleRideHomeBack = useCallback(() => {
+    router.replace(RIDE_HOME_FALLBACK);
+  }, [router]);
+  const handleRideGoHome = useCallback(() => {
+    router.replace(openedFromRideHome ? RIDE_HOME_FALLBACK : HOME_TAB_FALLBACK);
+  }, [router, openedFromRideHome]);
+  const handleRideTrackingBack = openedFromRideHome ? handleRideHomeBack : handleBack;
   const orderId = id ?? "";
+  /** Past orders opened from Orders → History use the bill/invoice details UI. */
+  const useHistoryOrderDetails = view === "history";
   const [mapReady, setMapReady] = useState(false);
   const [customizationItem, setCustomizationItem] = useState<OrderDetailLineItem | null>(null);
   const [ratingSheetVisible, setRatingSheetVisible] = useState(false);
   const [ratingDismissed, setRatingDismissed] = useState(false);
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
-  const prevDeliveredRef = useRef(false);
+  const [invoiceDownloading, setInvoiceDownloading] = useState(false);
 
   const { data: order, isLoading } = useQuery({
     queryKey: ["order", orderId],
     queryFn: () => orderService.getOrder(orderId),
     enabled: !!orderId,
     initialData: () => getOrderDetailInitialData(queryClient, orderId),
-    staleTime: 30_000,
+    staleTime: 5_000,
+    refetchOnMount: "always",
     refetchInterval: (query) => {
-      const status = (query.state.data?.status ?? "").toUpperCase();
+      const data = query.state.data;
+      const status = normalizeCustomerOrderStatus(data?.status);
       if (
-        !status ||
-        status === "DELIVERED" ||
-        status === "CANCELLED" ||
-        status === "PAYMENT_FAILED" ||
-        status === "FAILED"
+        data &&
+        isPersonRideOrder(data) &&
+        status === "DELIVERED" &&
+        isRideFarePaymentPending(data.paymentStatus)
+      ) {
+        return 3_000;
+      }
+      const statusUpper = (data?.status ?? "").toUpperCase();
+      if (
+        !statusUpper ||
+        statusUpper === "DELIVERED" ||
+        statusUpper === "CANCELLED" ||
+        statusUpper === "PAYMENT_FAILED" ||
+        statusUpper === "FAILED"
       ) {
         return false;
       }
-      return 5_000;
+      return 3_000;
     },
   });
 
@@ -143,13 +192,37 @@ export default function OrderDetailsScreen() {
 
   useEffect(() => {
     if (!order || !isPersonRideOrder(order)) return;
-    if (isPersonRideSearchingStatus(order, order.status) && !order.rider) {
-      router.replace({
-        pathname: "/home/service/ride-searching",
-        params: { orderId: order.orderId },
+    if (!isPersonRideSearchingStatus(order, order.status) || order.rider) return;
+
+    let cancelled = false;
+    void getRideOrderStatus(order.orderId)
+      .then((rideStatus) => {
+        if (cancelled) return;
+        if (isRideCaptainAssigned(rideStatus)) {
+          void queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+          return;
+        }
+        const redirectParams = buildRideSearchingResumeParams(order);
+        if (openedFromRideHome) redirectParams.returnTo = "ride";
+        router.replace({
+          pathname: "/home/service/ride-searching",
+          params: redirectParams,
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        const redirectParams = buildRideSearchingResumeParams(order);
+        if (openedFromRideHome) redirectParams.returnTo = "ride";
+        router.replace({
+          pathname: "/home/service/ride-searching",
+          params: redirectParams,
+        });
       });
-    }
-  }, [order, router]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [order, router, openedFromRideHome, orderId, queryClient]);
 
   useEffect(() => {
     if (!isInProgress) {
@@ -178,8 +251,8 @@ export default function OrderDetailsScreen() {
     queryKey: ["orderTracking", orderId],
     queryFn: () => orderService.getOrderTracking(orderId),
     enabled: !!orderId && !!isInProgress,
-    refetchInterval: isInProgress ? 2000 : false,
-    staleTime: 1500,
+    refetchInterval: isInProgress ? 8_000 : false,
+    staleTime: 4_000,
   });
 
   const deliveryLat = order?.deliveryLat != null ? order.deliveryLat : DEFAULT_LAT + 0.008;
@@ -211,6 +284,11 @@ export default function OrderDetailsScreen() {
   }, [order?.status, order?.orderId, etaData, updateOrderStatus, removeActiveOrder]);
 
   useEffect(() => {
+    setRatingSheetVisible(false);
+    setRatingDismissed(false);
+  }, [orderId]);
+
+  useEffect(() => {
     if (rate === "1" || rate === "true") {
       setRatingDismissed(false);
     }
@@ -221,27 +299,57 @@ export default function OrderDetailsScreen() {
     const delivered = normalizeCustomerOrderStatus(order.status) === "DELIVERED";
     const alreadyRated = order.storeRatingSubmitted === true;
     const wantsRate = rate === "1" || rate === "true";
-    if (delivered && !alreadyRated && (!ratingDismissed || wantsRate)) {
+    const isFoodDelivered = delivered && !isPersonRideOrder(order);
+    const usesDeliveredSuccessScreen = isFoodDelivered && !useHistoryOrderDetails;
+    if (!isFoodDelivered || alreadyRated || usesDeliveredSuccessScreen) return;
+    if (!ratingDismissed || wantsRate) {
       setRatingSheetVisible(true);
     }
-    if (!delivered) {
-      prevDeliveredRef.current = false;
-    } else if (delivered && !prevDeliveredRef.current) {
-      prevDeliveredRef.current = true;
-    }
-  }, [order?.status, order?.storeRatingSubmitted, ratingDismissed, rate, order]);
+  }, [
+    order?.status,
+    order?.storeRatingSubmitted,
+    ratingDismissed,
+    rate,
+    order,
+    useHistoryOrderDetails,
+  ]);
+
+  useEffect(() => {
+    if (!order || isPersonRideOrder(order)) return;
+    if (normalizeCustomerOrderStatus(order.status) !== "DELIVERED") return;
+    void queryClient.prefetchQuery({
+      queryKey: customerSupportChatTopicsQueryKey("delivered", "food"),
+      queryFn: () => fetchCustomerSupportChatTopics("delivered", "food"),
+      staleTime: 300_000,
+    });
+  }, [order?.orderId, order?.status, queryClient, order]);
 
   const handleSubmitStoreRating = async (payload: {
-    storeRating: number;
-    deliveryRating: number;
+    storeRating?: number;
+    deliveryRating?: number;
     reviewText?: string;
     riderReviewText?: string;
+    storeReviewTags?: string[];
+    riderReviewTags?: string[];
     riderTipAmount?: number;
   }) => {
     if (!orderId) return;
+    const storeRating = payload.storeRating != null && payload.storeRating >= 1 ? payload.storeRating : null;
+    const deliveryRating =
+      payload.deliveryRating != null && payload.deliveryRating >= 1 ? payload.deliveryRating : null;
+    if (storeRating == null && deliveryRating == null) return;
+
     setRatingSubmitting(true);
     try {
-      await orderService.submitStoreRating(orderId, payload);
+      await orderService.submitStoreRating(orderId, {
+        storeRating,
+        deliveryRating,
+        reviewText: payload.reviewText ?? null,
+        riderReviewText: payload.riderReviewText ?? null,
+        storeReviewTags: payload.storeReviewTags,
+        riderReviewTags: payload.riderReviewTags,
+        riderTipAmount: payload.riderTipAmount ?? null,
+      });
       await queryClient.invalidateQueries({ queryKey: ["order", orderId] });
       await queryClient.invalidateQueries({ queryKey: ["my-orders"] });
       setRatingSheetVisible(false);
@@ -258,6 +366,26 @@ export default function OrderDetailsScreen() {
     }
   };
 
+  const renderOrderRatingSheet = () => {
+    if (!order || isPersonRideOrder(order)) return null;
+    const isDelivered = normalizeCustomerOrderStatus(order.status) === "DELIVERED";
+    return (
+      <OrderDeliveryRatingSheet
+        visible={ratingSheetVisible && isDelivered && !order.storeRatingSubmitted}
+        storeName={order.merchantPublicName ?? order.merchantName ?? "Restaurant"}
+        storeBannerUri={toAbsoluteImageUrl(order.merchantBannerUrl)}
+        riderName={order.rider?.name}
+        checkoutTipAmount={order.tipAmount ?? 0}
+        submitting={ratingSubmitting}
+        onClose={() => {
+          setRatingSheetVisible(false);
+          setRatingDismissed(true);
+        }}
+        onSubmit={handleSubmitStoreRating}
+      />
+    );
+  };
+
   const deliveryMapPayload = useMemo<DeliveryMapPayload>(
     () => ({
       pickupLat,
@@ -266,7 +394,9 @@ export default function OrderDetailsScreen() {
       dropLng: deliveryLng,
       riderLat: tracking?.rider?.latitude ?? null,
       riderLng: tracking?.rider?.longitude ?? null,
-      route: routeCoordinates,
+      fullRoute: routeCoordinates,
+      remainingRoute: routeCoordinates,
+      mapPadding: { top: 52, bottom: 48, left: 32, right: 32 },
     }),
     [
       pickupLat,
@@ -305,6 +435,9 @@ export default function OrderDetailsScreen() {
   );
 
   const liveEtaMins = resolveLiveEtaMinutes(etaData);
+  const merchantDelayed = isMerchantEtaDelayed(etaData);
+  const etaUpdated = isEtaUpdatedFromPromise(etaData);
+  const etaContextLabel = resolveCustomerEtaContextLabel(etaData);
   const { data: trackingWeather } = useLocationWeather({
     lat: order?.deliveryLat,
     lng: order?.deliveryLng,
@@ -312,12 +445,22 @@ export default function OrderDetailsScreen() {
   });
 
   const handleOpenHelp = () => {
+    const isDeliveredFood =
+      !!order && !isPersonRideOrder(order) && (order.status ?? "").trim().toUpperCase() === "DELIVERED";
+    if (isDeliveredFood) {
+      void queryClient.prefetchQuery({
+        queryKey: customerSupportChatTopicsQueryKey("delivered", "food"),
+        queryFn: () => fetchCustomerSupportChatTopics("delivered", "food"),
+        staleTime: 300_000,
+      });
+    }
     router.push({
       pathname: "/orders/raise-ticket",
       params: {
         orderId: String(order?.orderId ?? orderId),
         orderRef: String(order?.formattedOrderId ?? order?.orderId ?? orderId),
         ...(order?.coreOrderId != null ? { coreOrderId: String(order.coreOrderId) } : {}),
+        ...(isDeliveredFood ? { chat: "1" } : {}),
       },
     });
   };
@@ -328,8 +471,23 @@ export default function OrderDetailsScreen() {
     Alert.alert("Copied", "Order ID copied to clipboard.");
   };
 
-  const handleInvoice = () => {
-    Alert.alert("Invoice", "Invoice download will be available soon.");
+  const handleInvoice = async () => {
+    if (!orderId || invoiceDownloading) return;
+    setInvoiceDownloading(true);
+    try {
+      const { downloadOrderInvoice } = await import("@/lib/downloadOrderInvoice");
+      await downloadOrderInvoice(orderId, order?.formattedOrderId ?? order?.orderId ?? orderId);
+    } catch (e) {
+      const msg =
+        (e as { response?: { data?: { message?: string; error?: string } } })?.response?.data
+          ?.message ??
+        (e as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+        (e instanceof Error ? e.message : null) ??
+        "Could not download invoice. Please try again.";
+      Alert.alert("Invoice unavailable", msg);
+    } finally {
+      setInvoiceDownloading(false);
+    }
   };
 
   if (!orderId) {
@@ -360,7 +518,11 @@ export default function OrderDetailsScreen() {
   const displayOrderId = order.formattedOrderId ?? order.orderId;
   const isRideOrder = isPersonRideOrder(order);
   const isRideSearching =
-    isRideOrder && isPersonRideSearchingStatus(order, order.status) && !order.rider;
+    isRideOrder &&
+    isPersonRideSearchingStatus(order, order.status) &&
+    !order.rider &&
+    !isRideAwaitingPickupStatus(order.status) &&
+    !isPersonRideInProgressStatus(order.status);
 
   if (isRideSearching) {
     return (
@@ -374,13 +536,43 @@ export default function OrderDetailsScreen() {
   if (isRideOrder && isInProgress) {
     return (
       <>
-        <AndroidBackHandler />
+        <AndroidBackHandler
+          fallback={openedFromRideHome ? RIDE_HOME_FALLBACK : undefined}
+          preferFallback={openedFromRideHome}
+        />
         <RideAcceptedTrackingScreen
           order={order}
           tracking={tracking}
           etaMinutes={liveEtaMins}
-          onBack={() => router.back()}
+          onBack={handleRideTrackingBack}
           onOpenSupport={handleOpenHelp}
+        />
+      </>
+    );
+  }
+
+  if (isRideOrder && orderStatus === "DELIVERED" && !useHistoryOrderDetails) {
+    if (isRideFarePaymentPending(order.paymentStatus)) {
+      return (
+        <>
+          <AndroidBackHandler
+            fallback={openedFromRideHome ? RIDE_HOME_FALLBACK : HOME_TAB_FALLBACK}
+            preferFallback
+          />
+          <RideFarePaymentPendingScreen order={order} onBack={handleRideGoHome} />
+        </>
+      );
+    }
+    return (
+      <>
+        <AndroidBackHandler
+          fallback={openedFromRideHome ? RIDE_HOME_FALLBACK : HOME_TAB_FALLBACK}
+          preferFallback
+        />
+        <RideOrderDeliveredScreen
+          order={order}
+          onBack={handleRideGoHome}
+          onOpenHelp={handleOpenHelp}
         />
       </>
     );
@@ -389,11 +581,58 @@ export default function OrderDetailsScreen() {
   if (isRideOrder && isTerminalOrderStatus(orderStatus)) {
     return (
       <>
-        <AndroidBackHandler />
+        <AndroidBackHandler
+          fallback={openedFromRideHome ? RIDE_HOME_FALLBACK : undefined}
+          preferFallback={openedFromRideHome}
+        />
         <RideOrderDetailsScreen
           order={order}
-          onBack={() => router.back()}
+          onBack={handleRideTrackingBack}
           onOpenSupport={handleOpenHelp}
+        />
+      </>
+    );
+  }
+
+  if (isInProgress && !isRideOrder) {
+    const storeId = order.merchantPublicStoreId;
+    return (
+      <>
+        <AndroidBackHandler />
+        <FoodLiveTrackingScreen
+          order={order}
+          tracking={tracking}
+          etaMinutes={liveEtaMins}
+          merchantDelayed={merchantDelayed}
+          etaUpdated={etaUpdated}
+          etaContextLabel={etaContextLabel}
+          onBack={handleBack}
+          onOpenHelp={handleOpenHelp}
+          onOpenMerchant={() => {
+            if (storeId) router.push(`/home/merchant/${storeId}`);
+          }}
+          onOrderCancelled={() => {
+            void queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+          }}
+        />
+      </>
+    );
+  }
+
+  const isDeliveredFood = orderStatus === "DELIVERED" && !isPersonRideOrder(order);
+
+  if (isDeliveredFood && !useHistoryOrderDetails) {
+    const storeId = order.merchantPublicStoreId;
+    return (
+      <>
+        <AndroidBackHandler />
+        <FoodOrderDeliveredScreen
+          order={order}
+          onBack={handleBack}
+          onOpenHelp={handleOpenHelp}
+          onOpenMerchant={() => {
+            if (storeId) router.push(`/home/merchant/${storeId}`);
+          }}
         />
       </>
     );
@@ -408,13 +647,24 @@ export default function OrderDetailsScreen() {
   const dropAddress = order.deliveryAddress?.trim() || null;
   const bannerUri = toAbsoluteImageUrl(order.merchantBannerUrl);
   const items = order.items ?? [];
-  const bill = parseOrderBillFromSnapshot(order.billingSnapshot, order.totalAmount ?? null);
+  const bill = parseOrderBillFromSnapshot(
+    order.billingSnapshot,
+    order.totalAmount ?? null,
+    order.tipAmount ?? null
+  );
   const isCancelled = orderStatus === "CANCELLED";
   const isDelivered = orderStatus === "DELIVERED";
   const isFailed =
     orderStatus === "PAYMENT_FAILED" ||
     orderStatus === "FAILED" ||
     order.paymentStatus?.toLowerCase() === "failed";
+  const hideRiderOnInnerPage = isDelivered || isCancelled;
+  const hasAlternateContact = Boolean(order.alternateContactSetAt);
+  const alternateContactName = order.alternateContactName?.trim() || null;
+  const alternateContactPhone = order.alternateContactPhone?.trim() || null;
+  const deliveryCustomerName = hasAlternateContact
+    ? order.deliveryPrimaryContactName?.trim() || null
+    : order.deliveryContactName?.trim() || null;
   const paymentMethodLabel = (order.paymentMethod ?? "UPI").replace(/_/g, " ").toUpperCase();
   const statusBanner = isRideOrder
     ? getPersonRideStatusBannerText(orderStatus, order.paymentStatus)
@@ -428,7 +678,7 @@ export default function OrderDetailsScreen() {
       <StatusBar style="dark" backgroundColor="#fff" />
       <View style={styles.screen}>
         <View style={[styles.header, { paddingTop: Math.max(insets.top - 8, 0) }]}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.headerSide} hitSlop={12}>
+          <TouchableOpacity onPress={handleBack} style={styles.headerSide} hitSlop={12}>
             <Ionicons name="arrow-back" size={22} color={TEXT} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>{pageTitle}</Text>
@@ -661,7 +911,6 @@ export default function OrderDetailsScreen() {
                     style={styles.map}
                     center={deliveryMapCenter}
                     payload={deliveryMapPayload}
-                    fitCoords={deliveryMapFitCoords}
                   />
                 ) : (
                   <View style={styles.mapPlaceholder}>
@@ -744,6 +993,12 @@ export default function OrderDetailsScreen() {
                 <Text style={styles.billValue}>{formatMoney(bill.donation)}</Text>
               </View>
             )}
+            {bill.tipAmount > 0.005 && (
+              <View style={styles.billRow}>
+                <Text style={styles.billLabel}>Tip for delivery partner</Text>
+                <Text style={styles.billValue}>{formatMoney(bill.tipAmount)}</Text>
+              </View>
+            )}
 
             <View style={[styles.billRow, styles.billGrandRow]}>
               <Text style={styles.billGrandLabel}>Grand total</Text>
@@ -771,7 +1026,7 @@ export default function OrderDetailsScreen() {
             )}
           </View>
 
-          {order.rider ? (
+          {order.rider && !hideRiderOnInnerPage ? (
             <View style={styles.card}>
               <View style={styles.riderRow}>
                 <View style={styles.riderAvatar}>
@@ -782,6 +1037,33 @@ export default function OrderDetailsScreen() {
                   {order.rider.phone ? (
                     <Text style={styles.riderPhone}>{maskPhone(order.rider.phone)}</Text>
                   ) : null}
+                </View>
+              </View>
+            </View>
+          ) : null}
+
+          {hasAlternateContact && (alternateContactName || alternateContactPhone) ? (
+            <View style={styles.card}>
+              <View style={styles.infoRow}>
+                <Ionicons name="call-outline" size={20} color={GREEN} />
+                <View style={styles.infoTextWrap}>
+                  <Text style={styles.infoTitle}>Alternate contact number</Text>
+                  <Text style={styles.infoSub}>
+                    {alternateContactName ? alternateContactName : "Contact"}
+                    {alternateContactPhone ? ` · ${maskPhone(alternateContactPhone)}` : ""}
+                  </Text>
+                </View>
+              </View>
+            </View>
+          ) : null}
+
+          {deliveryCustomerName ? (
+            <View style={styles.card}>
+              <View style={styles.infoRow}>
+                <Ionicons name="person-outline" size={20} color={GREEN} />
+                <View style={styles.infoTextWrap}>
+                  <Text style={styles.infoTitle}>Customer name</Text>
+                  <Text style={styles.infoSub}>{deliveryCustomerName}</Text>
                 </View>
               </View>
             </View>
@@ -831,19 +1113,9 @@ export default function OrderDetailsScreen() {
           onClose={() => setCustomizationItem(null)}
         />
 
-        <OrderDeliveryRatingSheet
-          visible={ratingSheetVisible && isDelivered && !order.storeRatingSubmitted}
-          storeName={restaurantName}
-          storeBannerUri={bannerUri}
-          riderName={order.rider?.name}
-          checkoutTipAmount={order.tipAmount ?? 0}
-          submitting={ratingSubmitting}
-          onClose={() => {
-            setRatingSheetVisible(false);
-            setRatingDismissed(true);
-          }}
-          onSubmit={handleSubmitStoreRating}
-        />
+        {renderOrderRatingSheet()}
+
+        <InvoiceDownloadingToast visible={invoiceDownloading} />
       </View>
     </>
   );

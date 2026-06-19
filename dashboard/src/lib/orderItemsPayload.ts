@@ -312,3 +312,40 @@ export function preloadOrderItemImages(urls: string[]): void {
     img.src = url;
   }
 }
+
+const orderItemsCache = new Map<number, OrderItemsPayload>();
+const orderItemsInflight = new Map<number, Promise<OrderItemsPayload | null>>();
+
+export function getCachedOrderItems(orderId: number): OrderItemsPayload | null {
+  return orderItemsCache.get(orderId) ?? null;
+}
+
+export function seedOrderItemsCache(orderId: number, payload: OrderItemsPayload): void {
+  if (payload.items?.length) {
+    orderItemsCache.set(orderId, payload);
+  }
+}
+
+/** Deduped fetch — order detail + items modal share the same in-memory cache. */
+export function fetchOrderItemsCached(orderId: number): Promise<OrderItemsPayload | null> {
+  const cached = orderItemsCache.get(orderId);
+  if (cached?.items?.length) return Promise.resolve(cached);
+
+  const inflight = orderItemsInflight.get(orderId);
+  if (inflight) return inflight;
+
+  const request = fetch(`/api/orders/${orderId}/items`, { credentials: "include" })
+    .then((res) => res.json())
+    .then((body) => parseOrderItemsApiResponse(body))
+    .then((parsed) => {
+      if (parsed?.items?.length) orderItemsCache.set(orderId, parsed);
+      return parsed;
+    })
+    .catch(() => null)
+    .finally(() => {
+      orderItemsInflight.delete(orderId);
+    });
+
+  orderItemsInflight.set(orderId, request);
+  return request;
+}

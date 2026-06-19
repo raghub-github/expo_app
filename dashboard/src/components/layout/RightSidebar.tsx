@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useEffect, useState } from "react";
+import { useMemo, useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useSearchParams } from "next/navigation";
@@ -13,6 +13,7 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardList,
+  FileUp,
 } from "lucide-react";
 import {
   getCurrentDashboard,
@@ -55,6 +56,10 @@ import { StoreInfoCard, StoreInfoCardSkeleton, type StoreInfoCardData } from "@/
 import { WalletRequestsSummarySidebar } from "@/components/merchants/WalletRequestsSummarySidebar";
 import { useStore } from "@/hooks/useStore";
 import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
+import { useCurrentRoute } from "@/context/CurrentRouteContext";
+import { shouldShowDashboardNavOverlay } from "@/lib/navigation/dashboard-nav-transition";
+import { EXPIRED_RESUBMITTED_DOCS_LABEL } from "@/lib/merchants/expired-resubmitted-docs-label";
+import { MERCHANT_RESUBMITTED_DOCS_REFRESH_EVENT } from "@/lib/merchants/merchant-resubmitted-docs-refresh";
 
 interface RightSidebarProps {
   isOpen: boolean;
@@ -79,12 +84,25 @@ export function RightSidebar({
 }: RightSidebarProps) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const currentRoute = useCurrentRoute();
   const rightSidebarCtx = useRightSidebar();
   const { hasDashboardAccess, isSuperAdmin, canPerformAction } = usePermission();
   const { canTogglePortal = false } = usePermissions();
   
   // Remove query parameters for comparison
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
+
+  const handleSidebarNavClickCapture = useCallback(
+    (event: React.MouseEvent<HTMLElement>) => {
+      const anchor = (event.target as HTMLElement).closest("a[href]");
+      if (!anchor || !(anchor instanceof HTMLAnchorElement)) return;
+      const rawHref = anchor.getAttribute("href");
+      if (!rawHref || rawHref.startsWith("http") || rawHref.startsWith("#")) return;
+      if (!shouldShowDashboardNavOverlay(cleanPathname, rawHref)) return;
+      currentRoute?.startNavigation(rawHref.split("?")[0].split("#")[0]);
+    },
+    [cleanPathname, currentRoute]
+  );
 
   // Get current dashboard
   const currentDashboard = useMemo(
@@ -120,6 +138,18 @@ export function RightSidebar({
   const [areaManagerType, setAreaManagerType] =
     useState<AreaManagerTypeFilter | null>(null);
   const [pendingMenuRequestsCount, setPendingMenuRequestsCount] = useState<number>(0);
+  const [resubmittedDocsCount, setResubmittedDocsCount] = useState<number>(0);
+
+  const refreshResubmittedDocsCount = useCallback(() => {
+    fetch("/api/merchant/stores/stats")
+      .then((res) => res.json())
+      .then((body) => {
+        if (!body?.success) return;
+        const count = Number(body.resubmitted ?? 0);
+        setResubmittedDocsCount(Number.isFinite(count) ? count : 0);
+      })
+      .catch(() => setResubmittedDocsCount(0));
+  }, []);
 
   useEffect(() => {
     if (!isAreaManagerDashboard) return;
@@ -138,10 +168,11 @@ export function RightSidebar({
   }, [isAreaManagerDashboard]);
 
   useEffect(() => {
-    const isAdminMerchantsHome =
-      cleanPathname === "/dashboard/merchants" && portal === "admin";
-    if (!isAdminMerchantsHome) {
+    const isAdminMerchantsArea =
+      cleanPathname.startsWith("/dashboard/merchants") && portal === "admin";
+    if (!isAdminMerchantsArea) {
       setPendingMenuRequestsCount(0);
+      setResubmittedDocsCount(0);
       return;
     }
 
@@ -157,10 +188,18 @@ export function RightSidebar({
         if (!cancelled) setPendingMenuRequestsCount(0);
       });
 
+    refreshResubmittedDocsCount();
+
     return () => {
       cancelled = true;
     };
-  }, [cleanPathname, portal]);
+  }, [cleanPathname, portal, refreshResubmittedDocsCount]);
+
+  useEffect(() => {
+    const onRefresh = () => refreshResubmittedDocsCount();
+    window.addEventListener(MERCHANT_RESUBMITTED_DOCS_REFRESH_EVENT, onRefresh);
+    return () => window.removeEventListener(MERCHANT_RESUBMITTED_DOCS_REFRESH_EVENT, onRefresh);
+  }, [refreshResubmittedDocsCount]);
 
   const currentSubRoutes = useMemo((): DashboardSubRoute[] => {
     let filtered = rawSubRoutes;
@@ -362,6 +401,7 @@ export function RightSidebar({
         />
       )}
       <aside
+        onClickCapture={handleSidebarNavClickCapture}
         className={`fixed z-40 flex flex-col ${isTicketDetailPage ? "shadow-none" : "shadow-xl"} transition-[transform,width] duration-300 ease-out ${
           /* Queue left rail: full viewport height (matches queue home). Right-docked ticket detail: start below header row. */
           isTicketDetailPage && !(queueDarkLeftRail && dockLeft) ? "bottom-0 top-14" : "inset-y-0"
@@ -759,7 +799,10 @@ export function RightSidebar({
                         })
                         .sort((a, b) => b.href.length - a.href.length)[0]?.href ?? null;
                 const linkEl = (route: DashboardSubRoute) => {
-                  const isActive = activeHref === route.href;
+                  const isAllMerchantsRoute = route.href === "/dashboard/merchants";
+                  const isActive =
+                    activeHref === route.href &&
+                    !(isResubmittedActive && isAllMerchantsRoute);
                   const Icon = route.icon;
                   return (
                     <Link
@@ -815,6 +858,9 @@ export function RightSidebar({
                     : null);
                 const showWalletRequests = isMerchantsDashboard && !effectiveStoreId;
                 const isMenuRequestsActive = cleanPathname === "/dashboard/merchants/menu-requests";
+                const isResubmittedActive =
+                  cleanPathname === "/dashboard/merchants" &&
+                  searchParams.get("category") === "resubmitted";
                 return (
                   <>
                     {currentSubRoutes.map((route) => linkEl(route))}
@@ -901,6 +947,57 @@ export function RightSidebar({
                             {pendingMenuRequestsCount > 0
                               ? `Menu change requests (${pendingMenuRequestsCount} pending)`
                               : "Menu change requests"}
+                            <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-gray-900" />
+                          </div>
+                        </Link>
+                      )
+                    )}
+                    {isMerchantsDashboard && portal === "admin" && (
+                      isOpen ? (
+                        <Link
+                          href="/dashboard/merchants?portal=admin&category=resubmitted"
+                          className={`mt-2 grid w-full min-w-0 cursor-pointer grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-x-2 rounded-lg border px-2 py-2 text-xs font-semibold transition-all duration-200 ${
+                            isResubmittedActive
+                              ? "border-violet-700 bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg shadow-violet-500/20"
+                              : "border-violet-200 bg-violet-50 text-violet-900 hover:border-violet-300 hover:bg-violet-100 hover:-translate-x-1"
+                          }`}
+                        >
+                          <span className="flex size-5 items-center justify-center justify-self-start text-current">
+                            <FileUp className="h-4 w-4 shrink-0" aria-hidden />
+                          </span>
+                          <span className="min-w-0 truncate text-left">{EXPIRED_RESUBMITTED_DOCS_LABEL}</span>
+                          {resubmittedDocsCount > 0 && (
+                            <span
+                              className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                                isResubmittedActive ? "bg-white/20 text-white" : "bg-violet-200 text-violet-900"
+                              }`}
+                            >
+                              {resubmittedDocsCount}
+                            </span>
+                          )}
+                        </Link>
+                      ) : (
+                        <Link
+                          href="/dashboard/merchants?portal=admin&category=resubmitted"
+                          title={
+                            resubmittedDocsCount > 0
+                              ? `${EXPIRED_RESUBMITTED_DOCS_LABEL} (${resubmittedDocsCount})`
+                              : EXPIRED_RESUBMITTED_DOCS_LABEL
+                          }
+                          className={`group relative mt-2 flex cursor-pointer items-center justify-center rounded-lg border px-2 py-2.5 transition-all duration-200 ${
+                            isResubmittedActive
+                              ? "border-violet-700 bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg"
+                              : "border-violet-200 bg-violet-50 text-violet-900 hover:border-violet-300 hover:bg-violet-100"
+                          }`}
+                        >
+                          <FileUp className="h-5 w-5 flex-shrink-0" />
+                          {resubmittedDocsCount > 0 && (
+                            <span className="absolute -top-1 -right-1 rounded-full bg-violet-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                              {resubmittedDocsCount}
+                            </span>
+                          )}
+                          <div className="absolute right-full mr-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
+                            {EXPIRED_RESUBMITTED_DOCS_LABEL}
                             <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-gray-900" />
                           </div>
                         </Link>

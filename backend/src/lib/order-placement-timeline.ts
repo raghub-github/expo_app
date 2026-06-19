@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import { toTimestamptzParam } from "./sql-timestamps.js";
 
 /** Canonical timeline statuses for customer checkout → order placed. */
 export const PLACEMENT_TIMELINE_STATUSES = [
@@ -17,11 +18,6 @@ function rowsFromExecute<T>(result: unknown): T[] {
   return rows ?? [];
 }
 
-/** postgres.js bind params must be string/number — not raw Date objects. */
-function toTimestamptzParam(value: Date | string | number): string {
-  const d = value instanceof Date ? value : new Date(value);
-  return Number.isFinite(d.getTime()) ? d.toISOString() : new Date().toISOString();
-}
 
 export type AppendTimelineInput = {
   orderCorePk: number;

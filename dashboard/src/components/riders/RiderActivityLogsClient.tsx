@@ -2,8 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { supabase } from "@/lib/rider-dashboard/supabaseClient";
-import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
+import { useResolvedRiderSearch } from "@/hooks/useResolvedRiderSearch";
 import { RiderSectionHeader } from "./RiderSectionHeader";
 import { CollapsibleTableFilters } from "./CollapsibleTableFilters";
 import { FilterChips, type FilterChipItem } from "./FilterChips";
@@ -18,12 +17,6 @@ import {
   XCircle,
 } from "lucide-react";
 import Link from "next/link";
-
-interface RiderInfo {
-  id: number;
-  name: string | null;
-  mobile: string;
-}
 
 export interface ActivityLogRow {
   date: string;
@@ -84,13 +77,11 @@ function serviceLabel(s: string): string {
 export function RiderActivityLogsClient() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const riderContext = useRiderDashboardOptional();
-  const searchValue = (searchParams.get("search") || "").trim();
+  const { rider, resolveLoading, error, hasSearch, searchValue } =
+    useResolvedRiderSearch();
   const [searchInput, setSearchInput] = useState(searchValue);
-  const [rider, setRider] = useState<RiderInfo | null>(null);
-  const [resolveLoading, setResolveLoading] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   const [period, setPeriod] = useState(searchParams.get("period") || "week");
   const [serviceType, setServiceType] = useState(
@@ -117,53 +108,10 @@ export function RiderActivityLogsClient() {
     serviceType?: string;
   }>({});
 
-  const resolveRider = useCallback(async (value: string) => {
-    if (!value.trim()) {
-      setRider(null);
-      setRows([]);
-      return;
-    }
-    setResolveLoading(true);
-    setError(null);
-    try {
-      if (!supabase) throw new Error("Database not available");
-      let query = supabase.from("riders").select("id, name, mobile");
-      const isRiderId = /^GMR(\d+)$/i.test(value);
-      const isNumeric = /^\d{1,9}$/.test(value);
-      const isPhone = /^\d{10,}$/.test(value.replace(/^\+?91/, ""));
-      if (isRiderId)
-        query = query.eq("id", parseInt(value.replace(/^GMR/i, ""), 10));
-      else if (isNumeric) query = query.eq("id", parseInt(value, 10));
-      else if (isPhone)
-        query = query.eq("mobile", value.replace(/^\+?91/, ""));
-      else query = query.ilike("mobile", `%${value}%`);
-      const { data, error: e } = await query.limit(1).single();
-      if (e || !data) {
-        setRider(null);
-        setRows([]);
-        setError("No rider found");
-        return;
-      }
-      setRider({
-        id: data.id,
-        name: data.name,
-        mobile: data.mobile,
-      });
-    } catch (err: unknown) {
-      setError(
-        err instanceof Error ? err.message : "Failed to resolve rider"
-      );
-      setRider(null);
-      setRows([]);
-    } finally {
-      setResolveLoading(false);
-    }
-  }, []);
-
   const fetchActivityLogs = useCallback(
     async (riderId: number) => {
       setLoading(true);
-      setError(null);
+      setFetchError(null);
       try {
         const params = new URLSearchParams();
         if (period) params.set("period", period);
@@ -189,7 +137,7 @@ export function RiderActivityLogsClient() {
           serviceType: json.data?.serviceType,
         });
       } catch (err: unknown) {
-        setError(
+        setFetchError(
           err instanceof Error ? err.message : "Failed to load activity logs"
         );
         setRows([]);
@@ -202,29 +150,15 @@ export function RiderActivityLogsClient() {
     [period, serviceType, from, to, page, pageSize]
   );
 
-  const riderFromContext = riderContext?.currentRiderInfo
-    ? {
-        id: riderContext.currentRiderInfo.id,
-        name: riderContext.currentRiderInfo.name,
-        mobile: riderContext.currentRiderInfo.mobile,
-      }
-    : null;
-
   useEffect(() => setSearchInput(searchValue), [searchValue]);
-  useEffect(() => {
-    if (searchValue) resolveRider(searchValue);
-    else if (riderFromContext) {
-      setRider(riderFromContext);
-      setError(null);
-    } else {
-      setRider(null);
-      setRows([]);
-      setError(null);
-    }
-  }, [searchValue, riderFromContext?.id, resolveRider]);
 
   useEffect(() => {
     if (rider) fetchActivityLogs(rider.id);
+    else {
+      setRows([]);
+      setTotal(0);
+      setTotalsFromApi(null);
+    }
   }, [rider, fetchActivityLogs]);
 
   useEffect(() => {
@@ -292,7 +226,6 @@ export function RiderActivityLogsClient() {
     applyFilters({ period: "week", serviceType: "all", from: "", to: "" });
   };
 
-  const hasSearch = searchValue.length > 0;
   const activeFilterCount = [period !== "day", serviceType !== "all", from, to].filter(
     Boolean
   ).length;
@@ -316,7 +249,7 @@ export function RiderActivityLogsClient() {
         description="Rider login time, service, orders completed/cancelled, and earnings."
         rider={rider}
         resolveLoading={resolveLoading}
-        error={error}
+        error={error || fetchError}
         hasSearch={hasSearch}
         actionButtons={
           rider ? (

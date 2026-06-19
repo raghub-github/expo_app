@@ -5,8 +5,8 @@ import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
-import { fetchRestaurantById, fetchRestaurantByName } from '@/lib/database'
 import { Restaurant } from '@/lib/types'
+import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord'
 import { DEMO_RESTAURANT_ID } from '@/lib/constants'
 import {
   useMerchantWallet,
@@ -138,6 +138,11 @@ function formatCategory(cat: string): string {
   return cat.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
+function isCancellationNoCreditEntry(row: LedgerEntry): boolean {
+  const meta = row.metadata as Record<string, unknown> | null
+  return meta?.entry_type === 'order_cancellation' && meta?.balance_impact === 'none'
+}
+
 function pctChangeLabel(current: number, prior: number): { text: string; positive: boolean } {
   if (prior === 0) {
     if (current === 0) return { text: '0%', positive: true }
@@ -150,8 +155,9 @@ function pctChangeLabel(current: number, prior: number): { text: string; positiv
 function PaymentsContent() {
   const searchParams = useSearchParams()
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
   const [storeId, setStoreId] = useState<string | null>(null)
+  const { data: storeRecord, isLoading: storeQueryLoading } = usePartnerStoreRecord(storeId)
+  const isLoading = storeQueryLoading && !storeRecord
   const [showWithdrawal, setShowWithdrawal] = useState(false)
   const [withdrawalAmount, setWithdrawalAmount] = useState('')
   const [isWithdrawing, setIsWithdrawing] = useState(false)
@@ -230,25 +236,8 @@ function PaymentsContent() {
   }, [searchParams])
 
   useEffect(() => {
-    if (!storeId) return
-    let cancelled = false
-    const load = async () => {
-      setIsLoading(true)
-      try {
-        let data = await fetchRestaurantById(storeId)
-        if (!data && !storeId.match(/^GMM\d{4}$/)) {
-          data = await fetchRestaurantByName(storeId)
-        }
-        if (data) setRestaurant(data as unknown as Restaurant)
-      } catch (e) {
-        console.error('Error loading payments:', e)
-      } finally {
-        if (!cancelled) setIsLoading(false)
-      }
-    }
-    load()
-    return () => { cancelled = true }
-  }, [storeId])
+    if (storeRecord) setRestaurant(storeRecord as unknown as Restaurant)
+  }, [storeRecord])
 
   useEffect(() => {
     if (bankAccounts.length === 0) return
@@ -621,9 +610,9 @@ function PaymentsContent() {
 
           <div className="px-4 sm:px-6 lg:px-8 py-4 max-w-7xl mx-auto w-full space-y-3">
             {/* Wallet summary cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
               {/* Withdrawable - Primary Card */}
-              <div className="lg:col-span-1 bg-emerald-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+              <div className="bg-emerald-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
                 <div className="flex items-start justify-between">
                   <div>
                     <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Withdrawable</p>
@@ -637,23 +626,6 @@ function PaymentsContent() {
                   </div>
                   <div className="p-2 rounded-lg bg-emerald-100 flex-shrink-0">
                     <Wallet size={16} className="text-emerald-700" />
-                  </div>
-                </div>
-              </div>
-
-              {/* Locked (refund window) */}
-              <div className="bg-amber-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">In refund window</p>
-                    {walletLoading ? (
-                      <div className="h-7 w-20 mt-1.5 bg-gray-200 rounded animate-pulse" />
-                    ) : (
-                      <p className="text-xl font-bold text-gray-900 mt-1">
-                        {formatInr(wallet?.locked_settlement_total ?? wallet?.locked_balance ?? 0)}
-                      </p>
-                    )}
-                    <p className="text-[10px] text-amber-800 mt-1">Releases per admin hold rules</p>
                   </div>
                 </div>
               </div>
@@ -775,6 +747,7 @@ function PaymentsContent() {
               analyticsLoading={analyticsLoading}
               payoutData={payoutData}
               payoutsLoading={payoutsLoading}
+              walletTotalEarned={wallet?.total_earned ?? 0}
             />
 
             {/* Bank & UPI + Quick Actions Row */}
@@ -1023,7 +996,7 @@ function PaymentsContent() {
                           <th className="text-left py-3 px-4 font-semibold text-gray-700">Description</th>
                           <th className="text-right py-3 px-4 font-semibold text-gray-700">Amount</th>
                           <th className="text-center py-3 px-4 font-semibold text-gray-700">Status</th>
-                          <th className="text-right py-3 px-4 font-semibold text-gray-700">Balance After</th>
+                          <th className="text-right py-3 px-4 font-semibold text-gray-700">Withdrawable After</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
@@ -1050,11 +1023,24 @@ function PaymentsContent() {
                               </td>
                               <td className="py-3 px-4 text-gray-600 whitespace-nowrap">{new Date(row.created_at).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}</td>
                               <td className="py-3 px-4 text-gray-600 truncate max-w-xs" title={row.description ?? ''}>{row.description || '—'}</td>
-                              <td className={`py-3 px-4 text-right font-semibold tabular-nums ${row.direction === 'CREDIT' ? 'text-emerald-600' : 'text-red-600'}`}>
-                                {row.direction === 'CREDIT' ? '+' : '-'}{formatInr(row.amount)}
+                              <td className={`py-3 px-4 text-right font-semibold tabular-nums ${
+                                isCancellationNoCreditEntry(row)
+                                  ? 'text-amber-700'
+                                  : row.direction === 'CREDIT'
+                                    ? 'text-emerald-600'
+                                    : 'text-red-600'
+                              }`}>
+                                {isCancellationNoCreditEntry(row)
+                                  ? formatInr(row.amount)
+                                  : `${row.direction === 'CREDIT' ? '+' : '-'}${formatInr(row.amount)}`}
                               </td>
                               <td className="py-3 px-4 text-center">
-                                {row.direction === 'CREDIT' ? (
+                                {isCancellationNoCreditEntry(row) ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 text-amber-800 text-xs font-medium">
+                                    <div className="w-2 h-2 rounded-full bg-amber-600"/>
+                                    Cancelled
+                                  </span>
+                                ) : row.direction === 'CREDIT' ? (
                                   <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">
                                     <div className="w-2 h-2 rounded-full bg-emerald-600"/>
                                     Credit

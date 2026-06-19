@@ -125,6 +125,20 @@ function pipelineRank(status: string): number {
   return i >= 0 ? i : -1;
 }
 
+/** True only when a rider explicitly marked food pickup (OTP/barcode/mark). */
+export function hasRiderMarkedFoodPickup(riderPickedUpAt?: string | null): boolean {
+  const t = String(riderPickedUpAt ?? '').trim();
+  if (!t) return false;
+  return Number.isFinite(Date.parse(t));
+}
+
+/** Merchant dispatch / core in_transit must not advance tabs until rider pickup is recorded. */
+function capPipelineUntilRiderPickup(status: string, riderPickedUpAt?: string | null): string {
+  if (status !== 'OUT_FOR_DELIVERY') return status;
+  if (hasRiderMarkedFoodPickup(riderPickedUpAt)) return status;
+  return 'READY_FOR_PICKUP';
+}
+
 /**
  * Resolve partner tab status from orders_core + orders_food.
  * When sources disagree (e.g. dashboard set Dispatched on core but food still READY),
@@ -133,7 +147,8 @@ function pipelineRank(status: string): number {
 export function resolvePartnerPipeline(
   foodOrderStatus: string | null | undefined,
   coreStatus: string | null | undefined,
-  currentStatus: string | null | undefined
+  currentStatus: string | null | undefined,
+  riderPickedUpAt?: string | null
 ): string {
   const cur = mapStateMachineStatusToPartnerUi(currentStatus);
   const fromFood = mapStateMachineStatusToPartnerUi(foodOrderStatus);
@@ -159,12 +174,16 @@ export function resolvePartnerPipeline(
     !isMerchantMarkedFoodReady(foodOrderStatus) &&
     pipelineRank(best) >= pipelineRank('READY_FOR_PICKUP')
   ) {
-    if (fromFood && pipelineRank(fromFood) >= 0) return fromFood;
-    if (cur && pipelineRank(cur) >= 0 && cur !== 'READY_FOR_PICKUP') return cur;
+    if (fromFood && pipelineRank(fromFood) >= 0) {
+      return capPipelineUntilRiderPickup(fromFood, riderPickedUpAt);
+    }
+    if (cur && pipelineRank(cur) >= 0 && cur !== 'READY_FOR_PICKUP') {
+      return capPipelineUntilRiderPickup(cur, riderPickedUpAt);
+    }
     return 'PREPARING';
   }
 
-  return best || 'CREATED';
+  return capPipelineUntilRiderPickup(best || 'CREATED', riderPickedUpAt);
 }
 
 /** @deprecated use resolvePartnerPipeline */

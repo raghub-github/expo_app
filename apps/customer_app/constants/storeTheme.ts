@@ -1,4 +1,4 @@
-/** Zomato-inspired store inner page palette (reference UI). */
+/** GatiMitra store inner page palette (reference UI). */
 export const StoreTheme = {
   background: "#FFFFFF",
   textPrimary: "#1C1C1C",

@@ -6,13 +6,22 @@ import {
   mapboxLabelRestoreScript,
 } from "@/components/maps/mapbox-web-shared";
 import { mapboxRapidoRouteScript } from "@/components/maps/mapbox-rapido-route-script";
+import { mapboxRideNavScript } from "@/components/maps/mapbox-ride-nav-script";
+import { mapboxPickupZoneScript } from "@/components/maps/mapbox-pickup-zone-script";
 
 type Center = { latitude: number; longitude: number };
 
-export function buildRideTrackingMapHtml(token: string, center: Center, bikeUri: string): string {
+export function buildRideTrackingMapHtml(
+  token: string,
+  center: Center,
+  bikeUri: string,
+  options?: { navigationStyle?: boolean }
+): string {
   const lat = center.latitude;
   const lng = center.longitude;
   const uri = escJson(bikeUri);
+  const initialPitch = options?.navigationStyle ? 58 : 0;
+  const initialZoom = options?.navigationStyle ? 17.4 : 14;
 
   return `<!DOCTYPE html>
 <html>
@@ -31,10 +40,11 @@ export function buildRideTrackingMapHtml(token: string, center: Center, bikeUri:
         container: 'map',
         style: '${MAPBOX_RIDE_STYLE}',
         center: [${lng}, ${lat}],
-        zoom: 14,
+        zoom: ${initialZoom},
         minZoom: 10,
         maxZoom: 18,
-        pitch: 0,
+        pitch: ${initialPitch},
+        bearing: 0,
         attributionControl: false
       });
       ${mapboxLabelRestoreScript()}
@@ -54,6 +64,9 @@ export function buildRideTrackingMapHtml(token: string, center: Center, bikeUri:
       map.on('load', function() {
         ensureMapLabelsVisible(map);
         ${mapboxRapidoRouteScript()}
+        ${mapboxRideNavScript()}
+        ${mapboxPickupZoneScript()}
+        if (window.patchRideTrackingForNav) window.patchRideTrackingForNav();
         map.resize();
         if (window.ReactNativeWebView) {
           window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'ready' }));
@@ -61,14 +74,19 @@ export function buildRideTrackingMapHtml(token: string, center: Center, bikeUri:
       });
 
       window.updateRider = function(lat, lng, heading) {
+        applyRiderMarker(lat, lng, heading);
+        if (window.onNavRiderUpdate) window.onNavRiderUpdate(lat, lng, heading);
+      };
+
+      function applyRiderMarker(lat, lng, heading) {
         if (lat == null || lng == null) {
           if (riderMarker) { try { riderMarker.remove(); } catch (e) {} riderMarker = null; }
           return;
         }
         if (!riderMarker) {
           var el = document.createElement('div');
-          el.style.cssText = 'width:44px;height:44px;display:flex;align-items:center;justify-content:center;pointer-events:none;';
-          el.innerHTML = '<img id="rider-img" src="${uri}" style="width:40px;height:40px;object-fit:contain;transform-origin:center center;" alt="" />';
+          el.style.cssText = 'width:48px;height:48px;display:flex;align-items:center;justify-content:center;pointer-events:none;';
+          el.innerHTML = '<div id="rider-shell" style="width:48px;height:48px;display:flex;align-items:center;justify-content:center;pointer-events:none;transition:transform 0.28s cubic-bezier(0.22,1,0.36,1);"><div style="width:44px;height:44px;border-radius:22px;background:#fff;box-shadow:0 2px 10px rgba(26,115,232,0.28),0 1px 4px rgba(0,0,0,0.18);display:flex;align-items:center;justify-content:center;border:2px solid #1A73E8;"><img id="rider-img" src="${uri}" style="width:32px;height:32px;object-fit:contain;transform-origin:center center;transition:transform 0.32s cubic-bezier(0.22,1,0.36,1);" alt="" /></div></div>';
           riderMarker = new mapboxgl.Marker({ element: el, anchor: 'center' }).setLngLat([lng, lat]).addTo(map);
         } else {
           riderMarker.setLngLat([lng, lat]);
@@ -77,7 +95,7 @@ export function buildRideTrackingMapHtml(token: string, center: Center, bikeUri:
         if (img && heading != null && !isNaN(heading)) {
           img.style.transform = 'rotate(' + heading + 'deg)';
         }
-      };
+      }
 
       window.fitToCoordinates = function(coords, padding, maxZoom) {
         if (!coords || coords.length < 1) return;

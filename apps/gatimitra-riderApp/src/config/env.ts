@@ -11,10 +11,34 @@ type RiderAppConfig = {
   /** Same Supabase project as customer/merchant (Phone Auth + Send SMS hook → MSG91). */
   supabaseUrl: string | null;
   supabaseAnonKey: string | null;
-  /** Force backend /otp/request + /otp/verify even when Supabase keys are set. */
+  /**
+   * When true, phone OTP uses POST /v1/auth/otp/request (backend + MSG91) — same as customer/merchant
+   * with EXPO_PUBLIC_PHONE_OTP_USE_BACKEND=true (typical for LAN dev when Supabase hook is not public).
+   */
   phoneOtpUseBackendOnly: boolean;
   mapboxToken?: string;
 };
+
+/** Android emulator: localhost -> 10.0.2.2; legacy :30000/:4000 -> :3000. */
+function resolveApiBaseUrl(raw: string): string {
+  let trimmed = raw.replace(/\/+$/, "");
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.port === "30000" || parsed.port === "4000") {
+      parsed.port = "3000";
+      trimmed = parsed.toString().replace(/\/$/, "");
+    }
+  } catch {
+    /* ignore */
+  }
+  if (
+    Platform.OS === "android" &&
+    (/^https?:\/\/localhost(\b|:)/.test(trimmed) || /^https?:\/\/127\.0\.0\.1(\b|:)/.test(trimmed))
+  ) {
+    return trimmed.replace(/localhost|127\.0\.0\.1/, "10.0.2.2");
+  }
+  return trimmed;
+}
 
 /**
  * Expo public env rule:
@@ -34,16 +58,14 @@ export function getRiderAppConfig(): RiderAppConfig {
   const supabaseAnonKey =
     asNonEmptyString(process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY) ??
     asNonEmptyString(extra.EXPO_PUBLIC_SUPABASE_ANON_KEY);
-  const phoneOtpFlag = (
-    process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND ??
-    asNonEmptyString(extra.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND) ??
-    ""
-  )
-    .trim()
-    .toLowerCase();
+  const phoneOtpBackendRaw =
+    asNonEmptyString(process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND) ??
+    asNonEmptyString(extra.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND);
   const phoneOtpUseBackendOnly =
-    phoneOtpFlag === "true" || phoneOtpFlag === "1" || phoneOtpFlag === "yes";
-
+    phoneOtpBackendRaw === "1" ||
+    phoneOtpBackendRaw?.toLowerCase() === "true" ||
+    phoneOtpBackendRaw?.toLowerCase() === "yes" ||
+    phoneOtpBackendRaw?.toLowerCase() === "on";
   const fromExtra = asNonEmptyString(extra.API_BASE_URL);
 
   // Production safety net — see merchant_app/config/env.ts for rationale.
@@ -59,7 +81,7 @@ export function getRiderAppConfig(): RiderAppConfig {
   const wsEnabled = isRiderWsEnabled();
 
   return {
-    apiBaseUrl,
+    apiBaseUrl: resolveApiBaseUrl(apiBaseUrl),
     wsBaseUrl,
     wsEnabled,
     supabaseUrl,

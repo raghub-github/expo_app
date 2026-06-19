@@ -124,3 +124,51 @@ export async function manualAssignRiderOnBackend(args: {
     actor_email: args.actorEmail ?? undefined,
   });
 }
+
+export async function clearRiderPaymentHoldOnBackend(args: {
+  ordersCoreId: number;
+  actorEmail?: string | null;
+}): Promise<RiderManagementBackendResult & { credited?: boolean }> {
+  const base = backendBaseUrl();
+  if (!base) {
+    return { ok: false, error: "Rider management service is not configured", status: 503 };
+  }
+  const token = internalToken();
+  if (!token) {
+    return { ok: false, error: "Rider management service is not configured", status: 503 };
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${base}/v1/internal/orders/clear-rider-payment-hold`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-token": token,
+      },
+      body: JSON.stringify({
+        orders_core_id: args.ordersCoreId,
+        actor_email: args.actorEmail ?? undefined,
+      }),
+      cache: "no-store",
+    });
+  } catch {
+    return {
+      ok: false,
+      error: "Could not reach rider backend. Is Fastify running on port 3000?",
+      status: 502,
+    };
+  }
+  const json = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    error?: string;
+    credited?: boolean;
+  };
+  if (!res.ok || !json.ok) {
+    return {
+      ok: false,
+      error: mapBackendFailure(res, json),
+      status: res.status >= 400 ? res.status : 502,
+    };
+  }
+  return { ok: true, credited: json.credited };
+}

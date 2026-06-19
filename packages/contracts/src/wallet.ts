@@ -257,15 +257,14 @@ export function idempotencyKey(prefix: string, ...parts: (string | number)[]): s
 /** Unified balance buckets for merchant app, partnersite, and dashboard. */
 export function normalizeMerchantWalletDisplay(summary: WalletSummary) {
   const available = summary.available_balance;
-  const locked = summary.locked_settlement_total ?? summary.locked_balance;
   const hold = summary.hold_balance;
   const pending = summary.pending_balance;
   return {
     withdrawable: roundMoney(summary.withdrawable_balance ?? available),
-    locked: roundMoney(locked),
+    locked: 0,
     hold: roundMoney(hold),
     pending: roundMoney(pending),
-    total: roundMoney(summary.total_balance ?? available + locked + hold + pending),
+    total: roundMoney(summary.total_balance ?? available + hold + pending),
     settlement_paused: summary.settlement_paused ?? false,
   };
 }

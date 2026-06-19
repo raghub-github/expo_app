@@ -15,7 +15,7 @@ export function formatMenuPortionLabel(
   return null;
 }
 
-/** Zomato-style: "Half (500 ml)", "Coke (250 ml)", "Boiled Egg (1 piece)". */
+/** GatiMitra-style: "Half (500 ml)", "Coke (250 ml)", "Boiled Egg (1 piece)". */
 export function formatMenuOptionDisplayName(
   name: string,
   sizeValue?: string | null,

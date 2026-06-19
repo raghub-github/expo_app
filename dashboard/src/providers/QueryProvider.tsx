@@ -1,7 +1,9 @@
 "use client";
 
+import { useState } from "react";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
-import { queryClient, persister } from "@/lib/react-query";
+import { getQueryClient, persister } from "@/lib/react-query";
 
 interface QueryProviderProps {
   children: React.ReactNode;
@@ -15,16 +17,20 @@ interface QueryProviderProps {
  * inside the provider (dev only).
  */
 export function QueryProvider({ children }: QueryProviderProps) {
+  const [queryClient] = useState(() => getQueryClient());
+
   return (
-    <PersistQueryClientProvider
-      client={queryClient}
-      persistOptions={{
-        persister,
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-        buster: "", // Cache version buster (increment to invalidate all cache)
-      }}
-    >
-      {children}
-    </PersistQueryClientProvider>
+    <QueryClientProvider client={queryClient}>
+      <PersistQueryClientProvider
+        client={queryClient}
+        persistOptions={{
+          persister,
+          maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+          buster: "", // Cache version buster (increment to invalidate all cache)
+        }}
+      >
+        {children}
+      </PersistQueryClientProvider>
+    </QueryClientProvider>
   );
 }

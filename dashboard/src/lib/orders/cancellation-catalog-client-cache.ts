@@ -29,6 +29,20 @@ let inflight: Promise<CatalogCache> | null = null;
 
 const TTL_MS = 10 * 60 * 1000;
 
+export function getCachedCancellationCatalog(): CatalogCache | null {
+  if (cache && Date.now() - cache.fetchedAt < TTL_MS) {
+    return cache;
+  }
+  return null;
+}
+
+/** Warm catalog in background (order detail / rider cancellation UI). */
+export function prefetchCancellationCatalogClient(): void {
+  void fetchCancellationCatalogClient().catch(() => {
+    /* optional prefetch — UI loads on demand if this fails */
+  });
+}
+
 export async function fetchCancellationCatalogClient(): Promise<CatalogCache> {
   if (cache && Date.now() - cache.fetchedAt < TTL_MS) {
     return cache;

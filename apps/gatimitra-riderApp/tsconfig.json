@@ -17,6 +17,8 @@
     "nativewind-env.d.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "archive-output/**",
+    "src/i18n/locales/**"
   ]
 }

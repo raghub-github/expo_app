@@ -12,6 +12,9 @@ import { sliceOrderLineItems } from "@/lib/orderCardDisplay";
 import { formatOrderCardCustomerLabel } from "@/components/order/orderFormatters";
 import { formatMerchantRs } from "@/lib/merchant-line-total";
 import { merchantOrderCardLayoutStyles as styles } from "@/components/order/merchantOrderCardLayoutStyles";
+import { MerchantOrderBillBreakdown } from "@/components/order/MerchantOrderBillBreakdown";
+import { MerchantAssignedRiderRow } from "@/components/order/MerchantAssignedRiderRow";
+import { orderHasAssignedRider } from "@/lib/orderAssignedRider";
 
 export type MerchantOrderCardLayoutProps = {
   order: OrderRecord;
@@ -27,6 +30,7 @@ export type MerchantOrderCardLayoutProps = {
   headerRight?: ReactNode;
   headerBelow?: ReactNode;
   outerBanner?: ReactNode;
+  statusBadge?: ReactNode;
   showInstructions?: boolean;
   midContent?: ReactNode;
   riderContent?: ReactNode;
@@ -49,6 +53,7 @@ export function MerchantOrderCardLayout({
   headerRight,
   headerBelow,
   outerBanner,
+  statusBadge,
   showInstructions = true,
   midContent,
   riderContent,
@@ -74,6 +79,20 @@ export function MerchantOrderCardLayout({
     [order.customerName, order.customerStoreOrderOrdinal]
   );
 
+  const defaultRiderContent =
+    order.deliveryType === "GATIMITRA_RIDER" ? (
+      orderHasAssignedRider(order) ? (
+        <MerchantAssignedRiderRow order={order} />
+      ) : (
+        <View style={styles.riderRow}>
+          <View style={styles.riderAvatar}>
+            <Ionicons name="bicycle" size={16} color="#888888" />
+          </View>
+          <Text style={styles.riderText}>Assigning delivery partner…</Text>
+        </View>
+      )
+    ) : null;
+
   const openDetail = () => onViewDetail?.();
 
   return (
@@ -81,6 +100,7 @@ export function MerchantOrderCardLayout({
       {outerBanner}
 
       <View style={[styles.card, outerBanner ? styles.cardUnderBanner : null]}>
+        {statusBadge ? <View style={styles.statusBadgeRow}>{statusBadge}</View> : null}
         <View style={styles.headerRow}>
           <View style={styles.headerLeft}>
             <MerchantOrderIdRow
@@ -167,36 +187,12 @@ export function MerchantOrderCardLayout({
               color="#666666"
             />
           </Pressable>
-          {billOpen ? (
-            <View style={styles.billBreakdown}>
-              {order.lineItems.map((item, idx) => (
-                <Pressable
-                  key={`bill-${idx}`}
-                  onPress={() => onItemPress?.(item)}
-                  style={({ pressed }) => [styles.billRow, pressed && styles.pressed]}
-                >
-                  <Text style={styles.billItemLabel}>
-                    {item.qty} x {item.name}
-                  </Text>
-                  <Text style={styles.billItemValue}>₹{item.price}</Text>
-                </Pressable>
-              ))}
-            </View>
-          ) : null}
+          {billOpen ? <MerchantOrderBillBreakdown order={order} /> : null}
         </View>
 
         {midContent}
 
-        {showRider
-          ? riderContent ?? (
-              <View style={styles.riderRow}>
-                <View style={styles.riderAvatar}>
-                  <Ionicons name="bicycle" size={16} color="#888888" />
-                </View>
-                <Text style={styles.riderText}>Assigning delivery partner…</Text>
-              </View>
-            )
-          : null}
+        {showRider ? riderContent ?? defaultRiderContent : null}
 
         {footer ? <View style={styles.footer}>{footer}</View> : null}
       </View>

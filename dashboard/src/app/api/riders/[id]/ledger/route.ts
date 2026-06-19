@@ -8,11 +8,29 @@ import { getDb } from "@/lib/db/client";
 import { riders, walletLedger, systemUsers } from "@/lib/db/schema";
 import { eq, and, or, desc, gte, lte, inArray, ilike, sql } from "drizzle-orm";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { ordersCore } from "@/lib/db/schema";
+import {
+  extractOrderCoreIdFromLedger,
+  resolveOrderPublicIdFromLedger,
+  resolveServiceTypeFromLedger,
+  type LedgerOrderCoreRow,
+} from "@/lib/riders/rider-ledger-resolve";
 
 export const runtime = "nodejs";
 
-const CREDIT_TYPES = ["earning", "bonus", "refund", "referral_bonus", "penalty_reversal"];
-const DEBIT_TYPES = ["penalty", "onboarding_fee", "adjustment"];
+const CREDIT_TYPES = [
+  "earning",
+  "bonus",
+  "refund",
+  "referral_bonus",
+  "penalty_reversal",
+  "manual_add",
+  "incentive",
+  "surge",
+  "failed_withdrawal_revert",
+  "cancellation_payout",
+];
+const DEBIT_TYPES = ["penalty", "onboarding_fee", "adjustment", "subscription_fee", "withdrawal"];
 
 export async function GET(
   request: NextRequest,
@@ -112,22 +130,55 @@ export async function GET(
       .limit(Number.isNaN(limit) ? 30 : limit)
       .offset(offset);
 
+    const coreIds = rows
+      .map((r) =>
+        extractOrderCoreIdFromLedger(
+          r.ref,
+          (r.metadata as Record<string, unknown> | null | undefined) ?? null
+        )
+      )
+      .filter((id): id is number => id != null);
+
+    const coreRowById = new Map<number, LedgerOrderCoreRow>();
+    if (coreIds.length > 0) {
+      const uniqueIds = [...new Set(coreIds)];
+      const orderRows = await db
+        .select({
+          id: ordersCore.id,
+          orderType: ordersCore.orderType,
+          formattedOrderId: ordersCore.formattedOrderId,
+          orderId: ordersCore.orderId,
+          externalRef: ordersCore.externalRef,
+        })
+        .from(ordersCore)
+        .where(inArray(ordersCore.id, uniqueIds));
+      for (const orderRow of orderRows) {
+        coreRowById.set(orderRow.id, orderRow);
+      }
+    }
+
     const ledger = rows.map((r) => {
-      const meta = r.metadata as { orderId?: number } | null | undefined;
-      const orderIdFromMeta = meta?.orderId != null ? String(meta.orderId) : null;
-      const orderId =
-        r.refType === "order" && r.ref
-          ? r.ref
-          : (r.refType === "penalty" || r.refType === "penalty_revert")
-            ? orderIdFromMeta
-            : null;
+      const meta = (r.metadata as Record<string, unknown> | null | undefined) ?? null;
+      const coreId = extractOrderCoreIdFromLedger(r.ref, meta);
+      const coreRow = coreId != null ? coreRowById.get(coreId) ?? null : null;
+      const orderId = resolveOrderPublicIdFromLedger({
+        ref: r.ref,
+        refType: r.refType,
+        metadata: meta,
+        coreRow,
+      });
+      const resolvedServiceType = resolveServiceTypeFromLedger({
+        serviceType: r.serviceType,
+        metadata: meta,
+        coreRow,
+      });
       return {
         id: r.id,
         riderId: r.riderId,
         entryType: r.entryType,
         amount: r.amount,
         balance: r.balance,
-        serviceType: r.serviceType,
+        serviceType: resolvedServiceType,
         ref: r.ref,
         refType: r.refType,
         description: r.description,

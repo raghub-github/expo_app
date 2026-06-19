@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveOrderCancellationRefund } from '@/lib/order-cancellation-refund';
+import { applyMerchantOrderCancellationLedger } from '@/lib/apply-merchant-cancellation-ledger';
 
 export type OrderCancellationActorType =
   | 'store'
@@ -59,7 +60,10 @@ export async function recordOrderCancellation(
     .eq('order_id', input.orderCorePk)
     .maybeSingle();
   const linked = Number(foodLink?.cancellation_reason_id);
-  if (Number.isFinite(linked) && linked > 0) return linked;
+  if (Number.isFinite(linked) && linked > 0) {
+    await syncMerchantCancellationLedger(input);
+    return linked;
+  }
 
   const { data: latest } = await db
     .from('order_cancellation_reasons')
@@ -78,6 +82,7 @@ export async function recordOrderCancellation(
       .from('orders_food')
       .update({ cancellation_reason_id: latestId })
       .eq('order_id', input.orderCorePk);
+    await syncMerchantCancellationLedger(input);
     return latestId;
   }
 
@@ -182,7 +187,27 @@ export async function recordOrderCancellation(
       .eq('order_id', input.orderCorePk);
   }
 
+  await syncMerchantCancellationLedger(input);
   return cancellationReasonId;
+}
+
+async function syncMerchantCancellationLedger(input: RecordOrderCancellationInput): Promise<void> {
+  try {
+    const merchantDebit =
+      typeof input.metadata?.merchantDebit === 'string'
+        ? input.metadata.merchantDebit
+        : typeof (input.metadata as { merchant_debit?: string } | undefined)?.merchant_debit === 'string'
+          ? (input.metadata as { merchant_debit: string }).merchant_debit
+          : null;
+    await applyMerchantOrderCancellationLedger({
+      orderCoreId: input.orderCorePk,
+      merchantDebit,
+      actorSystemUserId: input.cancelledById ?? null,
+      source: 'partner_cancel',
+    });
+  } catch (ledgerErr) {
+    console.warn('[recordOrderCancellation] merchant ledger failed:', ledgerErr);
+  }
 }
 
 export { actorTypeFromSource, slugReasonCode };

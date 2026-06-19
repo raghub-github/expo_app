@@ -3,6 +3,7 @@
  */
 
 import { getSql } from "../db/client.js";
+import { publishRiderEvent } from "../modules/realtime/publish.js";
 
 export type DispatchAssignmentAuditEventType =
   | "offer_sent"
@@ -133,6 +134,207 @@ export async function recordDispatchAssignmentAudit(
       ${now.toISOString()}::timestamptz
     )
   `;
+
+  await syncRiderDispatchOfferStats(input.riderId, input.eventType, now).catch((err) => {
+    console.warn("[recordDispatchAssignmentAudit] offer stats sync failed:", err);
+  });
+}
+
+async function syncRiderDispatchOfferStats(
+  riderId: number,
+  eventType: DispatchAssignmentAuditEventType,
+  occurredAt: Date
+): Promise<void> {
+  const offered = eventType === "offer_sent" ? 1 : 0;
+  const accepted = eventType === "accepted" ? 1 : 0;
+  const rejected = eventType === "rejected" ? 1 : 0;
+  const missed = eventType === "timeout" ? 1 : 0;
+  if (offered + accepted + rejected + missed === 0) return;
+
+  const sql = getSql();
+  await sql`
+    INSERT INTO rider_dispatch_offer_stats (
+      rider_id,
+      offers_total,
+      offers_accepted,
+      offers_rejected,
+      offers_missed,
+      last_offer_at,
+      last_accepted_at,
+      updated_at
+    )
+    VALUES (
+      ${riderId},
+      ${offered},
+      ${accepted},
+      ${rejected},
+      ${missed},
+      ${offered ? occurredAt.toISOString() : null}::timestamptz,
+      ${accepted ? occurredAt.toISOString() : null}::timestamptz,
+      NOW()
+    )
+    ON CONFLICT (rider_id) DO UPDATE SET
+      offers_total = rider_dispatch_offer_stats.offers_total + ${offered},
+      offers_accepted = rider_dispatch_offer_stats.offers_accepted + ${accepted},
+      offers_rejected = rider_dispatch_offer_stats.offers_rejected + ${rejected},
+      offers_missed = rider_dispatch_offer_stats.offers_missed + ${missed},
+      last_offer_at = CASE
+        WHEN ${offered} > 0 THEN GREATEST(
+          COALESCE(rider_dispatch_offer_stats.last_offer_at, '-infinity'::timestamptz),
+          ${occurredAt.toISOString()}::timestamptz
+        )
+        ELSE rider_dispatch_offer_stats.last_offer_at
+      END,
+      last_accepted_at = CASE
+        WHEN ${accepted} > 0 THEN GREATEST(
+          COALESCE(rider_dispatch_offer_stats.last_accepted_at, '-infinity'::timestamptz),
+          ${occurredAt.toISOString()}::timestamptz
+        )
+        ELSE rider_dispatch_offer_stats.last_accepted_at
+      END,
+      updated_at = NOW()
+  `;
+}
+
+type PendingOfferRow = {
+  rider_id: number;
+  assignment_attempt_number: number;
+  order_id: string;
+  wave_number: number | null;
+  dispatch_session_id: number | null;
+  metadata: Record<string, unknown>;
+};
+
+/** Riders who received offer_sent but have no accept/reject/timeout outcome yet. */
+export async function listPendingDispatchOffersForOrder(
+  orderCoreId: number,
+  excludeRiderId?: number | null
+): Promise<PendingOfferRow[]> {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT DISTINCT ON (a.rider_id, a.assignment_attempt_number)
+      a.rider_id,
+      a.assignment_attempt_number,
+      a.order_id,
+      a.wave_number,
+      a.dispatch_session_id,
+      a.metadata
+    FROM order_rider_dispatch_assignment_audit a
+    WHERE a.order_core_id = ${orderCoreId}
+      AND a.event_type = 'offer_sent'
+      AND (${excludeRiderId ?? null}::bigint IS NULL OR a.rider_id <> ${excludeRiderId ?? null})
+      AND NOT EXISTS (
+        SELECT 1
+        FROM order_rider_dispatch_assignment_audit o
+        WHERE o.order_core_id = a.order_core_id
+          AND o.rider_id = a.rider_id
+          AND o.assignment_attempt_number = a.assignment_attempt_number
+          AND o.event_type IN ('accepted', 'rejected', 'timeout')
+      )
+    ORDER BY a.rider_id, a.assignment_attempt_number, a.created_at DESC
+  `) as Array<Record<string, unknown>>;
+
+  return (rows ?? []).map((r) => ({
+    rider_id: Number(r.rider_id),
+    assignment_attempt_number: Number(r.assignment_attempt_number),
+    order_id: String(r.order_id),
+    wave_number: r.wave_number != null ? Number(r.wave_number) : null,
+    dispatch_session_id: r.dispatch_session_id != null ? Number(r.dispatch_session_id) : null,
+    metadata: (r.metadata as Record<string, unknown>) ?? {},
+  }));
+}
+
+/** Mark all pending offers on an order as missed (timeout) — idempotent per rider+attempt. */
+export async function recordPendingDispatchOffersMissed(input: {
+  orderCoreId: number;
+  excludeRiderId?: number | null;
+  reason: string;
+  missSource?: string;
+  occurredAt?: Date;
+}): Promise<number> {
+  const pending = await listPendingDispatchOffersForOrder(
+    input.orderCoreId,
+    input.excludeRiderId ?? null
+  );
+  if (pending.length === 0) return 0;
+
+  const now = input.occurredAt ?? new Date();
+  for (const row of pending) {
+    await recordDispatchAssignmentAudit({
+      orderCoreId: input.orderCoreId,
+      orderId: row.order_id,
+      riderId: row.rider_id,
+      eventType: "timeout",
+      assignmentAttemptNumber: row.assignment_attempt_number,
+      dispatchSessionId: row.dispatch_session_id,
+      waveNumber: row.wave_number,
+      timeoutAt: now,
+      responseReceivedAt: now,
+      actorType: "system",
+      actorId: input.missSource ?? "dispatch_engine",
+      metadata: {
+        missReason: input.reason,
+        serviceType: row.metadata?.serviceType ?? null,
+      },
+      occurredAt: now,
+    });
+
+    if (input.reason === "order_accepted_by_other_rider") {
+      await publishRiderEvent(row.rider_id, {
+        type: "dispatch_offer_withdrawn",
+        reason: "accepted_by_other_rider",
+        orderId: row.order_id,
+      });
+    }
+  }
+  return pending.length;
+}
+
+export type RiderDispatchOfferStats = {
+  riderId: number;
+  offersTotal: number;
+  offersAccepted: number;
+  offersRejected: number;
+  offersMissed: number;
+  acceptRate: number | null;
+  lastOfferAt: string | null;
+  lastAcceptedAt: string | null;
+};
+
+export async function getRiderDispatchOfferStats(riderId: number): Promise<RiderDispatchOfferStats> {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT
+      rider_id,
+      offers_total,
+      offers_accepted,
+      offers_rejected,
+      offers_missed,
+      last_offer_at,
+      last_accepted_at
+    FROM rider_dispatch_offer_stats
+    WHERE rider_id = ${riderId}
+    LIMIT 1
+  `) as Array<Record<string, unknown>>;
+
+  const row = rows[0];
+  const offersTotal = Number(row?.offers_total ?? 0);
+  const offersAccepted = Number(row?.offers_accepted ?? 0);
+  const offersRejected = Number(row?.offers_rejected ?? 0);
+  const offersMissed = Number(row?.offers_missed ?? 0);
+  const acceptRate =
+    offersTotal > 0 ? Math.round((offersAccepted / offersTotal) * 1000) / 10 : null;
+
+  return {
+    riderId,
+    offersTotal,
+    offersAccepted,
+    offersRejected,
+    offersMissed,
+    acceptRate,
+    lastOfferAt: row?.last_offer_at != null ? String(row.last_offer_at) : null,
+    lastAcceptedAt: row?.last_accepted_at != null ? String(row.last_accepted_at) : null,
+  };
 }
 
 /** Bulk offer_sent rows after dispatch wave notification. */

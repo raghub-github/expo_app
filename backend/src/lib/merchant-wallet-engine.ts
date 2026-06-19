@@ -56,12 +56,52 @@ export async function getOrCreateWallet(storeId: number): Promise<{ id: number }
 
 export async function getWalletSummary(storeId: number): Promise<WalletSummary> {
   const sql = getSql();
+
+  try {
+    const { backfillMissingDeliveredOrderCredits, backfillMissingCancelledOrderLedger } =
+      await import("./backfill-merchant-wallet-credits.js");
+    await backfillMissingDeliveredOrderCredits(sql, storeId);
+    await backfillMissingCancelledOrderLedger(sql, storeId);
+  } catch (e) {
+    console.warn("[getWalletSummary] backfill credits:", e);
+  }
+
   const wallet = await getOrCreateWallet(storeId);
   const walletId = wallet.id;
 
+  const balanceLedgerRows = await sql`
+    SELECT id, balance_type, balance_after, amount, direction, created_at, metadata
+    FROM merchant_wallet_ledger
+    WHERE wallet_id = ${walletId}
+    ORDER BY created_at ASC, id ASC
+    LIMIT 5000
+  `;
+
+  const { latestRunningBalanceFromLedgerRows } = await import("./merchant-wallet-ledger-display.js");
+  const ledgerRunningBalance = latestRunningBalanceFromLedgerRows(
+    (balanceLedgerRows as any[]).map((row) => ({
+      id: row.id,
+      balance_type: row.balance_type,
+      balance_after: row.balance_after != null ? Number(row.balance_after) : null,
+      amount: row.amount != null ? Number(row.amount) : null,
+      direction: row.direction,
+      created_at: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+      metadata: row.metadata,
+    }))
+  );
+
+  if ((balanceLedgerRows as unknown[]).length > 0) {
+    await sql`
+      UPDATE merchant_wallet
+      SET available_balance = ${ledgerRunningBalance},
+          updated_at = NOW()
+      WHERE id = ${walletId}
+        AND ABS(COALESCE(available_balance, 0) - ${ledgerRunningBalance}) >= 0.01
+    `;
+  }
+
   const [w] = await sql`
     SELECT available_balance, pending_balance, hold_balance, reserve_balance,
-           COALESCE(locked_balance, 0) AS locked_balance,
            COALESCE(pending_settlement, 0) AS pending_settlement,
            COALESCE(lifetime_credit, 0) AS lifetime_credit,
            COALESCE(lifetime_debit, 0) AS lifetime_debit,
@@ -101,7 +141,6 @@ export async function getWalletSummary(storeId: number): Promise<WalletSummary> 
   const pendingWithdrawal = Number((payoutRows[0] as any)?.total ?? 0);
 
   let settlementPaused = false;
-  let lockedSettlementTotal = 0;
   try {
     const [sp] = await sql`
       SELECT COALESCE(settlement_paused, false) AS settlement_paused
@@ -111,19 +150,12 @@ export async function getWalletSummary(storeId: number): Promise<WalletSummary> 
   } catch {
     /* pre-0239 */
   }
-  try {
-    const lockedRows = await sql`
-      SELECT COALESCE(SUM(merchant_net), 0) AS total
-      FROM payment_order_settlements
-      WHERE wallet_id = ${walletId} AND lifecycle_status IN ('LOCKED', 'HOLD')
-    `;
-    lockedSettlementTotal = Number((lockedRows[0] as { total?: number })?.total ?? 0);
-  } catch {
-    lockedSettlementTotal = Number(wr.locked_balance ?? 0);
-  }
 
-  const available = roundMoney(Number(wr.available_balance ?? 0));
-  const locked = roundMoney(Number(wr.locked_balance ?? 0));
+  const available = roundMoney(
+    (balanceLedgerRows as unknown[]).length > 0
+      ? ledgerRunningBalance
+      : Number(wr.available_balance ?? 0)
+  );
   const hold = roundMoney(Number(wr.hold_balance ?? 0));
   const pending = roundMoney(Number(wr.pending_balance ?? 0));
 
@@ -142,7 +174,7 @@ export async function getWalletSummary(storeId: number): Promise<WalletSummary> 
     pending_balance: roundMoney(Number(wr.pending_balance ?? 0)),
     hold_balance: roundMoney(Number(wr.hold_balance ?? 0)),
     reserve_balance: roundMoney(Number(wr.reserve_balance ?? 0)),
-    locked_balance: roundMoney(Number(wr.locked_balance ?? 0)),
+    locked_balance: 0,
     pending_settlement: roundMoney(Number(wr.pending_settlement ?? 0)),
     lifetime_credit: roundMoney(Number(wr.lifetime_credit ?? 0)),
     lifetime_debit: roundMoney(Number(wr.lifetime_debit ?? 0)),
@@ -154,9 +186,9 @@ export async function getWalletSummary(storeId: number): Promise<WalletSummary> 
     today_earning: roundMoney(todayEarning),
     yesterday_earning: roundMoney(yesterdayEarning),
     pending_withdrawal_total: roundMoney(pendingWithdrawal),
-    locked_settlement_total: roundMoney(lockedSettlementTotal),
+    locked_settlement_total: 0,
     withdrawable_balance: available,
-    total_balance: roundMoney(available + locked + hold + pending),
+    total_balance: roundMoney(available + hold + pending),
     settlement_paused: settlementPaused,
     delivered_today: deliveredToday,
   };
@@ -169,8 +201,27 @@ export async function queryLedger(
   opts: LedgerQueryOptions = { limit: WALLET_CONSTANTS.DEFAULT_LEDGER_PAGE_SIZE, offset: 0 }
 ): Promise<{ entries: LedgerEntry[]; total: number }> {
   const sql = getSql();
+
+  try {
+    const { backfillMissingDeliveredOrderCredits, backfillMissingCancelledOrderLedger } =
+      await import("./backfill-merchant-wallet-credits.js");
+    await backfillMissingDeliveredOrderCredits(sql, storeId);
+    await backfillMissingCancelledOrderLedger(sql, storeId);
+  } catch (e) {
+    console.warn("[queryLedger] backfill:", e);
+  }
+
   const wallet = await getOrCreateWallet(storeId);
   const walletId = wallet.id;
+
+  try {
+    const { repairCancellationLedgerWithdrawableMetadata } = await import(
+      "./backfill-merchant-wallet-credits.js"
+    );
+    await repairCancellationLedgerWithdrawableMetadata(sql, walletId);
+  } catch (e) {
+    console.warn("[queryLedger] repair withdrawable metadata:", e);
+  }
   const limit = Math.min(opts.limit ?? WALLET_CONSTANTS.DEFAULT_LEDGER_PAGE_SIZE, WALLET_CONSTANTS.MAX_LEDGER_PAGE_SIZE);
   const offset = opts.offset ?? 0;
 
@@ -229,8 +280,33 @@ export async function queryLedger(
     formatted_order_id: null,
   }));
 
+  const bucketRows = await sql`
+    SELECT id, balance_type, balance_after, amount, direction, created_at, metadata
+    FROM merchant_wallet_ledger
+    WHERE wallet_id = ${walletId}
+    ORDER BY created_at ASC, id ASC
+    LIMIT 5000
+  `;
+
+  const {
+    buildWithdrawableBalanceByLedgerId,
+    applyWithdrawableBalanceToLedgerEntries,
+  } = await import("./merchant-wallet-ledger-display.js");
+  const withdrawableById = buildWithdrawableBalanceByLedgerId(
+    (bucketRows as any[]).map((row) => ({
+      id: row.id,
+      balance_type: row.balance_type,
+      balance_after: row.balance_after != null ? Number(row.balance_after) : null,
+      amount: row.amount != null ? Number(row.amount) : null,
+      direction: row.direction,
+      created_at: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+      metadata: row.metadata,
+    }))
+  );
+  const enrichedEntries = applyWithdrawableBalanceToLedgerEntries(entries, withdrawableById);
+
   return {
-    entries,
+    entries: enrichedEntries,
     total: Number((countRows[0] as any)?.cnt ?? entries.length),
   };
 }
@@ -491,8 +567,7 @@ export async function reconcileWallet(storeId: number): Promise<ReconciliationRe
   const ledgerNet = roundMoney(creditSum - debitSum);
 
   const [w] = await sql`
-    SELECT available_balance, pending_balance, hold_balance, reserve_balance,
-           COALESCE(locked_balance, 0) AS locked_balance
+    SELECT available_balance, pending_balance, hold_balance, reserve_balance
     FROM merchant_wallet WHERE id = ${walletId}
   `;
   const wr = w as any;
@@ -500,8 +575,7 @@ export async function reconcileWallet(storeId: number): Promise<ReconciliationRe
     Number(wr.available_balance ?? 0) +
     Number(wr.pending_balance ?? 0) +
     Number(wr.hold_balance ?? 0) +
-    Number(wr.reserve_balance ?? 0) +
-    Number(wr.locked_balance ?? 0)
+    Number(wr.reserve_balance ?? 0)
   );
 
   const difference = roundMoney(ledgerNet - walletTotal);

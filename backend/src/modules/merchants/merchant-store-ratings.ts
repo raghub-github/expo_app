@@ -19,8 +19,8 @@ export async function getStoreRatingsForStores(
   const rows = await db
     .select({
       storeId: merchantStoreRatings.storeId,
-      avgRating: sql<string>`round(avg(${merchantStoreRatings.rating})::numeric, 1)`,
-      totalReviews: sql<number>`count(*)::int`,
+      avgRating: sql<string>`round(avg(${merchantStoreRatings.foodRating})::numeric, 1)`,
+      totalReviews: sql<number>`count(${merchantStoreRatings.foodRating})::int`,
     })
     .from(merchantStoreRatings)
     .where(inArray(merchantStoreRatings.storeId, ids))

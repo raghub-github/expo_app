@@ -1,6 +1,8 @@
 /**
- * Customer checkout: exactly ONE promotional offer at a time
- * (platform OR merchant OR billing coupon — never stacked).
+ * Customer checkout: exactly ONE checkout promo at a time
+ * (platform OR merchant OR billing coupon — never stacked with each other).
+ * Membership subscription benefits (e.g. GMitra Plus free delivery) apply after
+ * this step and stack with the single promo.
  */
 
 import type {
@@ -19,9 +21,19 @@ import {
   applyPlatformFeeBucketOffers,
   estimateOfferDiscountValue,
   listEligiblePlatformOffersForCheckout,
+  platformOfferConflictsWithSubscriptionFreeDelivery,
   qualifyingCartFromRem,
+  resolveSelectedPlatformOfferForCheckout,
 } from "./platformOffersApply.js";
 import { merchantOfferEligibilityReason } from "./merchantOffersCheckout.js";
+
+function merchantOfferConflictsWithSubscriptionFreeDelivery(
+  ctx: BillContext,
+  offer: MerchantOfferRow
+): boolean {
+  if (!ctx.customerSubscriptionFreeDeliveryEligible) return false;
+  return offer.offerType.toUpperCase() === "FREE_DELIVERY";
+}
 
 function num(v: unknown): number {
   if (v == null) return 0;
@@ -91,9 +103,10 @@ function resolveExclusiveWinner(
     return { kind: "none" };
   }
 
-  const code = (ctx.couponCode ?? "").trim();
-  if (code && dataset.coupon) {
-    return { kind: "coupon", coupon: dataset.coupon };
+  const platformId = ctx.selectedPlatformOfferId;
+  if (platformId != null) {
+    const offer = resolveSelectedPlatformOfferForCheckout(ctx, dataset, grossCart, platformId);
+    return offer ? { kind: "platform", offer } : { kind: "none" };
   }
 
   const merchantId = ctx.selectedMerchantOfferId;
@@ -105,11 +118,9 @@ function resolveExclusiveWinner(
     return { kind: "none" };
   }
 
-  const platformId = ctx.selectedPlatformOfferId;
-  if (platformId != null) {
-    const eligible = listEligiblePlatformOffersForCheckout(ctx, dataset, grossCart);
-    const offer = eligible.find((o) => o.id === platformId);
-    return offer ? { kind: "platform", offer } : { kind: "none" };
+  const code = (ctx.couponCode ?? "").trim();
+  if (code && dataset.coupon) {
+    return { kind: "coupon", coupon: dataset.coupon };
   }
 
   /** Dataset coupon is pre-validated against `couponCode` at load time. */
@@ -123,6 +134,7 @@ function resolveExclusiveWinner(
 
   const platformEligible = listEligiblePlatformOffersForCheckout(ctx, dataset, grossCart);
   for (const o of platformEligible) {
+    if (platformOfferConflictsWithSubscriptionFreeDelivery(ctx, o)) continue;
     const amt = estimatePlatformOfferTotal(o, ctx, rem);
     if (amt > bestAmt) {
       bestAmt = amt;
@@ -134,6 +146,7 @@ function resolveExclusiveWinner(
     if (offer.autoApply === false) continue;
     const t = offer.offerType.toUpperCase();
     if (t === "COUPON") continue;
+    if (merchantOfferConflictsWithSubscriptionFreeDelivery(ctx, offer)) continue;
     if (merchantOfferEligibilityReason(offer, ctx, grossCart)) continue;
     const amt = estimateMerchantOfferDiscount(offer, ctx, grossCart, rem);
     if (amt > bestAmt) {

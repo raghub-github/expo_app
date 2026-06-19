@@ -60,3 +60,35 @@ export function routeDistanceMeters(route: MapLatLng[]): number {
   }
   return total;
 }
+
+/** Zomato-style dashed preview arc between store and customer before a rider is assigned. */
+export function buildPickupDropPreviewArc(
+  from: MapLatLng,
+  to: MapLatLng,
+  segments = 32
+): MapLatLng[] {
+  const mid: MapLatLng = {
+    latitude: (from.latitude + to.latitude) / 2,
+    longitude: (from.longitude + to.longitude) / 2,
+  };
+  const dx = to.longitude - from.longitude;
+  const dy = to.latitude - from.latitude;
+  const dist = Math.hypot(dx, dy) || 1;
+  const nx = -dy / dist;
+  const ny = dx / dist;
+  const bulge = dist * 0.16;
+  const control: MapLatLng = {
+    latitude: mid.latitude + ny * bulge,
+    longitude: mid.longitude + nx * bulge,
+  };
+  const points: MapLatLng[] = [];
+  for (let i = 0; i <= segments; i += 1) {
+    const t = i / segments;
+    const u = 1 - t;
+    points.push({
+      latitude: u * u * from.latitude + 2 * u * t * control.latitude + t * t * to.latitude,
+      longitude: u * u * from.longitude + 2 * u * t * control.longitude + t * t * to.longitude,
+    });
+  }
+  return points;
+}

@@ -105,7 +105,7 @@ export async function PUT(
     let file: File | null = null;
     let docNumberSent = false;
     let removeImage = false;
-    let displayDocType = currentDoc.docType;
+    let displayDocType: string = currentDoc.docType;
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await request.formData();

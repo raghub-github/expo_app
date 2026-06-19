@@ -52,8 +52,9 @@ export const WS_CHANNEL_RE = /^[a-z][a-z0-9_-]*:[A-Za-z0-9_:-]+$/;
 
 export const SERVICE_PORTS = {
   BACKEND: 3000,
+  BACKEND_DEV: 4000,
   DASHBOARD: 3001,
-  PARTNERSITE: 3002,
+  PARTNERSITE: 3000,
   WS_GATEWAY: 4100,
 } as const;
 

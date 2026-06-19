@@ -34,6 +34,32 @@ function sqlLinkedFoodStatusKey(): SQL {
   )`;
 }
 
+/** Rider physically marked pickup (OTP/barcode/mark) — required for DESPATCHED tab. */
+function sqlHasRiderMarkedPickup(): SQL {
+  return sql`(
+    EXISTS (
+      SELECT 1
+      FROM orders_food of
+      WHERE of.order_id = ${ordersCore.id}
+        AND of.rider_picked_up_at IS NOT NULL
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM order_rider_assignments ora
+      WHERE (
+        ora.order_core_id = ${ordersCore.id}
+        OR ora.order_id = ${ordersCore.id}
+      )
+        AND ora.picked_up_at IS NOT NULL
+        AND ora.cancelled_at IS NULL
+        AND ora.unassigned_at IS NULL
+        AND upper(coalesce(ora.assignment_status::text, '')) NOT IN (
+          'CANCELLED', 'REJECTED', 'UNASSIGNED'
+        )
+    )
+  )`;
+}
+
 /** Delivered / cancelled / terminal — never shown on food orders dashboard tabs. */
 export function sqlFoodOrderIsTerminal(): SQL {
   const cur = sqlCurrentStatusKey();
@@ -86,12 +112,34 @@ function sqlIsDispatchedStage(): SQL {
   const food = sqlLinkedFoodStatusKey();
   const core = sqlCoreStatusKey();
   return sql`(
-    ${cur} IN ${DISPATCHED_CUR}
-    OR ${food} IN ${DISPATCHED_CUR}
-    OR ${core} IN ${DISPATCHED_CORE}
-    OR (
-      ${core} = 'picked_up'
-      AND NOT (${cur} ILIKE 'DISPATCH%READY%' OR ${cur} IN ${DISPATCH_READY_CUR})
+    ${sqlHasRiderMarkedPickup()}
+    AND (
+      ${cur} IN ${DISPATCHED_CUR}
+      OR ${food} IN ${DISPATCHED_CUR}
+      OR ${core} IN ${DISPATCHED_CORE}
+      OR (
+        ${core} = 'picked_up'
+        AND NOT (${cur} ILIKE 'DISPATCH%READY%' OR ${cur} IN ${DISPATCH_READY_CUR})
+      )
+    )
+  )`;
+}
+
+/** Merchant dispatch / core in_transit before rider pickup — stays on DESPATCH READY tab. */
+function sqlIsDispatchedStatusWithoutRiderPickup(): SQL {
+  const cur = sqlCurrentStatusKey();
+  const food = sqlLinkedFoodStatusKey();
+  const core = sqlCoreStatusKey();
+  return sql`(
+    NOT ${sqlHasRiderMarkedPickup()}
+    AND (
+      ${cur} IN ${DISPATCHED_CUR}
+      OR ${food} IN ${DISPATCHED_CUR}
+      OR ${core} IN ${DISPATCHED_CORE}
+      OR (
+        ${core} = 'picked_up'
+        AND NOT (${cur} ILIKE 'DISPATCH%READY%' OR ${cur} IN ${DISPATCH_READY_CUR})
+      )
     )
   )`;
 }
@@ -110,10 +158,12 @@ function sqlIsDispatchReadyStage(): SQL {
         ${core} = 'picked_up'
         AND (${cur} ILIKE 'DISPATCH%READY%' OR ${cur} IN ${DISPATCH_READY_CUR})
       )
+      OR ${sqlIsDispatchedStatusWithoutRiderPickup()}
     )
     AND NOT (
       (${core} = 'reached_store' OR ${cur} IN ${RIDER_AT_MERCHANT_CUR})
       AND ${food} NOT IN ${DISPATCH_READY_CUR}
+      AND NOT ${sqlIsDispatchedStatusWithoutRiderPickup()}
     )
   )`;
 }

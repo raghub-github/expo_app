@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { resolveEtaBreachTimelineIndex } from "@/lib/orders/eta-breach";
-import { isRiderOnlyOrderTimelineEntry } from "@/lib/orders/order-timeline-rider-filter";
+import { filterOrderProgressTimelineEntries } from "@/lib/orders/order-timeline-rider-filter";
 
 export interface OrderTimelineEntry {
   id: number;
@@ -40,13 +40,7 @@ interface OrderTimelineProps {
 }
 
 function filterOrderProgressEntries(list: OrderTimelineEntry[]): OrderTimelineEntry[] {
-  return list.filter(
-    (e) =>
-      !isRiderOnlyOrderTimelineEntry({
-        status: e.status,
-        actorType: e.actorType,
-      })
-  );
+  return filterOrderProgressTimelineEntries(list);
 }
 
 export default function OrderTimeline({

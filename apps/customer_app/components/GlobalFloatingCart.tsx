@@ -26,15 +26,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withSequence,
-  withTiming,
   SlideInUp,
   Easing,
 } from "react-native-reanimated";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCartStore } from "@/store/cartStore";
 import { useOrderStore } from "@/store/orderStore";
 import { useMerchantScrollStore } from "@/store/merchantScrollStore";
@@ -46,14 +41,24 @@ import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useEnsureStoreLiveStatus } from "@/hooks/useEnsureStoreLiveStatus";
 import { closedStoreCtaCopy, getOpenSoonState } from "@/lib/storeScheduleUi";
 import { useScheduleTick } from "@/hooks/useScheduleTick";
+import { FloatingOrderTrackingPill } from "@/components/orders/FloatingOrderTrackingPill";
+import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
+import { prefetchSubscriptionPlans } from "@/lib/subscriptionCache";
+import { useAuthStore } from "@/store/authStore";
 
 const CHECKOUT_PATH = "/checkout";
 
 /** Shown instead of multi-cart checkout until the feature exists. */
 const CHECKOUT_ALL_COMING_SOON = "Checkout all functionality coming soon";
 
-/** Bottom sheet primary accent (Zomato-style; brand red token). */
+/** Bottom sheet primary accent (GatiMitra-style; brand red token). */
 const SHEET_BRAND_RED = GatiMitraColors.closedRed;
+
+/** Show on main tab screens (Home, Food, Orders, Profile). */
+function useIsOnMainTabs(): boolean {
+  const segments = useSegments();
+  return segments[0] === "(tabs)";
+}
 
 /** Show on: /home, /home/merchant/*, /home/category/*, /search. */
 function useIsFoodServicePage(): boolean {
@@ -78,19 +83,10 @@ function useIsOnOrdersArea(): boolean {
   return p === "/orders" || p.startsWith("/orders/") || p.includes("orders");
 }
 
-const ORDER_STATIC_ROUTES = new Set([
-  "payment-failure",
-  "payment-success",
-  "payment-confirming",
-  "raise-ticket",
-]);
-
-/** Live order detail (/orders/[id]) — map + status already on screen; hide bottom track pill. */
-function useIsOnOrderDetailPage(): boolean {
+/** Hide floating track pill on any /orders/[slug] screen (detail, help, chat, payment, etc.). */
+function useHideFloatingOrderTrackingPill(): boolean {
   const segments = useSegments();
-  if (segments[0] !== "orders" || segments.length !== 2) return false;
-  const slug = String(segments[1] ?? "");
-  return slug.length > 0 && !ORDER_STATIC_ROUTES.has(slug);
+  return segments[0] === "orders" && segments.length === 2 && String(segments[1] ?? "").length > 0;
 }
 
 /** True when current route is restaurant detail and it's the same as cart merchant */
@@ -102,14 +98,34 @@ function useIsInsideCartRestaurant(): boolean {
   return isMerchantPage && !!cartMerchantId && currentMerchantId === cartMerchantId;
 }
 
+function FloatingOrderTrackingPillWithUnread({
+  order,
+  onPress,
+}: {
+  order: ActiveOrder;
+  onPress: () => void;
+}) {
+  const { data: chatUnread } = usePartnerChatUnread(order.orderId, true);
+  return (
+    <FloatingOrderTrackingPill
+      order={order}
+      onPress={onPress}
+      chatUnreadCount={chatUnread?.unreadCount ?? 0}
+    />
+  );
+}
+
 export function GlobalFloatingCart() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const pathname = usePathname();
+  const queryClient = useQueryClient();
+  const session = useAuthStore((s) => s.session);
   const segments = useSegments();
   const isFoodServicePage = useIsFoodServicePage();
+  const isOnMainTabs = useIsOnMainTabs();
   const isOnOrdersArea = useIsOnOrdersArea();
-  const isOnOrderDetailPage = useIsOnOrderDetailPage();
+  const hideFloatingOrderTrackingPill = useHideFloatingOrderTrackingPill();
   const isInsideCartRestaurant = useIsInsideCartRestaurant();
   const merchantScrollY = useMerchantScrollStore((s) => s.scrollY);
   const isCartCompact = isInsideCartRestaurant && merchantScrollY > 80;
@@ -125,7 +141,18 @@ export function GlobalFloatingCart() {
   const activeOrders = activeOrdersRaw.filter(
     (o) => o.status !== "DELIVERED" && o.status !== "CANCELLED"
   );
-  const activeOrder = activeOrders[0] ?? (activeOrderFallback?.status !== "DELIVERED" && activeOrderFallback?.status !== "CANCELLED" ? activeOrderFallback : null);
+  const trackingOrders = useMemo(() => {
+    if (activeOrders.length > 0) return activeOrders;
+    if (
+      activeOrderFallback &&
+      activeOrderFallback.status !== "DELIVERED" &&
+      activeOrderFallback.status !== "CANCELLED"
+    ) {
+      return [activeOrderFallback];
+    }
+    return [];
+  }, [activeOrders, activeOrderFallback]);
+  const activeOrder = trackingOrders[0] ?? null;
 
   const totalCount = items.reduce((n, i) => n + i.quantity, 0);
   const hasCart = totalCount > 0;
@@ -161,7 +188,7 @@ export function GlobalFloatingCart() {
   });
 
   const liveStatusFromStore = useStoreStatusStore((s) =>
-    merchantId ? s.getStatus(merchantId) : null
+    merchantId ? (s.statusMap[merchantId] ?? null) : null
   );
 
   useEffect(() => {
@@ -208,21 +235,21 @@ export function GlobalFloatingCart() {
   }, [cartMerchantQuery.data]);
 
   const resolvedThumbUri = heroImageUri ?? leadImageUri ?? fetchedBannerUri;
-  const hasActiveOrder = activeOrders.length > 0;
-  /** Hide track pill on order detail — tracking UI is already on that screen. */
-  const showActiveOrderTracking = hasActiveOrder && !isOnOrderDetailPage;
+  const hasActiveOrder = trackingOrders.length > 0;
+  /** Hide track pill on order sub-routes — tracking UI is already on-screen or irrelevant. */
+  const showActiveOrderTracking = hasActiveOrder && !hideFloatingOrderTrackingPill;
   /** Cart + tracking (or multiple orders): one pill per page, swipe to switch. */
   const showScrollDock =
-    showActiveOrderTracking && (hasCart || activeOrders.length > 1);
+    showActiveOrderTracking && (hasCart || trackingOrders.length > 1);
   const { width: windowWidth } = useWindowDimensions();
   const dockSideInset = 16;
   const dockPageWidth = Math.max(280, windowWidth - dockSideInset);
-  const dockPageCount = activeOrders.length + (hasCart ? 1 : 0);
+  const dockPageCount = trackingOrders.length + (hasCart ? 1 : 0);
   const [dockPageIndex, setDockPageIndex] = useState(0);
 
   useEffect(() => {
     setDockPageIndex(0);
-  }, [dockPageCount, merchantId, activeOrders.map((o) => o.orderId).join(",")]);
+  }, [dockPageCount, merchantId, trackingOrders.map((o) => o.orderId).join(",")]);
 
   const cartSlotCount = useMemo(() => {
     const stashedSlots = Object.values(stashedCarts).filter((c) => c.items.length > 0).length;
@@ -241,34 +268,16 @@ export function GlobalFloatingCart() {
     setCartRemoveExpanded(false);
   }, [merchantId]);
 
-  const pulse = useSharedValue(1);
-
   useEffect(() => {
-    if (showActiveOrderTracking) {
-      pulse.value = withRepeat(
-        withSequence(
-          withTiming(1.03, { duration: 800 }),
-          withTiming(1, { duration: 800 })
-        ),
-        -1,
-        true
-      );
-    } else {
-      pulse.value = withTiming(1);
-    }
-    return () => {
-      pulse.value = 1;
-    };
-  }, [showActiveOrderTracking, pulse]);
-
-  const pulseStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: pulse.value }],
-  }));
+    if (!session || !hasCart) return;
+    void prefetchSubscriptionPlans(queryClient);
+  }, [session, hasCart, queryClient]);
 
   const handleCartPress = () => {
     if (isCartStoreClosed) return;
     const currentPath = typeof pathname === "string" ? pathname : "";
     if (currentPath.startsWith("/checkout")) return;
+    void prefetchSubscriptionPlans(queryClient);
     router.push(CHECKOUT_PATH as any);
   };
 
@@ -292,7 +301,8 @@ export function GlobalFloatingCart() {
   };
 
   const visible =
-    (isFoodServicePage || isOnOrdersArea) && (hasCart || showActiveOrderTracking);
+    (hasCart && (isFoodServicePage || isOnOrdersArea)) ||
+    (showActiveOrderTracking && (isFoodServicePage || isOnOrdersArea || isOnMainTabs));
   if (!visible) return null;
 
   const inTabs = segments[0] === "(tabs)";
@@ -333,12 +343,11 @@ export function GlobalFloatingCart() {
           style={[styles.dockScroll, { width: dockPageWidth }]}
           contentContainerStyle={styles.dockContentPaged}
         >
-          {activeOrders.map((ord) => (
+          {trackingOrders.map((ord) => (
             <View key={ord.orderId} style={[styles.dockPage, { width: dockPageWidth }]}>
-              <TrackOrderPill
+              <FloatingOrderTrackingPillWithUnread
                 order={ord}
                 onPress={() => router.push(`/orders/${ord.orderId}` as const)}
-                pulseStyle={pulseStyle}
               />
             </View>
           ))}
@@ -393,31 +402,13 @@ export function GlobalFloatingCart() {
     return (
       <Animated.View
         entering={slideUpEntering}
-        style={[styles.wrap, { bottom: bottomOffset }]}
+        style={[styles.wrap, styles.trackingWrap, { bottom: bottomOffset }]}
         pointerEvents="box-none"
       >
-        <TouchableOpacity
-          activeOpacity={0.9}
+        <FloatingOrderTrackingPillWithUnread
+          order={activeOrder}
           onPress={() => router.push(`/orders/${activeOrder.orderId}` as const)}
-          style={styles.touchable}
-        >
-          <Animated.View style={[styles.pill, styles.livePill, pulseStyle]}>
-            <LinearGradient
-              colors={[GatiMitraColors.deepMintStart, GatiMitraColors.deepMintEnd]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={styles.pillGradient}
-            >
-              <View style={styles.pillContent}>
-                <Ionicons name="bicycle" size={22} color="#fff" />
-                <Text style={styles.liveText} numberOfLines={1}>
-                  Track Order · Arriving in {activeOrder.etaMinutes} mins
-                </Text>
-                <Text style={styles.liveCta}>Track Live →</Text>
-              </View>
-            </LinearGradient>
-          </Animated.View>
-        </TouchableOpacity>
+        />
       </Animated.View>
     );
   }
@@ -435,9 +426,9 @@ export function GlobalFloatingCart() {
       >
         <View
           style={[
-            styles.zomatoShell,
-            compact && styles.zomatoShellCompact,
-            !compact && showAllCartsTab && styles.zomatoShellWithTab,
+            styles.gmShell,
+            compact && styles.gmShellCompact,
+            !compact && showAllCartsTab && styles.gmShellWithTab,
           ]}
         >
           {!compact && showAllCartsTab ? (
@@ -453,33 +444,33 @@ export function GlobalFloatingCart() {
             </Pressable>
           ) : null}
 
-          <View style={[styles.zomatoBar, compact && styles.zomatoBarCompact]}>
+          <View style={[styles.gmBar, compact && styles.gmBarCompact]}>
             <Pressable
-              style={styles.zomatoLeftPress}
+              style={styles.gmLeftPress}
               onPress={handleViewMenuPress}
               hitSlop={4}
               android_ripple={{ color: "rgba(5, 150, 105, 0.08)" }}
             >
-              <View style={[styles.zomatoThumb, compact && styles.zomatoThumbCompact]}>
+              <View style={[styles.gmThumb, compact && styles.gmThumbCompact]}>
                 {resolvedThumbUri && !floatThumbLoadFailed ? (
                   <Image
                     source={{ uri: resolvedThumbUri }}
-                    style={styles.zomatoThumbImg}
+                    style={styles.gmThumbImg}
                     resizeMode="cover"
                     onError={() => setFloatThumbLoadFailed(true)}
                   />
                 ) : (
-                  <View style={styles.zomatoThumbPlaceholder}>
+                  <View style={styles.gmThumbPlaceholder}>
                     <Ionicons name="restaurant" size={compact ? 18 : 20} color={GatiMitraColors.textSecondary} />
                   </View>
                 )}
               </View>
-              <View style={styles.zomatoLeftTextCol}>
-                <Text style={[styles.zomatoStoreName, compact && styles.zomatoStoreNameCompact]} numberOfLines={1}>
+              <View style={styles.gmLeftTextCol}>
+                <Text style={[styles.gmStoreName, compact && styles.gmStoreNameCompact]} numberOfLines={1}>
                   {merchantName ?? "Restaurant"}
                 </Text>
-                <View style={styles.zomatoViewMenuRow}>
-                  <Text style={styles.zomatoViewMenuText}>View Menu</Text>
+                <View style={styles.gmViewMenuRow}>
+                  <Text style={styles.gmViewMenuText}>View Menu</Text>
                   <Ionicons name="chevron-forward" size={14} color={GatiMitraColors.emerald} />
                 </View>
               </View>
@@ -490,9 +481,9 @@ export function GlobalFloatingCart() {
               onPress={handleCartPress}
               disabled={isCartStoreClosed}
               style={[
-                styles.zomatoViewCartCta,
-                compact && styles.zomatoViewCartCtaCompact,
-                isCartStoreClosed && styles.zomatoViewCartCtaClosed,
+                styles.gmViewCartCta,
+                compact && styles.gmViewCartCtaCompact,
+                isCartStoreClosed && styles.gmViewCartCtaClosed,
               ]}
               accessibilityState={{ disabled: isCartStoreClosed }}
               accessibilityLabel={isCartStoreClosed ? "Store closed, cart unavailable" : "View cart"}
@@ -507,20 +498,20 @@ export function GlobalFloatingCart() {
                 }
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
-                style={styles.zomatoViewCartGradient}
+                style={styles.gmViewCartGradient}
               >
-                <Text style={[styles.zomatoViewCartTitle, compact && styles.zomatoViewCartTitleCompact]}>
+                <Text style={[styles.gmViewCartTitle, compact && styles.gmViewCartTitleCompact]}>
                   {isCartStoreClosed ? cartClosedCta.title : "View Cart"}
                 </Text>
-                <Text style={[styles.zomatoViewCartSub, compact && styles.zomatoViewCartSubCompact]}>
+                <Text style={[styles.gmViewCartSub, compact && styles.gmViewCartSubCompact]}>
                   {isCartStoreClosed ? cartClosedCta.sub : itemLabel}
                 </Text>
               </LinearGradient>
             </TouchableOpacity>
 
-            <View style={[styles.zomatoRightActions, cartRemoveExpanded && styles.zomatoRightActionsExpanded]}>
+            <View style={[styles.gmRightActions, cartRemoveExpanded && styles.gmRightActionsExpanded]}>
               <Pressable
-                style={[styles.zomatoCloseBtn, compact && styles.zomatoCloseBtnCompact]}
+                style={[styles.gmCloseBtn, compact && styles.gmCloseBtnCompact]}
                 onPress={cartRemoveExpanded ? handleCancelRemoveCart : handleDismissCartPress}
                 hitSlop={10}
                 accessibilityRole="button"
@@ -530,13 +521,13 @@ export function GlobalFloatingCart() {
               </Pressable>
               {cartRemoveExpanded ? (
                 <Pressable
-                  style={[styles.zomatoRemovePanel, compact && styles.zomatoRemovePanelCompact]}
+                  style={[styles.gmRemovePanel, compact && styles.gmRemovePanelCompact]}
                   onPress={handleConfirmRemoveCart}
                   hitSlop={6}
                   accessibilityRole="button"
                   accessibilityLabel="Confirm remove cart"
                 >
-                  <Text style={[styles.zomatoRemoveText, compact && styles.zomatoRemoveTextCompact]}>Remove</Text>
+                  <Text style={[styles.gmRemoveText, compact && styles.gmRemoveTextCompact]}>Remove</Text>
                 </Pressable>
               ) : null}
             </View>
@@ -569,36 +560,6 @@ export function GlobalFloatingCart() {
         }}
       />
     </>
-  );
-}
-
-function TrackOrderPill({
-  order,
-  onPress,
-  pulseStyle,
-}: {
-  order: ActiveOrder;
-  onPress: () => void;
-  pulseStyle: { transform: { scale: number }[] };
-}) {
-  return (
-    <TouchableOpacity activeOpacity={0.9} onPress={onPress} style={styles.dockPillFull}>
-      <Animated.View style={[styles.pill, styles.livePill, styles.dockPillInner, pulseStyle]}>
-        <LinearGradient
-          colors={[GatiMitraColors.deepMintStart, GatiMitraColors.deepMintEnd]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 0 }}
-          style={styles.pillGradient}
-        >
-          <View style={styles.pillContent}>
-            <Ionicons name="bicycle" size={20} color="#fff" />
-            <Text style={styles.liveText} numberOfLines={1}>
-              #{order.formattedOrderId ?? order.orderId} · {order.etaMinutes}m
-            </Text>
-          </View>
-        </LinearGradient>
-      </Animated.View>
-    </TouchableOpacity>
   );
 }
 
@@ -686,12 +647,12 @@ function AllCartsSheetModal({
                     {thumbUri && !thumbLoadFailed ? (
                       <Image
                         source={{ uri: thumbUri }}
-                        style={styles.zomatoThumbImg}
+                        style={styles.gmThumbImg}
                         resizeMode="cover"
                         onError={() => setThumbLoadFailed(true)}
                       />
                     ) : (
-                      <View style={styles.zomatoThumbPlaceholder}>
+                      <View style={styles.gmThumbPlaceholder}>
                         <Ionicons name="restaurant" size={20} color={GatiMitraColors.textSecondary} />
                       </View>
                     )}
@@ -710,7 +671,7 @@ function AllCartsSheetModal({
                         activeOpacity={isStoreClosed ? 1 : 0.92}
                         onPress={onViewCart}
                         disabled={isStoreClosed}
-                        style={[styles.sheetViewCartBtn, isStoreClosed && styles.zomatoViewCartCtaClosed]}
+                        style={[styles.sheetViewCartBtn, isStoreClosed && styles.gmViewCartCtaClosed]}
                       >
                         <LinearGradient
                           colors={
@@ -774,17 +735,21 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  zomatoShell: {
+  trackingWrap: {
+    left: 12,
+    right: 12,
+  },
+  gmShell: {
     width: "100%",
     maxWidth: 400,
     position: "relative",
     paddingTop: 0,
     alignItems: "stretch",
   },
-  zomatoShellWithTab: {
+  gmShellWithTab: {
     paddingTop: 14,
   },
-  zomatoShellCompact: {
+  gmShellCompact: {
     paddingTop: 0,
     maxWidth: 420,
   },
@@ -818,7 +783,7 @@ const styles = StyleSheet.create({
     color: GatiMitraColors.emerald,
     letterSpacing: 0.2,
   },
-  zomatoBar: {
+  gmBar: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#FFFFFF",
@@ -837,12 +802,12 @@ const styles = StyleSheet.create({
       android: { elevation: 10 },
     }),
   },
-  zomatoBarCompact: {
+  gmBarCompact: {
     borderRadius: 32,
     paddingVertical: 6,
     paddingLeft: 8,
   },
-  zomatoLeftPress: {
+  gmLeftPress: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
@@ -851,92 +816,92 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     paddingRight: 4,
   },
-  zomatoThumb: {
+  gmThumb: {
     width: 44,
     height: 44,
     borderRadius: 22,
     overflow: "hidden",
     backgroundColor: GatiMitraColors.mintSoft,
   },
-  zomatoThumbCompact: {
+  gmThumbCompact: {
     width: 38,
     height: 38,
     borderRadius: 19,
   },
-  zomatoThumbImg: {
+  gmThumbImg: {
     width: "100%",
     height: "100%",
   },
-  zomatoThumbPlaceholder: {
+  gmThumbPlaceholder: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#F3F4F6",
   },
-  zomatoLeftTextCol: {
+  gmLeftTextCol: {
     flex: 1,
     minWidth: 0,
     justifyContent: "center",
   },
-  zomatoStoreName: {
+  gmStoreName: {
     fontSize: 14,
     fontWeight: "800",
     color: GatiMitraColors.textPrimary,
   },
-  zomatoStoreNameCompact: {
+  gmStoreNameCompact: {
     fontSize: 13,
   },
-  zomatoViewMenuRow: {
+  gmViewMenuRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 2,
     marginTop: 2,
   },
-  zomatoViewMenuText: {
+  gmViewMenuText: {
     fontSize: 12,
     fontWeight: "600",
     color: GatiMitraColors.textSecondary,
   },
-  zomatoViewCartCta: {
+  gmViewCartCta: {
     borderRadius: 26,
     overflow: "hidden",
     minWidth: 108,
   },
-  zomatoViewCartCtaCompact: {
+  gmViewCartCtaCompact: {
     minWidth: 96,
     borderRadius: 22,
   },
-  zomatoViewCartCtaClosed: {
+  gmViewCartCtaClosed: {
     opacity: 0.58,
   },
   dockPillClosed: {
     opacity: 0.58,
   },
-  zomatoViewCartGradient: {
+  gmViewCartGradient: {
     paddingHorizontal: 14,
     paddingVertical: 8,
     alignItems: "center",
     justifyContent: "center",
     minHeight: 48,
   },
-  zomatoViewCartTitle: {
+  gmViewCartTitle: {
     fontSize: 14,
     fontWeight: "800",
     color: "#FFFFFF",
   },
-  zomatoViewCartTitleCompact: {
+  gmViewCartTitleCompact: {
     fontSize: 13,
   },
-  zomatoViewCartSub: {
+  gmViewCartSub: {
     fontSize: 11,
     fontWeight: "600",
     color: "rgba(255,255,255,0.92)",
     marginTop: 1,
   },
-  zomatoViewCartSubCompact: {
+  gmViewCartSubCompact: {
     fontSize: 10,
   },
-  zomatoCloseBtn: {
+  gmCloseBtn: {
     width: 38,
     height: 38,
     borderRadius: 19,
@@ -944,41 +909,41 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  zomatoCloseBtnCompact: {
+  gmCloseBtnCompact: {
     width: 34,
     height: 34,
     borderRadius: 17,
   },
-  zomatoRightActions: {
+  gmRightActions: {
     flexDirection: "row",
     alignItems: "center",
     gap: 0,
     flexShrink: 0,
   },
-  zomatoRightActionsExpanded: {
+  gmRightActionsExpanded: {
     backgroundColor: "#FFF1F2",
     borderRadius: 22,
     paddingRight: 4,
     overflow: "hidden",
   },
-  zomatoRemovePanel: {
+  gmRemovePanel: {
     paddingHorizontal: 14,
     paddingVertical: 10,
     justifyContent: "center",
     minHeight: 38,
   },
-  zomatoRemovePanelCompact: {
+  gmRemovePanelCompact: {
     paddingHorizontal: 12,
     paddingVertical: 8,
     minHeight: 34,
   },
-  zomatoRemoveText: {
+  gmRemoveText: {
     fontSize: 14,
     fontWeight: "800",
     color: SHEET_BRAND_RED,
     letterSpacing: 0.2,
   },
-  zomatoRemoveTextCompact: {
+  gmRemoveTextCompact: {
     fontSize: 13,
   },
   sheetDim: {

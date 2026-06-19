@@ -1,5 +1,5 @@
 /**
- * Profile tab — Zomato-style account card with GMitra Plus subscription strip.
+ * Profile tab — GatiMitra-style account card with GMitra Plus subscription strip.
  */
 
 import { useCallback, useMemo, useState, useEffect } from "react";
@@ -15,10 +15,10 @@ import { BrandingFooter } from "@/components/BrandingFooter";
 import { shareReferralCode } from "@/lib/referralShare";
 import { buildEmailAvatarCandidates } from "@/lib/emailAvatar";
 import { useProfile } from "@/hooks/useProfile";
+import { useCurrentSubscription } from "@/hooks/useCustomerSubscription";
 
 import { GatiMitraColors } from "@/constants/gatimitra";
 
-const GMITRA_PLUS_NAME = "GMitra Plus";
 const GREEN = GatiMitraColors.primaryMint;
 const GREEN_DARK = "#15803D";
 const TEXT = "#111827";
@@ -48,6 +48,7 @@ export default function ProfileScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { data: profile } = useProfile();
+  const { data: subscriptionStatus } = useCurrentSubscription(true);
 
   const displayName = profile?.full_name?.trim() || t("common.customer");
   const initials = useMemo(() => getInitials(displayName), [displayName]);
@@ -68,7 +69,13 @@ export default function ProfileScreen() {
   }, [showEmailAvatar, email, profileImageUrl]);
   const [avatarIndex, setAvatarIndex] = useState(0);
   const avatarUri = avatarCandidates[avatarIndex] ?? null;
-  const subscriptionActive = profile?.gmitra_plus_active ?? false;
+  const subscriptionActive = subscriptionStatus?.active ?? profile?.gmitra_plus_active ?? false;
+  const subscriptionPlanName =
+    subscriptionStatus?.subscription?.planName ??
+    subscriptionStatus?.plan?.planName ??
+    "Membership";
+  const subscriptionBenefits = subscriptionStatus?.plan?.benefits ?? [];
+  const freeDeliveryRadius = subscriptionStatus?.plan?.maxFreeDeliveryRadiusKm;
 
   useEffect(() => {
     setAvatarIndex(0);
@@ -93,22 +100,37 @@ export default function ProfileScreen() {
 
   const handleSubscriptionPress = useCallback(() => {
     if (subscriptionActive) {
+      const benefitLines =
+        subscriptionBenefits.length > 0
+          ? subscriptionBenefits.map((b) => `• ${b}`).join("\n")
+          : "Your membership benefits are applied automatically on eligible orders.";
+      const radiusNote =
+        subscriptionStatus?.plan?.freeDeliveryEnabled && freeDeliveryRadius != null
+          ? `\n\nFree delivery within ${freeDeliveryRadius} km on eligible orders.`
+          : "";
       Alert.alert(
-        `${GMITRA_PLUS_NAME} Active`,
-        "Your membership benefits are applied automatically on eligible orders — better delivery pricing and exclusive offers.",
+        `${subscriptionPlanName} Active`,
+        `${benefitLines}${radiusNote}`,
         [{ text: "OK" }]
       );
       return;
     }
     Alert.alert(
-      `Join ${GMITRA_PLUS_NAME}`,
-      "Add GMitra Plus at checkout on your next order — save on delivery and unlock member-only offers.",
+      `Join ${subscriptionPlanName}`,
+      `Add ${subscriptionPlanName} at checkout on your next order — save on delivery and unlock member-only offers.`,
       [
         { text: "Not now", style: "cancel" },
         { text: "Browse restaurants", onPress: () => router.push("/(tabs)") },
       ]
     );
-  }, [subscriptionActive, router]);
+  }, [
+    subscriptionActive,
+    subscriptionPlanName,
+    subscriptionBenefits,
+    subscriptionStatus?.plan?.freeDeliveryEnabled,
+    freeDeliveryRadius,
+    router,
+  ]);
 
   const handleReferNow = useCallback(() => {
     void shareReferralCode(referralCode, displayName);
@@ -142,7 +164,7 @@ export default function ProfileScreen() {
         contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 100 }]}
         showsVerticalScrollIndicator={false}
       >
-        {/* Profile card — Zomato-style with subscription strip */}
+        {/* Profile card — GatiMitra-style with subscription strip */}
         <View style={[styles.profileCard, { marginTop: Math.max(insets.top - 4, 6) }]}>
           <View style={styles.profileCardBody}>
             <View style={styles.identityRow}>
@@ -197,7 +219,7 @@ export default function ProfileScreen() {
               <MaterialCommunityIcons name="crown" size={16} color={GOLD} />
             </View>
             <Text style={styles.plusStripText}>
-              {subscriptionActive ? `${GMITRA_PLUS_NAME} Active` : `Join ${GMITRA_PLUS_NAME}`}
+              {subscriptionActive ? `${subscriptionPlanName} Active` : `Join ${subscriptionPlanName}`}
             </Text>
             <Ionicons name="chevron-forward" size={18} color={MUTED} />
           </TouchableOpacity>

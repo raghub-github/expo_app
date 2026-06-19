@@ -20,6 +20,7 @@ import {
 import { Logo } from "@/components/brand/Logo";
 import { useDashboardAccess } from "@/hooks/useDashboardAccess";
 import { usePermissions } from "@/hooks/usePermissions";
+import { isSuperAdminNavPath } from "@/lib/navigation/dashboard-routes";
 
 interface NavItem {
   name: string;
@@ -126,7 +127,10 @@ function SidebarComponent() {
       </div>
       <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-4" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
         {filteredNavigation.map((item) => {
-          const isActive = pathname === item.href;
+          const isActive =
+            pathname === item.href ||
+            (item.href !== "/dashboard" && pathname.startsWith(item.href + "/")) ||
+            (item.href === "/dashboard/super-admin" && isSuperAdminNavPath(pathname));
           const Icon = item.icon;
           return (
             <Link

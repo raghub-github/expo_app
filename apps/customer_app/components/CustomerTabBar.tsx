@@ -1,10 +1,11 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { View, Text, Pressable, StyleSheet, Platform } from "react-native";
 import { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { useCustomerGeoServiceAvailability } from "@/hooks/useCustomerGeoServiceAvailability";
 
 const TAB_ACTIVE = GatiMitraColors.splashMint;
 const TAB_INACTIVE = "#94A3B8";
@@ -82,14 +83,24 @@ function TabIcon({ tab, focused }: { tab: TabConfig; focused: boolean }) {
 export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { enabledServices } = useCustomerGeoServiceAvailability();
+  const foodEnabled = enabledServices.food;
   const bottomPad = Math.max(insets.bottom, Platform.OS === "android" ? 0 : 0);
+
+  const visibleRoutes = state.routes.filter(
+    (route) => route.name !== "offers" && (route.name !== "food" || foodEnabled)
+  );
+
+  useEffect(() => {
+    if (!foodEnabled && state.routes[state.index]?.name === "food") {
+      navigation.navigate("index");
+    }
+  }, [foodEnabled, state.index, state.routes, navigation]);
 
   return (
     <View style={[styles.wrapper, { paddingBottom: bottomPad }]}>
       <View style={styles.bar}>
-        {state.routes
-          .filter((route) => route.name !== "offers")
-          .map((route) => {
+        {visibleRoutes.map((route) => {
           const focused = state.routes[state.index]?.name === route.name;
           const tab = getTabConfig(route.name);
           const onPress = () => {

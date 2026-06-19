@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { assertStoreAccess } from "@/lib/auth/assert-store-access";
-import { resolveBackendApiBaseUrl } from "@/lib/backend-api-url";
+import { fetchBackendJson } from "@/lib/fetch-backend";
 import { client as sql } from "@/lib/drizzle";
 
 export const runtime = "nodejs";
@@ -61,31 +61,24 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(CLEAR_FALLBACK);
     }
 
-    const backendUrl = resolveBackendApiBaseUrl();
-    if (!backendUrl) {
-      return NextResponse.json(CLEAR_FALLBACK);
-    }
-
     const city = store?.city != null ? String(store.city) : undefined;
-    const url = new URL(`${backendUrl}/v1/weather/merchant`);
-    url.searchParams.set("lat", String(lat));
-    url.searchParams.set("lng", String(lng));
-    if (city) url.searchParams.set("city", city);
+    const params = new URLSearchParams({
+      lat: String(lat),
+      lng: String(lng),
+    });
+    if (city) params.set("city", city);
 
-    const res = await fetch(url.toString(), { signal: AbortSignal.timeout(WEATHER_FETCH_MS) });
-    if (!res.ok) {
+    const data = await fetchBackendJson<MerchantWeatherPayload>(
+      `/v1/weather/merchant?${params.toString()}`,
+      { timeoutMs: WEATHER_FETCH_MS }
+    );
+    if (!data) {
       return NextResponse.json(CLEAR_FALLBACK);
     }
 
-    const data = (await res.json()) as MerchantWeatherPayload;
     return NextResponse.json(data);
   } catch (e) {
-    const isTimeout =
-      e instanceof Error &&
-      (e.name === "TimeoutError" || e.name === "AbortError" || /timeout|aborted/i.test(e.message));
-    if (!isTimeout) {
-      console.warn("[merchant/weather]", e);
-    }
+    console.warn("[merchant/weather]", e);
     return NextResponse.json(CLEAR_FALLBACK);
   }
 }

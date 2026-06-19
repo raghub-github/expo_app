@@ -1,4 +1,12 @@
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import {
+  Animated,
+  LayoutChangeEvent,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import {
   prepReadyCountdownLabel,
   prepReadyTimeRemainingRatio,
@@ -29,13 +37,32 @@ export function MarkAsReadyCountdownButton({
     expiredLabel: labelPrefix,
   });
   const fillRatio = prepReadyTimeRemainingRatio(order, nowMs);
-  const fillPct = `${Math.round(fillRatio * 100)}%`;
   const isDark = theme === "dark";
+  const [btnWidth, setBtnWidth] = useState(0);
+  const fillWidth = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (btnWidth <= 0) return;
+    Animated.timing(fillWidth, {
+      toValue: fillRatio * btnWidth,
+      duration: 1000,
+      useNativeDriver: false,
+    }).start();
+  }, [btnWidth, fillRatio, fillWidth]);
+
+  const onLayout = (event: LayoutChangeEvent) => {
+    const width = event.nativeEvent.layout.width;
+    if (width > 0 && width !== btnWidth) {
+      setBtnWidth(width);
+      fillWidth.setValue(fillRatio * width);
+    }
+  };
 
   return (
     <Pressable
       onPress={onPress}
       disabled={disabled}
+      onLayout={onLayout}
       style={({ pressed }) => [
         styles.btn,
         isDark ? styles.btnDark : styles.btnLight,
@@ -44,12 +71,13 @@ export function MarkAsReadyCountdownButton({
         pressed && !disabled && styles.pressed,
       ]}
     >
-      <View
+      <Animated.View
         style={[
           isDark ? styles.fillDark : styles.fillLight,
-          { width: fillPct },
+          { width: fillWidth },
         ]}
       />
+      {isDark ? <View pointerEvents="none" style={styles.fillSheen} /> : null}
       <Text style={isDark ? styles.labelDark : styles.labelLight}>{label}</Text>
     </Pressable>
   );
@@ -73,7 +101,7 @@ const styles = StyleSheet.create({
   },
   btnDark: {
     borderWidth: 1,
-    borderColor: "#9A3412",
+    borderColor: "rgba(154, 52, 18, 0.25)",
     backgroundColor: "#1E293B",
   },
   fullWidth: { width: "100%" },
@@ -92,6 +120,10 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     backgroundColor: "#EA580C",
+  },
+  fillSheen: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
   },
   labelLight: {
     position: "relative",

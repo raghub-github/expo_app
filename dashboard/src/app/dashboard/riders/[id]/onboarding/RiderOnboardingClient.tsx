@@ -340,7 +340,7 @@ export default function RiderOnboardingClient() {
     if (!editingDoc) return;
 
     try {
-      setActionLoading(String(editingDoc.id));
+      setActionLoading(documentActionKey(editingDoc));
 
       const formData = new FormData();
       formData.append("displayDocType", editingDoc.docType);
@@ -388,7 +388,7 @@ export default function RiderOnboardingClient() {
     if (!editingDoc) return;
 
     try {
-      setActionLoading(String(editingDoc.id));
+      setActionLoading(documentActionKey(editingDoc));
 
       const formData = new FormData();
       formData.append("displayDocType", editingDoc.docType);

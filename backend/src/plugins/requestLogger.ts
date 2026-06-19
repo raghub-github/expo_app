@@ -11,13 +11,7 @@ async function requestLoggerPlugin(app: FastifyInstance) {
     // Track timing ourselves.
     (request as any).__startHrTime = process.hrtime.bigint();
 
-    request.log.info({
-      requestId: request.id,
-      method: request.method,
-      url: request.url,
-      ip: request.ip,
-      userAgent: request.headers["user-agent"],
-    }, "Incoming request");
+    request.log.info(`→ ${request.method} ${request.url}`);
   });
 
   app.addHook("onResponse", async (request: FastifyRequest, reply: FastifyReply) => {
@@ -25,13 +19,9 @@ async function requestLoggerPlugin(app: FastifyInstance) {
     const responseTimeMs =
       start != null ? Number((process.hrtime.bigint() - start) / 1_000_000n) : undefined;
 
-    request.log.info({
-      requestId: request.id,
-      method: request.method,
-      url: request.url,
-      statusCode: reply.statusCode,
-      responseTime: responseTimeMs != null ? `${responseTimeMs}ms` : undefined,
-    }, "Request completed");
+    request.log.info(
+      `${request.method} ${request.url} ${reply.statusCode}${responseTimeMs != null ? ` ${responseTimeMs}ms` : ""}`,
+    );
   });
 }
 

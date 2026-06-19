@@ -3,7 +3,7 @@
  * Used from finalizeOrder / webhook / legacy POST so DB rows are never sparse.
  */
 
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { customers, ordersCore, ordersFood } from "../db/schema.js";
 import type { NormalizedOrderItem } from "../modules/orders/orderNormalizer.js";
@@ -157,4 +157,82 @@ export async function enrichFoodOrderAfterPlacement(
       /* order_food_otps row shape may predate 0225; columns on orders_core/orders_food still hold OTPs */
     }
   }
+}
+
+export type OrdersFoodListSummary = {
+  orderId: number | null;
+  coreOrderId: string | null;
+  restaurantName: string | null;
+  foodItemsTotalValue: string | null;
+  vegNonVeg: string | null;
+  orderStatus: string | null;
+  rejectedReason: string | null;
+  cancelledByLabel: string | null;
+};
+
+/** Batch-load orders_food rows for customer order list (food orders only). */
+export async function loadOrdersFoodSummariesByCoreRows(
+  db: PostgresJsDatabase<Record<string, unknown>>,
+  rows: Array<{ id: number; orderId: string | null; orderType: string | null }>
+): Promise<Map<number, OrdersFoodListSummary>> {
+  const foodCoreRows = rows.filter((r) => r.orderType === "food");
+  const out = new Map<number, OrdersFoodListSummary>();
+  if (foodCoreRows.length === 0) return out;
+
+  const corePks = foodCoreRows.map((r) => r.id);
+  const orderIdTexts = [
+    ...new Set(
+      foodCoreRows
+        .map((r) => r.orderId?.trim())
+        .filter((id): id is string => Boolean(id))
+    ),
+  ];
+
+  const matchClause =
+    orderIdTexts.length > 0
+      ? or(
+          inArray(ordersFood.orderId, corePks),
+          sql`${ordersFood.coreOrderId}::text IN (${sql.join(
+            orderIdTexts.map((id) => sql`${id}`),
+            sql`, `
+          )})`
+        )
+      : inArray(ordersFood.orderId, corePks);
+
+  const foodRows = await db
+    .select({
+      orderId: ordersFood.orderId,
+      coreOrderId: ordersFood.coreOrderId,
+      restaurantName: ordersFood.restaurantName,
+      foodItemsTotalValue: ordersFood.foodItemsTotalValue,
+      vegNonVeg: sql<string | null>`${ordersFood.vegNonVeg}::text`.as("veg_non_veg"),
+      orderStatus: ordersFood.orderStatus,
+      rejectedReason: ordersFood.rejectedReason,
+      cancelledByLabel: ordersFood.cancelledByLabel,
+    })
+    .from(ordersFood)
+    .where(matchClause);
+
+  for (const core of foodCoreRows) {
+    const textId = core.orderId?.trim() ?? null;
+    const hit = foodRows.find(
+      (f) =>
+        f.orderId === core.id ||
+        (textId != null && String(f.coreOrderId ?? "").trim() === textId)
+    );
+    if (hit) out.set(core.id, hit);
+  }
+
+  return out;
+}
+
+export function ordersFoodMatchForCoreRow(
+  corePk: number,
+  coreOrderIdText: string | null
+) {
+  const textId = coreOrderIdText?.trim() ?? null;
+  return or(
+    eq(ordersFood.orderId, corePk),
+    textId != null ? sql`${ordersFood.coreOrderId}::text = ${textId}` : sql`false`
+  );
 }

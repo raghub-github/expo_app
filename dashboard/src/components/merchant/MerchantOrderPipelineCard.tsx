@@ -15,9 +15,9 @@ import {
 import type { OrdersFoodRow } from '@/lib/types/food-orders';
 import { FormattedOrderId, formatTimeAgo } from '@/components/merchant/merchant-incoming-order-ui';
 import { MerchantOrderItemsList } from '@/components/orders/MerchantOrderItemsList';
+import { resolveMerchantCtm } from '@/lib/merchant-order-ctm';
 import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
-import { resolveMerchantCtm } from '@/lib/merchant-order-item-display';
 import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
 import { MerchantPreparingOrderCard } from '@/components/merchant/MerchantPreparingOrderCard';
 import { ReadyHandoverRunningTimeline } from '@/components/orders/ReadyHandoverRunningTimeline';

@@ -52,6 +52,7 @@ const checkoutOfferMerchantRowSchema = z.object({
   autoApply: z.boolean().optional(),
   requiresCouponCode: z.string().nullable().optional(),
   minOrderAmount: z.number().nullable().optional(),
+  estimatedSavingsInr: z.number().nullable().optional(),
 });
 
 const calculateBodySchema = z.object({
@@ -69,6 +70,8 @@ const calculateBodySchema = z.object({
   cityName: z.string().optional().nullable(),
   userSegment: z.enum(["NEW", "EXISTING", "ALL"]).optional(),
   subscriptionOptIn: z.boolean().optional(),
+  subscriptionPlanId: z.coerce.number().int().positive().optional(),
+  subscriptionBillingCycle: z.enum(["weekly", "monthly", "yearly"]).optional(),
   checkoutAudience: z.enum(["CUSTOMER", "MERCHANT", "RIDER"]).optional(),
   couponRedemptionsByUser: z.number().int().nonnegative().optional(),
   /** 'delivery' (default) or 'self_pickup' — waives delivery fee on the billing engine side. */
@@ -137,6 +140,10 @@ function traceFromSnapshot(snap: Record<string, unknown> | undefined) {
   };
 }
 
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 function mapBillingToResponse(b: BillingResult, snapshot?: Record<string, unknown>) {
   const trace = traceFromSnapshot(snapshot);
   const gc = b.gst_components;
@@ -147,6 +154,10 @@ function mapBillingToResponse(b: BillingResult, snapshot?: Record<string, unknow
         ? (snapshot.deliveryPricingEngine as string)
         : null,
     deliverySlabQuote: snapshot?.deliverySlabQuote,
+    deliveryFeeExplainSubtext:
+      snapshot && typeof snapshot.deliveryFeeExplainSubtext === "string"
+        ? snapshot.deliveryFeeExplainSubtext
+        : null,
     itemTotal: b.item_total,
     addonTotal: b.addon_total,
     discountTotal: b.discount_total,
@@ -157,6 +168,15 @@ function mapBillingToResponse(b: BillingResult, snapshot?: Record<string, unknow
       if (typeof v !== "number" || !Number.isFinite(v)) return null;
       const x = Math.max(0, v);
       return x > 0.005 ? x : null;
+    })(),
+    deliveryFeeWaivedInr: (() => {
+      const marker = b.charges.find(
+        (c) => c.meta?.source === "customer_subscription_delivery_waived_marker"
+      );
+      if (marker && marker.amount > 0.005) return round2(marker.amount);
+      if (b.delivery_fee > 0.005) return null;
+      const disc = b.discounts.find((d) => d.meta?.source === "customer_subscription_free_delivery");
+      return disc && disc.amount > 0.005 ? round2(disc.amount) : null;
     })(),
     platformFee: b.platform_fee,
     packagingFee: b.packaging_fee,
@@ -178,6 +198,7 @@ function mapBillingToResponse(b: BillingResult, snapshot?: Record<string, unknow
       packaging: mapGstLine(gc.packaging),
       small_order: mapGstLine(gc.small_order),
       convenience: mapGstLine(gc.convenience),
+      ...(gc.subscription ? { subscription: mapGstLine(gc.subscription) } : {}),
     },
     totals: {
       total_discount: b.gst_totals.total_discount,
@@ -236,6 +257,7 @@ export async function billingRoutes(app: FastifyInstance) {
             unserviceableReason: z.enum(["out_of_range", "store_inactive"]).nullable(),
             deliveryPricingEngine: z.string().nullable().optional(),
             deliverySlabQuote: z.any().optional(),
+            deliveryFeeExplainSubtext: z.string().nullable().optional(),
             itemTotal: z.number(),
             addonTotal: z.number(),
             discountTotal: z.number(),
@@ -346,6 +368,8 @@ export async function billingRoutes(app: FastifyInstance) {
           cityName: body.cityName ?? null,
           userSegment: body.userSegment,
           subscriptionOptIn: body.subscriptionOptIn,
+          subscriptionPlanId: body.subscriptionPlanId,
+          subscriptionBillingCycle: body.subscriptionBillingCycle,
           checkoutAudience: body.checkoutAudience,
           couponRedemptionsByUser: body.couponRedemptionsByUser,
           deliveryType: body.deliveryType,
@@ -397,6 +421,8 @@ export async function billingRoutes(app: FastifyInstance) {
         cityName: body.cityName ?? null,
         userSegment: body.userSegment,
         subscriptionOptIn: body.subscriptionOptIn,
+        subscriptionPlanId: body.subscriptionPlanId,
+        subscriptionBillingCycle: body.subscriptionBillingCycle,
         checkoutAudience: body.checkoutAudience,
         couponRedemptionsByUser: body.couponRedemptionsByUser,
         deliveryType: body.deliveryType,
@@ -426,6 +452,7 @@ export async function billingRoutes(app: FastifyInstance) {
                 code: z.string(),
                 discountType: z.string(),
                 description: z.string(),
+                estimatedSavingsInr: z.number().nullable().optional(),
               })
             ),
             merchantOffers: z.array(checkoutOfferMerchantRowSchema),
@@ -443,6 +470,7 @@ export async function billingRoutes(app: FastifyInstance) {
                 name: z.string().nullable(),
                 offerKind: z.string(),
                 summary: z.string(),
+                estimatedSavingsInr: z.number().nullable().optional(),
               })
             ),
             // Ineligible — shown grayed-out in the app with the rejection reason

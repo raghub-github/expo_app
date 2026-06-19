@@ -58,13 +58,13 @@ export type OrderDetailEnrichment = {
   merchantInstructionsList: string[];
   firstEtaAtIso: string | null;
   cancellationInfo: OrderCancellationInfo | null;
-  customerFeedback: OrderCustomerFeedback | null;
   /** OTP for handover at pickup; null when not yet generated or already redeemed. */
-  pickupOtp?: string | null;
+  pickupOtp: string | null;
   /** OTP shown to rider/customer at delivery. */
-  deliveryOtp?: string | null;
+  deliveryOtp: string | null;
   /** OTP for return-to-origin flow. */
-  rtoOtp?: string | null;
+  rtoOtp: string | null;
+  customerFeedback: OrderCustomerFeedback | null;
   /** Seconds merchant was late marking ready (after prep_ready_by_at). Null if not applicable. */
   storePrepDelaySeconds: number | null;
   /** True while order is still preparing past the committed ready-by time. */
@@ -850,11 +850,11 @@ async function fetchOrderCancellationInfo(
     rejectedReason: resolved.rejected_reason,
     cancelledByLabel: resolved.cancelled_by_label,
     cancelledBy: pickString(
-      row.food_cancelled_by,
       row.core_cancelled_by,
       reasonRow?.cancelled_by,
-      foodDetails?.cancelled_by,
-      coreDetails?.cancelled_by
+      coreDetails?.cancelled_by,
+      row.food_cancelled_by,
+      foodDetails?.cancelled_by
     ),
     cancelledByType: resolved.cancelled_by_type,
     cancelledAtIso: pickIsoDate(
@@ -869,6 +869,11 @@ async function fetchOrderCancellationInfo(
       reasonRow?.refund_amount != null && reasonRow.refund_amount !== ""
         ? String(reasonRow.refund_amount)
         : null,
+    actionSource: pickString(
+      reasonRow?.action_source,
+      foodDetails?.action_source,
+      coreDetails?.action_source
+    ),
   };
 
   const hasAny =

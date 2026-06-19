@@ -1,10 +1,45 @@
 import type { NextConfig } from "next";
 import path from "path";
 
-/** Where Fastify lives when the merchant app uses EXPO_PUBLIC_API_BASE_URL=http://localhost:3000 (Next dev). */
-const merchantApiProxyTarget =
-  process.env.MERCHANT_API_PROXY_TARGET?.trim() ||
-  (process.env.NODE_ENV === "development" ? "http://127.0.0.1:4000" : "");
+/** Where Fastify lives in local dev (backend `npm run dev` → port 3000). */
+function normalizeDevBackendProxyTarget(raw: string | undefined): string {
+  const trimmed = (raw ?? "").trim().replace(/\/+$/, "");
+  if (!trimmed) {
+    return process.env.NODE_ENV === "development" ? "http://127.0.0.1:3000" : "";
+  }
+  if (
+    trimmed === "http://127.0.0.1:4000" ||
+    trimmed === "http://localhost:4000" ||
+    trimmed === "http://127.0.0.1:30000" ||
+    trimmed === "http://localhost:30000"
+  ) {
+    return "http://127.0.0.1:3000";
+  }
+  return trimmed;
+}
+
+const merchantApiProxyTarget = normalizeDevBackendProxyTarget(
+  process.env.MERCHANT_API_PROXY_TARGET
+);
+
+/** Monorepo root — used for standalone tracing and Turbopack (must match per Next.js 16). */
+const monorepoRoot = path.join(__dirname, "..");
+
+/** Legacy top-level paths from the removed `(dashboard)` route group → `/dashboard/*`. */
+const LEGACY_DASHBOARD_REDIRECTS = [
+  "merchants",
+  "super-admin",
+  "offers",
+  "tickets",
+  "system",
+  "riders",
+  "payments",
+  "orders",
+  "customers",
+  "analytics",
+  "area-managers",
+  "agents",
+] as const;
 
 const nextConfig: NextConfig = {
   serverExternalPackages: ["postgres", "drizzle-orm"],
@@ -13,7 +48,7 @@ const nextConfig: NextConfig = {
   // `next` (and most other deps) gets hoisted to `../node_modules`; tracing
   // only from `dashboard/` left the standalone bundle without a copy of next
   // itself, producing `Cannot find module 'next'` in the runtime container.
-  outputFileTracingRoot: path.join(__dirname, ".."),
+  outputFileTracingRoot: monorepoRoot,
   transpilePackages: ["@gatimitra/contracts"],
   // Disable dev indicator ("• Rendering..." / "Compiling...") at bottom-left to avoid delay and visual noise
   devIndicators: false,
@@ -27,11 +62,10 @@ const nextConfig: NextConfig = {
     optimizePackageImports: ["lucide-react"],
   },
   /**
-   * Configure Turbopack root so it resolves Next.js from the dashboard folder
-   * instead of incorrectly treating src/app as the workspace root.
+   * Must match `outputFileTracingRoot` (Next.js 16 requirement).
    */
   turbopack: {
-    root: path.join(process.cwd()),
+    root: monorepoRoot,
   },
   // Mapbox is loaded from CDN, no webpack config needed
 
@@ -58,14 +92,22 @@ const nextConfig: NextConfig = {
   // Default dev uses webpack (npm run dev --webpack) to avoid Turbopack ChunkLoadError; use npm run dev:turbopack for Turbopack.
   // If UI still doesn't update, run: npm run dev:clean to clear .next cache.
   /**
-   * Proxy REST API so mobile/web clients can use the same host:port as `next dev` (3000)
-   * while Fastify runs on another port (default 4000 in development).
-   * Override: MERCHANT_API_PROXY_TARGET=http://127.0.0.1:YOUR_API_PORT
+   * Proxy REST API so mobile/web clients can use the same host:port as `next dev` (3001)
+   * while Fastify runs on port 3000 (backend `npm run dev`).
+   * Legacy :4000 / :30000 backend URLs are auto-mapped to :3000 in dev.
    */
   async rewrites() {
     if (!merchantApiProxyTarget) return [];
     const base = merchantApiProxyTarget.replace(/\/+$/, "");
     return [{ source: "/v1/:path*", destination: `${base}/v1/:path*` }];
+  },
+
+  async redirects() {
+    return LEGACY_DASHBOARD_REDIRECTS.map((segment) => ({
+      source: `/${segment}`,
+      destination: `/dashboard/${segment}`,
+      permanent: false,
+    }));
   },
 
   async headers() {

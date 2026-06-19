@@ -1,5 +1,5 @@
 /**
- * Your Collections — bookmarked restaurants (Zomato-style bookmarks list).
+ * Your Collections — bookmarked restaurants (GatiMitra-style bookmarks list).
  */
 
 import { useCallback, useMemo, useState } from "react";

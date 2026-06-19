@@ -13,6 +13,7 @@ import {
   markRideSearchWindowEnded,
 } from "./ride.tip-boost.service.js";
 import { getNearbyRideSupply } from "./ride.availability.service.js";
+import { quoteCustomerRideFare } from "../ride-state-config/rideQuote.service.js";
 
 const rideStopSchema = z.object({
   sequence: z.number().int().min(1).max(2),
@@ -23,9 +24,11 @@ const rideStopSchema = z.object({
 
 const placeRideBodySchema = z.object({
   pickupAddress: z.string().min(1),
+  pickupLabel: z.string().optional().nullable(),
   pickupLat: z.number(),
   pickupLng: z.number(),
   dropAddress: z.string().min(1),
+  dropLabel: z.string().optional().nullable(),
   dropLat: z.number(),
   dropLng: z.number(),
   intermediateStops: z.array(rideStopSchema).max(2).optional(),
@@ -45,6 +48,8 @@ const placeRideBodySchema = z.object({
   farPickupAcknowledged: z.boolean().optional(),
   searchTimeoutSec: z.number().int().min(60).max(600).optional(),
   customerTipAmount: z.number().int().min(0).optional().default(0),
+  pickupPincode: z.string().optional().nullable(),
+  pickupState: z.string().optional().nullable(),
 });
 
 const cancelRideBodySchema = z.object({
@@ -76,6 +81,20 @@ const availabilityQuerySchema = z.object({
   pickupLng: z.coerce.number(),
   radiusKm: z.coerce.number().min(0.5).max(10).optional(),
   rideType: z.string().min(1).optional(),
+  tripKm: z.coerce.number().min(0).max(500).optional(),
+  pickupPincode: z.string().optional(),
+  pickupState: z.string().optional(),
+});
+
+const rideQuoteBodySchema = z.object({
+  pickupLat: z.number(),
+  pickupLng: z.number(),
+  dropLat: z.number(),
+  dropLng: z.number(),
+  tripKm: z.number().nonnegative(),
+  catalogCode: z.string().min(1),
+  pickupPincode: z.string().optional().nullable(),
+  pickupState: z.string().optional().nullable(),
 });
 
 const availabilityOptionSchema = z.object({
@@ -129,7 +148,46 @@ export async function rideRoutes(app: FastifyInstance) {
         pickupLng: q.pickupLng,
         radiusKm: q.radiusKm,
         rideType: q.rideType,
+        tripKm: q.tripKm,
+        pickupPincode: q.pickupPincode,
+        pickupState: q.pickupState,
       });
+    }
+  );
+
+  app.post(
+    "/quote",
+    {
+      schema: {
+        body: rideQuoteBodySchema,
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            stateId: z.string().nullable(),
+            pricingGeoLevel: z.string().nullable(),
+            pricingGeoRefId: z.string().nullable(),
+            pricingVehicle: z.string().nullable(),
+            eligible: z.boolean(),
+            maxDistanceKm: z.number().nullable(),
+            baseFare: z.number(),
+            distanceFare: z.number(),
+            surgeTotal: z.number(),
+            finalFare: z.number(),
+            appliedSurges: z.array(z.object({ name: z.string(), amount: z.number() })),
+            rateCardSummary: z.string().nullable(),
+            waitingChargeNote: z.string().nullable(),
+          }),
+          400: z.object({ error: z.string(), code: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const body = req.body as z.infer<typeof rideQuoteBodySchema>;
+      const result = await quoteCustomerRideFare(body);
+      if (!result.ok) {
+        return reply.status(400).send({ error: result.message, code: result.code });
+      }
+      return result;
     }
   );
 
@@ -176,9 +234,11 @@ export async function rideRoutes(app: FastifyInstance) {
           const result = await placeRideOrder({
             customerPk,
             pickupAddress: body.pickupAddress,
+            pickupLabel: body.pickupLabel,
             pickupLat: body.pickupLat,
             pickupLng: body.pickupLng,
             dropAddress: body.dropAddress,
+            dropLabel: body.dropLabel,
             dropLat: body.dropLat,
             dropLng: body.dropLng,
             intermediateStops: body.intermediateStops,
@@ -195,6 +255,8 @@ export async function rideRoutes(app: FastifyInstance) {
             farPickupAcknowledged: body.farPickupAcknowledged,
             searchTimeoutSec: body.searchTimeoutSec ?? DEFAULT_RIDE_SEARCH_TIMEOUT_SEC,
             customerTipAmount: body.customerTipAmount ?? 0,
+            pickupPincode: body.pickupPincode,
+            pickupState: body.pickupState,
           });
           return result;
         } catch (e) {
@@ -225,6 +287,12 @@ export async function rideRoutes(app: FastifyInstance) {
               cancelled: z.boolean(),
               pickupOtp: z.string().nullable(),
               rideStarted: z.boolean(),
+              riderReachedPickupAt: z.string().nullable(),
+              pickupOtpVerifiedAt: z.string().nullable(),
+              pickupWaitSeconds: z.number().nullable(),
+              pickupWaitFreeMinutes: z.number(),
+              pickupWaitingChargePerMin: z.number(),
+              estimatedPickupWaitingCharge: z.number(),
               awaitingTipBoost: z.boolean(),
               dispatchRetryCount: z.number(),
               customerTipAmount: z.number(),
@@ -314,6 +382,7 @@ export async function rideRoutes(app: FastifyInstance) {
             200: z.object({
               orderId: z.string(),
               awaitingTipBoost: z.boolean(),
+              searchExpiresAt: z.string(),
             }),
             404: z.object({ error: z.string() }),
             403: z.object({ error: z.string() }),

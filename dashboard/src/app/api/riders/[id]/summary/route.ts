@@ -8,7 +8,21 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
 import { fetchRiderUnifiedTickets } from "@/lib/riders/rider-unified-tickets";
 import { fetchRiderRecentOrders, formatRiderOrderDisplayId } from "@/lib/riders/rider-orders-query";
-import { riders, withdrawalRequests, blacklistHistory, dutyLogs, riderVehicles, riderPenalties, riderWallet, riderWalletFreezeHistory, riderNegativeWalletBlocks, systemUsers, onboardingPayments } from "@/lib/db/schema";
+import { walletBlockHistoryReason } from "@/lib/rider-restriction-display";
+import {
+  riders,
+  withdrawalRequests,
+  blacklistHistory,
+  dutyLogs,
+  riderVehicles,
+  riderPenalties,
+  riderWallet,
+  riderWalletFreezeHistory,
+  riderNegativeWalletBlocks,
+  systemUsers,
+  onboardingPayments,
+  riderPaymentMethods,
+} from "@/lib/db/schema";
 import { eq, and, or, desc, gte, lte, isNull, sql } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -121,7 +135,7 @@ export async function GET(
 
     // Per‑rider summary cache (30s) – keyed by rider + filters to avoid
     // recalculating heavy aggregates on quick tab switches.
-    const cacheKey = riderId ? `rider_summary_v2:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
+    const cacheKey = riderId ? `rider_summary_v4:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
     const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
 
     if (cacheKey) {
@@ -228,6 +242,7 @@ export async function GET(
       latestFreezeRow,
       latestDutyLog,
       logoutSession,
+      activeBankAccount,
     ] = await Promise.all([
       fetchRiderRecentOrders(db, riderId, orderFilters),
       db
@@ -325,6 +340,19 @@ export async function GET(
         .limit(1)
         .then((rows) => rows[0] ?? null),
       getRiderLogoutSessionSnapshot(riderId),
+      db
+        .select()
+        .from(riderPaymentMethods)
+        .where(
+          and(
+            eq(riderPaymentMethods.riderId, riderId),
+            eq(riderPaymentMethods.methodType, "bank"),
+            isNull(riderPaymentMethods.deletedAt),
+          ),
+        )
+        .orderBy(desc(riderPaymentMethods.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
     ]);
 
     let recentPenalties: Array<Record<string, unknown>> = [];
@@ -461,19 +489,53 @@ export async function GET(
       all: allStatusAdjusted,
     };
 
-    // Blacklist/whitelist history (latest first, for UI)
+    // Blacklist/whitelist history (latest first, for UI) + wallet auto-block rows from rider_negative_wallet_blocks
+    const walletTotalForBlocks = walletRow ? Number(walletRow.totalBalance ?? 0) : 0;
+    const globalWalletBlockForHistory =
+      Number.isFinite(walletTotalForBlocks) && walletTotalForBlocks <= -200;
+
     const blacklistHistoryList = blacklistRows.slice(0, 30).map((r) => ({
       id: r.id,
-      serviceType: (r.serviceType as string) || 'all',
+      serviceType: (r.serviceType as string) || "all",
       banned: r.banned,
       reason: r.reason,
-      source: r.source ?? 'agent',
+      source: r.source ?? "agent",
       isPermanent: r.isPermanent,
       expiresAt: r.expiresAt?.toISOString() ?? null,
       createdAt: r.createdAt.toISOString(),
       actorEmail: r.agentEmailFromJoin ?? null,
       actorName: r.actorName ?? null,
+      restrictionType: "agent_blacklist" as const,
     }));
+
+    const walletRestrictionHistory = negativeWalletBlockRows.map((b, index) => ({
+      id: -(index + 1),
+      serviceType: (b.serviceType as string) || "all",
+      banned: true,
+      reason: walletBlockHistoryReason(
+        {
+          serviceType: (b.serviceType as string) || "all",
+          reason: (b as { reason?: string }).reason ?? "negative_wallet",
+          createdAt:
+            b.createdAt instanceof Date ? b.createdAt.toISOString() : String(b.createdAt),
+        },
+        globalWalletBlockForHistory
+      ),
+      source: "automated",
+      isPermanent: false,
+      expiresAt: null,
+      createdAt:
+        b.createdAt instanceof Date ? b.createdAt.toISOString() : String(b.createdAt ?? new Date()),
+      actorEmail: null,
+      actorName: null,
+      restrictionType: "wallet_auto_block" as const,
+    }));
+
+    const restrictionHistory = [...blacklistHistoryList, ...walletRestrictionHistory]
+      .sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      )
+      .slice(0, 50);
 
     // Get online/offline status (most recent duty log)
     // IMPORTANT BUSINESS RULE:
@@ -551,8 +613,11 @@ export async function GET(
           id: order.id,
           orderType: order.orderType,
           status: order.status,
+          riderAssignmentStatus: order.riderAssignmentStatus ?? null,
+          riderRideUnassigned: order.riderRideUnassigned ?? false,
           fareAmount: order.fareAmount,
           riderEarning: order.riderEarning,
+          walletCredited: order.walletCredited ?? false,
           createdAt:
             order.createdAt instanceof Date
               ? order.createdAt.toISOString()
@@ -585,8 +650,24 @@ export async function GET(
           serviceTypes: activeVehicle.serviceTypes || [],
           verified: activeVehicle.verified,
         } : null,
+        bankAccount: activeBankAccount
+          ? {
+              id: activeBankAccount.id,
+              accountHolderName: activeBankAccount.accountHolderName,
+              bankName: activeBankAccount.bankName ?? null,
+              ifsc: activeBankAccount.ifsc ?? null,
+              branch: activeBankAccount.branch ?? null,
+              accountNumberMasked: activeBankAccount.accountNumberEncrypted ? "••••" : null,
+              verificationStatus: activeBankAccount.verificationStatus,
+              verifiedAt: activeBankAccount.verifiedAt
+                ? activeBankAccount.verifiedAt.toISOString()
+                : null,
+              createdAt: activeBankAccount.createdAt.toISOString(),
+            }
+          : null,
         blacklistStatusByService,
-        blacklistHistory: blacklistHistoryList,
+        blacklistHistory: restrictionHistory,
+        restrictionHistory,
         negativeWalletBlocks: negativeWalletBlockRows.map((b) => ({
           serviceType: b.serviceType,
           reason: b.reason,

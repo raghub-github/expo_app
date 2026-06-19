@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import {
   updateOrderRemarkWithHistory,
@@ -32,18 +32,11 @@ export async function GET(
       );
     }
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 }
-      );
+    const auth = await getAuthenticatedApiUser();
+    if (!auth.ok) {
+      return NextResponse.json(auth.body, { status: auth.status });
     }
+    const { user } = auth;
 
     const allowed =
       (await isSuperAdmin(user.id, user.email ?? "")) ||
@@ -100,18 +93,11 @@ export async function PATCH(
       );
     }
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 }
-      );
+    const auth = await getAuthenticatedApiUser();
+    if (!auth.ok) {
+      return NextResponse.json(auth.body, { status: auth.status });
     }
+    const { user } = auth;
 
     const allowed =
       (await isSuperAdmin(user.id, user.email ?? "")) ||

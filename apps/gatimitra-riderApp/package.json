@@ -3,7 +3,8 @@
   "main": "expo-router/entry",
   "version": "1.0.0",
   "scripts": {
-    "start": "expo start -c",
+    "start": "expo start",
+    "start:clean": "node scripts/clear-metro-cache.js && expo start -c",
     "start:no-cache": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
@@ -21,6 +22,7 @@
     "@gatimitra/expo-push-kit": "^0.0.1",
     "@gatimitra/sdk": "^0.0.1",
     "@react-native-community/datetimepicker": "^8.6.0",
+    "@react-native-community/netinfo": "11.4.1",
     "@react-navigation/native": "^7.1.8",
     "@rnmapbox/maps": "^10.2.10",
     "@supabase/supabase-js": "^2.97.0",

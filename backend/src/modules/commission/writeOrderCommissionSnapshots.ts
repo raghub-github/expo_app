@@ -20,7 +20,7 @@
 
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { sql } from "drizzle-orm";
-import { resolveStoreCommission } from "./commission.resolver.js";
+import { resolveStoreCommission, type ResolvedCommission } from "./commission.resolver.js";
 
 type ItemForSnapshot = {
   /** order_id text (e.g. GM10000001) — used to look up the inserted order's PK */
@@ -51,9 +51,11 @@ export async function writeOrderItemCommissionSnapshots(
   storeId: number,
   items: ItemForSnapshot[],
   orderIdNumOverride?: number,
+  /** Pre-resolved outside db.transaction() to avoid a second pool connection mid-txn. */
+  commissionOverride?: ResolvedCommission | null,
 ): Promise<void> {
   if (items.length === 0) return;
-  const commission = await resolveStoreCommission(storeId);
+  const commission = commissionOverride ?? (await resolveStoreCommission(storeId));
   const pct = commission.percent;
   // If somehow commission resolved to 100% (invalid) we skip writing and let
   // upstream alert us — better to drop the snapshot than insert nonsense.

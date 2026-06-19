@@ -42,8 +42,9 @@ export function countLiveSidebarPipelineOrders(
 export function isLiveSidebarPipelineFromCore(
   foodOrderStatus: string | null | undefined,
   coreStatus: string | null | undefined,
-  currentStatus: string | null | undefined
+  currentStatus: string | null | undefined,
+  riderPickedUpAt?: string | null
 ): boolean {
-  const ui = resolvePartnerPipeline(foodOrderStatus, coreStatus, currentStatus);
+  const ui = resolvePartnerPipeline(foodOrderStatus, coreStatus, currentStatus, riderPickedUpAt);
   return isLiveSidebarPipelineStatus(ui);
 }

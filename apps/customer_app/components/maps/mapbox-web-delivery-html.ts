@@ -1,12 +1,11 @@
 import { MAPBOX_RIDE_STYLE } from "@/lib/customer-map-assets";
 import { escToken, mapboxHtmlHead, mapboxLabelRestoreScript } from "@/components/maps/mapbox-web-shared";
-import { mapboxRapidoRouteScript } from "@/components/maps/mapbox-rapido-route-script";
-
-type Point = { latitude: number; longitude: number } | null;
+import { mapboxFoodDeliveryScript } from "@/components/maps/mapbox-food-delivery-script";
 
 export function buildDeliveryTrackingMapHtml(
   token: string,
-  center: { latitude: number; longitude: number }
+  center: { latitude: number; longitude: number },
+  bikeUri: string
 ): string {
   const lat = center.latitude;
   const lng = center.longitude;
@@ -18,61 +17,38 @@ export function buildDeliveryTrackingMapHtml(
   <div id="map"></div>
   <script>
     (function(){
-      var markers = { pickup: null, drop: null, rider: null };
       mapboxgl.accessToken = '${escToken(token)}';
       var map = new mapboxgl.Map({
         container: 'map',
         style: '${MAPBOX_RIDE_STYLE}',
         center: [${lng}, ${lat}],
-        zoom: 13,
+        zoom: 14.5,
         attributionControl: false
       });
       ${mapboxLabelRestoreScript()}
       map.on('style.load', function() { ensureMapLabelsVisible(map); });
       map.on('load', function() {
         ensureMapLabelsVisible(map);
-        ${mapboxRapidoRouteScript()}
+        ${mapboxFoodDeliveryScript(bikeUri)}
         map.resize();
         if (window.ReactNativeWebView) {
           window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'ready' }));
         }
       });
-
-      function setMarker(key, lat, lng, color, size) {
-        if (lat == null || lng == null) {
-          if (markers[key]) { try { markers[key].remove(); } catch (e) {} markers[key] = null; }
-          return;
-        }
-        if (!markers[key]) {
-          var el = document.createElement('div');
-          el.style.cssText = 'width:' + size + 'px;height:' + size + 'px;border-radius:50%;background:' + color + ';border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.2);';
-          markers[key] = new mapboxgl.Marker({ element: el, anchor: 'center' }).setLngLat([lng, lat]).addTo(map);
-        } else {
-          markers[key].setLngLat([lng, lat]);
-        }
-      }
-
-      window.updateDeliveryMap = function(data) {
-        setMarker('pickup', data.pickupLat, data.pickupLng, '#22C55E', 14);
-        setMarker('drop', data.dropLat, data.dropLng, '#EF4444', 14);
-        setMarker('rider', data.riderLat, data.riderLng, '#2563EB', 16);
-        if (data.route && data.route.length >= 2) {
-          window.updateRoute && window.updateRoute(data.route);
-        }
-      };
-
-      window.fitToCoordinates = function(coords, padding, maxZoom) {
-        if (!coords || coords.length < 1) return;
-        var points = coords.map(function(c) { return [c.longitude, c.latitude]; });
-        var cap = typeof maxZoom === 'number' ? maxZoom : 15;
-        var bounds = points.reduce(function(b, c) { return b.extend(c); }, new mapboxgl.LngLatBounds(points[0], points[0]));
-        map.fitBounds(bounds, { padding: padding || { top: 40, bottom: 40, left: 40, right: 40 }, duration: 500, maxZoom: cap });
-      };
     })();
   <\/script>
 </body>
 </html>`;
 }
+
+export type DeliveryMapRouteStyle = "dashed" | "solid";
+
+export type DeliveryMapPadding = {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+};
 
 export type DeliveryMapPayload = {
   pickupLat: number | null;
@@ -81,5 +57,27 @@ export type DeliveryMapPayload = {
   dropLng: number | null;
   riderLat: number | null;
   riderLng: number | null;
-  route: { latitude: number; longitude: number }[];
+  riderHeading?: number | null;
+  /** Full road geometry from routing API. */
+  fullRoute?: { latitude: number; longitude: number }[];
+  /** Trimmed remaining route on road (rider-app splitRouteProgress). */
+  remainingRoute: { latitude: number; longitude: number }[];
+  /** Dashed store → customer arc before rider assignment (Zomato-style preview). */
+  preRiderArcRoute?: { latitude: number; longitude: number }[];
+  /** Dashed GPS → route join connector. */
+  connectorRoute?: { latitude: number; longitude: number }[];
+  routeJoinLat?: number | null;
+  routeJoinLng?: number | null;
+  hideRouteLine?: boolean;
+  highlightPickupZone?: boolean;
+  highlightDropZone?: boolean;
+  geofenceRadiusM?: number;
+  geofenceProximityM?: number;
+  riderArrived?: boolean;
+  refitCamera?: boolean;
+  mapPhase?: "rider_to_pickup" | "rider_to_drop";
+  mapPadding?: DeliveryMapPadding;
+  /** @deprecated use remainingRoute */
+  route?: { latitude: number; longitude: number }[];
+  routeStyle?: DeliveryMapRouteStyle;
 };

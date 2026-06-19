@@ -8,11 +8,17 @@ import {
   TextInput,
   ActivityIndicator,
   ScrollView,
+  useWindowDimensions,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import {
+  RESTAURANT_RATING_TAGS,
+  DELIVERY_RATING_TAGS,
+  defaultTagsForRating,
+} from "@/lib/post-delivery-rating-tags";
 
 const GREEN = GatiMitraColors.primaryMint;
 const TEXT = "#1C1C1C";
@@ -40,9 +46,37 @@ function StarRow({
           >
             <Ionicons
               name={filled ? "star" : "star-outline"}
-              size={30}
+              size={28}
               color={filled ? "#F59E0B" : "#D1D5DB"}
             />
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
+function RatingTags({
+  tags,
+  selected,
+  onToggle,
+}: {
+  tags: readonly string[];
+  selected: string[];
+  onToggle: (tag: string) => void;
+}) {
+  return (
+    <View style={styles.tagsWrap}>
+      {tags.map((tag) => {
+        const active = selected.includes(tag);
+        return (
+          <TouchableOpacity
+            key={tag}
+            style={[styles.tagChip, active && styles.tagChipActive]}
+            onPress={() => onToggle(tag)}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.tagChipText, active && styles.tagChipTextActive]}>{tag}</Text>
           </TouchableOpacity>
         );
       })}
@@ -60,10 +94,12 @@ export type OrderDeliveryRatingSheetProps = {
   submitting?: boolean;
   onClose: () => void;
   onSubmit: (payload: {
-    storeRating: number;
-    deliveryRating: number;
+    storeRating?: number;
+    deliveryRating?: number;
     reviewText?: string;
     riderReviewText?: string;
+    storeReviewTags?: string[];
+    riderReviewTags?: string[];
     riderTipAmount?: number;
   }) => void;
 };
@@ -79,8 +115,12 @@ export function OrderDeliveryRatingSheet({
   onSubmit,
 }: OrderDeliveryRatingSheetProps) {
   const insets = useSafeAreaInsets();
+  const { height: winH } = useWindowDimensions();
+  const sheetHeight = Math.round(winH * 0.86);
   const [storeRating, setStoreRating] = useState(0);
   const [deliveryRating, setDeliveryRating] = useState(0);
+  const [storeSelectedTags, setStoreSelectedTags] = useState<string[]>([]);
+  const [riderSelectedTags, setRiderSelectedTags] = useState<string[]>([]);
   const [reviewText, setReviewText] = useState("");
   const [riderReviewText, setRiderReviewText] = useState("");
   const [selectedTip, setSelectedTip] = useState<number | null>(null);
@@ -91,27 +131,78 @@ export function OrderDeliveryRatingSheet({
     if (!visible) return;
     setStoreRating(0);
     setDeliveryRating(0);
+    setStoreSelectedTags([]);
+    setRiderSelectedTags([]);
     setReviewText("");
     setRiderReviewText("");
     setSelectedTip(null);
   }, [visible]);
 
-  const canSubmit = storeRating >= 1 && deliveryRating >= 1 && !submitting;
+  const handleStoreRatingChange = (stars: number) => {
+    setStoreRating(stars);
+    setStoreSelectedTags(defaultTagsForRating(RESTAURANT_RATING_TAGS, stars));
+  };
+
+  const handleDeliveryRatingChange = (stars: number) => {
+    setDeliveryRating(stars);
+    setRiderSelectedTags(defaultTagsForRating(DELIVERY_RATING_TAGS, stars));
+  };
+
+  const toggleStoreTag = (tag: string) => {
+    setStoreSelectedTags((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
+    );
+  };
+
+  const toggleRiderTag = (tag: string) => {
+    setRiderSelectedTags((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
+    );
+  };
+
+  const hasStoreRating = storeRating >= 1;
+  const hasDeliveryRating = deliveryRating >= 1;
+  const canSubmit = (hasStoreRating || hasDeliveryRating) && !submitting;
+
+  const handleSubmit = () => {
+    if (!canSubmit) return;
+    onSubmit({
+      ...(hasStoreRating ? { storeRating } : {}),
+      ...(hasDeliveryRating ? { deliveryRating } : {}),
+      reviewText: reviewText.trim() || undefined,
+      riderReviewText: riderReviewText.trim() || undefined,
+      ...(storeSelectedTags.length ? { storeReviewTags: storeSelectedTags } : {}),
+      ...(riderSelectedTags.length ? { riderReviewTags: riderSelectedTags } : {}),
+      ...(selectedTip != null && selectedTip > 0 ? { riderTipAmount: selectedTip } : {}),
+    });
+  };
 
   return (
-    <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.88} flushBottom>
+    <StoreBottomSheetShell
+      visible={visible}
+      onClose={onClose}
+      maxHeightRatio={0.92}
+      flushBottom
+      keyboardAvoiding
+      sheetStyle={{ height: sheetHeight }}
+    >
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 8 }}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingBottom: Math.max(insets.bottom, 16) + 12 },
+        ]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.header}>
           <View style={styles.successIcon}>
-            <Ionicons name="checkmark-circle" size={28} color={GREEN} />
+            <Ionicons name="checkmark-circle" size={26} color={GREEN} />
           </View>
           <Text style={styles.title}>Order delivered!</Text>
-          <Text style={styles.subtitle}>Rate your restaurant and delivery partner.</Text>
+          <Text style={styles.subtitle}>
+            Rate the restaurant, delivery partner, or both — at least one is enough.
+          </Text>
         </View>
 
         <View style={styles.section}>
@@ -129,7 +220,14 @@ export function OrderDeliveryRatingSheet({
             </Text>
           </View>
           <Text style={styles.rateHint}>How was the food?</Text>
-          <StarRow value={storeRating} onChange={setStoreRating} />
+          <StarRow value={storeRating} onChange={handleStoreRatingChange} />
+          {storeRating >= 1 ? (
+            <RatingTags
+              tags={RESTAURANT_RATING_TAGS}
+              selected={storeSelectedTags}
+              onToggle={toggleStoreTag}
+            />
+          ) : null}
           <Text style={styles.reviewLabel}>Review restaurant (optional)</Text>
           <TextInput
             style={styles.reviewInput}
@@ -154,7 +252,14 @@ export function OrderDeliveryRatingSheet({
             </Text>
           </View>
           <Text style={styles.rateHint}>How was the delivery?</Text>
-          <StarRow value={deliveryRating} onChange={setDeliveryRating} />
+          <StarRow value={deliveryRating} onChange={handleDeliveryRatingChange} />
+          {deliveryRating >= 1 ? (
+            <RatingTags
+              tags={DELIVERY_RATING_TAGS}
+              selected={riderSelectedTags}
+              onToggle={toggleRiderTag}
+            />
+          ) : null}
           <Text style={styles.reviewLabel}>Review delivery (optional)</Text>
           <TextInput
             style={styles.reviewInput}
@@ -195,15 +300,7 @@ export function OrderDeliveryRatingSheet({
         <TouchableOpacity
           style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}
           disabled={!canSubmit}
-          onPress={() =>
-            onSubmit({
-              storeRating,
-              deliveryRating,
-              reviewText: reviewText.trim() || undefined,
-              riderReviewText: riderReviewText.trim() || undefined,
-              ...(selectedTip != null && selectedTip > 0 ? { riderTipAmount: selectedTip } : {}),
-            })
-          }
+          onPress={handleSubmit}
           activeOpacity={0.9}
         >
           {submitting ? (
@@ -213,7 +310,12 @@ export function OrderDeliveryRatingSheet({
           )}
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.laterBtn} onPress={onClose} disabled={submitting} activeOpacity={0.8}>
+        <TouchableOpacity
+          style={styles.laterBtn}
+          onPress={onClose}
+          disabled={submitting}
+          activeOpacity={0.8}
+        >
           <Text style={styles.laterBtnText}>Maybe later</Text>
         </TouchableOpacity>
       </ScrollView>
@@ -222,47 +324,51 @@ export function OrderDeliveryRatingSheet({
 }
 
 const styles = StyleSheet.create({
-  scroll: { paddingHorizontal: 20, paddingTop: 8 },
-  header: { alignItems: "center", marginBottom: 16 },
+  scroll: { flex: 1 },
+  scrollContent: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+  },
+  header: { alignItems: "center", marginBottom: 14 },
   successIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: "#ECFDF5",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 10,
+    marginBottom: 8,
   },
   title: { fontSize: 20, fontWeight: "700", color: TEXT, textAlign: "center" },
   subtitle: {
     marginTop: 6,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 13,
+    lineHeight: 18,
     color: MUTED,
     textAlign: "center",
-    paddingHorizontal: 8,
+    paddingHorizontal: 4,
   },
   section: {
-    marginBottom: 16,
-    padding: 14,
+    marginBottom: 12,
+    padding: 12,
     borderRadius: 14,
     backgroundColor: "#F8FAF9",
     borderWidth: 1,
     borderColor: "#E8F5EE",
   },
   sectionTitle: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "700",
     color: GREEN,
     textTransform: "uppercase",
     letterSpacing: 0.4,
-    marginBottom: 10,
+    marginBottom: 8,
   },
   entityRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    marginBottom: 12,
+    marginBottom: 10,
   },
   entityThumb: { width: 44, height: 44, borderRadius: 8 },
   entityThumbFallback: {
@@ -275,11 +381,27 @@ const styles = StyleSheet.create({
   },
   riderThumb: { backgroundColor: "#ECFDF5" },
   entityName: { flex: 1, fontSize: 15, fontWeight: "600", color: TEXT },
-  rateHint: { fontSize: 13, fontWeight: "600", color: TEXT, marginBottom: 8 },
-  starRow: { flexDirection: "row", gap: 6, marginBottom: 10 },
-  reviewLabel: { fontSize: 12, fontWeight: "600", color: MUTED, marginBottom: 6, marginTop: 4 },
+  rateHint: { fontSize: 13, fontWeight: "600", color: TEXT, marginBottom: 6 },
+  starRow: { flexDirection: "row", gap: 4, marginBottom: 8 },
+  tagsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 8 },
+  tagChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+    backgroundColor: "#fff",
+  },
+  tagChipActive: {
+    borderColor: GatiMitraColors.warmOrange,
+    backgroundColor: "#FFF7ED",
+  },
+  tagChipText: { fontSize: 12, fontWeight: "600", color: TEXT },
+  tagChipTextActive: { color: GatiMitraColors.warmOrange },
+  reviewLabel: { fontSize: 12, fontWeight: "600", color: MUTED, marginBottom: 6, marginTop: 2 },
   reviewInput: {
-    minHeight: 72,
+    minHeight: 64,
+    maxHeight: 96,
     borderWidth: 1,
     borderColor: "#EBEBEB",
     borderRadius: 10,
@@ -290,13 +412,13 @@ const styles = StyleSheet.create({
     backgroundColor: "#FAFAFA",
   },
   tipBlock: {
-    marginTop: 12,
-    paddingTop: 12,
+    marginTop: 10,
+    paddingTop: 10,
     borderTopWidth: 1,
     borderTopColor: "#E5E7EB",
   },
   tipTitle: { fontSize: 14, fontWeight: "700", color: TEXT },
-  tipSubtitle: { fontSize: 12, color: MUTED, marginTop: 2, marginBottom: 10 },
+  tipSubtitle: { fontSize: 12, color: MUTED, marginTop: 2, marginBottom: 8 },
   tipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   tipChip: {
     paddingHorizontal: 16,
@@ -319,9 +441,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     minHeight: 48,
+    marginTop: 4,
   },
   submitBtnDisabled: { opacity: 0.45 },
   submitBtnText: { color: "#fff", fontSize: 16, fontWeight: "700" },
-  laterBtn: { marginTop: 12, paddingVertical: 10, alignItems: "center" },
+  laterBtn: { marginTop: 10, paddingVertical: 10, alignItems: "center" },
   laterBtnText: { fontSize: 14, fontWeight: "600", color: MUTED },
 });

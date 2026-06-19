@@ -26,6 +26,7 @@ import {
   syncOperationalStatusFromSchedule,
 } from '@/lib/storeScheduleSync';
 import { loadMerchantLicenseEvaluation } from '@/lib/syncMerchantLicenseCompliance';
+import { resetPartnerNotificationsPanelCleared } from '@/lib/partner-notifications-panel';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -218,27 +219,23 @@ export async function GET(req: NextRequest) {
       storeOpsDebugLog(`GET:${step}`, row);
     };
 
-    const { data: store } = await db
-      .from('merchant_stores')
-      .select(
-        'operational_status, is_active, is_accepting_orders, is_available, approval_status, deleted_at, delisted_at, timezone'
-      )
-      .eq('id', storeInternalId)
-      .single();
-
-    const { data: avail } = await db
-      .from('merchant_store_availability')
-      .select(
-        'manual_close_until, close_reason, auto_open_from_schedule, block_auto_open, restriction_type, unavailable_reason, is_available, is_accepting_orders, is_manual_override, schedule_end_prompt_expires_at, schedule_end_prompted_at, last_toggled_by_email, last_toggled_by_name, last_toggled_by_id, last_toggle_type, last_toggled_at'
-      )
-      .eq('store_id', storeInternalId)
-      .single();
-
-    const { data: oh } = await db
-      .from('merchant_store_operating_hours')
-      .select('*')
-      .eq('store_id', storeInternalId)
-      .single();
+    const [{ data: store }, { data: avail }, { data: oh }] = await Promise.all([
+      db
+        .from('merchant_stores')
+        .select(
+          'operational_status, is_active, is_accepting_orders, is_available, approval_status, deleted_at, delisted_at, timezone'
+        )
+        .eq('id', storeInternalId)
+        .single(),
+      db
+        .from('merchant_store_availability')
+        .select(
+          'manual_close_until, close_reason, auto_open_from_schedule, block_auto_open, restriction_type, unavailable_reason, is_available, is_accepting_orders, is_manual_override, schedule_end_prompt_expires_at, schedule_end_prompted_at, last_toggled_by_email, last_toggled_by_name, last_toggled_by_id, last_toggle_type, last_toggled_at'
+        )
+        .eq('store_id', storeInternalId)
+        .single(),
+      db.from('merchant_store_operating_hours').select('*').eq('store_id', storeInternalId).single(),
+    ]);
 
     const storeTz = (store as { timezone?: string } | null)?.timezone || 'Asia/Kolkata';
     const ohRecord = (oh ?? null) as Record<string, unknown> | null;
@@ -394,13 +391,23 @@ export async function GET(req: NextRequest) {
 
     /** Active/upcoming Partner "Schedule time-off" rows (`merchant_store_scheduled_closures`). */
     const closureNowIso = new Date().toISOString();
-    const { data: schedClosureRows } = await db
-      .from('merchant_store_scheduled_closures')
-      .select('id, reason, starts_at, ends_at, status, marked_from')
-      .eq('store_id', storeInternalId)
-      .in('status', ['scheduled', 'active'])
-      .gt('ends_at', closureNowIso)
-      .order('starts_at', { ascending: true });
+    const [{ data: schedClosureRows }, { data: rushRows }] = await Promise.all([
+      db
+        .from('merchant_store_scheduled_closures')
+        .select('id, reason, starts_at, ends_at, status, marked_from')
+        .eq('store_id', storeInternalId)
+        .in('status', ['scheduled', 'active'])
+        .gt('ends_at', closureNowIso)
+        .order('starts_at', { ascending: true }),
+      db
+        .from('merchant_store_rush_windows')
+        .select('duration_minutes, started_at, ends_at, marked_from')
+        .eq('store_id', storeInternalId)
+        .eq('is_active', true)
+        .gt('ends_at', closureNowIso)
+        .order('started_at', { ascending: false })
+        .limit(1),
+    ]);
 
     const scheduledTimeOffs: Array<{
       id: number;
@@ -440,14 +447,6 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const { data: rushRows } = await db
-      .from('merchant_store_rush_windows')
-      .select('duration_minutes, started_at, ends_at, marked_from')
-      .eq('store_id', storeInternalId)
-      .eq('is_active', true)
-      .gt('ends_at', closureNowIso)
-      .order('started_at', { ascending: false })
-      .limit(1);
     const rushRow = rushRows?.[0];
     let activeRush: Record<string, unknown> | null = null;
     if (rushRow) {
@@ -466,7 +465,7 @@ export async function GET(req: NextRequest) {
       };
     }
 
-    const licenseStatus = await loadMerchantLicenseEvaluation(db, storeInternalId);
+    const licenseStatus = syncResult.licenseEvaluation;
 
     const responseBody: Record<string, unknown> = {
       operational_status: displayOperational,
@@ -876,6 +875,8 @@ export async function POST(req: NextRequest) {
       }
 
       storeOpsDebugLog('POST:manual_open:done', { storeId, storeInternalId, status_log_ok: !logErr });
+
+      await resetPartnerNotificationsPanelCleared(db, storeInternalId);
 
       return NextResponse.json({
         success: true,

@@ -4,6 +4,7 @@
  */
 
 import { getSql } from "../client";
+import { merchantStoreResubmittedDocsPendingSql } from "./merchant-resubmitted-docs";
 
 export interface MerchantStoreRow {
   id: number;
@@ -202,6 +203,7 @@ export async function countMerchantStoresByStatus(
   active: number;
   drafted: number;
   new: number;
+  resubmitted: number;
 }> {
   const sql = getSql();
   const baseCondition =
@@ -232,7 +234,8 @@ export async function countMerchantStoresByStatus(
           AND COALESCE(onboarding_completed, false) = false
       )::int AS drafted,
       count(*) FILTER (WHERE is_active = true AND status = 'ACTIVE')::int AS active,
-      count(*) FILTER (WHERE created_at >= (now() - interval '30 days'))::int AS new
+      count(*) FILTER (WHERE created_at >= (now() - interval '30 days'))::int AS new,
+      count(*) FILTER (WHERE ${merchantStoreResubmittedDocsPendingSql()})::int AS resubmitted
     FROM merchant_stores
     WHERE ${baseCondition} ${childCondition} ${storeTypeCondition} ${dateFromCondition} ${dateToCondition}
   `;
@@ -245,6 +248,7 @@ export async function countMerchantStoresByStatus(
     drafted: Number(row?.drafted ?? 0),
     active: Number(row?.active ?? 0),
     new: Number(row?.new ?? 0),
+    resubmitted: Number(row?.resubmitted ?? 0),
   };
 }
 
@@ -661,6 +665,8 @@ export async function listMerchantStores(params: {
   newOnly?: boolean;
   /** "Drafted Store" = approval_status=DRAFT with some steps completed, but not yet finished (step 8 pending). */
   draftedOnly?: boolean;
+  /** Partner re-uploaded documents after rejection or expired-licence renewal — pending admin re-verification. */
+  resubmittedOnly?: boolean;
   storeType?: string | null;
   /** Filter by created_at >= fromDate (YYYY-MM-DD) */
   createdFrom?: string;
@@ -754,6 +760,10 @@ export async function listMerchantStores(params: {
       `
     : sql``;
 
+  const resubmittedOnlyCondition = params.resubmittedOnly
+    ? sql`AND ${merchantStoreResubmittedDocsPendingSql()}`
+    : sql``;
+
   // Optional date range filter (from/to particular date)
   const fromDate = params.createdFrom?.trim();
   const toDate = params.createdTo?.trim();
@@ -780,6 +790,7 @@ export async function listMerchantStores(params: {
     ${newOnlyCondition}
     ${storeTypeCondition}
     ${draftedOnlyCondition}
+    ${resubmittedOnlyCondition}
     ${dateFromCondition}
     ${dateToCondition}
     ${searchCondition}
@@ -1546,4 +1557,97 @@ export async function updateMerchantStore(
   `;
   
   return (Array.isArray(result) ? result[0] : result) as Row | null;
+}
+
+export type MerchantTrendPoint = { date: string; count: number };
+export type VerificationTrendPoint = { date: string; verified: number; rejected: number };
+
+export type MerchantTrendRange = {
+  /** Inclusive start date YYYY-MM-DD */
+  fromDate?: string;
+  /** Inclusive end date YYYY-MM-DD */
+  toDate?: string;
+  /** Used when from/to omitted; default 7 */
+  days?: number;
+};
+
+function resolveTrendDateBounds(range?: MerchantTrendRange): { from: string; to: string } {
+  const to = range?.toDate?.trim() || new Date().toISOString().slice(0, 10);
+  if (range?.fromDate?.trim()) {
+    return { from: range.fromDate.trim(), to };
+  }
+  const days = Math.max(1, Math.min(365, range?.days ?? 7));
+  const end = new Date(`${to}T12:00:00`);
+  const start = new Date(end);
+  start.setDate(start.getDate() - (days - 1));
+  return { from: start.toISOString().slice(0, 10), to };
+}
+
+/** New child stores per day (merchant growth chart). Default: last 7 days. */
+export async function getMerchantGrowthTrend(
+  areaManagerId: number | null,
+  range?: MerchantTrendRange
+): Promise<MerchantTrendPoint[]> {
+  const sql = getSql();
+  const { from, to } = resolveTrendDateBounds(range);
+  const amFilter =
+    areaManagerId != null ? sql`AND area_manager_id = ${areaManagerId}` : sql``;
+  const rows = await sql<{ day: string; count: number }[]>`
+    SELECT to_char(d.day, 'YYYY-MM-DD') AS day, COALESCE(c.cnt, 0)::int AS count
+    FROM generate_series(${from}::date, ${to}::date, '1 day') AS d(day)
+    LEFT JOIN (
+      SELECT created_at::date AS day, count(*)::int AS cnt
+      FROM merchant_stores
+      WHERE deleted_at IS NULL AND parent_id IS NOT NULL ${amFilter}
+        AND created_at::date >= ${from}::date
+        AND created_at::date <= ${to}::date
+      GROUP BY 1
+    ) c ON c.day = d.day
+    ORDER BY d.day ASC
+  `;
+  return (Array.isArray(rows) ? rows : []).map((r) => ({
+    date: r.day,
+    count: Number(r.count ?? 0),
+  }));
+}
+
+/** Approved vs rejected stores per day. Default: last 7 days. */
+export async function getVerificationTrend(
+  areaManagerId: number | null,
+  range?: MerchantTrendRange
+): Promise<VerificationTrendPoint[]> {
+  const sql = getSql();
+  const { from, to } = resolveTrendDateBounds(range);
+  const amFilter =
+    areaManagerId != null ? sql`AND area_manager_id = ${areaManagerId}` : sql``;
+  const rows = await sql<{ day: string; verified: number; rejected: number }[]>`
+    SELECT to_char(d.day, 'YYYY-MM-DD') AS day,
+      COALESCE(v.cnt, 0)::int AS verified,
+      COALESCE(r.cnt, 0)::int AS rejected
+    FROM generate_series(${from}::date, ${to}::date, '1 day') AS d(day)
+    LEFT JOIN (
+      SELECT approved_at::date AS day, count(*)::int AS cnt
+      FROM merchant_stores
+      WHERE deleted_at IS NULL AND parent_id IS NOT NULL ${amFilter}
+        AND approval_status = 'APPROVED'
+        AND approved_at::date >= ${from}::date
+        AND approved_at::date <= ${to}::date
+      GROUP BY 1
+    ) v ON v.day = d.day
+    LEFT JOIN (
+      SELECT updated_at::date AS day, count(*)::int AS cnt
+      FROM merchant_stores
+      WHERE deleted_at IS NULL AND parent_id IS NOT NULL ${amFilter}
+        AND approval_status IN ('REJECTED', 'BLOCKED', 'SUSPENDED')
+        AND updated_at::date >= ${from}::date
+        AND updated_at::date <= ${to}::date
+      GROUP BY 1
+    ) r ON r.day = d.day
+    ORDER BY d.day ASC
+  `;
+  return (Array.isArray(rows) ? rows : []).map((row) => ({
+    date: row.day,
+    verified: Number(row.verified ?? 0),
+    rejected: Number(row.rejected ?? 0),
+  }));
 }

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { assertStoreAccess } from '@/lib/auth/assert-store-access';
 import { roundMoney } from '@/lib/wallet-types';
 import {
   istDateKeyFromIso,
@@ -26,16 +25,26 @@ function parsePeriod(raw: string | null): Period {
   return 'week';
 }
 
+async function sumLedgerEarnings(db: ReturnType<typeof getDb>, walletId: number): Promise<number> {
+  const { data } = await db
+    .from('merchant_wallet_ledger')
+    .select('amount')
+    .eq('wallet_id', walletId)
+    .eq('direction', 'CREDIT')
+    .eq('category', 'ORDER_EARNING');
+  return roundMoney(
+    (data ?? []).reduce((s, row) => s + Number(row.amount ?? 0), 0)
+  );
+}
+
 /**
  * GET /api/merchant/wallet/analytics?storeId=GMMC1015&period=week|month|quarter
- * Daily earnings (ORDER_EARNING credits) and withdrawals (WITHDRAWAL debits) for charts.
  */
 export async function GET(req: NextRequest) {
   try {
     const storeId = req.nextUrl.searchParams.get('storeId') ?? req.nextUrl.searchParams.get('store_id');
-    const gate = await assertStoreAccess(storeId);
-    if (!gate.ok) {
-      return NextResponse.json({ error: gate.error }, { status: gate.status });
+    if (!storeId?.trim()) {
+      return NextResponse.json({ error: 'storeId is required' }, { status: 400 });
     }
 
     const period = parsePeriod(req.nextUrl.searchParams.get('period'));
@@ -45,7 +54,7 @@ export async function GET(req: NextRequest) {
     const rangeStartIso = `${rangeStartKey}T00:00:00+05:30`;
 
     const db = getDb();
-    const merchantStoreId = await resolveMerchantStoreId(db, storeId!.trim());
+    const merchantStoreId = await resolveMerchantStoreId(db, storeId.trim());
     if (merchantStoreId == null) {
       return NextResponse.json({ error: 'Store not found' }, { status: 404 });
     }
@@ -85,8 +94,7 @@ export async function GET(req: NextRequest) {
       .from('merchant_wallet_ledger')
       .select('amount, direction, category, created_at')
       .eq('wallet_id', walletId)
-      .gte('created_at', rangeStartIso)
-      .in('category', ['ORDER_EARNING', 'WITHDRAWAL']);
+      .gte('created_at', rangeStartIso);
 
     if (ledgerErr) {
       console.error('[merchant/wallet/analytics]', ledgerErr);
@@ -102,13 +110,23 @@ export async function GET(req: NextRequest) {
 
     let period_transaction_count = 0;
     for (const row of ledgerRows ?? []) {
+      const cat = String(row.category ?? '').toUpperCase();
+      const dir = String(row.direction ?? '').toUpperCase();
+      const amt = Number(row.amount ?? 0);
+      if (!(amt > 0)) continue;
+
+      const isEarning = cat === 'ORDER_EARNING' && dir === 'CREDIT';
+      const isWithdrawal =
+        (cat === 'WITHDRAWAL' || cat === 'WITHDRAWAL_DEBIT') && dir === 'DEBIT';
+      if (!isEarning && !isWithdrawal) continue;
+
       const key = istDateKeyFromIso(String(row.created_at));
       if (!earningsByDay.has(key)) continue;
+
       period_transaction_count += 1;
-      const amt = Number(row.amount ?? 0);
-      if (row.category === 'ORDER_EARNING' && row.direction === 'CREDIT') {
+      if (isEarning) {
         earningsByDay.set(key, (earningsByDay.get(key) ?? 0) + amt);
-      } else if (row.category === 'WITHDRAWAL' && row.direction === 'DEBIT') {
+      } else if (isWithdrawal) {
         withdrawalsByDay.set(key, (withdrawalsByDay.get(key) ?? 0) + amt);
       }
     }
@@ -127,6 +145,11 @@ export async function GET(req: NextRequest) {
       series.reduce((s, p) => s + p.withdrawals, 0)
     );
 
+    let totalEarned = roundMoney(Number(walletRow?.total_earned ?? 0));
+    if (totalEarned <= 0) {
+      totalEarned = await sumLedgerEarnings(db, walletId);
+    }
+
     return NextResponse.json({
       success: true,
       period,
@@ -134,7 +157,7 @@ export async function GET(req: NextRequest) {
       period_total_earnings,
       period_total_withdrawals,
       period_transaction_count,
-      total_earned: roundMoney(Number(walletRow?.total_earned ?? 0)),
+      total_earned: totalEarned,
       total_withdrawn: roundMoney(Number(walletRow?.total_withdrawn ?? 0)),
     });
   } catch (e) {

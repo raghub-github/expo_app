@@ -32,7 +32,7 @@ export function prefetchMenuItemsForOrders(
     pending.add(id);
   }
   for (const id of pending) {
-    void fetchMenuItem(storeId, id, token)
+    void fetchMenuItem(String(storeId), id, token)
       .then((detail) => {
         if (detail) setCachedMenuItem(storeId, id, detail);
       })

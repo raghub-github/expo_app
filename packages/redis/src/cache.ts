@@ -18,11 +18,15 @@ import { getRedis } from "./client.js";
 const NS = "cache:";
 
 export async function cacheGet<T>(key: string): Promise<T | null> {
-  const redis = getRedis();
-  const raw = await redis.get(NS + key);
-  if (raw == null) return null;
   try {
-    return JSON.parse(raw) as T;
+    const redis = getRedis();
+    const raw = await redis.get(NS + key);
+    if (raw == null) return null;
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
   } catch {
     return null;
   }
@@ -30,13 +34,21 @@ export async function cacheGet<T>(key: string): Promise<T | null> {
 
 export async function cacheSet<T>(key: string, value: T, ttlSec: number): Promise<void> {
   if (ttlSec <= 0) throw new Error("cacheSet: ttlSec must be > 0");
-  const redis = getRedis();
-  await redis.set(NS + key, JSON.stringify(value), "EX", ttlSec);
+  try {
+    const redis = getRedis();
+    await redis.set(NS + key, JSON.stringify(value), "EX", ttlSec);
+  } catch {
+    /* Redis optional / unavailable — caller falls back to compute path. */
+  }
 }
 
 export async function cacheDel(key: string): Promise<void> {
-  const redis = getRedis();
-  await redis.del(NS + key);
+  try {
+    const redis = getRedis();
+    await redis.del(NS + key);
+  } catch {
+    /* tolerated */
+  }
 }
 
 /**
@@ -51,33 +63,37 @@ export async function cacheGetOrSet<T>(
   compute: () => Promise<T>,
   opts?: { maxWaitMs?: number },
 ): Promise<T> {
-  const cached = await cacheGet<T>(key).catch(() => null);
+  const cached = await cacheGet<T>(key);
   if (cached != null) return cached;
 
+  let redis;
+  try {
+    redis = getRedis();
+  } catch {
+    return compute();
+  }
+
   const lockKey = `${NS}lock:${key}`;
-  const redis = getRedis();
   const wonLock = await redis.set(lockKey, "1", "PX", 5_000, "NX").catch(() => null);
 
   if (wonLock === "OK") {
     try {
       const fresh = await compute();
-      await cacheSet(key, fresh, ttlSec).catch(() => undefined);
+      await cacheSet(key, fresh, ttlSec);
       return fresh;
     } finally {
       await redis.del(lockKey).catch(() => undefined);
     }
   }
 
-  // Lost the race — wait briefly for the winner to populate the cache.
   const maxWait = opts?.maxWaitMs ?? 1500;
   const start = Date.now();
   while (Date.now() - start < maxWait) {
     await new Promise((r) => setTimeout(r, 50));
-    const reread = await cacheGet<T>(key).catch(() => null);
+    const reread = await cacheGet<T>(key);
     if (reread != null) return reread;
   }
-  // Cache miss + waited too long → compute ourselves (no SETNX this time).
   const fallback = await compute();
-  await cacheSet(key, fallback, ttlSec).catch(() => undefined);
+  await cacheSet(key, fallback, ttlSec);
   return fallback;
 }

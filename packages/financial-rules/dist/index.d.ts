@@ -86,5 +86,23 @@ export declare function refundFieldsFromEngineResult(result: Record<string, unkn
     refundAmount: number | null;
 };
 export declare function parseEngineResult(raw: Record<string, unknown> | undefined): FinancialRuleExecutionResult;
+export type EnginePreviewDisplay = {
+    ok: boolean;
+    rule_code: string | null;
+    execution_status: string | null;
+    amounts: Record<string, unknown> | null;
+    error: string | null;
+    simulated: boolean;
+    scenario?: string;
+    order_milestone?: string;
+    engine?: string;
+};
+export declare function formatEnginePreviewStatus(status: string | null | undefined): string;
+export declare function formatEnginePreviewError(error: string | null | undefined): string;
+/** Normalize gm_execute_rule / simulate output for dashboard preview UI. */
+export declare function normalizeEnginePreviewDisplay(result: FinancialRuleExecutionResult, extras?: {
+    scenario?: string;
+    orderMilestone?: string;
+}): EnginePreviewDisplay;
 export declare function buildIdempotencyKey(prefix: string, parts: (string | number | null | undefined)[]): string;
 //# sourceMappingURL=index.d.ts.map

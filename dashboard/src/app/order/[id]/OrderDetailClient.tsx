@@ -5,7 +5,7 @@ import OrderTimeline, { type OrderTimelineEntry } from "./OrderTimeline";
 import OrderActionBanner from "./OrderActionBanner";
 import OrderRightSidebar from "./OrderRightSidebar";
 import {
-  parseOrderItemsApiResponse,
+  fetchOrderItemsCached,
   type OrderItemsPayload,
 } from "@/lib/orderItemsPayload";
 import { computeOrderItemQuantityCount } from "@/lib/merchantOrderFoodActions";
@@ -28,6 +28,7 @@ import {
   OrderCustomerFeedbackSideSheet,
   type FeedbackSheetTarget,
 } from "./OrderCustomerFeedbackSideSheet";
+import { OrderPartnerChatSideSheet } from "./OrderPartnerChatSideSheet";
 import {
   isManualStatusOptionDisabled,
   canApplyManualStatusUpdate,
@@ -45,8 +46,12 @@ import { formatDeliveredByLabel } from "@/lib/orders/order-detail-display";
 import {
   prefetchRiderActivityLog,
   seedRiderActivityLogCache,
+  invalidateRiderActivityLogCache,
+  fetchRiderActivityLogCached,
   type RiderActivityLogCacheEntry,
 } from "@/lib/riderActivityLogCache";
+import { prefetchCancellationCatalogClient } from "@/lib/orders/cancellation-catalog-client-cache";
+import { prefetchPartnerChat, seedPartnerChatCache, type PartnerChatCacheEntry } from "@/lib/partnerChatCache";
 import {
   mapNotificationsFromApi,
   mapReconsFromApi,
@@ -56,8 +61,10 @@ import {
   type SidebarRemark,
 } from "@/lib/orders/order-sidebar-activity";
 import { resolveOrderTypeFromPublicId } from "@/lib/orders/resolve-order-type-from-public-id";
+import { hasOrderCancellationOnProgressTimeline } from "@/lib/orders/order-timeline-rider-filter";
 import type { PersonRideOrderDetail } from "@/lib/db/operations/person-ride-order-detail";
 import PersonRideOrderSections from "./PersonRideOrderSections";
+import { formatRiderOrderStatusDisplayLabel } from "@/lib/riders/rider-order-status-display";
 
 /** Status options for "Update order status" modal (value = DB enum) */
 const STATUS_OPTIONS = [
@@ -147,6 +154,9 @@ interface OrderDetail {
   customerRiskFlag: string | null;
   customerName: string | null;
   customerMobile: string | null;
+  customerAlternateMobile: string | null;
+  orderAlternateContactPhone: string | null;
+  orderDeliveryPrimaryContactPhone: string | null;
   riderId?: number | null;
   riderName: string | null;
   riderMobile: string | null;
@@ -170,6 +180,10 @@ interface OrderDetail {
   manualStatusUpdatedByEmail?: string | null;
   /** orders_food.order_status — drives Dispatch Ready enablement with rider-at-store. */
   foodOrderStatus?: string | null;
+  /** orders_food.dispatched_at — admin/rider dispatch timestamp. */
+  dispatchedAt?: string | null;
+  /** orders_food.rider_picked_up_at — rider physical pickup from store. */
+  riderPickedUpAt?: string | null;
   /** Delivery instructions from orders_food (food orders only). */
   deliveryInstructions?: string | null;
   /** ETA in seconds from creation (for timeline). */
@@ -323,6 +337,151 @@ function orderMatchesPublicId(order: OrderDetail, publicId: string): boolean {
   return candidates.some((c) => c != null && normalizeOrderPublicId(String(c)) === target);
 }
 
+function toNumberOrNullFromApi(v: unknown): number | null {
+  if (v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function mapOrderCoreApiRowToDetail(row: Record<string, unknown>): OrderDetail {
+  const toNumberOrNull = toNumberOrNullFromApi;
+  return {
+    id: row.id as number,
+    formattedOrderId: row.formattedOrderId as string | null,
+    orderId: row.orderId as string | null,
+    orderType: (row.orderType as string | undefined) ?? "food",
+    orderSource: (row.orderSource as string | null) ?? null,
+    status: row.status as string,
+    currentStatus: row.currentStatus as string | null,
+    paymentStatus: row.paymentStatus as string | null,
+    paymentMethod: (row.paymentMethod as string | null) ?? null,
+    fareAmount: toNumberOrNull(row.fareAmount),
+    itemTotal: toNumberOrNull(row.itemTotal),
+    addonTotal: toNumberOrNull(row.addonTotal),
+    grandTotal: toNumberOrNull(row.grandTotal),
+    tipAmount: toNumberOrNull(row.tipAmount),
+    totalAmount:
+      toNumberOrNull(row.grandTotal) ?? toNumberOrNull(row.fareAmount) ?? null,
+    routedToEmail: (row.routedToEmail as string | null) ?? null,
+    customerId: (row.customerId as number | null) ?? null,
+    customerExternalId: (row.customerExternalId as string | null) ?? null,
+    customerEmail: (row.customerEmail as string | null) ?? null,
+    customerAccountStatus: (row.customerAccountStatus as string | null) ?? null,
+    customerRiskFlag: (row.customerRiskFlag as string | null) ?? null,
+    customerName: row.customerName as string | null,
+    customerMobile: row.customerMobile as string | null,
+    customerAlternateMobile: (row.customerAlternateMobile as string | null) ?? null,
+    orderAlternateContactPhone: (row.orderAlternateContactPhone as string | null) ?? null,
+    orderDeliveryPrimaryContactPhone:
+      (row.orderDeliveryPrimaryContactPhone as string | null) ?? null,
+    riderId: (row.riderId as number | null) ?? null,
+    riderName: row.riderName as string | null,
+    riderMobile: row.riderMobile as string | null,
+    dropAddressRaw: row.dropAddressRaw as string | null,
+    dropAddressNormalized: (row.dropAddressNormalized as string | null) ?? null,
+    dropAddressGeocoded: (row.dropAddressGeocoded as string | null) ?? null,
+    pickupAddressRaw: (row.pickupAddressRaw as string | null) ?? null,
+    pickupAddressNormalized: (row.pickupAddressNormalized as string | null) ?? null,
+    pickupAddressGeocoded: (row.pickupAddressGeocoded as string | null) ?? null,
+    pickupLat: toNumberOrNull(row.pickupLat),
+    pickupLon: toNumberOrNull(row.pickupLon),
+    dropLat: toNumberOrNull(row.dropLat),
+    dropLon: toNumberOrNull(row.dropLon),
+    pickupAddressDeviationMeters: (row.pickupAddressDeviationMeters as number | null) ?? null,
+    dropAddressDeviationMeters: (row.dropAddressDeviationMeters as number | null) ?? null,
+    distanceMismatchFlagged: Boolean(row.distanceMismatchFlagged),
+    distanceKm: (row.distanceKm as number | null) ?? null,
+    merchantStoreId: row.merchantStoreId as number | null,
+    merchantParentId: row.merchantParentId as number | null,
+    createdAt: row.createdAt as string,
+    updatedAt: row.updatedAt as string,
+    manualStatusUpdatedByEmail: (row.manualStatusUpdatedByEmail as string | null) ?? null,
+    foodOrderStatus: typeof row.foodOrderStatus === "string" ? row.foodOrderStatus : null,
+    dispatchedAt: row.dispatchedAt != null ? String(row.dispatchedAt) : null,
+    riderPickedUpAt: row.riderPickedUpAt != null ? String(row.riderPickedUpAt) : null,
+    deliveryInstructions: (row.deliveryInstructions as string | null) ?? null,
+    etaSeconds: (row.etaSeconds as number | null) ?? null,
+    estimatedDeliveryTime:
+      row.estimatedDeliveryTime != null ? String(row.estimatedDeliveryTime) : null,
+    firstEtaAt: row.firstEtaAt != null ? String(row.firstEtaAt) : null,
+    etaBreachedAt: row.etaBreachedAt != null ? String(row.etaBreachedAt) : null,
+    etaBreachedTimelineId:
+      row.etaBreachedTimelineId != null ? Number(row.etaBreachedTimelineId) : null,
+    orderTimeIso: row.orderTimeIso != null ? String(row.orderTimeIso) : null,
+    orderTimeSource: row.orderTimeSource === "placed_at" ? "placed_at" : "created_at",
+    itemCount: row.itemCount != null ? Number(row.itemCount) : null,
+    systemKptMinutes: row.systemKptMinutes != null ? Number(row.systemKptMinutes) : null,
+    merchantUpdatedKptMinutes:
+      row.merchantUpdatedKptMinutes != null ? Number(row.merchantUpdatedKptMinutes) : null,
+    merchantExtraPrepMinutes:
+      row.merchantExtraPrepMinutes != null ? Number(row.merchantExtraPrepMinutes) : null,
+    isScheduledOrder: Boolean(row.isScheduledOrder),
+    scheduledDeliverySummary:
+      row.scheduledDeliverySummary != null ? String(row.scheduledDeliverySummary) : null,
+    deliveryType: row.deliveryType != null ? String(row.deliveryType) : null,
+    contactlessDelivery:
+      row.contactlessDelivery === true
+        ? true
+        : row.contactlessDelivery === false
+          ? false
+          : null,
+    localityType: row.localityType != null ? String(row.localityType) : null,
+    localityIsSafe:
+      row.localityIsSafe === true ? true : row.localityIsSafe === false ? false : null,
+    deliveredBy: row.deliveredBy != null ? String(row.deliveredBy) : null,
+    deliveryInitiator: row.deliveryInitiator != null ? String(row.deliveryInitiator) : null,
+    customerTrustTierLabel:
+      row.customerTrustTierLabel != null ? String(row.customerTrustTierLabel) : null,
+    customerUserType:
+      row.customerUserType != null
+        ? String(row.customerUserType)
+        : row.customerTrustTierLabel != null
+          ? String(row.customerTrustTierLabel)
+          : null,
+    riderInstructionsList: Array.isArray(row.riderInstructionsList)
+      ? (row.riderInstructionsList as string[])
+      : [],
+    merchantInstructionsList: Array.isArray(row.merchantInstructionsList)
+      ? (row.merchantInstructionsList as string[])
+      : [],
+    cancellationInfo:
+      row.cancellationInfo && typeof row.cancellationInfo === "object"
+        ? (row.cancellationInfo as OrderCancellationInfo)
+        : null,
+    pickupOtp:
+      row.pickupOtp != null && String(row.pickupOtp).trim()
+        ? String(row.pickupOtp).trim()
+        : null,
+    rtoOtp:
+      row.rtoOtp != null && String(row.rtoOtp).trim() ? String(row.rtoOtp).trim() : null,
+    deliveryOtp:
+      row.deliveryOtp != null && String(row.deliveryOtp).trim()
+        ? String(row.deliveryOtp).trim()
+        : null,
+    customerFeedback:
+      row.customerFeedback && typeof row.customerFeedback === "object"
+        ? (row.customerFeedback as OrderCustomerFeedback)
+        : null,
+    storePrepDelaySeconds: toNumberOrNull(row.storePrepDelaySeconds),
+    storePrepDelayLive: Boolean(row.storePrepDelayLive),
+    storePrepDelayAnchorAt:
+      row.storePrepDelayAnchorAt != null ? String(row.storePrepDelayAnchorAt) : null,
+    storePrepDelayWasLate: Boolean(row.storePrepDelayWasLate),
+    riderRestaurantWaitSeconds: toNumberOrNull(row.riderRestaurantWaitSeconds),
+    riderRestaurantWaitLive: Boolean(row.riderRestaurantWaitLive),
+    riderRestaurantWaitAnchorAt:
+      row.riderRestaurantWaitAnchorAt != null
+        ? String(row.riderRestaurantWaitAnchorAt)
+        : null,
+    deliveryProofImageUrl:
+      row.deliveryProofImageUrl != null ? String(row.deliveryProofImageUrl) : null,
+    rideDetail:
+      row.rideDetail && typeof row.rideDetail === "object"
+        ? (row.rideDetail as PersonRideOrderDetail)
+        : null,
+  };
+}
+
 function InfinitySpinner() {
   return (
     <div className="flex flex-col items-center justify-center gap-3">
@@ -378,9 +537,12 @@ export default function OrderDetailClient({
   onNotFoundChange,
 }: OrderDetailClientProps) {
   const isHardReloadRef = useRef(false);
+  const fetchGenerationRef = useRef(0);
+  const orderRef = useRef<OrderDetail | null>(null);
   const [hasHydrated, setHasHydrated] = useState(false);
   const [isHardReload, setIsHardReload] = useState(false);
   const [order, setOrder] = useState<OrderDetail | null>(null);
+  orderRef.current = order;
   const [merchantSummary, setMerchantSummary] = useState<MerchantSummaryFromApi | null>(null);
   const [initialRemarksCount, setInitialRemarksCount] = useState<number>(0);
   const [initialReconsCount, setInitialReconsCount] = useState<number>(0);
@@ -393,6 +555,9 @@ export default function OrderDetailClient({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refetchTrigger, setRefetchTrigger] = useState(0);
+  const [dispatchSessionActive, setDispatchSessionActive] = useState(false);
+  const [watchRiderAssignment, setWatchRiderAssignment] = useState(false);
+  const [activityLogRefreshKey, setActivityLogRefreshKey] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [selectedStatus, setSelectedStatus] = useState<
@@ -420,6 +585,7 @@ export default function OrderDetailClient({
   const [feedbackSheetTarget, setFeedbackSheetTarget] = useState<FeedbackSheetTarget | null>(
     null
   );
+  const [partnerChatOpen, setPartnerChatOpen] = useState(false);
 
   const ensureOrderItemsPrefetch = useCallback(() => {
     const orderId = order?.id;
@@ -428,14 +594,9 @@ export default function OrderDetailClient({
     if (itemsPrefetchInFlight.current) return;
 
     itemsPrefetchInFlight.current = true;
-    void fetch(`/api/orders/${orderId}/items`, { credentials: "include" })
-      .then((res) => res.json())
-      .then((body) => parseOrderItemsApiResponse(body))
+    void fetchOrderItemsCached(orderId)
       .then((parsed) => {
         if (parsed) setOrderItemsPayload(parsed);
-      })
-      .catch(() => {
-        /* modal may fetch on miss */
       })
       .finally(() => {
         itemsPrefetchInFlight.current = false;
@@ -459,8 +620,9 @@ export default function OrderDetailClient({
   }, [hasHydrated, isHardReload, loading, order, onLoadingChange]);
 
   useEffect(() => {
-    onNotFoundChange?.(!loading && Boolean(error || !order));
-  }, [loading, error, order, onNotFoundChange]);
+    const authPending = !auth?.authReady;
+    onNotFoundChange?.(!loading && !authPending && Boolean(error || !order));
+  }, [loading, error, order, onNotFoundChange, auth?.authReady]);
 
   useEffect(() => {
     if (!order?.id) {
@@ -492,6 +654,7 @@ export default function OrderDetailClient({
     if (!isOrderPage || !pageVisible) return;
 
     let cancelled = false;
+    const generation = ++fetchGenerationRef.current;
 
     const normalizedPublicId = orderPublicId.trim().replace(/[-\s]/g, "");
 
@@ -503,6 +666,11 @@ export default function OrderDetailClient({
       setOrderItemsPayload(null);
       setError("Invalid order ID.");
       setLoading(false);
+      setIsRefreshing(false);
+      return;
+    }
+
+    if (!auth?.authReady) {
       return;
     }
 
@@ -513,13 +681,15 @@ export default function OrderDetailClient({
       return orderMatchesPublicId(prev, normalizedPublicId) ? prev : null;
     });
 
+    const hasMatchingOrder =
+      orderRef.current != null && orderMatchesPublicId(orderRef.current, normalizedPublicId);
+
     if (refetchTrigger > 0) {
       setIsRefreshing(true);
-    } else if (isHardReloadRef.current) {
+    } else if (isHardReloadRef.current || !hasMatchingOrder) {
       setLoading(true);
       setIsRefreshing(false);
     } else {
-      setLoading(true);
       setIsRefreshing(true);
     }
     setError(null);
@@ -583,6 +753,8 @@ export default function OrderDetailClient({
             statusHistory?: unknown[];
             paymentDetail?: OrderPaymentDetail;
             riderActivityLog?: RiderActivityLogCacheEntry | null;
+            riderDispatchUi?: unknown;
+            partnerChat?: unknown;
           };
         } catch {
           throw new Error("Invalid order response");
@@ -595,11 +767,7 @@ export default function OrderDetailClient({
           const coreOrderId =
             row.id != null && Number.isFinite(Number(row.id)) ? Number(row.id) : null;
           const itemsPromise =
-            coreOrderId != null
-              ? fetch(`/api/orders/${coreOrderId}/items`, { credentials: "include" })
-                  .then((res) => res.json())
-                  .then((itemsBody) => parseOrderItemsApiResponse(itemsBody))
-              : Promise.resolve(null);
+            coreOrderId != null ? fetchOrderItemsCached(coreOrderId) : Promise.resolve(null);
 
           const embedded = body.timeline;
           const timeline = Array.isArray(embedded) ? embedded : [];
@@ -610,11 +778,13 @@ export default function OrderDetailClient({
           const hasEmbeddedRiderTracking = body.riderTracking !== undefined;
           if (cancelled) return;
 
-          const toNumberOrNull = (v: unknown): number | null => {
-            if (v === null || v === undefined) return null;
-            const n = Number(v);
-            return Number.isFinite(n) ? n : null;
-          };
+          setOrder(mapOrderCoreApiRowToDetail(row as Record<string, unknown>));
+          if (fetchGenerationRef.current === generation) {
+            setLoading(false);
+            setIsRefreshing(false);
+          }
+
+          const toNumberOrNull = toNumberOrNullFromApi;
 
           if (body.merchantSummary != null && typeof body.merchantSummary === "object") {
             const raw = body.merchantSummary as MerchantSummaryFromApi;
@@ -716,152 +886,36 @@ export default function OrderDetailClient({
             } else {
               prefetchRiderActivityLog(coreOrderId);
             }
+            prefetchCancellationCatalogClient();
+            const dispatchUi = body.riderDispatchUi as
+              | {
+                  dispatchSessionActive?: boolean;
+                  dispatchManualHold?: boolean;
+                }
+              | undefined;
+            if (dispatchUi) {
+              setDispatchSessionActive(Boolean(dispatchUi.dispatchSessionActive));
+              setWatchRiderAssignment(Boolean(dispatchUi.dispatchSessionActive));
+            } else {
+              setDispatchSessionActive(false);
+              setWatchRiderAssignment(false);
+            }
+            const embeddedPartnerChat = body.partnerChat as
+              | { messages?: unknown[]; chatClosed?: boolean }
+              | undefined;
+            if (
+              embeddedPartnerChat &&
+              Array.isArray(embeddedPartnerChat.messages)
+            ) {
+              seedPartnerChatCache(coreOrderId, {
+                messages: embeddedPartnerChat.messages as PartnerChatCacheEntry["messages"],
+                chatClosed: Boolean(embeddedPartnerChat.chatClosed),
+              });
+            } else {
+              prefetchPartnerChat(coreOrderId);
+            }
           }
-          setOrder({
-            id: row.id,
-            formattedOrderId: row.formattedOrderId,
-            orderId: row.orderId,
-            orderType: row.orderType ?? "food",
-            orderSource: row.orderSource ?? null,
-            status: row.status,
-            currentStatus: row.currentStatus,
-            paymentStatus: row.paymentStatus,
-            paymentMethod: row.paymentMethod ?? null,
-            fareAmount: toNumberOrNull(row.fareAmount),
-            itemTotal: toNumberOrNull(row.itemTotal),
-            addonTotal: toNumberOrNull(row.addonTotal),
-            grandTotal: toNumberOrNull(row.grandTotal),
-            tipAmount: toNumberOrNull(row.tipAmount),
-            totalAmount:
-              toNumberOrNull(row.grandTotal) ??
-              toNumberOrNull(row.fareAmount) ??
-              null,
-            routedToEmail: row.routedToEmail ?? null,
-            customerId: row.customerId ?? null,
-            customerExternalId: row.customerExternalId ?? null,
-            customerEmail: row.customerEmail ?? null,
-            customerAccountStatus: row.customerAccountStatus ?? null,
-            customerRiskFlag: row.customerRiskFlag ?? null,
-            customerName: row.customerName,
-            customerMobile: row.customerMobile,
-            riderId: row.riderId ?? null,
-            riderName: row.riderName,
-            riderMobile: row.riderMobile,
-            dropAddressRaw: row.dropAddressRaw,
-            dropAddressNormalized: row.dropAddressNormalized ?? null,
-            dropAddressGeocoded: row.dropAddressGeocoded ?? null,
-            pickupAddressRaw: row.pickupAddressRaw ?? null,
-            pickupAddressNormalized: row.pickupAddressNormalized ?? null,
-            pickupAddressGeocoded: row.pickupAddressGeocoded ?? null,
-            pickupLat: toNumberOrNull(row.pickupLat),
-            pickupLon: toNumberOrNull(row.pickupLon),
-            dropLat: toNumberOrNull(row.dropLat),
-            dropLon: toNumberOrNull(row.dropLon),
-            pickupAddressDeviationMeters: row.pickupAddressDeviationMeters ?? null,
-            dropAddressDeviationMeters: row.dropAddressDeviationMeters ?? null,
-            distanceMismatchFlagged: row.distanceMismatchFlagged ?? false,
-            distanceKm: row.distanceKm ?? null,
-            merchantStoreId: row.merchantStoreId,
-            merchantParentId: row.merchantParentId,
-            createdAt: row.createdAt,
-            updatedAt: row.updatedAt,
-            manualStatusUpdatedByEmail: row.manualStatusUpdatedByEmail ?? null,
-            foodOrderStatus:
-              typeof row.foodOrderStatus === "string" ? row.foodOrderStatus : null,
-            deliveryInstructions: row.deliveryInstructions ?? null,
-            etaSeconds: row.etaSeconds ?? null,
-            estimatedDeliveryTime: row.estimatedDeliveryTime != null ? String(row.estimatedDeliveryTime) : null,
-            firstEtaAt: row.firstEtaAt != null ? String(row.firstEtaAt) : null,
-            etaBreachedAt: row.etaBreachedAt != null ? String(row.etaBreachedAt) : null,
-            etaBreachedTimelineId: row.etaBreachedTimelineId != null ? Number(row.etaBreachedTimelineId) : null,
-            orderTimeIso: row.orderTimeIso != null ? String(row.orderTimeIso) : null,
-            orderTimeSource:
-              row.orderTimeSource === "placed_at" ? "placed_at" : "created_at",
-            itemCount: row.itemCount != null ? Number(row.itemCount) : null,
-            systemKptMinutes:
-              row.systemKptMinutes != null ? Number(row.systemKptMinutes) : null,
-            merchantUpdatedKptMinutes:
-              row.merchantUpdatedKptMinutes != null
-                ? Number(row.merchantUpdatedKptMinutes)
-                : null,
-            merchantExtraPrepMinutes:
-              row.merchantExtraPrepMinutes != null
-                ? Number(row.merchantExtraPrepMinutes)
-                : null,
-            isScheduledOrder: Boolean(row.isScheduledOrder),
-            scheduledDeliverySummary:
-              row.scheduledDeliverySummary != null
-                ? String(row.scheduledDeliverySummary)
-                : null,
-            deliveryType: row.deliveryType != null ? String(row.deliveryType) : null,
-            contactlessDelivery:
-              row.contactlessDelivery === true
-                ? true
-                : row.contactlessDelivery === false
-                  ? false
-                  : null,
-            localityType: row.localityType != null ? String(row.localityType) : null,
-            localityIsSafe:
-              row.localityIsSafe === true ? true : row.localityIsSafe === false ? false : null,
-            deliveredBy: row.deliveredBy != null ? String(row.deliveredBy) : null,
-            deliveryInitiator:
-              row.deliveryInitiator != null ? String(row.deliveryInitiator) : null,
-            customerTrustTierLabel:
-              row.customerTrustTierLabel != null
-                ? String(row.customerTrustTierLabel)
-                : null,
-            customerUserType:
-              row.customerUserType != null
-                ? String(row.customerUserType)
-                : row.customerTrustTierLabel != null
-                  ? String(row.customerTrustTierLabel)
-                  : null,
-            riderInstructionsList: Array.isArray(row.riderInstructionsList)
-              ? (row.riderInstructionsList as string[])
-              : [],
-            merchantInstructionsList: Array.isArray(row.merchantInstructionsList)
-              ? (row.merchantInstructionsList as string[])
-              : [],
-            cancellationInfo:
-              row.cancellationInfo && typeof row.cancellationInfo === "object"
-                ? (row.cancellationInfo as OrderCancellationInfo)
-                : null,
-            pickupOtp:
-              row.pickupOtp != null && String(row.pickupOtp).trim()
-                ? String(row.pickupOtp).trim()
-                : null,
-            rtoOtp:
-              row.rtoOtp != null && String(row.rtoOtp).trim()
-                ? String(row.rtoOtp).trim()
-                : null,
-            deliveryOtp:
-              row.deliveryOtp != null && String(row.deliveryOtp).trim()
-                ? String(row.deliveryOtp).trim()
-                : null,
-            customerFeedback:
-              row.customerFeedback && typeof row.customerFeedback === "object"
-                ? (row.customerFeedback as OrderCustomerFeedback)
-                : null,
-            storePrepDelaySeconds: toNumberOrNull(row.storePrepDelaySeconds),
-            storePrepDelayLive: Boolean(row.storePrepDelayLive),
-            storePrepDelayAnchorAt:
-              row.storePrepDelayAnchorAt != null
-                ? String(row.storePrepDelayAnchorAt)
-                : null,
-            storePrepDelayWasLate: Boolean(row.storePrepDelayWasLate),
-            riderRestaurantWaitSeconds: toNumberOrNull(row.riderRestaurantWaitSeconds),
-            riderRestaurantWaitLive: Boolean(row.riderRestaurantWaitLive),
-            riderRestaurantWaitAnchorAt:
-              row.riderRestaurantWaitAnchorAt != null
-                ? String(row.riderRestaurantWaitAnchorAt)
-                : null,
-            deliveryProofImageUrl:
-              row.deliveryProofImageUrl != null ? String(row.deliveryProofImageUrl) : null,
-            rideDetail:
-              row.rideDetail && typeof row.rideDetail === "object"
-                ? (row.rideDetail as PersonRideOrderDetail)
-                : null,
-          });
+          // Order detail is set immediately after API row parse (see mapOrderCoreApiRowToDetail).
 
           // Refunds + line items load in background so the page renders without extra round trips.
           void (async () => {
@@ -907,15 +961,23 @@ export default function OrderDetailClient({
           setError("Order not found.");
           setOrderRefunds([]);
           setOrderTickets([]);
+          if (fetchGenerationRef.current === generation) {
+            setLoading(false);
+            setIsRefreshing(false);
+          }
         }
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : "";
         setError(msg ? `Failed to load order: ${msg}` : "Failed to load order.");
+        if (fetchGenerationRef.current === generation) {
+          setLoading(false);
+          setIsRefreshing(false);
+        }
       })
       .finally(() => {
-        if (!cancelled) {
+        if (!cancelled && fetchGenerationRef.current === generation) {
           setLoading(false);
           setIsRefreshing(false);
         }
@@ -923,7 +985,7 @@ export default function OrderDetailClient({
     return () => {
       cancelled = true;
     };
-  }, [orderPublicId, refetchTrigger, isOrderPage, pageVisible]);
+  }, [orderPublicId, refetchTrigger, isOrderPage, pageVisible, auth?.authReady]);
 
   const dispatchStage = useMemo(
     () =>
@@ -936,6 +998,11 @@ export default function OrderDetailClient({
         : "open",
     [order?.status, order?.currentStatus, order?.foodOrderStatus]
   );
+
+  const orderCancelledOnTimeline = useMemo(() => {
+    if (hasOrderCancellationOnProgressTimeline(timelineEntries)) return true;
+    return dispatchStage === "cancelled";
+  }, [timelineEntries, dispatchStage]);
 
   const openStatusModal = useCallback(() => {
     if (!order) return;
@@ -1010,6 +1077,121 @@ export default function OrderDetailClient({
     setRefetchTrigger((t) => t + 1);
   }, []);
 
+  const refreshRiderAssignmentArtifacts = useCallback(
+    (coreOrderId: number, riderId: number, previousRiderId: number | null) => {
+      if (riderId === previousRiderId) return;
+      invalidateRiderActivityLogCache(coreOrderId);
+      void fetchRiderActivityLogCached(coreOrderId);
+      setActivityLogRefreshKey((k) => k + 1);
+      void fetch(`/api/orders/${coreOrderId}/rider-timeline?rider_id=${riderId}`, {
+        credentials: "include",
+      })
+        .then((r) => r.json().catch(() => null))
+        .then((body) => {
+          if (body && typeof body === "object") {
+            setRiderTimelineInitial(body as RiderTimelineData);
+          }
+        });
+      void fetch(`/api/orders/${coreOrderId}/rider-tracking`, { credentials: "include" })
+        .then((r) => r.json().catch(() => null))
+        .then((body) => {
+          if (body && typeof body === "object") {
+            setRiderTrackingInitial(body as OrderRiderTrackingPayload);
+          }
+        });
+    },
+    []
+  );
+
+  useEffect(() => {
+    const coreId = order?.id;
+    if (!isOrderPage || !pageVisible || coreId == null || !order) return;
+
+    const statusUpper = String(order.currentStatus ?? order.status ?? "").toUpperCase();
+    const isTerminal =
+      statusUpper === "DELIVERED" || ["CANCELLED", "FAILED", "REJECTED"].includes(statusUpper);
+    const hasRider =
+      order.riderId != null &&
+      Number.isFinite(Number(order.riderId)) &&
+      Number(order.riderId) > 0;
+    const shouldPoll =
+      !isTerminal && !hasRider && (watchRiderAssignment || dispatchSessionActive);
+
+    if (!shouldPoll) return;
+
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/orders/${coreId}/rider-assignment-snapshot`, {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const body = (await res.json().catch(() => ({}))) as {
+          success?: boolean;
+          riderId?: number | null;
+          riderName?: string | null;
+          riderMobile?: string | null;
+          dispatchManualHold?: boolean;
+          dispatchSessionActive?: boolean;
+        };
+        if (cancelled || !res.ok || !body.success) return;
+
+        setDispatchSessionActive(Boolean(body.dispatchSessionActive));
+
+        setOrder((prev) => {
+          if (!prev || prev.id !== coreId) return prev;
+          const previousRiderId =
+            prev.riderId != null && Number.isFinite(Number(prev.riderId))
+              ? Number(prev.riderId)
+              : null;
+          const nextRiderId =
+            body.riderId != null && Number.isFinite(Number(body.riderId))
+              ? Number(body.riderId)
+              : null;
+
+          if (nextRiderId != null && nextRiderId !== previousRiderId) {
+            refreshRiderAssignmentArtifacts(coreId, nextRiderId, previousRiderId);
+            setWatchRiderAssignment(false);
+          } else if (!body.dispatchSessionActive && nextRiderId == null) {
+            setWatchRiderAssignment(false);
+          }
+
+          if (
+            previousRiderId === nextRiderId &&
+            (prev.riderName ?? null) === (body.riderName ?? null) &&
+            (prev.riderMobile ?? null) === (body.riderMobile ?? null)
+          ) {
+            return prev;
+          }
+
+          return {
+            ...prev,
+            riderId: nextRiderId,
+            riderName: body.riderName ?? null,
+            riderMobile: body.riderMobile ?? null,
+          };
+        });
+      } catch {
+        /* ignore transient poll errors */
+      }
+    };
+
+    void poll();
+    const timer = window.setInterval(() => void poll(), 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    order,
+    isOrderPage,
+    pageVisible,
+    watchRiderAssignment,
+    dispatchSessionActive,
+    refreshRiderAssignmentArtifacts,
+  ]);
+
   const displayId = useMemo(
     () =>
       order
@@ -1054,7 +1236,8 @@ export default function OrderDetailClient({
     img.src = url;
   }, [riderSelfieUrl]);
 
-  const awaitingOrder = !order && (loading || isRefreshing);
+  const authPending = !auth?.authReady;
+  const awaitingOrder = !order && (loading || authPending);
 
   if (awaitingOrder) {
     return (
@@ -1114,12 +1297,7 @@ export default function OrderDetailClient({
   const idLast4 = normalizedId.length > 4 ? normalizedId.slice(-4) : "";
   const idLast4Chars = idLast4.split("");
 
-  const orderStatusLabel = statusLabel
-    ? statusLabel
-        .toString()
-        .replace(/_/g, " ")
-        .replace(/\b\w/g, (c) => c.toUpperCase())
-    : "—";
+  const orderStatusLabel = formatRiderOrderStatusDisplayLabel(statusLabel, order.orderType);
 
   const statusForChip = (statusLabel ?? "").toString().toLowerCase();
 
@@ -1141,7 +1319,11 @@ export default function OrderDetailClient({
   const statusOptionMatch = STATUS_OPTIONS.find(
     (opt) => opt.value === (order.status ?? "").toString().toLowerCase()
   );
-  const statusButtonLabel = statusOptionMatch ? statusOptionMatch.label : "Select Option";
+  const statusButtonLabel = statusOptionMatch
+    ? order.orderType === "person_ride" && statusOptionMatch.value === "delivered"
+      ? "Completed"
+      : statusOptionMatch.label
+    : "Select Option";
   const isOrderCancelledOrRejected = dispatchStage === "cancelled";
 
   const isOptionDisabled = (value: ManualStatusValue) =>
@@ -1231,8 +1413,8 @@ export default function OrderDetailClient({
 
   return (
     <>
-      <div className="space-y-3 lg:space-y-0 lg:flex lg:items-start lg:justify-between lg:gap-4 text-[12px] md:text-[13px] text-slate-700">
-      <div className="w-full lg:basis-[80%] lg:pr-3 space-y-3 lg:h-[calc(100vh-64px)] lg:overflow-y-auto">
+      <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto overscroll-y-contain lg:flex-row lg:gap-4 lg:overflow-hidden text-[12px] md:text-[13px] text-slate-700">
+      <div className="w-full min-w-0 space-y-3 bg-[#F8FAFC] lg:min-h-0 lg:flex-[4] lg:overflow-y-auto lg:overscroll-y-contain lg:pr-3">
         {/* Primary order summary just below main header */}
         <section className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 pb-2 border-b border-slate-100">
           <div>
@@ -1486,6 +1668,7 @@ export default function OrderDetailClient({
               orderRefunds={orderRefunds}
               onCopy={handleCopy}
               onPhoneClick={handleCustomerPhoneClick}
+              onRefresh={handleRefreshOrder}
             />
           ) : (
           <>
@@ -1501,6 +1684,9 @@ export default function OrderDetailClient({
                     : null,
                 customerName: order.customerName,
                 customerMobile: order.customerMobile,
+                customerAlternateMobile: order.customerAlternateMobile,
+                orderAlternateContactPhone: order.orderAlternateContactPhone,
+                orderDeliveryPrimaryContactPhone: order.orderDeliveryPrimaryContactPhone,
                 customerEmail: order.customerEmail,
                 customerAddress: order.dropAddressNormalized ?? order.dropAddressRaw,
                 dropAddressRaw: order.dropAddressRaw,
@@ -1513,6 +1699,7 @@ export default function OrderDetailClient({
               }}
               onCopy={handleCopy}
               onPhoneClick={handleCustomerPhoneClick}
+              onOpenPartnerChat={() => setPartnerChatOpen(true)}
             />
 
             {/* Merchant card */}
@@ -1550,6 +1737,8 @@ export default function OrderDetailClient({
               className="h-full flex flex-col"
               initialRiderTimeline={riderTimelineInitial}
               riderSelfieUrl={riderSelfieUrl}
+              dispatchSessionActive={dispatchSessionActive}
+              activityLogRefreshKey={activityLogRefreshKey}
               order={{
                 orderId: order.id,
                 riderId: order.riderId ?? null,
@@ -1569,6 +1758,7 @@ export default function OrderDetailClient({
                 riderRestaurantWaitSeconds: order.riderRestaurantWaitSeconds ?? null,
                 riderRestaurantWaitLive: order.riderRestaurantWaitLive ?? false,
                 riderRestaurantWaitAnchorAt: order.riderRestaurantWaitAnchorAt ?? null,
+                orderType: order.orderType,
               }}
               deliveryProofImageUrl={order.deliveryProofImageUrl ?? null}
               customerFeedback={order.customerFeedback ?? null}
@@ -1576,8 +1766,22 @@ export default function OrderDetailClient({
               onOpenFeedback={() => setFeedbackSheetTarget("rider")}
               onCopy={handleCopy}
               onPhoneClick={handleCustomerPhoneClick}
-              onRiderManagementComplete={() => {
-                if (order.id != null) prefetchRiderActivityLog(order.id);
+              onRiderManagementComplete={(detail) => {
+                if (order.id != null) {
+                  invalidateRiderActivityLogCache(order.id);
+                  void fetchRiderActivityLogCached(order.id);
+                  setActivityLogRefreshKey((k) => k + 1);
+                }
+                if (
+                  detail.action === "cancel_reassign" ||
+                  detail.action === "assign_rider"
+                ) {
+                  setDispatchSessionActive(true);
+                  setWatchRiderAssignment(true);
+                } else {
+                  setDispatchSessionActive(false);
+                  setWatchRiderAssignment(false);
+                }
                 handleRefreshOrder();
               }}
             />
@@ -1611,7 +1815,16 @@ export default function OrderDetailClient({
                 }
                 pickupAddressGeocoded={order.pickupAddressGeocoded ?? null}
                 orderStatus={order.currentStatus ?? order.status}
-                pickedUpAt={riderTimelineInitial?.picked_up_at ?? null}
+                coreStatus={order.status}
+                foodOrderStatus={order.foodOrderStatus}
+                dispatchedAt={order.dispatchedAt}
+                riderPickedUpAt={order.riderPickedUpAt}
+                pickedUpAt={
+                  riderTimelineInitial?.picked_up_at ??
+                  order.riderPickedUpAt ??
+                  null
+                }
+                reachedMerchantAt={riderTimelineInitial?.reached_merchant_at ?? null}
                 pickupLat={order.pickupLat ?? null}
                 pickupLon={order.pickupLon ?? null}
                 dropLat={mapDropLat}
@@ -1625,7 +1838,7 @@ export default function OrderDetailClient({
       </div>
 
         {/* Right sidebar */}
-      <div className="w-full lg:basis-[20%] lg:pl-2 lg:h-[calc(100vh-64px)] lg:overflow-y-auto">
+      <div className="w-full min-w-0 bg-[#F8FAFC] lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-y-contain lg:pl-2 lg:max-w-[320px] xl:max-w-[360px]">
         <OrderRightSidebar
           order={order}
           orderRefunds={orderRefunds}
@@ -1650,6 +1863,7 @@ export default function OrderDetailClient({
           }
           onRefundCreated={() => setRefetchTrigger((t) => t + 1)}
           onPrefetchOrderItems={ensureOrderItemsPrefetch}
+          orderCancelledOnTimeline={orderCancelledOnTimeline}
         />
       </div>
     </div>
@@ -1696,8 +1910,10 @@ export default function OrderDetailClient({
                     {statusHistory.map((entry, i) => (
                       <tr key={i} className="border-b border-slate-100 hover:bg-slate-50/50">
                         <td className="py-2 pr-4 font-medium text-slate-800">
-                          {MANUAL_STATUS_LABELS[entry.toStatus as ManualStatusValue] ??
-                            entry.toStatus.replace(/_/g, " ")}
+                          {entry.toStatus === "delivered"
+                            ? formatRiderOrderStatusDisplayLabel("delivered", order.orderType)
+                            : MANUAL_STATUS_LABELS[entry.toStatus as ManualStatusValue] ??
+                              entry.toStatus.replace(/_/g, " ")}
                         </td>
                         <td className="py-2 pr-3 text-slate-600 whitespace-nowrap">
                           {new Date(entry.createdAt).toLocaleString()}
@@ -1806,6 +2022,20 @@ export default function OrderDetailClient({
           merchantName={merchantSummary?.storeName}
           riderName={order.riderName}
           onClose={() => setFeedbackSheetTarget(null)}
+        />
+      ) : null}
+
+      {partnerChatOpen && order ? (
+        <OrderPartnerChatSideSheet
+          orderCoreId={order.id}
+          orderLabel={
+            order.formattedOrderId?.trim() ||
+            order.orderId?.trim() ||
+            `#${order.id}`
+          }
+          customerName={order.customerName}
+          riderName={order.riderName}
+          onClose={() => setPartnerChatOpen(false)}
         />
       ) : null}
     </>

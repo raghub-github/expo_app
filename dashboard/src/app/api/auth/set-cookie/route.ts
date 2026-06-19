@@ -7,6 +7,7 @@ import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { initializeSession } from "@/lib/auth/session-manager";
 import { validateUserForLogin } from "@/lib/auth/user-validation";
+import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 import { recordFailedLogin, recordLogin } from "@/lib/auth/user-management";
 import { getSystemUserById } from "@/lib/db/operations/users";
 import { getIpAddress, getUserAgent } from "@/lib/audit/logger";
@@ -104,6 +105,17 @@ export async function POST(request: NextRequest) {
     });
 
     if (error) {
+      if (isInvalidRefreshToken(error)) {
+        try {
+          await supabase.auth.signOut();
+        } catch {
+          // ignore
+        }
+        return NextResponse.json(
+          { success: false, error: "Session invalid", code: "SESSION_INVALID" },
+          { status: 401 }
+        );
+      }
       console.error("[set-cookie] Supabase error:", error);
       return NextResponse.json(
         { success: false, error: error.message },

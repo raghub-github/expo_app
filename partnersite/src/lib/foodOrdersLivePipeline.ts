@@ -24,11 +24,43 @@ export function normOrderStatusForSidebar(s: string | null | undefined): string 
   return normFoodStatus(s);
 }
 
+/** Effective tab status — merges orders_food, orders_core.status, and current_status. */
+export function resolveOrderSidebarPipelineStatus(order: {
+  order_status?: string | null;
+  core_status?: string | null;
+  current_status?: string | null;
+  rider_picked_up_at?: string | null;
+}): string {
+  return resolvePartnerPipeline(
+    order.order_status,
+    order.core_status ?? null,
+    order.current_status ?? null,
+    order.rider_picked_up_at ?? null
+  );
+}
+
+export function pipelineTabForSidebarStatus(
+  status: string | null | undefined
+): LiveSidebarFilterId | null {
+  const st = normOrderStatusForSidebar(status ?? '');
+  if (st === 'CREATED') return 'NEW_ORDERS';
+  if (PREPARING_PIPELINE.has(st)) return 'PREPARING';
+  if (st === 'READY_FOR_PICKUP') return 'READY_FOR_PICKUP';
+  if (st === 'OUT_FOR_DELIVERY') return 'OUT_FOR_DELIVERY';
+  if (st === 'RTO') return 'RTO';
+  return null;
+}
+
 export function orderMatchesLiveSidebarFilter(
-  order: { order_status?: string | null },
+  order: {
+    order_status?: string | null;
+    core_status?: string | null;
+    current_status?: string | null;
+    rider_picked_up_at?: string | null;
+  },
   filterId: LiveSidebarFilterId | string
 ): boolean {
-  const st = normOrderStatusForSidebar(order.order_status);
+  const st = resolveOrderSidebarPipelineStatus(order);
   if (filterId === 'NEW_ORDERS') return st === 'CREATED';
   if (filterId === 'PREPARING') return PREPARING_PIPELINE.has(st);
   if (filterId === 'READY_FOR_PICKUP') return st === 'READY_FOR_PICKUP';
@@ -50,9 +82,16 @@ export function isLiveSidebarPipelineStatus(status: string | null | undefined): 
 
 /** Count pending live-board orders (today + older) — sum of sidebar tab buckets. */
 export function countLiveSidebarPipelineOrders(
-  orders: Array<{ order_status?: string | null }>
+  orders: Array<{
+    order_status?: string | null;
+    core_status?: string | null;
+    current_status?: string | null;
+    rider_picked_up_at?: string | null;
+  }>
 ): number {
-  return orders.filter((o) => isLiveSidebarPipelineStatus(o.order_status)).length;
+  return orders.filter((o) =>
+    isLiveSidebarPipelineStatus(resolveOrderSidebarPipelineStatus(o))
+  ).length;
 }
 
 export function liveSidebarFilterCounts(
@@ -70,8 +109,9 @@ export function liveSidebarFilterCounts(
 export function isLiveSidebarPipelineFromCore(
   foodOrderStatus: string | null | undefined,
   coreStatus: string | null | undefined,
-  currentStatus: string | null | undefined
+  currentStatus: string | null | undefined,
+  riderPickedUpAt?: string | null
 ): boolean {
-  const ui = resolvePartnerPipeline(foodOrderStatus, coreStatus, currentStatus);
+  const ui = resolvePartnerPipeline(foodOrderStatus, coreStatus, currentStatus, riderPickedUpAt);
   return isLiveSidebarPipelineStatus(ui);
 }

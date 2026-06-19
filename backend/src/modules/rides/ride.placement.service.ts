@@ -14,6 +14,15 @@ import { customerOrderRefWhere } from "../../lib/order-ref-resolve.js";
 import { getRoute } from "../distance/distance.service.js";
 import { getEnv } from "../../config/env.js";
 import { RIDE_TIP_AMOUNTS } from "./ride.tip-boost.service.js";
+import {
+  isCatalogOptionEligibleForTrip,
+  loadRideVehicleLimitsForState,
+  resolveRideStateIdFromCoords,
+} from "../ride-state-config/index.js";
+import { quoteCustomerRideFare } from "../ride-state-config/rideQuote.service.js";
+import { resolveRideAddressDisplayLabel } from "../../lib/ride-address-display.js";
+import { resolveRidePickupFreeWaitMinutes, resolveRidePickupWaitingChargePerMin } from "../../lib/ride-pickup-wait.js";
+import { findCustomerOutstandingRideFare } from "../../lib/ride-fare-gate.js";
 
 export const DEFAULT_RIDE_SEARCH_TIMEOUT_SEC = 4 * 60;
 
@@ -43,9 +52,11 @@ export type RideIntermediateStop = {
 export type PlaceRideOrderInput = {
   customerPk: number;
   pickupAddress: string;
+  pickupLabel?: string | null;
   pickupLat: number;
   pickupLng: number;
   dropAddress: string;
+  dropLabel?: string | null;
   dropLat: number;
   dropLng: number;
   intermediateStops?: RideIntermediateStop[];
@@ -62,6 +73,8 @@ export type PlaceRideOrderInput = {
   farPickupAcknowledged?: boolean;
   searchTimeoutSec?: number;
   customerTipAmount?: number;
+  pickupPincode?: string | null;
+  pickupState?: string | null;
 };
 
 export type PlaceRideOrderResult = {
@@ -109,7 +122,20 @@ async function resolveDistanceKm(
   tripKm?: number | null
 ): Promise<number> {
   if (tripKm != null && Number.isFinite(tripKm) && tripKm > 0) {
-    return Math.round(tripKm * 100) / 100;
+    const km = Math.round(tripKm * 100) / 100;
+    // eslint-disable-next-line no-console
+    console.log(
+      "[ride-placement] distance",
+      JSON.stringify({
+        source: "client_route",
+        routeDistanceKm: km,
+        pickupLat,
+        pickupLng,
+        dropLat,
+        dropLng,
+      })
+    );
+    return km;
   }
   try {
     const env = getEnv();
@@ -256,6 +282,18 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
     throw Object.assign(new Error("Invalid pickup or drop coordinates"), { statusCode: 400 });
   }
 
+  const outstandingFare = await findCustomerOutstandingRideFare(input.customerPk);
+  if (outstandingFare) {
+    throw Object.assign(
+      new Error("Please clear your previous due ride fare before booking a new ride"),
+      {
+        statusCode: 409,
+        code: "RIDE_FARE_DUE",
+        outstandingOrderId: outstandingFare.orderId,
+      }
+    );
+  }
+
   const bookedForSelf = input.bookedForSelf !== false;
   if (!bookedForSelf && !input.passengerName?.trim()) {
     throw Object.assign(new Error("Passenger name is required for guest booking"), {
@@ -263,12 +301,17 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
     });
   }
 
-  const estimatedFare = Math.max(0, Math.round(input.estimatedFare));
+  const estimatedFareInput = Math.max(0, Math.round(input.estimatedFare));
   const customerTipAmount = Math.max(0, Math.round(input.customerTipAmount ?? 0));
   if (!RIDE_TIP_AMOUNTS.has(customerTipAmount)) {
     throw Object.assign(new Error("Invalid tip amount"), { statusCode: 400 });
   }
-  const grandTotal = estimatedFare + customerTipAmount;
+  if (input.tripKm == null || !Number.isFinite(input.tripKm) || input.tripKm <= 0) {
+    throw Object.assign(
+      new Error("Trip route distance is required — refresh ride options and try again"),
+      { statusCode: 400, code: "TRIP_DISTANCE_REQUIRED" }
+    );
+  }
   const distanceKm = await resolveDistanceKm(
     input.pickupLat,
     input.pickupLng,
@@ -276,6 +319,82 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
     input.dropLng,
     input.tripKm
   );
+
+  const fareQuote = await quoteCustomerRideFare({
+    pickupLat: input.pickupLat,
+    pickupLng: input.pickupLng,
+    dropLat: input.dropLat,
+    dropLng: input.dropLng,
+    tripKm: distanceKm,
+    catalogCode: input.rideType,
+    pickupPincode: input.pickupPincode,
+    pickupState: input.pickupState,
+  });
+
+  if (!fareQuote.ok) {
+    throw Object.assign(new Error(fareQuote.message), {
+      statusCode: 400,
+      code: fareQuote.code,
+    });
+  }
+  if (!fareQuote.eligible || fareQuote.finalFare <= 0) {
+    throw Object.assign(
+      new Error("This vehicle is not available for trips of this distance in your area"),
+      { statusCode: 400, code: "VEHICLE_DISTANCE_EXCEEDED" }
+    );
+  }
+
+  const serverFare = Math.round(fareQuote.finalFare);
+  if (Math.abs(serverFare - estimatedFareInput) > 2) {
+    throw Object.assign(
+      new Error("Fare has changed. Please go back and refresh the ride options."),
+      { statusCode: 400, code: "FARE_MISMATCH" }
+    );
+  }
+  const estimatedFare = serverFare;
+  const grandTotal = estimatedFare + customerTipAmount;
+
+  const pickupWaitFreeMinutes = await resolveRidePickupFreeWaitMinutes({
+    pickupLat: input.pickupLat,
+    pickupLng: input.pickupLng,
+    rideType: input.rideType,
+    checkoutMetadata: {
+      pickupPincode: input.pickupPincode?.trim(),
+      pickupState: input.pickupState?.trim(),
+    },
+  });
+  const pickupWaitingChargePerMin = await resolveRidePickupWaitingChargePerMin({
+    pickupLat: input.pickupLat,
+    pickupLng: input.pickupLng,
+    rideType: input.rideType,
+    checkoutMetadata: {
+      pickupPincode: input.pickupPincode?.trim(),
+      pickupState: input.pickupState?.trim(),
+    },
+  });
+
+  const stateId = await resolveRideStateIdFromCoords({
+    pickupLat: input.pickupLat,
+    pickupLng: input.pickupLng,
+    pickupPincode: input.pickupPincode,
+    pickupState: input.pickupState,
+  });
+  if (stateId) {
+    const limits = await loadRideVehicleLimitsForState(stateId);
+    if (limits.length > 0 &&
+      !isCatalogOptionEligibleForTrip({
+        catalogCode: input.rideType,
+        tripKm: distanceKm,
+        limits,
+      })
+    ) {
+      throw Object.assign(
+        new Error("This vehicle is not available for trips of this distance in your state"),
+        { statusCode: 400, code: "VEHICLE_DISTANCE_EXCEEDED" }
+      );
+    }
+  }
+
   const paymentMethodEnum = paymentMethodToEnum(input.paymentMethod);
   const vehicleType =
     input.vehicleTypeRequired?.trim() ||
@@ -334,6 +453,30 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
           rideType: input.rideType,
           vehicleTypeRequired: vehicleType,
           searchTimeoutSec,
+          pickupLabel: resolveRideAddressDisplayLabel({
+            label: input.pickupLabel,
+            fullAddress: pickupAddress,
+            defaultLabel: pickupAddress,
+          }),
+          dropLabel: resolveRideAddressDisplayLabel({
+            label: input.dropLabel,
+            fullAddress: dropAddress,
+            defaultLabel: dropAddress,
+          }),
+          pickupFullAddress: pickupAddress,
+          dropFullAddress: dropAddress,
+          routeDistanceKm: distanceKm,
+          tripKm: distanceKm,
+          pickupPincode: input.pickupPincode?.trim() || undefined,
+          pickupState: input.pickupState?.trim() || undefined,
+          pickupWaitFreeMinutes,
+          estimatedFare,
+          ...(fareQuote.waitingChargeNote
+            ? { waitingChargeNote: fareQuote.waitingChargeNote }
+            : {}),
+          ...(pickupWaitingChargePerMin > 0
+            ? { pickupWaitingChargePerMin }
+            : {}),
         },
       })
       .returning({
@@ -593,6 +736,12 @@ export async function getRideOrderForCustomer(
   cancelled: boolean;
   pickupOtp: string | null;
   rideStarted: boolean;
+  riderReachedPickupAt: string | null;
+  pickupOtpVerifiedAt: string | null;
+  pickupWaitSeconds: number | null;
+  pickupWaitFreeMinutes: number;
+  pickupWaitingChargePerMin: number;
+  estimatedPickupWaitingCharge: number;
   awaitingTipBoost: boolean;
   dispatchRetryCount: number;
   customerTipAmount: number;
@@ -611,6 +760,9 @@ export async function getRideOrderForCustomer(
       riderId: ordersCore.riderId,
       grandTotal: ordersCore.grandTotal,
       pickupOtp: ordersCore.pickupOtp,
+      checkoutMetadata: ordersCore.checkoutMetadata,
+      pickupLat: ordersCore.pickupLat,
+      pickupLon: ordersCore.pickupLon,
     })
     .from(ordersCore)
     .where(
@@ -626,6 +778,9 @@ export async function getRideOrderForCustomer(
       assignedRiderId: ordersRide.assignedRiderId,
       cancelledAt: ordersRide.cancelledAt,
       pickupOtpVerifiedAt: ordersRide.pickupOtpVerifiedAt,
+      riderReachedPickupAt: ordersRide.riderReachedPickupAt,
+      pickupWaitSeconds: ordersRide.pickupWaitSeconds,
+      rideType: ordersRide.rideType,
       awaitingTipBoost: ordersRide.awaitingTipBoost,
       dispatchRetryCount: ordersRide.dispatchRetryCount,
       customerTipAmount: ordersRide.customerTipAmount,
@@ -640,6 +795,40 @@ export async function getRideOrderForCustomer(
 
   const dbStatus = String(row.status ?? "assigned");
   const pickupOtpVerified = rideRow?.pickupOtpVerifiedAt != null;
+  const riderReachedPickupAt = rideRow?.riderReachedPickupAt?.toISOString?.() ?? null;
+  const pickupOtpVerifiedAt = rideRow?.pickupOtpVerifiedAt?.toISOString?.() ?? null;
+  const pickupWaitSeconds =
+    rideRow?.pickupWaitSeconds != null ? Math.max(0, Number(rideRow.pickupWaitSeconds) || 0) : null;
+  const pickupWaitFreeMinutes = await resolveRidePickupFreeWaitMinutes({
+    checkoutMetadata: row.checkoutMetadata,
+    pickupLat: Number(row.pickupLat),
+    pickupLng: Number(row.pickupLon),
+    rideType: rideRow?.rideType,
+  });
+  const pickupWaitingChargePerMin = await resolveRidePickupWaitingChargePerMin({
+    checkoutMetadata: row.checkoutMetadata,
+    pickupLat: Number(row.pickupLat),
+    pickupLng: Number(row.pickupLon),
+    rideType: rideRow?.rideType,
+  });
+  const freeBudgetSec = Math.max(0, Math.round(pickupWaitFreeMinutes * 60));
+  let estimatedPickupWaitingCharge = 0;
+  if (pickupWaitingChargePerMin > 0) {
+    let billableSec = 0;
+    if (pickupWaitSeconds != null) {
+      billableSec = Math.max(0, pickupWaitSeconds - freeBudgetSec);
+    } else if (riderReachedPickupAt && !pickupOtpVerifiedAt) {
+      const startMs = new Date(riderReachedPickupAt).getTime();
+      if (Number.isFinite(startMs)) {
+        const elapsed = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+        billableSec = Math.max(0, elapsed - freeBudgetSec);
+      }
+    }
+    if (billableSec > 0) {
+      estimatedPickupWaitingCharge =
+        Math.round(Math.ceil(billableSec / 60) * pickupWaitingChargePerMin * 10) / 10;
+    }
+  }
   const riderId = row.riderId ?? rideRow?.assignedRiderId ?? null;
   const cancelled = dbStatus === "cancelled" || rideRow?.cancelledAt != null;
   const rideStarted =
@@ -651,6 +840,7 @@ export async function getRideOrderForCustomer(
   if (cancelled) appStatus = "CANCELLED";
   else if (rideStarted) appStatus = "RIDE_IN_PROGRESS";
   else if (
+    riderReachedPickupAt ||
     dbStatus === "reached_user" ||
     (pickupOtpVerified && String(row.currentStatus ?? "").toUpperCase() === "RIDER_AT_PICKUP")
   )
@@ -675,6 +865,12 @@ export async function getRideOrderForCustomer(
     cancelled,
     pickupOtp: row.pickupOtp?.trim() || null,
     rideStarted,
+    riderReachedPickupAt,
+    pickupOtpVerifiedAt,
+    pickupWaitSeconds,
+    pickupWaitFreeMinutes,
+    pickupWaitingChargePerMin,
+    estimatedPickupWaitingCharge,
     awaitingTipBoost: rideRow?.awaitingTipBoost === true,
     dispatchRetryCount: Number(rideRow?.dispatchRetryCount ?? 0),
     customerTipAmount: Number(rideRow?.customerTipAmount ?? 0),

@@ -1,4 +1,5 @@
 import { haversineKm } from "@/lib/billSummary";
+import { etaMinutesFromMeters } from "@/lib/navigation-route-progress";
 
 /** Split a 4-digit pickup OTP into individual digit strings for PIN boxes. */
 export function splitPickupOtpDigits(otp: string | null | undefined): string[] {
@@ -35,7 +36,7 @@ export function formatRiderDistanceToPickup(
   return `${(km).toFixed(km < 10 ? 1 : 0)} km away`;
 }
 
-/** Rough pickup ETA from straight-line distance when server ETA is missing. */
+/** Pickup ETA from straight-line distance when road route ETA is unavailable. */
 export function estimatePickupEtaMinutes(
   riderLat: number | null | undefined,
   riderLng: number | null | undefined,
@@ -45,5 +46,54 @@ export function estimatePickupEtaMinutes(
   if (riderLat == null || riderLng == null) return null;
   const km = haversineKm(riderLat, riderLng, pickupLat, pickupLng);
   if (!Number.isFinite(km) || km <= 0) return null;
-  return Math.max(1, Math.ceil(km * 4));
+  return etaMinutesFromMeters(km * 1000);
+}
+
+/**
+ * Rider → pickup/drop ETA for live tracking.
+ * Pickup leg never uses order-wide server ETA (that is often the full trip time).
+ */
+export function resolveRideLegEtaMinutes(args: {
+  rideInProgress: boolean;
+  routeEtaMinutes: number | null | undefined;
+  routeDistanceM: number | null | undefined;
+  serverEtaMinutes: number | null | undefined;
+  riderLat: number | null | undefined;
+  riderLng: number | null | undefined;
+  destLat: number;
+  destLng: number;
+}): number | null {
+  const {
+    rideInProgress,
+    routeEtaMinutes,
+    routeDistanceM,
+    serverEtaMinutes,
+    riderLat,
+    riderLng,
+    destLat,
+    destLng,
+  } = args;
+
+  if (routeEtaMinutes != null && routeEtaMinutes > 0) {
+    if (routeDistanceM != null && routeDistanceM > 0 && routeDistanceM <= 800) {
+      const fromDistance = etaMinutesFromMeters(routeDistanceM);
+      if (fromDistance != null && routeEtaMinutes > Math.max(3, fromDistance * 2)) {
+        return fromDistance;
+      }
+    }
+    return routeEtaMinutes;
+  }
+
+  if (routeDistanceM != null && routeDistanceM > 0) {
+    return etaMinutesFromMeters(routeDistanceM);
+  }
+
+  const fromRider = estimatePickupEtaMinutes(riderLat, riderLng, destLat, destLng);
+  if (fromRider != null) return fromRider;
+
+  if (rideInProgress && serverEtaMinutes != null && serverEtaMinutes > 0) {
+    return serverEtaMinutes;
+  }
+
+  return null;
 }

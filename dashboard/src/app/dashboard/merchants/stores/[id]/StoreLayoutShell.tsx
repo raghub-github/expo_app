@@ -6,6 +6,8 @@ import { StoreQueryHydrator } from "./StoreQueryHydrator";
 import { StoreProvider, type StoreContextStore } from "./StoreContext";
 import { MerchantIncomingOrderModal } from "@/components/merchant/MerchantIncomingOrderModal";
 import { MerchantPendingNewOrdersBar } from "@/components/merchant/MerchantPendingNewOrdersBar";
+import { MerchantAcceptanceTimeoutSync } from "@/components/merchant/MerchantAcceptanceTimeoutSync";
+import { Toaster } from "sonner";
 import { useStore } from "@/hooks/useStore";
 import type { StoreProfile } from "@/hooks/useStore";
 
@@ -36,7 +38,9 @@ function StoreLayoutFallback({
   children: React.ReactNode;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
   const { store, isLoading } = useStore(storeId);
+  const isOrdersPage = pathname.includes("/orders");
 
   if (isLoading && !store) {
     return (
@@ -64,15 +68,22 @@ function StoreLayoutFallback({
 
   return (
     <StoreProvider storeId={storeId} store={store as StoreContextStore}>
-      <div className="w-full max-w-full overflow-x-hidden">
+      <div className="flex min-h-0 flex-1 flex-col w-full max-w-full overflow-hidden">
+        <Toaster position="top-right" richColors closeButton />
         <StoreQueryHydrator storeId={storeId} store={store as StoreProfile} />
         <MerchantIncomingOrderModal />
+        <MerchantAcceptanceTimeoutSync />
         <MerchantPendingNewOrdersBar />
         <div
-          className="w-full"
-          style={{
-            paddingBottom: "max(5.5rem, calc(env(safe-area-inset-bottom, 0px) + 5.5rem))",
-          }}
+          className="flex min-h-0 flex-1 flex-col w-full overflow-hidden"
+          style={
+            isOrdersPage
+              ? undefined
+              : {
+                  paddingBottom:
+                    "max(5.5rem, calc(env(safe-area-inset-bottom, 0px) + 5.5rem))",
+                }
+          }
         >
           {children}
         </div>
@@ -118,6 +129,8 @@ export function StoreLayoutShell({
     router.replace(qs ? `${pathname}?${qs}` : pathname);
   };
 
+  const isOrdersPage = pathname.includes("/orders");
+
   if (!store) {
     return (
       <StoreLayoutFallback storeId={storeId}>
@@ -128,7 +141,8 @@ export function StoreLayoutShell({
 
   return (
     <StoreProvider storeId={storeId} store={store as StoreContextStore}>
-      <div className="w-full max-w-full overflow-x-hidden">
+      <div className="flex min-h-0 flex-1 flex-col w-full max-w-full overflow-hidden">
+        <Toaster position="top-right" richColors closeButton />
         <StoreQueryHydrator storeId={storeId} store={store as StoreProfile} />
         {showDelistedModal && (
           <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 p-4" aria-modal="true" role="dialog">
@@ -196,13 +210,19 @@ export function StoreLayoutShell({
       )}
 
         <MerchantIncomingOrderModal />
+        <MerchantAcceptanceTimeoutSync />
         <MerchantPendingNewOrdersBar />
         {/* Main content — store name, address, and store ID are shown in the right sidebar Store Information Card */}
         <div
-          className="w-full"
-          style={{
-            paddingBottom: "max(5.5rem, calc(env(safe-area-inset-bottom, 0px) + 5.5rem))",
-          }}
+          className="flex min-h-0 flex-1 flex-col w-full overflow-hidden"
+          style={
+            isOrdersPage
+              ? undefined
+              : {
+                  paddingBottom:
+                    "max(5.5rem, calc(env(safe-area-inset-bottom, 0px) + 5.5rem))",
+                }
+          }
         >
           {children}
         </div>

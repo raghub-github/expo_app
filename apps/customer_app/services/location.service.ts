@@ -57,6 +57,26 @@ function isPincodeOnly(value?: string | null): boolean {
   return !!value && /^\d{6}$/.test(value.trim());
 }
 
+/** UI placeholders — not useful for rider pickup/drop headings. */
+export function isGenericLocationLabel(value?: string | null): boolean {
+  if (!value?.trim()) return true;
+  const trimmed = value.trim();
+  const lower = trimmed.toLowerCase();
+  return (
+    trimmed === "—" ||
+    trimmed === "-" ||
+    lower === "n/a" ||
+    lower === "na" ||
+    lower === "unknown" ||
+    lower === "current location" ||
+    lower === "pickup point" ||
+    lower === "pickup location" ||
+    lower === "drop location" ||
+    lower === "selected location" ||
+    lower === "location not available"
+  );
+}
+
 /** Prefer locality / street name over bare pincode for map & list headings. */
 export function resolvePlaceDisplayName(input: {
   primary?: string | null;
@@ -81,6 +101,7 @@ export function resolvePlaceDisplayName(input: {
     return (
       !!part &&
       !isPincodeOnly(part) &&
+      !isGenericLocationLabel(part) &&
       lower !== "india" &&
       lower !== normalizedState &&
       lower !== normalizedCity

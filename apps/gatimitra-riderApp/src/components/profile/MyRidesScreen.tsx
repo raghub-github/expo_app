@@ -13,7 +13,6 @@ import {
 import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import type { ComponentProps } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -23,228 +22,141 @@ import {
 import { openOrderHistoryDetail } from "@/src/lib/order-history-nav";
 import type { RiderOrderSummary } from "@/src/services/api/riderApi";
 import { colors } from "@/src/theme";
-import { formatDistanceKm } from "@/src/lib/incoming-order-display";
-import {
-  formatRideHistoryListDate,
-  orderHistoryCategoryLabel,
-  orderHistoryCategoryVisual,
-  orderHistoryTitle,
-  orderMatchesHistorySearch,
-  rideHistoryDropLabel,
-  rideHistoryEarningPlusLabel,
-  rideHistoryOrderId,
-  rideHistoryPickupLabel,
-  rideHistoryStatusLabel,
-} from "@/src/lib/rider-ride-history-display";
+import { OrderCategoryDropdown } from "@/src/components/profile/OrderCategoryDropdown";
 import {
   OrderHistoryDateRangeSheet,
   formatDateRangeChip,
   isOrderInDateRange,
 } from "@/src/components/profile/OrderHistoryDateRangeSheet";
+import {
+  formatRideHistoryListDate,
+  orderHistoryCategoryVisual,
+  orderHistorySubtitle,
+  orderHistoryTitle,
+  orderMatchesHistorySearch,
+  rideHistoryDropLabel,
+  rideHistoryEarningLabel,
+  rideHistoryOrderId,
+  rideHistoryStatusLabel,
+  isOrderEarningCreditPending,
+} from "@/src/lib/rider-ride-history-display";
+import { formatOrderHistoryPaymentLabel } from "@/src/lib/rider-payment-display";
 
 const GREEN = colors.success[600];
-const FILTER_GREEN = "#16A34A";
-const PAGE_BG = "#F1F5F9";
-const CARD_BG = "#FFFFFF";
-const HEADER_BG = "#FFFFFF";
+const GREEN_LIGHT = "#ECFDF5";
+const INK = "#111827";
+const BG = "#F5F6F8";
+const SURFACE = "#FFFFFF";
+const MUTED = "#6B7280";
+const BORDER = "#E8ECF0";
+const CARD_BORDER = "#D1D5DB";
 
-type IonName = ComponentProps<typeof Ionicons>["name"];
-type StatusFilter = "all" | "completed" | "cancelled";
-type SortOrder = "latest" | "oldest";
-type FilterChipId = RiderOrderHistoryFilter | "completed" | "cancelled";
-type FilterChipDef = {
-  id: FilterChipId;
-  labelKey: string;
-  fallback: string;
-  icon: IonName;
-  color: string;
-  activeBg: string;
-};
-
-const CATEGORY_FILTERS: FilterChipDef[] = [
-  { id: "all", labelKey: "profile.myOrders.filterAll", fallback: "All", icon: "grid", color: FILTER_GREEN, activeBg: FILTER_GREEN },
-  { id: "food", labelKey: "profile.myRides.filterFood", fallback: "Food", icon: "restaurant", color: "#EA580C", activeBg: "#EA580C" },
-  { id: "parcel", labelKey: "profile.myRides.filterParcel", fallback: "Parcel", icon: "cube", color: "#2563EB", activeBg: "#2563EB" },
-  { id: "ride", labelKey: "profile.myRides.filterRide", fallback: "Ride", icon: "car", color: "#9333EA", activeBg: "#9333EA" },
-];
-
-const STATUS_FILTERS: FilterChipDef[] = [
-  { id: "completed", labelKey: "profile.myRides.statusCompleted", fallback: "Completed", icon: "checkmark-circle", color: GREEN, activeBg: GREEN },
-  { id: "cancelled", labelKey: "profile.myRides.statusCancelled", fallback: "Cancelled", icon: "close-circle", color: "#DC2626", activeBg: "#DC2626" },
-];
-
-function getCategoryAccent(chip: FilterChipDef): string {
-  return chip.id === "all" ? FILTER_GREEN : chip.color;
+function formatCompactAddress(raw: string, maxLen = 120): string {
+  const parts = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const unique: string[] = [];
+  for (const part of parts) {
+    const key = part.toLowerCase();
+    if (!unique.some((u) => u.toLowerCase() === key)) unique.push(part);
+  }
+  const joined = unique.join(", ");
+  if (joined.length <= maxLen) return joined;
+  return `${joined.slice(0, maxLen - 1).trim()}…`;
 }
 
-function FilterCategoryTile({
-  chip,
-  selected,
-  onPress,
-}: {
-  chip: FilterChipDef;
-  selected: boolean;
-  onPress: () => void;
-}) {
-  const { t } = useTranslation();
-  const accent = getCategoryAccent(chip);
-
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.catTile,
-        selected && [styles.catTileSelected, { borderColor: accent }],
-        pressed && styles.catTilePressed,
-      ]}
-    >
-      <View
-        style={[
-          styles.catIconBox,
-          selected
-            ? { backgroundColor: accent }
-            : { backgroundColor: `${accent}18` },
-        ]}
-      >
-        <Ionicons
-          name={chip.icon}
-          size={22}
-          color={selected ? "#FFFFFF" : accent}
-        />
-      </View>
-      <Text
-        style={[
-          styles.catTileLabel,
-          selected ? { color: accent, fontWeight: "800" } : styles.catTileLabelIdle,
-        ]}
-        numberOfLines={1}
-      >
-        {t(chip.labelKey, chip.fallback)}
-      </Text>
-      {selected ? <View style={[styles.catTileDot, { backgroundColor: accent }]} /> : null}
-    </Pressable>
-  );
-}
-
-function FilterStatusChip({
-  chip,
-  selected,
-  onPress,
-}: {
-  chip: FilterChipDef;
-  selected: boolean;
-  onPress: () => void;
-}) {
-  const { t } = useTranslation();
-  const isCompleted = chip.id === "completed";
-  const accent = isCompleted ? FILTER_GREEN : "#DC2626";
-  const idleBg = isCompleted ? "#ECFDF5" : "#FEF2F2";
-  const idleBorder = isCompleted ? "#BBF7D0" : "#FECACA";
-
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.statusChip,
-        selected
-          ? { backgroundColor: accent, borderColor: accent }
-          : { backgroundColor: idleBg, borderColor: idleBorder },
-        pressed && styles.statusChipPressed,
-      ]}
-    >
-      <View
-        style={[
-          styles.statusIconWrap,
-          selected
-            ? { backgroundColor: "rgba(255,255,255,0.22)" }
-            : { backgroundColor: isCompleted ? "#DCFCE7" : "#FEE2E2" },
-        ]}
-      >
-        <Ionicons
-          name={chip.icon}
-          size={18}
-          color={selected ? "#FFFFFF" : accent}
-        />
-      </View>
-      <Text
-        style={[
-          styles.statusChipLabel,
-          { color: selected ? "#FFFFFF" : accent },
-        ]}
-        numberOfLines={1}
-      >
-        {t(chip.labelKey, chip.fallback)}
-      </Text>
-      {selected ? (
-        <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
-      ) : null}
-    </Pressable>
-  );
-}
-
-function OrderHistoryFilterBar({
+function MyOrdersHeader({
   category,
-  statusFilter,
+  searchQuery,
+  searchFocused,
+  searchRef,
+  hasDateFilter,
+  onBack,
   onCategoryFilter,
-  onStatusFilter,
+  onSearchChange,
+  onSearchFocus,
+  onSearchBlur,
+  onClearSearch,
+  onOpenDateFilter,
 }: {
   category: RiderOrderHistoryFilter;
-  statusFilter: StatusFilter;
+  searchQuery: string;
+  searchFocused: boolean;
+  searchRef: React.RefObject<TextInput | null>;
+  hasDateFilter: boolean;
+  onBack: () => void;
   onCategoryFilter: (id: RiderOrderHistoryFilter) => void;
-  onStatusFilter: (id: Exclude<StatusFilter, "all">) => void;
+  onSearchChange: (text: string) => void;
+  onSearchFocus: () => void;
+  onSearchBlur: () => void;
+  onClearSearch: () => void;
+  onOpenDateFilter: () => void;
 }) {
   const { t } = useTranslation();
 
   return (
-    <View style={styles.filterSection}>
-      <View style={styles.filterSectionHead}>
-        <View style={styles.filterHeadIcon}>
-          <Ionicons name="layers-outline" size={16} color={FILTER_GREEN} />
-        </View>
-        <View style={styles.filterHeadText}>
-          <Text style={styles.filterSectionTitle}>
-            {t("profile.myOrders.filterBy", "Filter orders")}
+    <View style={styles.headerShell}>
+      <View style={styles.headerTop}>
+        <Pressable
+          onPress={onBack}
+          style={({ pressed }) => [styles.headerBackBtn, pressed && styles.pressed]}
+          hitSlop={6}
+        >
+          <Ionicons name="arrow-back" size={22} color={INK} />
+        </Pressable>
+        <View style={styles.headerTextCol}>
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            {t("profile.myOrders.title", "My Orders")}
           </Text>
-          <Text style={styles.filterSectionSub}>
-            {t("profile.myOrders.filterBySub", "Category & delivery status")}
+          <Text style={styles.headerSubtitle} numberOfLines={1}>
+            {t("profile.myOrders.subtitle", "View your past orders")}
           </Text>
         </View>
+        <OrderCategoryDropdown value={category} onChange={onCategoryFilter} />
       </View>
 
-      <View style={styles.categoryRow}>
-        {CATEGORY_FILTERS.map((chip) => (
-          <FilterCategoryTile
-            key={chip.id}
-            chip={chip}
-            selected={statusFilter === "all" && category === chip.id}
-            onPress={() => onCategoryFilter(chip.id)}
+      <View style={styles.searchRow}>
+        <View style={[styles.searchBox, searchFocused && styles.searchBoxFocused]}>
+          <Ionicons name="search" size={18} color={MUTED} />
+          <TextInput
+            ref={searchRef}
+            value={searchQuery}
+            onChangeText={onSearchChange}
+            placeholder={t("profile.myOrders.searchPlaceholder", "Search order ID, restaurant…")}
+            placeholderTextColor="#9CA3AF"
+            style={styles.searchInput}
+            onFocus={onSearchFocus}
+            onBlur={onSearchBlur}
+            returnKeyType="search"
           />
-        ))}
-      </View>
-
-      <View style={styles.filterDividerRow}>
-        <View style={styles.filterDividerLine} />
-        <Text style={styles.filterDividerLabel}>
-          {t("profile.myOrders.statusLabel", "Status")}
-        </Text>
-        <View style={styles.filterDividerLine} />
-      </View>
-
-      <View style={styles.statusRow}>
-        {STATUS_FILTERS.map((chip) => (
-          <FilterStatusChip
-            key={chip.id}
-            chip={chip}
-            selected={statusFilter === chip.id}
-            onPress={() => onStatusFilter(chip.id as Exclude<StatusFilter, "all">)}
+          {searchQuery.length > 0 ? (
+            <Pressable onPress={onClearSearch} hitSlop={8}>
+              <Ionicons name="close-circle" size={18} color="#9CA3AF" />
+            </Pressable>
+          ) : null}
+        </View>
+        <Pressable
+          onPress={onOpenDateFilter}
+          style={({ pressed }) => [
+            styles.filterBtn,
+            hasDateFilter && styles.filterBtnActive,
+            pressed && styles.pressed,
+          ]}
+          hitSlop={4}
+        >
+          <Ionicons
+            name={hasDateFilter ? "calendar" : "options-outline"}
+            size={20}
+            color={hasDateFilter ? GREEN : INK}
           />
-        ))}
+        </Pressable>
       </View>
     </View>
   );
 }
 
-function OrderHistoryCard({
+function OrderCard({
   order,
   onPress,
 }: {
@@ -253,89 +165,105 @@ function OrderHistoryCard({
 }) {
   const { t } = useTranslation();
   const visual = orderHistoryCategoryVisual(order.category);
-  const catLabel = orderHistoryCategoryLabel(order.category, t);
-  const statusLabel = rideHistoryStatusLabel(order.status, t);
-  const distance = formatDistanceKm(order.distanceKm ?? order.tripDistanceKm);
-  const isCompleted = order.status === "delivered";
+  const isDone = order.status === "delivered";
   const isCancelled = order.status === "cancelled";
+  const earningPending = isOrderEarningCreditPending(order);
+  const subtitle = orderHistorySubtitle(order);
+  const drop = formatCompactAddress(rideHistoryDropLabel(order));
+  const paymentLabel = formatOrderHistoryPaymentLabel(
+    order.paymentMethod,
+    order.paymentStatus,
+    t
+  );
+  const statusLabel = rideHistoryStatusLabel(order.status, t, order);
 
   return (
     <Pressable
       onPress={onPress}
-      style={({ pressed }) => [styles.orderCard, pressed && styles.orderCardPressed]}
-      accessibilityRole="button"
-      accessibilityLabel={t("profile.myOrders.viewDetails", "View details")}
+      style={({ pressed }) => [styles.orderCardPressable, pressed && styles.pressed]}
     >
-      <View style={styles.cardTopRow}>
-        <View style={[styles.categoryIconBox, { backgroundColor: visual.iconBg }]}>
-          <Ionicons name={visual.icon} size={24} color={visual.iconColor} />
-        </View>
-
-        <View style={styles.cardMainCol}>
-          <View style={styles.badgeRow}>
-            <View style={[styles.catTag, { backgroundColor: `${visual.accent}14` }]}>
-              <Text style={[styles.catTagText, { color: visual.accent }]}>{catLabel}</Text>
-            </View>
-            {isCompleted ? (
-              <View style={styles.completedBadge}>
-                <Ionicons name="checkmark-circle" size={13} color={GREEN} />
-                <Text style={styles.completedBadgeText}>{statusLabel}</Text>
-              </View>
-            ) : isCancelled ? (
-              <View style={styles.cancelledBadge}>
-                <Ionicons name="close-circle" size={13} color="#DC2626" />
-                <Text style={styles.cancelledBadgeText}>{statusLabel}</Text>
-              </View>
+      <View style={styles.orderCard}>
+      <View style={styles.orderCardInner}>
+        <View style={styles.orderTop}>
+          <View style={[styles.orderCatCircle, { backgroundColor: visual.iconBg }]}>
+            <Ionicons name={visual.icon} size={20} color={visual.iconColor} />
+          </View>
+          <View style={styles.orderMetaCol}>
+            <Text style={styles.orderId} numberOfLines={1} ellipsizeMode="tail">
+              {rideHistoryOrderId(order)}
+            </Text>
+            <Text style={styles.orderDate} numberOfLines={1} ellipsizeMode="tail">
+              {formatRideHistoryListDate(order.createdAt)}
+            </Text>
+          </View>
+          <View style={styles.orderPriceCol}>
+            <Text
+              style={[styles.orderPrice, isCancelled && styles.orderPriceCancelled]}
+              numberOfLines={1}
+            >
+              {rideHistoryEarningLabel(order, t)}
+            </Text>
+            {subtitle ? (
+              <Text style={styles.orderItems} numberOfLines={1} ellipsizeMode="tail">
+                {subtitle}
+              </Text>
             ) : null}
           </View>
+        </View>
 
-          <Text style={styles.cardTitle} numberOfLines={2}>
-            {orderHistoryTitle(order)}
+        <Text style={styles.orderTitle} numberOfLines={2} ellipsizeMode="tail">
+          {orderHistoryTitle(order)}
+        </Text>
+
+        <View style={styles.orderAddressRow}>
+          <View style={styles.orderAddressIcon}>
+            <Ionicons name="location-outline" size={16} color={GREEN} />
+          </View>
+          <Text style={styles.orderAddress} numberOfLines={2} ellipsizeMode="tail">
+            {drop}
           </Text>
-          <Text style={styles.cardMeta}>{rideHistoryOrderId(order)}</Text>
-          <Text style={styles.cardMeta}>{formatRideHistoryListDate(order.createdAt)}</Text>
         </View>
 
-        <View style={styles.earnCol}>
-          <Text style={styles.earnPlus}>{rideHistoryEarningPlusLabel(order)}</Text>
-          <Text style={styles.earnCaption}>{t("profile.myOrders.earned", "Earned")}</Text>
-          {distance !== "—" ? (
-            <View style={styles.distBadge}>
-              <Ionicons name="location-outline" size={11} color="#64748B" />
-              <Text style={styles.distText}>{distance}</Text>
+        {paymentLabel ? (
+          <View style={styles.orderMetaRow}>
+            <View style={styles.orderAddressIcon}>
+              <Ionicons name="wallet-outline" size={15} color={GREEN} />
             </View>
-          ) : null}
+            <Text style={styles.orderMetaText} numberOfLines={1} ellipsizeMode="tail">
+              {paymentLabel}
+            </Text>
+          </View>
+        ) : null}
+
+        <View style={styles.orderFoot}>
+          <View
+            style={[
+              styles.statusPill,
+              isDone && !earningPending && styles.statusPillDone,
+              earningPending && styles.statusPillPending,
+              isCancelled && styles.statusPillCancelled,
+            ]}
+          >
+            {isDone && !earningPending ? <View style={styles.statusDot} /> : null}
+            <Text
+              style={[
+                styles.statusPillText,
+                isDone && !earningPending && styles.statusPillTextDone,
+                earningPending && styles.statusPillTextPending,
+                isCancelled && styles.statusPillTextCancelled,
+              ]}
+            >
+              {statusLabel}
+            </Text>
+          </View>
+          <View style={styles.viewDetailsRow}>
+            <Text style={styles.viewDetailsText}>
+              {t("profile.myOrders.viewDetails", "View Details")}
+            </Text>
+            <Ionicons name="chevron-forward" size={16} color={MUTED} />
+          </View>
         </View>
       </View>
-
-      <View style={styles.routeBox}>
-        <View style={styles.routeTimeline}>
-          <View style={styles.routeTimelineTrack}>
-            <View style={[styles.routeTimelineDot, { backgroundColor: "#EA580C" }]} />
-            <View style={styles.routeTimelineLine} />
-            <View style={[styles.routeTimelineDot, { backgroundColor: GREEN }]} />
-          </View>
-          <View style={styles.routeStops}>
-            <View style={styles.routeStop}>
-              <Text style={styles.routeLabelPickup}>PICKUP</Text>
-              <Text style={styles.routeAddr} numberOfLines={3}>
-                {rideHistoryPickupLabel(order)}
-              </Text>
-            </View>
-            <View style={styles.routeStopSpacer} />
-            <View style={styles.routeStop}>
-              <Text style={styles.routeLabelDrop}>DROP</Text>
-              <Text style={styles.routeAddr} numberOfLines={3}>
-                {rideHistoryDropLabel(order)}
-              </Text>
-            </View>
-          </View>
-        </View>
-      </View>
-
-      <View style={styles.cardFooter}>
-        <Text style={styles.viewDetails}>{t("profile.myOrders.viewDetails", "View details")}</Text>
-        <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
       </View>
     </Pressable>
   );
@@ -346,34 +274,21 @@ export function MyRidesScreen() {
   const queryClient = useQueryClient();
   const searchRef = useRef<TextInput>(null);
   const [category, setCategory] = useState<RiderOrderHistoryFilter>("all");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [sortOrder, setSortOrder] = useState<SortOrder>("latest");
   const [searchFocused, setSearchFocused] = useState(false);
   const [dateFrom, setDateFrom] = useState<Date | null>(null);
   const [dateTo, setDateTo] = useState<Date | null>(null);
   const [showDateSheet, setShowDateSheet] = useState(false);
 
   const hasDateFilter = dateFrom != null || dateTo != null;
-
   const { data, isLoading, isFetching, error, refetch } = useRiderOrderHistory(category);
 
   const onCategoryFilter = useCallback((id: RiderOrderHistoryFilter) => {
     setCategory(id);
-    setStatusFilter("all");
-  }, []);
-
-  const onStatusFilter = useCallback((id: StatusFilter) => {
-    setStatusFilter((prev) => (prev === id ? "all" : id));
   }, []);
 
   const orders = useMemo(() => {
     let list = data?.orders ?? [];
-    if (statusFilter === "completed") {
-      list = list.filter((o) => o.status === "delivered");
-    } else if (statusFilter === "cancelled") {
-      list = list.filter((o) => o.status === "cancelled");
-    }
     if (searchQuery.trim()) {
       list = list.filter((o) => orderMatchesHistorySearch(o, searchQuery));
     }
@@ -383,23 +298,9 @@ export function MyRidesScreen() {
     return [...list].sort((a, b) => {
       const ta = new Date(a.createdAt).getTime();
       const tb = new Date(b.createdAt).getTime();
-      return sortOrder === "latest" ? tb - ta : ta - tb;
+      return tb - ta;
     });
-  }, [data?.orders, statusFilter, searchQuery, sortOrder, dateFrom, dateTo, hasDateFilter]);
-
-  const onCalendarPress = useCallback(() => {
-    setShowDateSheet(true);
-  }, []);
-
-  const clearDateFilter = useCallback(() => {
-    setDateFrom(null);
-    setDateTo(null);
-  }, []);
-
-  const onDateRangeApply = useCallback((from: Date | null, to: Date | null) => {
-    setDateFrom(from);
-    setDateTo(to);
-  }, []);
+  }, [data?.orders, searchQuery, dateFrom, dateTo, hasDateFilter]);
 
   const openDetail = useCallback(
     (order: RiderOrderSummary) => {
@@ -410,134 +311,54 @@ export function MyRidesScreen() {
 
   const listHeader = useMemo(
     () => (
-      <View style={styles.listHeader}>
-        <View style={styles.toolbarCard}>
-          <View
-            style={[
-              styles.searchBox,
-              styles.searchSortHalf,
-              searchFocused && styles.searchBoxFocused,
-            ]}
-          >
-            <View style={styles.searchIconWrap}>
-              <Ionicons name="search" size={17} color="#64748B" />
-            </View>
-            <TextInput
-              ref={searchRef}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder={t("profile.myOrders.searchShort", "Search ID...")}
-              placeholderTextColor="#94A3B8"
-              style={styles.searchInput}
-              onFocus={() => setSearchFocused(true)}
-              onBlur={() => setSearchFocused(false)}
-              returnKeyType="search"
-            />
-            {searchQuery.length > 0 ? (
-              <Pressable onPress={() => setSearchQuery("")} hitSlop={8}>
-                <Ionicons name="close-circle" size={18} color="#94A3B8" />
-              </Pressable>
-            ) : null}
-          </View>
-
-          <Pressable
-            onPress={() => setSortOrder((s) => (s === "latest" ? "oldest" : "latest"))}
-            style={[styles.sortRowBtn, styles.searchSortHalf]}
-          >
-            <View style={styles.sortIconWrap}>
-              <Ionicons name="swap-vertical" size={16} color="#475569" />
-            </View>
-            <Text style={styles.sortRowBtnText} numberOfLines={1}>
-              {sortOrder === "latest"
-                ? t("profile.myOrders.sortLatest", "Latest First")
-                : t("profile.myOrders.sortOldest", "Oldest First")}
-            </Text>
-            <Ionicons name="chevron-down" size={14} color="#64748B" />
-          </Pressable>
-        </View>
-
+      <View style={styles.listHead}>
         {hasDateFilter ? (
-          <Pressable onPress={clearDateFilter} style={styles.dateFilterChip}>
-            <Ionicons name="calendar" size={14} color={FILTER_GREEN} />
-            <Text style={styles.dateFilterChipText}>
-              {formatDateRangeChip(dateFrom, dateTo)}
-            </Text>
-            <Ionicons name="close-circle" size={16} color="#94A3B8" />
+          <Pressable
+            onPress={() => {
+              setDateFrom(null);
+              setDateTo(null);
+            }}
+            style={styles.dateChip}
+          >
+            <Ionicons name="calendar" size={14} color={GREEN} />
+            <Text style={styles.dateChipText}>{formatDateRangeChip(dateFrom, dateTo)}</Text>
+            <Ionicons name="close" size={14} color={MUTED} />
           </Pressable>
         ) : null}
+        <Text style={styles.resultsLabel}>
+          {orders.length === 1
+            ? t("profile.myOrders.oneResult", "1 order")
+            : t("profile.myOrders.nResults", "{{count}} orders", { count: orders.length })}
+        </Text>
       </View>
     ),
-    [
-      clearDateFilter,
-      dateFrom,
-      dateTo,
-      hasDateFilter,
-      searchFocused,
-      searchQuery,
-      sortOrder,
-      t,
-    ]
+    [dateFrom, dateTo, hasDateFilter, orders.length, t]
   );
 
   const renderItem = useCallback(
     ({ item }: { item: RiderOrderSummary }) => (
-      <OrderHistoryCard order={item} onPress={() => openDetail(item)} />
+      <OrderCard order={item} onPress={() => openDetail(item)} />
     ),
     [openDetail]
   );
 
   return (
     <SafeAreaView style={styles.root} edges={["top", "bottom"]}>
-      <View style={styles.pageHeader}>
-        <View style={styles.headerAccent} />
-        <View style={styles.pageHeaderTopRow}>
-          <Pressable
-            onPress={() => router.back()}
-            style={({ pressed }) => [styles.backBtn, pressed && styles.backBtnPressed]}
-            hitSlop={8}
-          >
-            <Ionicons name="arrow-back" size={20} color="#0F172A" />
-          </Pressable>
-          <View style={styles.titleBlock}>
-            <Text style={styles.pageTitle} numberOfLines={1}>
-              {t("profile.myOrders.title", "My Orders")}
-            </Text>
-            <Text style={styles.pageSubtitle} numberOfLines={2}>
-              {t("profile.myOrders.subtitle", "View and manage all your completed orders")}
-            </Text>
-          </View>
-          <View style={styles.headerActions}>
-            <Pressable
-              style={styles.headerIconBtn}
-              hitSlop={8}
-              onPress={() => searchRef.current?.focus()}
-            >
-              <Ionicons name="search-outline" size={19} color="#374151" />
-            </Pressable>
-            <Pressable
-              style={[
-                styles.headerIconBtn,
-                hasDateFilter ? styles.headerIconBtnActive : null,
-              ]}
-              hitSlop={8}
-              onPress={onCalendarPress}
-            >
-              <Ionicons
-                name={hasDateFilter ? "calendar" : "calendar-outline"}
-                size={19}
-                color={hasDateFilter ? FILTER_GREEN : "#374151"}
-              />
-            </Pressable>
-          </View>
-        </View>
-
-        <OrderHistoryFilterBar
-          category={category}
-          statusFilter={statusFilter}
-          onCategoryFilter={onCategoryFilter}
-          onStatusFilter={onStatusFilter}
-        />
-      </View>
+      <View style={styles.screen}>
+      <MyOrdersHeader
+        category={category}
+        searchQuery={searchQuery}
+        searchFocused={searchFocused}
+        searchRef={searchRef}
+        hasDateFilter={hasDateFilter}
+        onBack={() => router.back()}
+        onCategoryFilter={onCategoryFilter}
+        onSearchChange={setSearchQuery}
+        onSearchFocus={() => setSearchFocused(true)}
+        onSearchBlur={() => setSearchFocused(false)}
+        onClearSearch={() => setSearchQuery("")}
+        onOpenDateFilter={() => setShowDateSheet(true)}
+      />
 
       {isLoading && !data ? (
         <View style={styles.center}>
@@ -549,8 +370,12 @@ export function MyRidesScreen() {
           keyExtractor={(item) => `${item.category}-${item.id}`}
           renderItem={renderItem}
           ListHeaderComponent={listHeader}
-          contentContainerStyle={[styles.listContent, orders.length === 0 && styles.listEmpty]}
+          contentContainerStyle={[
+            styles.listContent,
+            orders.length === 0 && styles.listEmpty,
+          ]}
           style={styles.list}
+          overScrollMode="never"
           refreshControl={
             <RefreshControl
               refreshing={isFetching && !isLoading}
@@ -558,10 +383,14 @@ export function MyRidesScreen() {
               tintColor={GREEN}
             />
           }
-          ItemSeparatorComponent={() => <View style={styles.cardSpacer} />}
+          removeClippedSubviews={false}
+          ItemSeparatorComponent={() => <View style={styles.separator} />}
+          showsVerticalScrollIndicator={false}
           ListEmptyComponent={
             <View style={styles.empty}>
-              <Ionicons name="document-text-outline" size={48} color="#CBD5E1" />
+              <View style={styles.emptyIcon}>
+                <Ionicons name="receipt-outline" size={40} color="#D1D5DB" />
+              </View>
               <Text style={styles.emptyTitle}>
                 {t("profile.myOrders.emptyTitle", "No orders found")}
               </Text>
@@ -574,542 +403,292 @@ export function MyRidesScreen() {
           }
         />
       )}
+      </View>
 
       <OrderHistoryDateRangeSheet
         visible={showDateSheet}
         onClose={() => setShowDateSheet(false)}
         initialFrom={dateFrom}
         initialTo={dateTo}
-        onApply={onDateRangeApply}
+        onApply={(from, to) => {
+          setDateFrom(from);
+          setDateTo(to);
+        }}
       />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: PAGE_BG },
-  center: { flex: 1, alignItems: "center", justifyContent: "center" },
-  pageHeader: {
-    backgroundColor: HEADER_BG,
+  root: { flex: 1, backgroundColor: BG, overflow: "hidden" },
+  screen: { flex: 1, overflow: "hidden" },
+  pressed: { opacity: 0.9 },
+
+  headerShell: {
+    backgroundColor: BG,
+    paddingBottom: 12,
+    overflow: "hidden",
+  },
+  headerTop: {
+    flexDirection: "row",
+    alignItems: "center",
     paddingHorizontal: 16,
-    paddingTop: 6,
-    paddingBottom: 14,
-    borderBottomLeftRadius: 20,
-    borderBottomRightRadius: 20,
-    ...Platform.select({
-      ios: {
-        shadowColor: "#0f172a",
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.06,
-        shadowRadius: 12,
-      },
-      android: { elevation: 4 },
-      default: {},
-    }),
+    paddingTop: 4,
+    paddingBottom: 12,
+    gap: 8,
   },
-  headerAccent: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 3,
-    backgroundColor: FILTER_GREEN,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-  },
-  pageHeaderTopRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-    marginBottom: 14,
-    marginTop: 4,
-  },
-  backBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#F1F5F9",
-    marginTop: 2,
-  },
-  backBtnPressed: { opacity: 0.75 },
-  titleBlock: { flex: 1, minWidth: 0 },
-  headerActions: { flexDirection: "row", gap: 8, flexShrink: 0, marginTop: 2 },
-  headerIconBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#F8FAFC",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-  },
-  pageTitle: {
-    fontSize: 24,
-    fontWeight: "800",
-    color: "#0F172A",
-    letterSpacing: -0.4,
-  },
-  pageSubtitle: {
-    marginTop: 4,
-    fontSize: 13,
-    fontWeight: "500",
-    color: "#64748B",
-    lineHeight: 18,
-  },
-  filterSection: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 20,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: "#E8EDF3",
-    ...Platform.select({
-      ios: {
-        shadowColor: "#0f172a",
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 0.07,
-        shadowRadius: 14,
-      },
-      android: { elevation: 3 },
-      default: {},
-    }),
-  },
-  filterSectionHead: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    marginBottom: 14,
-  },
-  filterHeadIcon: {
+  headerBackBtn: {
     width: 36,
     height: 36,
-    borderRadius: 12,
-    backgroundColor: "#ECFDF5",
     alignItems: "center",
     justifyContent: "center",
+    flexShrink: 0,
   },
-  filterHeadText: { flex: 1 },
-  filterSectionTitle: {
-    fontSize: 15,
+  headerTextCol: {
+    flex: 1,
+    minWidth: 0,
+    marginRight: 4,
+  },
+  headerTitle: {
+    fontSize: 20,
     fontWeight: "800",
-    color: "#0F172A",
+    color: INK,
+    letterSpacing: -0.4,
   },
-  filterSectionSub: {
-    marginTop: 2,
+  headerSubtitle: {
     fontSize: 12,
     fontWeight: "500",
-    color: "#94A3B8",
+    color: MUTED,
+    marginTop: 2,
   },
-  categoryRow: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  catTile: {
-    flex: 1,
-    alignItems: "center",
-    paddingVertical: 10,
-    paddingHorizontal: 4,
-    borderRadius: 16,
-    borderWidth: 1.5,
-    borderColor: "#EEF2F6",
-    backgroundColor: "#FAFBFC",
-    minWidth: 0,
-  },
-  catTileSelected: {
-    backgroundColor: "#FFFFFF",
-    ...Platform.select({
-      ios: {
-        shadowColor: "#0f172a",
-        shadowOffset: { width: 0, height: 3 },
-        shadowOpacity: 0.08,
-        shadowRadius: 6,
-      },
-      android: { elevation: 2 },
-      default: {},
-    }),
-  },
-  catTilePressed: { opacity: 0.9, transform: [{ scale: 0.97 }] },
-  catIconBox: {
-    width: 46,
-    height: 46,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 6,
-  },
-  catTileLabel: {
-    fontSize: 11,
-    fontWeight: "600",
-    textAlign: "center",
-  },
-  catTileLabelIdle: {
-    color: "#475569",
-  },
-  catTileDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 3,
-    marginTop: 5,
-  },
-  filterDividerRow: {
+  searchRow: {
     flexDirection: "row",
     alignItems: "center",
+    paddingHorizontal: 16,
     gap: 10,
-    marginVertical: 14,
-  },
-  filterDividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: "#E8EDF3",
-  },
-  filterDividerLabel: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#94A3B8",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  statusRow: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  statusChip: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 14,
-    borderWidth: 1.5,
-    minWidth: 0,
-  },
-  statusChipPressed: { opacity: 0.92 },
-  statusIconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  statusChipLabel: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: "700",
-  },
-  list: { flex: 1 },
-  listHeader: {
-    paddingTop: 14,
-    paddingBottom: 6,
-  },
-  toolbarCard: {
-    flexDirection: "row",
-    alignItems: "stretch",
-    gap: 10,
-    marginHorizontal: 16,
-    marginBottom: 10,
-    padding: 10,
-    borderRadius: 16,
-    backgroundColor: CARD_BG,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    ...Platform.select({
-      ios: {
-        shadowColor: "#0f172a",
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.05,
-        shadowRadius: 8,
-      },
-      android: { elevation: 2 },
-      default: {},
-    }),
-  },
-  searchSortHalf: {
-    flex: 1,
-    minWidth: 0,
   },
   searchBox: {
+    flex: 1,
+    flexShrink: 1,
+    minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
-    backgroundColor: "#F8FAFC",
-    borderRadius: 12,
+    gap: 8,
+    backgroundColor: SURFACE,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    minHeight: 48,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
-    paddingHorizontal: 8,
-    minHeight: 46,
-  },
-  searchIconWrap: {
-    width: 28,
-    alignItems: "center",
-    justifyContent: "center",
+    borderColor: BORDER,
   },
   searchBoxFocused: {
-    borderColor: FILTER_GREEN,
-    backgroundColor: "#FFFFFF",
+    borderColor: GREEN,
   },
   searchInput: {
     flex: 1,
     fontSize: 14,
-    fontWeight: "600",
-    color: "#0F172A",
+    fontWeight: "500",
+    color: INK,
     paddingVertical: 8,
   },
-  sortRowBtn: {
-    flexDirection: "row",
+  filterBtn: {
+    width: 48,
+    height: 48,
+    flexShrink: 0,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    gap: 4,
-    paddingHorizontal: 6,
-    minHeight: 46,
-    borderRadius: 12,
-    backgroundColor: "#F8FAFC",
+    backgroundColor: SURFACE,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: BORDER,
   },
-  sortIconWrap: {
-    width: 24,
-    alignItems: "center",
+  filterBtnActive: {
+    backgroundColor: GREEN_LIGHT,
+    borderColor: GREEN,
   },
-  sortRowBtnText: {
-    flex: 1,
-    flexShrink: 1,
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#334155",
-    textAlign: "center",
-  },
-  headerIconBtnActive: {
-    borderColor: "#86EFAC",
-    backgroundColor: "#ECFDF5",
-  },
-  dateFilterChip: {
+
+  center: { flex: 1, alignItems: "center", justifyContent: "center" },
+  list: { flex: 1 },
+  listContent: { paddingHorizontal: 16, paddingBottom: 24 },
+  listEmpty: { flexGrow: 1 },
+  listHead: { paddingTop: 4, paddingBottom: 4 },
+
+  dateChip: {
     flexDirection: "row",
     alignItems: "center",
     alignSelf: "flex-start",
     gap: 6,
-    marginHorizontal: 16,
-    marginBottom: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: 999,
-    backgroundColor: "#ECFDF5",
-    borderWidth: 1,
-    borderColor: "#A7F3D0",
+    backgroundColor: GREEN_LIGHT,
+    marginBottom: 10,
   },
-  dateFilterChipText: {
-    flex: 1,
-    fontSize: 13,
+  dateChipText: {
+    fontSize: 12,
     fontWeight: "600",
     color: "#047857",
   },
-  listContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 24,
+  resultsLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: MUTED,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    marginBottom: 10,
   },
-  listEmpty: { flexGrow: 1 },
-  cardSpacer: { height: 12 },
+  separator: { height: 12 },
+
+  orderCardPressable: {
+    width: "100%",
+    alignSelf: "stretch",
+  },
   orderCard: {
-    backgroundColor: CARD_BG,
-    borderRadius: 16,
+    width: "100%",
+    backgroundColor: SURFACE,
+    borderRadius: 14,
+    padding: 14,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
-    overflow: "hidden",
+    borderColor: CARD_BORDER,
     ...Platform.select({
       ios: {
-        shadowColor: "#0f172a",
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.06,
-        shadowRadius: 8,
+        shadowColor: "#0F172A",
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.05,
+        shadowRadius: 3,
       },
-      android: { elevation: 2 },
+      android: { elevation: 1 },
       default: {},
     }),
   },
-  orderCardPressed: { opacity: 0.96 },
-  cardTopRow: {
+  orderCardInner: {
+    width: "100%",
+  },
+  orderTop: {
     flexDirection: "row",
     alignItems: "flex-start",
-    padding: 14,
-    paddingBottom: 10,
-    gap: 12,
+    marginBottom: 12,
   },
-  categoryIconBox: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
+  orderCatCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
+    marginRight: 12,
     flexShrink: 0,
   },
-  cardMainCol: {
-    flex: 1,
-    minWidth: 0,
-  },
-  badgeRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    flexWrap: "wrap",
-    gap: 6,
-    marginBottom: 6,
-  },
-  catTag: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  catTagText: { fontSize: 11, fontWeight: "800" },
-  completedBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: "#ECFDF5",
-  },
-  completedBadgeText: { fontSize: 11, fontWeight: "700", color: GREEN },
-  cancelledBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: "#FEF2F2",
-  },
-  cancelledBadgeText: { fontSize: 11, fontWeight: "700", color: "#DC2626" },
-  cardTitle: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: "#0F172A",
-    lineHeight: 22,
-    marginBottom: 3,
-  },
-  cardMeta: {
-    fontSize: 12,
-    fontWeight: "500",
-    color: "#94A3B8",
-    marginBottom: 2,
-  },
-  earnCol: {
+  orderMetaCol: { flex: 1, minWidth: 0, marginRight: 8, flexShrink: 1 },
+  orderId: { fontSize: 14, fontWeight: "800", color: INK },
+  orderDate: { fontSize: 12, fontWeight: "500", color: MUTED, marginTop: 2 },
+  orderPriceCol: {
     alignItems: "flex-end",
     flexShrink: 0,
-    maxWidth: 88,
-    paddingTop: 2,
+    width: 72,
   },
-  earnPlus: { fontSize: 16, fontWeight: "800", color: GREEN, textAlign: "right" },
-  earnCaption: {
-    fontSize: 10,
-    fontWeight: "600",
-    color: "#94A3B8",
-    marginTop: 2,
-    marginBottom: 6,
-    textAlign: "right",
+  orderPrice: { fontSize: 16, fontWeight: "800", color: INK },
+  orderPriceCancelled: {
+    color: MUTED,
+    textDecorationLine: "line-through",
   },
-  distBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 3,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: "#F1F5F9",
-  },
-  distText: { fontSize: 11, fontWeight: "600", color: "#64748B" },
-  routeBox: {
-    marginHorizontal: 14,
+  orderItems: { fontSize: 12, fontWeight: "500", color: MUTED, marginTop: 2 },
+  orderTitle: {
+    width: "100%",
+    fontSize: 15,
+    fontWeight: "700",
+    color: INK,
+    lineHeight: 21,
     marginBottom: 10,
-    padding: 12,
-    borderRadius: 12,
-    backgroundColor: "#F8FAFC",
-    borderWidth: 1,
-    borderColor: "#EEF2F6",
   },
-  routeTimeline: {
+  orderAddressRow: {
     flexDirection: "row",
-    alignItems: "stretch",
-    gap: 12,
+    alignItems: "flex-start",
+    gap: 8,
+    marginBottom: 8,
   },
-  routeTimelineTrack: {
-    width: 16,
+  orderAddressIcon: {
+    width: 18,
+    marginTop: 1,
+    flexShrink: 0,
     alignItems: "center",
-    paddingTop: 4,
-    paddingBottom: 4,
   },
-  routeTimelineDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
-  routeTimelineLine: {
-    flex: 1,
-    width: 2,
-    minHeight: 24,
-    backgroundColor: "#CBD5E1",
-    marginVertical: 4,
-  },
-  routeStops: {
+  orderAddress: {
     flex: 1,
     minWidth: 0,
-    justifyContent: "space-between",
-  },
-  routeStop: { flexShrink: 0 },
-  routeStopSpacer: { height: 8 },
-  routeLabelPickup: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: "#EA580C",
-    letterSpacing: 0.5,
-    marginBottom: 3,
-  },
-  routeLabelDrop: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: GREEN,
-    letterSpacing: 0.5,
-    marginBottom: 3,
-  },
-  routeAddr: {
     fontSize: 13,
     fontWeight: "500",
-    color: "#334155",
-    lineHeight: 18,
+    color: "#4B5563",
+    lineHeight: 19,
   },
-  cardFooter: {
+  orderMetaRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    marginBottom: 14,
+  },
+  orderMetaText: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 12,
+    fontWeight: "500",
+    color: MUTED,
+    lineHeight: 17,
+  },
+  orderFoot: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "flex-end",
-    gap: 4,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    justifyContent: "space-between",
+    paddingTop: 14,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#EEF2F6",
-    backgroundColor: "#FAFBFC",
+    borderTopColor: BORDER,
   },
-  viewDetails: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#94A3B8",
+  statusPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#F3F4F6",
   },
+  statusPillDone: { backgroundColor: GREEN_LIGHT },
+  statusPillPending: { backgroundColor: "#FFFBEB" },
+  statusPillCancelled: { backgroundColor: "#FEF2F2" },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: GREEN,
+  },
+  statusPillText: { fontSize: 12, fontWeight: "700", color: MUTED },
+  statusPillTextDone: { color: GREEN },
+  statusPillTextPending: { color: "#B45309" },
+  statusPillTextCancelled: { color: "#DC2626" },
+  viewDetailsRow: { flexDirection: "row", alignItems: "center", gap: 2 },
+  viewDetailsText: { fontSize: 13, fontWeight: "600", color: MUTED },
+
   empty: {
     alignItems: "center",
     paddingHorizontal: 32,
-    paddingTop: 40,
-    gap: 8,
+    paddingTop: 48,
   },
-  emptyTitle: {
-    fontSize: 17,
-    fontWeight: "800",
-    color: "#0F172A",
-    marginTop: 8,
+  emptyIcon: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: SURFACE,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: BORDER,
   },
+  emptyTitle: { fontSize: 17, fontWeight: "800", color: INK },
   emptySub: {
     fontSize: 14,
-    color: "#64748B",
+    color: MUTED,
     textAlign: "center",
+    marginTop: 6,
     lineHeight: 20,
   },
 });

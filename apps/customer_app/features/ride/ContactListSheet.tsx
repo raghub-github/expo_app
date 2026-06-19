@@ -31,12 +31,16 @@ type ContactListSheetProps = {
   visible: boolean;
   onClose: () => void;
   onSelectContact?: (name: string, phone?: string) => void;
+  title?: string;
+  emptyText?: string;
 };
 
 export function ContactListSheet({
   visible,
   onClose,
   onSelectContact,
+  title = "Select a guest",
+  emptyText = "No contacts found on this device.",
 }: ContactListSheetProps) {
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
@@ -56,11 +60,13 @@ export function ContactListSheet({
     })
       .then(({ data }) => {
         setContacts(
-          data.map((c) => ({
-            id: c.id ?? c.name,
-            name: c.name ?? "Unknown",
-            phone: c.phoneNumbers?.[0]?.number,
-          }))
+          data
+            .map((c) => ({
+              id: c.id ?? c.name,
+              name: c.name ?? "Unknown",
+              phone: c.phoneNumbers?.[0]?.number,
+            }))
+            .filter((c) => Boolean(c.name?.trim()) && Boolean(c.phone?.replace(/\D/g, "")))
         );
       })
       .catch((e) => {
@@ -70,7 +76,9 @@ export function ContactListSheet({
   }, [visible]);
 
   const handleSelect = (item: ContactItem) => {
-    onSelectContact?.(item.name, item.phone);
+    const phone = item.phone?.replace(/[\s-]/g, "") ?? "";
+    if (!phone) return;
+    onSelectContact?.(item.name, phone);
     onClose();
   };
 
@@ -93,7 +101,7 @@ export function ContactListSheet({
         >
           <View style={styles.handle} />
           <View style={styles.headerRow}>
-            <Text style={styles.title}>Select a guest</Text>
+            <Text style={styles.title}>{title}</Text>
             <TouchableOpacity onPress={onClose} style={styles.closeBtn} hitSlop={12}>
               <Ionicons name="close" size={22} color={GatiMitraColors.textPrimary} />
             </TouchableOpacity>
@@ -105,6 +113,10 @@ export function ContactListSheet({
           ) : error ? (
             <View style={styles.errorWrap}>
               <Text style={styles.errorText}>{error}</Text>
+            </View>
+          ) : contacts.length === 0 ? (
+            <View style={styles.errorWrap}>
+              <Text style={styles.errorText}>{emptyText}</Text>
             </View>
           ) : (
             <FlatList

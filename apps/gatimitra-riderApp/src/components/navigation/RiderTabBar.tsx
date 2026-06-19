@@ -1,9 +1,10 @@
 import React from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Text, Pressable, StyleSheet, Platform } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { resolveRiderTabBarBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { useEarningsBankSheetStore } from "@/src/stores/earningsBankSheetStore";
 import { colors } from "@/src/theme";
 import { LORA_BOLD, LORA_SEMIBOLD, TAB_LABEL_SIZE } from "@/src/theme/headerFonts";
 
@@ -27,6 +28,9 @@ const TABS: TabConfig[] = [
 export function RiderTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
   const bottomPad = resolveRiderTabBarBottomInset(insets.bottom);
+  const bankSheetOpen = useEarningsBankSheetStore((s) => s.visible);
+
+  if (bankSheetOpen) return null;
 
   return (
     <View style={[styles.shell, { paddingBottom: bottomPad }]}>
@@ -80,15 +84,18 @@ export function RiderTabBar({ state, descriptors, navigation }: BottomTabBarProp
 const styles = StyleSheet.create({
   shell: {
     backgroundColor: "#ffffff",
-    borderTopWidth: 1,
-    borderTopColor: colors.gray[100],
     paddingTop: 4,
     paddingHorizontal: 6,
-    shadowColor: "#0f172a",
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.06,
-    shadowRadius: 12,
-    elevation: 12,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0f172a",
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.03,
+        shadowRadius: 4,
+      },
+      android: { elevation: 1 },
+      default: {},
+    }),
   },
   bar: {
     flexDirection: "row",

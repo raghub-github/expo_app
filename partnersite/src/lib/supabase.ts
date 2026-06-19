@@ -1,8 +1,10 @@
 import { createBrowserClient } from '@supabase/ssr';
+import { createSafeFetchWithTimeout } from '@/lib/auth/fetch-with-timeout';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 const hasEnv = Boolean(supabaseUrl && supabaseAnonKey);
+const browserFetch = createSafeFetchWithTimeout(15_000);
 
 if (!hasEnv && typeof window !== 'undefined') {
 	// Browser-only warning — silence build/SSG which loads this module before
@@ -20,7 +22,9 @@ const safeUrl = supabaseUrl || 'https://placeholder.supabase.co';
 const safeAnonKey = supabaseAnonKey || 'placeholder-anon-key';
 
 // Client-side Supabase client using @supabase/ssr for proper cookie handling.
-export const supabase = createBrowserClient(safeUrl, safeAnonKey);
+export const supabase = createBrowserClient(safeUrl, safeAnonKey, {
+  global: { fetch: browserFetch },
+});
 
 // Service-key usage is intentionally not exposed from the frontend bundle;
 // this alias is kept for compatibility with older imports.

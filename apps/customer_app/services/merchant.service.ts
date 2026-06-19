@@ -288,6 +288,19 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
       const n = Number(raw);
       return Number.isFinite(n) && n > 0 ? n : null;
     })(),
+    liveStatus: (() => {
+      const raw =
+        item.liveStatus ??
+        (item as Record<string, unknown>).liveStatus ??
+        (item as Record<string, unknown>).live_status;
+      const normalized = (raw ?? "").toString().trim().toUpperCase();
+      if (normalized === "OPEN" || normalized === "CLOSED") {
+        return normalized as "OPEN" | "CLOSED";
+      }
+      if (item.isOpen === true) return "OPEN";
+      if (item.isOpen === false) return "CLOSED";
+      return undefined;
+    })(),
   };
 }
 

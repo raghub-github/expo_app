@@ -76,7 +76,7 @@ export function formatOpenStatusTagText(openStatus: StoreOpenStatusLabel): strin
     return `${openStatus.label} · ${openStatus.sub}`;
   }
   if (openStatus.label === "Closed" && openStatus.sub.startsWith("Opens")) {
-    return openStatus.sub;
+    return `Closed · ${openStatus.sub}`;
   }
   return `${openStatus.label} · ${openStatus.sub}`;
 }

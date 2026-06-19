@@ -2,13 +2,21 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Loader2, RefreshCw, Play, Copy, Shield, Plus, FileBarChart, CheckCircle, Pencil, Archive } from "lucide-react";
+import { Loader2, RefreshCw, Copy, Plus, Pencil, Archive } from "lucide-react";
 import { readApiJson } from "@/lib/payment/read-api-json";
+import { useToast } from "@/context/ToastContext";
 import {
+  readGmRuleEngineCacheSnapshot,
   resolveGmRuleEngineInitial,
   writeGmRuleEngineCache,
   type GmRuleEngineCachedCatalogs,
 } from "@/components/rules/gm-rule-engine-cache";
+import {
+  PenaltyPartyToggle,
+  RiderCancellationPenaltyPanel,
+} from "@/components/rules/RiderCancellationPenaltyPanel";
+import { re } from "@/components/rules/gm-rule-engine-ui";
+import type { PenaltyPartyCode } from "@/lib/rider-cancellation-penalty-engine.types";
 
 type Catalogs = GmRuleEngineCachedCatalogs;
 
@@ -19,15 +27,16 @@ export type GmRuleEngineInitialPayload = {
   loadError: string | null;
 };
 
-function initialMessage(payload: GmRuleEngineInitialPayload): { type: "ok" | "err"; text: string } | null {
-  if (payload.loadError) return { type: "err", text: payload.loadError };
+function initialMessage(payload: GmRuleEngineInitialPayload): string | null {
+  if (payload.loadError) return payload.loadError;
   if (payload.migrationRequired) {
-    return { type: "err", text: "Run migration 0246 on Supabase SQL editor." };
+    return "Run migration 0246 on Supabase SQL editor.";
   }
   return null;
 }
 
 export function GmRuleEngineClient({ initialPayload }: { initialPayload: GmRuleEngineInitialPayload }) {
+  const { toast } = useToast();
   const hydrated = useMemo(() => resolveGmRuleEngineInitial(initialPayload), [initialPayload]);
 
   const [refreshing, setRefreshing] = useState(false);
@@ -35,47 +44,21 @@ export function GmRuleEngineClient({ initialPayload }: { initialPayload: GmRuleE
   const [migrationRequired, setMigrationRequired] = useState(hydrated.migrationRequired);
   const [rows, setRows] = useState<Record<string, unknown>[]>(hydrated.rows);
   const [catalogs, setCatalogs] = useState<Catalogs | null>(hydrated.catalogs);
-  const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(() =>
-    initialMessage(hydrated)
-  );
-  const [simResult, setSimResult] = useState<Record<string, unknown> | null>(null);
-  const [simulating, setSimulating] = useState(false);
 
-  const [tab, setTab] = useState<"rules" | "simulator" | "approvals" | "reports">("rules");
-  const [approvals, setApprovals] = useState<Record<string, unknown>[]>([]);
-  const [reports, setReports] = useState<Record<string, unknown>[]>([]);
-
-  const loadApprovals = useCallback(async () => {
-    const res = await fetch("/api/super-admin/gm-rules/approvals", { cache: "no-store" });
-    const data = await readApiJson(res);
-    if (res.ok && data.success) setApprovals((data.rows as Record<string, unknown>[]) ?? []);
-  }, []);
-
-  const loadReports = useCallback(async () => {
-    const res = await fetch("/api/super-admin/gm-rules/reports", { cache: "no-store" });
-    const data = await readApiJson(res);
-    if (res.ok && data.success) setReports((data.rows as Record<string, unknown>[]) ?? []);
-  }, []);
-
-  const [sim, setSim] = useState({
-    scenario_type: "CANCELLATION",
-    service_type: "FOOD",
-    order_stage: "PRE_PICKUP_CANCELLED",
-    triggered_by: "MERCHANT",
-    order_gross: 500,
-  });
+  const [tab, setTab] = useState<"rules" | "penalties">("penalties");
+  const [penaltyParty, setPenaltyParty] = useState<PenaltyPartyCode>("RIDER");
+  const [penaltyRefreshKey, setPenaltyRefreshKey] = useState(0);
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = opts?.silent ?? false;
     if (!silent) setRefreshing(true);
     if (!silent && rows.length === 0) setInitialLoading(true);
-    setMsg(null);
     try {
       const res = await fetch("/api/super-admin/gm-rules", { cache: "no-store" });
       const data = await readApiJson(res);
       if (!res.ok || !data.success) {
         if (!silent || rows.length === 0) {
-          setMsg({ type: "err", text: String(data.error ?? "Load failed") });
+          toast(String(data.error ?? "Load failed"), "error");
         }
         return;
       }
@@ -88,47 +71,42 @@ export function GmRuleEngineClient({ initialPayload }: { initialPayload: GmRuleE
         writeGmRuleEngineCache(nextRows, nextCatalogs);
       }
       if (data.migrationRequired) {
-        setMsg({
-          type: "err",
-          text: String(data.message ?? "Run migration 0246 on Supabase SQL editor."),
-        });
+        toast(String(data.message ?? "Run migration 0246 on Supabase SQL editor."), "error");
       }
     } catch (e) {
       if (!silent || rows.length === 0) {
-        setMsg({ type: "err", text: e instanceof Error ? e.message : "Load failed" });
+        toast(e instanceof Error ? e.message : "Load failed", "error");
       }
     } finally {
       setInitialLoading(false);
       if (!silent) setRefreshing(false);
     }
-  }, [rows.length]);
+  }, [rows.length, toast]);
 
   useEffect(() => {
-    void load({ silent: hydrated.rows.length > 0 });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount + stale-while-revalidate only
-  }, []);
+    const bootMsg = initialMessage(hydrated);
+    if (bootMsg) toast(bootMsg, "error");
+  }, [hydrated, toast]);
 
-  const runSimulation = async () => {
-    setSimulating(true);
-    setSimResult(null);
-    try {
-      const res = await fetch("/api/super-admin/gm-rules/simulate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(sim),
-      });
-      const data = await readApiJson(res);
-      if (!res.ok || !data.success) {
-        setMsg({ type: "err", text: String(data.error ?? "Simulation failed") });
-        return;
-      }
-      setSimResult((data.result as Record<string, unknown>) ?? null);
-      setMsg({ type: "ok", text: "Simulation complete" });
-    } catch (e) {
-      setMsg({ type: "err", text: e instanceof Error ? e.message : "Simulation failed" });
-    } finally {
-      setSimulating(false);
+  useEffect(() => {
+    const cached = readGmRuleEngineCacheSnapshot();
+    let hasCachedRows = hydrated.rows.length > 0;
+    if (!hasCachedRows && cached?.rows.length) {
+      setRows(cached.rows);
+      if (cached.catalogs) setCatalogs(cached.catalogs);
+      hasCachedRows = true;
     }
+    if (tab !== "rules") return;
+    void load({ silent: hasCachedRows });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- rules tab + mount cache only
+  }, [tab]);
+
+  const handleRefresh = () => {
+    if (tab === "penalties") {
+      setPenaltyRefreshKey((k) => k + 1);
+      return;
+    }
+    void load();
   };
 
   const bulkAction = async (action: "enable" | "disable" | "archive", ids: number[]) => {
@@ -140,44 +118,60 @@ export function GmRuleEngineClient({ initialPayload }: { initialPayload: GmRuleE
     const data = await readApiJson(res);
     if (res.ok && data.success) {
       setRows((data.rows as Record<string, unknown>[]) ?? []);
-      setMsg({ type: "ok", text: `Bulk ${action} applied` });
+      toast(`Bulk ${action} applied`);
     } else {
-      setMsg({ type: "err", text: String(data.error ?? "Bulk action failed") });
+      toast(String(data.error ?? "Bulk action failed"), "error");
     }
   };
 
   return (
-    <div className="space-y-6 p-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="flex items-center gap-2 text-2xl font-semibold text-slate-900">
-            <Shield className="h-7 w-7 text-indigo-600" />
-            Financial Rule Engine
-          </h1>
-          <p className="mt-1 text-sm text-slate-600">
-            Centralized cancellation, refund, penalty & settlement rules. Catalogs load dynamically from DB enums.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => void load()}
-          disabled={refreshing}
-          className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm disabled:opacity-60"
-        >
-          <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
-          Refresh
-        </button>
-      </div>
-
-      {msg && (
+    <div
+      className="w-full min-w-0 -m-4 space-y-5 p-4 sm:-m-6 sm:p-6"
+      style={{ backgroundColor: re.pageBg, minHeight: "calc(100vh - 4rem)" }}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div
-          className={`rounded-lg px-4 py-3 text-sm ${
-            msg.type === "ok" ? "bg-emerald-50 text-emerald-800" : "bg-red-50 text-red-800"
-          }`}
+          className="inline-flex rounded-lg border border-slate-200 bg-white p-1 shadow-sm"
+          role="tablist"
+          aria-label="Rule engine section"
         >
-          {msg.text}
+          {(["rules", "penalties"] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              role="tab"
+              aria-selected={tab === t}
+              onClick={() => setTab(t)}
+              className={`rounded-md px-4 py-2 text-sm font-medium capitalize transition-colors ${
+                tab === t
+                  ? "bg-[#5D3FD3] text-white shadow-sm"
+                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+              }`}
+            >
+              {t}
+            </button>
+          ))}
         </div>
-      )}
+
+        <div className="flex flex-wrap items-center gap-2">
+          <PenaltyPartyToggle
+            party={penaltyParty}
+            onChange={(p) => {
+              setPenaltyParty(p);
+              setTab("penalties");
+            }}
+          />
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className={re.btnGhost}
+          >
+            <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+        </div>
+      </div>
 
       {migrationRequired && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
@@ -187,120 +181,27 @@ export function GmRuleEngineClient({ initialPayload }: { initialPayload: GmRuleE
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-2">
-        {(["rules", "simulator", "approvals", "reports"] as const).map((t) => (
-          <button
-            key={t}
-            type="button"
-            onClick={() => {
-              setTab(t);
-              if (t === "approvals") void loadApprovals();
-              if (t === "reports") void loadReports();
-            }}
-            className={`rounded-lg px-3 py-1.5 text-sm capitalize ${
-              tab === t ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-700"
-            }`}
+      {tab === "rules" ? (
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Link
+            href="/dashboard/super-admin/rule-engine/new"
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"
           >
-            {t}
-          </button>
-        ))}
-        <Link
-          href="/dashboard/super-admin/rule-engine/new"
-          className="ml-auto inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-sm hover:bg-slate-50"
-        >
-          <Plus className="h-4 w-4" /> New rule
-        </Link>
-      </div>
-
-      {tab === "simulator" && (
-      <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <h2 className="mb-3 text-lg font-medium">Rule simulator</h2>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          <label className="text-sm">
-            Scenario
-            <select
-              className="mt-1 w-full rounded border px-2 py-1.5"
-              value={sim.scenario_type}
-              onChange={(e) => setSim((s) => ({ ...s, scenario_type: e.target.value }))}
-            >
-              {(catalogs?.scenarioTypes ?? ["CANCELLATION"]).map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-sm">
-            Service type
-            <select
-              className="mt-1 w-full rounded border px-2 py-1.5"
-              value={sim.service_type}
-              onChange={(e) => setSim((s) => ({ ...s, service_type: e.target.value }))}
-            >
-              {(catalogs?.serviceTypes ?? [{ code: "FOOD", label: "Food" }]).map((v) => (
-                <option key={v.code} value={v.code}>
-                  {v.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-sm">
-            Order stage
-            <select
-              className="mt-1 w-full rounded border px-2 py-1.5"
-              value={sim.order_stage}
-              onChange={(e) => setSim((s) => ({ ...s, order_stage: e.target.value }))}
-            >
-              {(catalogs?.orderStages ?? []).map((v) => (
-                <option key={v.code} value={v.code}>
-                  {v.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-sm">
-            Triggered by
-            <select
-              className="mt-1 w-full rounded border px-2 py-1.5"
-              value={sim.triggered_by}
-              onChange={(e) => setSim((s) => ({ ...s, triggered_by: e.target.value }))}
-            >
-              {(catalogs?.triggeredBy ?? []).map((v) => (
-                <option key={v.code} value={v.code}>
-                  {v.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-sm">
-            Order gross (₹)
-            <input
-              type="number"
-              className="mt-1 w-full rounded border px-2 py-1.5"
-              value={sim.order_gross}
-              onChange={(e) => setSim((s) => ({ ...s, order_gross: Number(e.target.value) }))}
-            />
-          </label>
+            <Plus className="h-4 w-4" /> New rule
+          </Link>
         </div>
-        <button
-          type="button"
-          disabled={simulating || migrationRequired}
-          onClick={() => void runSimulation()}
-          className="mt-4 inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm text-white disabled:opacity-50"
-        >
-          {simulating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-          Simulate
-        </button>
-        {simResult && (
-          <pre className="mt-4 max-h-64 overflow-auto rounded bg-slate-900 p-3 text-xs text-slate-100">
-            {JSON.stringify(simResult, null, 2)}
-          </pre>
-        )}
-      </section>
+      ) : null}
+
+      {tab === "penalties" && (
+        <RiderCancellationPenaltyPanel
+          party={penaltyParty}
+          onPartyChange={setPenaltyParty}
+          refreshKey={penaltyRefreshKey}
+        />
       )}
 
       {tab === "rules" && (
-      <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+      <section className={re.card}>
         <div className="flex items-center justify-between border-b px-4 py-3">
           <h2 className="text-lg font-medium">Active rules ({rows.length})</h2>
           <div className="flex gap-2">
@@ -401,7 +302,7 @@ export function GmRuleEngineClient({ initialPayload }: { initialPayload: GmRuleE
                         });
                         const data = await readApiJson(res);
                         if (res.ok && data.success) void load();
-                        else setMsg({ type: "err", text: String(data.error ?? "Clone failed") });
+                        else toast(String(data.error ?? "Clone failed"), "error");
                       }}
                     >
                       <Copy className="h-4 w-4" />
@@ -419,7 +320,7 @@ export function GmRuleEngineClient({ initialPayload }: { initialPayload: GmRuleE
                         });
                         const data = await readApiJson(res);
                         if (res.ok && data.success) void load();
-                        else setMsg({ type: "err", text: String(data.error ?? "Status update failed") });
+                        else toast(String(data.error ?? "Status update failed"), "error");
                       }}
                     >
                       {r.active_status === "ACTIVE" ? "Off" : "On"}
@@ -436,7 +337,7 @@ export function GmRuleEngineClient({ initialPayload }: { initialPayload: GmRuleE
                         });
                         const data = await readApiJson(res);
                         if (res.ok && data.success) void load();
-                        else setMsg({ type: "err", text: String(data.error ?? "Archive failed") });
+                        else toast(String(data.error ?? "Archive failed"), "error");
                       }}
                     >
                       <Archive className="h-4 w-4" />
@@ -452,49 +353,6 @@ export function GmRuleEngineClient({ initialPayload }: { initialPayload: GmRuleE
       </section>
       )}
 
-      {tab === "approvals" && (
-        <section className="rounded-xl border bg-white p-4 shadow-sm">
-          <h2 className="mb-3 flex items-center gap-2 font-medium"><CheckCircle className="h-5 w-5" /> Pending approvals ({approvals.length})</h2>
-          <ul className="space-y-2 text-sm">
-            {approvals.map((a) => (
-              <li key={String(a.id)} className="flex items-center justify-between rounded border p-3">
-                <span>{String(a.rule_code)} — ₹{String(a.amount)} — order {String(a.core_order_id ?? a.order_id)}</span>
-                <button type="button" className="rounded bg-emerald-600 px-2 py-1 text-xs text-white" onClick={async () => {
-                  await fetch("/api/super-admin/gm-rules/approvals", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ approvalId: a.id, action: "approve" }) });
-                  void loadApprovals();
-                }}>Approve</button>
-              </li>
-            ))}
-            {approvals.length === 0 && <li className="text-slate-500">No pending approvals.</li>}
-          </ul>
-        </section>
-      )}
-
-      {tab === "reports" && (
-        <section className="rounded-xl border bg-white p-4 shadow-sm">
-          <h2 className="mb-3 flex items-center gap-2 font-medium"><FileBarChart className="h-5 w-5" /> Execution report</h2>
-          <div className="max-h-96 overflow-auto">
-            <table className="min-w-full text-xs">
-              <thead><tr className="text-left text-slate-500"><th className="p-2">Time</th><th className="p-2">Rule</th><th className="p-2">Order</th><th className="p-2">Refund</th><th className="p-2">Status</th></tr></thead>
-              <tbody>
-                {reports.map((r) => (
-                  <tr key={String(r.id)} className="border-t">
-                    <td className="p-2">{String(r.executed_at ?? "").slice(0, 19)}</td>
-                    <td className="p-2 font-mono">{String(r.rule_code)}</td>
-                    <td className="p-2">{String(r.core_order_id ?? r.order_id)}</td>
-                    <td className="p-2">₹{String(r.applied_refund)}</td>
-                    <td className="p-2">{String(r.execution_status)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
-
-      <p className="text-xs text-slate-500">
-        Legacy <code>payment_cancellation_rules</code> tab is deprecated — manage all rules here.
-      </p>
     </div>
   );
 }

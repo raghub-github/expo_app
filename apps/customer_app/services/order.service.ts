@@ -5,6 +5,7 @@
 
 import api from "./api";
 import { ORDER_PLACEMENT_TIMEOUT_MS } from "@/constants";
+import { isRetriableCheckoutError } from "@/utils/networkError";
 
 const ORDERS_PREFIX = "/v1/orders";
 
@@ -26,6 +27,8 @@ export type OrderSummary = {
   totalReviews?: number | null;
   totalAmount?: number;
   createdAt: string;
+  paymentStatus?: string | null;
+  checkoutMetadata?: Record<string, unknown> | null;
   items?: {
     name: string;
     quantity: number;
@@ -39,6 +42,10 @@ export type OrderSummary = {
   storeRatingSubmitted?: boolean;
   storeRating?: number | null;
   deliveryRating?: number | null;
+  /** Human-readable cancellation reason (orders_food.rejected_reason). */
+  cancellationReason?: string | null;
+  /** Who cancelled — e.g. Cancelled by me, Rejected by Restaurant. */
+  cancelledByLabel?: string | null;
   orderType?: string | null;
   rideType?: string | null;
   deliveryAddress?: string | null;
@@ -61,10 +68,22 @@ export type OrderDetail = OrderSummary & {
     phone?: string;
     photoUrl?: string | null;
     rating?: number | null;
+    deliveredOrdersCount?: number | null;
     vehicleRegistration?: string | null;
     vehicleModel?: string | null;
   };
   deliveryAddress?: string;
+  deliveryAddressLabel?: string | null;
+  deliveryContactName?: string | null;
+  deliveryContactPhone?: string | null;
+  deliveryPrimaryContactName?: string | null;
+  alternateContactName?: string | null;
+  alternateContactPhone?: string | null;
+  /** Set when customer added an alternate contact from order help (one-time). */
+  alternateContactSetAt?: string | null;
+  deliveryInstructionsList?: string[];
+  merchantInstructionsList?: string[];
+  merchantPhone?: string | null;
   paymentMethod?: string | null;
   paymentStatus?: string | null;
   /** 4-digit code shown on customer tracking for delivery handoff. */
@@ -75,6 +94,12 @@ export type OrderDetail = OrderSummary & {
   rideType?: string | null;
   /** ISO timestamp when assigned rider marked reached pickup. */
   riderReachedPickupAt?: string | null;
+  /** ISO timestamp when rider marked food pickup (OTP/barcode/mark). */
+  riderPickedUpAt?: string | null;
+  /** ISO timestamp when rider verified pickup OTP (person_ride). */
+  pickupOtpVerifiedAt?: string | null;
+  /** Person ride started — captain en route to drop. */
+  rideStarted?: boolean | null;
   /** Optional: for map – when available from backend */
   deliveryLat?: number | null;
   deliveryLng?: number | null;
@@ -86,12 +111,28 @@ export type OrderDetail = OrderSummary & {
   deliveryRating?: number | null;
   storeReviewText?: string | null;
   riderReviewText?: string | null;
+  storeReviewTags?: string[];
+  riderReviewTags?: string[];
+  /** Customer packaging feedback: good | not_good */
+  customerPackagingFeedback?: "good" | "not_good" | null;
+  /** Customer answer: was rider in GatiMitra uniform? */
+  customerRiderInUniform?: boolean | null;
   /** Rider tip paid at checkout (₹). */
   tipAmount?: number | null;
   /** Trip distance in km when available. */
   distanceKm?: number | null;
   /** Estimated or actual ride duration in minutes. */
   rideDurationMinutes?: number | null;
+  /** Person ride: finalized pickup wait duration (seconds). */
+  pickupWaitSeconds?: number | null;
+  pickupWaitingChargePerMin?: number | null;
+  estimatedPickupWaitingCharge?: number | null;
+  deliveryPromiseComparison?: {
+    promisedMinutes: number;
+    actualMinutes: number;
+    deltaMinutes: number;
+    message: string;
+  } | null;
 };
 
 /** Live rider position for tracking map (from GET /orders/:id/tracking) */
@@ -157,6 +198,8 @@ export type CreateOrderPayload = {
   pickupLon?: number;
   couponCode?: string | null;
   subscriptionOptIn?: boolean;
+  subscriptionPlanId?: number;
+  subscriptionBillingCycle?: "weekly" | "monthly" | "yearly";
   /** 'delivery' (default) or 'self_pickup'. Self-pickup zeroes the delivery fee server-side. */
   deliveryType?: "delivery" | "self_pickup";
   checkoutMetadata?: CheckoutMetadataPayload;
@@ -236,6 +279,25 @@ export const orderService = {
     return data;
   },
 
+  /** Pending order with retries on flaky LAN / slow billing recalc (idempotent via Idempotency-Key). */
+  async createPendingOrderWithRetry(
+    payload: CreatePendingPayload,
+    opts: { retries?: number; delayMs?: number } = {}
+  ): Promise<CreatePendingResponse> {
+    const { retries = 2, delayMs = 1200 } = opts;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await this.createPendingOrder(payload);
+      } catch (e) {
+        lastErr = e;
+        if (!isRetriableCheckoutError(e) || attempt === retries) throw e;
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+    throw lastErr;
+  },
+
   async finalizeOrder(payload: FinalizeOrderPayload): Promise<FinalizeOrderResponse> {
     const { data } = await api.post<FinalizeOrderResponse>(`${ORDERS_PREFIX}/finalize`, payload, {
       timeout: ORDER_PLACEMENT_TIMEOUT_MS,
@@ -248,7 +310,7 @@ export const orderService = {
     return data;
   },
 
-  /** Finalize with retries on network error (idempotent; safe to retry). */
+  /** Finalize with retries on network error or idempotent server failures (safe to retry). */
   async finalizeOrderWithRetry(
     payload: FinalizeOrderPayload,
     opts: { retries?: number; delayMs?: number } = {}
@@ -260,10 +322,7 @@ export const orderService = {
         return await this.finalizeOrder(payload);
       } catch (e) {
         lastErr = e;
-        const isNetwork =
-          (e as { code?: string; message?: string })?.code === "ERR_NETWORK" ||
-          String((e as Error)?.message ?? "").toLowerCase().includes("network error");
-        if (!isNetwork || attempt === retries) throw e;
+        if (!isRetriableCheckoutError(e) || attempt === retries) throw e;
         await new Promise((r) => setTimeout(r, delayMs));
       }
     }
@@ -293,14 +352,104 @@ export const orderService = {
   async submitStoreRating(
     orderId: string,
     payload: {
-      storeRating: number;
+      storeRating?: number | null;
       deliveryRating?: number | null;
       reviewText?: string | null;
       riderReviewText?: string | null;
+      storeReviewTags?: string[];
+      riderReviewTags?: string[];
       riderTipAmount?: number | null;
     }
-  ): Promise<{ submitted: true; storeRating: number; deliveryRating: number | null }> {
+  ): Promise<{ submitted: true; storeRating: number | null; deliveryRating: number | null }> {
     const { data } = await api.post(`${ORDERS_PREFIX}/${orderId}/store-rating`, payload);
+    return data;
+  },
+
+  async submitPostDeliveryFeedback(
+    orderId: string,
+    payload: {
+      packagingFeedback?: "good" | "not_good";
+      riderInUniform?: boolean;
+    }
+  ): Promise<{
+    ok: true;
+    packagingFeedback: "good" | "not_good" | null;
+    riderInUniform: boolean | null;
+  }> {
+    const { data } = await api.post(`${ORDERS_PREFIX}/${orderId}/post-delivery-feedback`, payload);
+    return data;
+  },
+
+  /** Pay a delivery partner tip during live order tracking (after Razorpay success). */
+  async submitRiderTip(
+    orderId: string,
+    payload: {
+      tipAmount: number;
+      razorpayOrderId: string;
+      razorpayPaymentId: string;
+      razorpaySignature: string;
+    }
+  ): Promise<{ ok: true; tipAmount: number }> {
+    const { data } = await api.post(`${ORDERS_PREFIX}/${orderId}/rider-tip`, payload);
+    return data;
+  },
+
+  /** Pay ride fare after delivery (Razorpay verify + rider wallet credit). */
+  async payRideFare(
+    orderId: string,
+    payload: {
+      razorpayOrderId: string;
+      razorpayPaymentId: string;
+      razorpaySignature: string;
+    }
+  ): Promise<{ ok: true; amountPaid: number }> {
+    const { data } = await api.post(`${ORDERS_PREFIX}/${orderId}/ride-fare-payment`, payload);
+    return data;
+  },
+
+  /** Append a cooking / kitchen note during live food order tracking. */
+  async appendMerchantInstruction(
+    orderId: string,
+    instruction: string
+  ): Promise<{ ok: true; merchantInstructionsList: string[] }> {
+    const { data } = await api.post(`${ORDERS_PREFIX}/${orderId}/merchant-instructions`, {
+      instruction,
+    });
+    return data;
+  },
+
+  async updateDeliveryInstructions(
+    orderId: string,
+    instructions: string[]
+  ): Promise<{ ok: true; deliveryInstructionsList: string[] }> {
+    const { data } = await api.post(`${ORDERS_PREFIX}/${orderId}/delivery-instructions`, {
+      instructions,
+    });
+    return data;
+  },
+
+  async setAlternateContact(
+    orderId: string,
+    payload: { contactName: string; contactPhone: string }
+  ): Promise<{ ok: true; deliveryContactName: string | null; deliveryContactPhone: string | null }> {
+    const { data } = await api.post(`${ORDERS_PREFIX}/${orderId}/alternate-contact`, payload);
+    return data;
+  },
+
+  /** Platform + delivery GST tax invoices (HTML for in-app viewer). */
+  async fetchOrderInvoice(orderId: string): Promise<{ html: string; title: string }> {
+    const { data } = await api.get(`${ORDERS_PREFIX}/${orderId}/invoice`);
+    return data;
+  },
+
+  async cancelFoodOrder(
+    orderId: string,
+    payload: { reasonCode: string; reasonText: string }
+  ): Promise<{ orderId: string; status: string }> {
+    const { data } = await api.post<{ orderId: string; status: string }>(
+      `${ORDERS_PREFIX}/${orderId}/cancel`,
+      payload
+    );
     return data;
   },
 };

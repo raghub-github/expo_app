@@ -27,6 +27,7 @@ import {
   sqlFoodOrderActiveListScope,
   sqlFoodOrderDashboardStageFilter,
 } from "./food-orders-dashboard-stages";
+import { filterOrderProgressTimelineEntries } from "@/lib/orders/order-timeline-rider-filter";
 import {
   canApplyManualStatusUpdate,
   resolveDispatchManualStage,
@@ -135,6 +136,11 @@ export interface OrdersCoreRow {
   customerName: string | null;
   customerMobile: string | null;
   customerEmail: string | null;
+  customerAlternateMobile: string | null;
+  orderAlternateContactPhone: string | null;
+  orderAlternateContactName: string | null;
+  orderDeliveryPrimaryContactPhone: string | null;
+  orderDeliveryPrimaryContactName: string | null;
   customerAccountStatus: string | null;
   customerRiskFlag: string | null;
   // Rider info
@@ -422,6 +428,11 @@ export async function listOrdersCore(
         customerName: customers.fullName,
         customerMobile: customers.primaryMobile,
         customerEmail: customers.email,
+        customerAlternateMobile: customers.alternateMobile,
+        orderAlternateContactPhone: ordersCore.alternateContactPhone,
+        orderAlternateContactName: ordersCore.alternateContactName,
+        orderDeliveryPrimaryContactPhone: ordersCore.deliveryPrimaryContactPhone,
+        orderDeliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
         customerAccountStatus: customers.accountStatus,
         customerRiskFlag: customers.riskFlag,
         riderId: ordersCore.riderId,
@@ -536,6 +547,11 @@ export async function listOrdersCore(
         customerName: customers.fullName,
         customerMobile: customers.primaryMobile,
         customerEmail: customers.email,
+        customerAlternateMobile: customers.alternateMobile,
+        orderAlternateContactPhone: ordersCore.alternateContactPhone,
+        orderAlternateContactName: ordersCore.alternateContactName,
+        orderDeliveryPrimaryContactPhone: ordersCore.deliveryPrimaryContactPhone,
+        orderDeliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
         customerAccountStatus: customers.accountStatus,
         customerRiskFlag: customers.riskFlag,
         riderId: ordersCore.riderId,
@@ -648,6 +664,11 @@ export async function listOrdersCore(
       customerName: customers.fullName,
       customerMobile: customers.primaryMobile,
       customerEmail: customers.email,
+      customerAlternateMobile: customers.alternateMobile,
+      orderAlternateContactPhone: ordersCore.alternateContactPhone,
+      orderAlternateContactName: ordersCore.alternateContactName,
+      orderDeliveryPrimaryContactPhone: ordersCore.deliveryPrimaryContactPhone,
+      orderDeliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
       customerAccountStatus: customers.accountStatus,
       customerRiskFlag: customers.riskFlag,
       riderId: ordersCore.riderId,
@@ -734,17 +755,47 @@ const STATUS_TO_LABEL: Record<UpdateableOrderStatus, string> = {
   delivered: "Delivered",
 };
 
-export async function getFoodOrderStatus(orderId: number): Promise<string | null> {
+export type FoodOrderMeta = {
+  orderStatus: string | null;
+  dispatchedAt: string | null;
+  riderPickedUpAt: string | null;
+};
+
+function toFoodIso(value: unknown): string | null {
+  if (value == null) return null;
+  if (value instanceof Date) return value.toISOString();
+  const d = new Date(String(value));
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+
+export async function getFoodOrderMeta(orderId: number): Promise<FoodOrderMeta> {
   const sql = getSql();
   const rows = await sql`
-    SELECT order_status
+    SELECT order_status, dispatched_at, rider_picked_up_at
     FROM orders_food
     WHERE order_id = ${orderId}
     LIMIT 1
   `;
   const row = Array.isArray(rows) ? rows[0] : rows;
-  const status = (row as { order_status?: string | null } | undefined)?.order_status;
-  return status != null && String(status).trim() !== "" ? String(status) : null;
+  const r = row as
+    | {
+        order_status?: string | null;
+        dispatched_at?: unknown;
+        rider_picked_up_at?: unknown;
+      }
+    | undefined;
+  const status = r?.order_status;
+  return {
+    orderStatus:
+      status != null && String(status).trim() !== "" ? String(status) : null,
+    dispatchedAt: toFoodIso(r?.dispatched_at),
+    riderPickedUpAt: toFoodIso(r?.rider_picked_up_at),
+  };
+}
+
+export async function getFoodOrderStatus(orderId: number): Promise<string | null> {
+  const meta = await getFoodOrderMeta(orderId);
+  return meta.orderStatus;
 }
 
 async function syncOrdersFoodForDashboardStatus(
@@ -1032,7 +1083,7 @@ export async function getOrderTimelineEntries(
 export async function getOrderTimelineEntriesWithFallback(
   orderId: number
 ): Promise<OrderTimelineEntry[]> {
-  let entries = await getOrderTimelineEntries(orderId);
+  let entries = filterOrderProgressTimelineEntries(await getOrderTimelineEntries(orderId));
   if (entries.length === 0) {
     const createdAt = await getOrderCreatedAt(orderId);
     if (createdAt) {
@@ -1150,14 +1201,34 @@ export async function updateOrderStatus(
 
     await syncOrdersFoodForDashboardStatus(orderId, status, now);
 
+    const { syncRiderMilestoneFromDashboardStatus } = await import(
+      "@/lib/db/operations/rider-milestone-dashboard-sync"
+    );
+    await syncRiderMilestoneFromDashboardStatus(
+      orderId,
+      status,
+      updatedByEmail,
+      now
+    ).catch((err) => {
+      console.warn("[updateOrderStatus] rider milestone sync failed:", err);
+    });
+
     if (status === "delivered") {
       const { creditMerchantWalletForDeliveredCoreOrder } = await import(
         "@/lib/credit-merchant-wallet-after-delivery"
       );
+      const { creditRiderWalletForDeliveredCoreOrder } = await import(
+        "@/lib/credit-rider-wallet-after-delivery"
+      );
       try {
         await creditMerchantWalletForDeliveredCoreOrder(orderId, previousLabel);
       } catch (walletErr) {
-        console.warn("[updateOrderStatus] wallet credit failed:", walletErr);
+        console.warn("[updateOrderStatus] merchant wallet credit failed:", walletErr);
+      }
+      try {
+        await creditRiderWalletForDeliveredCoreOrder(orderId);
+      } catch (walletErr) {
+        console.warn("[updateOrderStatus] rider wallet credit failed:", walletErr);
       }
     }
   } catch (err) {
@@ -1393,6 +1464,7 @@ export async function recordOrderCancellation(
   const linkedId = Number(existing[0]?.cancellation_reason_id);
   const latestId = Number(existing[0]?.id);
   if (Number.isFinite(linkedId) && linkedId > 0) {
+    await syncOrderCancellationLedger(input);
     return { cancellationReasonId: linkedId, updated: true };
   }
   if (Number.isFinite(latestId) && latestId > 0) {
@@ -1402,6 +1474,7 @@ export async function recordOrderCancellation(
     await sql`
       UPDATE orders_food SET cancellation_reason_id = ${latestId} WHERE order_id = ${input.orderId}
     `;
+    await syncOrderCancellationLedger(input);
     return { cancellationReasonId: latestId, updated: true };
   }
 
@@ -1451,6 +1524,7 @@ export async function recordOrderCancellation(
           rejected_reason: input.displayReason,
         } as Record<string, unknown>),
     });
+    await syncOrderCancellationLedger(input);
     return { cancellationReasonId, updated: true };
   }
 
@@ -1463,7 +1537,31 @@ export async function recordOrderCancellation(
     cancelledByLabel: input.cancelledByLabel,
     cancellationDetails: input.cancellationDetails,
   });
+  await syncOrderCancellationLedger(input);
   return { cancellationReasonId, updated };
+}
+
+async function syncOrderCancellationLedger(input: RecordOrderCancellationInput): Promise<void> {
+  try {
+    const { applyMerchantOrderCancellationLedger } = await import(
+      "@/lib/orders/apply-merchant-cancellation-debit"
+    );
+    const merchantDebit =
+      typeof input.metadata?.merchantDebit === "string"
+        ? input.metadata.merchantDebit
+        : typeof (input.metadata as { merchant_debit?: string } | undefined)?.merchant_debit ===
+            "string"
+          ? (input.metadata as { merchant_debit: string }).merchant_debit
+          : null;
+    await applyMerchantOrderCancellationLedger({
+      orderCoreId: input.orderId,
+      merchantDebit,
+      actorSystemUserId: input.cancelledById,
+      source: "order_cancellation",
+    });
+  } catch (ledgerErr) {
+    console.warn("[recordOrderCancellation] merchant ledger failed:", ledgerErr);
+  }
 }
 
 export { slugReasonCode };
@@ -1610,6 +1708,7 @@ export async function updateOrdersCoreCancellation(
       cancelled_by_label: timelineLabel,
       cancel_mode: "manual",
       action_source: "admin",
+      order_cancellation: true,
     },
   });
   return { updated: true };

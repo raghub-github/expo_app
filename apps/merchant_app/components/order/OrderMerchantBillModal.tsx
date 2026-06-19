@@ -6,10 +6,10 @@ import {
 } from "react-native";
 import type { ApiFoodOrder, ApiFoodOrderItem } from "@/services/ordersApi";
 import {
-  merchantBillPartsFromFoodItems,
   merchantItemLineParts,
   formatMerchantRs,
 } from "@/lib/merchant-line-total";
+import { merchantBillPartsFromOrder } from "@/lib/resolveMerchantOrderTotal";
 import { GatiMitraMerchant, CARD_RADIUS, H_PADDING } from "@/constants/theme";
 import {
   foodOrderAddonRows,
@@ -122,11 +122,14 @@ function SummaryRow({
 
 export function OrderMerchantBillModal({ visible, onClose, order }: Props) {
   const items = order.items ?? [];
-  const packaging = order.pricing?.packaging ?? 0;
-  const discount = order.pricing?.discount ?? 0;
-  const bill = merchantBillPartsFromFoodItems(items, { packaging, discount });
-  const displayTotal =
-    Number(order.pricing?.total) > 0 ? Number(order.pricing!.total) : bill.total;
+  const bill = merchantBillPartsFromOrder({
+    pricing: order.pricing,
+    grand_total: order.grand_total,
+    food_items_total_value: order.food_items_total_value ?? null,
+    items,
+    billingSnapshot: order.billing_snapshot ?? null,
+  });
+  const displayTotal = bill.total;
   const showPaid = isPaidOrder(order);
 
   return (

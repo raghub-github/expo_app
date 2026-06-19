@@ -9,15 +9,26 @@ import { OrderCustomerBottomSheet } from "@/components/order/OrderCustomerBottom
 import { OrderTimelineSheet } from "@/components/order/OrderTimelineSheet";
 import {
   isPrepCountdownExpired,
+  isPrepPerformanceOverdue,
   PLATFORM_DEFAULT_PREP_MINUTES,
   prepReadyCountdownLabel,
   canUseNeedMoreTime,
+  formatExtraPrepTimeAddedLabel,
   type PrepCountdownOrder,
 } from "@/lib/order-prep-time";
-import { OrderPrepDelayedBanner } from "@/components/order/OrderPrepDelayedBanner";
+import { OrderPrepDelayedBanner, ExtraPrepTimeAddedBanner } from "@/components/order/OrderPrepDelayedBanner";
 import {
   formatOrderDateTime,
 } from "@/components/order/orderFormatters";
+import { RiderAssignPendingCard } from "@/components/order/RiderAssignPendingCard";
+import { MerchantAssignedRiderRow } from "@/components/order/MerchantAssignedRiderRow";
+import { useNearbyDispatchRiders } from "@/hooks/useNearbyDispatchRiders";
+import { shouldShowPendingRiderAssign } from "@/lib/orderAssignedRider";
+
+function parseOrdersFoodId(orderId: string): number | null {
+  const n = parseInt(orderId, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
 
 export function orderToPrepCountdown(order: OrderRecord): PrepCountdownOrder {
   return {
@@ -27,7 +38,9 @@ export function orderToPrepCountdown(order: OrderRecord): PrepCountdownOrder {
     preparation_time_minutes:
       order.preparationTimeMinutes ?? PLATFORM_DEFAULT_PREP_MINUTES,
     prep_ready_by_at: order.prepReadyByAt ?? null,
+    expected_ready_at: order.expectedReadyAt ?? null,
     prep_delay_minutes: order.prepDelayMinutes ?? null,
+    last_prep_delay_minutes_added: order.lastPrepDelayMinutesAdded ?? null,
   };
 }
 
@@ -58,14 +71,27 @@ export function MerchantPreparingOrderCard({
   const { speaking, speak } = useOrderSpeech();
 
   const prepOrder = useMemo(() => orderToPrepCountdown(order), [order]);
+  const extraTimeLabel = formatExtraPrepTimeAddedLabel(
+    order.lastPrepDelayMinutesAdded,
+    order.prepDelayMinutes
+  );
   const placedAt = formatOrderDateTime(order.createdAt);
+  const ordersFoodId = parseOrdersFoodId(order.id);
+  const showPendingRider = shouldShowPendingRiderAssign(order, [
+    "created",
+    "preparing",
+    "ready",
+  ]);
+  const { summary: nearbyRiderSummary } = useNearbyDispatchRiders(ordersFoodId, showPendingRider);
 
-  const prepExpired =
+  const performanceOverdue = isPrepPerformanceOverdue(prepOrder, nowMs);
+  const countdownExpired =
     isPrepCountdownExpired(prepOrder, nowMs, { prefix: "Order Ready" }) ||
     !prepReadyCountdownLabel(prepOrder, nowMs, { prefix: "Order Ready" }).label.includes("(");
 
   const canNeedMore =
-    prepExpired &&
+    performanceOverdue &&
+    countdownExpired &&
     !!onNeedMoreTime &&
     canUseNeedMoreTime(
       order.prepDelayUseCount,
@@ -73,7 +99,7 @@ export function MerchantPreparingOrderCard({
       order.prepDelayMinutes
     );
 
-  const footerButtons = prepExpired ? (
+  const footerButtons = performanceOverdue ? (
     canNeedMore ? (
       <View style={styles.actionRow}>
         <Pressable
@@ -133,9 +159,19 @@ export function MerchantPreparingOrderCard({
         onSpeak={() => void speak(order)}
         onMenu={() => setMenuOpen(true)}
         outerBanner={
-          prepExpired ? (
-            <OrderPrepDelayedBanner order={prepOrder} nowMs={nowMs} />
+          performanceOverdue ? (
+            <>
+              <OrderPrepDelayedBanner order={prepOrder} nowMs={nowMs} />
+              {extraTimeLabel ? <ExtraPrepTimeAddedBanner label={extraTimeLabel} /> : null}
+            </>
           ) : undefined
+        }
+        riderContent={
+          showPendingRider ? (
+            <RiderAssignPendingCard summary={nearbyRiderSummary} />
+          ) : order.deliveryType === "GATIMITRA_RIDER" ? (
+            <MerchantAssignedRiderRow order={order} />
+          ) : null
         }
         footer={footerButtons}
       />

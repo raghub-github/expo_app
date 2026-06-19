@@ -9,7 +9,20 @@ export function isNetworkError(err: unknown): boolean {
   const e = err as { code?: string; message?: string };
   if (e?.code && NETWORK_CODES.includes(e.code)) return true;
   const msg = (e?.message ?? "").toLowerCase();
-  return msg.includes("network error") || msg.includes("failed to fetch") || msg.includes("load failed");
+  return (
+    msg.includes("network error") ||
+    msg.includes("failed to fetch") ||
+    msg.includes("load failed") ||
+    msg.includes("timeout") ||
+    msg.includes("timed out")
+  );
+}
+
+/** Safe to retry checkout placement calls (pending / Razorpay order / finalize). */
+export function isRetriableCheckoutError(err: unknown): boolean {
+  if (isNetworkError(err)) return true;
+  const e = err as { response?: { status?: number; data?: { error?: string } } };
+  return e?.response?.status === 500 && e?.response?.data?.error === "ORDER_CREATION_FAILED";
 }
 
 const DEV_HOST_HINT =

@@ -95,7 +95,7 @@ export default function ItemVariantsScreen() {
   }, [canUse, token, storeId, refetch]);
 
   return (
-    <View style={{ flex: 1, backgroundColor: GatiMitraMerchant.bg }}>
+    <View style={{ flex: 1, backgroundColor: GatiMitraMerchant.background }}>
       <View style={{ paddingHorizontal: H_PADDING, paddingTop: 14, paddingBottom: 10, flexDirection: "row", alignItems: "center", gap: 10 }}>
         <TouchableOpacity onPress={() => router.back()} hitSlop={8} style={{ paddingVertical: 6, paddingHorizontal: 6 }}>
           <Ionicons name="chevron-back" size={22} color={GatiMitraMerchant.textPrimary} />

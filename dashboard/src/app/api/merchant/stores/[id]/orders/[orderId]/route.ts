@@ -262,6 +262,11 @@ export async function PATCH(
 
     try {
       const corePatch: Record<string, unknown> = { current_status: newStatus, updated_at: now };
+      if (newStatus === "CANCELLED") {
+        corePatch.status = "cancelled";
+        corePatch.cancelled_at = now;
+        corePatch.cancelled_by = actionSource === "system" ? "SYSTEM" : "MERCHANT";
+      }
       if (newStatus === "ACCEPTED" && acceptPrepReadyByAt && acceptPrepMinutes != null) {
         corePatch.prep_ready_by_at = acceptPrepReadyByAt;
         corePatch.prep_time_minutes = acceptPrepMinutes;

@@ -1,13 +1,15 @@
 "use client";
 
 import { supabase } from "@/lib/supabase/client";
+import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 import { safeParseJson } from "@/lib/utils";
 
 export type SetCookieResult = { ok: true } | { ok: false; error: string };
 const SERVER_COOKIE_SYNCED_KEY = "gm_server_cookie_synced_v1";
 const SERVER_COOKIE_SYNC_TTL_MS = 30 * 60 * 1000;
 
-function markServerCookieSynced(): void {
+/** Mark httpOnly cookie sync complete (e.g. right after login set-cookie). */
+export function markServerCookieSynced(): void {
   if (typeof window === "undefined") return;
   try {
     // Shared across tabs — sessionStorage caused every new tab to re-post refresh tokens.
@@ -81,12 +83,25 @@ export async function syncServerSessionCookies(): Promise<boolean> {
 
   inFlightSync = (async () => {
     try {
-      const {
-        data: { session },
-        error,
-      } = await supabase.auth.getSession();
+      let session: { access_token: string; refresh_token: string } | null = null;
+      try {
+        const result = await supabase.auth.getSession();
+        session = result.data?.session ?? null;
+        if (result.error) {
+          if (isInvalidRefreshToken(result.error)) {
+            await supabase.auth.signOut();
+            return false;
+          }
+          return false;
+        }
+      } catch (err) {
+        if (isInvalidRefreshToken(err)) {
+          await supabase.auth.signOut();
+        }
+        return false;
+      }
 
-      if (error || !session?.access_token || !session?.refresh_token) {
+      if (!session?.access_token || !session?.refresh_token) {
         return false;
       }
 
@@ -96,7 +111,7 @@ export async function syncServerSessionCookies(): Promise<boolean> {
       // Supabase refresh tokens are single-use and can rotate across tabs/processes.
       // If another request already consumed this token, treat sync as completed
       // to avoid noisy retry loops and repeated "Already Used" errors.
-      if (/invalid refresh token:\s*already used/i.test(r.error)) {
+      if (/invalid refresh token/i.test(r.error)) {
         markServerCookieSynced();
         return true;
       }

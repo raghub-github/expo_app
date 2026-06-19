@@ -1,5 +1,5 @@
 /**
- * DB-driven item customization bottom sheet — Zomato-style UI, GatiMitra mint accents.
+ * DB-driven item customization bottom sheet — GatiMitra-style UI, GatiMitra mint accents.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";

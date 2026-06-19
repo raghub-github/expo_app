@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Store, ChevronRight, CheckCircle, Clock, XCircle, Sparkles, Ban, Pencil } from "lucide-react";
 import { StoreDashboardSkeleton } from "./stores/[id]/StoreDashboardSkeleton";
@@ -12,7 +12,10 @@ import {
   readStoredMerchantsPortal,
   resolveMerchantsPortal,
 } from "@/lib/merchants/portal-preference";
-import { usePermissions } from "@/hooks/usePermissions";
+import { MerchantsAdminHome, type AdminStoreRow } from "@/components/merchants/MerchantsAdminHome";
+import { EXPIRED_RESUBMITTED_DOCS_LABEL } from "@/lib/merchants/expired-resubmitted-docs-label";
+import { dispatchMerchantResubmittedDocsRefresh } from "@/lib/merchants/merchant-resubmitted-docs-refresh";
+import { useStoreVerificationSheetOptional } from "@/context/StoreVerificationSheetContext";
 
 type FilterMode = "child" | "parent";
 
@@ -23,6 +26,7 @@ type StoreStats = {
   rejected: number;
   drafted: number;
   new: number;
+  resubmitted: number;
 };
 
 type ChildRow = {
@@ -148,12 +152,32 @@ function ChildActionButton({
   returnTo,
   portal,
   onNavigate,
+  resubmittedDocReview = false,
+  onReviewDocs,
 }: {
   child: ChildRow;
   returnTo: string;
   portal: "admin" | "merchant";
   onNavigate: () => void;
+  resubmittedDocReview?: boolean;
+  onReviewDocs?: () => void;
 }) {
+  if (resubmittedDocReview && onReviewDocs) {
+    return (
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onReviewDocs();
+        }}
+        className="inline-flex cursor-pointer items-center gap-1 rounded-md bg-amber-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-amber-600 focus:outline-none focus:ring-1 focus:ring-amber-500"
+      >
+        <CheckCircle className="h-3.5 w-3.5" />
+        Review docs
+      </button>
+    );
+  }
+
   const status = (child.approval_status || "").toUpperCase();
   const isVerified = status === "APPROVED";
   const isDelisted = status === "DELISTED";
@@ -194,12 +218,16 @@ function ChildStoreRow({
   portal,
   onChildClick,
   compact = false,
+  resubmittedDocReview = false,
+  onReviewDocs,
 }: {
   child: ChildRow;
   returnTo: string;
   portal: "admin" | "merchant";
   onChildClick: (child: ChildRow) => void;
   compact?: boolean;
+  resubmittedDocReview?: boolean;
+  onReviewDocs?: () => void;
 }) {
   const status = (child.approval_status || "").toUpperCase();
   const isUnread =
@@ -277,14 +305,28 @@ function ChildStoreRow({
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
-        <StatusBadge status={child.approval_status} />
-        <ChildActionButton child={child} returnTo={returnTo} portal={portal} onNavigate={() => onChildClick(child)} />
+        {resubmittedDocReview ? (
+          <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+            <Clock className="h-3 w-3" />
+            Docs pending
+          </span>
+        ) : (
+          <StatusBadge status={child.approval_status} />
+        )}
+        <ChildActionButton
+          child={child}
+          returnTo={returnTo}
+          portal={portal}
+          onNavigate={() => onChildClick(child)}
+          resubmittedDocReview={resubmittedDocReview}
+          onReviewDocs={onReviewDocs}
+        />
       </div>
     </div>
   );
 }
 
-type CategoryKey = "total" | "verified" | "pending" | "rejected" | "drafted" | "new";
+type CategoryKey = "total" | "verified" | "pending" | "rejected" | "drafted" | "new" | "resubmitted";
 
 interface StatCardConfig {
   key: CategoryKey;
@@ -376,11 +418,17 @@ function buildChildStoreTargetUrl(args: {
   return `/dashboard/merchants/verifications?${vParams.toString()}`;
 }
 
-export function MerchantsSearchClient() {
+export function MerchantsSearchClient({
+  canTogglePortal = false,
+}: {
+  canTogglePortal?: boolean;
+}) {
   const searchParams = useSearchParams();
   const router = useRouter();
   const merchantsSearch = useMerchantsSearch();
-  const { canTogglePortal = false } = usePermissions();
+  const verificationSheet = useStoreVerificationSheetOptional();
+  const [listRefreshKey, setListRefreshKey] = useState(0);
+  const verificationSheetWasOpen = useRef(false);
 
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
@@ -400,12 +448,13 @@ export function MerchantsSearchClient() {
   const stats: StoreStats | null =
     statsQuery.data && (statsQuery.data as { success?: boolean }).success
       ? {
-          total: (statsQuery.data as StoreStats).total ?? 0,
-          verified: (statsQuery.data as StoreStats).verified ?? 0,
-          pending: (statsQuery.data as StoreStats).pending ?? 0,
-          rejected: (statsQuery.data as StoreStats).rejected ?? 0,
-          drafted: (statsQuery.data as StoreStats).drafted ?? 0,
-          new: (statsQuery.data as StoreStats).new ?? 0,
+          total: (statsQuery.data as unknown as StoreStats).total ?? 0,
+          verified: (statsQuery.data as unknown as StoreStats).verified ?? 0,
+          pending: (statsQuery.data as unknown as StoreStats).pending ?? 0,
+          rejected: (statsQuery.data as unknown as StoreStats).rejected ?? 0,
+          drafted: (statsQuery.data as unknown as StoreStats).drafted ?? 0,
+          new: (statsQuery.data as unknown as StoreStats).new ?? 0,
+          resubmitted: (statsQuery.data as unknown as StoreStats & { resubmitted?: number }).resubmitted ?? 0,
         }
       : null;
   const statsLoading = statsQuery.isLoading;
@@ -426,7 +475,7 @@ export function MerchantsSearchClient() {
   );
 
   const hasSearchParams = searchQuery.length > 0;
-  const hasCategory = category != null && ["verified", "pending", "rejected", "drafted", "new", "total"].includes(category);
+  const hasCategory = category != null && ["verified", "pending", "rejected", "drafted", "new", "total", "resubmitted"].includes(category);
 
   const lastSearchTrigger = merchantsSearch?.lastSearchTrigger ?? 0;
   const triggeredSearch = merchantsSearch?.triggeredSearch ?? null;
@@ -458,6 +507,22 @@ export function MerchantsSearchClient() {
     canTogglePortal,
     storedPortal: typeof window !== "undefined" ? readStoredMerchantsPortal() : null,
   });
+
+  const isExpiredResubmittedView = category === "resubmitted";
+  const showAdminHome = portal === "admin" && !hasSearchParams && !hasCategory;
+
+  const buildAdminStoreUrl = (store: AdminStoreRow) =>
+    buildChildStoreTargetUrl({
+      child: { ...store, type: "child", parent_id: null, onboarding_step: null, onboarding_completed: null },
+      returnTo,
+      portal,
+    });
+
+  const portalQuery = useMemo(() => {
+    const q = new URLSearchParams(searchParams.toString());
+    q.set("portal", "admin");
+    return q.toString();
+  }, [searchParams]);
 
   /** When merchant portal has an active list search, show skeleton until API completes or redirect finishes. */
   const hasActiveListSearch = hasEffectiveSearchParams || (hasCategory && effectiveFilter === "child");
@@ -595,7 +660,48 @@ export function MerchantsSearchClient() {
       });
 
     return () => ac.abort();
-  }, [effectiveFilter, effectiveSearch, shouldFetchList, hasCategory, category, fromDate, toDate, storeTypeFilter, portal, returnTo, router, lastSearchTrigger]);
+  }, [
+    effectiveFilter,
+    effectiveSearch,
+    shouldFetchList,
+    hasCategory,
+    category,
+    fromDate,
+    toDate,
+    storeTypeFilter,
+    portal,
+    returnTo,
+    router,
+    lastSearchTrigger,
+    listRefreshKey,
+  ]);
+
+  const handleResubmittedDocReview = useCallback(
+    (child: ChildRow) => {
+      verificationSheet?.openVerificationSheet(child.id, 4);
+    },
+    [verificationSheet]
+  );
+
+  const handleChildClick = useCallback(
+    (child: ChildRow) => {
+      if (isExpiredResubmittedView) {
+        handleResubmittedDocReview(child);
+        return;
+      }
+      router.push(buildChildStoreTargetUrl({ child, returnTo, portal }));
+    },
+    [isExpiredResubmittedView, handleResubmittedDocReview, router, returnTo, portal]
+  );
+
+  useEffect(() => {
+    const open = verificationSheet?.isOpen ?? false;
+    if (verificationSheetWasOpen.current && !open && isExpiredResubmittedView) {
+      setListRefreshKey((k) => k + 1);
+      dispatchMerchantResubmittedDocsRefresh();
+    }
+    verificationSheetWasOpen.current = open;
+  }, [verificationSheet?.isOpen, isExpiredResubmittedView]);
 
   const handleCategoryClick = (key: CategoryKey) => {
     const next = new URLSearchParams(searchParams.toString());
@@ -626,10 +732,6 @@ export function MerchantsSearchClient() {
     if (nextType) next.set("storeType", nextType);
     else next.delete("storeType");
     router.push(`/dashboard/merchants?${next.toString()}`);
-  };
-
-  const handleChildClick = (child: ChildRow) => {
-    router.push(buildChildStoreTargetUrl({ child, returnTo, portal }));
   };
 
   const statCards: StatCardConfig[] = useMemo(
@@ -691,6 +793,28 @@ export function MerchantsSearchClient() {
 
   return (
     <div className="space-y-3">
+      {showAdminHome ? (
+        <MerchantsAdminHome
+          stats={stats}
+          statsLoading={statsLoading}
+          category={category}
+          onCategoryClick={handleCategoryClick}
+          fromDate={fromDate || undefined}
+          toDate={toDate || undefined}
+          storeType={storeTypeFilter}
+          dateFromInput={dateFromInput}
+          dateToInput={dateToInput}
+          storeTypeFilter={storeTypeFilterRaw}
+          onDateFromChange={setDateFromInput}
+          onDateToChange={setDateToInput}
+          onStoreTypeChange={handleStoreTypeChange}
+          onApplyFilters={applyDateFilter}
+          onClearFilters={clearDateFilter}
+          portalQuery={portalQuery}
+          buildStoreUrl={buildAdminStoreUrl}
+        />
+      ) : (
+        <>
       {/* Merchant portal + list search: show skeleton only while loading; no border, no "Not Found" until API completes */}
       {showSkeleton ? (
         <div className="rounded-lg min-w-0 border-0 border-none shadow-none outline-none ring-0">
@@ -700,7 +824,7 @@ export function MerchantsSearchClient() {
         <div className="rounded-lg border border-gray-200 bg-white p-4">
         <>
       {/* Main-area toggle removed: Admin/Merchant toggle stays only in header. Merchant portal: no sticky bar in main area. */}
-      {portal === "admin" && (
+      {portal === "admin" && !isExpiredResubmittedView && (
         <div className="sticky top-0 z-10 -mx-2 bg-white px-2 pb-2 pt-0.5 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
           {/* Top row: Merchants / Assign AM title (left) + Date filter (right top, just above Rejected card area) - no bg, no shadow */}
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -812,6 +936,8 @@ export function MerchantsSearchClient() {
                     ? "Pending"
                     : category === "drafted"
                       ? "Drafted Store"
+                      : category === "resubmitted"
+                        ? EXPIRED_RESUBMITTED_DOCS_LABEL
                       : category === "new"
                         ? "New (30d)"
                         : "Rejected"} ({childItems?.length ?? 0})
@@ -829,6 +955,8 @@ export function MerchantsSearchClient() {
                     returnTo={returnTo}
                     portal={portal}
                     onChildClick={handleChildClick}
+                    resubmittedDocReview={isExpiredResubmittedView}
+                    onReviewDocs={() => handleResubmittedDocReview(child)}
                   />
                 ))}
               </div>
@@ -945,6 +1073,8 @@ export function MerchantsSearchClient() {
       )}
         </>
         </div>
+      )}
+        </>
       )}
     </div>
   );

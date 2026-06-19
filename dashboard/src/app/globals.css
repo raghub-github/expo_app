@@ -14,9 +14,14 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    /* Dashboard UI is light-only; avoid black overscroll gaps on Windows dark mode. */
+    --background: #f8fafc;
+    --foreground: #171717;
   }
+}
+
+html {
+  background: var(--background);
 }
 
 body {

@@ -21,9 +21,44 @@ const defaultConfig = getDefaultConfig(projectRoot);
 const config = defaultConfig;
 
 // Keep Metro file cache outside OneDrive (invalid option fileMapCacheDirectory removed for expo-doctor).
-config.cacheStores = ({ FileStore }) => [
-  new FileStore({ root: metroCacheDir }),
-];
+// Wrap clear() — Metro's default clear can throw ENOTEMPTY on Windows when another bundler holds files.
+config.cacheStores = ({ FileStore }) => {
+  const store = new FileStore({ root: metroCacheDir });
+  store.clear = () => {
+    const tryRm = (target) => {
+      try {
+        fs.rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    if (tryRm(metroCacheDir)) {
+      fs.mkdirSync(metroCacheDir, { recursive: true });
+      return;
+    }
+
+    const staleDir = `${metroCacheDir}.stale-${Date.now()}`;
+    try {
+      fs.renameSync(metroCacheDir, staleDir);
+      fs.mkdirSync(metroCacheDir, { recursive: true });
+      setImmediate(() => {
+        tryRm(staleDir);
+      });
+    } catch (err) {
+      const code = err && typeof err === 'object' ? err.code : null;
+      if (code === 'ENOTEMPTY' || code === 'EBUSY' || code === 'EPERM') {
+        console.warn(
+          '[metro] Cache clear skipped — stop the other Metro/Expo process (often port 8081) or use npm start without -c.',
+        );
+        return;
+      }
+      throw err;
+    }
+  };
+  return [store];
+};
 
 const packagesFolder = path.resolve(workspaceRoot, 'packages');
 const gatimitraWorkspacePackages = ['contracts', 'sdk', 'expo-push-kit'];

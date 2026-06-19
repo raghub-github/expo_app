@@ -1,5 +1,5 @@
 /**
- * Restaurant About / Store Information – Zomato-style layout.
+ * Restaurant About / Store Information – GatiMitra layout.
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";

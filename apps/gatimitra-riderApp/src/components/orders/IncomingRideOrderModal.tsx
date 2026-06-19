@@ -39,6 +39,7 @@ import {
   incomingOrderBadgeLabel,
   incomingOrderBannerLabel,
 } from "@/src/lib/incoming-order-display";
+import { resolveRiderDisplayedEarning } from "@/src/lib/rider-earning-display";
 import type { RiderOrderSummary } from "@/src/services/api/riderApi";
 
 export type IncomingDispatchOrder = {
@@ -57,6 +58,9 @@ export type IncomingDispatchOrder = {
   estimatedEarning: number;
   baseEarning?: number;
   customerTipAmount?: number;
+  waitingEarning?: number;
+  surgeEarning?: number;
+  appliedSurges?: { name: string; amount: number }[];
   totalEarning?: number;
   higherDispatchPriority?: boolean;
   createdAt: string;
@@ -406,11 +410,18 @@ export function IncomingOrderModal({
   const acceptLabel = incomingOrderAcceptLabel(order.category);
   const bannerIcon = categoryBannerIcon(order.category);
   const isDeliveryOrder = order.category === "food" || order.category === "parcel";
-  const deliveryFee = Math.round(order.baseEarning ?? order.estimatedEarning ?? 0);
-  const tipAmount = order.customerTipAmount != null && order.customerTipAmount > 0
-    ? Math.round(order.customerTipAmount)
-    : 0;
-  const totalEarning = Math.round(order.totalEarning ?? deliveryFee + tipAmount);
+  const slabBase = Math.round(order.baseEarning ?? order.estimatedEarning ?? 0);
+  const waitingAmount =
+    order.waitingEarning != null && order.waitingEarning > 0
+      ? Math.round(order.waitingEarning)
+      : 0;
+  const surgeLines = order.appliedSurges ?? [];
+  const tipAmount =
+    order.customerTipAmount != null && order.customerTipAmount > 0
+      ? Math.round(order.customerTipAmount)
+      : 0;
+  const totalEarning = Math.round(resolveRiderDisplayedEarning(order));
+  const footerBottomInset = Math.max(insets.bottom, Platform.OS === "android" ? 24 : 12) + 8;
   const pickupKm = order.pickupDistanceKm;
   const tripKm = order.tripDistanceKm ?? order.distanceKm;
   const totalKm =
@@ -511,9 +522,32 @@ export function IncomingOrderModal({
                         : t("orders.incoming.baseEarning", "Base earnings")}
                     </Text>
                     <Text style={styles.earningsSubValue}>
-                      ₹{deliveryFee.toLocaleString("en-IN")}
+                      ₹{slabBase.toLocaleString("en-IN")}
                     </Text>
                   </View>
+                  {waitingAmount > 0 ? (
+                    <View style={styles.earningsLine}>
+                      <Text style={styles.earningsSubLabel}>
+                        {t("orders.incoming.waitingCharge", "Waiting charge")}
+                      </Text>
+                      <Text style={styles.earningsSubValue}>
+                        + ₹{waitingAmount.toLocaleString("en-IN")}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {surgeLines.map((surge) => (
+                    <View key={`${surge.name}-${surge.amount}`} style={styles.earningsLine}>
+                      <View style={styles.tipLineLabel}>
+                        <Ionicons name="flash-outline" size={13} color="#B45309" />
+                        <Text style={styles.surgeLineText} numberOfLines={1}>
+                          {surge.name}
+                        </Text>
+                      </View>
+                      <Text style={styles.surgeLineValue}>
+                        + ₹{Math.round(surge.amount).toLocaleString("en-IN")}
+                      </Text>
+                    </View>
+                  ))}
                   {tipAmount > 0 ? (
                     <View style={styles.earningsLine}>
                       <View style={styles.tipLineLabel}>
@@ -597,7 +631,7 @@ export function IncomingOrderModal({
               </View>
             </ScrollView>
 
-            <View style={[styles.footer, { paddingBottom: insets.bottom }]}>
+            <View style={[styles.footer, { paddingBottom: footerBottomInset }]}>
               <AcceptRideSwipeButton
                 loading={loading}
                 disabled={secondsLeft <= 0}
@@ -888,6 +922,18 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "800",
     color: "#15803D",
+  },
+  surgeLineText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#B45309",
+    flexShrink: 1,
+    maxWidth: 180,
+  },
+  surgeLineValue: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#B45309",
   },
   earningsDividerHorizontal: {
     height: 1,

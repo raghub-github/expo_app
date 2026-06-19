@@ -95,6 +95,14 @@ import { StoreOffersSheet } from "@/components/store/StoreOffersSheet";
 import { StoreScheduleSheet } from "@/components/store/StoreScheduleSheet";
 import type { PastOrderItem } from "@/components/store/StorePastOrderRow";
 import { orderService } from "@/services/order.service";
+import { billingService } from "@/services/billing.service";
+import { cartLineBaseUnitPrice } from "@/lib/cart-line-pricing";
+import { CouponAvailableBottomSheet } from "@/components/checkout/CouponAvailableBottomSheet";
+import {
+  useCouponAvailablePrompt,
+  type CouponAvailablePrompt,
+} from "@/hooks/useCouponAvailablePrompt";
+import { useCheckoutOfferStore } from "@/store/checkoutOfferStore";
 
 /** Stable SectionList row id when the same dish appears in more than one section (RN keyExtractor is only (item, index)). */
 type MenuListRow = MenuItem & { listRowKey: string };
@@ -512,6 +520,7 @@ export default function MerchantDetailScreen() {
     ...(storeOffersData?.merchant_offers ?? []),
     ...(storeOffersData?.platform_offers ?? []),
   ];
+
   /** Inner page: full offer list (no free-delivery-only promos in the strip). */
   const visibleOffers = useMemo(
     () =>
@@ -674,6 +683,82 @@ export default function MerchantDetailScreen() {
   const cartItems = useCartStore((s) => s.items) ?? [];
   const cartMerchantId = useCartStore((s) => s.merchantId);
   const syncCartPrices = useCartStore((s) => s.syncPricesFromMap);
+
+  const cartSubtotalForOffers = useMemo(() => {
+    if (cartMerchantId !== merchantId) return 0;
+    return (cartItems ?? []).reduce((s, i) => {
+      const base = cartLineBaseUnitPrice(i);
+      const line = base * i.quantity;
+      const addonLine = (i.addons ?? []).reduce(
+        (a, ad) => a + ad.addonPrice * ad.quantity * i.quantity,
+        0
+      );
+      return s + line + addonLine;
+    }, 0);
+  }, [cartItems, cartMerchantId, merchantId]);
+
+  const checkoutOffersQuery = useQuery({
+    queryKey: [
+      "billing-checkout-offers",
+      merchantId,
+      resolvedDeliveryAddress?.id,
+      cartSubtotalForOffers,
+      pincode,
+      state,
+    ],
+    queryFn: () =>
+      billingService.getCheckoutOffers({
+        merchantId: merchantId!,
+        addressId: String(resolvedDeliveryAddress!.id),
+        cartSubtotal: cartSubtotalForOffers,
+        serviceType: "FOOD",
+        pincode,
+        state,
+        city,
+      }),
+    enabled:
+      !!merchantId &&
+      !!resolvedDeliveryAddress &&
+      cartMerchantId === merchantId &&
+      cartItems.length > 0,
+    staleTime: 60 * 1000,
+  });
+
+  const setPendingCheckoutOffer = useCheckoutOfferStore((s) => s.setPending);
+
+  const couponAvailablePrompt = useCouponAvailablePrompt({
+    offersData: checkoutOffersQuery.data,
+    offersFetching: checkoutOffersQuery.isFetching,
+    cartSubtotal: cartSubtotalForOffers,
+    hasAppliedOffer: false,
+    blocked: offersSheetVisible || customizationSheetVisible,
+  });
+
+  const handleCouponAvailableApply = useCallback(
+    (p: CouponAvailablePrompt) => {
+      couponAvailablePrompt.dismiss(p.key);
+      if (p.applyType === "coupon") {
+        setPendingCheckoutOffer({
+          type: "coupon",
+          couponCode: p.couponCode,
+          couponLabel: p.description ?? p.couponCode,
+        });
+      } else if (p.applyType === "merchant" && p.merchantOfferId != null) {
+        setPendingCheckoutOffer({
+          type: "merchant",
+          merchantOfferId: p.merchantOfferId,
+          couponCode: p.couponCode,
+          couponLabel: p.merchantOfferTitle ?? p.couponCode,
+        });
+      } else if (p.applyType === "platform" && p.platformOfferId != null) {
+        setPendingCheckoutOffer({
+          type: "platform",
+          platformOfferId: p.platformOfferId,
+        });
+      }
+    },
+    [couponAvailablePrompt, setPendingCheckoutOffer]
+  );
 
   // Keep the floating-cart total in sync with the live menu — if commission
   // changed since the user added an item, the cart price for those items
@@ -1131,7 +1216,7 @@ export default function MerchantDetailScreen() {
   }, []);
   const closeReportSheet = useCallback(() => setReportSheetVisible(false), []);
 
-  const liveStatusFromStore = useStoreStatusStore((s) => s.getStatus(merchantId));
+  const liveStatusFromStore = useStoreStatusStore((s) => s.statusMap[merchantId] ?? null);
 
   const merchantNextOpenAt =
     (merchant as { nextOpenAt?: string | number | null } | undefined)?.nextOpenAt ?? null;
@@ -1653,7 +1738,7 @@ export default function MerchantDetailScreen() {
         onScroll={scrollHandler}
         scrollEventThrottle={16}
         scrollEnabled
-        keyboardShouldPersistTaps="handled"
+        keyboardShouldPersistTaps="always"
         showsVerticalScrollIndicator
         {...(Platform.OS === "android" ? { overScrollMode: "never" as const } : {})}
         onScrollToIndexFailed={(info) => {
@@ -1682,6 +1767,14 @@ export default function MerchantDetailScreen() {
             <Text style={styles.emptyMenuText}>No items match the selected filters.</Text>
           </View>
         }
+      />
+
+      <CouponAvailableBottomSheet
+        visible={couponAvailablePrompt.visible}
+        prompt={couponAvailablePrompt.prompt}
+        bottomInset={insets.bottom}
+        onClose={couponAvailablePrompt.dismiss}
+        onApply={handleCouponAvailableApply}
       />
 
       <StoreOffersSheet

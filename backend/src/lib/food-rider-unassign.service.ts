@@ -9,9 +9,8 @@ import { getDb } from "../db/client.js";
 type DbTx = PostgresJsDatabase<Record<string, unknown>>;
 import { ordersCore, ordersFood } from "../db/schema.js";
 import {
-  completeOrderDispatch,
+  pauseOrderDispatchForManualAssignment,
   restartOrderDispatch,
-  startOrderDispatch,
 } from "./order-dispatch.service.js";
 import { recordDispatchAssignmentAudit } from "./rider-dispatch-assignment-audit.js";
 import { recordRiderDispatchExclusion } from "./rider-dispatch-order-exclusion.js";
@@ -19,6 +18,7 @@ import {
   recordFoodRiderAdminCancelled,
   recordFoodRiderUnassigned,
 } from "./rider-ride-assignment.js";
+import { applyRiderUnassignWalletPolicy } from "./rider-delivery-wallet-eligibility.js";
 
 export type UnassignFoodRiderInput = {
   orderCorePk: number;
@@ -80,13 +80,21 @@ async function clearFoodRiderAssignment(
         riderId: null,
         status: "assigned",
         currentStatus: nextCoreStatus,
+        actualPickupTime: null,
         updatedAt: now,
       })
       .where(and(eq(ordersCore.id, input.orderCorePk), eq(ordersCore.riderId, input.riderId)));
 
     await tx
       .update(ordersFood)
-      .set({ riderId: null, updatedAt: now })
+      .set({
+        riderId: null,
+        riderReachedPickupAt: null,
+        pickupDurationSeconds: null,
+        pickupTimerStartedAt: null,
+        pickupWaitSeconds: null,
+        updatedAt: now,
+      })
       .where(eq(ordersFood.orderId, input.orderCorePk));
 
     await recordFn(tx, foodSt, now);
@@ -147,10 +155,18 @@ export async function adminCancelFoodRiderFromOrder(
     occurredAt: now,
   });
 
+  await applyRiderUnassignWalletPolicy({
+    orderCorePk: input.orderCorePk,
+    orderIdText: input.orderIdText,
+    riderId: input.riderId,
+    actorType: input.actorType ?? "admin",
+    reasonCode: input.reasonCode,
+  });
+
   if (input.mode === "reassign") {
     await restartOrderDispatch(input.orderCorePk);
   } else {
-    await completeOrderDispatch(input.orderCorePk, "cancelled");
+    await pauseOrderDispatchForManualAssignment(input.orderCorePk);
   }
 }
 
@@ -204,6 +220,14 @@ export async function unassignFoodRiderAndRestartDispatch(
     occurredAt: now,
   });
 
+  await applyRiderUnassignWalletPolicy({
+    orderCorePk: input.orderCorePk,
+    orderIdText: input.orderIdText,
+    riderId: input.riderId,
+    actorType: input.actorType ?? "system",
+    reasonCode: input.reasonCode,
+  });
+
   await restartOrderDispatch(input.orderCorePk);
 }
 
@@ -211,6 +235,6 @@ export async function unassignFoodRiderAndRestartDispatch(
 export async function manualAssignRiderForFoodOrder(orderCorePk: number): Promise<{
   started: boolean;
 }> {
-  await startOrderDispatch(orderCorePk);
+  await restartOrderDispatch(orderCorePk);
   return { started: true };
 }

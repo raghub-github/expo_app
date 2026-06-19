@@ -2,6 +2,7 @@ import React from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
+import { profileCardShadow } from "@/src/components/profile/profileCardShadow";
 
 export const PROFILE_CARD_RADIUS = 20;
 
@@ -55,11 +56,7 @@ const styles = StyleSheet.create({
     width: "100%",
     borderRadius: PROFILE_CARD_RADIUS,
     overflow: "hidden",
-    shadowColor: "#0F172A",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
+    ...profileCardShadow,
   },
   shellPressed: {
     opacity: 0.94,

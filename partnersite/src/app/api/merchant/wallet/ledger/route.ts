@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { WALLET_CONSTANTS } from '@/lib/wallet-types';
+import { backfillMissingDeliveredOrderCredits, backfillMissingCancelledOrderLedger } from '@/lib/backfill-merchant-wallet-credits';
+import {
+  applyWithdrawableBalanceToLedgerEntries,
+  buildWithdrawableBalanceByLedgerId,
+} from '@/lib/merchant-wallet-ledger-display';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -38,6 +43,13 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Store not found' }, { status: 404 });
     }
 
+    try {
+      await backfillMissingDeliveredOrderCredits(db, merchantStoreId);
+      await backfillMissingCancelledOrderLedger(db, merchantStoreId);
+    } catch (backfillErr) {
+      console.warn('[merchant/wallet/ledger] backfill:', backfillErr);
+    }
+
     const { data: wallet } = await db
       .from('merchant_wallet')
       .select('id')
@@ -55,6 +67,15 @@ export async function GET(req: NextRequest) {
     }
 
     const walletId = wallet.id as number;
+
+    try {
+      const { repairCancellationLedgerWithdrawableMetadata } = await import(
+        '@/lib/backfill-merchant-wallet-credits'
+      );
+      await repairCancellationLedgerWithdrawableMetadata(db, walletId);
+    } catch (repairErr) {
+      console.warn('[merchant/wallet/ledger] repair withdrawable metadata:', repairErr);
+    }
     const from = req.nextUrl.searchParams.get('from');
     const to = req.nextUrl.searchParams.get('to');
     const direction = req.nextUrl.searchParams.get('direction');
@@ -175,9 +196,31 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    const { data: bucketRows } = await db
+      .from('merchant_wallet_ledger')
+      .select('id, balance_type, balance_after, amount, direction, created_at, metadata')
+      .eq('wallet_id', walletId)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(5000);
+
+    const withdrawableById = buildWithdrawableBalanceByLedgerId(
+      (bucketRows ?? []).map((row) => ({
+        id: row.id as number,
+        balance_type: row.balance_type as string | null,
+        balance_after: row.balance_after != null ? Number(row.balance_after) : null,
+        amount: row.amount != null ? Number(row.amount) : null,
+        direction: row.direction as string | null,
+        created_at: row.created_at as string,
+        metadata: row.metadata as Record<string, unknown> | null,
+      }))
+    );
+
+    const enrichedList = applyWithdrawableBalanceToLedgerEntries(list, withdrawableById);
+
     return NextResponse.json({
       success: true,
-      entries: list,
+      entries: enrichedList,
       total: count ?? list.length,
       limit,
       offset,

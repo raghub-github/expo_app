@@ -15,7 +15,7 @@
  *   });
  */
 import { randomBytes } from "node:crypto";
-import { getRedis } from "./client.js";
+import { getRedis, isRedisOptional } from "./client.js";
 
 const RELEASE_SCRIPT = `
 if redis.call("get", KEYS[1]) == ARGV[1] then
@@ -24,6 +24,10 @@ else
   return 0
 end
 `;
+
+function localDevLock(): { release: () => Promise<void> } {
+  return { release: async () => undefined };
+}
 
 /**
  * Acquire a lock; returns null if it's already held by someone else.
@@ -34,21 +38,27 @@ export async function tryAcquireLock(
   ttlMs: number,
 ): Promise<{ release: () => Promise<void> } | null> {
   if (!key || ttlMs <= 0) throw new Error("tryAcquireLock: invalid key/ttl");
-  const redis = getRedis();
-  const token = randomBytes(16).toString("hex");
-  const fullKey = `lock:${key}`;
-  // SET with NX (only set if not exists) + PX (TTL in ms). Atomic.
-  const ok = await redis.set(fullKey, token, "PX", ttlMs, "NX");
-  if (ok !== "OK") return null;
-  return {
-    release: async () => {
-      try {
-        await redis.eval(RELEASE_SCRIPT, 1, fullKey, token);
-      } catch {
-        /* best-effort */
-      }
-    },
-  };
+  try {
+    const redis = getRedis();
+    const token = randomBytes(16).toString("hex");
+    const fullKey = `lock:${key}`;
+    const ok = await redis.set(fullKey, token, "PX", ttlMs, "NX");
+    if (ok !== "OK") return null;
+    return {
+      release: async () => {
+        try {
+          await redis.eval(RELEASE_SCRIPT, 1, fullKey, token);
+        } catch {
+          /* best-effort */
+        }
+      },
+    };
+  } catch {
+    if (isRedisOptional()) {
+      return localDevLock();
+    }
+    return null;
+  }
 }
 
 /**

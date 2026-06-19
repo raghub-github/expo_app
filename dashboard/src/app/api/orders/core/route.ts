@@ -10,7 +10,7 @@ import {
   listOrdersCore,
   getOrderManualStatusHistory,
   getFoodDeliveryInstructions,
-  getFoodOrderStatus,
+  getFoodOrderMeta,
   getOrderTimelineEntriesWithFallback,
   recordEtaBreachIfNeeded,
   ensureOrderEtaWhenAccepted,
@@ -32,6 +32,11 @@ import {
   type OrderRiderTrackingPayload,
 } from "@/lib/db/operations/order-rider-tracking";
 import { fetchOrderPaymentDetail } from "@/lib/orders/order-payment-detail";
+import { listOrderPartnerChatForDashboard } from "@/lib/db/operations/order-partner-chat";
+import {
+  getOrderRiderAssignmentSnapshot,
+  type OrderRiderAssignmentSnapshot,
+} from "@/lib/db/operations/order-rider-dispatch-ui";
 
 /** Row returned to the client: list shape + `storeId`, optional enrichments for single-order fetch */
 type OrderCoreApiListItem = Omit<OrdersCoreRow, "estimatedDeliveryTime"> & {
@@ -126,6 +131,8 @@ type SingleOrderEnrichment = {
   riderTimeline: RiderAssignmentTimelineData | null;
   riderTracking: OrderRiderTrackingPayload | null;
   riderActivityLog: RiderActivityLogPayload | null;
+  partnerChat: Awaited<ReturnType<typeof listOrderPartnerChatForDashboard>>;
+  riderDispatchUi: OrderRiderAssignmentSnapshot | null;
 };
 
 /** Detail-page enrichments (timeline, payment, merchant summary) for a single-order fetch. */
@@ -155,6 +162,11 @@ async function enrichSingleOrderDetail(
   let riderTimeline: RiderAssignmentTimelineData | null = null;
   let riderTracking: OrderRiderTrackingPayload | null = null;
   let riderActivityLog: RiderActivityLogPayload | null = null;
+  let partnerChat: Awaited<ReturnType<typeof listOrderPartnerChatForDashboard>> = {
+    messages: [],
+    chatClosed: false,
+  };
+  let riderDispatchUi: OrderRiderAssignmentSnapshot | null = null;
 
   if (orderId != null && Number.isFinite(orderId)) {
     const firstRow = first as {
@@ -198,7 +210,9 @@ async function enrichSingleOrderDetail(
       riderTimelineResult,
       riderTrackingResult,
       riderActivityLogResult,
-      foodOrderStatusResult,
+      foodOrderMetaResult,
+      partnerChatResult,
+      riderDispatchUiResult,
     ] = await Promise.all([
       storeIdNum != null ? getMerchantStoreSummaryByStoreId(storeIdNum) : Promise.resolve(null),
       listOrderRemarks(orderId),
@@ -252,11 +266,19 @@ async function enrichSingleOrderDetail(
         return null;
       }),
       first?.orderType === "food"
-        ? getFoodOrderStatus(orderId).catch((err) => {
-            console.error("[GET /api/orders/core] food order status failed", err);
+        ? getFoodOrderMeta(orderId).catch((err) => {
+            console.error("[GET /api/orders/core] food order meta failed", err);
             return null;
           })
         : Promise.resolve(null),
+      listOrderPartnerChatForDashboard(orderId).catch((err) => {
+        console.error("[GET /api/orders/core] partner chat fetch failed", err);
+        return { messages: [], chatClosed: false };
+      }),
+      getOrderRiderAssignmentSnapshot(orderId).catch((err) => {
+        console.error("[GET /api/orders/core] rider dispatch ui fetch failed", err);
+        return null;
+      }),
     ]);
 
     merchantSummary = summary;
@@ -284,6 +306,8 @@ async function enrichSingleOrderDetail(
     riderTimeline = riderTimelineResult;
     riderTracking = riderTrackingResult;
     riderActivityLog = riderActivityLogResult;
+    partnerChat = partnerChatResult;
+    riderDispatchUi = riderDispatchUiResult;
 
     let enrichedData = data;
     if (deliveryInstructions !== undefined) {
@@ -294,11 +318,13 @@ async function enrichSingleOrderDetail(
         },
       ] as unknown as typeof enrichedData;
     }
-    if (foodOrderStatusResult != null || first?.orderType === "food") {
+    if (foodOrderMetaResult != null || first?.orderType === "food") {
       enrichedData = [
         {
           ...(enrichedData[0] as Record<string, unknown>),
-          foodOrderStatus: foodOrderStatusResult,
+          foodOrderStatus: foodOrderMetaResult?.orderStatus ?? null,
+          dispatchedAt: foodOrderMetaResult?.dispatchedAt ?? null,
+          riderPickedUpAt: foodOrderMetaResult?.riderPickedUpAt ?? null,
         },
       ] as unknown as typeof enrichedData;
     }
@@ -387,6 +413,8 @@ async function enrichSingleOrderDetail(
     riderTimeline,
     riderTracking,
     riderActivityLog,
+    partnerChat,
+    riderDispatchUi,
   };
 }
 
@@ -410,6 +438,8 @@ function buildSingleOrderResponseExtras(
     riderTimeline: enrichment.riderTimeline,
     riderTracking: enrichment.riderTracking,
     riderActivityLog: enrichment.riderActivityLog,
+    partnerChat: enrichment.partnerChat,
+    riderDispatchUi: enrichment.riderDispatchUi,
   };
 }
 

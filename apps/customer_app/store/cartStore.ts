@@ -101,6 +101,76 @@ const defaultState = {
   hydrated: false,
 };
 
+let cartPersistTimer: ReturnType<typeof setTimeout> | null = null;
+const CART_PERSIST_DEBOUNCE_MS = 180;
+
+async function writeCartToStorage(state: {
+  merchantId: string | null;
+  merchantName: string | null;
+  merchantBannerUrl: string | null;
+  items: CartItem[];
+  stashedCarts: Record<string, StashedMerchantCart>;
+  lastUpdatedAt: number;
+}): Promise<void> {
+  await setItem(
+    STORAGE_KEYS.CART,
+    JSON.stringify({
+      merchantId: state.merchantId,
+      merchantName: state.merchantName,
+      merchantBannerUrl: state.merchantBannerUrl,
+      items: state.items,
+      stashedCarts: state.stashedCarts,
+      lastUpdatedAt: state.lastUpdatedAt,
+    })
+  );
+}
+
+function queueCartPersist(get: () => CartState): void {
+  if (cartPersistTimer) clearTimeout(cartPersistTimer);
+  cartPersistTimer = setTimeout(() => {
+    cartPersistTimer = null;
+    const {
+      merchantId,
+      merchantName,
+      merchantBannerUrl,
+      items,
+      stashedCarts,
+      lastUpdatedAt,
+    } = get();
+    void writeCartToStorage({
+      merchantId,
+      merchantName,
+      merchantBannerUrl,
+      items,
+      stashedCarts,
+      lastUpdatedAt,
+    });
+  }, CART_PERSIST_DEBOUNCE_MS);
+}
+
+function flushCartPersistNow(get: () => CartState): Promise<void> {
+  if (cartPersistTimer) {
+    clearTimeout(cartPersistTimer);
+    cartPersistTimer = null;
+  }
+  const {
+    merchantId,
+    merchantName,
+    merchantBannerUrl,
+    items,
+    stashedCarts,
+    lastUpdatedAt,
+  } = get();
+  return writeCartToStorage({
+    merchantId,
+    merchantName,
+    merchantBannerUrl,
+    items,
+    stashedCarts,
+    lastUpdatedAt,
+  });
+}
+
 function mergeCartLine(items: CartItem[], line: CartItem): CartItem[] {
   const existing = items.find((i) => i.menuItemId === line.menuItemId);
   if (!existing) return [...items, line];
@@ -157,7 +227,7 @@ export const useCartStore = create<CartState>((set, get) => ({
         stashedCarts: restStash,
         lastUpdatedAt: now,
       });
-      get().persist();
+      queueCartPersist(get);
       return;
     }
 
@@ -181,7 +251,7 @@ export const useCartStore = create<CartState>((set, get) => ({
       items: next,
       lastUpdatedAt: now,
     });
-    get().persist();
+    queueCartPersist(get);
   },
 
   updateQuantity: (menuItemId, delta) => {
@@ -194,7 +264,7 @@ export const useCartStore = create<CartState>((set, get) => ({
     const merchantName = next.length ? get().merchantName : null;
     const merchantBannerUrl = next.length ? get().merchantBannerUrl : null;
     set({ items: next, merchantId, merchantName, merchantBannerUrl, lastUpdatedAt: now });
-    get().persist();
+    queueCartPersist(get);
   },
 
   getActiveCartContext: (): ActiveCartContext => {
@@ -232,7 +302,7 @@ export const useCartStore = create<CartState>((set, get) => ({
     });
     if (!changed) return;
     set({ items: next, lastUpdatedAt: Date.now() });
-    get().persist();
+    queueCartPersist(get);
   },
 
   clearCart: () => {
@@ -250,7 +320,7 @@ export const useCartStore = create<CartState>((set, get) => ({
       lastUpdatedAt: 0,
       // hydrated intentionally NOT touched — stays true
     });
-    get().persist();
+    void flushCartPersistNow(get);
   },
 
   setCartForReorder: (merchantId, merchantName, items, merchantBannerUrl) => {
@@ -262,7 +332,7 @@ export const useCartStore = create<CartState>((set, get) => ({
       items: items.map((i) => ({ ...i })),
       lastUpdatedAt: now,
     });
-    get().persist();
+    void flushCartPersistNow(get);
   },
 
   hydrate: async () => {
@@ -297,10 +367,6 @@ export const useCartStore = create<CartState>((set, get) => ({
   },
 
   persist: async () => {
-    const { merchantId, merchantName, merchantBannerUrl, items, stashedCarts, lastUpdatedAt } = get();
-    await setItem(
-      STORAGE_KEYS.CART,
-      JSON.stringify({ merchantId, merchantName, merchantBannerUrl, items, stashedCarts, lastUpdatedAt }),
-    );
+    await flushCartPersistNow(get);
   },
 }));

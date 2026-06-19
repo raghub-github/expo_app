@@ -94,6 +94,11 @@ export const documentFileSideEnum = pgEnum("document_file_side", [
   "single",
 ]);
 
+export const riderPayoutMethodTypeEnum = pgEnum("rider_payout_method_type", [
+  "bank",
+  "upi",
+]);
+
 export const paymentMethodTypeEnum = pgEnum("payment_method_type", [
   "bank",
   "upi",
@@ -1977,6 +1982,8 @@ export const orderCancellationReasonCatalog = pgTable(
     reasonCode: text("reason_code").notNull(),
     sortOrder: integer("sort_order").notNull().default(0),
     isActive: boolean("is_active").notNull().default(true),
+    channel: text("channel").notNull().default("web"),
+    serviceType: text("service_type"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -2100,6 +2107,7 @@ export const ordersCore = pgTable(
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     cancelledBy: text("cancelled_by"),
     cancelledById: bigint("cancelled_by_id", { mode: "number" }),
+    billingSnapshot: jsonb("billing_snapshot"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -2119,6 +2127,11 @@ export const ordersCore = pgTable(
     placedAt: timestamp("placed_at", { withTimezone: true }),
     formattedOrderId: text("formatted_order_id"),
     orderId: text("order_id"),
+    alternateContactName: text("alternate_contact_name"),
+    alternateContactPhone: text("alternate_contact_phone"),
+    alternateContactSetAt: timestamp("alternate_contact_set_at", { withTimezone: true }),
+    deliveryPrimaryContactName: text("delivery_primary_contact_name"),
+    deliveryPrimaryContactPhone: text("delivery_primary_contact_phone"),
     /** Email of the last dashboard user who manually updated order status (Dispatch Ready / Dispatched / Delivered). */
     manualStatusUpdatedByEmail: text("manual_status_updated_by_email"),
   },
@@ -2147,6 +2160,36 @@ export const ordersCore = pgTable(
     riskFlaggedIdx: index("orders_core_risk_flagged_idx").on(table.riskFlagged),
     distanceMismatchIdx: index("orders_core_distance_mismatch_idx").on(
       table.distanceMismatchFlagged
+    ),
+  })
+);
+
+export const orderPartnerChatSenderEnum = pgEnum("order_partner_chat_sender", [
+  "CUSTOMER",
+  "RIDER",
+  "SYSTEM",
+]);
+
+export const orderPartnerChatMessages = pgTable(
+  "order_partner_chat_messages",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderCoreId: bigint("order_core_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    orderPublicId: text("order_public_id").notNull(),
+    senderType: orderPartnerChatSenderEnum("sender_type").notNull(),
+    senderCustomerId: bigint("sender_customer_id", { mode: "number" }),
+    senderRiderId: integer("sender_rider_id"),
+    body: text("body").notNull(),
+    readByCustomerAt: timestamp("read_by_customer_at", { withTimezone: true }),
+    readByRiderAt: timestamp("read_by_rider_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    coreCreatedIdx: index("order_partner_chat_messages_core_created_idx").on(
+      table.orderCoreId,
+      table.createdAt
     ),
   })
 );
@@ -2327,6 +2370,9 @@ export const ordersRide = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    adminRiderPaymentClearedAt: timestamp("admin_rider_payment_cleared_at", {
+      withTimezone: true,
+    }),
   },
   (table) => ({
     orderIdIdx: index("orders_ride_order_id_idx").on(table.orderId),
@@ -2928,7 +2974,7 @@ export const riderPaymentMethods = pgTable(
     riderId: integer("rider_id")
       .notNull()
       .references(() => riders.id, { onDelete: "cascade" }),
-    methodType: paymentMethodTypeEnum("method_type").notNull(),
+    methodType: riderPayoutMethodTypeEnum("method_type").notNull(),
     accountHolderName: text("account_holder_name").notNull(),
     bankName: text("bank_name"),
     ifsc: text("ifsc"),

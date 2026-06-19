@@ -20,6 +20,12 @@ export function isRiderNotFoundError(error: unknown): boolean {
   return /rider not found/i.test(haystack);
 }
 
+export function isOrderFetchNotFoundError(error: unknown): boolean {
+  if (error instanceof HttpError && error.status === 404) return true;
+  if (error instanceof ApiError && error.status === 404) return true;
+  return false;
+}
+
 export function isUnauthorizedError(error: unknown): boolean {
   return error instanceof HttpError && error.status === 401;
 }
@@ -147,6 +153,39 @@ export async function putJson<TResponse>(
     url,
     {
       method: "PUT",
+      headers: {
+        "content-type": "application/json",
+        ...(init?.headers ?? {}),
+      },
+      body: JSON.stringify(body),
+    },
+    timeout,
+  );
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    maybeNotifySessionRevoked(res.status, text);
+    throw new HttpError(
+      `HTTP ${res.status} ${res.statusText}${text ? `: ${text}` : ""}`,
+      res.status,
+      text,
+    );
+  }
+
+  return (await res.json()) as TResponse;
+}
+
+export async function patchJson<TResponse>(
+  url: string,
+  body: unknown,
+  init?: { headers?: Record<string, string>; timeout?: number },
+): Promise<TResponse> {
+  const timeout = init?.timeout ?? 30000;
+
+  const res = await fetchWithTimeout(
+    url,
+    {
+      method: "PATCH",
       headers: {
         "content-type": "application/json",
         ...(init?.headers ?? {}),

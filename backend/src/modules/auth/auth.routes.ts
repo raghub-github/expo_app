@@ -12,7 +12,6 @@ import {
   type OtpVerify,
 } from "@gatimitra/contracts";
 import { getEnv } from "../../config/env.js";
-import { sendOtpViaMsg91 } from "../../services/otp/msg91.js";
 import { deliverSupabaseOtpViaMsg91 } from "../../services/otp/msg91DeliverSupabaseOtp.js";
 import { issueSupabaseCompatibleJwt } from "./jwt.js";
 import { verifyFirebaseIdToken } from "./firebaseAdmin.js";
@@ -428,10 +427,13 @@ export async function authRoutes(app: FastifyInstance) {
         response: { 200: OtpRequestResponseSchema },
       },
     },
-    async (req) => {
+    async (req, reply) => {
       const { phoneE164 } = OtpRequestSchema.parse(req.body);
       const requestId = ulid();
       const expiresInSec = env.MSG91_OTP_EXPIRY_SEC;
+      const phoneTail = phoneE164.replace(/\D/g, "").slice(-4);
+
+      req.log?.info?.({ phoneE164, phoneTail, requestId }, "[OTP] Requested");
 
       // 6-digit OTP (SMS standard; MSG91 and partnersite use 6).
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -442,32 +444,50 @@ export async function authRoutes(app: FastifyInstance) {
         attempts: 0,
       });
 
-      // Send SMS via MSG91 when configured (same provider as partnersite).
-      if (env.MSG91_AUTH_KEY) {
-        const sendResult = await sendOtpViaMsg91({
-          authKey: env.MSG91_AUTH_KEY,
-          phoneE164,
-          otp,
-          templateId: env.MSG91_TEMPLATE_ID,
-          senderId: env.MSG91_SENDER_ID,
-          otpExpirySec: expiresInSec,
-        });
-        if (!sendResult.ok) {
-          req.log?.warn?.({ phoneE164, requestId, err: sendResult.error }, "MSG91 send failed");
-          // Do not fail the request – dev can still use OTP from logs; prod may retry or show generic error
+      req.log?.info?.({ requestId, expiresInSec }, "[OTP] Generated");
+
+      // Send SMS via MSG91 — same channel order as supabase-send-sms / partnersite (Flow DLT first).
+      const delivered = await deliverSupabaseOtpViaMsg91(env, phoneE164, otp);
+      const smsSent = delivered.ok;
+      if (!smsSent) {
+        otpStore.delete(requestId);
+        req.log?.warn?.(
+          { phoneE164, phoneTail, requestId, err: delivered.error, attempts: delivered.attempts },
+          "[OTP] SMS Failed",
+        );
+        if (env.NODE_ENV !== "production") {
+          // eslint-disable-next-line no-console
+          console.warn("\n  [OTP] SMS NOT sent:", delivered.error, "\n");
         }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).code(503).send({
+          error: "sms_delivery_failed",
+          message:
+            "Could not send OTP by SMS. Check MSG91_AUTH_KEY, template/flow IDs, and sender ID on the API server.",
+        });
       }
 
-      // Log OTP in dev so you can copy and sign in when SMS is not configured or fails.
-      req.log?.info?.({ phoneE164, requestId, otp }, "OTP generated");
+      req.log?.info?.({ phoneE164, phoneTail, requestId, channel: delivered.channel }, "[OTP] SMS Sent");
+
+      // Server-side log only — never return OTP to mobile clients.
       if (env.NODE_ENV !== "production") {
         // eslint-disable-next-line no-console
-        console.log("\n  [OTP] Phone:", phoneE164, "| OTP:", otp, "| RequestId:", requestId, "\n");
+        console.log(
+          "\n  [OTP] Phone:",
+          phoneE164,
+          "| OTP:",
+          otp,
+          "| RequestId:",
+          requestId,
+          `| SMS: sent (${delivered.channel})`,
+          "\n",
+        );
       }
 
       return {
         requestId,
         expiresInSec,
+        smsSent: true,
       };
     },
   );
@@ -490,25 +510,40 @@ export async function authRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const body = OtpVerifySchema.parse(req.body) as OtpVerify & { appType?: string };
       const { requestId, phoneE164, deviceId, otp } = body;
+      const appType = body.appType ?? "unknown";
+      const phoneTail = phoneE164.replace(/\D/g, "").slice(-4);
+
+      req.log?.info?.({ requestId, appType, phoneTail }, "[OTP] Verify attempted");
 
       const entry = otpStore.get(requestId);
-      if (!entry) return reply.code(400).send({ error: "invalid_request_id" });
-      if (entry.phoneE164 !== phoneE164) return reply.code(400).send({ error: "phone_mismatch" });
+      if (!entry) {
+        req.log?.warn?.({ requestId, appType }, "[OTP] Verify failed — invalid request id");
+        return reply.code(400).send({ error: "invalid_request_id" });
+      }
+      if (entry.phoneE164 !== phoneE164) {
+        req.log?.warn?.({ requestId, appType }, "[OTP] Verify failed — phone mismatch");
+        return reply.code(400).send({ error: "phone_mismatch" });
+      }
       if (Date.now() > entry.expiresAtMs) {
         otpStore.delete(requestId);
+        req.log?.warn?.({ requestId, appType }, "[OTP] Expired");
         return reply.code(400).send({ error: "otp_expired" });
       }
 
       entry.attempts += 1;
       if (entry.attempts > 5) {
         otpStore.delete(requestId);
+        req.log?.warn?.({ requestId, appType }, "[OTP] Verify failed — too many attempts");
         return reply.code(429).send({ error: "too_many_attempts" });
       }
 
       if (entry.otp !== otp) {
+        req.log?.warn?.({ requestId, appType, attempt: entry.attempts }, "[OTP] Verify failed — invalid code");
         return reply.code(400).send({ error: "invalid_otp" });
       }
       otpStore.delete(requestId);
+
+      req.log?.info?.({ requestId, appType, phoneTail }, "[OTP] Verified");
 
       const db = getDb();
       const sql = getSql();

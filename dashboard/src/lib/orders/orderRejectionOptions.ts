@@ -46,3 +46,24 @@ export function findCatalogReasonBySelectValue(
 export function catalogReasonOptionValue(row: CancellationReasonCatalogRow): string {
   return String(normalizeCatalogReasonId(row.id) ?? row.id);
 }
+
+/** Catalog row for admin cancel-without-refund (attribute OTHER). */
+export function findCancelledWithoutRefundReason(
+  grouped: CancellationReasonCatalogGrouped
+): CancellationReasonCatalogRow | null {
+  for (const rows of Object.values(grouped)) {
+    for (const row of rows) {
+      const label = row.label.trim().toLowerCase();
+      const code = String(row.reasonCode ?? "").trim().toLowerCase();
+      if (
+        code === "cancelled_without_refund" ||
+        code === "canceled_without_refund" ||
+        label === "cancelled without refund" ||
+        label === "canceled without refund"
+      ) {
+        return row;
+      }
+    }
+  }
+  return null;
+}

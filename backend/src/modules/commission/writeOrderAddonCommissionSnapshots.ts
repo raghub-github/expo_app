@@ -5,7 +5,7 @@
 
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { orderItemAddonCommissionSnapshots } from "../../db/schema.js";
-import { resolveStoreCommission } from "./commission.resolver.js";
+import { resolveStoreCommission, type ResolvedCommission } from "./commission.resolver.js";
 
 export type AddonForCommissionSnapshot = {
   orderItemAddonId: number;
@@ -24,10 +24,12 @@ export async function writeOrderAddonCommissionSnapshots(
   orderIdNum: number,
   orderItemId: number,
   addons: AddonForCommissionSnapshot[],
+  /** Pre-resolved outside db.transaction() to avoid a second pool connection mid-txn. */
+  commissionOverride?: ResolvedCommission | null,
 ): Promise<void> {
   if (addons.length === 0 || !Number.isFinite(orderIdNum) || orderIdNum <= 0) return;
 
-  const commission = await resolveStoreCommission(storeId);
+  const commission = commissionOverride ?? (await resolveStoreCommission(storeId));
   const pct = commission.percent;
   if (!Number.isFinite(pct) || pct < 0 || pct >= 100) {
     console.warn(

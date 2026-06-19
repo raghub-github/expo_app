@@ -27,10 +27,11 @@ import { RiderDeliveryPartnerCard } from '@/components/orders/RiderDeliveryPartn
 import { RiderAssignPendingCard } from '@/components/orders/RiderAssignPendingCard';
 import { useNearbyDispatchRiders } from '@/hooks/useNearbyDispatchRiders';
 import { useRiderArrivalToMerchant } from '@/hooks/useRiderArrivalToMerchant';
-import { hasRiderReachedMerchant } from '@/lib/rider-merchant-arrival-display';
+import { hasRiderReachedMerchant, resolveRiderDisplayVariant, riderEnRouteToMerchant } from '@/lib/rider-merchant-arrival-display';
 import { deliveryEtaMinutesLabel } from '@/lib/order-prep-time';
 import { formatOrderDropAddress } from '@/lib/formatOrderAddress';
 import { usePastRidersEligibility } from '@/hooks/usePastRidersEligibility';
+import { resolveRiderStoreWaitState } from '@/lib/rider-store-wait-display';
 
 /** Panel preview only — full list via sidesheet (+N more). No scroll on items. */
 const ITEMS_PREVIEW_MAX = 4;
@@ -212,12 +213,21 @@ export function OrderPanel({
   const isReadyForPickup = status === 'READY_FOR_PICKUP';
   const isPickedUp = status === 'OUT_FOR_DELIVERY';
   const deliveryLabel = deliveryEtaMinutesLabel(order.eta_seconds);
-  const riderReachedMerchant = hasRiderReachedMerchant({
+  const riderDisplayInput = {
+    order_status: status,
     core_status: order.core_status,
     current_status: order.current_status,
     reached_merchant_at:
       (order as { reached_merchant_at?: string | null }).reached_merchant_at ?? null,
-  });
+    rider_reached_pickup_at:
+      (order as { rider_reached_pickup_at?: string | null }).rider_reached_pickup_at ?? null,
+    rider_picked_up_at: order.rider_picked_up_at ?? null,
+    pickup_wait_seconds:
+      (order as { pickup_wait_seconds?: number | null }).pickup_wait_seconds ?? null,
+    rider_assignment_status:
+      (order as { rider_assignment_status?: string | null }).rider_assignment_status ?? null,
+  };
+  const riderReachedMerchant = hasRiderReachedMerchant(riderDisplayInput);
   const riderAssigned = !!(
     order.rider_id ??
     order.rider_details?.id ??
@@ -227,7 +237,7 @@ export function OrderPanel({
   const terminalStatus = ['DELIVERED', 'CANCELLED', 'RTO'].includes(status);
   const showPendingRiderAssign =
     panelMode === 'live' && !riderAssigned && !terminalStatus;
-  const { summary: nearbyRiderSummary, loading: nearbyRidersLoading } = useNearbyDispatchRiders(
+  const { summary: nearbyRiderSummary } = useNearbyDispatchRiders(
     order.id,
     showPendingRiderAssign
   );
@@ -247,18 +257,19 @@ export function OrderPanel({
     !!displayOtps.rto ||
     !!otpCode;
 
-  const riderEnRouteToMerchant =
-    showRiderCard && riderAssigned && !isPickedUp && !riderReachedMerchant;
+  const riderEnRouteToMerchantFlag =
+    showRiderCard && riderAssigned && riderEnRouteToMerchant(riderDisplayInput);
   const { arrivalSubtitle: riderArrivalSubtitle } = useRiderArrivalToMerchant(
     order.id,
-    riderEnRouteToMerchant
+    riderEnRouteToMerchantFlag
   );
 
-  const riderCardVariant = isPickedUp
-    ? 'picked_up'
-    : riderReachedMerchant
-      ? 'arrived'
-      : 'on_the_way';
+  const riderCardVariant = resolveRiderDisplayVariant(riderDisplayInput);
+
+  const storeWait = resolveRiderStoreWaitState(riderDisplayInput);
+  const showStoreWait =
+    riderCardVariant === 'arrived' &&
+    (storeWait.live || (storeWait.finalizedSeconds != null && storeWait.finalizedSeconds > 0));
 
   return (
     <div
@@ -421,7 +432,6 @@ export function OrderPanel({
                 'Looking for nearby riders — we will assign one soon'
               }
               radiusKm={nearbyRiderSummary?.radiusKm}
-              loading={nearbyRidersLoading && !nearbyRiderSummary}
             />
           ) : showRiderCard ? (
             <RiderDeliveryPartnerCard
@@ -430,7 +440,7 @@ export function OrderPanel({
               riderPhone={riderMobile}
               riderSelfieUrl={riderPhoto}
               variant={riderCardVariant}
-              arrivalSubtitle={riderEnRouteToMerchant ? riderArrivalSubtitle : undefined}
+              arrivalSubtitle={riderEnRouteToMerchantFlag ? riderArrivalSubtitle : undefined}
               pickupOtp={riderReachedMerchant ? displayOtps.pickup : undefined}
               rtoDisplay={riderReachedMerchant ? (rtoDisplay ?? undefined) : undefined}
               legacyOtp={
@@ -438,10 +448,15 @@ export function OrderPanel({
               }
               legacyOtpType={otpType}
               deliveryLabel={isPickedUp ? deliveryLabel ?? undefined : undefined}
-              onTrackRider={onTrackRider}
+              onTrackRider={terminalStatus ? undefined : onTrackRider}
               onOpenRiderPhoto={onOpenRiderPhoto}
               onUniformFeedback={isPickedUp ? onUniformFeedback : undefined}
               uniformFeedback={uniformFeedback}
+              storeWaitAnchorAt={showStoreWait ? storeWait.anchorAt : undefined}
+              storeWaitLive={showStoreWait ? storeWait.live : undefined}
+              storeWaitFinalizedSeconds={
+                showStoreWait && !storeWait.live ? storeWait.finalizedSeconds : undefined
+              }
             />
           ) : null}
 

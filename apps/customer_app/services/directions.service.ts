@@ -23,10 +23,15 @@ export type VehicleRouteConfig = {
 export type CalculatedRoute = {
   coordinates: LatLng[];
   distanceKm: number;
+  /** Raw routing engine duration before vehicle scaling. */
+  durationSeconds: number;
   etaMinutes: number;
   source: "mapbox" | "osrm" | "backend";
   vehicleId: string;
 };
+
+/** Single canonical profile for fare, ETA, and ride distance (pickup → drop). */
+export const CANONICAL_RIDE_ROUTE_VEHICLE_ID = "bike";
 
 const OSRM_DRIVING = "https://router.project-osrm.org/route/v1/driving";
 
@@ -185,6 +190,7 @@ function rawRouteToCalculated(
   return {
     coordinates,
     distanceKm: route.distance / 1000,
+    durationSeconds: Math.max(1, Math.round(route.duration)),
     etaMinutes: vehicleEtaMinutes(route.duration, config),
     source,
     vehicleId,
@@ -294,6 +300,7 @@ async function fetchBackendPolyline(
     return {
       coordinates,
       distanceKm: result.distanceKm,
+      durationSeconds: Math.max(1, Math.round(rawDuration)),
       etaMinutes: vehicleEtaMinutes(rawDuration, config),
       source: "backend",
       vehicleId: rideId,
@@ -332,10 +339,30 @@ export async function getCalculatedRouteWithStops(
   pickup: LatLng,
   stops: LatLng[],
   drop: LatLng,
-  rideId: string
+  rideId: string,
+  options?: { skipCache?: boolean }
 ): Promise<CalculatedRoute | null> {
   const path = [pickup, ...stops.filter(Boolean), drop];
-  return getCalculatedRouteCoordinates(path, rideId);
+  return getCalculatedRouteCoordinates(path, rideId, options);
+}
+
+/**
+ * Canonical pickup → drop route used for fare, ETA, and ride distance everywhere.
+ * Never varies by selected vehicle — recalculate only when pickup/drop/stops change.
+ */
+export async function resolveCanonicalRideRoute(
+  pickup: LatLng,
+  stops: LatLng[],
+  drop: LatLng,
+  options?: { skipCache?: boolean }
+): Promise<CalculatedRoute | null> {
+  return getCalculatedRouteWithStops(
+    pickup,
+    stops,
+    drop,
+    CANONICAL_RIDE_ROUTE_VEHICLE_ID,
+    options
+  );
 }
 
 /** @deprecated Use getCalculatedRouteCoordinates — no straight-line fallback. */

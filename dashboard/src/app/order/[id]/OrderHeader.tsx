@@ -27,7 +27,7 @@ export default function OrderHeader({ forceSkeleton = false }: OrderHeaderProps)
   const showSkeleton = forceSkeleton || (!authReady && !email);
 
   return (
-    <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur shadow-[0_1px_4px_rgba(15,23,42,0.08)]">
+    <header className="z-40 shrink-0 border-b border-slate-200 bg-white/95 shadow-[0_1px_4px_rgba(15,23,42,0.08)] backdrop-blur">
       <div className="flex h-11 w-full items-center justify-between px-3 sm:h-12 sm:px-4 md:px-6">
         {/* Logo hard-left */}
         <div className="flex items-center gap-2 sm:gap-3">

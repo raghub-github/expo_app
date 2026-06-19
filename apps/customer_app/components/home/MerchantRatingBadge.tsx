@@ -1,5 +1,5 @@
 /**
- * Zomato-style rating pill — tap toggles star left (By X+) ↔ right (For you).
+ * GatiMitra-style rating pill — tap toggles star left (By X+) ↔ right (For you).
  */
 
 import { useMemo, useState } from "react";

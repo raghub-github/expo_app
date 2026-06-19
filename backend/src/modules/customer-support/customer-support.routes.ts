@@ -13,6 +13,10 @@
  *   POST /v1/customer-support/tickets/:ticketId/upload
  *   POST /v1/customer-support/tickets/:ticketId/rating
  *   POST /v1/customer-support/tickets/:ticketId/reopen
+ *   POST /v1/customer-support/support-chat/sessions
+ *   GET  /v1/customer-support/support-chat/sessions/:sessionId
+ *   PATCH /v1/customer-support/support-chat/sessions/:sessionId
+ *   POST /v1/customer-support/support-chat/sessions/:sessionId/messages
  *
  * Auth: requires customer JWT (`req.auth.role === "customer"`, `req.auth.sub`
  * is the `customers.customer_id` text uuid). Ownership is enforced on every
@@ -22,11 +26,18 @@
  */
 
 import type { FastifyInstance } from "fastify";
+import multipart from "@fastify/multipart";
 import { getSql } from "../../db/client.js";
 import { getDb } from "../../db/client.js";
 import { eq } from "drizzle-orm";
 import { customers } from "../../db/schema.js";
 import { auth } from "../../plugins/auth.js";
+import {
+  buildFraudReportTicketCopy,
+  normalizeFraudReportTarget,
+  type FraudReportTargetType,
+} from "../../lib/customer-order-fraud-report.js";
+import { normalizeTicketAttachmentsForDb } from "../../lib/ticket-attachments-for-db.js";
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /* Helpers                                                                     */
@@ -71,6 +82,7 @@ type ResolvedCustomerOrder = {
   grand_total: number | null;
   placed_at: string | null;
   delivered_at: string | null;
+  cancelled_at: string | null;
   merchant_store_id: number | null;
   merchant_store_name: string | null;
 };
@@ -86,6 +98,7 @@ function mapResolvedOrder(r: Record<string, unknown>): ResolvedCustomerOrder {
     grand_total: r.grand_total != null ? Number(r.grand_total) : null,
     placed_at: toIsoOrNull(r.placed_at),
     delivered_at: toIsoOrNull(r.delivered_at),
+    cancelled_at: toIsoOrNull(r.cancelled_at),
     merchant_store_id: r.merchant_store_id != null ? Number(r.merchant_store_id) : null,
     merchant_store_name: r.merchant_store_name != null ? String(r.merchant_store_name) : null,
   };
@@ -119,6 +132,7 @@ async function resolveCustomerOrderRef(
     SELECT oc.id, oc.order_id, oc.formatted_order_id, oc.order_type::text AS order_type,
            oc.status::text AS status, oc.current_status,
            oc.grand_total, oc.placed_at, oc.actual_delivery_time AS delivered_at,
+           oc.cancelled_at,
            oc.merchant_store_id,
            ms.store_name AS merchant_store_name
     FROM orders_core oc
@@ -164,11 +178,261 @@ async function resolveCustomerInternalId(sub: string): Promise<{
   };
 }
 
+type ChatSessionRow = {
+  id: number;
+  order_id: number | null;
+  ticket_id: number | null;
+  ticket_title_id: number | null;
+  selected_issue_label: string | null;
+  status: string;
+  metadata: Record<string, unknown>;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+function mapChatSessionRow(r: Record<string, unknown>): ChatSessionRow {
+  return {
+    id: Number(r.id),
+    order_id: r.order_id != null ? Number(r.order_id) : null,
+    ticket_id: r.ticket_id != null ? Number(r.ticket_id) : null,
+    ticket_title_id: r.ticket_title_id != null ? Number(r.ticket_title_id) : null,
+    selected_issue_label: r.selected_issue_label != null ? String(r.selected_issue_label) : null,
+    status: String(r.status ?? "active"),
+    metadata:
+      r.metadata && typeof r.metadata === "object" && !Array.isArray(r.metadata)
+        ? (r.metadata as Record<string, unknown>)
+        : {},
+    created_at: toIsoOrNull(r.created_at),
+    updated_at: toIsoOrNull(r.updated_at),
+  };
+}
+
+function mapChatMessageRow(r: Record<string, unknown>) {
+  return {
+    id: Number(r.id),
+    client_message_id: r.client_message_id != null ? String(r.client_message_id) : null,
+    role: String(r.role ?? "bot") as "bot" | "user",
+    message_text: String(r.message_text ?? ""),
+    menu_level: r.menu_level != null ? String(r.menu_level) : null,
+    payload:
+      r.payload && typeof r.payload === "object" && !Array.isArray(r.payload)
+        ? (r.payload as Record<string, unknown>)
+        : {},
+    display_order: r.display_order != null ? Number(r.display_order) : 0,
+    created_at: toIsoOrNull(r.created_at) ?? new Date().toISOString(),
+  };
+}
+
+async function fetchChatSessionMessages(
+  sql: ReturnType<typeof getSql>,
+  sessionId: number
+) {
+  const rows = await sql`
+    SELECT id, client_message_id, role, message_text, menu_level, payload, display_order, created_at
+    FROM customer_support_chat_messages
+    WHERE session_id = ${sessionId}
+    ORDER BY display_order ASC, id ASC
+  `;
+  return (rows as Array<Record<string, unknown>>).map(mapChatMessageRow);
+}
+
+async function assertOwnedChatSession(
+  sql: ReturnType<typeof getSql>,
+  customerId: number,
+  sessionId: number
+): Promise<ChatSessionRow | null> {
+  const rows = await sql`
+    SELECT id, order_id, ticket_id, ticket_title_id, selected_issue_label, status, metadata, created_at, updated_at
+    FROM customer_support_chat_sessions
+    WHERE id = ${sessionId} AND customer_id = ${customerId}
+    LIMIT 1
+  `;
+  const row = (rows as Array<Record<string, unknown>>)[0];
+  return row ? mapChatSessionRow(row) : null;
+}
+
+type CustomerTitleRow = {
+  id: number;
+  group_id: number | null;
+  customer_section_id: string | null;
+  title_text: string | null;
+  intake_unified_title: string | null;
+  intake_unified_category: string | null;
+  intake_unified_priority: string | null;
+  intake_unified_service_type: string | null;
+  tag_codes: string[] | null;
+};
+
+function mapCustomerTitleRow(r: Record<string, unknown>): CustomerTitleRow {
+  return {
+    id: Number(r.id),
+    group_id: r.group_id != null ? Number(r.group_id) : null,
+    customer_section_id: r.customer_section_id != null ? String(r.customer_section_id) : null,
+    title_text: r.title_text != null ? String(r.title_text) : null,
+    intake_unified_title:
+      r.intake_unified_title != null ? String(r.intake_unified_title).trim() || null : null,
+    intake_unified_category:
+      r.intake_unified_category != null ? String(r.intake_unified_category) : null,
+    intake_unified_priority:
+      r.intake_unified_priority != null ? String(r.intake_unified_priority) : null,
+    intake_unified_service_type:
+      r.intake_unified_service_type != null ? String(r.intake_unified_service_type) : null,
+    tag_codes: Array.isArray(r.tag_codes) ? (r.tag_codes as string[]) : null,
+  };
+}
+
+async function fetchCustomerTitleRowById(
+  sql: ReturnType<typeof getSql>,
+  ticketTitleId: number
+): Promise<CustomerTitleRow | null> {
+  const tr = await sql`
+    SELECT
+      tt.id, tt.group_id, tt.customer_section_id, tt.title_text,
+      tt.intake_unified_title, tt.intake_unified_category,
+      tt.intake_unified_priority, tt.intake_unified_service_type,
+      COALESCE(
+        (
+          SELECT array_agg(UPPER(TRIM(tg2.tag_code)) ORDER BY tg2.id)
+          FROM ticket_title_tags ttm
+          INNER JOIN ticket_tags tg2 ON tg2.id = ttm.tag_id
+          WHERE ttm.ticket_title_id = tt.id
+        ),
+        CASE
+          WHEN tt.tag_id IS NOT NULL THEN (
+            SELECT ARRAY[UPPER(TRIM(tg3.tag_code))]
+            FROM ticket_tags tg3 WHERE tg3.id = tt.tag_id LIMIT 1
+          )
+          ELSE NULL
+        END
+      ) AS tag_codes
+    FROM ticket_titles tt
+    WHERE tt.id = ${ticketTitleId}
+      AND tt.is_active = TRUE
+      AND tt.ticket_section::text = 'customer'
+    LIMIT 1
+  `;
+  const r = (tr as Array<Record<string, unknown>>)[0];
+  return r ? mapCustomerTitleRow(r) : null;
+}
+
+async function fetchCustomerTitleRowByIssueLabel(
+  sql: ReturnType<typeof getSql>,
+  issueLabel: string
+): Promise<CustomerTitleRow | null> {
+  const label = issueLabel.trim();
+  if (!label) return null;
+  const tr = await sql`
+    SELECT
+      tt.id, tt.group_id, tt.customer_section_id, tt.title_text,
+      tt.intake_unified_title, tt.intake_unified_category,
+      tt.intake_unified_priority, tt.intake_unified_service_type,
+      COALESCE(
+        (
+          SELECT array_agg(UPPER(TRIM(tg2.tag_code)) ORDER BY tg2.id)
+          FROM ticket_title_tags ttm
+          INNER JOIN ticket_tags tg2 ON tg2.id = ttm.tag_id
+          WHERE ttm.ticket_title_id = tt.id
+        ),
+        CASE
+          WHEN tt.tag_id IS NOT NULL THEN (
+            SELECT ARRAY[UPPER(TRIM(tg3.tag_code))]
+            FROM ticket_tags tg3 WHERE tg3.id = tt.tag_id LIMIT 1
+          )
+          ELSE NULL
+        END
+      ) AS tag_codes
+    FROM ticket_titles tt
+    WHERE tt.is_active = TRUE
+      AND tt.ticket_section::text = 'customer'
+      AND tt.intake_unified_title IS NOT NULL
+      AND TRIM(tt.intake_unified_title) <> ''
+      AND LOWER(TRIM(tt.title_text)) = LOWER(${label})
+    ORDER BY tt.display_order ASC NULLS LAST, tt.id ASC
+    LIMIT 1
+  `;
+  const r = (tr as Array<Record<string, unknown>>)[0];
+  return r ? mapCustomerTitleRow(r) : null;
+}
+
+/** Never use human-readable title_text on unified_tickets.ticket_title — enum/text code only. */
+async function resolveCustomerTicketTitleRow(
+  sql: ReturnType<typeof getSql>,
+  ticketTitleId: number | null,
+  selectedIssueLabel: string | null | undefined
+): Promise<CustomerTitleRow | null> {
+  let row: CustomerTitleRow | null = null;
+  if (ticketTitleId != null) {
+    row = await fetchCustomerTitleRowById(sql, ticketTitleId);
+  }
+  if (row?.intake_unified_title) return row;
+
+  const label = selectedIssueLabel?.trim();
+  if (label) {
+    const byLabel = await fetchCustomerTitleRowByIssueLabel(sql, label);
+    if (byLabel) return byLabel;
+  }
+
+  return row;
+}
+
+function buildTicketSubmittedChatMessage(ticketDisplayId: string): string {
+  const ref = ticketDisplayId.trim();
+  const ticketLabel = ref.startsWith("#") ? ref : `#${ref}`;
+  return `Your query has been recorded. Your ticket ID is ${ticketLabel}. GatiMitra team will look into your concern and revert within 24 working hours.`;
+}
+
+async function linkChatSessionToTicket(
+  sql: ReturnType<typeof getSql>,
+  customerId: number,
+  chatSessionId: number,
+  ticketId: number,
+  patch?: { selected_issue_label?: string | null; ticket_title_id?: number | null }
+): Promise<void> {
+  const ticketRows = await sql`
+    SELECT ticket_id
+    FROM unified_tickets
+    WHERE id = ${ticketId}
+    LIMIT 1
+  `;
+  const ticketDisplayId = String((ticketRows as Array<Record<string, unknown>>)[0]?.ticket_id ?? ticketId);
+  const confirmationText = buildTicketSubmittedChatMessage(ticketDisplayId);
+  const confirmationPayload = JSON.stringify({
+    ticket_id: ticketDisplayId,
+    ticket_numeric_id: ticketId,
+    kind: "ticket_submitted",
+  });
+
+  await sql`
+    UPDATE customer_support_chat_sessions
+    SET ticket_id = ${ticketId},
+        status = 'submitted',
+        selected_issue_label = COALESCE(${patch?.selected_issue_label ?? null}, selected_issue_label),
+        ticket_title_id = COALESCE(${patch?.ticket_title_id ?? null}, ticket_title_id),
+        metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify({ ticket_display_id: ticketDisplayId })}::jsonb,
+        updated_at = NOW()
+    WHERE id = ${chatSessionId}
+      AND customer_id = ${customerId}
+  `;
+  await sql`
+    INSERT INTO customer_support_chat_messages (
+      session_id, role, message_text, menu_level, payload, display_order
+    )
+    SELECT
+      ${chatSessionId},
+      'bot',
+      ${confirmationText},
+      NULL,
+      ${confirmationPayload}::jsonb,
+      COALESCE((SELECT MAX(display_order) FROM customer_support_chat_messages WHERE session_id = ${chatSessionId}), 0) + 1
+  `;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────── */
 
 export async function customerSupportRoutes(app: FastifyInstance) {
   // Public health probe? None. Everything below requires auth.
   await app.register(auth, { required: true });
+  await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
 
   /**
    * GET /help-sections — Title catalog filtered to customer-facing intake.
@@ -178,10 +442,26 @@ export async function customerSupportRoutes(app: FastifyInstance) {
    *      includes that status (lowercase) or is NULL (always show).
    *   `?service_type=food|person_ride|parcel` — limit catalog to that service
    *      (food orders also include `other` titles; rides only person_ride).
+   *   `?group_code=` / `?group_name=` — limit to one ticket group (post-delivery chat).
+   *   `?parent_title_id=root` — only top-level titles (no parent row).
+   *   `?intake_only=true` — only leaf titles (no active children) for chat/ticket intake.
+   *   `?folder_title=` — children of a parent title row (e.g. "Customer - Post Delivery").
+   *   `?title_code=` — fetch one catalog row by title_code (post-delivery chat parent).
    * Pass `NO_ORDER` for the not-about-an-order flow. Omit order_status for
    * the full catalog (section picker before an order is chosen).
    */
-  app.get<{ Querystring: { order_status?: string; service_type?: string } }>(
+  app.get<{
+    Querystring: {
+      order_status?: string;
+      service_type?: string;
+      group_code?: string;
+      group_name?: string;
+      parent_title_id?: string;
+      intake_only?: string;
+      folder_title?: string;
+      title_code?: string;
+    };
+  }>(
     "/help-sections",
     async (req, reply) => {
     if (req.auth?.role !== "customer" || !req.auth?.sub) {
@@ -189,79 +469,123 @@ export async function customerSupportRoutes(app: FastifyInstance) {
     }
     const filter = normalizeHelpOrderStatus(req.query.order_status);
     const serviceType = normalizeHelpServiceType(req.query.service_type);
+    const groupCode = String(req.query.group_code ?? "").trim();
+    const groupName = String(req.query.group_name ?? "").trim();
+    const folderTitle = String(req.query.folder_title ?? "").trim();
+    const titleCode = String(req.query.title_code ?? "").trim();
+    const hasGroupFilter = groupCode.length > 0 || groupName.length > 0;
+    const hasFolderFilter = folderTitle.length > 0;
+    const hasTitleCodeFilter = titleCode.length > 0;
+    const parentRaw = String(req.query.parent_title_id ?? "").trim().toLowerCase();
+    const parentRootOnly =
+      parentRaw === "" || parentRaw === "root" || parentRaw === "null";
+    const parentId =
+      !parentRootOnly && /^\d+$/.test(parentRaw) ? Number(parentRaw) : null;
+    const intakeOnly = String(req.query.intake_only ?? "").trim().toLowerCase() === "true";
     const sql = getSql();
     try {
-      const rows = filter
-        ? await sql`
-            SELECT
-              tt.id            AS ticket_title_id,
-              tt.title_code    AS title_code,
-              tt.title_text    AS title_text,
-              tt.customer_section_id AS section_id,
-              tt.display_order AS display_order,
-              tt.group_id      AS group_id,
-              tg.group_name    AS group_name,
-              tt.applicable_order_statuses AS applicable_order_statuses
-            FROM ticket_titles tt
-            LEFT JOIN ticket_groups tg ON tg.id = tt.group_id
-            WHERE tt.is_active = TRUE
-              AND tt.ticket_section::text = 'customer'
-              AND tt.customer_section_id IS NOT NULL
+      const rows = await sql`
+        SELECT
+          tt.id            AS ticket_title_id,
+          tt.title_code    AS title_code,
+          tt.title_text    AS title_text,
+          tt.customer_section_id AS section_id,
+          tt.display_order AS display_order,
+          tt.group_id      AS group_id,
+          tg.group_code    AS group_code,
+          tg.group_name    AS group_name,
+          tt.applicable_order_statuses AS applicable_order_statuses,
+          tt.default_quick_options AS default_quick_options
+        FROM ticket_titles tt
+        LEFT JOIN ticket_groups tg ON tg.id = tt.group_id
+        WHERE tt.is_active = TRUE
+          AND tt.ticket_section::text = 'customer'
+          AND (tt.group_id IS NULL OR tg.is_active = TRUE)
+          AND (
+            ${hasGroupFilter}
+            OR ${hasFolderFilter}
+            OR ${hasTitleCodeFilter}
+            OR (
+              tt.customer_section_id IS NOT NULL
               AND TRIM(tt.customer_section_id::text) <> ''
-              AND (
-                ${serviceType}::text IS NULL
-                OR (
-                  ${serviceType} = 'person_ride'
-                  AND tt.service_type::text = 'person_ride'
-                )
-                OR (
-                  ${serviceType} = 'food'
-                  AND tt.service_type::text IN ('food', 'other')
-                )
-                OR (
-                  ${serviceType} NOT IN ('person_ride', 'food')
-                  AND tt.service_type::text = ${serviceType}
-                )
+            )
+          )
+          AND (
+            ${titleCode} = ''
+            OR tt.title_code = ${titleCode}
+          )
+          AND (
+            ${serviceType}::text IS NULL
+            OR (
+              ${serviceType} = 'person_ride'
+              AND tt.service_type::text = 'person_ride'
+            )
+            OR (
+              ${serviceType} = 'food'
+              AND tt.service_type::text IN ('food', 'other')
+            )
+            OR (
+              ${serviceType} NOT IN ('person_ride', 'food')
+              AND tt.service_type::text = ${serviceType}
+            )
+          )
+          AND (
+            ${filter}::text IS NULL
+            OR ${filter} = ''
+            OR tt.applicable_order_statuses IS NULL
+            OR ${filter} = ANY(tt.applicable_order_statuses)
+          )
+          AND (
+            (${groupCode} = '' AND ${groupName} = '')
+            OR (
+              (${groupCode} <> '' AND tg.group_code = ${groupCode})
+              OR (${groupName} <> '' AND LOWER(TRIM(tg.group_name)) = LOWER(TRIM(${groupName})))
+              OR EXISTS (
+                SELECT 1
+                FROM ticket_titles parent
+                LEFT JOIN ticket_groups pg ON pg.id = parent.group_id
+                WHERE parent.id = tt.parent_title_id
+                  AND parent.is_active = TRUE
+                  AND (
+                    (${groupCode} <> '' AND pg.group_code = ${groupCode})
+                    OR (${groupName} <> '' AND LOWER(TRIM(pg.group_name)) = LOWER(TRIM(${groupName})))
+                  )
               )
-              AND (
-                tt.applicable_order_statuses IS NULL
-                OR ${filter} = ANY(tt.applicable_order_statuses)
-              )
-            ORDER BY tt.customer_section_id ASC, tt.display_order ASC NULLS LAST, tt.id ASC
-          `
-        : await sql`
-            SELECT
-              tt.id            AS ticket_title_id,
-              tt.title_code    AS title_code,
-              tt.title_text    AS title_text,
-              tt.customer_section_id AS section_id,
-              tt.display_order AS display_order,
-              tt.group_id      AS group_id,
-              tg.group_name    AS group_name,
-              tt.applicable_order_statuses AS applicable_order_statuses
-            FROM ticket_titles tt
-            LEFT JOIN ticket_groups tg ON tg.id = tt.group_id
-            WHERE tt.is_active = TRUE
-              AND tt.ticket_section::text = 'customer'
-              AND tt.customer_section_id IS NOT NULL
-              AND TRIM(tt.customer_section_id::text) <> ''
-              AND (
-                ${serviceType}::text IS NULL
-                OR (
-                  ${serviceType} = 'person_ride'
-                  AND tt.service_type::text = 'person_ride'
-                )
-                OR (
-                  ${serviceType} = 'food'
-                  AND tt.service_type::text IN ('food', 'other')
-                )
-                OR (
-                  ${serviceType} NOT IN ('person_ride', 'food')
-                  AND tt.service_type::text = ${serviceType}
-                )
-              )
-            ORDER BY tt.customer_section_id ASC, tt.display_order ASC NULLS LAST, tt.id ASC
-          `;
+            )
+          )
+          AND (
+            ${intakeOnly}
+            OR NOT EXISTS (
+              SELECT 1
+              FROM ticket_titles child
+              WHERE child.parent_title_id = tt.id
+                AND child.is_active = TRUE
+                AND child.ticket_section::text = 'customer'
+            )
+          )
+          AND (
+            NOT ${hasGroupFilter}
+            OR ${intakeOnly}
+            OR NOT ${parentRootOnly}
+            OR ${parentId != null}
+            OR tt.parent_title_id IS NULL
+          )
+          AND (
+            ${parentId == null}
+            OR tt.parent_title_id = ${parentId ?? -1}
+          )
+          AND (
+            ${folderTitle} = ''
+            OR tt.parent_title_id IN (
+              SELECT p.id
+              FROM ticket_titles p
+              WHERE p.is_active = TRUE
+                AND p.ticket_section::text = 'customer'
+                AND LOWER(TRIM(p.title_text)) = LOWER(TRIM(${folderTitle}))
+            )
+          )
+        ORDER BY tt.display_order ASC NULLS LAST, tt.customer_section_id ASC NULLS LAST, tt.id ASC
+      `;
       const sections = (rows as Array<Record<string, unknown>>).map((r) => ({
         ticket_title_id: Number(r.ticket_title_id),
         title_code: r.title_code != null ? String(r.title_code) : null,
@@ -269,9 +593,15 @@ export async function customerSupportRoutes(app: FastifyInstance) {
         section_id: r.section_id != null ? String(r.section_id) : null,
         display_order: r.display_order != null ? Number(r.display_order) : null,
         group_id: r.group_id != null ? Number(r.group_id) : null,
+        group_code: r.group_code != null ? String(r.group_code) : null,
         group_name: r.group_name != null ? String(r.group_name) : null,
         applicable_order_statuses: Array.isArray(r.applicable_order_statuses)
           ? (r.applicable_order_statuses as string[])
+          : null,
+        default_quick_options: Array.isArray(r.default_quick_options)
+          ? (r.default_quick_options as unknown[])
+              .map((x) => String(x).trim())
+              .filter(Boolean)
           : null,
       }));
       return reply.send({ ok: true, sections });
@@ -324,6 +654,7 @@ export async function customerSupportRoutes(app: FastifyInstance) {
     const rows = await sql`
       SELECT oc.id, oc.order_id, oc.formatted_order_id, oc.status::text AS status, oc.current_status,
              oc.grand_total, oc.placed_at, oc.actual_delivery_time AS delivered_at,
+           oc.cancelled_at,
              oc.merchant_store_id,
              ms.store_name AS merchant_store_name
       FROM orders_core oc
@@ -334,6 +665,572 @@ export async function customerSupportRoutes(app: FastifyInstance) {
     `;
     const orders = (rows as Array<Record<string, unknown>>).map((r) => mapResolvedOrder(r));
     return reply.send({ ok: true, orders, hasMore: orders.length === limit });
+  });
+
+  /**
+   * POST /support-chat/sessions — create or resume an active chat for an order.
+   */
+  app.post<{
+    Body: { order_id?: number | string | null; metadata?: Record<string, unknown> };
+  }>("/support-chat/sessions", async (req, reply) => {
+    if (req.auth?.role !== "customer" || !req.auth?.sub) {
+      return reply.code(401).send({ error: "customer_required" });
+    }
+    const me = await resolveCustomerInternalId(req.auth.sub);
+    if (!me) return reply.code(404).send({ error: "customer_not_found" });
+
+    const body = (req.body || {}) as Record<string, unknown>;
+    const rawOrderId = body.order_id;
+    let orderIdNum: number | null =
+      typeof rawOrderId === "number" && Number.isInteger(rawOrderId) && rawOrderId > 0
+        ? rawOrderId
+        : typeof rawOrderId === "string" && /^\d+$/.test(rawOrderId.trim())
+          ? Number(rawOrderId.trim())
+          : null;
+
+    const metadata =
+      body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
+        ? (body.metadata as Record<string, unknown>)
+        : {};
+    const metadataJson = JSON.stringify(metadata);
+
+    const sql = getSql();
+
+    if (orderIdNum != null) {
+      const ordRows = await sql`
+        SELECT id FROM orders_core
+        WHERE id = ${orderIdNum} AND customer_id = ${me.id}
+        LIMIT 1
+      `;
+      if ((ordRows as Array<unknown>).length === 0) {
+        return reply.code(404).send({ error: "order_not_found" });
+      }
+    }
+
+    const existingRows = orderIdNum != null
+      ? await sql`
+          SELECT id, order_id, ticket_id, ticket_title_id, selected_issue_label, status, metadata, created_at, updated_at
+          FROM customer_support_chat_sessions
+          WHERE customer_id = ${me.id}
+            AND order_id = ${orderIdNum}
+            AND status IN ('active', 'submitted')
+          ORDER BY updated_at DESC
+          LIMIT 1
+        `
+      : await sql`
+          SELECT id, order_id, ticket_id, ticket_title_id, selected_issue_label, status, metadata, created_at, updated_at
+          FROM customer_support_chat_sessions
+          WHERE customer_id = ${me.id}
+            AND order_id IS NULL
+            AND status IN ('active', 'submitted')
+          ORDER BY updated_at DESC
+          LIMIT 1
+        `;
+
+    const existing = (existingRows as Array<Record<string, unknown>>)[0];
+    if (existing) {
+      const session = mapChatSessionRow(existing);
+      const messages = await fetchChatSessionMessages(sql, session.id);
+      return reply.send({ ok: true, session, messages, resumed: true });
+    }
+
+    const insertRows = await sql`
+      INSERT INTO customer_support_chat_sessions (customer_id, order_id, metadata)
+      VALUES (${me.id}, ${orderIdNum}, ${metadataJson}::jsonb)
+      RETURNING id, order_id, ticket_id, ticket_title_id, selected_issue_label, status, metadata, created_at, updated_at
+    `;
+    const row = (insertRows as Array<Record<string, unknown>>)[0];
+    if (!row) return reply.code(500).send({ error: "chat_session_create_failed" });
+    return reply.code(201).send({
+      ok: true,
+      session: mapChatSessionRow(row),
+      messages: [],
+      resumed: false,
+    });
+  });
+
+  /**
+   * GET /support-chat/sessions/:sessionId — load session + full message history.
+   */
+  app.get<{ Params: { sessionId: string } }>(
+    "/support-chat/sessions/:sessionId",
+    async (req, reply) => {
+      if (req.auth?.role !== "customer" || !req.auth?.sub) {
+        return reply.code(401).send({ error: "customer_required" });
+      }
+      const me = await resolveCustomerInternalId(req.auth.sub);
+      if (!me) return reply.code(404).send({ error: "customer_not_found" });
+
+      const sessionId = Number(req.params.sessionId);
+      if (!Number.isInteger(sessionId) || sessionId < 1) {
+        return reply.code(400).send({ error: "invalid_session_id" });
+      }
+      const sql = getSql();
+      const session = await assertOwnedChatSession(sql, me.id, sessionId);
+      if (!session) return reply.code(404).send({ error: "session_not_found" });
+      const messages = await fetchChatSessionMessages(sql, sessionId);
+      return reply.send({ ok: true, session, messages });
+    }
+  );
+
+  /**
+   * PATCH /support-chat/sessions/:sessionId — update linked order, selected issue, or end chat.
+   */
+  app.patch<{
+    Params: { sessionId: string };
+    Body: {
+      order_id?: number | string | null;
+      ticket_title_id?: number | string | null;
+      selected_issue_label?: string | null;
+      ticket_id?: number | string | null;
+      status?: string | null;
+    };
+  }>("/support-chat/sessions/:sessionId", async (req, reply) => {
+    if (req.auth?.role !== "customer" || !req.auth?.sub) {
+      return reply.code(401).send({ error: "customer_required" });
+    }
+    const me = await resolveCustomerInternalId(req.auth.sub);
+    if (!me) return reply.code(404).send({ error: "customer_not_found" });
+
+    const sessionId = Number(req.params.sessionId);
+    if (!Number.isInteger(sessionId) || sessionId < 1) {
+      return reply.code(400).send({ error: "invalid_session_id" });
+    }
+
+    const body = (req.body || {}) as Record<string, unknown>;
+    const sql = getSql();
+    const owned = await assertOwnedChatSession(sql, me.id, sessionId);
+    if (!owned) return reply.code(404).send({ error: "session_not_found" });
+
+    let orderIdNum: number | null | undefined;
+    if (body.order_id !== undefined) {
+      const rawOrderId = body.order_id;
+      orderIdNum =
+        rawOrderId == null
+          ? null
+          : typeof rawOrderId === "number" && Number.isInteger(rawOrderId) && rawOrderId > 0
+            ? rawOrderId
+            : typeof rawOrderId === "string" && /^\d+$/.test(rawOrderId.trim())
+              ? Number(rawOrderId.trim())
+              : null;
+      if (orderIdNum != null) {
+        const ordRows = await sql`
+          SELECT id FROM orders_core
+          WHERE id = ${orderIdNum} AND customer_id = ${me.id}
+          LIMIT 1
+        `;
+        if ((ordRows as Array<unknown>).length === 0) {
+          return reply.code(404).send({ error: "order_not_found" });
+        }
+      }
+    }
+
+    let ticketTitleId: number | null | undefined;
+    if (body.ticket_title_id !== undefined) {
+      const raw = body.ticket_title_id;
+      ticketTitleId =
+        raw == null
+          ? null
+          : typeof raw === "number" && Number.isInteger(raw) && raw > 0
+            ? raw
+            : typeof raw === "string" && /^\d+$/.test(raw.trim())
+              ? Number(raw.trim())
+              : null;
+    }
+
+    let ticketIdNum: number | null | undefined;
+    if (body.ticket_id !== undefined) {
+      const raw = body.ticket_id;
+      ticketIdNum =
+        raw == null
+          ? null
+          : typeof raw === "number" && Number.isInteger(raw) && raw > 0
+            ? raw
+            : typeof raw === "string" && /^\d+$/.test(raw.trim())
+              ? Number(raw.trim())
+              : null;
+    }
+
+    const selectedIssueLabel =
+      typeof body.selected_issue_label === "string" && body.selected_issue_label.trim()
+        ? body.selected_issue_label.trim().slice(0, 500)
+        : body.selected_issue_label === null
+          ? null
+          : undefined;
+
+    const statusRaw = typeof body.status === "string" ? body.status.trim().toLowerCase() : "";
+    const nextStatus =
+      statusRaw === "active" || statusRaw === "submitted" || statusRaw === "ended"
+        ? statusRaw
+        : undefined;
+
+    const rows = await sql`
+      UPDATE customer_support_chat_sessions
+      SET
+        order_id = COALESCE(${orderIdNum ?? null}, order_id),
+        ticket_title_id = COALESCE(${ticketTitleId ?? null}, ticket_title_id),
+        selected_issue_label = COALESCE(${selectedIssueLabel ?? null}, selected_issue_label),
+        ticket_id = COALESCE(${ticketIdNum ?? null}, ticket_id),
+        status = COALESCE(${nextStatus ?? null}, status),
+        updated_at = NOW()
+      WHERE id = ${sessionId} AND customer_id = ${me.id}
+      RETURNING id, order_id, ticket_id, ticket_title_id, selected_issue_label, status, metadata, created_at, updated_at
+    `;
+    const row = (rows as Array<Record<string, unknown>>)[0];
+    if (!row) return reply.code(404).send({ error: "session_not_found" });
+    return reply.send({ ok: true, session: mapChatSessionRow(row) });
+  });
+
+  /**
+   * POST /support-chat/sessions/:sessionId/messages — append a chat bubble.
+   */
+  app.post<{
+    Params: { sessionId: string };
+    Body: {
+      client_message_id?: string | null;
+      role?: string;
+      message_text?: string;
+      menu_level?: string | null;
+      payload?: Record<string, unknown> | null;
+    };
+  }>("/support-chat/sessions/:sessionId/messages", async (req, reply) => {
+    if (req.auth?.role !== "customer" || !req.auth?.sub) {
+      return reply.code(401).send({ error: "customer_required" });
+    }
+    const me = await resolveCustomerInternalId(req.auth.sub);
+    if (!me) return reply.code(404).send({ error: "customer_not_found" });
+
+    const sessionId = Number(req.params.sessionId);
+    if (!Number.isInteger(sessionId) || sessionId < 1) {
+      return reply.code(400).send({ error: "invalid_session_id" });
+    }
+
+    const body = (req.body || {}) as Record<string, unknown>;
+    const roleRaw = String(body.role ?? "").trim().toLowerCase();
+    if (roleRaw !== "bot" && roleRaw !== "user") {
+      return reply.code(400).send({ error: "invalid_role" });
+    }
+    const messageText =
+      typeof body.message_text === "string" ? body.message_text.trim().slice(0, 10000) : "";
+    const clientMessageId =
+      typeof body.client_message_id === "string" && body.client_message_id.trim()
+        ? body.client_message_id.trim().slice(0, 120)
+        : null;
+    const menuLevel =
+      typeof body.menu_level === "string" && body.menu_level.trim()
+        ? body.menu_level.trim().slice(0, 40)
+        : null;
+    const payload =
+      body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)
+        ? (body.payload as Record<string, unknown>)
+        : {};
+    const payloadJson = JSON.stringify(payload);
+
+    const sql = getSql();
+    const owned = await assertOwnedChatSession(sql, me.id, sessionId);
+    if (!owned) return reply.code(404).send({ error: "session_not_found" });
+    if (owned.status !== "active") {
+      return reply.code(400).send({ error: "session_not_active" });
+    }
+
+    if (clientMessageId) {
+      const dupRows = await sql`
+        SELECT id, client_message_id, role, message_text, menu_level, payload, display_order, created_at
+        FROM customer_support_chat_messages
+        WHERE session_id = ${sessionId} AND client_message_id = ${clientMessageId}
+        LIMIT 1
+      `;
+      const dup = (dupRows as Array<Record<string, unknown>>)[0];
+      if (dup) {
+        return reply.send({ ok: true, message: mapChatMessageRow(dup), duplicate: true });
+      }
+    }
+
+    const orderRows = await sql`
+      SELECT COALESCE(MAX(display_order), 0) + 1 AS next_order
+      FROM customer_support_chat_messages
+      WHERE session_id = ${sessionId}
+    `;
+    const displayOrder = Number((orderRows as Array<Record<string, unknown>>)[0]?.next_order ?? 1);
+
+    const insertRows = await sql`
+      INSERT INTO customer_support_chat_messages (
+        session_id, client_message_id, role, message_text, menu_level, payload, display_order
+      ) VALUES (
+        ${sessionId},
+        ${clientMessageId},
+        ${roleRaw},
+        ${messageText},
+        ${menuLevel},
+        ${payloadJson}::jsonb,
+        ${displayOrder}
+      )
+      RETURNING id, client_message_id, role, message_text, menu_level, payload, display_order, created_at
+    `;
+    const row = (insertRows as Array<Record<string, unknown>>)[0];
+    if (!row) return reply.code(500).send({ error: "message_create_failed" });
+
+    await sql`
+      UPDATE customer_support_chat_sessions
+      SET updated_at = NOW()
+      WHERE id = ${sessionId} AND customer_id = ${me.id}
+    `;
+
+    return reply.code(201).send({ ok: true, message: mapChatMessageRow(row) });
+  });
+
+  /**
+   * GET /fraud-report-options?target=merchant|rider
+   * Options for the order help fraud bottom sheet.
+   */
+  app.get<{ Querystring: { target?: string } }>("/fraud-report-options", async (req, reply) => {
+    if (req.auth?.role !== "customer" || !req.auth?.sub) {
+      return reply.code(401).send({ error: "customer_required" });
+    }
+    const targetType = normalizeFraudReportTarget(req.query.target);
+    if (!targetType) return reply.code(400).send({ error: "invalid_target" });
+
+    const sql = getSql();
+    try {
+      const rows = await sql`
+        SELECT option_code, option_text, display_order, requires_details
+        FROM customer_order_fraud_report_options
+        WHERE target_type = ${targetType}
+          AND is_active = TRUE
+        ORDER BY display_order ASC, id ASC
+      `;
+      const options = (rows as Array<Record<string, unknown>>).map((r) => ({
+        option_code: String(r.option_code),
+        option_text: String(r.option_text),
+        display_order: Number(r.display_order ?? 0),
+        requires_details: r.requires_details === true,
+      }));
+      return reply.send({ ok: true, target_type: targetType, options });
+    } catch (e) {
+      req.log.error({ err: e }, "fraud-report-options failed");
+      return reply.code(500).send({ error: "fraud_report_options_failed" });
+    }
+  });
+
+  /**
+   * POST /fraud-reports — structured fraud report + unified support ticket.
+   * Body: { order_id, target_type, option_codes[], custom_details? }
+   */
+  app.post<{
+    Body: {
+      order_id?: number | string | null;
+      target_type?: string;
+      option_codes?: string[];
+      custom_details?: string | null;
+    };
+  }>("/fraud-reports", async (req, reply) => {
+    if (req.auth?.role !== "customer" || !req.auth?.sub) {
+      return reply.code(401).send({ error: "customer_required" });
+    }
+    const me = await resolveCustomerInternalId(req.auth.sub);
+    if (!me) return reply.code(404).send({ error: "customer_not_found" });
+
+    const body = (req.body || {}) as Record<string, unknown>;
+    const targetType = normalizeFraudReportTarget(body.target_type);
+    if (!targetType) return reply.code(400).send({ error: "invalid_target" });
+
+    const rawCodes = body.option_codes;
+    const optionCodes = Array.isArray(rawCodes)
+      ? Array.from(
+          new Set(
+            rawCodes
+              .map((c) => String(c ?? "").trim())
+              .filter(Boolean)
+          )
+        )
+      : [];
+    if (optionCodes.length === 0) {
+      return reply.code(400).send({ error: "option_codes_required" });
+    }
+
+    const customDetails =
+      typeof body.custom_details === "string" ? body.custom_details.trim() : "";
+
+    const rawOrderId = body.order_id;
+    let orderIdNum: number | null =
+      typeof rawOrderId === "number" && Number.isInteger(rawOrderId) && rawOrderId > 0
+        ? rawOrderId
+        : typeof rawOrderId === "string" && /^\d+$/.test(rawOrderId.trim())
+          ? Number(rawOrderId.trim())
+          : null;
+
+    const sql = getSql();
+
+    let orderContext: {
+      orderInternalId: number;
+      displayOrderId: string;
+      merchantStoreId: number | null;
+      merchantParentId: number | null;
+      riderId: number | null;
+    } | null = null;
+
+    if (orderIdNum != null) {
+      const ordRows = await sql`
+        SELECT id, order_id, formatted_order_id, merchant_store_id, merchant_parent_id, rider_id
+        FROM orders_core
+        WHERE id = ${orderIdNum} AND customer_id = ${me.id}
+        LIMIT 1
+      `;
+      const ord = (ordRows as Array<Record<string, unknown>>)[0];
+      if (!ord) return reply.code(404).send({ error: "order_not_found" });
+      orderContext = {
+        orderInternalId: Number(ord.id),
+        displayOrderId:
+          String(ord.formatted_order_id ?? ord.order_id ?? ord.id).trim() || String(ord.id),
+        merchantStoreId: ord.merchant_store_id != null ? Number(ord.merchant_store_id) : null,
+        merchantParentId: ord.merchant_parent_id != null ? Number(ord.merchant_parent_id) : null,
+        riderId: ord.rider_id != null ? Number(ord.rider_id) : null,
+      };
+    } else if (typeof rawOrderId === "string" && rawOrderId.trim()) {
+      const resolved = await resolveCustomerOrderRef(sql, me.id, rawOrderId.trim());
+      if (!resolved) return reply.code(404).send({ error: "order_not_found" });
+      const ordRows = await sql`
+        SELECT id, order_id, formatted_order_id, merchant_store_id, merchant_parent_id, rider_id
+        FROM orders_core
+        WHERE id = ${resolved.id} AND customer_id = ${me.id}
+        LIMIT 1
+      `;
+      const ord = (ordRows as Array<Record<string, unknown>>)[0];
+      if (!ord) return reply.code(404).send({ error: "order_not_found" });
+      orderContext = {
+        orderInternalId: Number(ord.id),
+        displayOrderId:
+          String(ord.formatted_order_id ?? ord.order_id ?? ord.id).trim() || String(ord.id),
+        merchantStoreId: ord.merchant_store_id != null ? Number(ord.merchant_store_id) : null,
+        merchantParentId: ord.merchant_parent_id != null ? Number(ord.merchant_parent_id) : null,
+        riderId: ord.rider_id != null ? Number(ord.rider_id) : null,
+      };
+    }
+
+    if (!orderContext) return reply.code(400).send({ error: "order_id_required" });
+
+    try {
+      const optionRows = await sql`
+        SELECT option_code, option_text, requires_details
+        FROM customer_order_fraud_report_options
+        WHERE target_type = ${targetType}
+          AND is_active = TRUE
+          AND option_code = ANY(${optionCodes}::text[])
+      `;
+      const selectedOptions = (optionRows as Array<Record<string, unknown>>).map((r) => ({
+        option_code: String(r.option_code),
+        option_text: String(r.option_text),
+        requires_details: r.requires_details === true,
+      }));
+
+      if (selectedOptions.length !== optionCodes.length) {
+        return reply.code(400).send({ error: "invalid_option_codes" });
+      }
+
+      const needsDetails = selectedOptions.some((o) => o.requires_details);
+      if (needsDetails && customDetails.length < 10) {
+        return reply.code(400).send({
+          error: "custom_details_required",
+          message: "Please share more details about your concern.",
+        });
+      }
+
+      const { subject, description } = buildFraudReportTicketCopy({
+        targetType,
+        displayOrderId: orderContext.displayOrderId,
+        selectedOptions,
+        customDetails: customDetails || null,
+      });
+
+      const ticketTitle =
+        targetType === "merchant" ? "CUSTOMER_MERCHANT_FRAUD" : "CUSTOMER_RIDER_FRAUD";
+      const metadataJson = JSON.stringify({
+        customer_help: {
+          fraud_report: true,
+          target_type: targetType,
+          option_codes: optionCodes,
+          source_platform: "CUSTOMER_APP",
+        },
+      });
+
+      const insertRows = await sql`
+        INSERT INTO unified_tickets (
+          ticket_type, ticket_source, service_type, ticket_title, ticket_category,
+          order_id, customer_id, rider_id, merchant_store_id, merchant_parent_id,
+          raised_by_type, raised_by_id, raised_by_name, raised_by_mobile, raised_by_email,
+          subject, description, priority, status, auto_generated,
+          group_id, tags, metadata
+        ) VALUES (
+          'ORDER_RELATED'::unified_ticket_type,
+          'CUSTOMER'::unified_ticket_source,
+          'FOOD'::unified_ticket_service_type,
+          ${ticketTitle},
+          'COMPLAINT'::unified_ticket_category,
+          ${orderContext.orderInternalId},
+          ${me.id},
+          ${orderContext.riderId},
+          ${orderContext.merchantStoreId},
+          ${orderContext.merchantParentId},
+          'CUSTOMER'::unified_ticket_source,
+          ${me.id},
+          ${me.name},
+          ${me.mobile},
+          ${me.email},
+          ${subject},
+          ${description},
+          'HIGH'::unified_ticket_priority,
+          'OPEN'::unified_ticket_status,
+          FALSE,
+          NULL,
+          ${targetType === "merchant" ? "{MERCHANT_FRAUD}" : "{RIDER_FRAUD}"}::text[],
+          ${metadataJson}::jsonb
+        )
+        RETURNING id, ticket_id, status, priority, subject, description, created_at
+      `;
+      const ticketRow = (insertRows as Array<Record<string, unknown>>)[0];
+      if (!ticketRow) return reply.code(500).send({ error: "ticket_create_failed" });
+
+      const reportRows = await sql`
+        INSERT INTO customer_order_fraud_reports (
+          order_core_id,
+          customer_id,
+          target_type,
+          selected_option_codes,
+          custom_details,
+          unified_ticket_id
+        ) VALUES (
+          ${orderContext.orderInternalId},
+          ${me.id},
+          ${targetType},
+          ${optionCodes}::text[],
+          ${customDetails || null},
+          ${Number(ticketRow.id)}
+        )
+        RETURNING id, created_at
+      `;
+      const reportRow = (reportRows as Array<Record<string, unknown>>)[0];
+
+      return reply.send({
+        ok: true,
+        report: {
+          id: Number(reportRow?.id ?? 0),
+          target_type: targetType as FraudReportTargetType,
+          created_at: toIsoOrNull(reportRow?.created_at) ?? new Date().toISOString(),
+        },
+        ticket: {
+          id: Number(ticketRow.id),
+          ticket_id: String(ticketRow.ticket_id ?? ""),
+          status: String(ticketRow.status ?? "OPEN"),
+          priority: String(ticketRow.priority ?? "HIGH"),
+          subject: ticketRow.subject ?? null,
+          description: ticketRow.description ?? null,
+          created_at: toIsoOrNull(ticketRow.created_at) ?? new Date().toISOString(),
+        },
+      });
+    } catch (e) {
+      req.log.error({ err: e }, "fraud-report create failed");
+      return reply.code(500).send({ error: "fraud_report_failed" });
+    }
   });
 
   /**
@@ -379,59 +1276,14 @@ export async function customerSupportRoutes(app: FastifyInstance) {
 
     const sql = getSql();
 
-    // Look up the title row (catalog) to derive routing + classification.
-    type TitleRow = {
-      id: number;
-      group_id: number | null;
-      customer_section_id: string | null;
-      title_text: string | null;
-      intake_unified_title: string | null;
-      intake_unified_category: string | null;
-      intake_unified_priority: string | null;
-      intake_unified_service_type: string | null;
-      tag_codes: string[] | null;
-    };
-    let titleRow: TitleRow | null = null;
-    if (ticketTitleId != null) {
-      const tr = await sql`
-        SELECT
-          tt.id, tt.group_id, tt.customer_section_id, tt.title_text,
-          tt.intake_unified_title, tt.intake_unified_category,
-          tt.intake_unified_priority, tt.intake_unified_service_type,
-          COALESCE(
-            (
-              SELECT array_agg(UPPER(TRIM(tg2.tag_code)) ORDER BY tg2.id)
-              FROM ticket_title_tags ttm
-              INNER JOIN ticket_tags tg2 ON tg2.id = ttm.tag_id
-              WHERE ttm.ticket_title_id = tt.id
-            ),
-            CASE
-              WHEN tt.tag_id IS NOT NULL THEN (
-                SELECT ARRAY[UPPER(TRIM(tg3.tag_code))]
-                FROM ticket_tags tg3 WHERE tg3.id = tt.tag_id LIMIT 1
-              )
-              ELSE NULL
-            END
-          ) AS tag_codes
-        FROM ticket_titles tt
-        WHERE tt.id = ${ticketTitleId}
-          AND tt.is_active = TRUE
-          AND tt.ticket_section::text = 'customer'
-        LIMIT 1
-      `;
-      const r = (tr as Array<Record<string, unknown>>)[0];
-      if (!r) return reply.code(400).send({ error: "invalid_ticket_title_id" });
-      titleRow = {
-        id: Number(r.id),
-        group_id: r.group_id != null ? Number(r.group_id) : null,
-        customer_section_id: r.customer_section_id != null ? String(r.customer_section_id) : null,
-        title_text: r.title_text != null ? String(r.title_text) : null,
-        intake_unified_title: r.intake_unified_title != null ? String(r.intake_unified_title) : null,
-        intake_unified_category: r.intake_unified_category != null ? String(r.intake_unified_category) : null,
-        intake_unified_priority: r.intake_unified_priority != null ? String(r.intake_unified_priority) : null,
-        intake_unified_service_type: r.intake_unified_service_type != null ? String(r.intake_unified_service_type) : null,
-        tag_codes: Array.isArray(r.tag_codes) ? (r.tag_codes as string[]) : null,
-      };
+    const selectedIssueLabel =
+      typeof body.selected_issue_label === "string" && body.selected_issue_label.trim()
+        ? body.selected_issue_label.trim().slice(0, 500)
+        : null;
+
+    const titleRow = await resolveCustomerTicketTitleRow(sql, ticketTitleId, selectedIssueLabel);
+    if (ticketTitleId != null && !titleRow) {
+      return reply.code(400).send({ error: "invalid_ticket_title_id" });
     }
 
     // Resolve order context if order_id is provided (numeric id, GM…, or GMF…).
@@ -485,10 +1337,8 @@ export async function customerSupportRoutes(app: FastifyInstance) {
     }
 
     const ticketType = orderContext ? "ORDER_RELATED" : "NON_ORDER_RELATED";
-    const ticketTitle =
-      (titleRow?.intake_unified_title && titleRow.intake_unified_title.trim()) ||
-      titleRow?.title_text?.trim() ||
-      "CUSTOMER_GENERAL_QUERY";
+    const ticketTitle = titleRow?.intake_unified_title?.trim() || "CUSTOMER_GENERAL_QUERY";
+    const effectiveTicketTitleId = titleRow?.id ?? ticketTitleId;
     const ticketCategory = normCategory(
       titleRow?.intake_unified_category || (orderContext ? "ORDER" : "OTHER")
     );
@@ -510,13 +1360,20 @@ export async function customerSupportRoutes(app: FastifyInstance) {
     const metadataJson = JSON.stringify({
       customer_help: {
         section_id: titleRow?.customer_section_id ?? body.section_code ?? null,
-        ticket_title_id: titleRow?.id ?? null,
+        ticket_title_id: effectiveTicketTitleId ?? null,
         source_platform: "CUSTOMER_APP",
         order_id_app: orderIdNum,
+        formatted_order_id:
+          typeof body.display_order_id === "string" && body.display_order_id.trim()
+            ? body.display_order_id.trim().slice(0, 64)
+            : null,
+        selected_issue_label: selectedIssueLabel,
       },
     });
 
-    const insertRows = await sql`
+    let insertRows: Array<Record<string, unknown>>;
+    try {
+      insertRows = (await sql`
       INSERT INTO unified_tickets (
         ticket_type, ticket_source, service_type, ticket_title, ticket_category,
         order_id, customer_id, rider_id, merchant_store_id, merchant_parent_id,
@@ -549,9 +1406,37 @@ export async function customerSupportRoutes(app: FastifyInstance) {
         ${metadataJson}::jsonb
       )
       RETURNING id, ticket_id, status, priority, subject, description, created_at
-    `;
+    `) as Array<Record<string, unknown>>;
+    } catch (e) {
+      req.log.error({ err: e, ticketTitle, ticketTitleId, selectedIssueLabel }, "customer ticket insert failed");
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("unified_ticket_title") || msg.includes("invalid input value for enum")) {
+        return reply.code(400).send({
+          error: "invalid_ticket_title",
+          message: "Could not classify this issue. Please pick a topic again or contact support.",
+        });
+      }
+      return reply.code(500).send({ error: "ticket_create_failed" });
+    }
     const row = (insertRows as Array<Record<string, unknown>>)[0];
     if (!row) return reply.code(500).send({ error: "ticket_create_failed" });
+
+    const rawChatSessionId = body.chat_session_id;
+    const chatSessionId =
+      typeof rawChatSessionId === "number" && Number.isInteger(rawChatSessionId) && rawChatSessionId > 0
+        ? rawChatSessionId
+        : typeof rawChatSessionId === "string" && /^\d+$/.test(rawChatSessionId.trim())
+          ? Number(rawChatSessionId.trim())
+          : null;
+    if (chatSessionId != null) {
+      try {
+        await linkChatSessionToTicket(sql, me.id, chatSessionId, Number(row.id), {
+          ticket_title_id: effectiveTicketTitleId,
+        });
+      } catch (e) {
+        req.log.warn({ err: e, chatSessionId }, "chat session ticket link failed");
+      }
+    }
 
     return reply.send({
       ok: true,
@@ -744,13 +1629,15 @@ export async function customerSupportRoutes(app: FastifyInstance) {
     }
     const body = (req.body || {}) as { message_text?: string; attachments?: unknown };
     const text = (body.message_text || "").toString().trim();
-    if (!text) return reply.code(400).send({ error: "invalid_body", message: "message_text required" });
-
-    const attachments = Array.isArray(body.attachments)
-      ? body.attachments
-          .map((a) => (typeof a === "string" ? a : null))
-          .filter((a): a is string => !!a)
-      : [];
+    const attachments = normalizeTicketAttachmentsForDb(body.attachments);
+    if (!text && attachments.length === 0) {
+      return reply.code(400).send({
+        error: "invalid_body",
+        message: "message_text or attachments required",
+      });
+    }
+    const messageText =
+      text || (attachments.length > 1 ? "Shared attachments" : "Shared an attachment");
 
     const sql = getSql();
     // Ownership check
@@ -770,7 +1657,7 @@ export async function customerSupportRoutes(app: FastifyInstance) {
         AND sender_type = 'CUSTOMER'::unified_ticket_source
         AND sender_id = ${me.id}
         AND COALESCE(is_internal_note, FALSE) = FALSE
-        AND BTRIM(COALESCE(message_text, '')) = ${text}
+        AND BTRIM(COALESCE(message_text, '')) = ${messageText}
         AND created_at >= (NOW() - INTERVAL '20 seconds')
       ORDER BY id DESC
       LIMIT 1
@@ -782,7 +1669,7 @@ export async function customerSupportRoutes(app: FastifyInstance) {
         deduped_existing_message: true,
         message: {
           id: Number(d.id),
-          message_text: text,
+          message_text: messageText,
           attachments,
           sender_type: "CUSTOMER",
           sender_id: me.id,
@@ -797,7 +1684,7 @@ export async function customerSupportRoutes(app: FastifyInstance) {
         sender_type, sender_id, sender_name,
         attachments, is_internal_note
       ) VALUES (
-        ${ticketIdNum}, ${text}, 'TEXT',
+        ${ticketIdNum}, ${messageText}, 'TEXT',
         'CUSTOMER'::unified_ticket_source, ${me.id}, ${me.name},
         ${attachments}::text[], FALSE
       )
@@ -815,7 +1702,7 @@ export async function customerSupportRoutes(app: FastifyInstance) {
             updated_at = NOW(),
             -- if ticket was RESOLVED and customer replied, reopen it
             status = CASE
-              WHEN status IN ('RESOLVED','CLOSED')::unified_ticket_status[]
+              WHEN status IN ('RESOLVED'::unified_ticket_status, 'CLOSED'::unified_ticket_status)
                 THEN 'REOPENED'::unified_ticket_status
               ELSE status
             END
@@ -829,7 +1716,7 @@ export async function customerSupportRoutes(app: FastifyInstance) {
       ok: true,
       message: {
         id: Number(row?.id),
-        message_text: text,
+        message_text: messageText,
         attachments,
         sender_type: "CUSTOMER",
         sender_id: me.id,

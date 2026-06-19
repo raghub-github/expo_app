@@ -700,7 +700,7 @@ export default function VacationScreen() {
           value={tempDate ?? new Date()}
           mode="date"
           display="default"
-          onChange={(event, date) => {
+          onChange={(event: { type?: string }, date?: Date) => {
             if ((event as { type?: string })?.type === "dismissed") {
               closePickersAndReturnToReason();
               return;
@@ -743,7 +743,7 @@ export default function VacationScreen() {
                   value={tempDate ?? new Date()}
                   mode="date"
                   display="spinner"
-                  onChange={(_, date) => date && setTempDate(date)}
+                  onChange={(_: unknown, date?: Date) => date && setTempDate(date)}
                   minimumDate={new Date()}
                 />
               )}
@@ -1218,6 +1218,28 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textSecondary,
     textAlign: "center",
     paddingVertical: 8,
+  },
+  emptySlotsCard: {
+    alignItems: "center",
+    paddingVertical: 24,
+    paddingHorizontal: CARD_PADDING,
+    backgroundColor: GatiMitraMerchant.cardBg,
+    borderRadius: CARD_RADIUS,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  emptySlotsTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+    marginBottom: 6,
+    textAlign: "center",
+  },
+  emptySlotsSubtitle: {
+    fontSize: 13,
+    color: GatiMitraMerchant.textSecondary,
+    textAlign: "center",
+    lineHeight: 20,
   },
   modalActions: {
     flexDirection: "row",

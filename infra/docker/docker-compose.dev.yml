@@ -11,7 +11,7 @@
 #   - payment-worker  (reconciler + webhook retry)
 #   - ws-gateway      (websocket fan-out on :4100)
 #   - dashboard       (Next dev on :3001)
-#   - partnersite     (Next dev on :3002)
+#   - partnersite     (Next dev on :3000)
 #
 # Not included (intentional):
 #   - Mobile apps — Expo runs natively, not in containers.
@@ -163,7 +163,7 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      - "4000:3000"
     networks: [app]
 
   notification-worker:
@@ -244,13 +244,14 @@ services:
       - ../../partnersite/.env.local
     environment:
       NODE_ENV: development
-      NEXT_PUBLIC_API_URL: http://localhost:3000
-    command: sh -c "npm install --include-workspace-root --workspaces && npx next dev --port 3002"
+      GATIMITRA_BACKEND_API_URL: http://backend:3000
+      NEXTAUTH_URL: http://localhost:3000
+    command: sh -c "npm install --include-workspace-root --workspaces && npx next dev --port 3000"
     volumes:
       - ../..:/repo
       - /repo/node_modules
     ports:
-      - "3002:3002"
+      - "3000:3000"
     depends_on:
       - backend
     networks: [app]

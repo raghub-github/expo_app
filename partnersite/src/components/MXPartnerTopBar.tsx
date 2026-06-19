@@ -37,6 +37,7 @@ import { toast } from 'sonner';
 import { formatStoreActionSourceLabel } from '@/lib/storeActionSource';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 import { useMerchantSession } from '@/context/MerchantSessionContext';
+import { useApprovedPartnerStores } from '@/hooks/usePartnerResolveSession';
 import { usePartnerShellHeader } from '@/context/PartnerShellHeaderContext';
 import LogoutConfirmModal from '@/components/LogoutConfirmModal';
 import { PartnerToggleConfirmModal } from '@/components/PartnerToggleConfirmModal';
@@ -53,6 +54,8 @@ import {
   notificationListHasWaiting,
 } from '@/components/PartnerWaitingOrderSync';
 import { WAITING_FOR_ORDER_TITLE } from '@/lib/partner-notification-constants';
+import { PARTNER_NOTIFICATIONS_CHANGED } from '@/lib/clear-store-order-notifications';
+import { dispatchPartnerNotificationsCleared } from '@/lib/partner-notifications-panel';
 import { clientStoreOpsDebugLog } from '@/lib/store-ops-client-debug';
 import { toStoredDocumentUrl } from '@/lib/r2';
 import NeedHelpBadge from '@/components/NeedHelpBadge';
@@ -406,12 +409,20 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
   /** SSR-safe: empty until mount — never treat layout placeholders like "No ID" as store_id. */
   const [resolvedStoreId, setResolvedStoreId] = useState('');
-  const [storeList, setStoreList] = useState<
-    Array<{ store_id: string; store_name: string; full_address: string; banner_url?: string | null }>
-  >([]);
-  const [ownerName, setOwnerName] = useState<string | null>(null);
-  const [parentName, setParentName] = useState<string | null>(null);
-  const [ownerEmailResolved, setOwnerEmailResolved] = useState<string | null>(null);
+  const { data: resolveSessionData, approvedStores } = useApprovedPartnerStores();
+  const storeList = useMemo(
+    () =>
+      approvedStores.map((s) => ({
+        store_id: String(s.store_id),
+        store_name: String(s.store_name || s.store_id || 'Store'),
+        full_address: typeof s.full_address === 'string' ? s.full_address : '',
+        banner_url: typeof s.banner_url === 'string' && s.banner_url.trim() ? s.banner_url.trim() : null,
+      })),
+    [approvedStores]
+  );
+  const ownerName = resolveSessionData?.ownerName ?? null;
+  const parentName = resolveSessionData?.parentName ?? null;
+  const ownerEmailResolved = resolveSessionData?.ownerEmail ?? null;
   const [brokenAvatarSrc, setBrokenAvatarSrc] = useState<string | null>(null);
 
   const [sheet, setSheet] = useState<PartnerHeaderSheet | null>(null);
@@ -675,7 +686,9 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   }, [resolvedStoreId, fetchPartnerNotifications]);
 
   const clearAllPartnerNotifications = useCallback(async () => {
-    if (!resolvedStoreId) return;
+    if (!resolvedStoreId || partnerNotifications.length === 0) return;
+    const prev = partnerNotifications;
+    setPartnerNotifications([]);
     try {
       const res = await fetch('/api/merchant/store-notifications', {
         method: 'POST',
@@ -683,11 +696,18 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ store_id: resolvedStoreId, action: 'clear_all' }),
       });
-      if (res.ok) await fetchPartnerNotifications();
+      if (!res.ok) {
+        setPartnerNotifications(prev);
+        await fetchPartnerNotifications();
+        return;
+      }
+      dispatchPartnerNotificationsCleared(resolvedStoreId);
+      window.dispatchEvent(new CustomEvent(PARTNER_NOTIFICATIONS_CHANGED));
     } catch {
-      /* ignore */
+      setPartnerNotifications(prev);
+      await fetchPartnerNotifications();
     }
-  }, [resolvedStoreId, fetchPartnerNotifications]);
+  }, [resolvedStoreId, partnerNotifications, fetchPartnerNotifications]);
 
   useEffect(() => {
     const sync = () => {
@@ -706,40 +726,6 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       window.removeEventListener('storage', onStorage);
     };
   }, [restaurantId]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const res = await fetch('/api/merchant-auth/resolve-session', { credentials: 'include' });
-        const data = await res.json().catch(() => ({}));
-        if (cancelled || !res.ok || !(data as any).success) return;
-        setOwnerName(typeof (data as any).ownerName === 'string' ? (data as any).ownerName : null);
-        setParentName(typeof (data as any).parentName === 'string' ? (data as any).parentName : null);
-        setOwnerEmailResolved(
-          typeof (data as any).ownerEmail === 'string' ? (data as any).ownerEmail : null
-        );
-        if (!Array.isArray((data as any).stores)) return;
-        const approved = ((data as any).stores as any[]).filter(
-          (s: any) => String(s.approval_status || '').toUpperCase() === 'APPROVED'
-        );
-        setStoreList(
-          approved.map((s: any) => ({
-            store_id: String(s.store_id),
-            store_name: String(s.store_name || s.store_id || 'Store'),
-            full_address: typeof s.full_address === 'string' ? s.full_address : '',
-            banner_url: typeof s.banner_url === 'string' && s.banner_url.trim() ? s.banner_url.trim() : null,
-          }))
-        );
-      } catch {
-        /* ignore */
-      }
-    };
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const displayName =
     (merchantSession?.user?.name && merchantSession.user.name.trim()) ||
@@ -975,6 +961,12 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   useEffect(() => {
     if (sheet === 'notifications' && resolvedStoreId) void fetchPartnerNotifications();
   }, [sheet, resolvedStoreId, fetchPartnerNotifications]);
+
+  useEffect(() => {
+    const onChanged = () => void fetchPartnerNotifications();
+    window.addEventListener(PARTNER_NOTIFICATIONS_CHANGED, onChanged);
+    return () => window.removeEventListener(PARTNER_NOTIFICATIONS_CHANGED, onChanged);
+  }, [fetchPartnerNotifications]);
 
   useEffect(() => {
     if (sheet !== 'status') return;
@@ -1692,6 +1684,26 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       case 'notifications':
         return (
           <div className="space-y-0">
+            {partnerNotifications.length > 0 ? (
+              <div className="mb-2 flex items-center gap-3 border-b border-gray-100 pb-2">
+                {partnerUnreadCount > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => void markAllPartnerNotificationsRead()}
+                    className="text-xs font-semibold text-sky-600 hover:text-sky-800"
+                  >
+                    Mark all read
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => void clearAllPartnerNotifications()}
+                  className="ml-auto text-xs font-semibold text-red-600 hover:text-red-800"
+                >
+                  Clear all
+                </button>
+              </div>
+            ) : null}
             {partnerNotifLoading && partnerNotifications.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 text-sm text-gray-500">
                 <Loader2 className="mb-2 h-8 w-8 animate-spin text-sky-600" />
@@ -2788,35 +2800,15 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                 className={`mx-sheet-header items-start justify-between gap-2 !h-auto ${
                   sheet === 'status'
                     ? '!min-h-0 border-b border-slate-200/80 !bg-white/85 !px-5 !py-4 backdrop-blur-md sm:!py-4'
-                    : '!px-4 !py-3 min-h-[var(--mx-partner-topbar-h)] gap-3'
+                    : sheet === 'notifications'
+                      ? '!min-h-0 !px-4 !py-2 items-center gap-2'
+                      : '!px-4 !py-3 min-h-[var(--mx-partner-topbar-h)] gap-3'
                 }`}
               >
                 <div className="min-w-0 flex-1 pr-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 id="partner-sheet-title" className="truncate text-sm font-semibold leading-tight text-gray-900 sm:text-base">
-                      {sheetTitle[sheet]}
-                    </h2>
-                    {sheet === 'notifications' && partnerNotifications.length > 0 ? (
-                      <>
-                        {partnerUnreadCount > 0 ? (
-                          <button
-                            type="button"
-                            onClick={() => void markAllPartnerNotificationsRead()}
-                            className="shrink-0 text-xs font-semibold text-sky-600 hover:text-sky-800"
-                          >
-                            Mark all read
-                          </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          onClick={() => void clearAllPartnerNotifications()}
-                          className="shrink-0 text-xs font-semibold text-red-600 hover:text-red-800"
-                        >
-                          Clear all
-                        </button>
-                      </>
-                    ) : null}
-                  </div>
+                  <h2 id="partner-sheet-title" className="truncate text-sm font-semibold leading-tight text-gray-900 sm:text-base">
+                    {sheetTitle[sheet]}
+                  </h2>
                   {sheet === 'status' && activeOutletSummary ? (
                     <p className="mt-1 text-xs leading-snug text-gray-700">
                       <span className="mr-1 font-semibold text-emerald-600">ACTIVE OUTLET</span>
@@ -2828,16 +2820,16 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                 </div>
                 <button
                   type="button"
-                  className="shrink-0 self-start rounded-lg p-2 text-gray-500 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
+                  className="shrink-0 self-start rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
                   aria-label="Close"
                   onClick={() => setSheet(null)}
                 >
-                  <X size={20} />
+                  <X size={18} />
                 </button>
               </div>
               <div
                 className={`min-h-0 flex-1 overflow-y-auto hide-scrollbar ${
-                  sheet === 'status' ? 'px-5 py-2 pb-6 md:py-3' : 'p-4'
+                  sheet === 'status' ? 'px-5 py-2 pb-6 md:py-3' : sheet === 'notifications' ? 'px-4 pt-2 pb-4' : 'p-4'
                 }`}
               >
                 {sheetBody()}

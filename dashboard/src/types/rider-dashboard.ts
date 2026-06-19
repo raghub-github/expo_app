@@ -57,6 +57,17 @@ export interface RiderSummary {
     serviceTypes: string[];
     verified: boolean;
   } | null;
+  bankAccount: {
+    id: number;
+    accountHolderName: string;
+    bankName: string | null;
+    ifsc: string | null;
+    branch: string | null;
+    accountNumberMasked: string | null;
+    verificationStatus: "pending" | "verified" | "rejected";
+    verifiedAt: string | null;
+    createdAt: string;
+  } | null;
   recentOrders: any[];
   recentWithdrawals: any[];
   recentTickets: any[];
@@ -92,7 +103,7 @@ export interface RiderSummary {
       partiallyAllowedServices?: string[];
     } | null
   >;
-  /** Latest blacklist/whitelist actions (newest first) for history UI */
+  /** Latest blacklist/whitelist + wallet auto-block actions (newest first) */
   blacklistHistory?: {
     id: number;
     serviceType: string;
@@ -104,6 +115,26 @@ export interface RiderSummary {
     createdAt: string;
     actorEmail: string | null;
     actorName: string | null;
+    restrictionType?: "agent_blacklist" | "wallet_auto_block";
+  }[];
+  restrictionHistory?: {
+    id: number;
+    serviceType: string;
+    banned: boolean;
+    reason: string;
+    source: string;
+    isPermanent: boolean;
+    expiresAt: string | null;
+    createdAt: string;
+    actorEmail: string | null;
+    actorName: string | null;
+    restrictionType?: "agent_blacklist" | "wallet_auto_block";
+  }[];
+  negativeWalletBlocks?: {
+    serviceType: string;
+    reason: string;
+    blockReason?: "global" | "service";
+    createdAt?: string;
   }[];
   orderMetrics: {
     food: { sent: number; accepted: number; completed: number; rejected: number };
@@ -112,6 +143,7 @@ export interface RiderSummary {
   };
   wallet: {
     totalBalance: string;
+    globalWalletBlock?: boolean;
     withdrawable: string;
     locked: string;
     securityBalance: string;

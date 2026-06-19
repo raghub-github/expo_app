@@ -1,15 +1,16 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { usePermission } from '@/hooks/usePermission';
 import { usePathname } from 'next/navigation';
 import { getDashboardTypeFromPath } from '@/lib/permissions/path-mapping';
 import type { DashboardType } from '@/lib/db/schema';
-import { Package, X, Image, Truck, RotateCcw, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
+import { Package, X, Image, Truck, RotateCcw, CheckCircle, AlertTriangle, Loader2, Shield, User, ChevronDown, Info, FileText, ShieldCheck, IndianRupee } from 'lucide-react';
 
 import { DELIVERY_FEE_ITEM_ID } from '@/lib/foodOrderItems';
 import {
-  parseOrderItemsApiResponse,
+  fetchOrderItemsCached,
+  getCachedOrderItems,
   preloadOrderItemImages,
   type OrderItemApiRow,
   type OrderItemLineAmounts,
@@ -24,10 +25,38 @@ import {
 import { useCancellationReasonCatalog } from '@/hooks/useCancellationReasonCatalog';
 import {
   catalogReasonOptionValue,
+  findCancelledWithoutRefundReason,
   findCatalogReasonBySelectValue,
   normalizeCatalogReasonId,
   reasonsForAttribute,
 } from '@/lib/orders/orderRejectionOptions';
+import {
+  formatEnginePreviewError,
+  formatEnginePreviewStatus,
+  type EnginePreviewDisplay,
+} from '@gatimitra/financial-rules';
+
+type RiderPenaltyPreviewRider = {
+  riderId: number;
+  riderName: string | null;
+  riderMobile: string | null;
+  assignmentStatus: string | null;
+  acceptedAt: string | null;
+  pickedUpAt: string | null;
+  isCurrentOnOrder: boolean;
+  label: string;
+};
+
+type RiderPenaltyPreviewData = {
+  appliesPenalty: boolean;
+  penaltyAmount: number;
+  scenarioCode: string | null;
+  scenarioLabel: string | null;
+  ledgerTitle: string;
+  ledgerDescription: string;
+  skipped?: string;
+  skippedLabel?: string;
+};
 
 interface ItemsRefundModalProps {
   isOpen: boolean;
@@ -41,6 +70,8 @@ interface ItemsRefundModalProps {
   dashboardType?: DashboardType;
   /** Called after a refund is successfully created so parent can refetch refund list. */
   onRefundCreated?: () => void;
+  /** Order progress timeline already recorded cancellation — blocks refund+cancel type. */
+  orderCancelledOnTimeline?: boolean;
 }
 
 function discountTagLabel(tag?: OrderPricingLine['discountTag']): string | null {
@@ -214,7 +245,7 @@ function BillBreakdownSwitcher({
         };
 
   return (
-    <div className="mt-3 max-w-md ml-auto">
+    <div className="mt-3 w-full max-w-md ml-auto min-w-[240px]">
       <div className="mb-2 flex items-center justify-end gap-2">
         <label htmlFor="bill-view-select" className="text-[11px] font-medium text-slate-600">
           Bill view
@@ -238,6 +269,110 @@ function BillBreakdownSwitcher({
         totalAmount={active.totalAmount}
         accent={active.accent}
       />
+    </div>
+  );
+}
+
+function refundPercentOptions(): number[] {
+  const options: number[] = [];
+  for (let i = 10; i <= 100; i += 10) options.push(i);
+  return options;
+}
+
+function RefundCustomerPreviewPanel({
+  refundType,
+  ctcTotal,
+  refundPercent,
+  refundAmount,
+  itemRefundTotal,
+  onPercentChange,
+  onAmountChange,
+}: {
+  refundType: string;
+  ctcTotal: number;
+  refundPercent: number;
+  refundAmount: number;
+  itemRefundTotal: number;
+  onPercentChange: (pct: number) => void;
+  onAmountChange: (amount: number) => void;
+}) {
+  const isCancelWithoutRefund = refundType === 'cancel_without_refund';
+  const isFullCancelRefund = refundType === 'refund_with_cancellation';
+  const isPartialRefund = refundType === 'refund_without_cancellation';
+
+  const displayAmount = isPartialRefund
+    ? itemRefundTotal
+    : isCancelWithoutRefund
+      ? 0
+      : refundAmount;
+
+  return (
+    <div className="rounded-md border border-blue-200 bg-blue-50/70 p-3 w-full">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-700">
+        Customer refund preview
+      </p>
+      <p className="mt-0.5 text-[10px] text-slate-500">
+        {isCancelWithoutRefund
+          ? 'No amount will be refunded to the customer.'
+          : isPartialRefund
+            ? 'Based on selected item refund percentages.'
+            : 'Based on customer bill total (CTC).'}
+      </p>
+
+      {isFullCancelRefund && ctcTotal > 0 ? (
+        <div className="mt-2 space-y-2">
+          <div className="flex items-center justify-between gap-2 text-[11px]">
+            <span className="text-slate-600">Order total (CTC)</span>
+            <span className="font-semibold tabular-nums text-slate-800">₹{ctcTotal.toFixed(2)}</span>
+          </div>
+          <div>
+            <label className="block text-[11px] font-medium text-slate-600 mb-1">Refund %</label>
+            <select
+              value={refundPercent}
+              onChange={(e) => onPercentChange(Number(e.target.value))}
+              className="h-8 w-full rounded border border-slate-200 bg-white px-2 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+            >
+              {refundPercentOptions().map((pct) => (
+                <option key={pct} value={pct}>
+                  {pct}%
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mt-2 pt-2 border-t border-blue-200/80">
+        <label className="block text-[11px] font-medium text-slate-600 mb-1">
+          Amount refunded to customer
+        </label>
+        {isFullCancelRefund ? (
+          <div className="flex items-center gap-1 rounded border border-slate-200 bg-white px-2 h-9">
+            <span className="text-slate-500 text-sm">₹</span>
+            <input
+              type="number"
+              min={0}
+              step={0.01}
+              value={Number.isFinite(refundAmount) ? refundAmount : 0}
+              onChange={(e) => onAmountChange(Number(e.target.value))}
+              className="flex-1 min-w-0 border-0 bg-transparent text-sm font-semibold tabular-nums text-blue-700 focus:outline-none focus:ring-0"
+            />
+          </div>
+        ) : (
+          <p
+            className={`text-lg font-bold tabular-nums ${
+              displayAmount > 0 ? 'text-blue-700' : 'text-slate-400'
+            }`}
+          >
+            ₹{displayAmount.toFixed(2)}
+          </p>
+        )}
+        {isFullCancelRefund && ctcTotal > 0 && refundAmount > ctcTotal ? (
+          <p className="mt-1 text-[10px] text-amber-700">
+            Exceeds CTC (₹{ctcTotal.toFixed(2)}). Adjust before submit.
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -313,8 +448,44 @@ function payloadToRefundState(
   };
 }
 
+function resolveOrderItemsPayload(
+  orderId: number | null | undefined,
+  prefetched: OrderItemsPayload | null | undefined
+): OrderItemsPayload | null {
+  if (prefetched?.items?.length) return prefetched;
+  if (orderId != null) {
+    const cached = getCachedOrderItems(orderId);
+    if (cached?.items?.length) return cached;
+  }
+  return null;
+}
+
+/** Keep checkbox / refund row choices when items list is refreshed from prefetch or API. */
+function preserveRefundItemUserState(prev: RefundItem[], next: RefundItem[]): RefundItem[] {
+  if (prev.length === 0) return next;
+  const prevById = new Map(prev.map((item) => [item.id, item]));
+  return next.map((item) => {
+    const old = prevById.get(item.id);
+    if (!old) return item;
+    return {
+      ...item,
+      isSelected: old.isSelected,
+      refundType: old.refundType,
+      selectedQuantity: old.selectedQuantity,
+      remark: old.remark,
+      showDropdown: old.showDropdown,
+      customAmount: old.customAmount,
+      refundPercentage: old.refundPercentage,
+    };
+  });
+}
+
 function isDeliveryFeeRow(item: { id: number; isDeliveryFee?: boolean }): boolean {
   return item.isDeliveryFee === true || item.id === DELIVERY_FEE_ITEM_ID;
+}
+
+function roundMoney(n: number): number {
+  return Math.round(n * 100) / 100;
 }
 
 export default function ItemsRefundModal({
@@ -325,6 +496,7 @@ export default function ItemsRefundModal({
   prefetchedOrderItems,
   dashboardType: dashboardTypeProp,
   onRefundCreated,
+  orderCancelledOnTimeline = false,
 }: ItemsRefundModalProps) {
   const pathname = usePathname();
   const resolvedDashboard = dashboardTypeProp ?? getDashboardTypeFromPath(pathname ?? '') ?? 'ORDER_FOOD';
@@ -333,15 +505,9 @@ export default function ItemsRefundModal({
   const hasRefundPermission = isSuperAdmin || (resolvedDashboard && canPerformAction(resolvedDashboard, 'REFUND', { access_point_group: 'ORDER_REFUND' }));
   const hasCancellationPermission = isSuperAdmin || (resolvedDashboard && canPerformAction(resolvedDashboard, 'CANCEL', { access_point_group: 'ORDER_CANCEL' }));
   const canCreateRefund = hasRefundPermission && hasCancellationPermission;
+  const blockRefundWithCancellation = orderCancelledOnTimeline;
 
-  const shouldModalBeOpen = () => {
-    if (isOpen) return true;
-    if (typeof window === 'undefined') return false;
-    const savedModalState = localStorage.getItem('refundModalOpen');
-    return savedModalState === 'true';
-  };
-
-  const [modalOpen, setModalOpen] = useState(shouldModalBeOpen);
+  const [modalOpen, setModalOpen] = useState(false);
 
   const {
     attributes: catalogAttributes,
@@ -356,15 +522,21 @@ export default function ItemsRefundModal({
   const [refundType, setRefundType] = useState('');
   const [fault, setFault] = useState('');
   const [merchantDebit, setMerchantDebit] = useState('');
+  const [customerRefundPercent, setCustomerRefundPercent] = useState(100);
+  const [customerRefundAmount, setCustomerRefundAmount] = useState(0);
   const [showRefundType, setShowRefundType] = useState(false);
   const [showFault, setShowFault] = useState(false);
   const [showMerchantDebit, setShowMerchantDebit] = useState(false);
   const [showSubmit, setShowSubmit] = useState(false);
   const [showWarning, setShowWarning] = useState(false);
-  const [enginePreview, setEnginePreview] = useState<Record<string, unknown> | null>(null);
+  const [enginePreview, setEnginePreview] = useState<EnginePreviewDisplay | null>(null);
+  const [riderPenaltyPreview, setRiderPenaltyPreview] = useState<RiderPenaltyPreviewData | null>(null);
+  const [penaltyRiders, setPenaltyRiders] = useState<RiderPenaltyPreviewRider[]>([]);
+  const [penaltyRiderId, setPenaltyRiderId] = useState<number | null>(null);
+  const [penaltyPreviewsByRiderId, setPenaltyPreviewsByRiderId] = useState<
+    Record<number, RiderPenaltyPreviewData>
+  >({});
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [isRefundCompleted, setIsRefundCompleted] = useState(false);
-  const [refundActionMessage, setRefundActionMessage] = useState('');
   const [selectAll, setSelectAll] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -373,6 +545,49 @@ export default function ItemsRefundModal({
   const [loadedImageUrls, setLoadedImageUrls] = useState<Set<string>>(() => new Set());
   const [imagePanelLoading, setImagePanelLoading] = useState(false);
 
+  const isThreePlFaultSelected = fault === '3pl_fault' || fault === '3pl';
+
+  const fetchRiderPenaltyPreview = useCallback(
+    async (orderId: number, riderId?: number | null) => {
+      const res = await fetch(`/api/orders/${orderId}/rider-penalty-preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(riderId != null ? { riderId } : {}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        setRiderPenaltyPreview({
+          appliesPenalty: false,
+          penaltyAmount: 0,
+          scenarioCode: null,
+          scenarioLabel: null,
+          ledgerTitle: '',
+          ledgerDescription: '',
+          skipped: 'preview_failed',
+          skippedLabel: typeof data.error === 'string' ? data.error : 'Could not load rider penalty preview.',
+        });
+        return;
+      }
+      setPenaltyRiders((data.riders as RiderPenaltyPreviewRider[]) ?? []);
+      const previewsRaw = (data.previewsByRiderId as Record<number, RiderPenaltyPreviewData>) ?? {};
+      setPenaltyPreviewsByRiderId(previewsRaw);
+      const selectedId =
+        typeof data.selectedRiderId === 'number' ? data.selectedRiderId : null;
+      setPenaltyRiderId(selectedId);
+      setRiderPenaltyPreview(
+        (selectedId != null ? previewsRaw[selectedId] : null) ??
+          (data.preview as RiderPenaltyPreviewData) ??
+          null
+      );
+    },
+    []
+  );
+
+  const handlePenaltyRiderChange = (riderId: number) => {
+    setPenaltyRiderId(riderId);
+    const cached = penaltyPreviewsByRiderId[riderId];
+    if (cached) setRiderPenaltyPreview(cached);
+  };
   const refundTypeRef = useRef<HTMLDivElement>(null);
   const faultRef = useRef<HTMLDivElement>(null);
   const merchantDebitRef = useRef<HTMLDivElement>(null);
@@ -382,8 +597,9 @@ export default function ItemsRefundModal({
   const itemsSourceRef = useRef<OrderItemApiRow[]>([]);
   const [billView, setBillView] = useState<'customer' | 'merchant'>('customer');
 
-  const initialFromPrefetch = prefetchedOrderItems?.items?.length
-    ? payloadToRefundState(prefetchedOrderItems, 'customer')
+  const initialPayload = resolveOrderItemsPayload(orderIdProp, prefetchedOrderItems);
+  const initialFromPrefetch = initialPayload
+    ? payloadToRefundState(initialPayload, 'customer')
     : null;
 
   const handleBillViewChange = (view: 'customer' | 'merchant') => {
@@ -396,25 +612,36 @@ export default function ItemsRefundModal({
   const [refundItems, setRefundItems] = useState<RefundItem[]>(
     () => initialFromPrefetch?.items ?? []
   );
-  const [itemsLoading, setItemsLoading] = useState(
-    () => !(initialFromPrefetch?.items?.length)
+  const [itemsFetchSettled, setItemsFetchSettled] = useState(
+    () => Boolean(initialFromPrefetch?.items?.length)
   );
   const [itemsError, setItemsError] = useState<string | null>(null);
   const [pricing, setPricing] = useState<OrderItemsPricing | null>(
     () => initialFromPrefetch?.pricing ?? null
   );
 
+  const applyItemsPayload = useCallback((payload: OrderItemsPayload) => {
+    itemsSourceRef.current = payload.items;
+    const next = payloadToRefundState(payload, billView);
+    setRefundItems((prev) => preserveRefundItemUserState(prev, next.items));
+    setPricing(next.pricing);
+    setItemsError(null);
+    setItemsFetchSettled(true);
+  }, [billView]);
+
   useEffect(() => {
-    if (isOpen) setModalOpen(true);
+    setModalOpen(isOpen);
   }, [isOpen]);
 
   useEffect(() => {
-    if (modalOpen && typeof window !== 'undefined') {
-      localStorage.setItem('refundModalOpen', 'true');
-    } else if (typeof window !== 'undefined') {
-      localStorage.removeItem('refundModalOpen');
-    }
-  }, [modalOpen]);
+    if (!blockRefundWithCancellation || refundType !== 'refund_with_cancellation') return;
+    setRefundType('');
+    setShowFault(false);
+    setShowMerchantDebit(false);
+    setShowSubmit(false);
+    setFault('');
+    setMerchantDebit('');
+  }, [blockRefundWithCancellation, refundType]);
 
   useEffect(() => {
     if (modalOpen && typeof window !== 'undefined') {
@@ -458,6 +685,9 @@ export default function ItemsRefundModal({
           setShowMerchantDebit(parsedState.showMerchantDebit || false);
           setShowSubmit(parsedState.showSubmit || false);
           if (parsedState.selectAll !== undefined) setSelectAll(parsedState.selectAll);
+          if (Array.isArray(parsedState.refundItems) && parsedState.refundItems.length > 0) {
+            setRefundItems(parsedState.refundItems);
+          }
         } catch {
           localStorage.removeItem('refundFormState');
         }
@@ -466,15 +696,37 @@ export default function ItemsRefundModal({
   }, [modalOpen]);
 
   useEffect(() => {
-    if (prefetchedOrderItems?.items?.length) {
-      itemsSourceRef.current = prefetchedOrderItems.items;
-      const next = payloadToRefundState(prefetchedOrderItems, billView);
-      setRefundItems(next.items);
-      setPricing(next.pricing);
-      setItemsError(null);
-      setItemsLoading(false);
+    const payload = resolveOrderItemsPayload(orderIdProp, prefetchedOrderItems);
+    if (payload) applyItemsPayload(payload);
+  }, [prefetchedOrderItems, orderIdProp, applyItemsPayload]);
+
+  useEffect(() => {
+    if (!modalOpen || orderIdProp == null) return;
+
+    const payload = resolveOrderItemsPayload(orderIdProp, prefetchedOrderItems);
+    if (payload) {
+      applyItemsPayload(payload);
+      return;
     }
-  }, [prefetchedOrderItems]);
+
+    let cancelled = false;
+    setItemsFetchSettled(false);
+    void fetchOrderItemsCached(orderIdProp).then((parsed) => {
+      if (cancelled) return;
+      if (parsed?.items?.length) {
+        applyItemsPayload(parsed);
+        return;
+      }
+      setItemsError('Failed to load order items');
+      setRefundItems([]);
+      setPricing(null);
+      setItemsFetchSettled(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [modalOpen, orderIdProp, prefetchedOrderItems, applyItemsPayload]);
 
   useEffect(() => {
     const urls = refundItems
@@ -496,62 +748,6 @@ export default function ItemsRefundModal({
       img.src = url;
     });
   }, [refundItems]);
-
-  useEffect(() => {
-    if (!modalOpen || orderIdProp == null) return;
-
-    if (prefetchedOrderItems?.items?.length) {
-      itemsSourceRef.current = prefetchedOrderItems.items;
-      const next = payloadToRefundState(prefetchedOrderItems, billView);
-      setRefundItems(next.items);
-      setPricing(next.pricing);
-      setItemsError(null);
-      setItemsLoading(false);
-      return;
-    }
-
-    if (refundItems.length > 0) {
-      setItemsLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setItemsLoading(true);
-    setItemsError(null);
-    void (async () => {
-      try {
-        const res = await fetch(`/api/orders/${orderIdProp}/items`, { credentials: 'include' });
-        const data = await res.json().catch(() => ({}));
-        if (cancelled) return;
-        if (!res.ok || !data.success) {
-          setItemsError(data?.error ?? 'Failed to load order items');
-          setRefundItems([]);
-          setPricing(null);
-          return;
-        }
-        const rows = (Array.isArray(data.items) ? data.items : []) as OrderItemApiRow[];
-        itemsSourceRef.current = rows;
-        setRefundItems(rows.map((row) => mapApiItemToRefundItemForView(row, billView)));
-        if (data.pricing && typeof data.pricing === 'object') {
-          const parsed = parseOrderItemsApiResponse({ success: true, items: rows, pricing: data.pricing });
-          setPricing(parsed?.pricing ?? null);
-        } else {
-          setPricing(null);
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setItemsError(e instanceof Error ? e.message : 'Failed to load order items');
-          setRefundItems([]);
-          setPricing(null);
-        }
-      } finally {
-        if (!cancelled) setItemsLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [modalOpen, orderIdProp, prefetchedOrderItems]);
 
   useEffect(() => {
     const allItemsSelected = refundItems.every(item => item.isSelected);
@@ -577,17 +773,70 @@ export default function ItemsRefundModal({
 
   useEffect(() => {
     if (!modalOpen) return;
+    if (refundType === 'cancel_without_refund') return;
     if (fault && showFault && !showMerchantDebit) {
       const timer = setTimeout(() => setShowMerchantDebit(true), 1000);
       return () => clearTimeout(timer);
     }
-  }, [fault, showFault, showMerchantDebit, modalOpen]);
+  }, [fault, showFault, showMerchantDebit, modalOpen, refundType]);
 
   const checkItemSelectionForCancellation = () => {
     return refundItems.some(item => item.isSelected);
   };
 
   const attributeRejectionOptions = reasonsForAttribute(catalogGrouped, refundAttribute);
+
+  const customerCtcTotal = useMemo(() => {
+    const customerBill = pricing?.customer ?? pricing;
+    return roundMoney(Math.max(0, customerBill?.totalOrderAmount ?? 0));
+  }, [pricing]);
+
+  const applyCancelWithoutRefundCatalogReason = useCallback(() => {
+    const row = findCancelledWithoutRefundReason(catalogGrouped);
+    if (!row) return;
+    setRefundAttribute(row.attribute);
+    setCatalogReasonId(normalizeCatalogReasonId(row.id));
+    setRefundRejection(row.label);
+  }, [catalogGrouped]);
+
+  useEffect(() => {
+    if (refundType !== 'refund_with_cancellation' || customerCtcTotal <= 0) return;
+    setCustomerRefundAmount(roundMoney((customerCtcTotal * customerRefundPercent) / 100));
+  }, [customerCtcTotal, customerRefundPercent, refundType]);
+
+  useEffect(() => {
+    if (!showRefundType || refundType) return;
+    setRefundType('cancel_without_refund');
+    setShowFault(false);
+    setShowMerchantDebit(false);
+    setShowSubmit(true);
+  }, [showRefundType, refundType]);
+
+  useEffect(() => {
+    if (refundType !== 'cancel_without_refund') return;
+    applyCancelWithoutRefundCatalogReason();
+    setShowFault(false);
+    setShowMerchantDebit(false);
+    setShowSubmit(true);
+  }, [refundType, applyCancelWithoutRefundCatalogReason]);
+
+  const handleCustomerRefundPercentChange = (pct: number) => {
+    const next = Math.min(100, Math.max(10, pct));
+    setCustomerRefundPercent(next);
+    if (customerCtcTotal > 0) {
+      setCustomerRefundAmount(roundMoney((customerCtcTotal * next) / 100));
+    }
+  };
+
+  const handleCustomerRefundAmountChange = (amount: number) => {
+    const next = roundMoney(Math.max(0, amount));
+    setCustomerRefundAmount(next);
+    if (customerCtcTotal > 0) {
+      const pct = Math.round((next / customerCtcTotal) * 100);
+      const snapped = Math.min(100, Math.max(10, Math.round(pct / 10) * 10));
+      setCustomerRefundPercent(snapped);
+    }
+  };
 
   const handleAttributeChange = (value: string) => {
     if (refundAttribute === value) {
@@ -627,13 +876,36 @@ export default function ItemsRefundModal({
   };
 
   const handleRefundTypeChange = (value: string) => {
+    if (value === 'refund_with_cancellation' && blockRefundWithCancellation) {
+      onToast?.('This order is already cancelled. Refund with cancellation is not available.');
+      return;
+    }
     if (refundType === value) {
       setRefundType('');
       setShowFault(false);
+      setShowMerchantDebit(false);
+      setShowSubmit(false);
       return;
     }
     setRefundType(value);
-    setShowFault(true);
+    if (value === 'cancel_without_refund') {
+      applyCancelWithoutRefundCatalogReason();
+      setShowFault(false);
+      setShowMerchantDebit(false);
+      setFault('');
+      setMerchantDebit('');
+      setShowSubmit(true);
+    } else {
+      setShowFault(true);
+      setShowMerchantDebit(false);
+      setShowSubmit(false);
+      setFault('');
+      setMerchantDebit('');
+      if (value === 'refund_with_cancellation' && customerCtcTotal > 0) {
+        setCustomerRefundPercent(100);
+        setCustomerRefundAmount(customerCtcTotal);
+      }
+    }
     if (value === 'refund_without_cancellation') {
       setRefundItems(prev => prev.map(item => ({
         ...item,
@@ -803,9 +1075,61 @@ export default function ItemsRefundModal({
     }, 0);
   };
 
+  /** Merchant CTM amount to debit from wallet (uses frozen merchant line amounts, not customer CTC). */
+  const calculateMerchantDebitAmount = (): number => {
+    if (merchantDebit === 'no_debit' || !merchantDebit) return 0;
+    const merchantTotal = pricing?.totalOrderAmount ?? 0;
+    if (merchantDebit === 'full_debit') {
+      return roundMoney(Math.max(0, merchantTotal));
+    }
+    if (merchantDebit !== 'partial_debit') return 0;
+
+    const source = itemsSourceRef.current;
+    let total = 0;
+    for (const item of refundItems) {
+      const row = source.find((r) => r.id === item.id);
+      const unitMerchant = row?.amountPerQuantity ?? item.amountPerQuantity;
+
+      if (refundType === 'refund_without_cancellation') {
+        if (item.refundPercentage <= 0) continue;
+        const qty = item.selectedQuantity > 0 ? item.selectedQuantity : 1;
+        total += (unitMerchant * item.refundPercentage * qty) / 100;
+        continue;
+      }
+
+      if (item.refundType === 'NONE') continue;
+      const qty = isDeliveryFeeRow(item)
+        ? 1
+        : item.selectedQuantity > 0
+          ? item.selectedQuantity
+          : item.quantity;
+      if (item.refundType === 'PARTIAL') {
+        const customerUnit = item.amountPerQuantity > 0 ? item.amountPerQuantity : unitMerchant;
+        const ratio = customerUnit > 0 ? unitMerchant / customerUnit : 1;
+        total += roundMoney(item.customAmount * ratio);
+      } else {
+        total += roundMoney(unitMerchant * qty);
+      }
+    }
+
+    if (total <= 0 && merchantTotal > 0) {
+      return roundMoney(merchantTotal);
+    }
+    return roundMoney(Math.min(Math.max(0, total), merchantTotal));
+  };
+
   const handleSubmit = async () => {
-    if (!refundAttribute || !catalogReasonId || !refundRejection || !refundType || !fault || !merchantDebit) {
+    const requiresFaultAndDebit = refundType !== 'cancel_without_refund';
+    if (!refundAttribute || !catalogReasonId || !refundRejection || !refundType) {
       onToast?.('Please complete all refund options');
+      return;
+    }
+    if (refundType === 'refund_with_cancellation' && blockRefundWithCancellation) {
+      onToast?.('This order is already cancelled. Refund with cancellation is not available.');
+      return;
+    }
+    if (requiresFaultAndDebit && (!fault || !merchantDebit)) {
+      onToast?.('Please complete fault and merchant debit options');
       return;
     }
     if (refundType === 'refund_without_cancellation') {
@@ -814,42 +1138,74 @@ export default function ItemsRefundModal({
         onToast?.('Please select at least one item for refund in the refund form');
         return;
       }
-    } else {
+    } else if (refundType !== 'cancel_without_refund') {
       if (!checkItemSelectionForCancellation()) {
         onToast?.('Please select at least one item (including delivery fee if applicable)');
         return;
       }
     }
-    const actionMessages: Record<string, string> = {
-      cancel_without_refund: 'Order cancelled without refund',
-      refund_with_cancellation: 'Order cancelled with refund',
-      refund_without_cancellation: 'Partial refund processed',
-    };
-    setRefundActionMessage(actionMessages[refundType] ?? '');
+    if (refundType === 'refund_with_cancellation') {
+      if (!(customerRefundAmount > 0)) {
+        onToast?.('Customer refund amount must be greater than 0.');
+        return;
+      }
+    }
     setEnginePreview(null);
+    setRiderPenaltyPreview(null);
+    setPenaltyRiders([]);
+    setPenaltyRiderId(null);
+    setPenaltyPreviewsByRiderId({});
 
     const orderId = orderIdProp ?? null;
     if (orderId != null) {
       setPreviewLoading(true);
       try {
-        const totalAmount = calculateTotalRefundAmount();
-        const res = await fetch(`/api/orders/${orderId}/refunds/preview`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            refundType,
-            refundAmount: totalAmount,
-            catalogReasonId,
-            attribute: refundAttribute,
-            rejection: refundRejection,
-            refundMetadata: refundType === 'refund_without_cancellation'
-              ? { refundItems: refundItems.filter(i => i.refundType !== 'NONE').map(i => ({ id: i.id, refundPercentage: i.refundPercentage })) }
-              : undefined,
-          }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && data.success) {
-          setEnginePreview((data.preview as Record<string, unknown>) ?? null);
+        if (isThreePlFaultSelected) {
+          await fetchRiderPenaltyPreview(orderId);
+        } else {
+          const totalAmount = calculateTotalRefundAmount();
+          const previewAmount =
+            refundType === 'refund_with_cancellation'
+              ? customerRefundAmount
+              : totalAmount;
+          const res = await fetch(`/api/orders/${orderId}/refunds/preview`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              refundType,
+              refundAmount: previewAmount,
+              catalogReasonId,
+              attribute: refundAttribute,
+              rejection: refundRejection,
+              refundMetadata:
+                refundType === 'refund_without_cancellation'
+                  ? {
+                      refundItems: refundItems
+                        .filter(i => i.refundType !== 'NONE')
+                        .map(i => ({ id: i.id, refundPercentage: i.refundPercentage })),
+                    }
+                  : refundType === 'refund_with_cancellation'
+                    ? {
+                        refundPercentage: customerRefundPercent,
+                        ctcTotal: customerCtcTotal,
+                        customerRefundAmount: customerRefundAmount,
+                      }
+                    : undefined,
+            }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok && data.success) {
+            setEnginePreview((data.preview as EnginePreviewDisplay) ?? null);
+          } else {
+            setEnginePreview({
+              ok: false,
+              rule_code: null,
+              execution_status: 'UNAVAILABLE',
+              amounts: null,
+              error: typeof data.error === 'string' ? data.error : 'Preview failed',
+              simulated: false,
+            });
+          }
         }
       } catch {
         /* preview is best-effort */
@@ -862,18 +1218,24 @@ export default function ItemsRefundModal({
   };
 
   const resetFormAndClose = () => {
-    setIsRefundCompleted(false);
     setRefundAttribute('');
     setCatalogReasonId(null);
     setRefundRejection('');
     setRefundType('');
     setFault('');
     setMerchantDebit('');
+    setCustomerRefundPercent(100);
+    setCustomerRefundAmount(0);
     setShowRefundType(false);
     setShowFault(false);
     setShowMerchantDebit(false);
     setShowSubmit(false);
     setShowWarning(false);
+    setEnginePreview(null);
+    setRiderPenaltyPreview(null);
+    setPenaltyRiders([]);
+    setPenaltyRiderId(null);
+    setPenaltyPreviewsByRiderId({});
     setSelectAll(false);
     setRefundItems(prev => prev.map(item => ({
       ...item,
@@ -886,7 +1248,6 @@ export default function ItemsRefundModal({
       refundPercentage: 0
     })));
     if (typeof window !== 'undefined') {
-      localStorage.removeItem('refundModalOpen');
       localStorage.removeItem('refundFormState');
     }
     setModalOpen(false);
@@ -896,6 +1257,7 @@ export default function ItemsRefundModal({
   const confirmRefund = async () => {
     const orderId = orderIdProp ?? null;
     const totalAmount = calculateTotalRefundAmount();
+    const mxDebitAmount = calculateMerchantDebitAmount();
     const notificationMessages: Record<string, string> = {
       cancel_without_refund: 'Order has been cancelled successfully without refund.',
       refund_with_cancellation: 'Order has been cancelled and refund processed successfully.',
@@ -912,12 +1274,13 @@ export default function ItemsRefundModal({
             body: JSON.stringify({
               refundType: 'cancel_without_refund',
               refundReason: `${refundAttribute} - ${refundRejection}`,
-              refundDescription: `Fault: ${fault}, Merchant debit: ${merchantDebit}`,
+              refundDescription: refundRejection,
               attribute: refundAttribute,
               rejection: refundRejection,
               catalogReasonId,
               fault,
-              merchantDebit,
+              penaltyRiderId: isThreePlFaultSelected ? penaltyRiderId : null,
+              mxDebitAmount: 0,
             }),
           });
           const data = await res.json().catch(() => ({}));
@@ -934,8 +1297,7 @@ export default function ItemsRefundModal({
       }
       onToast?.(notificationMessages.cancel_without_refund);
       onRefundCreated?.();
-      setIsRefundCompleted(true);
-      setTimeout(resetFormAndClose, 3000);
+      resetFormAndClose();
       return;
     }
 
@@ -951,7 +1313,10 @@ export default function ItemsRefundModal({
       (sum, i) => sum + (i.amountPerQuantity * (isDeliveryFeeRow(i) ? 1 : i.quantity)),
       0
     );
-    const refundAmount = refundType === 'refund_with_cancellation' ? fullOrderAmount : totalAmount;
+    const refundAmount =
+      refundType === 'refund_with_cancellation'
+        ? customerRefundAmount
+        : totalAmount;
     const amountToSend = Math.max(0.01, refundAmount);
 
     try {
@@ -964,16 +1329,34 @@ export default function ItemsRefundModal({
           refundReason: `${refundAttribute} - ${refundRejection}`,
           refundDescription: `Fault: ${fault}, Merchant debit: ${merchantDebit}`,
           refundAmount: amountToSend,
-          mxDebitAmount: 0,
+          mxDebitAmount,
           mxDebitReason: merchantDebit,
           attribute: refundAttribute,
           rejection: refundRejection,
           catalogReasonId,
           fault,
+          penaltyRiderId: isThreePlFaultSelected ? penaltyRiderId : null,
           merchantDebit,
-          refundMetadata: refundType === 'refund_without_cancellation'
-            ? { refundItems: refundItems.filter(i => i.refundType !== 'NONE').map(i => ({ id: i.id, name: i.name, refundPercentage: i.refundPercentage, amount: calculatePercentageRefundAmount(i) })) }
-            : undefined,
+          refundMetadata:
+            refundType === 'refund_without_cancellation'
+              ? {
+                  refundItems: refundItems
+                    .filter(i => i.refundType !== 'NONE')
+                    .map(i => ({
+                      id: i.id,
+                      name: i.name,
+                      refundPercentage: i.refundPercentage,
+                      amount: calculatePercentageRefundAmount(i),
+                    })),
+                }
+              : refundType === 'refund_with_cancellation'
+                ? {
+                    refundPercentage: customerRefundPercent,
+                    ctcTotal: customerCtcTotal,
+                    customerRefundAmount: customerRefundAmount,
+                    fullOrderAmount,
+                  }
+                : undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -983,8 +1366,7 @@ export default function ItemsRefundModal({
       }
       onToast?.(notificationMessages[refundType] ?? 'Refund created.');
       onRefundCreated?.();
-      setIsRefundCompleted(true);
-      setTimeout(resetFormAndClose, 3000);
+      resetFormAndClose();
     } catch (e) {
       onToast?.(e instanceof Error ? e.message : 'Failed to submit refund');
     } finally {
@@ -999,7 +1381,6 @@ export default function ItemsRefundModal({
 
   const handleModalClose = () => {
     setModalOpen(false);
-    if (typeof window !== 'undefined') localStorage.removeItem('refundModalOpen');
     onClose?.();
   };
 
@@ -1007,63 +1388,209 @@ export default function ItemsRefundModal({
 
   return (
     <>
-      {isRefundCompleted && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[10001] p-5">
-          <div className="bg-white rounded-lg w-full max-w-[400px] shadow-[0_20px_40px_rgba(0,0,0,0.3)] animate-[fadeIn_0.3s_ease]">
-            <div className="p-6">
-              <div className="flex flex-col items-center text-center">
-                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mb-4">
-                  <CheckCircle className="w-8 h-8 text-green-500" />
-                </div>
-                <h3 className="text-lg font-semibold text-slate-800 mb-2">{refundActionMessage}</h3>
-                <p className="text-slate-600 text-sm mb-6">The action has been completed successfully.</p>
-                <div className="w-12 h-1 bg-emerald-500 rounded-full" />
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {showWarning && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[10000] p-5">
-          <div className="bg-white rounded-lg w-full max-w-[500px] shadow-[0_20px_40px_rgba(0,0,0,0.3)] animate-[fadeIn_0.3s_ease]">
-            <div className="p-6 border-b border-slate-200">
-              <h3 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
-                <AlertTriangle className="w-5 h-5 text-yellow-500 shrink-0" /> Confirm Refund
+          <div className="bg-white rounded-xl w-full max-w-[min(1000px,94vw)] shadow-[0_20px_40px_rgba(0,0,0,0.3)] animate-[fadeIn_0.3s_ease] overflow-hidden">
+            <div className="flex items-center justify-between px-5 pt-5 pb-1">
+              <h3 className="text-lg font-semibold text-slate-900 flex items-center gap-2.5 m-0">
+                <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0" strokeWidth={2.25} />
+                Confirm Refund
               </h3>
+              <button
+                type="button"
+                onClick={cancelRefund}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                aria-label="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
-            <div className="p-6">
-              <p className="text-slate-700 mb-4">
-                You are about to create a refund. Once submitted, this action cannot be undone. You will be responsible for this refund.
+
+            <div className="px-5 pb-5">
+              <p className="text-sm text-slate-500 leading-snug mb-3 m-0 whitespace-nowrap">
+                You are about to create a refund. Once submitted, this action cannot be undone.{' '}
+                You will be responsible for this refund.
               </p>
-              {previewLoading && (
+
+              {previewLoading && !isThreePlFaultSelected && (
                 <p className="mb-4 flex items-center gap-2 text-sm text-slate-500">
-                  <Loader2 className="h-4 w-4 animate-spin" /> Calculating rule engine outcome…
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Calculating rule engine outcome…
                 </p>
               )}
-              {enginePreview && !previewLoading && (
-                <div className="mb-4 rounded-md border border-indigo-100 bg-indigo-50/60 p-3 text-xs text-slate-700">
+
+              {isThreePlFaultSelected && previewLoading && (
+                <div className="mb-3 rounded-lg border border-amber-200/80 bg-[#FFF8F0] px-3 py-2.5 flex items-center gap-2 text-sm text-slate-500">
+                  <Loader2 className="h-4 w-4 animate-spin text-amber-600" />
+                  Loading rider penalty preview…
+                </div>
+              )}
+
+              {isThreePlFaultSelected && !previewLoading && (
+                <div className="rounded-lg border border-amber-200/80 bg-[#FFF8F0] px-3 py-3">
+                  <div className="flex items-start gap-2.5">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700">
+                      <Shield className="h-3.5 w-3.5" strokeWidth={2.25} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-amber-950 m-0 leading-tight">3PL Fault — Rider penalty</p>
+                      <p className="mt-0.5 text-[11px] text-slate-500 leading-snug m-0">
+                        Penalty will be debited from the selected rider&apos;s wallet when you confirm.
+                      </p>
+                    </div>
+                  </div>
+
+                  {penaltyRiders.length === 0 ? (
+                    <p className="mt-2.5 text-sm text-amber-800">
+                      No riders were assigned to this order. Penalty cannot be applied.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="mt-2.5 flex justify-end">
+                        <div className="w-[50%] min-w-0">
+                          <label className="block text-[11px] font-medium text-slate-500 mb-1 text-right">
+                            Select rider for penalty
+                          </label>
+                          <div className="relative w-full">
+                            <User className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                            <select
+                              value={penaltyRiderId ?? ''}
+                              onChange={(e) => handlePenaltyRiderChange(Number(e.target.value))}
+                              className="w-full appearance-none rounded-md border border-slate-200 bg-white py-2 pl-8 pr-8 text-sm font-medium text-slate-800 shadow-none focus:border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-100"
+                            >
+                              {penaltyRiders.map((r) => (
+                                <option key={r.riderId} value={r.riderId}>
+                                  {r.label}
+                                </option>
+                              ))}
+                            </select>
+                            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                          </div>
+                          <p className="mt-1 text-[10px] text-slate-400 leading-snug text-right">
+                            You may change the rider if you know which rider actually marked the order as picked up.
+                          </p>
+                        </div>
+                      </div>
+
+                      {riderPenaltyPreview?.appliesPenalty ? (
+                        <div className="mt-2.5 overflow-hidden rounded-md border border-amber-100/90 bg-white/70 divide-y divide-slate-100">
+                          <div className="flex items-center justify-between gap-3 px-3 py-2">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-rose-50 text-rose-600">
+                                <IndianRupee className="h-3.5 w-3.5" strokeWidth={2.25} />
+                              </div>
+                              <span className="text-sm text-slate-600">Penalty Amount</span>
+                            </div>
+                            <span className="text-sm font-bold text-red-600 tabular-nums shrink-0">
+                              ₹{riderPenaltyPreview.penaltyAmount.toFixed(2)}
+                            </span>
+                          </div>
+                          {riderPenaltyPreview.scenarioLabel ? (
+                            <div className="flex items-center justify-between gap-3 px-3 py-2">
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-amber-50 text-amber-600">
+                                  <Info className="h-3.5 w-3.5" strokeWidth={2.25} />
+                                </div>
+                                <span className="text-sm text-slate-600">Reason</span>
+                              </div>
+                              <span className="text-xs text-slate-700 text-right max-w-[55%] leading-snug">
+                                {riderPenaltyPreview.scenarioLabel}
+                              </span>
+                            </div>
+                          ) : null}
+                          {riderPenaltyPreview.ledgerTitle ? (
+                            <div className="flex items-center justify-between gap-3 px-3 py-2">
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-sky-50 text-sky-600">
+                                  <FileText className="h-3.5 w-3.5" strokeWidth={2.25} />
+                                </div>
+                                <span className="text-sm text-slate-600">Ledger</span>
+                              </div>
+                              <span className="text-xs text-slate-700 text-right max-w-[55%] leading-snug">
+                                {riderPenaltyPreview.ledgerTitle}
+                              </span>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <p className="mt-2.5 text-sm text-amber-800">
+                          {riderPenaltyPreview?.skippedLabel ?? 'No rider penalty will be applied.'}
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
+              {!isThreePlFaultSelected && enginePreview && !previewLoading && (
+                <div className="mb-4 rounded-xl border border-indigo-100 bg-indigo-50/60 p-4 text-xs text-slate-700">
                   <p className="font-semibold text-indigo-900">Financial Rule Engine preview</p>
-                  <p className="mt-1">
-                    Rule: {String(enginePreview.rule_code ?? '—')} · Status:{' '}
-                    {String(enginePreview.execution_status ?? '—')}
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Shows which configured financial rule would run and the refund amount the engine calculates before you confirm.
                   </p>
-                  {enginePreview.amounts && typeof enginePreview.amounts === 'object' ? (
-                    <p className="mt-1">
-                      Refund: ₹{Number((enginePreview.amounts as Record<string, unknown>).refund ?? 0).toFixed(2)}
+                  {enginePreview.error ? (
+                    <p className="mt-2 text-amber-800">{formatEnginePreviewError(enginePreview.error)}</p>
+                  ) : null}
+                  <p className="mt-2">
+                    Rule:{' '}
+                    <span className="font-medium">{enginePreview.rule_code ?? '—'}</span>
+                    {' · '}
+                    Status:{' '}
+                    <span className="font-medium">
+                      {formatEnginePreviewStatus(enginePreview.execution_status)}
+                    </span>
+                  </p>
+                  {enginePreview.scenario ? (
+                    <p className="mt-1 text-slate-500">
+                      Scenario: {enginePreview.scenario}
+                      {enginePreview.order_milestone ? ` · Stage: ${enginePreview.order_milestone}` : null}
                     </p>
                   ) : null}
-                  {String(enginePreview.execution_status) === 'APPROVAL_REQUIRED' && (
+                  {enginePreview.amounts && typeof enginePreview.amounts.refund === 'number' ? (
+                    <p className="mt-1">
+                      Engine refund: ₹{Number(enginePreview.amounts.refund).toFixed(2)}
+                    </p>
+                  ) : null}
+                  {enginePreview.execution_status === 'APPROVAL_REQUIRED' && (
                     <p className="mt-1 text-amber-800">This refund will require super-admin approval before settlement.</p>
                   )}
                 </div>
               )}
-              <div className="flex justify-end gap-3">
-                <button type="button" onClick={cancelRefund} className="px-6 py-2.5 bg-gray-200 hover:bg-gray-300 text-gray-800 border-none rounded-sm font-medium cursor-pointer transition-all text-sm">
+
+              {isThreePlFaultSelected && !previewLoading && penaltyRiders.length > 0 && (
+                <div className="mt-3 flex items-start gap-2 rounded-md border border-blue-100 bg-blue-50 px-3 py-2">
+                  <Info className="h-3.5 w-3.5 shrink-0 text-blue-600 mt-0.5" strokeWidth={2.25} />
+                  <p className="text-[11px] text-blue-800 leading-snug m-0">
+                    Please review the details above before confirming the refund.
+                  </p>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-3 mt-4">
+                <button
+                  type="button"
+                  onClick={cancelRefund}
+                  className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border-none rounded-lg font-medium cursor-pointer transition-all text-sm"
+                >
                   Cancel
                 </button>
-                <button type="button" onClick={confirmRefund} disabled={isSubmitting} className="px-6 py-2.5 bg-red-600 hover:bg-red-700 text-white border-none rounded-sm font-medium cursor-pointer transition-all text-sm disabled:opacity-60 disabled:cursor-not-allowed">
-                  {isSubmitting ? 'Submitting…' : 'Confirm Refund'}
+                <button
+                  type="button"
+                  onClick={confirmRefund}
+                  disabled={isSubmitting}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white border-none rounded-lg font-medium cursor-pointer transition-all text-sm disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Submitting…
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="h-4 w-4" strokeWidth={2.25} />
+                      Confirm Refund
+                    </>
+                  )}
                 </button>
               </div>
             </div>
@@ -1160,16 +1687,11 @@ export default function ItemsRefundModal({
               </div>
             </div>
 
-            {itemsLoading && refundItems.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-10 text-slate-500 gap-2">
-                <Loader2 className="w-8 h-8 animate-spin text-emerald-600" />
-                <p className="text-sm">Loading order items…</p>
-              </div>
-            ) : itemsError && refundItems.length === 0 ? (
+            {itemsError && refundItems.length === 0 ? (
               <div className="mb-3 px-3 py-2 bg-red-50 border border-red-200 rounded-md text-sm text-red-700">
                 {itemsError}
               </div>
-            ) : refundItems.length === 0 ? (
+            ) : itemsFetchSettled && refundItems.length === 0 ? (
               <div className="mb-3 px-3 py-4 text-center text-sm text-slate-500 border border-dashed border-slate-200 rounded-md">
                 No items found for this order.
               </div>
@@ -1241,21 +1763,24 @@ export default function ItemsRefundModal({
             ) : null}
 
             {pricing ? (
-              <BillBreakdownSwitcher
-                pricing={pricing}
-                billView={billView}
-                onBillViewChange={handleBillViewChange}
-              />
+              <div className="mt-3 flex justify-end">
+                <BillBreakdownSwitcher
+                  pricing={pricing}
+                  billView={billView}
+                  onBillViewChange={handleBillViewChange}
+                />
+              </div>
             ) : null}
 
             {canCreateRefund && (
-              <>
-                <h4 className="mt-4 mb-2 text-sm font-semibold text-slate-800 flex items-center gap-1.5">
+              <div className="mt-4 flex flex-col lg:flex-row gap-4 items-start">
+                <div className="flex-1 min-w-0 w-full">
+                <h4 className="mb-2 text-sm font-semibold text-slate-800 flex items-center gap-1.5">
                   <RotateCcw className="w-4 h-4 text-emerald-600 shrink-0" /> Create refund
                 </h4>
                 <div className="flex items-center gap-2 mb-3 flex-wrap">
                   <label className="text-xs font-medium text-slate-600 whitespace-nowrap">Refund reason</label>
-                  <select value={refundAttribute} onChange={(e) => handleAttributeChange(e.target.value)} disabled={catalogLoading} className="h-8 px-2 border border-slate-200 rounded text-xs text-slate-800 bg-white min-w-[140px] focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer disabled:opacity-60">
+                  <select value={refundAttribute} onChange={(e) => handleAttributeChange(e.target.value)} disabled={catalogLoading || refundType === 'cancel_without_refund'} className="h-8 px-2 border border-slate-200 rounded text-xs text-slate-800 bg-white min-w-[140px] focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer disabled:opacity-60">
                     <option value="">Select Attribute</option>
                     {catalogAttributes.map((attr) => (
                       <option key={attr.code} value={attr.code}>
@@ -1268,6 +1793,7 @@ export default function ItemsRefundModal({
                     onChange={(e) => handleRejectionChange(e.target.value)}
                     disabled={
                       !refundAttribute ||
+                      refundType === 'cancel_without_refund' ||
                       (catalogLoading && attributeRejectionOptions.length === 0)
                     }
                     className={`h-8 px-2 border rounded text-xs bg-white min-w-[160px] focus:outline-none focus:ring-1 focus:ring-emerald-500 ${refundAttribute ? 'border-emerald-500 text-slate-800 cursor-pointer' : 'border-slate-200 text-slate-400 cursor-not-allowed bg-slate-50'}`}
@@ -1292,8 +1818,27 @@ export default function ItemsRefundModal({
                         <input type="radio" name="refundType" value="cancel_without_refund" checked={refundType === 'cancel_without_refund'} onChange={(e) => handleRefundTypeChange(e.target.value)} className="w-3 h-3 text-emerald-600 cursor-pointer" />
                         Cancel without refund
                       </label>
-                      <label className={`flex items-center gap-1.5 border px-2 py-1.5 rounded cursor-pointer bg-white min-w-[140px] hover:bg-emerald-50 text-[11px] ${refundType === 'refund_with_cancellation' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200'}`}>
-                        <input type="radio" name="refundType" value="refund_with_cancellation" checked={refundType === 'refund_with_cancellation'} onChange={(e) => handleRefundTypeChange(e.target.value)} className="w-3 h-3 text-emerald-600 cursor-pointer" />
+                      <label
+                        className={`flex items-center gap-1.5 border px-2 py-1.5 rounded bg-white min-w-[140px] text-[11px] ${
+                          blockRefundWithCancellation
+                            ? 'opacity-50 cursor-not-allowed border-slate-200 bg-slate-50'
+                            : `cursor-pointer hover:bg-emerald-50 ${refundType === 'refund_with_cancellation' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200'}`
+                        }`}
+                        title={
+                          blockRefundWithCancellation
+                            ? 'Order is already cancelled on the progress timeline'
+                            : undefined
+                        }
+                      >
+                        <input
+                          type="radio"
+                          name="refundType"
+                          value="refund_with_cancellation"
+                          checked={refundType === 'refund_with_cancellation'}
+                          disabled={blockRefundWithCancellation}
+                          onChange={(e) => handleRefundTypeChange(e.target.value)}
+                          className="w-3 h-3 text-emerald-600 cursor-pointer disabled:cursor-not-allowed"
+                        />
                         Refund with cancellation
                       </label>
                       <label className={`flex items-center gap-1.5 border px-2 py-1.5 rounded cursor-pointer bg-white min-w-[140px] hover:bg-emerald-50 text-[11px] ${refundType === 'refund_without_cancellation' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200'}`}>
@@ -1362,7 +1907,7 @@ export default function ItemsRefundModal({
                   </div>
                 )}
 
-                {showFault && (
+                {showFault && refundType !== 'cancel_without_refund' && (
                   <div ref={faultRef} className="mb-3">
                     <label className="block text-xs font-medium text-slate-700 mb-1">Fault</label>
                     <div className="flex gap-2 flex-wrap">
@@ -1379,7 +1924,7 @@ export default function ItemsRefundModal({
                   </div>
                 )}
 
-                {showMerchantDebit && (
+                {showMerchantDebit && refundType !== 'cancel_without_refund' && (
                   <div ref={merchantDebitRef} className="mb-4">
                     <label className="block text-xs font-medium text-slate-700 mb-1">Merchant debit</label>
                     <div className="flex gap-2 flex-wrap">
@@ -1394,7 +1939,21 @@ export default function ItemsRefundModal({
                     </div>
                   </div>
                 )}
-              </>
+                </div>
+                {showRefundType && refundType === 'refund_with_cancellation' ? (
+                  <div className="w-full lg:w-[300px] shrink-0 lg:sticky lg:top-20">
+                    <RefundCustomerPreviewPanel
+                      refundType={refundType}
+                      ctcTotal={customerCtcTotal}
+                      refundPercent={customerRefundPercent}
+                      refundAmount={customerRefundAmount}
+                      itemRefundTotal={calculateTotalPercentageRefundAmount()}
+                      onPercentChange={handleCustomerRefundPercentChange}
+                      onAmountChange={handleCustomerRefundAmountChange}
+                    />
+                  </div>
+                ) : null}
+              </div>
             )}
 
             <div className="flex justify-end gap-2 mt-4 pt-3 border-t border-slate-200">

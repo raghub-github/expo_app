@@ -7,7 +7,8 @@ export type RiderOnboardingStepKey =
   | "aadhaar_name"
   | "pan_selfie"
   | "dl_rc"
-  | "rental_ev";
+  | "rental_ev"
+  | "payment";
 
 const STEP_ORDER: RiderOnboardingStepKey[] = [
   "method_selection",
@@ -64,6 +65,21 @@ function vehicleStepComplete(
   if (flow === "rental_ev") return rentalEvComplete(docs);
   if (flow === "dl_rc") return dlRcComplete(docs);
   return dlRcComplete(docs) || rentalEvComplete(docs);
+}
+
+/** Riders past MOBILE_VERIFIED (or KYC already approved) must not be routed back to doc upload. */
+function resolveNextStepForEstablishedRider(
+  rider: { onboardingStage: string; kycStatus: string },
+  completed: RiderOnboardingStepKey[]
+): RiderOnboardingStepKey | null {
+  if (rider.kycStatus === "APPROVED" || rider.kycStatus === "REVIEW") {
+    return "payment";
+  }
+  const stage = rider.onboardingStage;
+  if (stage === "KYC" || stage === "PAYMENT" || stage === "APPROVAL" || stage === "ACTIVE") {
+    return "payment";
+  }
+  return null;
 }
 
 export async function getRiderOnboardingProgress(riderId: number): Promise<{
@@ -129,6 +145,12 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
     completed.push("rental_ev");
   }
 
+  const rider = riderRows[0]!;
+  const establishedNext = resolveNextStepForEstablishedRider(rider, completed);
+  if (establishedNext) {
+    return { nextStep: establishedNext, completedSteps: completed };
+  }
+
   let nextStep: RiderOnboardingStepKey = "method_selection";
 
   if (!aadhaarComplete(docs, filesByDocId)) {
@@ -142,11 +164,54 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
       nextStep = "dl_rc";
     }
   } else {
-    // Vehicle onboarding finished — client routes to payment (no further doc steps).
-    nextStep = "rental_ev";
+    // All doc steps done — client opens payment screen (distinct from rental_ev upload step).
+    nextStep = "payment";
   }
 
   return { nextStep, completedSteps: completed };
+}
+
+/** True when KYC + vehicle steps are saved and the rider may pay the onboarding fee. */
+export async function isOnboardingDocumentsCompleteForPayment(riderId: number): Promise<boolean> {
+  const db = getDb();
+  const [rider] = await db.select().from(riders).where(eq(riders.id, riderId)).limit(1);
+  if (!rider) return false;
+
+  if (rider.onboardingStage !== "MOBILE_VERIFIED") return true;
+  if (rider.kycStatus === "APPROVED" || rider.kycStatus === "REVIEW") return true;
+
+  const progress = await getRiderOnboardingProgress(riderId);
+  if (progress.nextStep !== "payment") return false;
+  return (
+    progress.completedSteps.includes("aadhaar_name") && progress.completedSteps.includes("pan_selfie")
+  );
+}
+
+export async function ensureRiderOnboardingStageForPayment(
+  riderId: number,
+): Promise<{ ready: boolean; message?: string }> {
+  const db = getDb();
+  const [rider] = await db.select().from(riders).where(eq(riders.id, riderId)).limit(1);
+  if (!rider) return { ready: false, message: "Rider not found" };
+
+  if (rider.onboardingStage !== "MOBILE_VERIFIED") {
+    return { ready: true };
+  }
+
+  const docsReady = await isOnboardingDocumentsCompleteForPayment(riderId);
+  if (!docsReady) {
+    return {
+      ready: false,
+      message: "Please complete document submission first",
+    };
+  }
+
+  await db
+    .update(riders)
+    .set({ onboardingStage: "KYC", updatedAt: new Date() })
+    .where(eq(riders.id, riderId));
+
+  return { ready: true };
 }
 
 export function pickResumeOnboardingStep(

@@ -20,7 +20,13 @@ export function makeQueryClient() {
         staleTime: STALE_TIME_MS,
         gcTime: GC_TIME_MS,
         refetchOnWindowFocus: true,
-        retry: 1,
+        retry: (failureCount, error) => {
+          if (failureCount >= 1) return false;
+          if (error instanceof Error && /network error|failed to fetch/i.test(error.message)) {
+            return false;
+          }
+          return true;
+        },
         structuralSharing: true,
       },
       mutations: {

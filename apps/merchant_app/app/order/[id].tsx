@@ -33,11 +33,12 @@ import { OrderItemDetails } from "@/components/order/OrderItemDetails";
 import { OrderBillDetails } from "@/components/order/OrderBillDetails";
 import { OrderDetailCustomerCard } from "@/components/order/OrderDetailCustomerCard";
 import { OrderDetailRiderCard } from "@/components/order/OrderDetailRiderCard";
+import { OrderDetailSkeleton } from "@/components/order/OrderDetailSkeleton";
 import { OrderDetailOtpRow } from "@/components/order/OrderDetailOtpRow";
 import { FormattedOrderId } from "@/components/order/FormattedOrderId";
 import { fetchOrderEta, minutesUntil, prepDeadlineIso, type OrderEtaResponse } from "@/services/etaApi";
 import { apiStatusToStage, type OrderStage } from "@/hooks/useOrders";
-import { OrderDetailSkeleton } from "@/components/order/OrderDetailSkeleton";
+import { apiFoodOrderToRiderLog } from "@/lib/orderAssignedRider";
 import {
   GatiMitraMerchant,
   H_PADDING,
@@ -212,6 +213,11 @@ export default function OrderDetailScreen() {
 
   const prepByIso = prepDeadlineIso(eta);
   const prepMinsLeft = minutesUntil(prepByIso);
+  const displayRider = useMemo(
+    () => activeRider ?? (order ? apiFoodOrderToRiderLog(order) : null),
+    [activeRider, order]
+  );
+  const displayRiderReachedAt = riderReachedAt ?? order?.rider_reached_at ?? null;
 
   const runAction = async (nextApiStatus: string) => {
     if (!token || !storeId || ordersFoodId == null || !order) return;
@@ -371,9 +377,9 @@ export default function OrderDetailScreen() {
 
             <View style={{ marginHorizontal: H_PADDING }}>
               <OrderDetailRiderCard
-                rider={activeRider}
+                rider={displayRider}
                 deliveryType={order.delivery_type}
-                riderReachedAt={riderReachedAt}
+                riderReachedAt={displayRiderReachedAt}
               />
             </View>
 
@@ -399,7 +405,7 @@ export default function OrderDetailScreen() {
                 order={apiFoodOrderToTimelineOrder(order)}
                 timelineEntries={timelineEntries}
                 actions={actions}
-                riderReachedAt={riderReachedAt}
+                riderReachedAt={displayRiderReachedAt}
               />
             </View>
 

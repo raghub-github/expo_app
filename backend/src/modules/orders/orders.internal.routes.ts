@@ -183,4 +183,56 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
       return reply.code(500).send({ ok: false, error: "notify_failed" });
     }
   });
+
+  app.post("/eta/live-tick", async (req, reply) => {
+    try {
+      const { runLiveEtaTick } = await import("../../modules/eta/eta.live-tick.js");
+      const limit = Number((req.query as { limit?: string }).limit ?? 200);
+      const result = await runLiveEtaTick(Number.isFinite(limit) ? limit : 200);
+      return reply.send({ ok: true, ...result });
+    } catch (err) {
+      req.log.warn({ err }, "eta live-tick failed");
+      return reply.code(500).send({ ok: false, error: "eta_live_tick_failed" });
+    }
+  });
+
+  app.get("/eta/analytics-summary", async (req, reply) => {
+    try {
+      const days = Number((req.query as { days?: string }).days ?? 30);
+      const { getEtaAnalyticsSummary } = await import("../../modules/eta/eta.analytics.js");
+      const summary = await getEtaAnalyticsSummary(days);
+      return reply.send({ ok: true, summary });
+    } catch (err) {
+      req.log.warn({ err }, "eta analytics-summary failed");
+      return reply.code(500).send({ ok: false, error: "eta_analytics_failed" });
+    }
+  });
+
+  const clearPaymentHoldBody = z.object({
+    orders_core_id: z.number().int().min(1),
+    actor_email: z.string().email().optional(),
+  });
+
+  app.post("/orders/clear-rider-payment-hold", async (req, reply) => {
+    const parsed = clearPaymentHoldBody.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, error: "validation_failed" });
+    }
+    try {
+      const { adminClearRiderPaymentHoldForOrder } = await import(
+        "../../modules/rides/ride-payment.service.js"
+      );
+      const result = await adminClearRiderPaymentHoldForOrder({
+        orderCoreId: parsed.data.orders_core_id,
+        actorEmail: parsed.data.actor_email ?? null,
+      });
+      return reply.send({ ok: true, credited: result.credited });
+    } catch (err) {
+      req.log.warn({ err, body: parsed.data }, "clear-rider-payment-hold failed");
+      return reply.code(400).send({
+        ok: false,
+        error: err instanceof Error ? err.message : "clear_payment_hold_failed",
+      });
+    }
+  });
 }

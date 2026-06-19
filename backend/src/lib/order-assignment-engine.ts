@@ -11,7 +11,6 @@
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { getDb, getSql } from "../db/client.js";
 import {
-  blacklistHistory,
   dutyLogs,
   ordersCore,
   ordersFood,
@@ -21,11 +20,22 @@ import {
   riders,
 } from "../db/schema.js";
 import { fetchEffectiveDispatchRadiusMeters } from "./order-dispatch-settings.js";
+import { expandVehicleTypeCodesForCatalogMatch, mapVehicleTypeFromDb } from "./rider-vehicle-db-map.js";
+import {
+  deriveVehicleDispatchServicesFromProfile,
+  filterDispatchServicesForRiderProfile,
+} from "./rider-dispatch-service-rules.js";
 import { fetchFoodDispatchableStatusesForFlow } from "./food-rider-accept-flow.js";
 import {
   assertRiderCanAcceptDispatchOffer,
   canRiderReceiveDispatchOffer,
 } from "./rider-assignment-control.js";
+import {
+  filterUnrestrictedDispatchServices,
+  getRiderDispatchBlockSnapshot,
+  isDispatchServiceBlocked,
+  type RiderDispatchService,
+} from "./rider-account-restrictions.js";
 
 /** WGS-84 mean Earth radius in meters (ITRF-grade haversine). */
 const EARTH_RADIUS_METERS = 6_371_008.8;
@@ -109,6 +119,8 @@ export type DispatchOrderTarget = {
   pickup: DispatchPickupPoint;
   waveNumber: number;
   effectiveRadiusMeters: number;
+  /** Person ride: catalog vehicle_type codes that may accept this order (e.g. bike, two_wheeler). */
+  personRideVehicleTypes?: string[];
 };
 
 export type ActiveDispatchSessionRow = {
@@ -236,27 +248,159 @@ export async function fetchAllPickupRadiiMeters(): Promise<Record<DispatchServic
 
 async function getActiveVehicleServiceTypes(riderId: number): Promise<DispatchServiceType[]> {
   const db = getDb();
-  const [row] = await db
+  const rows = await db
     .select({ serviceTypes: riderVehicles.serviceTypes })
     .from(riderVehicles)
     .where(
       and(
         eq(riderVehicles.riderId, riderId),
         eq(riderVehicles.isActive, true),
-        isNull(riderVehicles.deletedAt)
+        eq(riderVehicles.verified, true),
+        isNull(riderVehicles.deletedAt),
+        sql`COALESCE(${riderVehicles.vehicleActiveStatus}, 'active') = 'active'`
       )
-    )
-    .limit(1);
+    );
 
-  return normalizeDispatchServices(row?.serviceTypes);
+  const merged: DispatchServiceType[] = [];
+  for (const row of rows) {
+    for (const service of normalizeDispatchServices(row.serviceTypes)) {
+      if (!merged.includes(service)) merged.push(service);
+    }
+  }
+  if (merged.length > 0) return merged;
+
+  const profile = await getRiderActiveVehicleProfile(riderId);
+  return deriveVehicleDispatchServicesFromProfile(profile);
+}
+
+/** Active verified vehicle_type codes for dispatch matching (person ride catalog). */
+export async function getRiderActiveVehicleTypeCodes(riderId: number): Promise<string[]> {
+  const db = getDb();
+  const rows = await db
+    .select({ vehicleType: riderVehicles.vehicleType })
+    .from(riderVehicles)
+    .where(
+      and(
+        eq(riderVehicles.riderId, riderId),
+        eq(riderVehicles.isActive, true),
+        eq(riderVehicles.verified, true),
+        isNull(riderVehicles.deletedAt),
+        sql`COALESCE(${riderVehicles.vehicleActiveStatus}, 'active') = 'active'`
+      )
+    );
+
+  const types = new Set<string>();
+  for (const row of rows) {
+    const vt = String(row.vehicleType ?? "").trim();
+    if (vt) types.add(vt);
+  }
+  return [...types];
+}
+
+/** Active verified vehicle profile for dispatch service rules (e.g. food vs 3/4-wheeler). */
+export async function getRiderActiveVehicleProfile(riderId: number): Promise<{
+  vehicleTypes: string[];
+  vehicleCategories: string[];
+}> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      vehicleType: riderVehicles.vehicleType,
+      vehicleCategory: riderVehicles.vehicleCategory,
+    })
+    .from(riderVehicles)
+    .where(
+      and(
+        eq(riderVehicles.riderId, riderId),
+        eq(riderVehicles.isActive, true),
+        eq(riderVehicles.verified, true),
+        isNull(riderVehicles.deletedAt),
+        sql`COALESCE(${riderVehicles.vehicleActiveStatus}, 'active') = 'active'`
+      )
+    );
+
+  const vehicleTypes = new Set<string>();
+  const vehicleCategories = new Set<string>();
+  for (const row of rows) {
+    const vt = mapVehicleTypeFromDb(String(row.vehicleType ?? "")).trim().toLowerCase();
+    if (vt) vehicleTypes.add(vt);
+    const vc = String(row.vehicleCategory ?? "").trim().toLowerCase();
+    if (vc) vehicleCategories.add(vc);
+  }
+  return {
+    vehicleTypes: [...vehicleTypes],
+    vehicleCategories: [...vehicleCategories],
+  };
+}
+
+function riderMatchesPersonRideVehicleTypes(
+  riderVehicleTypes: string[],
+  requiredTypes: string[] | undefined
+): boolean {
+  if (!requiredTypes?.length) return true;
+
+  const allowed = new Set<string>();
+  for (const required of requiredTypes) {
+    for (const code of expandVehicleTypeCodesForCatalogMatch(required)) {
+      allowed.add(code);
+    }
+  }
+  if (allowed.size === 0) return true;
+
+  const riderExpanded = new Set<string>();
+  for (const riderType of riderVehicleTypes) {
+    for (const code of expandVehicleTypeCodesForCatalogMatch(riderType)) {
+      riderExpanded.add(code);
+    }
+  }
+
+  return [...riderExpanded].some((code) => allowed.has(code));
 }
 
 function intersectServices(
   dutyServices: DispatchServiceType[],
   vehicleServices: DispatchServiceType[]
 ): DispatchServiceType[] {
+  if (dutyServices.length === 0 || vehicleServices.length === 0) return [];
   const vehicleSet = new Set(vehicleServices);
   return dutyServices.filter((s) => vehicleSet.has(s));
+}
+
+/** duty ON selection ∩ vehicle capabilities ∩ profile rules ∩ account restrictions. */
+export async function computeRiderEligibleDispatchServices(
+  riderId: number
+): Promise<DispatchServiceType[] | null> {
+  const db = getDb();
+
+  const [latestDuty] = await db
+    .select({ status: dutyLogs.status, serviceTypes: dutyLogs.serviceTypes })
+    .from(dutyLogs)
+    .where(eq(dutyLogs.riderId, riderId))
+    .orderBy(desc(dutyLogs.timestamp))
+    .limit(1);
+
+  if (latestDuty?.status !== "ON") return null;
+
+  const dutyServices = normalizeDispatchServices(latestDuty.serviceTypes);
+  if (dutyServices.length === 0) return null;
+
+  const vehicleProfile = await getRiderActiveVehicleProfile(riderId);
+  const vehicleServices = await getActiveVehicleServiceTypes(riderId);
+  if (vehicleServices.length === 0) return null;
+
+  const intersected = intersectServices(dutyServices, vehicleServices);
+  const profileFiltered = filterDispatchServicesForRiderProfile(intersected, vehicleProfile);
+  const restrictionSnapshot = await getRiderDispatchBlockSnapshot(riderId);
+  const unrestricted = filterUnrestrictedDispatchServices(profileFiltered, restrictionSnapshot);
+
+  return unrestricted.length > 0 ? unrestricted : null;
+}
+
+export function riderHasEligibleDispatchService(
+  eligibleServices: DispatchServiceType[],
+  serviceType: DispatchServiceType
+): boolean {
+  return eligibleServices.includes(serviceType);
 }
 
 export async function loadRiderGps(
@@ -323,36 +467,9 @@ async function isRiderBlacklistedForService(
   riderId: number,
   serviceType: DispatchServiceType
 ): Promise<boolean> {
-  const db = getDb();
-  const entries = await db
-    .select({
-      serviceType: blacklistHistory.serviceType,
-      isPermanent: blacklistHistory.isPermanent,
-      expiresAt: blacklistHistory.expiresAt,
-    })
-    .from(blacklistHistory)
-    .where(and(eq(blacklistHistory.riderId, riderId), eq(blacklistHistory.banned, true)))
-    .orderBy(desc(blacklistHistory.createdAt));
-
-  const norm = (s: string) => {
-    const x = (s || "").toLowerCase();
-    return x === "ride" ? "person_ride" : x;
-  };
-  const isActiveBan = (entry: { isPermanent: boolean; expiresAt: Date | null }) =>
-    entry.isPermanent || !entry.expiresAt || new Date(entry.expiresAt) > new Date();
-
-  const getEffectiveForSlot = (slots: string[]) => {
-    const candidate = entries.find((e) =>
-      slots.includes(norm(String(e.serviceType ?? "all")))
-    );
-    if (!candidate) return null;
-    return isActiveBan(candidate) ? candidate : null;
-  };
-
-  if (getEffectiveForSlot(["all"]) != null) return true;
-  if (serviceType === "food") return getEffectiveForSlot(["food", "all"]) != null;
-  if (serviceType === "parcel") return getEffectiveForSlot(["parcel", "all"]) != null;
-  return getEffectiveForSlot(["person_ride", "all"]) != null;
+  const snapshot = await getRiderDispatchBlockSnapshot(riderId);
+  if (!snapshot.accountRestricted) return false;
+  return isDispatchServiceBlocked(serviceType as RiderDispatchService, snapshot);
 }
 
 /** Fresh DB read — active dispatch session for an order (if any). */
@@ -423,13 +540,18 @@ export async function resolveOrderDispatchRadiusMeters(
   return fetchEffectiveDispatchRadiusMeters(serviceType, wave);
 }
 
-async function loadOnDutyRiderIds(): Promise<number[]> {
+async function loadOnDutyRiderIds(
+  requiredService?: DispatchServiceType
+): Promise<number[]> {
   const sqlClient = getSql();
+  const serviceJson =
+    requiredService != null ? JSON.stringify([requiredService]) : null;
   const rows = (await sqlClient`
     WITH latest_duty AS (
       SELECT DISTINCT ON (dl.rider_id)
         dl.rider_id,
-        dl.status
+        dl.status,
+        dl.service_types
       FROM duty_logs dl
       ORDER BY dl.rider_id, dl.timestamp DESC
     )
@@ -439,6 +561,11 @@ async function loadOnDutyRiderIds(): Promise<number[]> {
     WHERE r.status = 'ACTIVE'
       AND r.onboarding_stage = 'ACTIVE'
       AND r.deleted_at IS NULL
+      AND jsonb_array_length(COALESCE(ld.service_types, '[]'::jsonb)) > 0
+      AND (
+        ${serviceJson}::text IS NULL
+        OR COALESCE(ld.service_types, '[]'::jsonb) @> ${serviceJson}::jsonb
+      )
   `) as Array<{ rider_id: number }>;
 
   return (rows ?? [])
@@ -454,12 +581,30 @@ export async function evaluateRiderDispatchEligibility(
   riderId: number,
   target: Pick<
     DispatchOrderTarget,
-    "serviceType" | "pickup" | "effectiveRadiusMeters" | "orderCoreId" | "orderId"
+    | "serviceType"
+    | "pickup"
+    | "effectiveRadiusMeters"
+    | "orderCoreId"
+    | "orderId"
+    | "personRideVehicleTypes"
   >
 ): Promise<EligibleDispatchRider | null> {
+  const preEligible = await computeRiderEligibleDispatchServices(riderId);
+  if (!preEligible?.includes(target.serviceType)) return null;
+
+  const { isRiderSubscriptionDispatchBlocked } = await import("./rider-subscription-wallet.js");
+  if (await isRiderSubscriptionDispatchBlocked(riderId)) return null;
+
   const ctx = await resolveRiderAssignmentContext(riderId, { skipAssignmentCheck: true });
   if (!ctx) return null;
   if (!ctx.eligibleServices.includes(target.serviceType)) return null;
+
+  if (target.serviceType === "person_ride") {
+    const riderVehicleTypes = await getRiderActiveVehicleTypeCodes(riderId);
+    if (!riderMatchesPersonRideVehicleTypes(riderVehicleTypes, target.personRideVehicleTypes)) {
+      return null;
+    }
+  }
 
   const assignmentOk = await canRiderReceiveDispatchOffer(riderId, target.serviceType, {
     orderCoreId: target.orderCoreId,
@@ -501,7 +646,10 @@ export async function evaluateRiderDispatchEligibility(
 export async function listEligibleRidersForDispatchOrder(
   target: DispatchOrderTarget
 ): Promise<EligibleDispatchRider[]> {
-  const candidateIds = await loadOnDutyRiderIds();
+  const { isOrderDispatchManualHold } = await import("./order-dispatch-manual-hold.js");
+  if (await isOrderDispatchManualHold(target.orderCoreId)) return [];
+
+  const candidateIds = await loadOnDutyRiderIds(target.serviceType);
   const { fetchExcludedRiderIdsForOrder } = await import("./rider-dispatch-order-exclusion.js");
   const excludedRiderIds = await fetchExcludedRiderIdsForOrder(target.orderCoreId);
   const eligible: EligibleDispatchRider[] = [];
@@ -538,7 +686,9 @@ export async function resolveRiderAssignmentContext(
     .where(eq(riders.id, riderId))
     .limit(1);
 
-  if (!rider || rider.status !== "ACTIVE" || rider.onboardingStage !== "ACTIVE") return null;
+  if (!rider || rider.onboardingStage !== "ACTIVE") return null;
+  if (rider.status === "BLOCKED" || rider.status === "BANNED") return null;
+  if (rider.status !== "ACTIVE") return null;
 
   if (!options?.ignoreActiveOrder && !options?.skipAssignmentCheck) {
     if (options?.serviceTypeForDispatch) {
@@ -549,20 +699,15 @@ export async function resolveRiderAssignmentContext(
     }
   }
 
-  const [latestDuty] = await db
-    .select({ status: dutyLogs.status, serviceTypes: dutyLogs.serviceTypes })
-    .from(dutyLogs)
-    .where(eq(dutyLogs.riderId, riderId))
-    .orderBy(desc(dutyLogs.timestamp))
-    .limit(1);
+  const eligibleServices = await computeRiderEligibleDispatchServices(riderId);
+  if (!eligibleServices || eligibleServices.length === 0) return null;
 
-  if (latestDuty?.status !== "ON") return null;
-
-  const dutyServices = normalizeDispatchServices(latestDuty.serviceTypes);
-  const vehicleServices = await getActiveVehicleServiceTypes(riderId);
-  const eligibleServices = intersectServices(dutyServices, vehicleServices);
-
-  if (eligibleServices.length === 0) return null;
+  if (
+    options?.serviceTypeForDispatch &&
+    !riderHasEligibleDispatchService(eligibleServices, options.serviceTypeForDispatch)
+  ) {
+    return null;
+  }
 
   const gps = await loadRiderGps(riderId);
   if (!gps) return null;
@@ -589,7 +734,7 @@ export async function assertRiderWithinServicePickupRadius(
   }
 
   if (await isRiderBlacklistedForService(ctx.riderId, serviceType)) {
-    throw new RiderDispatchIneligibleError("You are suspended from this service", 403);
+    throw new RiderDispatchIneligibleError("Your account is restricted for this service", 403);
   }
 
   const configuredRadiusMeters =
@@ -691,6 +836,7 @@ async function fetchFoodPoolRows(): Promise<DispatchPoolOrderRow[]> {
       and(
         eq(ordersCore.orderType, "food"),
         isNull(ordersCore.riderId),
+        eq(ordersCore.dispatchManualHold, false),
         inArray(ordersFood.orderStatus, dispatchableStatuses),
         sql`${ordersFood.cancelledAt} IS NULL`
       )
@@ -791,8 +937,10 @@ export async function listDispatchPoolOrdersForRider(
   );
 
   const withinRadius: DispatchPoolOrderRow[] = [];
+  const { isOrderDispatchManualHold } = await import("./order-dispatch-manual-hold.js");
   for (const order of candidates) {
     if (excludedCoreIds.has(order.orderCoreId)) continue;
+    if (await isOrderDispatchManualHold(order.orderCoreId)) continue;
     if (await isRiderBlacklistedForService(riderId, order.serviceType)) continue;
 
     const ctx = baseCtx;
@@ -861,6 +1009,14 @@ export async function validateRiderAcceptance(
   await assertRiderWithinServicePickupRadius(ctx, serviceType, pickup, radiusMeters);
 
   if (options?.orderCoreId != null) {
+    const { isOrderDispatchManualHold } = await import("./order-dispatch-manual-hold.js");
+    if (await isOrderDispatchManualHold(options.orderCoreId)) {
+      throw new RiderDispatchIneligibleError(
+        "This order is waiting for admin assignment",
+        409
+      );
+    }
+
     const { isRiderExcludedFromOrderDispatch } = await import("./rider-dispatch-order-exclusion.js");
     const excluded = await isRiderExcludedFromOrderDispatch(riderId, options.orderCoreId);
     if (excluded) {

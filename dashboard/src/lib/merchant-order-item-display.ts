@@ -201,7 +201,7 @@ export function resolveMerchantCtm(order: {
   pricing?: { total?: number | null; packaging?: number; discount?: number } | null;
   total_ctm?: number | string | null;
   food_items_total_value?: number | string | null;
-  items?: unknown[] | null;
+  items?: Array<Partial<NormalizedOrderLineItem> & { name?: string }> | null;
 }): number {
   const itemsTyped = (order.items ?? []) as NormalizedOrderLineItem[];
   const fromPricing = Number(order.pricing?.total);

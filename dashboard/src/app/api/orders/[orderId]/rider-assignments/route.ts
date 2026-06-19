@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { listOrderRiderAssignmentsForOrder } from "@/lib/db/operations/order-rider-assignments";
+import { listDistinctOrderRidersForRecon } from "@/lib/db/operations/order-rider-assignments";
 
 export const runtime = "nodejs";
 
@@ -52,11 +52,19 @@ export async function GET(
       );
     }
 
-    const assignments = await listOrderRiderAssignmentsForOrder(orderId);
+    const riders = await listDistinctOrderRidersForRecon(orderId);
 
     return NextResponse.json({
       success: true,
-      data: assignments,
+      data: riders.map((rider) => ({
+        id: rider.id,
+        riderId: rider.riderId,
+        riderName: rider.riderName,
+        riderMobile: rider.riderMobile,
+        deliveryProvider: rider.deliveryProvider,
+        assignmentStatus: "historical",
+        assignedAt: null,
+      })),
     });
   } catch (error) {
     // eslint-disable-next-line no-console

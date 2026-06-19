@@ -12,14 +12,16 @@ const PAD = 20;
 export default function PaymentConfirmingScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { pendingId: pendingIdParam, merchantName: merchantNameParam, message: messageParam } = useLocalSearchParams<{
+  const { pendingId: pendingIdParam, merchantName: merchantNameParam, message: messageParam, deliveryEtaLabel: deliveryEtaLabelParam } = useLocalSearchParams<{
     pendingId?: string | string[];
     merchantName?: string | string[];
     message?: string | string[];
+    deliveryEtaLabel?: string | string[];
   }>();
   const pendingId = Array.isArray(pendingIdParam) ? pendingIdParam[0] : pendingIdParam;
   const merchantName = Array.isArray(merchantNameParam) ? merchantNameParam[0] : merchantNameParam;
   const initialMessage = Array.isArray(messageParam) ? messageParam[0] : messageParam;
+  const deliveryEtaLabel = Array.isArray(deliveryEtaLabelParam) ? deliveryEtaLabelParam[0] : deliveryEtaLabelParam;
 
   const statusQuery = useQuery({
     queryKey: ["pending-order-status", pendingId],
@@ -38,6 +40,7 @@ export default function PaymentConfirmingScreen() {
         params: {
           orderId: data.orderId,
           ...(merchantName ? { merchantName } : {}),
+          ...(deliveryEtaLabel ? { deliveryEtaLabel } : {}),
         },
       });
       return;
@@ -55,7 +58,7 @@ export default function PaymentConfirmingScreen() {
         },
       });
     }
-  }, [merchantName, router, statusQuery.data]);
+  }, [deliveryEtaLabel, merchantName, router, statusQuery.data]);
 
   return (
     <ScrollView

@@ -26,7 +26,7 @@ import { useRouter } from "expo-router";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { setStoreBookmark } from "@/services/merchant.service";
 import { useStoreBookmarkMutations } from "@/hooks/useStoreBookmarks";
-import { useStoreStatusStore } from "@/store/storeStatusStore";
+import { useMerchantLiveStatus } from "@/hooks/useMerchantLiveStatus";
 import { StoreBannerCarousel, LIST_CARD_CAROUSEL_HOLD_MS, LIST_CARD_CAROUSEL_SLIDE_MS } from "@/components/StoreBannerCarousel";
 import { NearFastDeliveryMeta } from "@/components/NearFastDeliveryMeta";
 import { MerchantRatingBadge } from "@/components/home/MerchantRatingBadge";
@@ -81,6 +81,7 @@ function StoreOpenStatusBadge({
 
   return (
     <View
+      pointerEvents="none"
       style={[
         styles.openClosedTag,
         isClosingSoon
@@ -117,17 +118,8 @@ function GMRestaurantCardV2Inner({
   const scale = useSharedValue(1);
   const blockNavRef = useRef(false);
 
-  const liveStatusFromStore = useStoreStatusStore((s) => s.getStatus(merchant.id));
-  const rawApi = (merchant.liveStatus ?? "").toString().trim().toUpperCase();
-  const apiStatus: "OPEN" | "CLOSED" | null =
-    rawApi === "OPEN" ? "OPEN" : rawApi === "CLOSED" ? "CLOSED" : null;
-  const liveStatus = liveStatusFromStore ?? apiStatus ?? "CLOSED";
+  const liveStatus = useMerchantLiveStatus(merchant);
   const isOpen = liveStatus === "OPEN";
-  useEffect(() => {
-    if (apiStatus) {
-      useStoreStatusStore.getState().setStatusFromApi(merchant.id, apiStatus === "OPEN", apiStatus);
-    }
-  }, [merchant.id, apiStatus]);
 
   useEffect(() => {
     setSaved(initialSaved);
@@ -240,13 +232,11 @@ function GMRestaurantCardV2Inner({
               </Text>
             </View>
           )}
-          <View pointerEvents="none">
-            <StoreOpenStatusBadge
-              isOpen={isOpen}
-              nextOpenAt={merchant.nextOpenAt}
-              nextCloseAt={merchant.nextCloseAt}
-            />
-          </View>
+          <StoreOpenStatusBadge
+            isOpen={isOpen}
+            nextOpenAt={merchant.nextOpenAt}
+            nextCloseAt={merchant.nextCloseAt}
+          />
         </View>
 
         <View style={[styles.content, !isOpen && styles.contentClosed]} pointerEvents="box-none">
@@ -373,6 +363,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 10,
     maxWidth: "75%",
+    zIndex: 4,
   },
   openClosedTagGreen: {
     backgroundColor: "#16A34A",

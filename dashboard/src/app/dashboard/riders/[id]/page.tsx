@@ -1,12 +1,13 @@
 "use client";
 
 import { useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { useGetRiderDetailsQuery } from '@/store/api/riderApi';
 import { useDashboardAccessQuery } from '@/hooks/queries/useDashboardAccessQuery';
 import { usePermissionsQuery } from '@/hooks/queries/usePermissionsQuery';
 import { queryKeys } from '@/lib/queryKeys';
+import { resolveRiderDashboardReturnUrl } from '@/lib/riders/rider-dashboard-navigation';
 import { CheckCircle, ArrowLeft, User, Car, FileText, CreditCard, Receipt, DollarSign, Calendar, MapPin, Phone, Mail, IdCard, Building2, Fuel, Settings, Shield, Clock, AlertCircle } from 'lucide-react';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { ONBOARDING_STAGE_LABELS } from '@/types/rider-dashboard';
@@ -192,8 +193,14 @@ export default function RiderDetailsPage() {
   const accessLoading = (permissionsLoading && !hasCachedPermissions) || (dashboardAccessLoading && !hasCachedDashboardAccess);
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const riderId = parseInt(params.id as string);
+  const returnToParam = searchParams.get("returnTo");
+
+  const handleBackToRiders = () => {
+    router.push(resolveRiderDashboardReturnUrl(returnToParam, riderId));
+  };
 
   const {
     data: riderData,
@@ -292,7 +299,7 @@ export default function RiderDetailsPage() {
     return (
       <div className="space-y-6">
         <button
-          onClick={() => router.push('/dashboard/riders')}
+          onClick={handleBackToRiders}
           className="flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-4"
         >
           <ArrowLeft className="h-4 w-4" />
@@ -371,7 +378,7 @@ export default function RiderDetailsPage() {
       {/* Compact Header - Just back button and verify button */}
       <div className="flex items-center justify-between gap-4">
         <button
-          onClick={() => router.push('/dashboard/riders')}
+          onClick={handleBackToRiders}
           className="flex items-center gap-2 text-gray-600 hover:text-gray-900 transition-colors py-2 px-3 rounded-lg hover:bg-gray-100 -ml-1"
           aria-label="Back to Riders"
         >

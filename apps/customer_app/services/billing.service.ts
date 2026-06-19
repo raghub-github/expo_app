@@ -35,6 +35,23 @@ export type GstComponentLine = {
   gst: number;
 };
 
+export type DeliverySlabQuote = {
+  distanceKm?: number;
+  baseFareApplied?: number;
+  perKmRate?: number;
+  minCharge?: number | null;
+  maxKm?: number | null;
+  includedKm?: number;
+  segments?: Array<{
+    slabId?: number;
+    minKm?: number;
+    maxKm?: number | null;
+    segmentKm?: number;
+    perKmRate?: number;
+    segmentAmount?: number;
+  }>;
+};
+
 export type CalculateBillResponse = {
   /** Route distance (km) used for delivery pricing; aligns with store→drop routing on server. */
   distanceKm: number | null;
@@ -52,6 +69,12 @@ export type CalculateBillResponse = {
   serviceRadiusKm?: number | null;
   /** Reason when `serviceable=false`, for UI copy. */
   unserviceableReason?: "out_of_range" | "store_inactive" | null;
+  /** slab_geo | fallback_per_km | no_slab_configured | no_geo_match | slab_invalid */
+  deliveryPricingEngine?: string | null;
+  /** Geo slab quote from `delivery_rate_slabs` for this drop location. */
+  deliverySlabQuote?: DeliverySlabQuote | null;
+  /** Human-readable slab formula, e.g. "₹25 for first 3 km, then ₹6 per km". */
+  deliveryFeeExplainSubtext?: string | null;
   itemTotal: number;
   addonTotal: number;
   discountTotal: number;
@@ -61,6 +84,8 @@ export type CalculateBillResponse = {
    * When `deliveryType` is self_pickup, `deliveryFee` is 0 but this shows what would have applied (for UI strikethrough).
    */
   deliveryFeeQuotedInr?: number | null;
+  /** Delivery fee waived by subscription free-delivery benefit (for strikethrough UI). */
+  deliveryFeeWaivedInr?: number | null;
   platformFee: number;
   packagingFee: number;
   surgeFee: number;
@@ -129,8 +154,10 @@ export type CalculateBillPayload = {
   serviceType?: "FOOD" | "PARCEL" | "RIDE" | "ALL";
   cityName?: string | null;
   userSegment?: "NEW" | "EXISTING" | "ALL";
-  /** Opt-in platform subscription add-on (matches backend SUBSCRIPTION pricing rules). */
+  /** Opt-in platform subscription add-on (DB-driven plan from Super Admin). */
   subscriptionOptIn?: boolean;
+  subscriptionPlanId?: number;
+  subscriptionBillingCycle?: "weekly" | "monthly" | "yearly";
   /** 'delivery' (default) or 'self_pickup'. Self-pickup zeroes the delivery fee in billing. */
   deliveryType?: "delivery" | "self_pickup";
   selectedPlatformOfferId?: number | null;
@@ -149,10 +176,23 @@ export type CheckoutOfferMerchantRow = {
 
 export type CheckoutOffersResponse = {
   ok: true;
-  coupons: { code: string; discountType: string; description: string }[];
-  merchantOffers: CheckoutOfferMerchantRow[];
+  coupons: {
+    code: string;
+    discountType: string;
+    description: string;
+    estimatedSavingsInr?: number | null;
+  }[];
+  merchantOffers: Array<
+    CheckoutOfferMerchantRow & { estimatedSavingsInr?: number | null }
+  >;
   merchantOffersIneligible?: Array<CheckoutOfferMerchantRow & { reason: string; lockReason: string }>;
-  platformOffers: { id: number; name: string | null; offerKind: string; summary: string }[];
+  platformOffers: {
+    id: number;
+    name: string | null;
+    offerKind: string;
+    summary: string;
+    estimatedSavingsInr?: number | null;
+  }[];
   /**
    * Offers the server filtered out for this cart. We render them disabled with
    * the rejection reason so the customer can see what's available but locked.

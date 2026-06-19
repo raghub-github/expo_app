@@ -12,17 +12,61 @@ export type ServerOnboardingStep =
   | "aadhaar_name"
   | "pan_selfie"
   | "dl_rc"
-  | "rental_ev";
+  | "rental_ev"
+  | "payment";
 
-const STEP_ORDER: (OnboardingStep | ServerOnboardingStep)[] = [
+const DOC_STEP_ORDER: (OnboardingStep | ServerOnboardingStep)[] = [
   "aadhaar_name",
   "pan_selfie",
   "dl_rc",
   "rental_ev",
 ];
 
-function stepIndex(step: string): number {
-  return STEP_ORDER.indexOf(step as OnboardingStep);
+function docStepIndex(step: string): number {
+  return DOC_STEP_ORDER.indexOf(step as OnboardingStep);
+}
+
+/** Legacy backend used rental_ev as the post-vehicle sentinel; completedSteps disambiguates. */
+export function isVehicleOnboardingComplete(
+  serverStep?: ServerOnboardingStep | null,
+  completedSteps?: string[] | null,
+  vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment"
+): boolean {
+  if (serverStep === "payment") return true;
+  if (!completedSteps?.length) return false;
+
+  if (vehicleOnboardingFlow === "rental_ev") {
+    return completedSteps.includes("rental_ev");
+  }
+  if (vehicleOnboardingFlow === "payment") {
+    return (
+      completedSteps.includes("dl_rc") &&
+      completedSteps.includes("rental_ev")
+    );
+  }
+  return completedSteps.includes("dl_rc");
+}
+
+export function resolveOnboardingRouteFromServer(
+  serverStep?: ServerOnboardingStep | null,
+  options?: {
+    completedOnboardingSteps?: string[] | null;
+    vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment";
+  }
+): `/(onboarding)/${string}` | null {
+  if (!serverStep || serverStep === "method_selection") return null;
+  if (serverStep === "payment") return "/(onboarding)/payment";
+  if (
+    serverStep === "rental_ev" &&
+    isVehicleOnboardingComplete(
+      serverStep,
+      options?.completedOnboardingSteps,
+      options?.vehicleOnboardingFlow
+    )
+  ) {
+    return "/(onboarding)/payment";
+  }
+  return onboardingStepToRoute(serverStep);
 }
 
 /** Prefer server progress when rider already completed earlier steps in DB. */
@@ -30,13 +74,14 @@ export function pickResumeOnboardingStep(
   localStep?: OnboardingStep,
   serverStep?: ServerOnboardingStep | null
 ): OnboardingStep | ServerOnboardingStep {
+  if (serverStep === "payment") return "payment";
   if (!serverStep || serverStep === "method_selection") {
     return localStep ?? "aadhaar_name";
   }
   if (!localStep) return serverStep;
 
-  const localIdx = stepIndex(localStep);
-  const serverIdx = stepIndex(serverStep);
+  const localIdx = docStepIndex(localStep);
+  const serverIdx = docStepIndex(serverStep);
   if (localIdx < 0) return serverStep;
   if (serverIdx < 0) return localStep;
   return serverIdx > localIdx ? serverStep : localStep;
@@ -44,6 +89,24 @@ export function pickResumeOnboardingStep(
 
 export function canAccessHome(status?: string | null, accountStatus?: string | null): boolean {
   return status === "approved" || accountStatus === "ACTIVE";
+}
+
+/** Verified / post-KYC riders must not be sent back to document upload screens. */
+export function resolveEstablishedRiderHref(
+  onboardingStatus?: string | null,
+  accountStatus?: string | null,
+  approvalStatus?: string | null,
+): `/(tabs)/orders` | `/(onboarding)/${string}` | null {
+  if (canAccessHome(onboardingStatus, accountStatus)) {
+    return "/(tabs)/orders";
+  }
+  if (onboardingStatus === "pending_approval" || onboardingStatus === "rejected") {
+    return "/(onboarding)/pending";
+  }
+  if (approvalStatus === "APPROVED" && onboardingStatus === "in_progress") {
+    return "/(onboarding)/payment";
+  }
+  return null;
 }
 
 export function onboardingStepToRoute(
@@ -58,6 +121,8 @@ export function onboardingStepToRoute(
       return "/(onboarding)/dl-rc";
     case "rental_ev":
       return "/(onboarding)/rental-ev";
+    case "payment":
+      return "/(onboarding)/payment";
     default:
       return "/(onboarding)/method-selection";
   }
@@ -71,38 +136,30 @@ export function resolveOnboardingHref(
     vehicleChoice?: string;
     vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment";
     accountStatus?: string | null;
+    completedOnboardingSteps?: string[] | null;
+    approvalStatus?: string | null;
   }
 ): `/(tabs)/orders` | `/(onboarding)/${string}` {
-  if (canAccessHome(status, options?.accountStatus)) {
-    return "/(tabs)/orders";
-  }
+  const establishedHref = resolveEstablishedRiderHref(
+    status,
+    options?.accountStatus,
+    options?.approvalStatus,
+  );
+  if (establishedHref) return establishedHref;
 
   if (status === "pending_approval" || status === "rejected") {
     return "/(onboarding)/pending";
   }
 
-  const resumeStep = pickResumeOnboardingStep(localStep, serverStep);
+  const serverRoute = resolveOnboardingRouteFromServer(serverStep, {
+    completedOnboardingSteps: options?.completedOnboardingSteps,
+    vehicleOnboardingFlow: options?.vehicleOnboardingFlow,
+  });
+  if (serverRoute) return serverRoute;
 
-  const skipToPayment =
-    options?.vehicleOnboardingFlow === "payment" ||
-    options?.vehicleOnboardingFlow === "dl_rc" ||
-    options?.vehicleChoice === "cycle" ||
-    options?.vehicleChoice === "bicycle" ||
-    options?.vehicleChoice === "e_cycle";
-  if (skipToPayment) {
-    const resumeIdx = stepIndex(resumeStep);
-    const dlRcIdx = stepIndex("dl_rc");
-    if (resumeIdx >= dlRcIdx && dlRcIdx >= 0) {
-      return "/(onboarding)/payment";
-    }
+  if (localStep) {
+    return onboardingStepToRoute(localStep);
   }
 
-  if (
-    options?.vehicleOnboardingFlow === "dl_rc" &&
-    (resumeStep === "rental_ev" || stepIndex(resumeStep) >= stepIndex("dl_rc"))
-  ) {
-    return "/(onboarding)/payment";
-  }
-
-  return onboardingStepToRoute(resumeStep);
+  return "/(onboarding)/aadhaar";
 }

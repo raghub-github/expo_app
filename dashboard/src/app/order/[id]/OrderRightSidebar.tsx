@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { STANDARD_REMARKS } from "@/lib/remarks/standardRemarks";
 import { useAuthOptional } from "@/providers/AuthProvider";
+import { syncServerSessionCookies } from "@/lib/auth/sync-server-session";
 import { Bell, ClipboardCheck, MessageCircle, Pencil, UserCircle2, X } from "lucide-react";
 import ItemsRefundModal from "./ItemsRefundModal";
 import type { OrderItemsPayload } from "@/lib/orderItemsPayload";
@@ -20,11 +21,10 @@ import {
 import { useLiveElapsedSeconds } from "@/hooks/useLiveElapsedSeconds";
 import { formatRtoOtpDisplay } from "@/lib/orderOtps";
 import {
-  formatCancelledByType,
+  dashboardRejectionCancellationDisplay,
   formatRejectionAmount,
   hasOrderCancellationInfo,
   isFaultDebitMetadataLine,
-  merchantCancellationDisplay,
   pickPreferredRefundStatus,
   rejectionAmountsMatch,
   rejectionTimesMatch,
@@ -38,6 +38,9 @@ import {
   type SidebarRecon,
   type SidebarRemark,
 } from "@/lib/orders/order-sidebar-activity";
+import {
+  fetchRiderActivityLogCached,
+} from "@/lib/riderActivityLogCache";
 
 interface OrderRightSidebarProps {
   order: {
@@ -116,6 +119,8 @@ interface OrderRightSidebarProps {
   prefetchedOrderItems?: OrderItemsPayload | null;
   /** Warm items cache before opening the modal (hover / click). */
   onPrefetchOrderItems?: () => void;
+  /** Order progress timeline already has a cancellation — block refund+cancel type. */
+  orderCancelledOnTimeline?: boolean;
 }
 
 type Remark = SidebarRemark;
@@ -271,6 +276,35 @@ function assignedRidersFromReconRecords(
       riderName: r.riderName ?? null,
       riderMobile: r.riderMobile ?? null,
       providerName: normalizeProviderName(r.providerName) ?? r.providerName ?? null,
+    };
+    const key = riderOptionDedupeKey(option);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(option);
+  }
+  return out;
+}
+
+function assignedRidersFromActivityLog(
+  logs: Array<{
+    riderId: number | null;
+    riderName: string | null;
+    riderMobile: string | null;
+    provider: string;
+  }>
+): AssignedRiderOption[] {
+  const out: AssignedRiderOption[] = [];
+  const seen = new Set<string>();
+  for (const log of logs) {
+    if (log.riderId == null && !log.riderName?.trim() && !log.riderMobile?.trim()) {
+      continue;
+    }
+    const option: AssignedRiderOption = {
+      id: log.riderId != null ? String(log.riderId) : `log_${seen.size}`,
+      riderId: log.riderId,
+      riderName: log.riderName ?? null,
+      riderMobile: log.riderMobile ?? null,
+      providerName: normalizeProviderName(log.provider) ?? log.provider ?? null,
     };
     const key = riderOptionDedupeKey(option);
     if (seen.has(key)) continue;
@@ -504,25 +538,6 @@ function formatReconDisplayTime(isoOrDate: string | Date): string {
   });
 }
 
-function ReconInlineField({
-  label,
-  children,
-  className = "",
-}: {
-  label: string;
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <div className={`flex min-w-0 items-start gap-1.5 ${className}`}>
-      <span className="shrink-0 pt-px text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-        {label}:
-      </span>
-      <div className="min-w-0 text-[12px] leading-snug text-slate-800">{children}</div>
-    </div>
-  );
-}
-
 type CxNotification = SidebarCxNotification;
 
 function SidebarLatestPreview({
@@ -563,9 +578,11 @@ export default function OrderRightSidebar({
   orderRefunds = [],
   prefetchedOrderItems = null,
   onPrefetchOrderItems,
+  orderCancelledOnTimeline = false,
   onRefundCreated,
 }: OrderRightSidebarProps) {
   const auth = useAuthOptional();
+  const authReady = auth?.authReady ?? false;
   const userEmail = auth?.user?.email ?? null;
   const [remarks, setRemarks] = useState<Remark[]>(initialRemarks ?? []);
   const [remarkType, setRemarkType] = useState<string>("CUSTOMER");
@@ -698,33 +715,15 @@ export default function OrderRightSidebar({
 
     const cancellation = order.cancellationInfo;
     if (hasOrderCancellationInfo(cancellation)) {
-      const { headline, detail } = merchantCancellationDisplay({
-        rejected_reason: cancellation!.rejectedReason,
-        cancelled_by_label: cancellation!.cancelledByLabel,
-      });
-      const reasonText = cancellation!.reasonText?.trim() || null;
-      const reason =
-        headline ||
-        reasonText ||
-        cancellation!.reasonCode?.trim() ||
-        cancellation!.rejectedReason?.trim() ||
-        "Order cancelled";
-      let detailText = detail;
-      if (!detailText && reasonText && reasonText !== reason) {
-        detailText = reasonText;
-      }
-      const source =
-        formatCancelledByType(cancellation!.cancelledByType) ||
-        cancellation!.cancelledByLabel?.trim() ||
-        null;
+      const display = dashboardRejectionCancellationDisplay(cancellation!);
 
       cancellationEntry = {
         id: "cancellation",
         kind: "cancellation",
-        reason,
-        detail: detailText,
-        source,
-        by: cancellation!.cancelledBy?.trim() || null,
+        reason: display.reason,
+        detail: display.detail,
+        source: display.canceledBy,
+        by: display.rejectedBy,
         at: formatRejectionAt(cancellation!.cancelledAtIso),
         atIso: cancellation!.cancelledAtIso ?? null,
         rider: null,
@@ -762,13 +761,29 @@ export default function OrderRightSidebar({
     return () => clearTimeout(t);
   }, [reconError]);
 
-  const loadRemarks = async () => {
+  const loadRemarks = async (options?: { force?: boolean }) => {
+    if (!authReady) return;
+    if (!options?.force && activityRefreshKey === 0 && initialRemarks != null) {
+      return;
+    }
+
+    const fetchRemarks = async () =>
+      fetch(`/api/orders/${order.id}/remarks`, { credentials: "include", cache: "no-store" });
+
     try {
       setIsLoadingRemarks(true);
-      const res = await fetch(`/api/orders/${order.id}/remarks`, { credentials: "include" });
+      let res = await fetchRemarks();
+      if (res.status === 401) {
+        const synced = await syncServerSessionCookies();
+        if (synced) {
+          res = await fetchRemarks();
+        }
+      }
       if (!res.ok) {
-        // eslint-disable-next-line no-console
-        console.error("Failed to load remarks", await res.text());
+        if (res.status !== 401 || remarks.length === 0) {
+          // eslint-disable-next-line no-console
+          console.error("Failed to load remarks", await res.text());
+        }
         return;
       }
       const json = await res.json();
@@ -784,7 +799,10 @@ export default function OrderRightSidebar({
       editedRemarks.forEach((r) => {
         const numericId = Number(r.id);
         if (!Number.isFinite(numericId)) return;
-        fetch(`/api/orders/${order.id}/remarks/${numericId}`)
+        fetch(`/api/orders/${order.id}/remarks/${numericId}`, {
+          credentials: "include",
+          cache: "no-store",
+        })
           .then((res) => (res.ok ? res.json() : null))
           .then((json) => {
             if (!json?.data) return;
@@ -854,9 +872,17 @@ export default function OrderRightSidebar({
   };
 
   useEffect(() => {
+    if (!authReady) return;
+
     void loadRemarks();
     void loadNotifications();
     setAssignedRiders(assignedRidersFromOrder(order));
+
+    const mergeAssignedRiders = (lists: AssignedRiderOption[][]) => {
+      setAssignedRiders((prev) =>
+        mergeAssignedRiderOptions([...lists, assignedRidersFromOrder(order), prev])
+      );
+    };
 
     const loadAssignments = async () => {
       try {
@@ -872,23 +898,25 @@ export default function OrderRightSidebar({
             riderName: string | null;
             riderMobile: string | null;
             deliveryProvider: string | null;
-            assignmentStatus: string;
-            assignedAt: string | Date | null;
           }> | null) ?? [];
 
-        setAssignedRiders((prev) =>
-          mergeAssignedRiderOptions([
-            assignedRidersFromAssignments(items),
-            assignedRidersFromOrder(order),
-            prev,
-          ])
-        );
+        mergeAssignedRiders([assignedRidersFromAssignments(items)]);
       } catch {
         // keep order-seeded riders
       }
     };
 
+    const loadActivityLogRiders = async () => {
+      try {
+        const payload = await fetchRiderActivityLogCached(order.id);
+        mergeAssignedRiders([assignedRidersFromActivityLog(payload.logs)]);
+      } catch {
+        // non-fatal
+      }
+    };
+
     void loadAssignments();
+    void loadActivityLogRiders();
 
     const loadRecons = async () => {
       try {
@@ -906,13 +934,7 @@ export default function OrderRightSidebar({
 
         setRecons(mapped);
 
-        setAssignedRiders((prev) =>
-          mergeAssignedRiderOptions([
-            prev,
-            assignedRidersFromOrder(order),
-            assignedRidersFromReconRecords(items),
-          ])
-        );
+        mergeAssignedRiders([assignedRidersFromReconRecords(items)]);
       } catch (error) {
         // eslint-disable-next-line no-console
         console.error("Error loading recons", error);
@@ -922,8 +944,16 @@ export default function OrderRightSidebar({
     };
 
     void loadRecons();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [order.id]);
+  }, [
+    authReady,
+    order.id,
+    order.riderId,
+    order.riderName,
+    order.riderMobile,
+    order.orderSource,
+    activityRefreshKey,
+    initialRemarks,
+  ]);
 
   const addRemark = async () => {
     const preset = remarkPreset.trim();
@@ -971,6 +1001,7 @@ export default function OrderRightSidebar({
     try {
       const res = await fetch(`/api/orders/${order.id}/remarks`, {
         method: "POST",
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
         },
@@ -1233,8 +1264,6 @@ export default function OrderRightSidebar({
       setIsSavingRecon(false);
     }
   };
-
-  const lastRecon = recons[0];
 
   const openCxInstructions = () => {
     setShowCxInstructions(true);
@@ -1649,6 +1678,7 @@ export default function OrderRightSidebar({
             className="flex items-center gap-1 text-xs font-medium text-emerald-600 hover:text-emerald-700 cursor-pointer"
             onClick={() => {
               setShowRemarksModal(true);
+              void loadRemarks({ force: true });
             }}
           >
             <i className="bi bi-list-check" />
@@ -1778,18 +1808,6 @@ export default function OrderRightSidebar({
             See all ({reconsCountDisplay})
           </button>
         </div>
-        {lastRecon ? (
-          <SidebarLatestPreview
-            label="Latest recon"
-            body={
-              lastRecon.reasonCategory
-                ? `${lastRecon.reasonCategory}${lastRecon.comment ? ` — ${lastRecon.comment}` : ""}`
-                : lastRecon.comment ?? lastRecon.reason
-            }
-            meta={`${lastRecon.rider} · ${lastRecon.time}`}
-            onOpen={() => setShowReconsModal(true)}
-          />
-        ) : null}
         <div className="space-y-2">
           <select
             value={reconRider}
@@ -1976,7 +1994,7 @@ export default function OrderRightSidebar({
                 ) : null}
                 {entry.source ? (
                   <p className="text-[11px] text-slate-600">
-                    <span className="font-medium text-slate-600">Source:</span> {entry.source}
+                    <span className="font-medium text-slate-600">Canceled by:</span> {entry.source}
                   </p>
                 ) : null}
                 {entry.rider ? (
@@ -1990,7 +2008,7 @@ export default function OrderRightSidebar({
                   </span>
                   {entry.by ? (
                     <span>
-                      <span className="font-medium text-slate-600">By:</span> {entry.by}
+                      <span className="font-medium text-slate-600">Rejected by:</span> {entry.by}
                     </span>
                   ) : null}
                 </div>
@@ -2358,35 +2376,38 @@ export default function OrderRightSidebar({
               ) : recons.length === 0 ? (
                 <div className="py-8 text-center text-xs text-slate-500">No recons available.</div>
               ) : (
-                <div className="space-y-2">
-                  <div className="hidden lg:grid lg:grid-cols-[minmax(11rem,1.15fr)_minmax(7rem,0.75fr)_minmax(9rem,1fr)_minmax(10rem,1.1fr)_minmax(8.5rem,0.85fr)] gap-3 px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 border-b border-slate-200">
-                    <span>Rider</span>
-                    <span>Date &amp; time</span>
-                    <span>Rejection option</span>
-                    <span>Reason / comment</span>
-                    <span>Submitted by</span>
-                  </div>
-                  {recons.map((r) => {
-                    const rejectionOption = r.reasonCategory?.trim() || null;
-                    const commentText =
-                      r.comment?.trim() ||
-                      (!rejectionOption ? r.reason?.trim() : null) ||
-                      null;
+                <div className="overflow-x-auto rounded-lg border border-gray-200">
+                  <table className="w-max min-w-full table-auto divide-y divide-gray-200">
+                    <thead>
+                      <tr className="bg-gray-50">
+                        <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600">
+                          Rider
+                        </th>
+                        <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600">
+                          Date &amp; time
+                        </th>
+                        <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600">
+                          Rejection option
+                        </th>
+                        <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600">
+                          Reason / comment
+                        </th>
+                        <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-gray-600">
+                          Submitted by
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200 bg-white">
+                      {recons.map((r) => {
+                        const rejectionOption = r.reasonCategory?.trim() || null;
+                        const commentText =
+                          r.comment?.trim() ||
+                          (!rejectionOption ? r.reason?.trim() : null) ||
+                          null;
 
-                    return (
-                      <article
-                        key={r.id}
-                        className="rounded-lg border border-slate-200 bg-slate-50/40 px-3 py-2.5 shadow-sm"
-                      >
-                        <div className="flex flex-col gap-3 lg:grid lg:grid-cols-[minmax(11rem,1.15fr)_minmax(7rem,0.75fr)_minmax(9rem,1fr)_minmax(10rem,1.1fr)_minmax(8.5rem,0.85fr)] lg:items-start lg:gap-3">
-                          <ReconInlineField
-                            label="Rider"
-                            className="lg:flex-col lg:gap-1 lg:[&>span]:hidden"
-                          >
-                            <div className="flex min-w-0 items-start gap-2">
-                              <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 lg:hidden">
-                                <UserCircle2 className="h-3.5 w-3.5" />
-                              </span>
+                        return (
+                          <tr key={r.id} className="hover:bg-gray-50 transition-colors">
+                            <td className="px-3 py-2 align-top text-[11px] text-gray-900 border-r border-gray-100 min-w-[11rem]">
                               <ReconRiderBlock
                                 providerName={r.providerName}
                                 riderName={r.riderName}
@@ -2394,59 +2415,39 @@ export default function OrderRightSidebar({
                                 fallbackLabel={r.rider}
                                 layout="inline"
                               />
-                            </div>
-                          </ReconInlineField>
-
-                          <ReconInlineField
-                            label="Date & time"
-                            className="lg:[&>span]:hidden"
-                          >
-                            <span className="whitespace-nowrap font-medium text-slate-700">
+                            </td>
+                            <td className="px-3 py-2 align-top whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100">
                               {r.time}
-                            </span>
-                          </ReconInlineField>
-
-                          <ReconInlineField
-                            label="Rejection option"
-                            className="lg:[&>span]:hidden"
-                          >
-                            {rejectionOption ?? (
-                              <span className="text-slate-400">Not selected</span>
-                            )}
-                          </ReconInlineField>
-
-                          <ReconInlineField
-                            label="Reason / comment"
-                            className="lg:[&>span]:hidden"
-                          >
-                            {commentText ? (
-                              <span className="text-slate-700 whitespace-pre-line">
-                                {commentText}
-                              </span>
-                            ) : (
-                              <span className="text-slate-400">—</span>
-                            )}
-                          </ReconInlineField>
-
-                          <ReconInlineField
-                            label="Submitted by"
-                            className="lg:[&>span]:hidden"
-                          >
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              {r.actorEmail ? (
-                                <span className="break-all" title={r.actorEmail}>
-                                  {r.actorEmail}
-                                </span>
-                              ) : (
-                                <span className="text-slate-400">—</span>
+                            </td>
+                            <td className="px-3 py-2 align-top text-[11px] text-gray-900 border-r border-gray-100 min-w-[9rem]">
+                              {rejectionOption ?? (
+                                <span className="text-gray-400">Not selected</span>
                               )}
-                              <AgentRoleBadge role={r.actorRole} />
-                            </div>
-                          </ReconInlineField>
-                        </div>
-                      </article>
-                    );
-                  })}
+                            </td>
+                            <td className="px-3 py-2 align-top text-[11px] text-gray-900 border-r border-gray-100 min-w-[10rem] max-w-[18rem]">
+                              {commentText ? (
+                                <span className="whitespace-pre-line">{commentText}</span>
+                              ) : (
+                                <span className="text-gray-400">—</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 align-top text-[11px] text-gray-900 min-w-[8.5rem]">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                {r.actorEmail ? (
+                                  <span className="break-all" title={r.actorEmail}>
+                                    {r.actorEmail}
+                                  </span>
+                                ) : (
+                                  <span className="text-gray-400">—</span>
+                                )}
+                                <AgentRoleBadge role={r.actorRole} />
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>
@@ -2462,6 +2463,7 @@ export default function OrderRightSidebar({
       onToast={(msg) => setToastMessage(msg)}
       orderId={order.id}
       prefetchedOrderItems={prefetchedOrderItems}
+      orderCancelledOnTimeline={orderCancelledOnTimeline}
       onRefundCreated={onRefundCreated}
     />
 
@@ -2539,7 +2541,7 @@ export default function OrderRightSidebar({
     )}
 
     {toastMessage && (
-      <div className="fixed bottom-4 right-4 z-[10003] max-w-sm rounded-lg bg-slate-800 px-4 py-3 text-sm text-white shadow-lg">
+      <div className="fixed top-4 right-4 z-[10003] max-w-sm rounded-lg bg-slate-800 px-4 py-3 text-sm text-white shadow-lg">
         {toastMessage}
       </div>
     )}

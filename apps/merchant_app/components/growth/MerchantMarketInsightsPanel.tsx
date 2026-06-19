@@ -170,7 +170,7 @@ const styles = StyleSheet.create({
     padding: 2,
   },
   scopeBtn: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 },
-  scopeBtnActive: { backgroundColor: GatiMitraMerchant.surface },
+  scopeBtnActive: { backgroundColor: GatiMitraMerchant.cardBg },
   scopeBtnText: { fontSize: 11, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
   scopeBtnTextActive: { color: "#6D28D9" },
   loader: { marginVertical: 24 },

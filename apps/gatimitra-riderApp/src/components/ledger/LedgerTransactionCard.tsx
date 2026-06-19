@@ -7,6 +7,7 @@ import type { RiderLedgerEntry } from "@/src/services/api/riderApi";
 import {
   formatLedgerAmount,
   formatLedgerDateTime,
+  ledgerEarningBanner,
   ledgerTransactionTitle,
 } from "@/src/components/ledger/ledgerDisplay";
 import { LEDGER_CARD_RADIUS, ledgerSoftShadow } from "@/src/components/ledger/ledgerUiTokens";
@@ -19,6 +20,7 @@ export function LedgerTransactionCard({ entry }: Props) {
   const { t } = useTranslation();
   const isCredit = entry.flow === "credit";
   const title = ledgerTransactionTitle(entry, t);
+  const subtitle = ledgerEarningBanner(entry, t);
 
   return (
     <View style={[styles.card, ledgerSoftShadow]}>
@@ -34,9 +36,11 @@ export function LedgerTransactionCard({ entry }: Props) {
           <Text style={styles.title} numberOfLines={2}>
             {title}
           </Text>
-          <Text style={styles.subtitle} numberOfLines={1}>
-            {entry.description}
-          </Text>
+          {subtitle ? (
+            <Text style={styles.subtitle} numberOfLines={1}>
+              {subtitle}
+            </Text>
+          ) : null}
         </View>
         <Text style={[styles.amount, isCredit ? styles.amountCredit : styles.amountDebit]}>
           {isCredit ? "+" : "−"} ₹{formatLedgerAmount(entry.amount)}
@@ -46,7 +50,7 @@ export function LedgerTransactionCard({ entry }: Props) {
       <View style={styles.footer}>
         <View style={styles.statusPill}>
           <View style={styles.statusDot} />
-          <Text style={styles.statusText}>{t("ledger.completed", "Completed")}</Text>
+          <Text style={styles.statusText}>{t("ledger.created", "Created")}</Text>
         </View>
         <Text style={styles.date}>{formatLedgerDateTime(entry.createdAt)}</Text>
       </View>

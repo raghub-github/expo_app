@@ -1,49 +1,19 @@
-export const RIDER_RIDE_CANCEL_REASON_CODES = [
-  "VEHICLE_ISSUE",
-  "CUSTOMER_UNREACHABLE",
-  "WRONG_PICKUP",
-  "UNSAFE_AREA",
-  "LONG_WAIT",
-  "OTHER",
-] as const;
-
-export type RiderRideCancelReasonCode = (typeof RIDER_RIDE_CANCEL_REASON_CODES)[number];
-
-export type RiderRideCancelReasonOption = {
-  code: RiderRideCancelReasonCode;
-  labelKey: string;
-  defaultLabel: string;
+/** Offline fallback when cancellation catalog API is unavailable. */
+export type RiderCancelReasonItem = {
+  id?: number;
+  reasonCode: string;
+  label: string;
 };
 
-export const RIDER_RIDE_CANCEL_REASON_OPTIONS: RiderRideCancelReasonOption[] = [
-  {
-    code: "VEHICLE_ISSUE",
-    labelKey: "orders.activeRide.cancelReason.vehicleIssue",
-    defaultLabel: "Vehicle breakdown / issue",
-  },
-  {
-    code: "CUSTOMER_UNREACHABLE",
-    labelKey: "orders.activeRide.cancelReason.customerUnreachable",
-    defaultLabel: "Customer not responding",
-  },
-  {
-    code: "WRONG_PICKUP",
-    labelKey: "orders.activeRide.cancelReason.wrongPickup",
-    defaultLabel: "Wrong pickup location",
-  },
-  {
-    code: "UNSAFE_AREA",
-    labelKey: "orders.activeRide.cancelReason.unsafeArea",
-    defaultLabel: "Unsafe area",
-  },
-  {
-    code: "LONG_WAIT",
-    labelKey: "orders.activeRide.cancelReason.longWait",
-    defaultLabel: "Waiting too long at pickup",
-  },
-  {
-    code: "OTHER",
-    labelKey: "orders.activeRide.cancelReason.other",
-    defaultLabel: "Other reason",
-  },
+export const RIDER_CANCEL_REASON_FALLBACK: RiderCancelReasonItem[] = [
+  { reasonCode: "app_rider_vehicle_issue", label: "Vehicle breakdown / issue" },
+  { reasonCode: "app_rider_customer_unreachable", label: "Customer not responding" },
+  { reasonCode: "app_rider_wrong_pickup", label: "Wrong pickup location" },
+  { reasonCode: "app_rider_unsafe_area", label: "Unsafe area" },
+  { reasonCode: "app_rider_long_wait", label: "Waiting too long at pickup" },
+  { reasonCode: "app_rider_other", label: "Other reason" },
 ];
+
+export function mapVariantToServiceType(variant: "ride" | "food"): "person_ride" | "food" {
+  return variant === "food" ? "food" : "person_ride";
+}

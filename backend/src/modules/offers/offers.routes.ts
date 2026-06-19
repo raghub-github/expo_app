@@ -20,6 +20,7 @@ import {
   billingPlatformOffers,
 } from "../../db/schema.js";
 import { listStores } from "../merchants/merchant.service.js";
+import { listActiveCustomerCoupons } from "../billing/billing.repository.js";
 import {
   resolveDropGeoRefsFromPincode,
   resolvePlatformOfferGeoBindingEffectiveIds,
@@ -581,6 +582,63 @@ async function fetchPlatformBannerOffers(
   return banners;
 }
 
+async function fetchCouponBannerOffers(serviceType: string): Promise<HomeBannerOffer[]> {
+  const db = getDb();
+  const coupons = await listActiveCustomerCoupons(db, serviceType);
+  return coupons.map((coupon, idx) => {
+    const value = coupon.valueNumeric;
+    const isPct = String(coupon.discountType).toUpperCase() === "PERCENTAGE";
+    const title =
+      isPct && value != null && value > 0
+        ? `Flat ${Math.round(value)}% OFF`
+        : value != null && value > 0
+          ? `Flat ₹${Math.round(value)} OFF`
+          : String(coupon.code);
+    const maxCap = coupon.maxDiscountCap;
+    return {
+      id: `coupon-${String(coupon.code).toLowerCase()}`,
+      store_id: "",
+      store_name: null,
+      title,
+      sub:
+        maxCap != null && maxCap > 0
+          ? `Save up to ₹${Math.round(maxCap)} · Use code ${coupon.code}`
+          : `Use code ${coupon.code}`,
+      kind: "platform",
+      source_offer_id: -(idx + 1),
+      offer_type: "COUPON",
+      coupon_code: coupon.code,
+      min_order_amount: null,
+      max_discount_amount: maxCap,
+      discount_percentage: isPct ? value : null,
+      discount_value: !isPct ? value : null,
+      valid_till: null,
+    };
+  });
+}
+
+const RIDE_EXCLUDED_PLATFORM_OFFER_KINDS = new Set([
+  "TIERED",
+  "BUY_X_GET_Y",
+  "BUY_N_GET_M",
+  "BOGO",
+  "BUNDLE",
+  "FREE_DELIVERY",
+  "FREE_ITEM",
+]);
+
+function isRideFeaturedBannerEligible(banner: HomeBannerOffer): boolean {
+  if (banner.kind === "merchant") return false;
+  const type = String(banner.offer_type ?? "").toUpperCase();
+  if (RIDE_EXCLUDED_PLATFORM_OFFER_KINDS.has(type)) return false;
+  const title = banner.title?.trim() ?? "";
+  if (/spend more save more|buy more save more|buy 1 get 1|bundle deal|free delivery/i.test(title)) {
+    return false;
+  }
+  if (banner.store_id?.trim()) return false;
+  return true;
+}
+
 async function fetchHomeFeaturedOffers(params: {
   pincode: string | null;
   stateName: string | null;
@@ -591,7 +649,7 @@ async function fetchHomeFeaturedOffers(params: {
   limit: number;
 }): Promise<HomeBannerOffer[]> {
   const nearby = await resolveNearbyStores(params.latitude, params.longitude, 30);
-  const [merchantBanners, platformBanners] = await Promise.all([
+  const [merchantBanners, platformBanners, couponBanners] = await Promise.all([
     fetchMerchantBannerOffers(nearby),
     fetchPlatformBannerOffers(
       params.pincode,
@@ -602,6 +660,7 @@ async function fetchHomeFeaturedOffers(params: {
       params.longitude,
       nearby
     ),
+    fetchCouponBannerOffers(params.serviceType),
   ]);
 
   const seen = new Set<string>();
@@ -613,12 +672,24 @@ async function fetchHomeFeaturedOffers(params: {
     merged.push(b);
   };
 
+  const isRide = params.serviceType.toUpperCase() === "RIDE";
+  const rideEligible = (b: HomeBannerOffer) => !isRide || isRideFeaturedBannerEligible(b);
+
   const globalPlatform = platformBanners.filter((b) => b.id.startsWith("platform-global-"));
   const scopedPlatform = platformBanners.filter((b) => !b.id.startsWith("platform-global-"));
 
-  for (const b of globalPlatform) push(b);
-  for (const b of scopedPlatform) push(b);
-  for (const b of merchantBanners) push(b);
+  for (const b of globalPlatform) {
+    if (rideEligible(b)) push(b);
+  }
+  for (const b of scopedPlatform) {
+    if (rideEligible(b)) push(b);
+  }
+  for (const b of couponBanners) {
+    if (rideEligible(b)) push(b);
+  }
+  if (!isRide) {
+    for (const b of merchantBanners) push(b);
+  }
 
   return merged.slice(0, params.limit);
 }

@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
+import { riderSearchMatchesLoadedRider } from "@/lib/riders/resolve-rider-search";
 import { RiderSectionHeader } from "./RiderSectionHeader";
 import { CollapsibleTableFilters } from "./CollapsibleTableFilters";
 import { FilterChips, type FilterChipItem } from "./FilterChips";
@@ -11,6 +12,7 @@ import { FilterSearchBar } from "./FilterSearchBar";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { TablePagination } from "./TablePagination";
 import Link from "next/link";
+import { formatLedgerDisplay } from "@/lib/riders/rider-ledger-display";
 
 interface RiderInfo {
   id: number;
@@ -126,7 +128,14 @@ export function RiderWalletHistoryClient() {
     : null;
 
   useEffect(() => {
-    if (searchValue) resolveRider(searchValue);
+    if (searchValue) {
+      if (riderFromContext && riderSearchMatchesLoadedRider(searchValue, riderFromContext)) {
+        setRider(riderFromContext);
+        setError(null);
+      } else {
+        resolveRider(searchValue);
+      }
+    }
     else if (riderFromContext) {
       setRider(riderFromContext);
       setError(null);
@@ -208,8 +217,7 @@ export function RiderWalletHistoryClient() {
     applyFilters({ flow: "all", entryType: "all", serviceType: "all", from: "", to: "", q: "" });
   };
 
-  const isCredit = (t: string) =>
-    ["earning", "bonus", "refund", "referral_bonus", "penalty_reversal", "manual_add", "incentive", "surge", "failed_withdrawal_revert", "cancellation_payout"].includes(t);
+  const isCredit = (flow: "credit" | "debit") => flow === "credit";
 
   function actionByLabel(row: LedgerRow): string {
     const t = (row.performedByType ?? "system").toLowerCase();
@@ -328,11 +336,11 @@ export function RiderWalletHistoryClient() {
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
                     <tr>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Type</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Title</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Reason</th>
                       <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Service</th>
                       <th className="px-4 py-2 text-right text-xs font-medium text-gray-700 uppercase tracking-wide">Amount</th>
                       <th className="px-4 py-2 text-right text-xs font-medium text-gray-700 uppercase tracking-wide">Balance</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Ref</th>
                       <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Order ID</th>
                       <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Date</th>
                       <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Action by</th>
@@ -346,22 +354,26 @@ export function RiderWalletHistoryClient() {
                       ledger.map((row) => {
                         const rowKey = `${row.id}-${row.riderId}-${row.createdAt}`;
                         const isExpanded = expandedRowKey === rowKey;
+                        const display = formatLedgerDisplay(row);
+                        const orderId = display.orderId ?? row.orderId;
                         return (
                           <React.Fragment key={rowKey}>
                             <tr className={isExpanded ? "bg-gray-50" : ""}>
-                              <td className="px-4 py-2 text-sm text-gray-900 font-medium">{row.entryType}</td>
-                              <td className="px-4 py-2 text-sm text-gray-900">{row.serviceType ?? "—"}</td>
-                              <td className={`px-4 py-2 text-sm text-right font-medium whitespace-nowrap ${isCredit(row.entryType) ? "text-green-600" : "text-red-600"}`}>
+                              <td className="px-4 py-2 text-sm text-gray-900 font-medium">{display.title}</td>
+                              <td className="px-4 py-2 text-sm text-gray-600 max-w-[240px] truncate" title={display.reason || row.description || undefined}>
+                                {display.reason || row.description || "—"}
+                              </td>
+                              <td className="px-4 py-2 text-sm text-gray-900">{display.serviceLabel}</td>
+                              <td className={`px-4 py-2 text-sm text-right font-medium whitespace-nowrap ${isCredit(display.flow) ? "text-green-600" : "text-red-600"}`}>
                                 <span className="inline-flex items-center justify-end gap-0.5">
-                                  <span aria-hidden="true">{isCredit(row.entryType) ? "+" : "−"}</span>
+                                  <span aria-hidden="true">{isCredit(display.flow) ? "+" : "−"}</span>
                                   <span>₹{Number(row.amount).toFixed(2)}</span>
                                 </span>
                               </td>
                               <td className={`px-4 py-2 text-sm text-right font-medium ${row.balance != null && Number(row.balance) < 0 ? "text-red-600" : "text-gray-900"}`}>
                                 {row.balance != null ? `₹${Number(row.balance).toFixed(2)}` : "—"}
                               </td>
-                              <td className="px-4 py-2 text-sm text-gray-900">{row.ref ?? row.description ?? "—"}</td>
-                              <td className="px-4 py-2 text-sm text-gray-800">{row.orderId ? `#${row.orderId}` : "—"}</td>
+                              <td className="px-4 py-2 text-sm text-gray-800">{orderId ? (orderId.startsWith("#") ? orderId : `#${orderId}`) : "—"}</td>
                               <td className="px-4 py-2 text-sm text-gray-800">{new Date(row.createdAt).toLocaleString()}</td>
                               <td className="px-4 py-2 text-sm text-gray-800">{actionByLabel(row)}</td>
                               <td className="px-2 py-2 text-center">
@@ -382,8 +394,15 @@ export function RiderWalletHistoryClient() {
                               <tr key={`${rowKey}-detail`} className="bg-gray-50 border-b border-gray-200">
                                 <td colSpan={9} className="px-4 py-3 text-sm">
                                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-1 text-gray-700">
-                                    {row.description && <div><span className="font-medium text-gray-600">Reason:</span> {row.description}</div>}
-                                    {row.orderId && <div><span className="font-medium text-gray-600">Order ID:</span> #{row.orderId}</div>}
+                                    <div><span className="font-medium text-gray-600">Type:</span> {row.entryType.replace(/_/g, " ")}</div>
+                                    {display.reason && <div><span className="font-medium text-gray-600">Reason:</span> {display.reason}</div>}
+                                    {row.description && row.description !== display.reason && (
+                                      <div><span className="font-medium text-gray-600">Description:</span> {row.description}</div>
+                                    )}
+                                    {orderId && <div><span className="font-medium text-gray-600">Order ID:</span> {orderId.startsWith("#") ? orderId : `#${orderId}`}</div>}
+                                    {(row.ref || row.refType) && (
+                                      <div><span className="font-medium text-gray-600">Ref:</span> {row.ref ?? "—"}{row.refType ? ` (${row.refType})` : ""}</div>
+                                    )}
                                     <div><span className="font-medium text-gray-600">Date:</span> {new Date(row.createdAt).toLocaleString()}</div>
                                   </div>
                                 </td>

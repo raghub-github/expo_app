@@ -1,13 +1,13 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
   Image,
-  TouchableOpacity,
   Pressable,
   StyleSheet,
   Platform,
   Vibration,
+  Alert,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import Animated, {
@@ -39,6 +39,9 @@ export type StoreMenuItemRowProps = {
   onShare?: (item: MenuItem) => void;
 };
 
+const IMAGE_SIZE = 118;
+const ADD_LOCK_MS = 320;
+
 export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   item,
   merchantId,
@@ -54,24 +57,78 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   onBookmark,
   onShare,
 }: StoreMenuItemRowProps) {
-  const quantity = useMenuItemCartQty(item.id, item.menuItemId, merchantId);
+  const cartQty = useMenuItemCartQty(item.id, item.menuItemId, merchantId);
+  const [optimisticQty, setOptimisticQty] = useState<number | null>(null);
+  const [addLocked, setAddLocked] = useState(false);
+  const addLockUntilRef = useRef(0);
   const [imageFailed, setImageFailed] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
   const addScale = useSharedValue(1);
+
+  const isCustomisable = item.hasVariants || item.hasAddons || item.hasCustomizations;
+  const displayQty = optimisticQty ?? cartQty;
+
+  useEffect(() => {
+    if (optimisticQty != null && cartQty >= optimisticQty) {
+      setOptimisticQty(null);
+    }
+  }, [cartQty, optimisticQty]);
+
+  useEffect(() => {
+    if (cartQty === 0) {
+      setOptimisticQty(null);
+    }
+  }, [cartQty]);
 
   useEffect(() => {
     setImageFailed(false);
     setImageLoaded(false);
   }, [item.imageUrl]);
 
-  const handleAdd = useCallback(() => {
-    if (isStoreClosed) return;
-    if (Platform.OS === "android") Vibration.vibrate(15);
+  const runAddAnimation = useCallback(() => {
     addScale.value = withSpring(0.96, { damping: 15, stiffness: 320 }, () => {
       addScale.value = withSpring(1);
     });
-    onAdd(item);
-  }, [item, onAdd, addScale, isStoreClosed]);
+  }, [addScale]);
+
+  const handleAdd = useCallback(() => {
+    if (isStoreClosed) return;
+    const now = Date.now();
+    if (now < addLockUntilRef.current) return;
+    addLockUntilRef.current = now + ADD_LOCK_MS;
+    setAddLocked(true);
+    setTimeout(() => setAddLocked(false), ADD_LOCK_MS);
+
+    if (!isCustomisable) {
+      setOptimisticQty((prev) => (prev ?? cartQty) + 1);
+    }
+
+    if (Platform.OS === "android") Vibration.vibrate(15);
+    runAddAnimation();
+
+    try {
+      onAdd(item);
+    } catch {
+      setOptimisticQty(null);
+      addLockUntilRef.current = 0;
+      Alert.alert("Could not add item", "Please try again.");
+    }
+  }, [cartQty, isCustomisable, isStoreClosed, item, onAdd, runAddAnimation]);
+
+  const handleIncrementPress = useCallback(() => {
+    if (isStoreClosed) return;
+    const now = Date.now();
+    if (now < addLockUntilRef.current) return;
+    addLockUntilRef.current = now + ADD_LOCK_MS;
+    setOptimisticQty((prev) => (prev ?? cartQty) + 1);
+    onIncrement(item.id, item.menuItemId);
+  }, [cartQty, isStoreClosed, item.id, item.menuItemId, onIncrement]);
+
+  const handleDecrementPress = useCallback(() => {
+    if (isStoreClosed) return;
+    setOptimisticQty((prev) => Math.max(0, (prev ?? cartQty) - 1));
+    onDecrement(item.id, item.menuItemId);
+  }, [cartQty, isStoreClosed, item.id, item.menuItemId, onDecrement]);
 
   const handleBookmarkPress = useCallback(() => {
     if (!onBookmark) return;
@@ -90,7 +147,6 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   const sellingPrice = getSellingPrice(item);
   const basePrice = getBasePrice(item);
   const showDiscount = basePrice != null && basePrice > sellingPrice;
-  const isCustomisable = item.hasVariants || item.hasAddons || item.hasCustomizations;
   const showRemoteImage = !!item.imageUrl && !imageFailed;
   const diet = getItemDiet(item);
 
@@ -193,40 +249,61 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
             {isStoreClosed ? <View style={styles.closedOverlay} /> : null}
           </View>
 
-          <Animated.View style={[styles.addSlot, addStyle]}>
-            {quantity === 0 ? (
+          <View style={styles.addSlot}>
+            {displayQty === 0 ? (
               <Pressable
                 onPress={handleAdd}
-                disabled={isStoreClosed}
-                style={[styles.addBtn, isStoreClosed && styles.addBtnDisabled]}
+                disabled={isStoreClosed || addLocked}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                pressRetentionOffset={{ top: 20, bottom: 20, left: 20, right: 20 }}
+                accessibilityRole="button"
+                accessibilityLabel={`Add ${item.name} to cart`}
               >
-                <Text style={[styles.addBtnText, isStoreClosed && styles.addBtnTextDisabled]}>
-                  {isStoreClosed ? "Closed" : "ADD"}
-                </Text>
-                {!isStoreClosed ? (
-                  <Ionicons name="add" size={14} color={StoreTheme.accentMint} />
-                ) : null}
+                {({ pressed }) => (
+                  <Animated.View
+                    style={[
+                      styles.addBtn,
+                      addStyle,
+                      isStoreClosed && styles.addBtnDisabled,
+                      addLocked && styles.addBtnLocked,
+                      pressed && !isStoreClosed && !addLocked && styles.addBtnPressed,
+                    ]}
+                  >
+                    <Text style={[styles.addBtnText, isStoreClosed && styles.addBtnTextDisabled]}>
+                      {isStoreClosed ? "Closed" : "ADD"}
+                    </Text>
+                    {!isStoreClosed ? (
+                      <Ionicons name="add" size={14} color={StoreTheme.accentMint} />
+                    ) : null}
+                  </Animated.View>
+                )}
               </Pressable>
             ) : (
               <View style={[styles.qtyWrap, isStoreClosed && styles.addBtnDisabled]}>
-                <TouchableOpacity
-                  onPress={() => !isStoreClosed && onDecrement(item.id, item.menuItemId)}
+                <Pressable
+                  onPress={handleDecrementPress}
                   style={styles.qtyBtn}
                   disabled={isStoreClosed}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Decrease ${item.name} quantity`}
                 >
                   <Ionicons name="remove" size={16} color={StoreTheme.accentMint} />
-                </TouchableOpacity>
-                <Text style={styles.qtyText}>{quantity}</Text>
-                <TouchableOpacity
-                  onPress={() => !isStoreClosed && onIncrement(item.id, item.menuItemId)}
+                </Pressable>
+                <Text style={styles.qtyText}>{displayQty}</Text>
+                <Pressable
+                  onPress={handleIncrementPress}
                   style={styles.qtyBtn}
                   disabled={isStoreClosed}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Increase ${item.name} quantity`}
                 >
                   <Ionicons name="add" size={16} color={StoreTheme.accentMint} />
-                </TouchableOpacity>
+                </Pressable>
               </View>
             )}
-          </Animated.View>
+          </View>
 
           {isCustomisable ? <Text style={styles.customisable}>customisable</Text> : null}
         </View>
@@ -235,8 +312,6 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
     </View>
   );
 });
-
-const IMAGE_SIZE = 118;
 
 const styles = StyleSheet.create({
   wrap: {
@@ -393,6 +468,7 @@ const styles = StyleSheet.create({
   addSlot: {
     width: IMAGE_SIZE - 16,
     marginTop: 8,
+    alignSelf: "center",
     zIndex: 2,
   },
   addBtn: {
@@ -407,7 +483,14 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     paddingHorizontal: 10,
     minHeight: 32,
+    width: "100%",
     ...StoreTheme.cardShadow,
+  },
+  addBtnPressed: {
+    backgroundColor: StoreTheme.accentMintSoft,
+  },
+  addBtnLocked: {
+    opacity: 0.72,
   },
   addBtnDisabled: {
     borderColor: "#9CA3AF",
@@ -434,10 +517,14 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     paddingHorizontal: 4,
     minHeight: 32,
+    width: "100%",
     ...StoreTheme.cardShadow,
   },
   qtyBtn: {
-    padding: 2,
+    padding: 4,
+    minWidth: 24,
+    alignItems: "center",
+    justifyContent: "center",
   },
   qtyText: {
     fontSize: 13,

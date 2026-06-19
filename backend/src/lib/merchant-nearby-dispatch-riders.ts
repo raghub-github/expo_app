@@ -26,6 +26,12 @@ export type NearbyDispatchRiderSummary = {
   assignSoonMessage: string;
 };
 
+const CACHE_TTL_MS = 12_000;
+const summaryCache = new Map<
+  number,
+  { fetchedAt: number; summary: NearbyDispatchRiderSummary | null }
+>();
+
 export function formatAssignSoonMessage(count: number): string {
   if (count <= 0) {
     return "Looking for nearby riders — we will assign one soon";
@@ -37,6 +43,20 @@ export function formatAssignSoonMessage(count: number): string {
 }
 
 export async function getNearbyDispatchRiderSummaryForOrderCoreId(
+  orderCoreId: number,
+  opts?: { forceRefresh?: boolean }
+): Promise<NearbyDispatchRiderSummary | null> {
+  const cached = summaryCache.get(orderCoreId);
+  if (!opts?.forceRefresh && cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+    return cached.summary;
+  }
+
+  const summary = await computeNearbyDispatchRiderSummary(orderCoreId);
+  summaryCache.set(orderCoreId, { fetchedAt: Date.now(), summary });
+  return summary;
+}
+
+async function computeNearbyDispatchRiderSummary(
   orderCoreId: number
 ): Promise<NearbyDispatchRiderSummary | null> {
   const db = getDb();

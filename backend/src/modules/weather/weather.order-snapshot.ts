@@ -9,6 +9,7 @@ import {
 } from "./weather.dispatch.js";
 import { buildZoneKey } from "./weather.classify.js";
 import { resolveServiceZone } from "./weather.zone-resolver.js";
+import { toTimestamptzParam } from "../../lib/sql-timestamps.js";
 
 /**
  * Immutable weather snapshot at order placement — never updated after insert.
@@ -48,7 +49,7 @@ export async function captureOrderWeatherSnapshot(
       serviceZone.zoneName
     );
     const severity = weather.severity;
-    const now = new Date();
+    const nowIso = toTimestamptzParam(new Date());
 
     await tx.execute(sql`
       INSERT INTO order_weather_snapshots (
@@ -85,8 +86,8 @@ export async function captureOrderWeatherSnapshot(
         ${surgeEligibleForSeverity(severity)},
         ${weatherPriorityBoostForSeverity(severity)},
         ${weatherDispatchWeightForSeverity(severity)},
-        ${now},
-        ${now}
+        ${nowIso}::timestamptz,
+        ${nowIso}::timestamptz
       )
       ON CONFLICT (order_core_id) DO NOTHING
     `);

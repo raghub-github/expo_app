@@ -14,6 +14,7 @@ const ROUTE_MAX_AGE_MS = 12_000;
 
 type LiveRouteState = {
   coordinates: MapLatLng[];
+  fullCoordinates: MapLatLng[];
   distanceM: number | null;
   etaMinutes: number | null;
   isRefreshing: boolean;
@@ -70,9 +71,11 @@ export function useRiderToPickupLiveRoute(
     );
   }, [rider?.latitude, rider?.longitude, pickup?.latitude, pickup?.longitude, rideId]);
 
+  const fullCoordinates = useMemo(() => route?.coordinates ?? [], [route?.coordinates]);
+
   const coordinates = useMemo(
-    () => sliceRouteFromRider(route?.coordinates ?? [], rider),
-    [route?.coordinates, rider]
+    () => sliceRouteFromRider(fullCoordinates, rider),
+    [fullCoordinates, rider]
   );
 
   const distanceM =
@@ -82,6 +85,7 @@ export function useRiderToPickupLiveRoute(
 
   return {
     coordinates,
+    fullCoordinates,
     distanceM,
     etaMinutes: route?.etaMinutes ?? null,
     isRefreshing,

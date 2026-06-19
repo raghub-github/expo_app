@@ -171,7 +171,7 @@ export function buildMerchantVisibleTimeline(
     {
       key: 'picked_up',
       label: 'Picked up',
-      atFn: () => order.rider_picked_up_at ?? order.dispatched_at ?? null,
+      atFn: () => order.rider_picked_up_at ?? null,
       showView: false,
       actorAction: null,
     },

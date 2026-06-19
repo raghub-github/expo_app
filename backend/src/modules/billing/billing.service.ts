@@ -12,7 +12,12 @@ import {
   loadMerchantOfferUsagesByUser,
 } from "./billing.repository.js";
 import { executeBillingPipeline } from "./executeBillingPipeline.js";
-import { listEligiblePlatformOffersForCheckout } from "./platformOffersApply.js";
+import {
+  customerHasSubscriptionOfferAccess,
+  listEligiblePlatformOffersForCheckout,
+  platformOfferConditionsPass,
+  platformOfferConflictsWithSubscriptionFreeDelivery,
+} from "./platformOffersApply.js";
 import { listMerchantOffersForCheckout } from "./merchantOffersCheckout.js";
 import {
   resolveDropGeoRefsFromPincode,
@@ -20,6 +25,8 @@ import {
 } from "./geoRefFromPincode.js";
 import { getRoute } from "../distance/distance.service.js";
 import { computeItemPackagingTotal } from "./packagingFromItems.js";
+import { formatDeliverySlabExplainSubtext } from "../delivery-slab-pricing/formatDeliverySlabExplain.js";
+import { getDeliveryFallbackRates } from "../delivery/deliveryFallback.config.js";
 import {
   billingDatasetCacheKey,
   getCachedBillingDataset,
@@ -72,6 +79,9 @@ export type ComputeBillInput = {
   userSegment?: "NEW" | "EXISTING" | "ALL";
   /** Platform subscription add-on at checkout (applies SUBSCRIPTION pricing rules). */
   subscriptionOptIn?: boolean;
+  /** Customer subscription plan selected at checkout (DB-driven; replaces hardcoded GMitra Plus). */
+  subscriptionPlanId?: number;
+  subscriptionBillingCycle?: "weekly" | "monthly" | "yearly";
   /**
    * Delivery type chosen at checkout. When 'self_pickup' the customer collects
    * from the store and the engine waives the delivery fee (and any
@@ -349,10 +359,29 @@ export async function computeBillForOrder(
   const checkoutAudience: "CUSTOMER" | "MERCHANT" | "RIDER" =
     audRaw === "MERCHANT" || audRaw === "RIDER" ? audRaw : "CUSTOMER";
 
+  const deliveryFallbackRates = await getDeliveryFallbackRates();
   const deliveryMinimumInr =
-    env.DELIVERY_MIN_FEE_INR != null && env.DELIVERY_MIN_FEE_INR > 0 ? env.DELIVERY_MIN_FEE_INR : undefined;
-  const deliveryDefaultBaseInr = env.DELIVERY_DEFAULT_BASE_INR ?? 25;
-  const deliveryDefaultPerKmInr = env.DELIVERY_DEFAULT_PER_KM_INR ?? 5;
+    deliveryFallbackRates.minFeeInr > 0 ? deliveryFallbackRates.minFeeInr : undefined;
+  const deliveryDefaultBaseInr = deliveryFallbackRates.baseInr;
+  const deliveryDefaultPerKmInr = deliveryFallbackRates.perKmInr;
+
+  let subscriptionBillingCtx: Awaited<
+    ReturnType<
+      typeof import("../subscription/customer-subscription.service.js").resolveCustomerSubscriptionBillingContext
+    >
+  > = null;
+  if (input.customerId > 0) {
+    const { resolveCustomerSubscriptionBillingContext } = await import(
+      "../subscription/customer-subscription.service.js"
+    );
+    subscriptionBillingCtx = await resolveCustomerSubscriptionBillingContext({
+      customerId: input.customerId,
+      distanceKm,
+      isSelfPickup: input.deliveryType === "self_pickup",
+      subscriptionOptIn: input.subscriptionOptIn,
+      subscriptionPlanId: input.subscriptionPlanId,
+    });
+  }
 
   const ctx: BillContext = {
     itemSubtotal,
@@ -390,7 +419,15 @@ export async function computeBillForOrder(
     deliveryDefaultPerKmInr: input.deliveryType === "self_pickup" ? 0 : deliveryDefaultPerKmInr,
     tipAmount,
     donationAmount,
-    subscriptionOptIn: input.subscriptionOptIn === true,
+    subscriptionOptIn:
+      subscriptionBillingCtx?.effectiveSubscriptionOptIn ?? input.subscriptionOptIn === true,
+    customerSubscriptionActive: subscriptionBillingCtx?.hasSubscriptionBenefits ?? false,
+    customerSubscriptionFreeDeliveryEligible: subscriptionBillingCtx?.freeDeliveryEligible ?? false,
+    subscriptionPlanId:
+      subscriptionBillingCtx?.planId ??
+      (input.subscriptionPlanId != null && input.subscriptionPlanId > 0
+        ? input.subscriptionPlanId
+        : undefined),
     isSelfPickup: input.deliveryType === "self_pickup",
     deliveryPricingEngine: quote.pricing_engine,
     checkoutAudience,
@@ -416,6 +453,22 @@ export async function computeBillForOrder(
 
   const billing = executeBillingPipeline(ctx, dataset);
 
+  let adjustedBilling = billing;
+  if (input.customerId > 0) {
+    const { applyCustomerSubscriptionBillingAdjustments } = await import(
+      "../subscription/customer-subscription.service.js"
+    );
+    adjustedBilling = await applyCustomerSubscriptionBillingAdjustments({
+      customerId: input.customerId,
+      billing,
+      distanceKm,
+      isSelfPickup: input.deliveryType === "self_pickup",
+      subscriptionOptIn: input.subscriptionOptIn,
+      subscriptionPlanId: input.subscriptionPlanId,
+      subscriptionBillingCycle: input.subscriptionBillingCycle,
+    });
+  }
+
   const serviceable = quote.serviceable;
   const serviceRadiusKm = quote.service_radius_km;
 
@@ -428,7 +481,7 @@ export async function computeBillForOrder(
         : 0;
 
   const snapshot = {
-    ...billing,
+    ...adjustedBilling,
     merchantStoreId: resolved.merchantStoreId,
     distanceKm,
     durationMin: quote.duration_min,
@@ -439,6 +492,12 @@ export async function computeBillForOrder(
     deliveryFeeFromGeo: null,
     deliveryPricingEngine: quote.pricing_engine,
     deliverySlabQuote: quote.slab_quote ?? null,
+    deliveryFeeExplainSubtext: formatDeliverySlabExplainSubtext({
+      pricingEngine: quote.pricing_engine,
+      slabQuote: quote.slab_quote ?? null,
+      defaultBaseInr: deliveryFallbackRates.baseInr,
+      defaultPerKmInr: deliveryFallbackRates.perKmInr,
+    }),
     serviceable,
     serviceRadiusKm,
     unserviceableReason: quote.unserviceable_reason ?? (serviceable ? null : "out_of_range"),
@@ -448,13 +507,14 @@ export async function computeBillForOrder(
     deliveryFeeQuotedInr,
   } as Record<string, unknown>;
 
-  return { ok: true, billing, snapshot };
+  return { ok: true, billing: adjustedBilling, snapshot };
 }
 
 export type CheckoutOfferCouponRow = {
   code: string;
   discountType: string;
   description: string;
+  estimatedSavingsInr: number | null;
 };
 
 export type CheckoutOfferMerchantRow = {
@@ -464,6 +524,7 @@ export type CheckoutOfferMerchantRow = {
   autoApply: boolean;
   requiresCouponCode: string | null;
   minOrderAmount: number | null;
+  estimatedSavingsInr: number | null;
 };
 
 export type CheckoutOfferPlatformRow = {
@@ -471,6 +532,7 @@ export type CheckoutOfferPlatformRow = {
   name: string | null;
   offerKind: string;
   summary: string;
+  estimatedSavingsInr: number | null;
 };
 
 function num(v: unknown): number {
@@ -479,18 +541,73 @@ function num(v: unknown): number {
   return Number.isFinite(x) ? x : 0;
 }
 
+function estimateCouponSavingsInr(
+  c: {
+    discountType: string;
+    valueNumeric: number | null;
+    maxDiscountCap: number | null;
+  },
+  cartSubtotal: number
+): number | null {
+  const dt = String(c.discountType).toUpperCase();
+  const v = num(c.valueNumeric);
+  if (dt === "FIXED" && v > 0) return Math.round(v);
+  if (dt === "PERCENTAGE" && v > 0 && cartSubtotal > 0) {
+    let saving = (cartSubtotal * v) / 100;
+    const cap = c.maxDiscountCap != null ? num(c.maxDiscountCap) : 0;
+    if (cap > 0) saving = Math.min(saving, cap);
+    return Math.round(saving);
+  }
+  return null;
+}
+
+function estimateMerchantOfferSavingsInr(
+  m: {
+    offerType: string;
+    discountValue: number | null;
+    discountPercentage: number | null;
+    maxDiscountAmount: number | null;
+  },
+  cartSubtotal: number
+): number | null {
+  const ot = String(m.offerType).toUpperCase();
+  if (ot === "PERCENTAGE" && num(m.discountPercentage) > 0 && cartSubtotal > 0) {
+    let saving = (cartSubtotal * num(m.discountPercentage)) / 100;
+    const cap = num(m.maxDiscountAmount);
+    if (cap > 0) saving = Math.min(saving, cap);
+    return Math.round(saving);
+  }
+  const fixed = num(m.discountValue);
+  if (fixed > 0) return Math.round(fixed);
+  return null;
+}
+
+function estimatePlatformOfferSavingsInr(o: PlatformOfferRow, cartSubtotal: number): number | null {
+  const dt = String(o.discountType ?? "").toUpperCase();
+  const v = num(o.valueNumeric);
+  if (dt === "FIXED" && v > 0) return Math.round(v);
+  if (dt === "PERCENTAGE" && v > 0 && cartSubtotal > 0) {
+    let saving = (cartSubtotal * v) / 100;
+    const cap = num(o.maxDiscountAmount);
+    if (cap > 0) saving = Math.min(saving, cap);
+    return Math.round(saving);
+  }
+  return null;
+}
+
 function describeCouponRow(c: {
   discountType: string;
   valueNumeric: number | null;
   maxDiscountCap: number | null;
 }): string {
   const v = c.valueNumeric ?? 0;
-  const cap = c.maxDiscountCap != null && c.maxDiscountCap > 0 ? ` · max ₹${c.maxDiscountCap}` : "";
+  const cap =
+    c.maxDiscountCap != null && c.maxDiscountCap > 0 ? ` up to ₹${c.maxDiscountCap}` : "";
   if (String(c.discountType).toUpperCase() === "PERCENTAGE") {
-    return `${v}% off${cap}`;
+    return `${v}% OFF${cap}`;
   }
   if (String(c.discountType).toUpperCase() === "FIXED") {
-    return `₹${v} off${cap}`;
+    return `₹${v} OFF${cap}`;
   }
   return "Promo discount";
 }
@@ -526,6 +643,9 @@ function formatPlatformOfferLockReason(reason: string, grossCart: number): strin
   }
   if (reason.includes("geo=GEO_NOT_BOUND")) return "Not available at your delivery location";
   if (reason.includes("segment=")) return "Not available for your account";
+  if (reason.includes("subscription_free_delivery=active")) return "Already included in your membership";
+  if (reason.includes("subscription_benefit_requires_membership")) return "Available with GMitra Plus membership";
+  if (reason.includes("conditions=")) return "Not available at your delivery location";
   return "Not eligible on this order";
 }
 
@@ -674,8 +794,25 @@ export async function listCheckoutBillOffers(
   /** Min-order gates use item + add-on subtotal only — never fees or taxes. */
   const grossCart = itemPlusAddon;
 
-  const deliveryDefaultBaseInr = env.DELIVERY_DEFAULT_BASE_INR ?? 25;
-  const deliveryDefaultPerKmInr = env.DELIVERY_DEFAULT_PER_KM_INR ?? 5;
+  const deliveryFallbackRates = await getDeliveryFallbackRates();
+  const deliveryDefaultBaseInr = deliveryFallbackRates.baseInr;
+  const deliveryDefaultPerKmInr = deliveryFallbackRates.perKmInr;
+
+  let subscriptionBillingCtx: Awaited<
+    ReturnType<
+      typeof import("../subscription/customer-subscription.service.js").resolveCustomerSubscriptionBillingContext
+    >
+  > = null;
+  if (input.customerId > 0) {
+    const { resolveCustomerSubscriptionBillingContext } = await import(
+      "../subscription/customer-subscription.service.js"
+    );
+    subscriptionBillingCtx = await resolveCustomerSubscriptionBillingContext({
+      customerId: input.customerId,
+      distanceKm,
+      isSelfPickup: false,
+    });
+  }
 
   const ctx: BillContext = {
     itemSubtotal: itemPlusAddon,
@@ -704,7 +841,10 @@ export async function listCheckoutBillOffers(
     deliveryDefaultPerKmInr,
     tipAmount: 0,
     donationAmount: 0,
-    subscriptionOptIn: false,
+    subscriptionOptIn: subscriptionBillingCtx?.effectiveSubscriptionOptIn ?? false,
+    customerSubscriptionActive: subscriptionBillingCtx?.hasSubscriptionBenefits ?? false,
+    customerSubscriptionFreeDeliveryEligible: subscriptionBillingCtx?.freeDeliveryEligible ?? false,
+    subscriptionPlanId: subscriptionBillingCtx?.planId,
     checkoutAudience: "CUSTOMER",
   };
 
@@ -733,6 +873,7 @@ export async function listCheckoutBillOffers(
     code: c.code,
     discountType: c.discountType,
     description: describeCouponRow(c),
+    estimatedSavingsInr: estimateCouponSavingsInr(c, grossCart),
   }));
 
   const { eligible: merchantEligible, ineligible: merchantIneligible } =
@@ -748,6 +889,7 @@ export async function listCheckoutBillOffers(
         ? String(m.couponCode).trim()
         : null,
     minOrderAmount: m.minOrderAmount != null && m.minOrderAmount > 0 ? m.minOrderAmount : null,
+    estimatedSavingsInr: estimateMerchantOfferSavingsInr(m, grossCart),
   }));
 
   const merchantOffersIneligible: Array<
@@ -762,6 +904,7 @@ export async function listCheckoutBillOffers(
         ? String(m.couponCode).trim()
         : null,
     minOrderAmount: m.minOrderAmount != null && m.minOrderAmount > 0 ? m.minOrderAmount : null,
+    estimatedSavingsInr: estimateMerchantOfferSavingsInr(m, grossCart),
     reason: m.reason,
     lockReason: m.lockReason,
   }));
@@ -773,6 +916,7 @@ export async function listCheckoutBillOffers(
     name: o.name ?? null,
     offerKind: String(o.offerKind ?? "DISCOUNT").toUpperCase(),
     summary: describePlatformOfferRow(o),
+    estimatedSavingsInr: estimatePlatformOfferSavingsInr(o, grossCart),
   }));
 
   // Ineligible platform offers — surfaced so the customer sees "min cart ₹399"
@@ -787,6 +931,7 @@ export async function listCheckoutBillOffers(
         name: o.name ?? null,
         offerKind: String(o.offerKind ?? "DISCOUNT").toUpperCase(),
         summary: describePlatformOfferRow(o),
+        estimatedSavingsInr: estimatePlatformOfferSavingsInr(o, grossCart),
         reason: formatPlatformOfferLockReason(
           rejectionById.get(o.id) ?? "",
           grossCart
@@ -873,6 +1018,13 @@ function listEligiblePlatformOffersForCheckoutWithReasons(
       const bound = ctx.platformOfferGeoBindingEffectiveIds;
       if (!bound.has(o.id)) reasons.push(`geo=GEO_NOT_BOUND (effectiveIds.size=${bound.size})`);
     }
+    if (platformOfferConflictsWithSubscriptionFreeDelivery(ctx, o)) {
+      reasons.push("subscription_free_delivery=active");
+    }
+    const offerKind = String(o.offerKind ?? "DISCOUNT").toUpperCase();
+    if (offerKind === "SUBSCRIPTION_BENEFIT" && !customerHasSubscriptionOfferAccess(ctx)) {
+      reasons.push("subscription_benefit_requires_membership");
+    }
     const minAmt = (() => {
       const direct = Number(o.minOrderAmount ?? 0);
       if (direct > 0) return direct;
@@ -881,6 +1033,8 @@ function listEligiblePlatformOffersForCheckoutWithReasons(
       return Number.isFinite(fallback) ? fallback : 0;
     })();
     if (minAmt > 0 && grossCart < minAmt) reasons.push(`minCart=${minAmt} cart=${grossCart}`);
+    const cond = (o.conditions ?? {}) as Record<string, unknown>;
+    if (!platformOfferConditionsPass(cond, ctx)) reasons.push("conditions=failed");
     rejections.push({ id: o.id, name: o.name ?? null, reason: reasons.length > 0 ? reasons.join("|") : "unknown" });
   }
   return { eligible, rejections };

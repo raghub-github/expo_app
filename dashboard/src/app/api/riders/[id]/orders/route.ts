@@ -21,6 +21,10 @@ type RiderOrderUiRow = {
   riderEarning: string | null;
   createdAt: string;
   externalRef: string | null;
+  earningCreditPending?: boolean;
+  paymentStatus?: string | null;
+  riderAssignmentStatus?: string | null;
+  riderRideUnassigned?: boolean;
 };
 
 function mapLegacyOrderRow(row: typeof orders.$inferSelect): RiderOrderUiRow {
@@ -48,6 +52,10 @@ function mapCoreOrderRow(row: {
   formattedOrderId?: string | null;
   orderId?: string | null;
   externalRef?: string | null;
+  earningCreditPending?: boolean;
+  paymentStatus?: string | null;
+  riderAssignmentStatus?: string | null;
+  riderRideUnassigned?: boolean;
 }): RiderOrderUiRow {
   const externalRef =
     (row.formattedOrderId?.trim() || null) ||
@@ -66,6 +74,10 @@ function mapCoreOrderRow(row: {
         ? row.createdAt.toISOString()
         : String(row.createdAt ?? new Date().toISOString()),
     externalRef,
+    earningCreditPending: row.earningCreditPending === true,
+    paymentStatus: row.paymentStatus ?? null,
+    riderAssignmentStatus: row.riderAssignmentStatus ?? null,
+    riderRideUnassigned: row.riderRideUnassigned ?? false,
   };
 }
 
@@ -147,6 +159,8 @@ export async function GET(
               formattedOrderId: row.formattedOrderId,
               orderId: row.orderId,
               externalRef: row.externalRef,
+              earningCreditPending: row.earningCreditPending,
+              paymentStatus: row.paymentStatus,
             })
           ),
           total: result.total,

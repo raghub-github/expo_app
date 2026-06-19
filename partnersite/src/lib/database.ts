@@ -20,6 +20,7 @@ export const fetchVerificationStatusCounts = async () => {
 import { supabase, supabaseAdmin } from './supabase'
 import { FoodOrder, OrderStats } from './types'
 import { MerchantStore } from './types'
+import { looksLikePartnerPublicStoreId } from './partner-orders-routes'
 
 // ============================================
 // MENU CATEGORY QUERIES
@@ -148,21 +149,59 @@ export const deleteMenuCategory = async (categoryId: number) => {
 // MERCHANT STORE QUERIES
 // ============================================
 
-export const fetchStoreById = async (storeId: string): Promise<MerchantStore | null> => {
+function isTransientSupabaseError(message: string, code?: string | null): boolean {
+  if (code === 'PGRST002') return true;
+  return /fetch failed|ENOTFOUND|ECONNREFUSED|network|timeout|57014|temporarily unavailable|PGRST002|schema cache|retrying/i.test(
+    message
+  );
+}
+
+async function fetchStoreByIdViaApi(storeId: string): Promise<MerchantStore | null> {
+  if (typeof window === 'undefined') return null;
   try {
-    const trimmed = String(storeId ?? '').trim();
-    if (!trimmed) {
-      return null;
-    }
+    const res = await fetch(
+      `/api/merchant/store-record?storeId=${encodeURIComponent(storeId)}`,
+      { credentials: 'include', cache: 'no-store' }
+    );
+    if (res.status === 404) return null;
+    if (!res.ok) return null;
+    return (await res.json()) as MerchantStore;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchStoreByIdViaSupabase(
+  trimmed: string,
+  maxAttempts = 3
+): Promise<MerchantStore | null> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const { data: byPublicId, error: publicErr } = await supabase
       .from('merchant_stores')
       .select('*')
       .eq('store_id', trimmed)
       .maybeSingle();
-    if (publicErr) {
-      console.error('Error fetching store:', publicErr.message ?? publicErr, publicErr.code ?? '', publicErr.details ?? '');
+
+    if (!publicErr && byPublicId) {
+      return byPublicId as MerchantStore;
     }
-    if (byPublicId) return byPublicId as MerchantStore;
+
+    if (publicErr) {
+      const msg = String(publicErr.message ?? publicErr.code ?? '');
+      const transient = isTransientSupabaseError(msg, publicErr.code);
+      if (transient && attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, 400 * attempt));
+        continue;
+      }
+      if (!transient) {
+        console.error(
+          'Error fetching store:',
+          publicErr.message ?? publicErr,
+          publicErr.code ?? '',
+          publicErr.details ?? ''
+        );
+      }
+    }
 
     if (/^\d+$/.test(trimmed)) {
       const { data: byInternalId, error: internalErr } = await supabase
@@ -170,19 +209,38 @@ export const fetchStoreById = async (storeId: string): Promise<MerchantStore | n
         .select('*')
         .eq('id', parseInt(trimmed, 10))
         .maybeSingle();
-      if (internalErr) {
+      if (internalErr && !isTransientSupabaseError(String(internalErr.message ?? ''), internalErr.code)) {
         console.error('Error fetching store by internal id:', internalErr.message ?? internalErr);
       }
       if (byInternalId) return byInternalId as MerchantStore;
     }
 
-    return null;
+    if (!publicErr || !isTransientSupabaseError(String(publicErr.message ?? ''), publicErr.code)) {
+      break;
+    }
+  }
+  return null;
+}
+
+export const fetchStoreById = async (storeId: string): Promise<MerchantStore | null> => {
+  try {
+    const trimmed = String(storeId ?? '').trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    if (typeof window !== 'undefined') {
+      const viaApi = await fetchStoreByIdViaApi(trimmed);
+      if (viaApi) return viaApi;
+    }
+
+    return fetchStoreByIdViaSupabase(trimmed);
   } catch (error: unknown) {
     const err = error as { message?: string; code?: string };
     console.error('Error fetching store:', err?.message ?? err?.code ?? error);
     return null;
   }
-}
+};
 
 export const fetchStoreByName = async (storeName: string): Promise<MerchantStore | null> => {
   try {
@@ -192,7 +250,9 @@ export const fetchStoreByName = async (storeName: string): Promise<MerchantStore
       .ilike('store_name', `%${storeName}%`)
       .single();
     if (error) {
-      console.error('Store not found:', storeName);
+      if (!looksLikePartnerPublicStoreId(storeName)) {
+        console.error('Store not found:', storeName);
+      }
       return null;
     }
     return data as MerchantStore;

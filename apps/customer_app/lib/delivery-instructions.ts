@@ -1,5 +1,7 @@
 /** Rider delivery instruction tags — keep in sync with backend buildDeliveryInstructionsArray. */
 
+import { normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
+
 export const DELIVERY_INSTRUCTION_PRESETS = [
   "Leave at door",
   "Leave with guard",
@@ -64,4 +66,23 @@ export function parseDeliveryInstructionsList(
   }
   prefs.note = notes.join(" | ");
   return prefs;
+}
+
+/** Keep in sync with backend `canCustomerUpdateDeliveryInstructions`. */
+export function canCustomerUpdateDeliveryInstructions(status: string | null | undefined): boolean {
+  const statusUpper = normalizeCustomerOrderStatus(status ?? "");
+  const blocked = new Set([
+    "OUT_FOR_DELIVERY",
+    "ON_THE_WAY",
+    "IN_TRANSIT",
+    "PICKED_UP",
+    "PICKED_BY_RIDER",
+    "DISPATCHED",
+    "DELIVERED",
+    "CANCELLED",
+    "FAILED",
+    "RTO",
+    "PAYMENT_FAILED",
+  ]);
+  return !blocked.has(statusUpper);
 }

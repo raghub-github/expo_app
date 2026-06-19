@@ -14,6 +14,7 @@ import { FilterSearchBar } from "./FilterSearchBar";
 import { TablePagination } from "./TablePagination";
 import { Plus, RotateCcw, RefreshCw, ChevronDown, X } from "lucide-react";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
+import { riderSearchMatchesLoadedRider } from "@/lib/riders/resolve-rider-search";
 import { useRiderAccessQuery } from "@/hooks/queries/useRiderAccessQuery";
 import {
   useGetRiderPenaltiesQuery,
@@ -319,7 +320,12 @@ export function RiderPenaltiesClient() {
   // Resolve rider: prefer URL search param; if none, use rider from context so data persists
   useEffect(() => {
     if (hasSearch) {
-      resolveRider(searchValue);
+      if (riderFromContext && riderSearchMatchesLoadedRider(searchValue, riderFromContext)) {
+        setRider(riderFromContext);
+        setResolveError(null);
+      } else {
+        resolveRider(searchValue);
+      }
     } else if (riderFromContext) {
       setRider(riderFromContext);
       setResolveError(null);

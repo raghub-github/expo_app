@@ -1,5 +1,5 @@
 /**
- * Onboarding – Add delivery location (Swiggy/Zomato-style).
+ * Onboarding – Add delivery location (GatiMitra-style).
  * Optional step: add first address or skip, then continue to permissions.
  */
 

@@ -116,7 +116,7 @@ export function RejectFollowUpHost({
     setOosBusy(true);
     try {
       for (const item of followUp.items) {
-        await patchItemOutOfStock(storeId, item.menuItemId, token, payload);
+        await patchItemOutOfStock(String(storeId), item.menuItemId, token, payload);
       }
       await finalizeAndDismiss(followUp.finalizeReject, onDismiss);
     } catch {

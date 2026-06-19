@@ -27,7 +27,8 @@ export const OtpRequestSchema = z.object({
 export const OtpRequestResponseSchema = z.object({
     requestId: z.string(),
     expiresInSec: z.number().int().positive(),
-    otp: z.string().optional(), // For development - OTP to display to user
+    /** Whether MSG91 accepted the SMS send (OTP is never returned to clients). */
+    smsSent: z.boolean().optional(),
 });
 export const OtpVerifySchema = z.object({
     requestId: z.string(),

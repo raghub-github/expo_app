@@ -12,6 +12,8 @@ import { restartOrderDispatch } from "../../lib/order-dispatch.service.js";
 export const RIDE_SEARCH_EXTENSION_SEC = 180;
 /** Max search extensions after the tip-boost sheet (one extra 3‑min window, then auto-cancel). */
 export const RIDE_MAX_SEARCH_EXTENSIONS = 1;
+/** Customer must pick a tip-boost CTA within this window or the order auto-cancels. */
+export const RIDE_TIP_BOOST_DECISION_SEC = 90;
 
 export const RIDE_TIP_AMOUNTS = new Set([0, 10, 20, 30, 40, 50]);
 
@@ -70,24 +72,30 @@ async function loadSearchingRide(customerPk: number, orderRef: string) {
   return row;
 }
 
-/** Mark first search window ended — pauses auto-cancel until customer acts. */
+/** Mark first search window ended — pauses auto-cancel until customer acts (90s decision window). */
 export async function markRideSearchWindowEnded(
   customerPk: number,
   orderRef: string
-): Promise<{ orderId: string; awaitingTipBoost: boolean }> {
+): Promise<{ orderId: string; awaitingTipBoost: boolean; searchExpiresAt: string }> {
   const db = getDb();
   const row = await loadSearchingRide(customerPk, orderRef);
   const now = new Date();
+  const searchExpiresAt = new Date(now.getTime() + RIDE_TIP_BOOST_DECISION_SEC * 1000);
 
   await db
     .update(ordersRide)
     .set({
       awaitingTipBoost: true,
+      searchExpiresAt,
       updatedAt: now,
     })
     .where(eq(ordersRide.orderId, row.coreId));
 
-  return { orderId: row.orderId ?? "", awaitingTipBoost: true };
+  return {
+    orderId: row.orderId ?? "",
+    awaitingTipBoost: true,
+    searchExpiresAt: searchExpiresAt.toISOString(),
+  };
 }
 
 export async function extendRideSearch(

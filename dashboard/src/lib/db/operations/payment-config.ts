@@ -16,7 +16,7 @@ export async function getPaymentConfigBundle(): Promise<PaymentConfigBundle> {
   const sql = getSql();
   const safe = async (q: () => unknown) => {
     try {
-      return (await q()) as Record<string, unknown>[];
+      return (await q()) as unknown as Record<string, unknown>[];
     } catch {
       return [];
     }
@@ -28,7 +28,7 @@ export async function getPaymentConfigBundle(): Promise<PaymentConfigBundle> {
     `),
     settlementRules: await safe(() => sql`SELECT * FROM payment_settlement_rules ORDER BY priority, id`),
     cancellationRules: await safe(() => sql`SELECT * FROM payment_cancellation_rules ORDER BY priority, id`),
-    holdRules: await safe(() => sql`SELECT * FROM payment_hold_rules ORDER BY id`),
+    holdRules: [],
     payoutRules: await safe(() => sql`SELECT * FROM payment_payout_rules ORDER BY id`),
     commissionRules: await safe(() => sql`SELECT * FROM payment_commission_rules ORDER BY id`),
     taxRules: await safe(() => sql`SELECT * FROM payment_tax_rules ORDER BY id`),

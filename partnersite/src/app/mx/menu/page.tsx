@@ -139,6 +139,7 @@ type MenuCombo = {
   display_order?: number | null;
   out_of_stock_manual?: boolean;
   out_of_stock_until?: string | null;
+  out_of_stock_updated_at?: string | null;
 };
 
 function itemHasCustomizationContent(item: MenuItem): boolean {
@@ -171,7 +172,7 @@ import {
   fetchAddonsForCustomization,
   fetchVariantsForMenuItem,
 } from '@/lib/database'
-import { MenuItemsGridSkeleton } from '@/components/PageSkeleton'
+import { MenuItemsGridSkeleton, MenuPageSkeleton } from '@/components/PageSkeleton'
 import { R2Image } from '@/components/R2Image'
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue'
 import { linkItemCuisineSelectionsToStoreProfile } from '@/lib/linkItemCuisinesToStore'
@@ -196,6 +197,7 @@ interface MenuCategory {
   is_active?: boolean;
   out_of_stock_manual?: boolean;
   out_of_stock_until?: string | null;
+  out_of_stock_updated_at?: string | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -1861,6 +1863,7 @@ function MenuContent() {
   const [imageUploadStatus, setImageUploadStatus] = useState<any>(null);
   const [storeImageCount, setStoreImageCount] = useState<{ totalUsed: number } | null>(null);
   const [storeError, setStoreError] = useState<string | null>(null);
+  const [storeIdResolved, setStoreIdResolved] = useState(false);
   const [planLimits, setPlanLimits] = useState<{
     maxMenuItems: number | null;
     maxMenuCategories: number | null;
@@ -2010,6 +2013,7 @@ function MenuContent() {
         // keep id from URL/localStorage
       }
       setStoreId(id);
+      setStoreIdResolved(true);
     };
     void getStoreId();
   }, [searchParams]);
@@ -2039,6 +2043,7 @@ function MenuContent() {
 
   // Fetch store and menu items
   useEffect(() => {
+    if (!storeIdResolved) return;
     if (!storeId) {
       setStoreError('Please select a store first. No store ID found in URL or localStorage.');
       setIsLoading(false);
@@ -2208,7 +2213,7 @@ function MenuContent() {
       }
     };
     loadData();
-  }, [storeId]);
+  }, [storeId, storeIdResolved]);
 
   useEffect(() => {
     if (!showCategoryModal || !storeId) {
@@ -3827,6 +3832,15 @@ function MenuContent() {
     if (pn != null && pn !== '') return `${base} · Plan: ${pn}`;
     return base;
   }, [planLimits?.planName]);
+
+  if (!storeIdResolved) {
+    return (
+      <MXLayoutWhite restaurantName="Loading..." restaurantId={undefined}>
+        <PartnerPageHeader title="Menu Management" subtitle="Loading menu…" />
+        <MenuPageSkeleton />
+      </MXLayoutWhite>
+    );
+  }
 
   // Show error if no store is selected
   if (storeError) {
@@ -5771,10 +5785,19 @@ function MenuContent() {
   );
 }
 
+function MenuPageSuspenseFallback() {
+  return (
+    <MXLayoutWhite restaurantName="Loading..." restaurantId={undefined}>
+      <PartnerPageHeader title="Menu Management" subtitle="Loading menu…" />
+      <MenuPageSkeleton />
+    </MXLayoutWhite>
+  );
+}
+
 // Export a Suspense-wrapped page for Next.js app directory compliance
 export default function MenuPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-white flex items-center justify-center">Loading...</div>}>
+    <Suspense fallback={<MenuPageSuspenseFallback />}>
       <MenuContent />
     </Suspense>
   );

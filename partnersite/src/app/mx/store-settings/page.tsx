@@ -18,6 +18,8 @@ import { toast } from 'sonner'
 import { normalizeWallTimeToHHMM } from '@/lib/wallTimeHHMM'
 import { toastStoreOperationsPostFailure } from '@/lib/storeOperationsPostFeedback'
 import { SettingsSidebar } from './components/SettingsSidebar'
+import { PlanExpiredWarningModal } from '@/components/merchant/PlanExpiredWarningModal'
+import { shouldShowPlanExpiredWarning } from '@/lib/plan-expired-warning'
 
 const StoreLocationMapboxGL = dynamicImport(() => import('@/components/StoreLocationMapboxGL'), { ssr: false })
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || ''
@@ -182,12 +184,19 @@ function StoreSettingsContent() {
   const [currentSubscription, setCurrentSubscription] = useState<any>(null)
   const [currentPlan, setCurrentPlan] = useState<any>(null)
   const [paymentHistory, setPaymentHistory] = useState<any[]>([])
+  const [planHistory, setPlanHistory] = useState<any[]>([])
   const [loadingPlans, setLoadingPlans] = useState(false)
   const [upgradingPlanId, setUpgradingPlanId] = useState<number | null>(null)
   const [pendingSubscriptionOrderId, setPendingSubscriptionOrderId] = useState<string | null>(null)
   const [onboardingPayments, setOnboardingPayments] = useState<any[]>([])
   const [autoRenew, setAutoRenew] = useState(false)
   const [showAutoRenewConfirm, setShowAutoRenewConfirm] = useState(false)
+  const [showPlanExpiredWarning, setShowPlanExpiredWarning] = useState(false)
+  const [expiredPlanMeta, setExpiredPlanMeta] = useState<{
+    planName?: string
+    expiredAt?: string | null
+    subscriptionId?: number | string | null
+  }>({})
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
   
   // Premium Benefits state
@@ -957,6 +966,25 @@ function StoreSettingsContent() {
           setCurrentSubscription(sub.data.subscription)
           setCurrentPlan(sub.data.plan)
           setAutoRenew(sub.data.subscription?.auto_renew === true ? true : false)
+          const expiredSub = sub.data.expiredSubscription
+          const planForWarning = sub.data.plan ?? expiredSub?.merchant_plans
+          if (
+            shouldShowPlanExpiredWarning({
+              storeId,
+              isActive: sub.data.isActive === true,
+              isExpired: sub.data.isExpired === true,
+              autoRenew: Boolean(expiredSub?.auto_renew),
+              planPrice: Number(planForWarning?.price ?? 0),
+              subscriptionId: expiredSub?.id,
+            })
+          ) {
+            setExpiredPlanMeta({
+              planName: planForWarning?.plan_name,
+              expiredAt: expiredSub?.billing_end_at ?? expiredSub?.expiry_date ?? null,
+              subscriptionId: expiredSub?.id,
+            })
+            setShowPlanExpiredWarning(true)
+          }
           if (sub.data.plan?.plan_code) {
             setSubscriptionPlan(sub.data.plan.plan_code.toLowerCase() as 'free' | 'pro' | 'enterprise')
             setMaxMenuItems(sub.data.plan.max_menu_items)
@@ -967,6 +995,12 @@ function StoreSettingsContent() {
             setPrioritySupport(sub.data.plan.priority_support || false)
             setMarketingAutomation(sub.data.plan.marketing_automation || false)
           }
+        }
+
+        if (payments.res?.ok && payments.data?.history) {
+          setPlanHistory(payments.data.history)
+        } else if (payments.res?.ok && payments.data?.payments) {
+          setPlanHistory(payments.data.payments)
         }
 
         if (payments.res?.ok && payments.data?.payments) {
@@ -1501,6 +1535,11 @@ function StoreSettingsContent() {
         paymentsData = await paymentsRes.json();
       } catch (jsonError) {
         console.error('Failed to parse payments JSON:', jsonError);
+      }
+      if (paymentsRes.ok && paymentsData?.history) {
+        setPlanHistory(paymentsData.history);
+      } else if (paymentsRes.ok && paymentsData?.payments) {
+        setPlanHistory(paymentsData.payments);
       }
       if (paymentsRes.ok && paymentsData?.payments) {
         setPaymentHistory(paymentsData.payments);
@@ -3136,68 +3175,108 @@ function StoreSettingsContent() {
                 </div>
 
                 {/* Payment History - Store Specific */}
-                {paymentHistory.length > 0 && (
+                {planHistory.length > 0 && (
                   <div className="bg-white rounded-lg border border-gray-200 p-3 sm:p-4 shadow-sm">
                     <h3 className="text-base sm:text-lg font-bold text-gray-900 mb-3">Plan Purchase History</h3>
                     <div className="space-y-2">
-                      {paymentHistory.slice(0, 10).map((payment: any) => (
-                        <div key={payment.id} className="p-2.5 bg-gray-50 rounded-lg border border-gray-100">
+                      {planHistory.slice(0, 10).map((entry: any) => {
+                        const isExpiredEntry = entry.kind === 'expired' || entry.subscription_status === 'EXPIRED'
+                        const isUpgraded = entry.kind === 'upgraded' || entry.subscription_status === 'UPGRADED'
+                        const isCancelled = entry.kind === 'cancelled' || entry.subscription_status === 'CANCELLED'
+                        const statusLabel = isExpiredEntry
+                          ? 'EXPIRED'
+                          : isUpgraded
+                            ? 'UPGRADED'
+                            : isCancelled
+                              ? 'CANCELLED'
+                              : (entry.payment_status ?? 'PAID')
+                        const statusClass = isExpiredEntry || isCancelled
+                          ? 'bg-red-100 text-red-700'
+                          : isUpgraded
+                            ? 'bg-blue-100 text-blue-700'
+                            : entry.payment_status === 'PAID'
+                              ? 'bg-green-100 text-green-700'
+                              : 'bg-yellow-100 text-yellow-700'
+                        const purchasedDate = entry.payment_date
+                          ? new Date(entry.payment_date)
+                          : null
+                        const expiredDate = entry.expired_at
+                          ? new Date(entry.expired_at)
+                          : entry.billing_period_end
+                            ? new Date(entry.billing_period_end)
+                            : null
+                        return (
+                        <div key={entry.id} className="p-2.5 bg-gray-50 rounded-lg border border-gray-100">
                           <div className="flex items-start justify-between mb-2">
                             <div className="flex-1">
                               <p className="font-semibold text-sm text-gray-900">
-                                {payment.merchant_plans?.plan_name || 'Plan Payment'}
+                                {entry.plan_name || entry.merchant_plans?.plan_name || 'Plan Payment'}
                               </p>
                               <p className="text-xs text-gray-600 mt-0.5">
-                                Purchased: {new Date(payment.payment_date).toLocaleDateString('en-IN', { 
-                                  day: 'numeric', 
-                                  month: 'short', 
-                                  year: 'numeric' 
-                                })}
-                                {payment.billing_period_start && (
-                                  <span className="ml-2">• Activated: {new Date(payment.billing_period_start).toLocaleDateString('en-IN', { 
-                                    day: 'numeric', 
-                                    month: 'short', 
-                                    year: 'numeric' 
+                                {purchasedDate && !isExpiredEntry ? (
+                                  <>
+                                    Purchased: {purchasedDate.toLocaleDateString('en-IN', {
+                                      day: 'numeric',
+                                      month: 'short',
+                                      year: 'numeric',
+                                    })}
+                                  </>
+                                ) : null}
+                                {expiredDate && (isExpiredEntry || isUpgraded || isCancelled) ? (
+                                  <span className={purchasedDate && !isExpiredEntry ? 'ml-2' : ''}>
+                                    {isExpiredEntry ? 'Expired' : isUpgraded ? 'Ended' : 'Cancelled'}:{' '}
+                                    {expiredDate.toLocaleDateString('en-IN', {
+                                      day: 'numeric',
+                                      month: 'short',
+                                      year: 'numeric',
+                                    })}
+                                  </span>
+                                ) : null}
+                                {entry.billing_period_start && !isExpiredEntry ? (
+                                  <span className="ml-2">• Activated: {new Date(entry.billing_period_start).toLocaleDateString('en-IN', {
+                                    day: 'numeric',
+                                    month: 'short',
+                                    year: 'numeric',
                                   })}</span>
-                                )}
+                                ) : null}
                               </p>
                             </div>
                             <div className="text-right ml-3">
-                              <p className="font-bold text-sm text-gray-900">₹{payment.amount}</p>
-                              <span className={`text-xs px-2 py-0.5 rounded ${
-                                payment.payment_status === 'PAID' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'
-                              }`}>
-                                {payment.payment_status}
+                              {entry.amount != null ? (
+                                <p className="font-bold text-sm text-gray-900">₹{entry.amount}</p>
+                              ) : null}
+                              <span className={`text-xs px-2 py-0.5 rounded ${statusClass}`}>
+                                {statusLabel}
                               </span>
                             </div>
                           </div>
-                          {/* Payment Transaction Details */}
-                          {(payment.payment_gateway_id || payment.payment_gateway_response) && (
+                          {(entry.payment_gateway_id || entry.payment_gateway_response) && (
                             <div className="pt-2 border-t border-gray-200 mt-2">
                               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600">
-                                {payment.payment_gateway_id && (
+                                {entry.payment_gateway_id && (
                                   <div>
                                     <span className="font-semibold">Transaction ID:</span>{' '}
-                                    <span className="font-mono">{payment.payment_gateway_id}</span>
+                                    <span className="font-mono">{entry.payment_gateway_id}</span>
                                   </div>
                                 )}
-                                {payment.payment_gateway_response?.razorpay_payment_id && (
+                                {entry.payment_gateway_response?.razorpay_payment_id && (
                                   <div>
                                     <span className="font-semibold">Payment ID:</span>{' '}
-                                    <span className="font-mono">{payment.payment_gateway_response.razorpay_payment_id}</span>
+                                    <span className="font-mono">{entry.payment_gateway_response.razorpay_payment_id}</span>
                                   </div>
                                 )}
-                                {payment.payment_gateway_response?.razorpay_order_id && (
+                                {entry.payment_gateway_response?.razorpay_order_id && (
                                   <div>
                                     <span className="font-semibold">Order ID:</span>{' '}
-                                    <span className="font-mono">{payment.payment_gateway_response.razorpay_order_id}</span>
+                                    <span className="font-mono">{entry.payment_gateway_response.razorpay_order_id}</span>
                                   </div>
                                 )}
                               </div>
                             </div>
                           )}
                         </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   </div>
                 )}
@@ -5029,6 +5108,17 @@ function StoreSettingsContent() {
           ),
           document.body
         )}
+
+        {typeof document !== 'undefined' && storeId ? (
+          <PlanExpiredWarningModal
+            open={showPlanExpiredWarning}
+            onClose={() => setShowPlanExpiredWarning(false)}
+            storeId={storeId}
+            subscriptionId={expiredPlanMeta.subscriptionId}
+            planName={expiredPlanMeta.planName}
+            expiredAt={expiredPlanMeta.expiredAt}
+          />
+        ) : null}
 
         {/* Auto Renew Confirmation Modal - portaled so backdrop blurs sidebar */}
         {typeof document !== 'undefined' && showAutoRenewConfirm && createPortal(

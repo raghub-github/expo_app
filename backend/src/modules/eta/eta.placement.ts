@@ -43,7 +43,7 @@ async function loadOrderItemKpts(orderIdText: string): Promise<EtaItem[]> {
              COALESCE(mmi.preparation_time_minutes, 0)::int AS kpt
       FROM orders_core_items oci
       LEFT JOIN merchant_menu_items mmi ON mmi.id = oci.menu_item_id
-      WHERE oci.order_id = (SELECT id FROM orders_core WHERE order_id = ${orderIdText} LIMIT 1)
+      WHERE oci.order_id = ${orderIdText}
     `;
     return rows
       .map((r) => ({

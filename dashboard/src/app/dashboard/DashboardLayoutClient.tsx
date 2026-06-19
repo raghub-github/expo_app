@@ -1,8 +1,12 @@
 "use client";
 
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, memo } from "react";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
+import {
+  DashboardSearchParamsProvider,
+  useDashboardSearchParams,
+} from "@/context/DashboardSearchParamsContext";
 import { HierarchicalSidebar } from "@/components/layout/HierarchicalSidebar";
 import { RightSidebar } from "@/components/layout/RightSidebar";
 import { Header } from "@/components/layout/Header";
@@ -19,8 +23,12 @@ import { TicketFilterSidebarProvider, useTicketFilterSidebar } from "@/context/T
 import { getCurrentDashboard, getCurrentDashboardSubRoutes } from "@/lib/navigation/dashboard-routes";
 import { queryKeys } from "@/lib/queryKeys";
 import { prefetchDashboardSection } from "@/lib/dashboard-prefetch";
+import {
+  cleanDashboardHref,
+  isDashboardNavAlreadyAtTarget,
+} from "@/lib/navigation/dashboard-nav-transition";
 import { TicketFilters } from "@/components/tickets/TicketFilters";
-import { GatiSpinner } from "@/components/ui/GatiSpinner";
+import { DashboardNavOverlay } from "@/components/layout/DashboardNavOverlay";
 import { CurrentRouteProvider, useCurrentRoute } from "@/context/CurrentRouteContext";
 import {
   isTicketsAppDetailPath,
@@ -67,8 +75,20 @@ function DashboardLayoutClient({
 }: {
   children: React.ReactNode;
 }) {
+  return (
+    <DashboardSearchParamsProvider>
+      <DashboardLayoutClientInner>{children}</DashboardLayoutClientInner>
+    </DashboardSearchParamsProvider>
+  );
+}
+
+function DashboardLayoutClientInner({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const searchParams = useDashboardSearchParams();
   const queryClient = useQueryClient();
 
   // Cancel in-flight page queries as soon as route changes to avoid outdated requests
@@ -95,6 +115,10 @@ function DashboardLayoutClient({
       (cleanPrev.startsWith("/dashboard/orders") && cleanNext.startsWith("/order")) ||
       (cleanPrev.startsWith("/order") && cleanNext.startsWith("/dashboard/orders"))
     ) {
+      return;
+    }
+    // Rider dashboard sub-pages: keep rider summary/context when switching tabs.
+    if (cleanPrev.startsWith("/dashboard/riders") && cleanNext.startsWith("/dashboard/riders")) {
       return;
     }
     // Order detail ↔ tickets: do not invalidate orders list or ticket caches on cross-nav.
@@ -309,6 +333,7 @@ function DashboardLayoutClient({
           handleRightSidebarToggle={handleRightSidebarToggle}
           handleLeftSidebarToggle={handleLeftSidebarToggle}
           isInSpecificDashboard={isInSpecificDashboard}
+          isStoreOrdersPath={isStoreOrdersPath}
         >
           {children}
         </DashboardLayoutContent>
@@ -326,6 +351,7 @@ function DashboardLayoutContent({
   handleRightSidebarToggle,
   handleLeftSidebarToggle,
   isInSpecificDashboard,
+  isStoreOrdersPath,
 }: {
   children: React.ReactNode;
   isLeftSidebarOpen: boolean;
@@ -335,12 +361,12 @@ function DashboardLayoutContent({
   handleRightSidebarToggle: () => void;
   handleLeftSidebarToggle: () => void;
   isInSpecificDashboard: boolean;
+  isStoreOrdersPath: boolean;
 }) {
   const pathname = usePathname();
-  const searchParams = useSearchParams();
-  const currentRouteCtx = useCurrentRoute();
-  const filterSidebar = useTicketFilterSidebar();
+  const searchParams = useDashboardSearchParams();
   const queryClient = useQueryClient();
+  const filterSidebar = useTicketFilterSidebar();
   const cleanPathname = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
   const isTicketDetailPage = useMemo(() => isTicketsAppDetailPath(cleanPathname), [cleanPathname]);
   const isTicketsQueueWorkspace = useMemo(
@@ -486,49 +512,32 @@ function DashboardLayoutContent({
     ]
   );
 
-  // Track when a sidebar navigation has started so we can immediately
-  // clear the previous page content and show a lightweight branded
-  // loader over main + right rail. Left sidebar and header stay visible
-  // (Spinner covers main below the header; right rail is full-height fixed, separate from header column.)
-  const [pendingNavHref, setPendingNavHref] = useState<string | null>(null);
-  const [showNavigationSpinner, setShowNavigationSpinner] = useState(false);
+  const currentRouteCtx = useCurrentRoute();
+  const isNavigating = currentRouteCtx?.isNavigating ?? false;
 
-  // Prevent spinner flashes for fast/cached navigations.
-  useEffect(() => {
-    if (!pendingNavHref) {
-      setShowNavigationSpinner(false);
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      setShowNavigationSpinner(true);
-    }, 180);
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [pendingNavHref]);
+  const cancelInFlightPageQueries = useCallback(() => {
+    queryClient.cancelQueries({
+      predicate: (query) => {
+        const key = query.queryKey as readonly unknown[];
+        const root = key?.[0];
+        if (key.includes("auth") || key.includes("bootstrap")) return false;
+        if (root === "permissions" || root === "dashboard-access") return false;
+        return true;
+      },
+    });
+  }, [queryClient]);
 
-  // As soon as the URL matches the target href (navigation completed),
-  // stop showing the global navigation spinner. Individual pages then
-  // render either cached data or their own loaders.
-  useEffect(() => {
-    if (!pendingNavHref) return;
-    const cleanTarget = pendingNavHref.split("?")[0].split("#")[0];
-    const isAtTarget =
-      cleanPathname === cleanTarget ||
-      (cleanTarget !== "/dashboard" && cleanPathname.startsWith(cleanTarget + "/"));
-    if (isAtTarget) {
-      setPendingNavHref(null);
-    }
-  }, [cleanPathname, pendingNavHref]);
+  const handleSidebarNavigationStart = useCallback(
+    (targetHref: string) => {
+      const cleanTarget = cleanDashboardHref(targetHref);
+      if (isDashboardNavAlreadyAtTarget(cleanPathname, cleanTarget)) return;
+      prefetchDashboardSection(queryClient, cleanTarget);
+      currentRouteCtx?.startNavigation(cleanTarget);
+      cancelInFlightPageQueries();
+    },
+    [queryClient, currentRouteCtx, cleanPathname, cancelInFlightPageQueries]
+  );
 
-  // During slower sidebar navigation, overlay the outgoing page with an opaque layer so
-  // heavy content (e.g. Mapbox on Home) does not show through the spinner.
-  // When we're in the global navigation loading state, we should treat the
-  // layout as if there is no right sidebar so that we don't show a sidebar
-  // or reserved margin before the new main content is ready.
-  // Additionally, on the rider dashboard we only want to reserve sidebar
-  // space once a rider has actually been selected. We treat the presence
-  // of a ?search=... param as the signal that a rider has been loaded.
   const isRiderDashboardLayout =
     cleanPathname === "/dashboard/riders" || cleanPathname.startsWith("/dashboard/riders/");
   const hasRiderSidebarContent =
@@ -536,6 +545,8 @@ function DashboardLayoutContent({
 
   const effectiveHasRightSidebar =
     hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent) && !isTicketDetailPage;
+
+  const showWorkspaceOverlay = isNavigating;
 
   const mainLgMarginLeft = isTicketsQueueWorkspace
     ? isRightSidebarOpen
@@ -557,13 +568,7 @@ function DashboardLayoutContent({
           ? "lg:mr-16"
           : "";
 
-  const spinnerLgLeft = isTicketsQueueWorkspace
-    ? isRightSidebarOpen
-      ? "lg:left-56"
-      : "lg:left-14"
-    : isLeftSidebarOpen
-      ? "lg:left-56"
-      : "lg:left-16";
+  /** Left sidebar stays visible; overlay sits above fixed right rail (z-40). */
 
   return (
     <LeftSidebarMobileProvider>
@@ -573,55 +578,26 @@ function DashboardLayoutContent({
             isOpen={isLeftSidebarOpen}
             onToggle={handleLeftSidebarToggle}
             isInSpecificDashboard={isInSpecificDashboard}
-            onNavigationStart={(targetHref) => {
-              const cleanTarget = targetHref.split("?")[0].split("#")[0];
-              const isAlreadyActive =
-                cleanPathname === cleanTarget ||
-                (cleanTarget !== "/dashboard" && cleanPathname.startsWith(cleanTarget + "/"));
-              if (isAlreadyActive) return;
-              // Tickets hub + queue share one app shell; let client routes load their own loaders instead of masking the whole main column.
-              if (
-                cleanPathname.startsWith("/dashboard/tickets") &&
-                cleanTarget.startsWith("/dashboard/tickets")
-              ) {
-                return;
-              }
-              // Orders list uses its own skeleton + cached React Query data; avoid full-page white overlay.
-              if (
-                cleanPathname.startsWith("/dashboard/orders") &&
-                cleanTarget.startsWith("/dashboard/orders")
-              ) {
-                return;
-              }
-              if (cleanTarget.startsWith("/dashboard/orders")) {
-                prefetchDashboardSection(queryClient, cleanTarget);
-              }
-              setPendingNavHref(cleanTarget);
-              currentRouteCtx?.setCurrentRoute(cleanTarget);
-            }}
+            onNavigationStart={handleSidebarNavigationStart}
           />
         )}
         <RightSidebarProvider value={rightSidebarContextValue}>
           <StoreVerificationSheetProvider>
           <MerchantsSearchProvider>
             <SyncSidebarsOnMobile />
-            {/*
-              Outer flex wraps main column + fixed right UI. Keep RightSidebar / ticket filters out of the same
-              flex row as <main> so fixed positioning is not tied to that scroll row (avoids subtle containing-block
-              / overflow issues and keeps overlays independent of main content transitions).
-            */}
-            <div className="flex min-w-0 flex-1">
-              {/* Main content: margin-left reserves space for fixed left sidebar (w-56, same as right); margin-right for right sidebar overlay */}
+            <div className="relative flex min-w-0 flex-1 min-h-0">
               <div
                 className={`flex flex-1 flex-col overflow-hidden w-full min-w-0 ${mainLgMarginLeft} ${mainLgMarginRight}`}
                 style={{ transition: "margin 0.3s ease-out" }}
               >
                 <Header />
-                <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden w-full">
+                <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden w-full">
                   <main
                     className={`flex-1 transition-all duration-300 w-full flex flex-col min-h-0 relative text-gray-900 ${
                       isTicketsFullBleedLayout
                         ? "overflow-hidden bg-white px-2 pb-3 pt-2 sm:px-3 sm:pb-4 sm:pt-2.5"
+                        : isStoreOrdersPath
+                          ? "overflow-hidden bg-white p-0 sm:p-0"
                         : isTicketsHubGreyPage
                           ? "overflow-y-auto bg-[#f4f5f7] p-4 sm:p-6"
                           : "overflow-y-auto bg-white p-3 sm:p-4"
@@ -629,29 +605,13 @@ function DashboardLayoutContent({
                   >
                     <div className="w-full max-w-full min-w-0 flex-1 flex flex-col min-h-0 relative">
                       {children}
+                      <DashboardNavOverlay visible={showWorkspaceOverlay} scope="main" />
                     </div>
                   </main>
-
-                  {showNavigationSpinner && (
-                    <div
-                      className={`pointer-events-auto fixed right-0 bottom-0 z-[130] flex items-center justify-center bg-[#FFFFFF] top-14 left-0 ${spinnerLgLeft}`}
-                      aria-busy
-                      aria-label="Loading page"
-                    >
-                      <GatiSpinner />
-                    </div>
-                  )}
-
-                  {/* Persistent Mapbox container stash (keeps map mounted across route changes). */}
-                  <div
-                    id="gm-map-stash"
-                    aria-hidden
-                    className="pointer-events-none fixed opacity-0"
-                    style={{ left: -10000, top: 0, width: 520, height: 520 }}
-                  />
                 </div>
               </div>
-              {hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent) && (
+
+              {effectiveHasRightSidebar && (
                 <RightSidebar
                   isOpen={isRightSidebarOpen}
                   onToggle={
@@ -664,6 +624,14 @@ function DashboardLayoutContent({
                   }
                 />
               )}
+
+              <div
+                id="gm-map-stash"
+                aria-hidden
+                className="pointer-events-none fixed opacity-0"
+                style={{ left: -10000, top: 0, width: 520, height: 520 }}
+              />
+
               {isTicketDetailPage && (
                 <div
                   className="fixed inset-y-0 z-50 overflow-hidden transition-[width] duration-300 ease-out"
