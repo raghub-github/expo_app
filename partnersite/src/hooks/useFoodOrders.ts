@@ -146,8 +146,6 @@ export interface OrdersFoodRow {
   /** Kitchen / state machine (PLACED, ACCEPTED, PREPARING, …) — drives tabs with orders_core.status */
   current_status?: string | null;
   order_type?: string | null;
-  /** Platform vs merchant self-delivery (orders_core.delivery_type / fulfillment). */
-  delivery_type?: string | null;
 }
 
 export interface FoodOrderStats {
