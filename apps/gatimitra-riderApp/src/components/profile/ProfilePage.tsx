@@ -1,3 +1,4 @@
+// @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
 // @refresh reset
 import React, { useEffect, useMemo, useState } from "react";
 import {

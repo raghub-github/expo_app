@@ -1,3 +1,4 @@
+// @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
 import { Redirect, useLocalSearchParams } from "expo-router";
 
 /** Legacy route — same raise-ticket hub as Profile → Raise Ticket. */

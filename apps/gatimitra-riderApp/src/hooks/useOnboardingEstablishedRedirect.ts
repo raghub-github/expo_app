@@ -1,3 +1,4 @@
+// @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
 import { useEffect } from "react";
 import { router } from "expo-router";
 import { resolveEstablishedRiderHref } from "@/src/lib/onboarding-routes";

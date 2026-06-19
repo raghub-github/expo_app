@@ -74,7 +74,6 @@ export async function prefetchSubscriptionPlans(queryClient: QueryClient): Promi
       staleTime: 60 * 1000,
       gcTime: SUBSCRIPTION_PLANS_GC_MS,
       retry: 1,
-      refetchOnMount: false,
     }),
   ]);
 }

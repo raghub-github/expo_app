@@ -357,7 +357,7 @@ function resolveRidePaymentWaitingCharge(args: {
 /** Amount due on delivered unpaid person rides (list + detail). */
 export function resolveRidePaymentDueAmount(
   order: Pick<
-    OrderSummary | OrderDetail,
+    OrderDetail,
     | "totalAmount"
     | "tipAmount"
     | "billingSnapshot"

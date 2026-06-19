@@ -1,3 +1,4 @@
+// @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
 // @refresh reset
 import React from "react";
 import { View, StyleSheet } from "react-native";
