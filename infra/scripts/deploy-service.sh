@@ -104,8 +104,16 @@ done
 
 if [[ $healthy -ne 1 ]]; then
   echo "✖ deploy: $svc — new replica never became healthy; rolling back" >&2
+
+  echo "===== FAILED CONTAINER LOGS ====="
+  docker logs "$new_cid" --tail 500 || true
+
+  echo "===== FAILED CONTAINER INSPECT ====="
+  docker inspect "$new_cid" || true
+
   docker stop "$new_cid" >/dev/null || true
   docker rm   "$new_cid" >/dev/null || true
+
   exit 1
 fi
 
