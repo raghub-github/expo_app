@@ -23,8 +23,8 @@
     "./prettier-base.json": "./prettier-base.json"
   },
   "scripts": {
-    "typecheck": "echo 'shared-config has no source to typecheck'",
-    "lint": "echo 'shared-config has no source to lint'",
-    "build": "echo 'shared-config is config-only — no build step'"
+    "typecheck": "node -e \"console.log('shared-config has no source to typecheck')\"",
+    "lint": "node -e \"console.log('shared-config has no source to lint')\"",
+    "build": "node -e \"console.log('shared-config is config-only — no build step')\""
   }
 }

@@ -11,7 +11,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "echo 'TODO'",
-    "build": "echo 'consumed as TS source'"
+    "build": "node -e \"console.log('@gatimitra/auth is consumed as TS source — no build step')\""
   },
   "devDependencies": {
     "@gatimitra/shared-config": "*",
