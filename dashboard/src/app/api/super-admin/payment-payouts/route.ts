@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { requireSuperAdminApi } from "@/lib/super-admin-api";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { approvePayoutRpc, listPendingMerchantPayouts, rejectPayoutRpc } from "@/lib/db/operations/payment-config";
+import { approvePayoutRpc, completeMerchantPayoutWithPgTxn, listMerchantPayouts, rejectPayoutRpc, updateMerchantPayoutPgOrUtr } from "@/lib/db/operations/payment-config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,7 +11,7 @@ export async function GET() {
   const gate = await requireSuperAdminApi();
   if (!gate.ok) return gate.response;
   try {
-    const payouts = await listPendingMerchantPayouts(100);
+    const payouts = await listMerchantPayouts(200);
     return NextResponse.json({ success: true, payouts });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Failed";
@@ -30,7 +30,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, error: "System user required" }, { status: 403 });
   }
 
-  let body: { action?: string; payoutId?: number; reason?: string };
+  let body: {
+    action?: string;
+    payoutId?: number;
+    reason?: string;
+    pgTransactionId?: string;
+    utrReference?: string;
+    field?: "pg" | "utr";
+    value?: string;
+  };
   try {
     body = await req.json();
   } catch {
@@ -71,7 +79,45 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ success: false, error: msg }, { status: 400 });
       }
     }
-    return NextResponse.json({ success: false, error: "action must be approve or reject" }, { status: 400 });
+    if (body.action === "complete") {
+      const pgTransactionId = body.pgTransactionId?.trim();
+      if (!pgTransactionId) {
+        return NextResponse.json({ success: false, error: "pgTransactionId is required" }, { status: 400 });
+      }
+      try {
+        const result = await completeMerchantPayoutWithPgTxn(
+          payoutId,
+          pgTransactionId,
+          systemUserId,
+          body.utrReference?.trim() || null
+        );
+        return NextResponse.json({ success: true, result: result ?? { ok: true } });
+      } catch (rpcErr) {
+        const msg = rpcErr instanceof Error ? rpcErr.message : "Complete failed";
+        if (msg.includes("payment_complete_merchant_payout") || msg.includes("does not exist")) {
+          return NextResponse.json({
+            success: false,
+            error: "Run migration 0270_merchant_payout_pg_transaction_id.sql on Supabase.",
+          }, { status: 503 });
+        }
+        return NextResponse.json({ success: false, error: msg }, { status: 400 });
+      }
+    }
+    if (body.action === "updateRefs") {
+      const field = body.field;
+      if (field !== "pg" && field !== "utr") {
+        return NextResponse.json({ success: false, error: "field must be pg or utr" }, { status: 400 });
+      }
+      const value = body.value ?? (field === "pg" ? body.pgTransactionId : body.utrReference) ?? "";
+      try {
+        const result = await updateMerchantPayoutPgOrUtr(payoutId, field, String(value));
+        return NextResponse.json({ success: true, result });
+      } catch (rpcErr) {
+        const msg = rpcErr instanceof Error ? rpcErr.message : "Update failed";
+        return NextResponse.json({ success: false, error: msg }, { status: 400 });
+      }
+    }
+    return NextResponse.json({ success: false, error: "action must be approve, reject, complete, or updateRefs" }, { status: 400 });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Failed";
     return NextResponse.json({ success: false, error: msg }, { status: 500 });

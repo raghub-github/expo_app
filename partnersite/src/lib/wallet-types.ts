@@ -55,6 +55,8 @@ export interface LedgerEntry {
   tds_amount: number | null;
   created_at: string;
   formatted_order_id?: string | null;
+  /** Payment gateway transaction ID — show in ledger for bank reference. */
+  pg_transaction_id?: string | null;
 }
 
 export interface PayoutQuote {
@@ -80,7 +82,18 @@ export const WALLET_CONSTANTS = {
   DEFAULT_REFUND_WINDOW_DAYS: 3,
   MAX_LEDGER_PAGE_SIZE: 100,
   DEFAULT_LEDGER_PAGE_SIZE: 50,
+  WITHDRAWAL_COMPLETED_DESCRIPTION:
+    'Funds have been successfully transferred to the registered bank account.',
 } as const;
+
+/** Normalize legacy withdrawal-complete ledger copy for merchant-facing UI. */
+export function formatLedgerDescription(description: string | null | undefined): string {
+  if (!description?.trim()) return '';
+  if (/^Withdrawal completed #\d+$/i.test(description.trim())) {
+    return WALLET_CONSTANTS.WITHDRAWAL_COMPLETED_DESCRIPTION;
+  }
+  return description;
+}
 
 export function roundMoney(n: number): number {
   return Math.round(n * 100) / 100;

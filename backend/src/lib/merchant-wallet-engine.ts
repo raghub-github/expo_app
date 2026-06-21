@@ -304,51 +304,73 @@ export async function queryLedger(
     }))
   );
   const enrichedEntries = applyWithdrawableBalanceToLedgerEntries(entries, withdrawableById);
+  const withPgIds = await enrichLedgerWithPgTransactionIds(sql, enrichedEntries);
 
   return {
-    entries: enrichedEntries,
+    entries: withPgIds,
     total: Number((countRows[0] as any)?.cnt ?? entries.length),
   };
 }
 
 // ─── Payout quote ─────────────────────────────────────────────────────────────
 
-export async function getPayoutQuote(storeId: number, amount: number): Promise<PayoutQuote> {
-  const sql = getSql();
-  const parentRows = await sql`SELECT parent_id FROM merchant_stores WHERE id = ${storeId} LIMIT 1`;
-  const parentId = parentRows.length > 0 ? (parentRows[0] as any).parent_id : null;
-  const today = new Date().toISOString().slice(0, 10);
+/** Merchant receives the full requested amount — no withdrawal-time commission. */
+export async function getPayoutQuote(_storeId: number, amount: number): Promise<PayoutQuote> {
+  const net = roundMoney(amount);
+  return {
+    requested_amount: net,
+    commission_percentage: 0,
+    commission_amount: 0,
+    net_payout_amount: net,
+  };
+}
 
-  let commissionPct = 0;
-  const storeRule = await sql`
-    SELECT commission_percentage FROM platform_commission_rules
-    WHERE merchant_store_id = ${storeId} AND effective_from <= ${today}
-      AND (effective_to IS NULL OR effective_to >= ${today})
-    ORDER BY effective_from DESC LIMIT 1
-  `;
-  if (storeRule.length > 0) {
-    commissionPct = Number((storeRule[0] as any).commission_percentage ?? 0);
-  } else if (parentId) {
-    const parentRule = await sql`
-      SELECT commission_percentage FROM platform_commission_rules
-      WHERE merchant_parent_id = ${parentId} AND effective_from <= ${today}
-        AND (effective_to IS NULL OR effective_to >= ${today})
-      ORDER BY effective_from DESC LIMIT 1
+async function enrichLedgerWithPgTransactionIds(
+  sql: ReturnType<typeof getSql>,
+  entries: LedgerEntry[]
+): Promise<LedgerEntry[]> {
+  const payoutIds = [
+    ...new Set(
+      entries
+        .filter((e) => e.category === "WITHDRAWAL" && e.reference_id != null && e.reference_id > 0)
+        .map((e) => e.reference_id as number)
+    ),
+  ];
+  if (payoutIds.length === 0) return entries;
+
+  const pgByPayoutId = new Map<number, string>();
+  try {
+    const rows = await sql`
+      SELECT pr.id,
+        COALESCE(pr.pg_transaction_id, ppa.gateway_payout_id, pr.utr_reference, ppa.utr_reference) AS pg_transaction_id
+      FROM merchant_payout_requests pr
+      LEFT JOIN payment_payout_approvals ppa
+        ON ppa.payout_request_id = pr.id AND ppa.payout_type = 'MERCHANT'
+      WHERE pr.id = ANY(${payoutIds})
     `;
-    if (parentRule.length > 0) {
-      commissionPct = Number((parentRule[0] as any).commission_percentage ?? 0);
+    for (const row of rows as { id: number; pg_transaction_id: string | null }[]) {
+      if (row.pg_transaction_id?.trim()) {
+        pgByPayoutId.set(Number(row.id), row.pg_transaction_id.trim());
+      }
+    }
+  } catch {
+    const rows = await sql`
+      SELECT id, COALESCE(pg_transaction_id, utr_reference) AS pg_transaction_id
+      FROM merchant_payout_requests
+      WHERE id = ANY(${payoutIds})
+    `;
+    for (const row of rows as { id: number; pg_transaction_id: string | null }[]) {
+      if (row.pg_transaction_id?.trim()) {
+        pgByPayoutId.set(Number(row.id), row.pg_transaction_id.trim());
+      }
     }
   }
 
-  const commissionAmount = roundMoney(amount * commissionPct / 100);
-  const netPayoutAmount = roundMoney(amount - commissionAmount);
-
-  return {
-    requested_amount: amount,
-    commission_percentage: commissionPct,
-    commission_amount: commissionAmount,
-    net_payout_amount: netPayoutAmount,
-  };
+  return entries.map((entry) => {
+    if (entry.category !== "WITHDRAWAL" || entry.reference_id == null) return entry;
+    const pg = pgByPayoutId.get(entry.reference_id);
+    return pg ? { ...entry, pg_transaction_id: pg } : entry;
+  });
 }
 
 // ─── Check for existing pending withdrawals ───────────────────────────────────
@@ -488,7 +510,7 @@ export async function completeWithdrawal(payoutRequestId: number): Promise<void>
     SELECT merchant_wallet_debit(
       ${walletId}, ${amount}, 'WITHDRAWAL', 'HOLD',
       'WITHDRAWAL', ${payoutRequestId}, ${debitKey},
-      ${'Withdrawal completed #' + payoutRequestId},
+      ${"Funds have been successfully transferred to the registered bank account."},
       ${JSON.stringify({ payout_request_id: payoutRequestId, net_payout_amount: Number(p.net_payout_amount) })}::jsonb
     ) AS ledger_id
   `;

@@ -20,6 +20,7 @@ import {
   type WalletAnalyticsPeriod,
 } from '@/hooks/useMerchantApi'
 import { formatInr } from '@/lib/format-inr';
+import { formatLedgerDescription } from '@/lib/wallet-types';
 import { RefundPolicyContent } from '@/components/RefundPolicyContent'
 import {
   Wallet,
@@ -45,8 +46,8 @@ import {
   User,
   FileImage,
   Clock,
-  Calculator,
   Phone,
+  Copy,
 } from 'lucide-react'
 import { PageSkeletonGeneric } from '@/components/PageSkeleton'
 import { PaymentsOverviewCharts } from '@/components/payments/PaymentsOverviewCharts'
@@ -73,6 +74,22 @@ const LEDGER_CATEGORIES = [
   'MANUAL_DEBIT',
   'TAX_ADJUSTMENT',
 ] as const
+
+const MIN_WITHDRAWAL = 100
+const MAX_WITHDRAWAL_PER_REQUEST = 100_000
+
+function getWithdrawableBalance(wallet: WalletSummary | undefined | null): number {
+  return wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0
+}
+
+function getMaxWithdrawalLimit(withdrawable: number): number {
+  return Math.min(Math.max(0, withdrawable), MAX_WITHDRAWAL_PER_REQUEST)
+}
+
+function formatWithdrawalInputAmount(amount: number): string {
+  const rounded = Math.round(amount * 100) / 100
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2)
+}
 
 interface WalletSummary {
   available_balance: number
@@ -107,6 +124,7 @@ interface LedgerEntry {
   order_id: number | null
   formatted_order_id: string | null
   table_id: string | null
+  pg_transaction_id?: string | null
 }
 
 interface OrderDetailItem {
@@ -136,6 +154,35 @@ interface OrderDetailRider {
 
 function formatCategory(cat: string): string {
   return cat.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+async function copyTextToClipboard(text: string, successMessage = 'Copied to clipboard') {
+  try {
+    await navigator.clipboard.writeText(text)
+    toast.success(successMessage)
+  } catch {
+    toast.error('Could not copy')
+  }
+}
+
+function PgTxnIdCell({ pgId }: { pgId: string | null | undefined }) {
+  if (!pgId?.trim()) {
+    return <span className="text-gray-400">—</span>
+  }
+  return (
+    <div className="flex items-start gap-1.5">
+      <span className="font-mono text-[11px] leading-snug break-all text-gray-700">{pgId}</span>
+      <button
+        type="button"
+        onClick={() => void copyTextToClipboard(pgId, 'PG TNX ID copied')}
+        className="shrink-0 rounded p-1 text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-800"
+        title="Copy PG TNX ID"
+        aria-label="Copy PG TNX ID"
+      >
+        <Copy size={14} />
+      </button>
+    </div>
+  )
 }
 
 function isCancellationNoCreditEntry(row: LedgerEntry): boolean {
@@ -192,6 +239,34 @@ function PaymentsContent() {
   const { data: ledgerData, isLoading: ledgerLoading } = useMerchantLedger(storeId, ledgerParams)
   const ledger = ledgerData?.entries ?? []
   const ledgerTotal = ledgerData?.total ?? 0
+  const withdrawableBalance = getWithdrawableBalance(wallet as WalletSummary | undefined)
+  const maxWithdrawalLimit = getMaxWithdrawalLimit(withdrawableBalance)
+  const withdrawalInputEnabled = maxWithdrawalLimit >= MIN_WITHDRAWAL && !isWithdrawing
+
+  const openWithdrawalSheet = () => {
+    const limit = getMaxWithdrawalLimit(getWithdrawableBalance(wallet as WalletSummary | undefined))
+    if (limit >= MIN_WITHDRAWAL) {
+      setWithdrawalAmount(formatWithdrawalInputAmount(limit))
+    } else {
+      setWithdrawalAmount('')
+    }
+    setShowWithdrawal(true)
+  }
+
+  const handleWithdrawalAmountChange = (raw: string) => {
+    if (raw === '') {
+      setWithdrawalAmount('')
+      return
+    }
+    const num = parseFloat(raw)
+    if (isNaN(num)) return
+    const cap = getMaxWithdrawalLimit(getWithdrawableBalance(wallet as WalletSummary | undefined))
+    if (num > cap) {
+      setWithdrawalAmount(formatWithdrawalInputAmount(cap))
+      return
+    }
+    setWithdrawalAmount(raw)
+  }
   const { data: bankAccounts = [], isLoading: bankAccountsLoading } = useMerchantBankAccounts(storeId)
   const payoutMutation = usePayoutRequestMutation()
   const invalidateBankAccounts = useInvalidateBankAccounts()
@@ -218,14 +293,11 @@ function PaymentsContent() {
   const [bankProofUploading, setBankProofUploading] = useState(false)
   const [addBankSubmitting, setAddBankSubmitting] = useState(false)
 
-  const [payoutQuote, setPayoutQuote] = useState<{ requested_amount: number; commission_percentage: number; commission_amount: number; gst_on_commission_percent: number; gst_on_commission: number; tds_amount: number; tax_amount: number; net_payout_amount: number } | null>(null)
-  const [payoutQuoteLoading, setPayoutQuoteLoading] = useState(false)
-
   const [expandedLedgerId, setExpandedLedgerId] = useState<number | null>(null)
   const [expandedRidersLedgerId, setExpandedRidersLedgerId] = useState<number | null>(null)
   const [orderDetailsCache, setOrderDetailsCache] = useState<Record<number, { items: OrderDetailItem[]; riders: OrderDetailRider[] }>>({})
   const [orderDetailsLoading, setOrderDetailsLoading] = useState<number | null>(null)
-  const [payoutDetailsCache, setPayoutDetailsCache] = useState<Record<number, { payout: { id: number; amount: number; net_payout_amount: number; commission_percentage: number; commission_amount: number; status: string; utr_reference: string | null; requested_at: string }; bank: { account_holder_name: string; account_number_masked: string | null; bank_name: string; payout_method: string; upi_id: string | null; ifsc_code?: string | null } | null }>>({})
+  const [payoutDetailsCache, setPayoutDetailsCache] = useState<Record<number, { payout: { id: number; amount: number; net_payout_amount: number; status: string; utr_reference: string | null; pg_transaction_id: string | null; requested_at: string }; bank: { account_holder_name: string; account_number_masked: string | null; bank_name: string; payout_method: string; upi_id: string | null; ifsc_code?: string | null } | null }>>({})
   const [payoutDetailsLoading, setPayoutDetailsLoading] = useState<number | null>(null)
 
   useEffect(() => {
@@ -254,43 +326,6 @@ function PaymentsContent() {
     }
   }, [showWithdrawal, bankAccounts, withdrawBankId])
 
-  useEffect(() => {
-    if (!showWithdrawal || !storeId) {
-      setPayoutQuote(null)
-      return
-    }
-    const amount = parseFloat(withdrawalAmount)
-    if (isNaN(amount) || amount < 100) {
-      setPayoutQuote(null)
-      return
-    }
-    let cancelled = false
-    setPayoutQuoteLoading(true)
-    setPayoutQuote(null)
-    fetch(`/api/merchant/payout-quote?storeId=${encodeURIComponent(storeId)}&amount=${amount}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (cancelled) return
-        if (data.success && data.requested_amount != null) {
-          setPayoutQuote({
-            requested_amount: data.requested_amount ?? amount,
-            commission_percentage: data.commission_percentage ?? 0,
-            commission_amount: data.commission_amount ?? 0,
-            gst_on_commission_percent: data.gst_on_commission_percent ?? 18,
-            gst_on_commission: data.gst_on_commission ?? 0,
-            tds_amount: data.tds_amount ?? 0,
-            tax_amount: data.tax_amount ?? 0,
-            net_payout_amount: data.net_payout_amount ?? amount,
-          })
-        } else {
-          setPayoutQuote(null)
-        }
-      })
-      .catch(() => { if (!cancelled) setPayoutQuote(null) })
-      .finally(() => { if (!cancelled) setPayoutQuoteLoading(false) })
-    return () => { cancelled = true }
-  }, [showWithdrawal, storeId, withdrawalAmount])
-
   const applyFilters = () => {
     setLedgerOffset(0)
   }
@@ -315,8 +350,12 @@ function PaymentsContent() {
       toast.error('Available balance is below the minimum withdrawal (₹100).')
       return
     }
-    if (amount > available) {
-      toast.error('Requested amount exceeds your available balance.')
+    if (amount > maxWithdrawalLimit) {
+      toast.error('Requested amount exceeds your available balance or ₹1,00,000 limit.')
+      return
+    }
+    if (amount > MAX_WITHDRAWAL_PER_REQUEST) {
+      toast.error('Maximum withdrawal per request is ₹1,00,000.')
       return
     }
     const bankId = withdrawBankId === '' ? null : Number(withdrawBankId)
@@ -329,8 +368,7 @@ function PaymentsContent() {
       await payoutMutation.mutateAsync({ storeId, amount, bank_account_id: bankId })
       setWithdrawalAmount('')
       setShowWithdrawal(false)
-      setPayoutQuote(null)
-      toast.success('Withdrawal request submitted. You will receive the net amount in 2–3 business days.')
+      toast.success('Withdrawal request submitted. Full amount will arrive within 24 to 48 hrs.')
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Request failed. Please try again.')
     } finally {
@@ -370,10 +408,9 @@ function PaymentsContent() {
               id: data.payout.id,
               amount: data.payout.amount,
               net_payout_amount: data.payout.net_payout_amount,
-              commission_percentage: data.payout.commission_percentage,
-              commission_amount: data.payout.commission_amount,
               status: data.payout.status,
               utr_reference: data.payout.utr_reference ?? null,
+              pg_transaction_id: data.payout.pg_transaction_id ?? data.payout.utr_reference ?? null,
               requested_at: data.payout.requested_at,
             },
             bank: data.bank ?? null,
@@ -551,7 +588,7 @@ function PaymentsContent() {
       const lines = rows.map((r) => [
         new Date(r.created_at).toISOString(),
         r.category,
-        (r.description ?? '').replace(/"/g, '""'),
+        formatLedgerDescription(r.description).replace(/"/g, '""'),
         r.direction,
         String(r.amount),
         String(r.balance_after),
@@ -598,7 +635,7 @@ function PaymentsContent() {
                   View refund policy
                 </button>
                 <button
-                  onClick={() => setShowWithdrawal(true)}
+                  onClick={openWithdrawalSheet}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm transition-colors text-sm"
                 >
                   <ArrowDownToLine size={16} />
@@ -826,7 +863,7 @@ function PaymentsContent() {
                 <h3 className="text-sm font-semibold text-gray-900 mb-3">Quick Actions</h3>
                 <div className="grid grid-cols-1 gap-2">
                   <button
-                    onClick={() => setShowWithdrawal(true)}
+                    onClick={openWithdrawalSheet}
                     className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 transition-colors group"
                   >
                     <div className="flex items-center gap-3">
@@ -994,6 +1031,7 @@ function PaymentsContent() {
                           <th className="text-left py-3 px-4 font-semibold text-gray-700">Order ID</th>
                           <th className="text-left py-3 px-4 font-semibold text-gray-700">Date & Time</th>
                           <th className="text-left py-3 px-4 font-semibold text-gray-700">Description</th>
+                          <th className="text-left py-3 px-4 font-semibold text-gray-700">PG TNX ID</th>
                           <th className="text-right py-3 px-4 font-semibold text-gray-700">Amount</th>
                           <th className="text-center py-3 px-4 font-semibold text-gray-700">Status</th>
                           <th className="text-right py-3 px-4 font-semibold text-gray-700">Withdrawable After</th>
@@ -1022,7 +1060,16 @@ function PaymentsContent() {
                                     : '—')}
                               </td>
                               <td className="py-3 px-4 text-gray-600 whitespace-nowrap">{new Date(row.created_at).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}</td>
-                              <td className="py-3 px-4 text-gray-600 truncate max-w-xs" title={row.description ?? ''}>{row.description || '—'}</td>
+                              <td className="py-3 px-4 align-top text-gray-600 min-w-[200px] max-w-xs whitespace-normal break-words leading-relaxed">
+                                {formatLedgerDescription(row.description) || '—'}
+                              </td>
+                              <td className="py-3 px-4 align-top text-gray-600 min-w-[160px]">
+                                {row.category === 'WITHDRAWAL' ? (
+                                  <PgTxnIdCell pgId={row.pg_transaction_id} />
+                                ) : (
+                                  '—'
+                                )}
+                              </td>
                               <td className={`py-3 px-4 text-right font-semibold tabular-nums ${
                                 isCancellationNoCreditEntry(row)
                                   ? 'text-amber-700'
@@ -1054,11 +1101,14 @@ function PaymentsContent() {
                               </td>
                               <td className="py-3 px-4 text-right text-gray-700 tabular-nums">{formatInr(row.balance_after)}</td>
                             </tr>
-                            {expandedLedgerId === row.id && row.category === 'WITHDRAWAL' && row.reference_id != null && (
+                            {expandedLedgerId === row.id && row.category === 'WITHDRAWAL' && row.reference_id != null && (() => {
+                              const payoutRefId = row.reference_id as number
+                              const payoutDetail = payoutDetailsCache[payoutRefId]
+                              return (
                               <tr className="bg-slate-50/60 border-b border-slate-200">
-                                <td colSpan={8} className="p-0">
+                                <td colSpan={9} className="p-0">
                                   <div className="px-4 pb-4 pt-1">
-                                    {payoutDetailsLoading === row.reference_id ? (
+                                    {payoutDetailsLoading === payoutRefId ? (
                                       <div className="flex items-center justify-center py-8 text-slate-500">
                                         <Loader2 size={24} className="animate-spin mr-2" />
                                         Loading payout details...
@@ -1071,20 +1121,43 @@ function PaymentsContent() {
                                             Transaction details
                                           </h4>
                                           <dl className="space-y-1.5 text-sm">
-                                            <div className="flex justify-between"><dt className="text-slate-500">Request ID</dt><dd className="font-medium tabular-nums">{payoutDetailsCache[row.reference_id]?.payout?.id ?? '—'}</dd></div>
-                                            <div className="flex justify-between"><dt className="text-slate-500">Status</dt><dd className="font-medium">{payoutDetailsCache[row.reference_id]?.payout?.status ?? '—'}</dd></div>
-                                            <div className="flex justify-between"><dt className="text-slate-500">Requested</dt><dd>{payoutDetailsCache[row.reference_id]?.payout?.requested_at ? new Date(payoutDetailsCache[row.reference_id].payout.requested_at).toLocaleString('en-IN') : '—'}</dd></div>
-                                            {payoutDetailsCache[row.reference_id]?.payout?.utr_reference && (
-                                              <div className="flex justify-between"><dt className="text-slate-500">UTR / Ref</dt><dd className="font-mono text-xs">{payoutDetailsCache[row.reference_id].payout.utr_reference}</dd></div>
+                                            <div className="flex justify-between"><dt className="text-slate-500">Request ID</dt><dd className="font-medium tabular-nums">{payoutDetail?.payout?.id ?? '—'}</dd></div>
+                                            <div className="flex justify-between"><dt className="text-slate-500">Status</dt><dd className="font-medium">{payoutDetail?.payout?.status ?? '—'}</dd></div>
+                                            <div className="flex justify-between"><dt className="text-slate-500">Requested</dt><dd>{payoutDetail?.payout?.requested_at ? new Date(payoutDetail.payout.requested_at).toLocaleString('en-IN') : '—'}</dd></div>
+                                            {payoutDetail?.payout?.pg_transaction_id && (
+                                              <div className="flex justify-between gap-3">
+                                                <dt className="shrink-0 text-slate-500">PG TNX ID</dt>
+                                                <dd className="flex items-start justify-end gap-1.5 text-right">
+                                                  <span className="font-mono text-xs break-all">
+                                                    {payoutDetail.payout.pg_transaction_id}
+                                                  </span>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                      void copyTextToClipboard(
+                                                        payoutDetail.payout.pg_transaction_id!,
+                                                        'PG TNX ID copied'
+                                                      )
+                                                    }
+                                                    className="shrink-0 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                                                    title="Copy PG TNX ID"
+                                                    aria-label="Copy PG TNX ID"
+                                                  >
+                                                    <Copy size={14} />
+                                                  </button>
+                                                </dd>
+                                              </div>
                                             )}
-                                            <div className="flex justify-between"><dt className="text-slate-500">Amount</dt><dd>{payoutDetailsCache[row.reference_id]?.payout?.amount != null ? formatInr(payoutDetailsCache[row.reference_id].payout.amount) : '—'}</dd></div>
-                                            <div className="flex justify-between"><dt className="text-slate-500">Net payout</dt><dd className="font-medium">{payoutDetailsCache[row.reference_id]?.payout?.net_payout_amount != null ? formatInr(payoutDetailsCache[row.reference_id].payout.net_payout_amount) : '—'}</dd></div>
-                                            {payoutDetailsCache[row.reference_id]?.payout?.status === 'COMPLETED' && storeId && (
+                                            {payoutDetail?.payout?.utr_reference && (
+                                              <div className="flex justify-between"><dt className="text-slate-500">UTR</dt><dd className="font-mono text-xs">{payoutDetail.payout.utr_reference}</dd></div>
+                                            )}
+                                            <div className="flex justify-between"><dt className="text-slate-500">Amount</dt><dd className="font-medium">{payoutDetail?.payout?.amount != null ? formatInr(payoutDetail.payout.amount) : '—'}</dd></div>
+                                            {payoutDetail?.payout?.status === 'COMPLETED' && storeId && (
                                               <div className="pt-2 mt-2 border-t border-slate-100">
                                                 <dt className="text-slate-500 text-xs mb-1">Invoice</dt>
                                                 <dd className="flex gap-2 flex-wrap">
                                                   <a
-                                                    href={`/api/merchant/invoice/${row.reference_id}?storeId=${encodeURIComponent(storeId)}&format=pdf`}
+                                                    href={`/api/merchant/invoice/${payoutRefId}?storeId=${encodeURIComponent(storeId)}&format=pdf`}
                                                     target="_blank"
                                                     rel="noopener noreferrer"
                                                     className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 hover:text-emerald-700"
@@ -1093,7 +1166,7 @@ function PaymentsContent() {
                                                     PDF
                                                   </a>
                                                   <a
-                                                    href={`/api/merchant/invoice/${row.reference_id}?storeId=${encodeURIComponent(storeId)}&format=csv`}
+                                                    href={`/api/merchant/invoice/${payoutRefId}?storeId=${encodeURIComponent(storeId)}&format=csv`}
                                                     target="_blank"
                                                     rel="noopener noreferrer"
                                                     className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 hover:text-emerald-700"
@@ -1112,8 +1185,7 @@ function PaymentsContent() {
                                             Bank details
                                           </h4>
                                           {(() => {
-                                            const details = payoutDetailsCache[row.reference_id];
-                                            const bank = details?.bank;
+                                            const bank = payoutDetail?.bank;
                                             if (!bank) return <p className="text-sm text-slate-500">Bank details not available</p>;
                                             return (
                                               <dl className="space-y-1.5 text-sm">
@@ -1133,10 +1205,11 @@ function PaymentsContent() {
                                   </div>
                                 </td>
                               </tr>
-                            )}
+                              )
+                            })()}
                             {expandedLedgerId === row.id && row.order_id != null && (
                               <tr className="bg-slate-50/60 border-b border-slate-200">
-                                <td colSpan={8} className="p-0">
+                                <td colSpan={9} className="p-0">
                                   <div className="px-4 pb-4 pt-1">
                                     {orderDetailsLoading === row.order_id ? (
                                       <div className="flex items-center justify-center py-8 text-slate-500">
@@ -1262,236 +1335,188 @@ function PaymentsContent() {
             className="absolute inset-0 bg-black/50 backdrop-blur-sm"
             onClick={() => setShowWithdrawal(false)}
           />
-          <aside className="relative ml-auto w-full max-w-md h-full bg-gradient-to-b from-white to-gray-50 shadow-2xl flex flex-col overflow-hidden">
-            {/* Header - More Attractive */}
-            <div className="flex-shrink-0 bg-gradient-to-br from-emerald-500 via-emerald-600 to-teal-600 p-6 flex items-center justify-between shadow-lg">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-white/20 backdrop-blur-sm rounded-xl">
-                  <Wallet className="text-white" size={24} />
+          <aside className="relative ml-auto w-full max-w-md h-full bg-white shadow-2xl flex flex-col overflow-hidden border-l border-gray-200">
+            <div className="flex-shrink-0 px-5 py-4 border-b border-gray-200 flex items-center justify-between bg-white">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="p-2 rounded-lg bg-emerald-50">
+                  <Wallet className="text-emerald-600 shrink-0" size={20} />
                 </div>
-                <div>
-                  <h2 className="text-xl font-bold text-white">Withdraw Money</h2>
-                  <p className="text-xs text-emerald-100 mt-0.5">Transfer to your account</p>
+                <div className="min-w-0">
+                  <h2 className="text-lg font-bold text-gray-900">Withdraw</h2>
+                  <p className="text-xs text-gray-500 truncate">
+                    Available {formatInr(wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0)}
+                  </p>
                 </div>
               </div>
-              <button 
-                onClick={() => setShowWithdrawal(false)} 
-                className="text-white/80 hover:text-white hover:bg-white/20 p-2 rounded-lg transition-all"
+              <button
+                type="button"
+                onClick={() => setShowWithdrawal(false)}
+                className="p-2 rounded-lg hover:bg-gray-100 text-gray-500"
               >
                 <X size={20} />
               </button>
             </div>
 
-            {/* Content */}
-            <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar p-6 pb-8 space-y-5">
-              {/* Balance Card - Enhanced */}
-              <div className="bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-200 rounded-2xl p-5 shadow-sm">
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-sm text-emerald-700 font-semibold uppercase tracking-wide">Available Balance</p>
-                  <TrendingUp size={18} className="text-emerald-600" />
-                </div>
-                <p className="text-3xl font-bold text-emerald-900 tracking-tight">
-                  {formatInr(wallet?.available_balance ?? 0)}
+            <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar px-5 py-5 space-y-5">
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/80 px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Withdrawable balance</p>
+                <p className="text-2xl font-bold text-emerald-900 mt-1 tabular-nums">
+                  {formatInr(wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0)}
                 </p>
-                <p className="text-xs text-emerald-600 mt-2">Ready to withdraw</p>
               </div>
 
-              {/* Amount Input - Enhanced */}
               <div>
-                <label className="block text-sm font-semibold text-gray-800 mb-2.5">Withdrawal Amount</label>
+                <label className="block text-sm font-semibold text-gray-800 mb-2">Withdrawal amount</label>
                 <div className="relative">
-                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-600 font-bold text-lg">₹</span>
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-600 font-bold">₹</span>
                   <input
                     type="number"
+                    min={MIN_WITHDRAWAL}
+                    max={maxWithdrawalLimit}
+                    step="1"
                     value={withdrawalAmount}
-                    onChange={(e) => setWithdrawalAmount(e.target.value)}
-                    placeholder="0.00"
-                    className="w-full pl-8 pr-4 py-3.5 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-emerald-300 focus:border-emerald-500 outline-none bg-white font-semibold text-lg transition-all"
-                    disabled={isWithdrawing}
+                    onChange={(e) => handleWithdrawalAmountChange(e.target.value)}
+                    placeholder={withdrawalInputEnabled ? `Min ₹${MIN_WITHDRAWAL}` : 'Insufficient balance'}
+                    className="w-full pl-9 pr-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-emerald-200 focus:border-emerald-500 outline-none text-lg font-semibold disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                    disabled={!withdrawalInputEnabled}
                   />
                 </div>
-                <p className="text-xs text-gray-500 mt-2">Minimum ₹100 • Maximum {formatInr(wallet?.available_balance ?? 0)}</p>
+                {(() => {
+                  const amt = parseFloat(withdrawalAmount)
+                  if (!withdrawalInputEnabled) {
+                    return (
+                      <p className="text-xs text-amber-700 mt-2">
+                        Withdrawal unavailable — minimum ₹{MIN_WITHDRAWAL} required in your balance.
+                      </p>
+                    )
+                  }
+                  if (!isNaN(amt) && amt >= MIN_WITHDRAWAL) {
+                    return (
+                      <p className="text-xs text-emerald-700 mt-2 font-medium">
+                        You receive full amount: {formatInr(amt)}
+                      </p>
+                    )
+                  }
+                  return (
+                    <p className="text-xs text-gray-500 mt-2">
+                      Minimum ₹{MIN_WITHDRAWAL} · Maximum {formatInr(maxWithdrawalLimit)} (up to ₹1,00,000 per request)
+                    </p>
+                  )
+                })()}
+                {withdrawalInputEnabled && withdrawalAmount.trim() !== '' && !isNaN(parseFloat(withdrawalAmount)) && parseFloat(withdrawalAmount) >= MIN_WITHDRAWAL && (
+                  <p className="text-xs text-gray-500 mt-2 leading-relaxed">
+                    Feel free to adjust the withdrawal amount as needed, as long as it does not exceed your available balance.
+                  </p>
+                )}
               </div>
 
-              {/* Breakdown - Enhanced */}
-              {(() => {
-                const amt = parseFloat(withdrawalAmount)
-                const showBreakdown = !payoutQuoteLoading && payoutQuote && !isNaN(amt) && amt >= 100
-                return showBreakdown ? (
-                  <div className="bg-gradient-to-br from-slate-50 to-gray-50 border-2 border-slate-200 rounded-xl p-4 space-y-3">
-                    <p className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                      <Calculator size={16} className="text-slate-600" />
-                      Withdrawal Breakdown
-                    </p>
-                    <div className="space-y-2.5 text-sm">
-                      <div className="flex justify-between items-center">
-                        <span className="text-gray-700">Requested</span>
-                        <span className="font-semibold text-gray-900">{formatInr(payoutQuote.requested_amount)}</span>
-                      </div>
-                      <div className="border-t border-gray-200"></div>
-                      {payoutQuote.commission_percentage > 0 && (
-                        <div className="flex justify-between items-center">
-                          <span className="text-gray-600">Commission ({payoutQuote.commission_percentage}%)</span>
-                          <span className="font-semibold text-amber-600">−{formatInr(payoutQuote.commission_amount ?? 0)}</span>
-                        </div>
-                      )}
-                      {(payoutQuote.gst_on_commission ?? 0) > 0 && (
-                        <div className="flex justify-between items-center">
-                          <span className="text-gray-600">GST ({payoutQuote.gst_on_commission_percent ?? 18}%)</span>
-                          <span className="font-semibold text-amber-600">−{formatInr(payoutQuote.gst_on_commission ?? payoutQuote.tax_amount ?? 0)}</span>
-                        </div>
-                      )}
-                      {(payoutQuote.tds_amount ?? 0) > 0 && (
-                        <div className="flex justify-between items-center">
-                          <span className="text-gray-600">TDS Deducted</span>
-                          <span className="font-semibold text-red-600">−{formatInr(payoutQuote.tds_amount ?? 0)}</span>
-                        </div>
-                      )}
-                      <div className="border-t border-gray-300 pt-2.5 flex justify-between items-center bg-emerald-50 -mx-4 px-4 py-2.5 rounded-lg">
-                        <span className="font-bold text-gray-900">You Get</span>
-                        <span className="text-xl font-bold text-emerald-700">{formatInr(payoutQuote.net_payout_amount)}</span>
-                      </div>
-                    </div>
-                  </div>
-                ) : payoutQuoteLoading && amt >= 100 ? (
-                  <div className="bg-slate-50 border-2 border-slate-200 rounded-xl p-4 flex items-center justify-center gap-2 text-slate-600">
-                    <Loader2 size={18} className="animate-spin" />
-                    <span className="text-sm font-medium">Calculating...</span>
-                  </div>
-                ) : null
-              })()}
-
-              {/* Account Selection - Enhanced */}
               <div>
-                <label className="block text-sm font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                <label className="block text-sm font-semibold text-gray-800 mb-2 flex items-center gap-2">
                   <Building2 size={16} className="text-emerald-600" />
                   Withdraw to
                 </label>
                 {bankAccountsLoading ? (
-                  <div className="w-full px-4 py-6 border-2 border-gray-200 rounded-xl bg-gray-50 text-center flex items-center justify-center gap-2">
-                    <Loader2 size={16} className="animate-spin text-gray-600" />
-                    <span className="text-sm text-gray-600 font-medium">Loading accounts...</span>
-                  </div>
-                ) : bankAccounts.length === 0 ? (
-                  <div className="w-full px-4 py-6 border-2 border-dashed border-gray-300 rounded-xl bg-gray-50 text-center">
-                    <CreditCard size={24} className="mx-auto text-gray-400 mb-2" />
-                    <p className="text-sm text-gray-600 mb-3 font-medium">No accounts added</p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowWithdrawal(false)
-                        setShowAddBank(true)
-                      }}
-                      className="text-sm px-3 py-2 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition-all shadow-sm"
-                    >
-                      Add Account
-                    </button>
+                  <div className="py-8 flex items-center justify-center gap-2 text-gray-500 text-sm">
+                    <Loader2 size={18} className="animate-spin" />
+                    Loading accounts…
                   </div>
                 ) : bankAccounts.filter((a) => !a.is_disabled).length === 0 ? (
-                  <div className="w-full px-4 py-6 border-2 border-dashed border-gray-300 rounded-xl bg-gray-50 text-center">
-                    <Ban size={24} className="mx-auto text-gray-400 mb-2" />
-                    <p className="text-sm text-gray-600 mb-3 font-medium">All accounts disabled</p>
+                  <div className="py-6 px-4 border border-dashed border-gray-300 rounded-xl text-center bg-gray-50">
+                    <CreditCard size={28} className="mx-auto text-gray-400 mb-2" />
+                    <p className="text-sm text-gray-600 mb-3">No active bank account</p>
                     <button
                       type="button"
-                      onClick={() => {
-                        setShowWithdrawal(false)
-                        setShowAddBank(true)
-                      }}
-                      className="text-sm px-3 py-2 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition-all shadow-sm"
+                      onClick={() => { setShowWithdrawal(false); setShowAddBank(true) }}
+                      className="text-sm px-4 py-2 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700"
                     >
-                      Add New Account
+                      Add account
                     </button>
                   </div>
-                ) : (
-                  <div className="space-y-2.5">
-                    {bankAccounts.filter((a) => !a.is_disabled).map((account) => (
-                      <label
-                        key={account.id}
-                        className={`flex items-start gap-3 p-4 rounded-xl border-2 cursor-pointer transition-all transform hover:scale-102 ${
-                          withdrawBankId === account.id
-                            ? 'border-emerald-500 bg-emerald-50 shadow-md'
-                            : 'border-gray-200 bg-white hover:border-emerald-300'
-                        }`}
-                        onClick={() => setWithdrawBankId(account.id)}
-                      >
-                        <div className={`mt-1 w-5 h-5 rounded-full border-2 flex items-center justify-center ${withdrawBankId === account.id ? 'border-emerald-600 bg-emerald-600' : 'border-gray-300'}`}>
-                          {withdrawBankId === account.id && <Check size={14} className="text-white" />}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <p className="font-bold text-gray-900 text-sm">{account.account_holder_name}</p>
-                            {account.is_primary && <span className="text-xs px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full font-bold">Default</span>}
-                          </div>
-                          <div className="space-y-0.5">
-                            <p className="text-xs text-gray-600 font-medium">
-                              {account.payout_method === 'upi' ? (
-                                <>UPI • {account.upi_id ?? '—'}</>
-                              ) : (
-                                <>{account.bank_name ?? 'Bank'} • {account.account_number_masked ?? '****'}</>
-                              )}
-                            </p>
-                            {account.payout_method !== 'upi' && account.ifsc_code && (
-                              <p className="text-xs text-gray-500">IFSC: {account.ifsc_code}</p>
-                            )}
-                          </div>
-                        </div>
-                        {account.payout_method === 'upi' ? (
-                          <Phone size={16} className="text-blue-500 flex-shrink-0" />
-                        ) : (
-                          <Building2 size={16} className="text-blue-600 flex-shrink-0" />
+                ) : (() => {
+                  const activeAccounts = bankAccounts.filter((a) => !a.is_disabled)
+                  const formatAccountLabel = (account: BankAccount) =>
+                    account.payout_method === 'upi'
+                      ? `${account.account_holder_name} · UPI ${account.upi_id ?? '—'}`
+                      : `${account.account_holder_name} · ${account.bank_name ?? 'Bank'} ${account.account_number_masked ?? '****'}`
+
+                  if (activeAccounts.length > 1) {
+                    return (
+                      <div className="space-y-2">
+                        <select
+                          value={withdrawBankId === '' ? '' : String(withdrawBankId)}
+                          onChange={(e) => setWithdrawBankId(e.target.value ? Number(e.target.value) : '')}
+                          disabled={isWithdrawing}
+                          className="w-full rounded-xl border border-gray-300 bg-white px-3 py-3 text-sm font-medium text-gray-900 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 outline-none disabled:opacity-50"
+                        >
+                          <option value="" disabled>Select bank account</option>
+                          {activeAccounts.map((account) => (
+                            <option key={account.id} value={account.id}>
+                              {formatAccountLabel(account)}
+                              {account.is_primary ? ' (Default)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                        {withdrawBankId !== '' && (
+                          <p className="text-xs text-gray-500 px-1">
+                            Selected account will receive the withdrawal.
+                          </p>
                         )}
-                      </label>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() => setShowAddBank(true)}
-                      className="w-full mt-2 px-4 py-2.5 border-2 border-dashed border-emerald-300 rounded-xl text-emerald-700 font-semibold hover:bg-emerald-50 transition-all text-sm flex items-center justify-center gap-2"
-                    >
-                      <Plus size={16} />
-                      Add Another Account
-                    </button>
-                  </div>
-                )}
+                      </div>
+                    )
+                  }
+
+                  const account = activeAccounts[0]
+                  return (
+                    <div className="rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3">
+                      <p className="text-sm font-semibold text-gray-900">{account.account_holder_name}</p>
+                      <p className="text-xs text-gray-600 mt-0.5">
+                        {account.payout_method === 'upi'
+                          ? `UPI · ${account.upi_id ?? '—'}`
+                          : `${account.bank_name ?? 'Bank'} · ${account.account_number_masked ?? '****'}`}
+                      </p>
+                    </div>
+                  )
+                })()}
               </div>
 
-              {/* Info Box */}
-              <div className="bg-blue-50 border border-blue-200 rounded-xl p-3.5 flex gap-2.5">
-                <Clock size={16} className="text-blue-600 flex-shrink-0 mt-0.5" />
-                <p className="text-xs text-blue-800 font-medium">Funds arrive in 2-3 business days. Minimum withdrawal: ₹100</p>
-              </div>
+              <p className="text-xs text-gray-500 flex items-center gap-1.5">
+                <Clock size={14} className="shrink-0" />
+                Funds arrive within 24 to 48 hrs
+              </p>
             </div>
 
-            {/* Footer Buttons - Enhanced */}
-            <div className="flex-shrink-0 bg-white border-t-2 border-gray-200 px-6 py-4 flex gap-3 shadow-lg">
+            <div className="flex-shrink-0 border-t border-gray-200 px-5 py-4 flex gap-3 bg-white">
               <button
+                type="button"
                 onClick={() => setShowWithdrawal(false)}
                 disabled={isWithdrawing}
-                className="flex-1 py-3 text-gray-700 border-2 border-gray-300 rounded-xl hover:bg-gray-100 font-bold disabled:opacity-50 transition-all"
+                className="flex-1 py-3 text-sm text-gray-700 border border-gray-300 rounded-xl hover:bg-gray-50 font-semibold disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={handleWithdrawal}
                 disabled={
                   isWithdrawing
+                  || !withdrawalInputEnabled
                   || !withdrawalAmount
-                  || parseFloat(withdrawalAmount) < 100
-                  || (wallet?.available_balance ?? 0) < 100
-                  || parseFloat(withdrawalAmount) > (wallet?.available_balance ?? 0)
+                  || parseFloat(withdrawalAmount) < MIN_WITHDRAWAL
+                  || parseFloat(withdrawalAmount) > maxWithdrawalLimit
                   || (withdrawBankId !== '' && !bankAccounts.some((a) => a.id === withdrawBankId && !a.is_disabled))
                   || (bankAccounts.filter((a) => !a.is_disabled).length === 0)
                 }
-                className="flex-1 py-3 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-xl hover:shadow-lg font-bold disabled:opacity-50 flex items-center justify-center gap-2 transition-all transform hover:scale-105 active:scale-95"
+                className="flex-1 py-3 text-sm bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 font-semibold disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {isWithdrawing ? (
                   <>
                     <Loader2 size={18} className="animate-spin" />
-                    <span>Processing...</span>
+                    Processing…
                   </>
                 ) : (
                   <>
                     <ArrowDownToLine size={18} />
-                    <span>Withdraw Now</span>
+                    Withdraw
                   </>
                 )}
               </button>

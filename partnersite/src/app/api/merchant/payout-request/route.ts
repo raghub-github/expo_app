@@ -109,37 +109,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid bank account' }, { status: 400 });
     }
 
-    // Commission calculation
-    let commissionPercentage = 0;
-    const today = new Date().toISOString().slice(0, 10);
-    const effectiveToFilter = `effective_to.is.null,effective_to.gte.${today}`;
-    let { data: rule } = await db
-      .from('platform_commission_rules')
-      .select('commission_percentage')
-      .eq('merchant_store_id', merchantStoreId)
-      .lte('effective_from', today)
-      .or(effectiveToFilter)
-      .order('effective_from', { ascending: false })
-      .limit(1)
-      .single();
-    if (!rule && parentId != null) {
-      const res = await db
-        .from('platform_commission_rules')
-        .select('commission_percentage')
-        .eq('merchant_parent_id', parentId)
-        .lte('effective_from', today)
-        .or(effectiveToFilter)
-        .order('effective_from', { ascending: false })
-        .limit(1)
-        .single();
-      rule = res.data;
-    }
-    if (rule?.commission_percentage != null) {
-      commissionPercentage = Number(rule.commission_percentage);
-    }
-
-    const commissionAmount = roundMoney(amount * (commissionPercentage / 100));
-    const netPayoutAmount = roundMoney(amount - commissionAmount);
+    // Full amount to merchant — no withdrawal-time commission
+    const commissionPercentage = 0;
+    const commissionAmount = 0;
+    const netPayoutAmount = roundMoney(amount);
 
     // STEP 1: HOLD funds — debit AVAILABLE
     const holdKey = `payout_hold_${walletId}_${Date.now()}`;

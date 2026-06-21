@@ -87,6 +87,7 @@ export interface LedgerEntry {
   order_id: number | null;
   formatted_order_id: string | null;
   table_id: string | null;
+  pg_transaction_id?: string | null;
 }
 
 export interface LedgerResponse {

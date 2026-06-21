@@ -172,6 +172,8 @@ export const LedgerEntrySchema = z.object({
   tds_amount: z.number().nullable(),
   created_at: z.string(),
   formatted_order_id: z.string().nullable().optional(),
+  /** Payment gateway transaction ID for completed withdrawals (bank reference). */
+  pg_transaction_id: z.string().nullable().optional(),
 });
 export type LedgerEntry = z.infer<typeof LedgerEntrySchema>;
 
