@@ -336,14 +336,14 @@ export default function LoginScreen() {
             <Text style={styles.footerLine2}>
               <Text
                 style={styles.footerLink}
-                onPress={() => Linking.openURL("/terms").catch(() => {})}
+                onPress={() => router.push("/profile/legal/terms-of-service" as never)}
               >
                 Terms of Service
               </Text>
               {" & "}
               <Text
                 style={styles.footerLink}
-                onPress={() => Linking.openURL("/privacy").catch(() => {})}
+                onPress={() => router.push("/profile/legal/privacy-policy" as never)}
               >
                 Privacy Policy
               </Text>

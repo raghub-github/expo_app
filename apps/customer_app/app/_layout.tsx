@@ -25,6 +25,7 @@ import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
 import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
 import { setOnSessionRevoked } from "@/services/api";
 import { PushNotificationBootstrap } from "@/components/PushNotificationBootstrap";
+import { LegalConsentGate } from "@/components/LegalConsentGate";
 import { AddressesPrefetch } from "@/components/AddressesPrefetch";
 import { FeaturedOffersPrefetch } from "@/components/FeaturedOffersPrefetch";
 import { UserAppCategoriesPrefetch } from "@/components/UserAppCategoriesPrefetch";
@@ -153,6 +154,7 @@ export default function RootLayout() {
               <GlobalFloatingCart />
               <LocationModalWrapper />
               <PushNotificationBootstrap />
+              <LegalConsentGate />
               <AddressesPrefetch />
               <FeaturedOffersPrefetch />
               <UserAppCategoriesPrefetch />
