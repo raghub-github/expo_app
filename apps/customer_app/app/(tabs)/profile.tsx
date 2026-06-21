@@ -151,6 +151,9 @@ export default function ProfileScreen() {
     { id: "addresses", label: t("profile.savedAddresses"), icon: "location-outline", path: "/profile/addresses" },
     { id: "collections", label: t("profile.yourCollections"), icon: "bookmark-outline", path: "/profile/collections" },
     { id: "settings", label: t("profile.settings"), icon: "settings-outline", path: "/profile/settings" },
+    { id: "help", label: "Help & Support", icon: "help-buoy-outline", path: "/profile/help" },
+    { id: "legal", label: "Legal & Policies", icon: "shield-checkmark-outline", path: "/profile/legal" },
+    { id: "about", label: "About", icon: "information-circle-outline", path: "/profile/about" },
     ...( !isEmailVerified && profile?.email
       ? [{ id: "verify", label: t("profile.verifyEmail"), icon: "mail-outline" as const, path: "/profile/verify-email", badge: "!" }]
       : []),

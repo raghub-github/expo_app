@@ -35,6 +35,7 @@ import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCartStore, type CartItem } from "@/store/cartStore";
 import { useLocationStore } from "@/store/locationStore";
+import { LegalFooter } from "@/components/LegalLinks";
 import { useOrderStore } from "@/store/orderStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useEnsureStoreLiveStatus } from "@/hooks/useEnsureStoreLiveStatus";
@@ -3441,6 +3442,10 @@ export default function CheckoutScreen() {
 
       {/* Footer: fixed-width delivery / takeaway toggle + Place Order CTA (width = screen − padding − gap − toggle; same corner radius as toggle shell). */}
       <View style={[styles.fixedBottom, { paddingBottom: insets.bottom + 12 }]}>
+        <LegalFooter
+          prefix="By placing this order you agree to"
+          docIds={["terms-of-service", "refund-cancellation-policy", "shipping-delivery-policy"]}
+        />
         <View style={styles.footerRow}>
           <View style={styles.deliveryTypeToggle}>
             <TouchableOpacity

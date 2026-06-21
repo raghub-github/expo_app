@@ -7,6 +7,7 @@ export default function OnboardingLayout() {
       <AndroidBackHandler />
       <Stack screenOptions={{ headerShown: false, gestureEnabled: false }}>
       <Stack.Screen name="index" />
+      <Stack.Screen name="consent" />
       <Stack.Screen name="address" />
       <Stack.Screen name="permissions" />
     </Stack>

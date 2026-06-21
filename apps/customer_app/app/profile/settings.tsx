@@ -151,16 +151,95 @@ export default function SettingsScreen() {
           />
         </View>
 
+        <SectionTitle title="Privacy & data" />
+        <View style={styles.card}>
+          <SettingsRow
+            icon="cloud-download-outline"
+            label="Download my data"
+            value="DPDPA right of access"
+            onPress={() => router.push("/profile/legal/dpdpa-compliance-notice" as never)}
+          />
+          <View style={styles.separator} />
+          <SettingsRow
+            icon="key-outline"
+            label="App permissions"
+            value="Camera, location, photos, contacts"
+            onPress={() => router.push("/profile/legal/permissions-rationale" as never)}
+          />
+          <View style={styles.separator} />
+          <SettingsRow
+            icon="nutrition-outline"
+            label="Cookie & tracking"
+            value="SDKs and personalisation"
+            onPress={() => router.push("/profile/legal/cookie-tracking-policy" as never)}
+          />
+          <View style={styles.separator} />
+          <SettingsRow
+            icon="trash-outline"
+            label="Delete my account"
+            value="Erase data; reversible for 15 days"
+            onPress={() => router.push("/profile/legal/data-deletion-policy" as never)}
+          />
+        </View>
+
         <SectionTitle title={t("settings.legal")} />
         <View style={styles.card}>
-          <SettingsRow icon="document-text-outline" label={t("settings.termsOfService")} onPress={() => {}} />
+          <SettingsRow
+            icon="document-text-outline"
+            label={t("settings.termsOfService")}
+            onPress={() => router.push("/profile/legal/terms-of-service" as never)}
+          />
           <View style={styles.separator} />
-          <SettingsRow icon="shield-checkmark-outline" label={t("settings.privacyPolicy")} onPress={() => {}} />
+          <SettingsRow
+            icon="shield-checkmark-outline"
+            label={t("settings.privacyPolicy")}
+            onPress={() => router.push("/profile/legal/privacy-policy" as never)}
+          />
+          <View style={styles.separator} />
+          <SettingsRow
+            icon="cash-outline"
+            label="Refund & Cancellation"
+            onPress={() => router.push("/profile/legal/refund-cancellation-policy" as never)}
+          />
+          <View style={styles.separator} />
+          <SettingsRow
+            icon="car-outline"
+            label="Shipping & Delivery"
+            onPress={() => router.push("/profile/legal/shipping-delivery-policy" as never)}
+          />
+          <View style={styles.separator} />
+          <SettingsRow
+            icon="hammer-outline"
+            label="Grievance Redressal"
+            onPress={() => router.push("/profile/legal/grievance-redressal-mechanism" as never)}
+          />
+          <View style={styles.separator} />
+          <SettingsRow
+            icon="library-outline"
+            label="All policies & documents"
+            onPress={() => router.push("/profile/legal" as never)}
+          />
         </View>
 
         <SectionTitle title={t("settings.about")} />
         <View style={styles.card}>
-          <SettingsRow icon="information-circle-outline" label={t("settings.appVersion")} value="1.0.0" showChevron={false} />
+          <SettingsRow
+            icon="information-circle-outline"
+            label="About GatiMitra"
+            onPress={() => router.push("/profile/about" as never)}
+          />
+          <View style={styles.separator} />
+          <SettingsRow
+            icon="accessibility-outline"
+            label="Accessibility statement"
+            onPress={() => router.push("/profile/legal/accessibility-statement" as never)}
+          />
+          <View style={styles.separator} />
+          <SettingsRow
+            icon="git-branch-outline"
+            label="Open-source licences"
+            onPress={() => router.push("/profile/legal/open-source-licenses" as never)}
+          />
         </View>
 
         <SectionTitle title={t("settings.accountActions")} />

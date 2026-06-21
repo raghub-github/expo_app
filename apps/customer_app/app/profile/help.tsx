@@ -124,6 +124,62 @@ export default function HelpScreen() {
           </View>
         )}
 
+        {/* Quick links — FAQ, Contact, Grievance — sourced from the legal pack */}
+        <Text style={styles.sectionTitle}>Quick links</Text>
+        <View style={[styles.listCard, SHADOW]}>
+          <TouchableOpacity
+            style={styles.quickRow}
+            onPress={() => router.push("/profile/legal/faq" as never)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="help-circle-outline" size={22} color={TEAL} />
+            <View style={styles.quickRowText}>
+              <Text style={styles.quickRowTitle}>FAQ</Text>
+              <Text style={styles.quickRowSub}>Common questions — food, rides, parcels</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={TEXT_GRAY} />
+          </TouchableOpacity>
+          <View style={styles.quickDivider} />
+          <TouchableOpacity
+            style={styles.quickRow}
+            onPress={() => router.push("/profile/legal/contact-us" as never)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="call-outline" size={22} color={TEAL} />
+            <View style={styles.quickRowText}>
+              <Text style={styles.quickRowTitle}>Contact Us</Text>
+              <Text style={styles.quickRowSub}>Every email, phone, and address</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={TEXT_GRAY} />
+          </TouchableOpacity>
+          <View style={styles.quickDivider} />
+          <TouchableOpacity
+            style={styles.quickRow}
+            onPress={() => router.push("/profile/legal/grievance-redressal-mechanism" as never)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="hammer-outline" size={22} color={TEAL} />
+            <View style={styles.quickRowText}>
+              <Text style={styles.quickRowTitle}>Grievance Redressal</Text>
+              <Text style={styles.quickRowSub}>How to file & escalate — IT Rules 2021</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={TEXT_GRAY} />
+          </TouchableOpacity>
+          <View style={styles.quickDivider} />
+          <TouchableOpacity
+            style={styles.quickRow}
+            onPress={() => router.push("/profile/legal/safety-policy" as never)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="shield-checkmark-outline" size={22} color={TEAL} />
+            <View style={styles.quickRowText}>
+              <Text style={styles.quickRowTitle}>Safety Policy</Text>
+              <Text style={styles.quickRowSub}>SOS, women safety, incident reporting</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={TEXT_GRAY} />
+          </TouchableOpacity>
+        </View>
+
         {/* Contact */}
         <Text style={styles.sectionTitle}>Contact us</Text>
         <View style={[styles.contactCard, SHADOW]}>
@@ -131,7 +187,23 @@ export default function HelpScreen() {
           <Text style={styles.contactValue}>support@gatimitra.com</Text>
           <Text style={styles.contactLabel}>Phone</Text>
           <Text style={styles.contactValue}>+91 1800-xxx-xxxx</Text>
+          <Text style={styles.contactLabel}>Grievance Officer</Text>
+          <Text style={styles.contactValue}>grievance.officer@gatimitra.com</Text>
         </View>
+
+        {/* All policies entry */}
+        <TouchableOpacity
+          style={[styles.allPoliciesCard, SHADOW]}
+          activeOpacity={0.85}
+          onPress={() => router.push("/profile/legal" as never)}
+        >
+          <Ionicons name="book-outline" size={22} color={TEAL} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.allPoliciesTitle}>All Policies & Legal Documents</Text>
+            <Text style={styles.allPoliciesSub}>Refund, privacy, safety, subscriptions & more</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={TEXT_GRAY} />
+        </TouchableOpacity>
       </ScrollView>
     </View>
   );
@@ -207,4 +279,26 @@ const styles = StyleSheet.create({
   },
   contactLabel: { fontSize: 12, fontWeight: "600", color: TEXT_GRAY, marginTop: 12 },
   contactValue: { fontSize: 15, color: TITLE_DARK, marginTop: 4 },
+  quickRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+    gap: 12,
+  },
+  quickRowText: { flex: 1 },
+  quickRowTitle: { fontSize: 15, fontWeight: "600", color: TITLE_DARK },
+  quickRowSub: { fontSize: 12.5, color: TEXT_GRAY, marginTop: 2 },
+  quickDivider: { height: 1, backgroundColor: "#F0F0F0", marginLeft: 52 },
+  allPoliciesCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: CARD_BG,
+    borderRadius: CARD_RADIUS,
+    padding: 18,
+    marginTop: 18,
+  },
+  allPoliciesTitle: { fontSize: 15, fontWeight: "700", color: TITLE_DARK },
+  allPoliciesSub: { fontSize: 12.5, color: TEXT_GRAY, marginTop: 4 },
 });

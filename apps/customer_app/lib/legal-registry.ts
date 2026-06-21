@@ -341,26 +341,33 @@ export const ONBOARDING_CONSENT_DOCS = LEGAL_DOCS.filter(
   (d) => d.requireConsentOnOnboarding
 );
 
+import { LEGAL_BUNDLE } from "@/legal/bundle.generated";
+
 /**
- * Async loader for the markdown body. Assumes the .md files are bundled as
- * static assets via metro.config.js asset extensions OR served from a CDN
- * at https://gatimitra.com/legal/<file>. Configure ONE path below before
- * shipping.
+ * Loads the markdown body for a policy doc.
+ *
+ * Strategy:
+ *   1. If EXPO_PUBLIC_LEGAL_CDN_URL is set, try the remote copy first
+ *      (lets you ship policy edits without a Play/App Store re-submission).
+ *      2.5-second timeout — falls back to bundled if slow / offline / 404.
+ *   2. Otherwise (or on fallback) returns the bundled copy that ships with
+ *      the app — generated from the .md sources by legal/build-bundle.mjs.
+ *
+ * The bundled copy ALWAYS exists, so the user always sees the policy.
  */
 export async function loadLegalDocBody(doc: LegalDoc): Promise<string> {
-  // OPTION A — bundled assets (offline-capable, requires metro.config.js change)
-  // const Asset = (await import("expo-asset")).Asset;
-  // const asset = Asset.fromModule(
-  //   require(`@/legal/${doc.file}`)  // metro config must allow .md
-  // );
-  // await asset.downloadAsync();
-  // const res = await fetch(asset.localUri ?? asset.uri);
-  // return res.text();
-
-  // OPTION B — remote (lets you ship policy updates without app re-submission)
-  const base =
-    process.env.EXPO_PUBLIC_LEGAL_CDN_URL ?? "https://gatimitra.com/legal";
-  const res = await fetch(`${base}/${doc.file}`);
-  if (!res.ok) throw new Error(`Failed to load ${doc.file}: ${res.status}`);
-  return res.text();
+  const cdn = process.env.EXPO_PUBLIC_LEGAL_CDN_URL;
+  if (cdn) {
+    try {
+      const res = await fetch(`${cdn}/${doc.file}`, {
+        signal: AbortSignal.timeout(2500),
+      });
+      if (res.ok) return await res.text();
+    } catch {
+      /* fall through */
+    }
+  }
+  const body = LEGAL_BUNDLE[doc.file];
+  if (!body) throw new Error(`No bundled body for ${doc.file}`);
+  return body;
 }
