@@ -29,6 +29,14 @@ import { computeBillForOrder } from "../billing/billing.service.js";
 import { normalizeOrderItems } from "./orderNormalizer.js";
 import { getRoute } from "../distance/distance.service.js";
 import {
+  parseCheckoutGatiCashAdjustments,
+  enrichBillingSnapshotWithCheckoutAdjustments,
+} from "../../lib/checkout-gaticash-adjustments.js";
+import {
+  fulfillCheckoutGatiCashWalletOps,
+  getCustomerGatiCashAvailable,
+} from "../../lib/checkout-gaticash-wallet-ops.js";
+import {
   resolveOrdersCorePk,
   writeOrderItemCommissionSnapshots,
 } from "../commission/writeOrderCommissionSnapshots.js";
@@ -623,6 +631,31 @@ export async function createPendingOrder(
     billingRulesetVersion = billRes.billing.ruleset_version;
   }
 
+  const checkoutMetadataEarly =
+    input.checkoutMetadata && typeof input.checkoutMetadata === "object"
+      ? (input.checkoutMetadata as Record<string, unknown>)
+      : {};
+  const checkoutAdj = parseCheckoutGatiCashAdjustments(checkoutMetadataEarly, grandTotal);
+  if (checkoutAdj.gatiCashApplied > 0.005) {
+    const { getSql } = await import("../../db/client.js");
+    const available = await getCustomerGatiCashAvailable(getSql(), customerId);
+    if (available + 0.005 < checkoutAdj.gatiCashApplied) {
+      return {
+        ok: false,
+        code: "INSUFFICIENT_GATICASH",
+        message: "Insufficient GatiCash balance. Please update wallet and try again.",
+      };
+    }
+  }
+  if (
+    checkoutAdj.gatiCashApplied > 0.005 ||
+    checkoutAdj.missedOfferDiscount > 0.005 ||
+    checkoutAdj.missedOfferWalletAdd > 0.005
+  ) {
+    grandTotal = checkoutAdj.adjustedGrandTotal;
+    billingSnapshot = enrichBillingSnapshotWithCheckoutAdjustments(billingSnapshot, checkoutAdj);
+  }
+
   const dropAddressRaw = [addrRow.addressLine1, addrRow.addressLine2, addrRow.city, addrRow.state, addrRow.postalCode]
     .filter(Boolean)
     .join(", ");
@@ -732,6 +765,9 @@ export async function createPendingOrder(
     distanceKm: String(distanceKm),
     billingSnapshot: billingSnapshot ?? undefined,
     billingRulesetVersion: billingRulesetVersion ?? undefined,
+    gatiCashApplied: sanitizeNumeric(checkoutAdj.gatiCashApplied),
+    missedOfferDiscount: sanitizeNumeric(checkoutAdj.missedOfferDiscount),
+    missedOfferWalletAdd: sanitizeNumeric(checkoutAdj.missedOfferWalletAdd),
     couponCode: couponStored ?? undefined,
     checkoutMetadata: checkoutMetadata ?? undefined,
     idempotencyKey: idemKey ?? undefined,
@@ -1121,6 +1157,24 @@ export async function finalizeOrder(
     .catch((e) => {
       console.error("[customer-subscription] post-finalize activation failed:", e);
     });
+
+  const finalizeAdj = parseCheckoutGatiCashAdjustments(
+    checkoutMeta,
+    Number(pending.grandTotal ?? 0) +
+      (Number(pending.gatiCashApplied ?? 0) +
+        Number(pending.missedOfferDiscount ?? 0) -
+        Number(pending.missedOfferWalletAdd ?? 0))
+  );
+  if (finalizeAdj.gatiCashApplied > 0.005 || finalizeAdj.missedOfferWalletAdd > 0.005) {
+    void fulfillCheckoutGatiCashWalletOps(getSql(), {
+      customerInternalId: Number(pending.customerId),
+      orderIdText,
+      merchantStoreId: Number(pending.merchantStoreId),
+      adjustments: finalizeAdj,
+    }).catch((e) => {
+      console.error("[gaticash] post-finalize wallet ops failed:", e);
+    });
+  }
 
   return {
     ok: true,

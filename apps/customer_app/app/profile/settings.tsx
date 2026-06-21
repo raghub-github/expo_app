@@ -149,6 +149,13 @@ export default function SettingsScreen() {
             value={t(`languages.${language}`)}
             onPress={() => router.push("/profile/language")}
           />
+          <View style={styles.separator} />
+          <SettingsRow
+            icon="accessibility-outline"
+            label="Accessibility settings"
+            value="Hearing, vision & mobility"
+            onPress={() => router.push("/profile/accessibility")}
+          />
         </View>
 
         <SectionTitle title="Privacy & data" />

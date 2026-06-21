@@ -4,6 +4,7 @@
 
 import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { BiPencilSquareIcon } from "@/components/icons/BiPencilSquareIcon";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { OrderDeliveryDetailsView } from "@/lib/order-delivery-details";
 
@@ -79,16 +80,12 @@ function DetailRow({
           hitSlop={8}
           activeOpacity={0.75}
           disabled={editDisabled}
+          accessibilityLabel="Edit"
         >
-          <Text
-            style={[
-              styles.editBtn,
-              editTone === "muted" && styles.editBtnMuted,
-              editDisabled && styles.editBtnDisabled,
-            ]}
-          >
-            Edit
-          </Text>
+          <BiPencilSquareIcon
+            size={16}
+            color={editDisabled ? "#D1D5DB" : editTone === "muted" ? MUTED : EDIT_RED}
+          />
         </TouchableOpacity>
       ) : null}
     </View>

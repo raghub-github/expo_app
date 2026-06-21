@@ -53,11 +53,13 @@ type LegalFooterProps = {
   docIds: string[];
   /** Style merged into the wrapping <Text>. */
   style?: TextStyle;
+  /** Tighter padding for sticky checkout footers. */
+  compact?: boolean;
 };
 
-export const LegalFooter = memo(function LegalFooter({ prefix, docIds, style }: LegalFooterProps) {
+export const LegalFooter = memo(function LegalFooter({ prefix, docIds, style, compact = false }: LegalFooterProps) {
   return (
-    <View style={styles.footerWrap}>
+    <View style={[styles.footerWrap, compact && styles.footerWrapCompact]}>
       <Text style={[styles.footer, style]}>
         {prefix}{" "}
         {docIds.map((id, idx) => {
@@ -82,6 +84,7 @@ const styles = StyleSheet.create({
     fontWeight: "500",
   },
   footerWrap: { paddingHorizontal: 16, paddingVertical: 10 },
+  footerWrapCompact: { paddingHorizontal: 4, paddingVertical: 4 },
   footer: { fontSize: 11.5, color: MUTED, lineHeight: 17, textAlign: "center" },
 });
 

@@ -12,6 +12,7 @@ import {
   LayoutChangeEvent,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { BiPencilSquareIcon } from "@/components/icons/BiPencilSquareIcon";
 import type { CustomerMapRef } from "@/lib/customer-map-handle";
 import type { LatLng } from "@/services/directions.service";
 import {
@@ -101,7 +102,7 @@ function RouteMarker({
             accessibilityRole="button"
             accessibilityLabel={`Edit ${variant} location`}
           >
-            <Ionicons name="pencil" size={15} color="#6B7280" />
+            <BiPencilSquareIcon size={15} color="#6B7280" />
           </TouchableOpacity>
         ) : null}
       </View>

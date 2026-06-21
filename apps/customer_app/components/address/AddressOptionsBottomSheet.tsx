@@ -8,6 +8,7 @@ import {
   Platform,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { BiPencilSquareIcon } from "@/components/icons/BiPencilSquareIcon";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -37,7 +38,7 @@ export function AddressOptionsBottomSheet({ visible, onClose, onEdit, onDelete }
           <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
             <Text style={styles.title}>Address options</Text>
             <TouchableOpacity style={styles.optionRow} onPress={onEdit} activeOpacity={0.85}>
-              <Ionicons name="create-outline" size={22} color={BRAND} />
+              <BiPencilSquareIcon size={22} color={BRAND} />
               <Text style={styles.optionText}>Edit Address</Text>
               <Ionicons name="chevron-forward" size={18} color={TEXT_GRAY} />
             </TouchableOpacity>

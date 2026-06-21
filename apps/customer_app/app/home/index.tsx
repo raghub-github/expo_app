@@ -22,6 +22,7 @@ import Animated, { createAnimatedComponent } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { useRouter } from "expo-router";
+import { foodHomeRouterBack } from "@/lib/safeRouterBack";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { merchantService } from "@/services/merchant.service";
@@ -401,7 +402,7 @@ export default function FoodMerchantsScreen() {
     [filteredAndSortedMerchants, statusMap, openNow]
   );
 
-  const handleBack = () => router.back();
+  const handleBack = () => foodHomeRouterBack(router);
   const handleSearch = () => router.push("/search");
   const handleCategorySelect = (id: string, slug: string) => {
     setActiveCategoryId(id);

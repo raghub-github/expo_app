@@ -50,6 +50,7 @@ export default function HomeScreen() {
         queryClient.invalidateQueries({ queryKey: ["active-location"] }),
         queryClient.invalidateQueries({ queryKey: ["featured-offers-home"] }),
         queryClient.invalidateQueries({ queryKey: ["geo", "services"] }),
+        queryClient.invalidateQueries({ queryKey: ["wallet", "balance"] }),
       ]);
       if (locationSource !== "selected") {
         await refetchLocation();
@@ -150,8 +151,12 @@ export default function HomeScreen() {
         locationPrimary={locationPrimary}
         locationSecondary={locationSecondary}
         onLocationPress={() => router.push("/location")}
-        onSearchPress={() => router.push("/search")}
         onNotificationPress={() => router.push("/notifications")}
+      />
+
+      <HomeWeatherBanner
+        weather={weather}
+        onWeatherPress={() => setWeatherSheetVisible(true)}
       />
 
       <ScrollView
@@ -167,11 +172,6 @@ export default function HomeScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={TEAL} colors={[TEAL]} />
         }
       >
-        <HomeWeatherBanner
-          weather={weather}
-          onWeatherPress={() => setWeatherSheetVisible(true)}
-        />
-
         <HomePromoCarousel
           offers={featuredOffersData?.offers}
           cardHeight={promoCardH}

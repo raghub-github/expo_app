@@ -55,6 +55,65 @@ function shouldSendPhoneOtpViaBackend(): boolean {
   return getSupabaseAuth() == null;
 }
 
+function isSupabaseSmsDeliveryError(message: string, status?: number): boolean {
+  if (status != null && status >= 500) return true;
+  return /hook|sms|provider|phone|otp|unexpected_failure|authretryablefetch|deliver|rate.?limit|too many/i.test(
+    message,
+  );
+}
+
+async function sendOtpViaBackend(payload: SendOtpPayload, phoneTail: string): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(`${apiBaseUrl()}${AUTH_PREFIX}/otp/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phoneE164: payload.phoneE164 }),
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (/network request failed|failed to fetch|network error|aborted/i.test(msg)) {
+      throw new Error("Unable to send OTP. Please try again.");
+    }
+    throw error;
+  }
+
+  const raw = await res.text();
+  let dataJson: Record<string, unknown> = {};
+  try {
+    dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+  } catch {
+    throw new Error("Invalid response from server while requesting OTP.");
+  }
+
+  if (!res.ok) {
+    if (__DEV__) {
+      // eslint-disable-next-line no-console
+      console.warn("[RiderAuth] SMS Failed (backend)", { status: res.status, dataJson, phoneTail });
+    }
+    const msg =
+      (typeof dataJson.message === "string" && dataJson.message) ||
+      (typeof dataJson.error === "string" && dataJson.error) ||
+      "Unable to send OTP. Please try again.";
+    throw new Error(msg);
+  }
+
+  const rid = typeof dataJson.requestId === "string" ? dataJson.requestId : "";
+  if (!rid) {
+    throw new Error("Server did not return an OTP request id. Check backend /v1/auth/otp/request.");
+  }
+  _lastBackendOtpRequestId = rid;
+
+  if (__DEV__) {
+    // eslint-disable-next-line no-console
+    console.log("[RiderAuth] SMS Sent (backend path)", {
+      requestId: rid,
+      smsSent: dataJson.smsSent === true,
+      phoneTail,
+    });
+  }
+}
+
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit & { timeoutMs?: number } = {}) {
   const { timeoutMs = 15000, ...rest } = init;
   const controller = new AbortController();
@@ -141,62 +200,14 @@ export const riderAuthService = {
     }
 
     if (viaBackend) {
-      let res: Response;
-      try {
-        res = await fetchWithTimeout(`${apiBaseUrl()}${AUTH_PREFIX}/otp/request`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ phoneE164: payload.phoneE164 }),
-        });
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        if (/network request failed|failed to fetch|network error|aborted/i.test(msg)) {
-          throw new Error("Unable to send OTP. Please try again.");
-        }
-        throw error;
-      }
-
-      const raw = await res.text();
-      let dataJson: Record<string, unknown> = {};
-      try {
-        dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-      } catch {
-        throw new Error("Invalid response from server while requesting OTP.");
-      }
-
-      if (!res.ok) {
-        if (__DEV__) {
-          // eslint-disable-next-line no-console
-          console.warn("[RiderAuth] SMS Failed", { status: res.status, dataJson });
-        }
-        const msg =
-          (typeof dataJson.message === "string" && dataJson.message) ||
-          (typeof dataJson.error === "string" && dataJson.error) ||
-          "Unable to send OTP. Please try again.";
-        throw new Error(msg);
-      }
-
-      const rid = typeof dataJson.requestId === "string" ? dataJson.requestId : "";
-      if (!rid) {
-        throw new Error("Server did not return an OTP request id. Check backend /v1/auth/otp/request.");
-      }
-      _lastBackendOtpRequestId = rid;
-
-      if (__DEV__) {
-        // eslint-disable-next-line no-console
-        console.log("[RiderAuth] SMS Sent (backend path)", {
-          requestId: rid,
-          smsSent: dataJson.smsSent === true,
-        });
-      }
+      await sendOtpViaBackend(payload, phoneTail ? `…${phoneTail}` : "(short)");
       return;
     }
 
     const supabase = getSupabaseAuth();
     if (!supabase) {
-      throw new Error(
-        "Supabase is not configured for rider OTP. Check EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.",
-      );
+      await sendOtpViaBackend(payload, phoneTail ? `…${phoneTail}` : "(short)");
+      return;
     }
 
     const { error } = await supabase.auth.signInWithOtp({
@@ -222,11 +233,20 @@ export const riderAuthService = {
     }
 
     if (error) {
-      const hint =
-        /hook|sms|provider|phone/i.test(error.message || "")
-          ? " Check Supabase Auth (Phone enabled), Send SMS hook URL, and backend MSG91 / SUPABASE_SEND_SMS_HOOK_SECRET."
-          : "";
-      throw new Error((error.message || "Unable to send OTP. Please try again.") + hint);
+      const errMsg = error.message || "Unable to send OTP. Please try again.";
+      const status = (error as { status?: number }).status;
+      if (isSupabaseSmsDeliveryError(errMsg, status)) {
+        if (__DEV__) {
+          // eslint-disable-next-line no-console
+          console.warn("[RiderAuth] Falling back to backend MSG91 OTP");
+        }
+        await sendOtpViaBackend(payload, phoneTail ? `…${phoneTail}` : "(short)");
+        return;
+      }
+      const hint = isSupabaseSmsDeliveryError(errMsg, status)
+        ? " Check Supabase Auth (Phone enabled), Send SMS hook URL, and backend MSG91 / SUPABASE_SEND_SMS_HOOK_SECRET."
+        : "";
+      throw new Error(errMsg + hint);
     }
   },
 

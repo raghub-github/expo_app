@@ -361,7 +361,23 @@ export const customerGenderEnum = pgEnum("customer_gender", [
   "prefer_not_to_say",
 ]);
 
-export const customerStatusEnum = pgEnum("customer_status", [
+export const customerHearingAccessibilityEnum = pgEnum("customer_hearing_accessibility", [
+  "deaf",
+  "hard_of_hearing",
+  "none",
+]);
+
+export const customerVisionAccessibilityEnum = pgEnum("customer_vision_accessibility", [
+  "blind",
+  "visual_impairment",
+  "none",
+]);
+
+export const customerMobilityAccessibilityEnum = pgEnum("customer_mobility_accessibility", [
+  "wheelchair_or_mobility_aid",
+  "physical_disability_mobility",
+  "none",
+]);
   "ACTIVE",
   "INACTIVE",
   "SUSPENDED",
@@ -392,6 +408,27 @@ export const walletTransactionTypeEnum = pgEnum("wallet_transaction_type", [
   "BONUS",
   "CASHBACK",
   "REVERSAL",
+  "TOPUP",
+  "EXPIRED",
+  "ADJUSTMENT",
+]);
+
+export const customerWalletBalanceLotTypeEnum = pgEnum("customer_wallet_balance_lot_type", [
+  "ADDED",
+  "REFUND",
+  "PROMOTIONAL",
+  "CASHBACK",
+  "BONUS",
+  "REFERRAL",
+  "LOYALTY",
+  "GIFT_CARD",
+  "ADJUSTMENT",
+]);
+
+export const customerWalletLotStatusEnum = pgEnum("customer_wallet_lot_status", [
+  "ACTIVE",
+  "DEPLETED",
+  "EXPIRED",
 ]);
 
 export const ticketStatusCustomerEnum = pgEnum("ticket_status_customer", [
@@ -2586,6 +2623,15 @@ export const customers = pgTable(
     uniqueExternalId: text("unique_external_id"),
     twitterVerified: boolean("twitter_verified").default(false),
     twitterFollowerCount: integer("twitter_follower_count"),
+    hearingAccessibility: customerHearingAccessibilityEnum("hearing_accessibility")
+      .notNull()
+      .default("none"),
+    visionAccessibility: customerVisionAccessibilityEnum("vision_accessibility")
+      .notNull()
+      .default("none"),
+    mobilityAccessibility: customerMobilityAccessibilityEnum("mobility_accessibility")
+      .notNull()
+      .default("none"),
   },
   (table) => ({
     customerIdIdx: index("customers_customer_id_idx").on(table.customerId),
@@ -2615,9 +2661,11 @@ export const customerWallet = pgTable(
     currentBalance: numeric("current_balance", { precision: 12, scale: 2 }).default("0.0"),
     lockedAmount: numeric("locked_amount", { precision: 12, scale: 2 }).default("0.0"),
     availableBalance: numeric("available_balance", { precision: 12, scale: 2 }).default("0.0"),
-    maxBalance: numeric("max_balance", { precision: 12, scale: 2 }).default("10000.0"),
+    maxBalance: numeric("max_balance", { precision: 12, scale: 2 }).default("50000.0"),
     minTransactionAmount: numeric("min_transaction_amount", { precision: 10, scale: 2 }).default("1.0"),
-    maxTransactionAmount: numeric("max_transaction_amount", { precision: 10, scale: 2 }).default("10000.0"),
+    maxTransactionAmount: numeric("max_transaction_amount", { precision: 10, scale: 2 }).default("50000.0"),
+    addedBalanceExpiryYears: integer("added_balance_expiry_years").notNull().default(10),
+    currency: text("currency").notNull().default("INR"),
     isActive: boolean("is_active").default(true),
     kycVerified: boolean("kyc_verified").default(false),
     lastTransactionAt: timestamp("last_transaction_at", { withTimezone: true }),
@@ -2668,6 +2716,60 @@ export const customerWalletTransactions = pgTable(
     createdAtIdx: index("customer_wallet_transactions_created_at_idx").on(table.createdAt),
     statusIdx: index("customer_wallet_transactions_status_idx").on(table.status),
     customerCreatedIdx: index("customer_wallet_transactions_customer_created_idx").on(table.customerId, table.createdAt),
+  })
+);
+
+/**
+ * GatiCash wallet settings — auto-add, monthly top-up tracking
+ */
+export const customerWalletSettings = pgTable(
+  "customer_wallet_settings",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    customerId: bigint("customer_id", { mode: "number" })
+      .notNull()
+      .unique()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    autoAddEnabled: boolean("auto_add_enabled").notNull().default(false),
+    autoAddAmount: numeric("auto_add_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+    autoAddThreshold: numeric("auto_add_threshold", { precision: 12, scale: 2 }).notNull().default("500"),
+    monthlyTopupLimit: numeric("monthly_topup_limit", { precision: 12, scale: 2 }).notNull().default("50000"),
+    monthlyTopupUsed: numeric("monthly_topup_used", { precision: 12, scale: 2 }).notNull().default("0"),
+    topupMonthKey: text("topup_month_key"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    customerIdIdx: index("customer_wallet_settings_customer_id_idx").on(table.customerId),
+  })
+);
+
+/**
+ * GatiCash credit lots — balance components with optional expiry
+ */
+export const customerWalletCreditLots = pgTable(
+  "customer_wallet_credit_lots",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    customerId: bigint("customer_id", { mode: "number" })
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    walletTransactionId: bigint("wallet_transaction_id", { mode: "number" }).references(
+      () => customerWalletTransactions.id,
+      { onDelete: "set null" }
+    ),
+    lotType: customerWalletBalanceLotTypeEnum("lot_type").notNull().default("ADDED"),
+    originalAmount: numeric("original_amount", { precision: 12, scale: 2 }).notNull(),
+    remainingAmount: numeric("remaining_amount", { precision: 12, scale: 2 }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    status: customerWalletLotStatusEnum("status").notNull().default("ACTIVE"),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    customerIdIdx: index("customer_wallet_credit_lots_customer_id_idx").on(table.customerId),
+    statusIdx: index("customer_wallet_credit_lots_status_idx").on(table.status),
   })
 );
 
@@ -3916,7 +4018,12 @@ export const customersRelations = relations(customers, ({ one, many }) => ({
     fields: [customers.id],
     references: [customerWallet.customerId],
   }),
+  walletSettings: one(customerWalletSettings, {
+    fields: [customers.id],
+    references: [customerWalletSettings.customerId],
+  }),
   walletTransactions: many(customerWalletTransactions),
+  walletCreditLots: many(customerWalletCreditLots),
   tickets: many(customerTickets),
 }));
 
@@ -3929,13 +4036,32 @@ export const customerWalletRelations = relations(customerWallet, ({ one }) => ({
 
 export const customerWalletTransactionsRelations = relations(
   customerWalletTransactions,
-  ({ one }) => ({
+  ({ one, many }) => ({
     customer: one(customers, {
       fields: [customerWalletTransactions.customerId],
       references: [customers.id],
     }),
+    creditLots: many(customerWalletCreditLots),
   })
 );
+
+export const customerWalletSettingsRelations = relations(customerWalletSettings, ({ one }) => ({
+  customer: one(customers, {
+    fields: [customerWalletSettings.customerId],
+    references: [customers.id],
+  }),
+}));
+
+export const customerWalletCreditLotsRelations = relations(customerWalletCreditLots, ({ one }) => ({
+  customer: one(customers, {
+    fields: [customerWalletCreditLots.customerId],
+    references: [customers.id],
+  }),
+  walletTransaction: one(customerWalletTransactions, {
+    fields: [customerWalletCreditLots.walletTransactionId],
+    references: [customerWalletTransactions.id],
+  }),
+}));
 
 export const customerTicketsRelations = relations(customerTickets, ({ one }) => ({
   customer: one(customers, {

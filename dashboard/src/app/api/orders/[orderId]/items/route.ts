@@ -14,17 +14,17 @@ import {
 } from "@/lib/foodOrderItems";
 import { buildOrderPricingSummary, type OrderItemLineAmounts } from "@/lib/orderItemsPayload";
 import {
-  loadSnapshotsByOrderTexts,
+  loadCommissionSnapshotsForCoreId,
   merchantAddonUnitForLine,
   merchantBaseUnitForItem,
   merchantOrderTotalFromBilling,
 } from "@/lib/merchant-visible-pricing";
+import { getActiveCommissionForStore } from "@/lib/db/operations/commission";
 import {
   merchantFundedDiscountFromBilling,
   merchantFundedDiscountLinesFromBilling,
   parseBillingSnapshot,
 } from "@/lib/merchant-billing-discount";
-import { getActiveCommissionForStore } from "@/lib/db/operations/commission";
 import {
   buildCustomisationDetail,
   findCartLineForOrderItem,
@@ -188,8 +188,10 @@ export async function GET(
     }
 
     const allowed =
-      (await isSuperAdmin(user.id, user.email ?? "")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"));
+      (await Promise.all([
+        isSuperAdmin(user.id, user.email ?? ""),
+        hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"),
+      ])).some(Boolean);
 
     if (!allowed) {
       return NextResponse.json(
@@ -207,7 +209,7 @@ export async function GET(
     const { data: core, error: coreErr } = await db
       .from("orders_core")
       .select(
-        "id, order_id, merchant_store_id, item_total, addon_total, grand_total, billing_snapshot, items"
+        "id, order_id, merchant_store_id, item_total, addon_total, grand_total, billing_snapshot, checkout_metadata, items"
       )
       .eq("id", orderId)
       .maybeSingle();
@@ -220,30 +222,100 @@ export async function GET(
       return NextResponse.json({ success: false, error: "Order not found" }, { status: 404 });
     }
 
-    const { data: food } = await db.from("orders_food").select("*").eq("order_id", orderId).maybeSingle();
+
+    const textOrderId = String(core.order_id ?? "").trim();
+    const storeId = core.merchant_store_id != null ? Number(core.merchant_store_id) : null;
+
+    const [
+      { data: food, error: foodErr },
+      { data: pendingRow },
+      { data: coreItemRows },
+      commissionSnaps,
+    ] = await Promise.all([
+      db.from("orders_food").select("*").eq("order_id", orderId).maybeSingle(),
+      textOrderId
+        ? db
+            .from("pending_orders")
+            .select("items_snapshot")
+            .eq("finalized_order_id", textOrderId)
+            .order("id", { ascending: false })
+            .limit(1)
+            .maybeSingle()
+        : Promise.resolve({ data: null }),
+      textOrderId
+        ? db
+            .from("orders_core_items")
+            .select(
+              "id, order_id, menu_item_id, item_name, variant_name, category_name, quantity, base_price, addon_price, total_price, veg_nonveg, item_snapshot"
+            )
+            .eq("order_id", textOrderId)
+            .order("id")
+        : Promise.resolve({ data: [] }),
+      loadCommissionSnapshotsForCoreId(db, orderId, storeId),
+    ]);
+
+    if (foodErr) {
+      console.error("[GET /api/orders/[orderId]/items] food:", foodErr.message);
+    }
 
     const keys = collectCoreItemOrderKeys(
       core as Record<string, unknown>,
       food as Record<string, unknown> | null
     );
-    const itemsByTextId = await loadCoreDbItemsByOrderTextIds(db, keys);
+
+    const itemIds = (coreItemRows ?? [])
+      .map((r) => Number((r as { id: number }).id))
+      .filter((n) => Number.isFinite(n));
+
+    const menuIds = [
+      ...new Set(
+        (coreItemRows ?? [])
+          .map((r) => Number((r as { menu_item_id?: number }).menu_item_id))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      ),
+    ];
+
+    const [itemsByTextId, { data: addonRows }, { data: menuRows }] = await Promise.all([
+      loadCoreDbItemsByOrderTextIds(db, keys),
+      itemIds.length > 0
+        ? db
+            .from("orders_core_item_addons")
+            .select("order_item_id, addon_name, quantity, addon_price")
+            .in("order_item_id", itemIds)
+        : Promise.resolve({ data: [] }),
+      storeId != null && menuIds.length > 0
+        ? db
+            .from("merchant_menu_items")
+            .select("id, item_image_url")
+            .eq("store_id", storeId)
+            .in("id", menuIds)
+        : Promise.resolve({ data: [] }),
+    ]);
+
     const normalized = resolveOrderItems(
       core as Record<string, unknown>,
       food as Record<string, unknown> | null,
       itemsByTextId
     );
 
-    const textOrderId = String(core.order_id ?? "").trim();
+    const addonsByItemId = new Map<
+      number,
+      Array<{ addon_name?: string | null; quantity: number; addon_price?: string | number | null }>
+    >();
+    for (const a of addonRows || []) {
+      const itemId = Number((a as { order_item_id: number }).order_item_id);
+      if (!Number.isFinite(itemId)) continue;
+      const list = addonsByItemId.get(itemId) ?? [];
+      list.push(a);
+      addonsByItemId.set(itemId, list);
+    }
 
-    const { data: pendingRow } = textOrderId
-      ? await db
-          .from("pending_orders")
-          .select("items_snapshot")
-          .eq("finalized_order_id", textOrderId)
-          .order("id", { ascending: false })
-          .limit(1)
-          .maybeSingle()
-      : { data: null };
+    const menuImageById = new Map<number, string>();
+    for (const m of menuRows || []) {
+      const id = Number((m as { id: number }).id);
+      const url = String((m as { item_image_url?: string }).item_image_url ?? "").trim();
+      if (Number.isFinite(id) && url) menuImageById.set(id, url);
+    }
 
     const cartLineSources: unknown[] = [];
     if (pendingRow?.items_snapshot) cartLineSources.push(pendingRow.items_snapshot);
@@ -260,60 +332,6 @@ export async function GET(
         cartLines = arr.map((r) =>
           r && typeof r === "object" ? (r as Record<string, unknown>) : {}
         );
-      }
-    }
-
-    const { data: coreItemRows } = textOrderId
-      ? await db
-          .from("orders_core_items")
-          .select(
-            "id, order_id, menu_item_id, item_name, variant_name, category_name, quantity, base_price, addon_price, total_price, veg_nonveg, item_snapshot"
-          )
-          .eq("order_id", textOrderId)
-          .order("id")
-      : { data: [] };
-
-    const itemIds = (coreItemRows ?? [])
-      .map((r) => Number((r as { id: number }).id))
-      .filter((n) => Number.isFinite(n));
-
-    const addonsByItemId = new Map<
-      number,
-      Array<{ addon_name?: string | null; quantity: number; addon_price?: string | number | null }>
-    >();
-    if (itemIds.length > 0) {
-      const { data: addonRows } = await db
-        .from("orders_core_item_addons")
-        .select("order_item_id, addon_name, quantity, addon_price")
-        .in("order_item_id", itemIds);
-      for (const a of addonRows || []) {
-        const itemId = Number((a as { order_item_id: number }).order_item_id);
-        if (!Number.isFinite(itemId)) continue;
-        const list = addonsByItemId.get(itemId) ?? [];
-        list.push(a);
-        addonsByItemId.set(itemId, list);
-      }
-    }
-
-    const storeId = core.merchant_store_id != null ? Number(core.merchant_store_id) : null;
-    const menuIds = [
-      ...new Set(
-        (coreItemRows ?? [])
-          .map((r) => Number((r as { menu_item_id?: number }).menu_item_id))
-          .filter((n) => Number.isFinite(n) && n > 0)
-      ),
-    ];
-    const menuImageById = new Map<number, string>();
-    if (storeId != null && menuIds.length > 0) {
-      const { data: menuRows } = await db
-        .from("merchant_menu_items")
-        .select("id, item_image_url")
-        .eq("store_id", storeId)
-        .in("id", menuIds);
-      for (const m of menuRows || []) {
-        const id = Number((m as { id: number }).id);
-        const url = String((m as { item_image_url?: string }).item_image_url ?? "").trim();
-        if (Number.isFinite(id) && url) menuImageById.set(id, url);
       }
     }
 
@@ -345,16 +363,17 @@ export async function GET(
       core as Record<string, unknown>
     );
 
-    const snapshotsByText = await loadSnapshotsByOrderTexts(
-      db,
-      textOrderId ? [textOrderId] : [],
-      storeId ?? undefined
-    );
-    const commissionSnaps = textOrderId ? snapshotsByText.get(textOrderId) ?? [] : [];
     let commissionPercent: number | undefined;
-    if (storeId != null) {
+    const needsCommissionFallback =
+      storeId != null &&
+      (coreItemRows ?? []).some((row) => {
+        const id = Number((row as { id: number }).id);
+        const snap = commissionSnaps.find((s) => s.orderItemId === id);
+        return !snap || snap.merchantBasePerUnit <= 0;
+      });
+    if (needsCommissionFallback) {
       try {
-        const trace = await getActiveCommissionForStore(storeId);
+        const trace = await getActiveCommissionForStore(storeId!);
         commissionPercent = trace.percent;
       } catch {
         commissionPercent = undefined;

@@ -203,6 +203,7 @@ export type CheckoutOffersResponse = {
     offerKind: string;
     summary: string;
     reason: string;
+    estimatedSavingsInr?: number | null;
   }[];
 };
 

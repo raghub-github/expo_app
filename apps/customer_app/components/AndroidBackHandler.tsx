@@ -8,6 +8,7 @@ import { useEffect } from "react";
 import { BackHandler, Platform } from "react-native";
 import { useRouter, useSegments } from "expo-router";
 import {
+  HOME_TAB_FALLBACK,
   resolveAndroidBackFallback,
   safeRouterBack,
   type SafeRouterBackFallback,
@@ -28,20 +29,29 @@ export function AndroidBackHandler({ fallback, preferFallback = false }: Android
     if (Platform.OS !== "android") return;
 
     const onHardwareBack = () => {
+      const root = segments[0];
+      // Main tabs sit on top of index/auth screens opened via replace — router.back() throws GO_BACK.
+      if (root === "(tabs)" && !fallback) {
+        return false;
+      }
+
       const resolvedFallback = fallback ?? resolveAndroidBackFallback(segments);
       if (preferFallback && resolvedFallback) {
-        safeRouterBack(router, resolvedFallback);
+        router.replace(resolvedFallback);
         return true;
       }
-      if (typeof router.canGoBack === "function" && router.canGoBack()) {
-        router.back();
+
+      // Food listing — always replace to tabs (opened from tab bar push; back() fails after reload).
+      if (
+        root === "home" &&
+        (segments.length === 1 || segments[1] === "index")
+      ) {
+        router.replace(HOME_TAB_FALLBACK);
         return true;
       }
-      if (resolvedFallback) {
-        safeRouterBack(router, resolvedFallback);
-        return true;
-      }
-      return false;
+
+      safeRouterBack(router, resolvedFallback ?? HOME_TAB_FALLBACK);
+      return true;
     };
 
     const sub = BackHandler.addEventListener("hardwareBackPress", onHardwareBack);

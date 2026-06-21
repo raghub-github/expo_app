@@ -2,7 +2,7 @@
  * GatiMitra-style floating active-order pill — white bar above tab nav.
  */
 
-import { View, Text, TouchableOpacity, StyleSheet, Platform } from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -79,15 +79,6 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "#ECECEC",
     position: "relative",
-    ...Platform.select({
-      ios: {
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 0.12,
-        shadowRadius: 16,
-      },
-      android: { elevation: 8 },
-    }),
   },
   floatingUnreadBadge: {
     position: "absolute",

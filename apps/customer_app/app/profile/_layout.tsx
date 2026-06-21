@@ -29,6 +29,7 @@ export default function ProfileLayout() {
       <Stack.Screen name="verify-email" options={{ headerShown: false }} />
       <Stack.Screen name="help" options={{ title: "Help & Support" }} />
       <Stack.Screen name="settings" options={{ headerShown: false }} />
+      <Stack.Screen name="accessibility" options={{ headerShown: false }} />
       <Stack.Screen name="ticket-create" options={{ title: "Create ticket" }} />
       <Stack.Screen name="ticket/[id]" options={{ title: "Ticket" }} />
       <Stack.Screen name="legal" options={{ headerShown: false }} />

@@ -631,6 +631,21 @@ export const userProfiles = pgTable(
 // Enums and table match DDL; use this for customer OTP verify and /me/profile
 // ---------------------------------------------------------------------------
 export const customerGenderEnum = pgEnum("customer_gender", ["MALE", "FEMALE", "OTHER", "PREFER_NOT_TO_SAY"]);
+export const customerHearingAccessibilityEnum = pgEnum("customer_hearing_accessibility", [
+  "deaf",
+  "hard_of_hearing",
+  "none",
+]);
+export const customerVisionAccessibilityEnum = pgEnum("customer_vision_accessibility", [
+  "blind",
+  "visual_impairment",
+  "none",
+]);
+export const customerMobilityAccessibilityEnum = pgEnum("customer_mobility_accessibility", [
+  "wheelchair_or_mobility_aid",
+  "physical_disability_mobility",
+  "none",
+]);
 export const customerStatusEnum = pgEnum("customer_status", ["ACTIVE", "SUSPENDED", "BLOCKED", "DEACTIVATED", "PENDING_VERIFICATION"]);
 export const riskLevelEnum = pgEnum("risk_level", ["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
 /** Customer address label (HOME / WORK / HOTEL / OTHER). Matches public.address_type. */
@@ -696,6 +711,15 @@ export const customers = pgTable(
     emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
     customerUuid: uuid("customer_uuid").notNull().$defaultFn(() => crypto.randomUUID()),
     gmitraPlusActive: boolean("gmitra_plus_active").notNull().default(false),
+    hearingAccessibility: customerHearingAccessibilityEnum("hearing_accessibility")
+      .notNull()
+      .default("none"),
+    visionAccessibility: customerVisionAccessibilityEnum("vision_accessibility")
+      .notNull()
+      .default("none"),
+    mobilityAccessibility: customerMobilityAccessibilityEnum("mobility_accessibility")
+      .notNull()
+      .default("none"),
   },
   (table) => ({
     customerIdIdx: index("customers_customer_id_idx").on(table.customerId),
@@ -2083,6 +2107,12 @@ export const pendingOrders = pgTable(
     distanceKm: numeric("distance_km", { precision: 8, scale: 2 }),
     billingSnapshot: jsonb("billing_snapshot"),
     billingRulesetVersion: integer("billing_ruleset_version"),
+    /** GatiCash wallet applied toward payment at checkout (INR). */
+    gatiCashApplied: numeric("gati_cash_applied", { precision: 12, scale: 2 }).default("0"),
+    /** Missed-offer discount subtracted from payable at checkout (INR). */
+    missedOfferDiscount: numeric("missed_offer_discount", { precision: 12, scale: 2 }).default("0"),
+    /** Missed-offer gap amount added to payable; credited to GatiCash after order (INR). */
+    missedOfferWalletAdd: numeric("missed_offer_wallet_add", { precision: 12, scale: 2 }).default("0"),
     couponCode: text("coupon_code"),
     checkoutMetadata: jsonb("checkout_metadata"),
     razorpayOrderId: text("razorpay_order_id"),

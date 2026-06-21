@@ -85,13 +85,7 @@ export default function OrderSuccessScreen() {
     merchantName: paramMerchantName,
     etaMinutes: paramEtaMinutes,
     deliveryEtaLabel: paramDeliveryEtaLabel,
-  } = useLocalSearchParams<{
-    orderId?: string | string[];
-    formattedOrderId?: string | string[];
-    merchantName?: string;
-    etaMinutes?: string | number;
-    deliveryEtaLabel?: string;
-  }>();
+  } = useLocalSearchParams();
   const route = useRoute();
   const router = useRouter();
   const insets = useSafeAreaInsets();

@@ -1,7 +1,7 @@
 /**
  * Food floating cart + multi-order tracking dock.
  * Visible on: /home, /home/merchant/*, /search, and on /orders when there are active orders.
- * Hidden on /orders/[id] (order detail already shows map + tracking).
+ * Hidden on /orders/[id] (order detail — no floating cart or track pill; tracking is on-screen).
  * When cart + active order(s): paged horizontal dock — swipe to switch (one pill visible at a time).
  */
 
@@ -42,6 +42,7 @@ import { useEnsureStoreLiveStatus } from "@/hooks/useEnsureStoreLiveStatus";
 import { closedStoreCtaCopy, getOpenSoonState } from "@/lib/storeScheduleUi";
 import { useScheduleTick } from "@/hooks/useScheduleTick";
 import { FloatingOrderTrackingPill } from "@/components/orders/FloatingOrderTrackingPill";
+import { customerTabBarOffset } from "@/components/CustomerTabBar";
 import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
 import { prefetchSubscriptionPlans } from "@/lib/subscriptionCache";
 import { useAuthStore } from "@/store/authStore";
@@ -67,7 +68,7 @@ function useIsFoodServicePage(): boolean {
   if (typeof pathname !== "string") return false;
   const p = pathname as string;
   if (segments[0] === "(auth)" || segments[0] === "(onboarding)") return false;
-  if (p.startsWith("/checkout") || p.startsWith("/profile") || p === "/wallet") return false;
+  if (p.startsWith("/checkout") || p.startsWith("/profile") || p.startsWith("/wallet")) return false;
   if (p === "/home" || p.startsWith("/home/merchant") || p.startsWith("/home/category")) return true;
   if (p.startsWith("/home/service") || p.startsWith("/home/shop")) return false;
   if (p === "/search") return true;
@@ -83,8 +84,26 @@ function useIsOnOrdersArea(): boolean {
   return p === "/orders" || p.startsWith("/orders/") || p.includes("orders");
 }
 
-/** Hide floating track pill on any /orders/[slug] screen (detail, help, chat, payment, etc.). */
+/** Hide floating track pill on screens where tracking is redundant or clutters checkout/payment flow. */
 function useHideFloatingOrderTrackingPill(): boolean {
+  const pathname = usePathname();
+  const segments = useSegments();
+  if (typeof pathname !== "string") return false;
+  const p = pathname as string;
+
+  if (p === "/checkout" || p.startsWith("/checkout/")) return true;
+
+  if (p.startsWith("/orders/payment-")) return true;
+
+  if (segments[0] === "home" && segments[1] === "merchant" && segments.length >= 3) {
+    return true;
+  }
+
+  return segments[0] === "orders" && segments.length === 2 && String(segments[1] ?? "").length > 0;
+}
+
+/** Hide floating cart on order detail / live tracking — map + status already on screen. */
+function useHideFloatingCart(): boolean {
   const segments = useSegments();
   return segments[0] === "orders" && segments.length === 2 && String(segments[1] ?? "").length > 0;
 }
@@ -115,6 +134,67 @@ function FloatingOrderTrackingPillWithUnread({
   );
 }
 
+/** Home-tab cart pill — same white-bar layout as active-order tracking pill. */
+function FloatingCartPill({
+  merchantName,
+  itemCount,
+  onPress,
+  disabled,
+  closedTitle,
+  closedSub,
+}: {
+  merchantName: string | null;
+  itemCount: number;
+  onPress: () => void;
+  disabled?: boolean;
+  closedTitle?: string;
+  closedSub?: string;
+}) {
+  const itemLabel = itemCount === 1 ? "1 item" : `${itemCount} items`;
+  return (
+    <TouchableOpacity
+      activeOpacity={disabled ? 1 : 0.92}
+      onPress={onPress}
+      disabled={disabled}
+      style={styles.dockCartTouchable}
+    >
+      <View style={[styles.dockCartShell, disabled && styles.dockCartShellDisabled]}>
+        <View style={styles.dockCartIconWrap}>
+          <Ionicons name="cart-outline" size={24} color="#111827" />
+        </View>
+        <View style={styles.dockCartCenter}>
+          <Text style={styles.dockCartTitle} numberOfLines={1}>
+            {merchantName?.trim() || "Your cart"}
+          </Text>
+          <View style={styles.dockCartSubRow}>
+            <Text style={styles.dockCartSub} numberOfLines={1}>
+              {disabled ? closedSub ?? "Cart unavailable" : `${itemLabel} · View cart`}
+            </Text>
+            {!disabled ? (
+              <Ionicons name="chevron-forward" size={14} color={GatiMitraColors.warmOrange} />
+            ) : null}
+          </View>
+        </View>
+        {disabled ? (
+          <View style={styles.dockCartCtaMuted}>
+            <Text style={styles.dockCartCtaMutedText}>{closedTitle ?? "Closed"}</Text>
+          </View>
+        ) : (
+          <LinearGradient
+            colors={[GatiMitraColors.deepMintStart, GatiMitraColors.primaryMint]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.dockCartCta}
+          >
+            <Text style={styles.dockCartCtaTop}>open</Text>
+            <Text style={styles.dockCartCtaBottom}>Cart</Text>
+          </LinearGradient>
+        )}
+      </View>
+    </TouchableOpacity>
+  );
+}
+
 export function GlobalFloatingCart() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -126,6 +206,7 @@ export function GlobalFloatingCart() {
   const isOnMainTabs = useIsOnMainTabs();
   const isOnOrdersArea = useIsOnOrdersArea();
   const hideFloatingOrderTrackingPill = useHideFloatingOrderTrackingPill();
+  const hideFloatingCart = useHideFloatingCart();
   const isInsideCartRestaurant = useIsInsideCartRestaurant();
   const merchantScrollY = useMerchantScrollStore((s) => s.scrollY);
   const isCartCompact = isInsideCartRestaurant && merchantScrollY > 80;
@@ -301,19 +382,147 @@ export function GlobalFloatingCart() {
   };
 
   const visible =
-    (hasCart && (isFoodServicePage || isOnOrdersArea)) ||
+    (hasCart && !hideFloatingCart && (isFoodServicePage || isOnOrdersArea || isOnMainTabs)) ||
     (showActiveOrderTracking && (isFoodServicePage || isOnOrdersArea || isOnMainTabs));
   if (!visible) return null;
 
   const inTabs = segments[0] === "(tabs)";
-  /** Matches compact CustomerTabBar (~52px content + wrapper padding). */
-  const TAB_BAR_HEIGHT = 58;
-  const GAP_ABOVE_NAV = 14;
+  /** Slight lift so pagination dots sit clearly above the tab bar. */
+  const FLOATING_GAP_ABOVE_TAB = 10;
   const bottomOffset = inTabs
-    ? insets.bottom + TAB_BAR_HEIGHT + GAP_ABOVE_NAV
-    : insets.bottom + GAP_ABOVE_NAV;
+    ? customerTabBarOffset(insets.bottom) + FLOATING_GAP_ABOVE_TAB
+    : insets.bottom + FLOATING_GAP_ABOVE_TAB;
 
   const slideUpEntering = SlideInUp.duration(250).easing(Easing.out(Easing.ease));
+  const compact = isCartCompact;
+  const itemLabel = totalCount === 1 ? "1 item" : `${totalCount} items`;
+  /** Main tab home uses the compact pill; food/browse keeps the full cart bar in every state. */
+  const useTabHomeCartPill = isOnMainTabs && !isFoodServicePage;
+
+  const cartPillNode = (
+    <FloatingCartPill
+      merchantName={merchantName}
+      itemCount={totalCount}
+      onPress={handleCartPress}
+      disabled={isCartStoreClosed}
+      closedTitle={isCartStoreClosed ? cartClosedCta.title : undefined}
+      closedSub={isCartStoreClosed ? cartClosedCta.sub : undefined}
+    />
+  );
+
+  const cartBarNode = (
+    <View
+      style={[
+        styles.gmShell,
+        compact && styles.gmShellCompact,
+        !compact && showAllCartsTab && styles.gmShellWithTab,
+      ]}
+    >
+      {!compact && showAllCartsTab ? (
+        <Pressable
+          style={styles.allCartsTab}
+          onPress={() => setAllCartsSheetVisible(true)}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel="All carts"
+        >
+          <Text style={styles.allCartsTabText}>All carts</Text>
+          <Ionicons name="caret-up" size={12} color={GatiMitraColors.emerald} />
+        </Pressable>
+      ) : null}
+
+      <View style={[styles.gmBar, compact && styles.gmBarCompact]}>
+        <Pressable
+          style={styles.gmLeftPress}
+          onPress={handleViewMenuPress}
+          hitSlop={4}
+          android_ripple={{ color: "rgba(5, 150, 105, 0.08)" }}
+        >
+          <View style={[styles.gmThumb, compact && styles.gmThumbCompact]}>
+            {resolvedThumbUri && !floatThumbLoadFailed ? (
+              <Image
+                source={{ uri: resolvedThumbUri }}
+                style={styles.gmThumbImg}
+                resizeMode="cover"
+                onError={() => setFloatThumbLoadFailed(true)}
+              />
+            ) : (
+              <View style={styles.gmThumbPlaceholder}>
+                <Ionicons name="restaurant" size={compact ? 18 : 20} color={GatiMitraColors.textSecondary} />
+              </View>
+            )}
+          </View>
+          <View style={styles.gmLeftTextCol}>
+            <Text style={[styles.gmStoreName, compact && styles.gmStoreNameCompact]} numberOfLines={1}>
+              {merchantName ?? "Restaurant"}
+            </Text>
+            <View style={styles.gmViewMenuRow}>
+              <Text style={styles.gmViewMenuText}>View Menu</Text>
+              <Ionicons name="chevron-forward" size={14} color={GatiMitraColors.emerald} />
+            </View>
+          </View>
+        </Pressable>
+
+        <TouchableOpacity
+          activeOpacity={isCartStoreClosed ? 1 : 0.92}
+          onPress={handleCartPress}
+          disabled={isCartStoreClosed}
+          style={[
+            styles.gmViewCartCta,
+            compact && styles.gmViewCartCtaCompact,
+            isCartStoreClosed && styles.gmViewCartCtaClosed,
+          ]}
+          accessibilityState={{ disabled: isCartStoreClosed }}
+          accessibilityLabel={isCartStoreClosed ? "Store closed, cart unavailable" : "View cart"}
+        >
+          <LinearGradient
+            colors={
+              isCartStoreClosed
+                ? cartOpenSoon
+                  ? (GatiMitraColors.mintGradient as unknown as [string, string])
+                  : (["#9CA3AF", "#6B7280"] as [string, string])
+                : (GatiMitraColors.checkoutGradient as unknown as [string, string])
+            }
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.gmViewCartGradient}
+          >
+            <Text style={[styles.gmViewCartTitle, compact && styles.gmViewCartTitleCompact]}>
+              {isCartStoreClosed ? cartClosedCta.title : "View Cart"}
+            </Text>
+            <Text style={[styles.gmViewCartSub, compact && styles.gmViewCartSubCompact]}>
+              {isCartStoreClosed ? cartClosedCta.sub : itemLabel}
+            </Text>
+          </LinearGradient>
+        </TouchableOpacity>
+
+        <View style={[styles.gmRightActions, cartRemoveExpanded && styles.gmRightActionsExpanded]}>
+          <Pressable
+            style={[styles.gmCloseBtn, compact && styles.gmCloseBtnCompact]}
+            onPress={cartRemoveExpanded ? handleCancelRemoveCart : handleDismissCartPress}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel={cartRemoveExpanded ? "Cancel remove cart" : "Remove cart"}
+          >
+            <Ionicons name="close" size={compact ? 18 : 20} color={GatiMitraColors.textSecondary} />
+          </Pressable>
+          {cartRemoveExpanded ? (
+            <Pressable
+              style={[styles.gmRemovePanel, compact && styles.gmRemovePanelCompact]}
+              onPress={handleConfirmRemoveCart}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel="Confirm remove cart"
+            >
+              <Text style={[styles.gmRemoveText, compact && styles.gmRemoveTextCompact]}>Remove</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
+    </View>
+  );
+
+  const cartContentNode = useTabHomeCartPill ? cartPillNode : cartBarNode;
 
   const onDockScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const x = e.nativeEvent.contentOffset.x;
@@ -325,76 +534,79 @@ export function GlobalFloatingCart() {
 
   if (showScrollDock) {
     return (
-      <Animated.View
-        entering={slideUpEntering}
-        style={[styles.wrap, styles.dockWrap, { bottom: bottomOffset }]}
-        pointerEvents="box-none"
-      >
-        <ScrollView
-          horizontal
-          pagingEnabled
-          showsHorizontalScrollIndicator={false}
-          decelerationRate="fast"
-          snapToInterval={dockPageWidth}
-          snapToAlignment="start"
-          disableIntervalMomentum
-          onMomentumScrollEnd={onDockScroll}
-          onScrollEndDrag={onDockScroll}
-          style={[styles.dockScroll, { width: dockPageWidth }]}
-          contentContainerStyle={styles.dockContentPaged}
+      <>
+        <Animated.View
+          entering={slideUpEntering}
+          style={[styles.wrap, styles.dockWrap, { bottom: bottomOffset }]}
+          pointerEvents="box-none"
         >
-          {trackingOrders.map((ord) => (
-            <View key={ord.orderId} style={[styles.dockPage, { width: dockPageWidth }]}>
-              <FloatingOrderTrackingPillWithUnread
-                order={ord}
-                onPress={() => router.push(`/orders/${ord.orderId}` as const)}
-              />
-            </View>
-          ))}
-          {hasCart ? (
-            <View style={[styles.dockPage, { width: dockPageWidth }]}>
-              <TouchableOpacity
-                activeOpacity={isCartStoreClosed ? 1 : 0.9}
-                onPress={handleCartPress}
-                disabled={isCartStoreClosed}
-                style={[styles.dockPillFull, isCartStoreClosed && styles.dockPillClosed]}
-              >
-                <View style={[styles.pill, styles.dockPillInner]}>
-                  <LinearGradient
-                    colors={
-                      isCartStoreClosed
-                        ? (["#9CA3AF", "#6B7280"] as [string, string])
-                        : (GatiMitraColors.mintGradient as unknown as [string, string])
-                    }
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
-                    style={styles.pillGradient}
-                  >
-                    <View style={styles.glassOverlay} />
-                    <View style={styles.pillContent}>
-                      <Ionicons name="cart" size={18} color={isCartStoreClosed ? "#fff" : GatiMitraColors.emerald} />
-                      <Text style={styles.cartCount}>{totalCount}</Text>
-                      <Text style={styles.cartCta}>
-                        {isCartStoreClosed ? (cartOpenSoon ? cartClosedCta.sub : "Closed") : "Cart →"}
-                      </Text>
-                    </View>
-                  </LinearGradient>
+          <View style={styles.dockContainer}>
+            <ScrollView
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              decelerationRate="fast"
+              snapToInterval={dockPageWidth}
+              snapToAlignment="start"
+              disableIntervalMomentum
+              onMomentumScrollEnd={onDockScroll}
+              onScrollEndDrag={onDockScroll}
+              style={[styles.dockScroll, { width: dockPageWidth }]}
+              contentContainerStyle={styles.dockContentPaged}
+            >
+              {trackingOrders.map((ord) => (
+                <View key={ord.orderId} style={[styles.dockPage, { width: dockPageWidth }]}>
+                  <FloatingOrderTrackingPillWithUnread
+                    order={ord}
+                    onPress={() => router.push(`/orders/${ord.orderId}` as const)}
+                  />
                 </View>
-              </TouchableOpacity>
-            </View>
-          ) : null}
-        </ScrollView>
-        {dockPageCount > 1 ? (
-          <View style={styles.dockDots} pointerEvents="none">
-            {Array.from({ length: dockPageCount }).map((_, i) => (
-              <View
-                key={i}
-                style={[styles.dockDot, i === dockPageIndex && styles.dockDotActive]}
-              />
-            ))}
+              ))}
+              {hasCart ? (
+                <View style={[styles.dockPage, { width: dockPageWidth }]}>
+                  {cartContentNode}
+                </View>
+              ) : null}
+            </ScrollView>
+            {dockPageCount > 1 ? (
+              <View style={styles.dockDots} pointerEvents="none">
+                {Array.from({ length: dockPageCount }).map((_, i) => (
+                  <View
+                    key={i}
+                    style={[styles.dockDot, i === dockPageIndex && styles.dockDotActive]}
+                  />
+                ))}
+              </View>
+            ) : null}
           </View>
+        </Animated.View>
+        {!useTabHomeCartPill ? (
+          <AllCartsSheetModal
+            visible={allCartsSheetVisible}
+            onClose={() => setAllCartsSheetVisible(false)}
+            merchantName={merchantName}
+            merchantId={merchantId}
+            cartSlotCount={cartSlotCount}
+            thumbUri={resolvedThumbUri}
+            itemLabel={itemLabel}
+            onViewMenu={() => {
+              setAllCartsSheetVisible(false);
+              handleViewMenuPress();
+            }}
+            isStoreClosed={isCartStoreClosed}
+            closedCta={cartClosedCta}
+            cartOpenSoon={cartOpenSoon}
+            onViewCart={() => {
+              setAllCartsSheetVisible(false);
+              handleCartPress();
+            }}
+            onRemoveCart={() => {
+              setAllCartsSheetVisible(false);
+              clearCart();
+            }}
+          />
         ) : null}
-      </Animated.View>
+      </>
     );
   }
 
@@ -413,152 +625,42 @@ export function GlobalFloatingCart() {
     );
   }
 
-  const compact = isCartCompact;
-
-  const itemLabel = totalCount === 1 ? "1 item" : `${totalCount} items`;
-
   return (
     <>
       <Animated.View
         entering={slideUpEntering}
-        style={[styles.wrap, { bottom: bottomOffset }]}
+        style={[styles.wrap, useTabHomeCartPill && styles.dockWrap, { bottom: bottomOffset }]}
         pointerEvents="box-none"
       >
-        <View
-          style={[
-            styles.gmShell,
-            compact && styles.gmShellCompact,
-            !compact && showAllCartsTab && styles.gmShellWithTab,
-          ]}
-        >
-          {!compact && showAllCartsTab ? (
-            <Pressable
-              style={styles.allCartsTab}
-              onPress={() => setAllCartsSheetVisible(true)}
-              hitSlop={6}
-              accessibilityRole="button"
-              accessibilityLabel="All carts"
-            >
-              <Text style={styles.allCartsTabText}>All carts</Text>
-              <Ionicons name="caret-up" size={12} color={GatiMitraColors.emerald} />
-            </Pressable>
-          ) : null}
-
-          <View style={[styles.gmBar, compact && styles.gmBarCompact]}>
-            <Pressable
-              style={styles.gmLeftPress}
-              onPress={handleViewMenuPress}
-              hitSlop={4}
-              android_ripple={{ color: "rgba(5, 150, 105, 0.08)" }}
-            >
-              <View style={[styles.gmThumb, compact && styles.gmThumbCompact]}>
-                {resolvedThumbUri && !floatThumbLoadFailed ? (
-                  <Image
-                    source={{ uri: resolvedThumbUri }}
-                    style={styles.gmThumbImg}
-                    resizeMode="cover"
-                    onError={() => setFloatThumbLoadFailed(true)}
-                  />
-                ) : (
-                  <View style={styles.gmThumbPlaceholder}>
-                    <Ionicons name="restaurant" size={compact ? 18 : 20} color={GatiMitraColors.textSecondary} />
-                  </View>
-                )}
-              </View>
-              <View style={styles.gmLeftTextCol}>
-                <Text style={[styles.gmStoreName, compact && styles.gmStoreNameCompact]} numberOfLines={1}>
-                  {merchantName ?? "Restaurant"}
-                </Text>
-                <View style={styles.gmViewMenuRow}>
-                  <Text style={styles.gmViewMenuText}>View Menu</Text>
-                  <Ionicons name="chevron-forward" size={14} color={GatiMitraColors.emerald} />
-                </View>
-              </View>
-            </Pressable>
-
-            <TouchableOpacity
-              activeOpacity={isCartStoreClosed ? 1 : 0.92}
-              onPress={handleCartPress}
-              disabled={isCartStoreClosed}
-              style={[
-                styles.gmViewCartCta,
-                compact && styles.gmViewCartCtaCompact,
-                isCartStoreClosed && styles.gmViewCartCtaClosed,
-              ]}
-              accessibilityState={{ disabled: isCartStoreClosed }}
-              accessibilityLabel={isCartStoreClosed ? "Store closed, cart unavailable" : "View cart"}
-            >
-              <LinearGradient
-                colors={
-                  isCartStoreClosed
-                    ? cartOpenSoon
-                      ? (GatiMitraColors.mintGradient as unknown as [string, string])
-                      : (["#9CA3AF", "#6B7280"] as [string, string])
-                    : (GatiMitraColors.checkoutGradient as unknown as [string, string])
-                }
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.gmViewCartGradient}
-              >
-                <Text style={[styles.gmViewCartTitle, compact && styles.gmViewCartTitleCompact]}>
-                  {isCartStoreClosed ? cartClosedCta.title : "View Cart"}
-                </Text>
-                <Text style={[styles.gmViewCartSub, compact && styles.gmViewCartSubCompact]}>
-                  {isCartStoreClosed ? cartClosedCta.sub : itemLabel}
-                </Text>
-              </LinearGradient>
-            </TouchableOpacity>
-
-            <View style={[styles.gmRightActions, cartRemoveExpanded && styles.gmRightActionsExpanded]}>
-              <Pressable
-                style={[styles.gmCloseBtn, compact && styles.gmCloseBtnCompact]}
-                onPress={cartRemoveExpanded ? handleCancelRemoveCart : handleDismissCartPress}
-                hitSlop={10}
-                accessibilityRole="button"
-                accessibilityLabel={cartRemoveExpanded ? "Cancel remove cart" : "Remove cart"}
-              >
-                <Ionicons name="close" size={compact ? 18 : 20} color={GatiMitraColors.textSecondary} />
-              </Pressable>
-              {cartRemoveExpanded ? (
-                <Pressable
-                  style={[styles.gmRemovePanel, compact && styles.gmRemovePanelCompact]}
-                  onPress={handleConfirmRemoveCart}
-                  hitSlop={6}
-                  accessibilityRole="button"
-                  accessibilityLabel="Confirm remove cart"
-                >
-                  <Text style={[styles.gmRemoveText, compact && styles.gmRemoveTextCompact]}>Remove</Text>
-                </Pressable>
-              ) : null}
-            </View>
-          </View>
-        </View>
+        {cartContentNode}
       </Animated.View>
 
-      <AllCartsSheetModal
-        visible={allCartsSheetVisible}
-        onClose={() => setAllCartsSheetVisible(false)}
-        merchantName={merchantName}
-        merchantId={merchantId}
-        cartSlotCount={cartSlotCount}
-        thumbUri={resolvedThumbUri}
-        itemLabel={itemLabel}
-        onViewMenu={() => {
-          setAllCartsSheetVisible(false);
-          handleViewMenuPress();
-        }}
-        isStoreClosed={isCartStoreClosed}
-        closedCta={cartClosedCta}
-        cartOpenSoon={cartOpenSoon}
-        onViewCart={() => {
-          setAllCartsSheetVisible(false);
-          handleCartPress();
-        }}
-        onRemoveCart={() => {
-          setAllCartsSheetVisible(false);
-          clearCart();
-        }}
-      />
+      {!useTabHomeCartPill ? (
+        <AllCartsSheetModal
+          visible={allCartsSheetVisible}
+          onClose={() => setAllCartsSheetVisible(false)}
+          merchantName={merchantName}
+          merchantId={merchantId}
+          cartSlotCount={cartSlotCount}
+          thumbUri={resolvedThumbUri}
+          itemLabel={itemLabel}
+          onViewMenu={() => {
+            setAllCartsSheetVisible(false);
+            handleViewMenuPress();
+          }}
+          isStoreClosed={isCartStoreClosed}
+          closedCta={cartClosedCta}
+          cartOpenSoon={cartOpenSoon}
+          onViewCart={() => {
+            setAllCartsSheetVisible(false);
+            handleCartPress();
+          }}
+          onRemoveCart={() => {
+            setAllCartsSheetVisible(false);
+            clearCart();
+          }}
+        />
+      ) : null}
     </>
   );
 }
@@ -733,7 +835,7 @@ const styles = StyleSheet.create({
     right: 16,
     zIndex: 999,
     alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "flex-end",
   },
   trackingWrap: {
     left: 12,
@@ -787,20 +889,13 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderRadius: 36,
+    borderRadius: 20,
     paddingLeft: 10,
     paddingRight: 6,
     paddingVertical: 8,
     gap: 4,
-    ...Platform.select({
-      ios: {
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.12,
-        shadowRadius: 20,
-      },
-      android: { elevation: 10 },
-    }),
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ECECEC",
   },
   gmBarCompact: {
     borderRadius: 32,
@@ -1158,17 +1253,27 @@ const styles = StyleSheet.create({
     left: 8,
     right: 8,
     alignItems: "center",
+    justifyContent: "flex-end",
+    backgroundColor: "transparent",
+  },
+  dockContainer: {
+    width: "100%",
+    alignItems: "center",
+    backgroundColor: "transparent",
   },
   dockScroll: {
     alignSelf: "center",
+    flexGrow: 0,
+    backgroundColor: "transparent",
   },
   dockContentPaged: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
   },
   dockPage: {
-    justifyContent: "center",
+    justifyContent: "flex-start",
     paddingHorizontal: 4,
+    overflow: "hidden",
   },
   dockPillFull: {
     width: "100%",
@@ -1179,6 +1284,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 6,
     marginTop: 8,
+    paddingBottom: 2,
+    backgroundColor: "transparent",
   },
   dockDot: {
     width: 6,
@@ -1192,6 +1299,86 @@ const styles = StyleSheet.create({
   },
   dockPillInner: {
     minHeight: 48,
+  },
+  dockCartTouchable: {
+    width: "100%",
+  },
+  dockCartShell: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    gap: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ECECEC",
+  },
+  dockCartShellDisabled: {
+    opacity: 0.72,
+  },
+  dockCartIconWrap: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dockCartCenter: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: "center",
+  },
+  dockCartTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#111827",
+    letterSpacing: -0.2,
+  },
+  dockCartSubRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    marginTop: 2,
+  },
+  dockCartSub: {
+    flexShrink: 1,
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#374151",
+  },
+  dockCartCta: {
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 56,
+  },
+  dockCartCtaTop: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.92)",
+    textTransform: "lowercase",
+  },
+  dockCartCtaBottom: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#FFFFFF",
+    marginTop: 1,
+  },
+  dockCartCtaMuted: {
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: "#F3F4F6",
+    minWidth: 56,
+    alignItems: "center",
+  },
+  dockCartCtaMutedText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#6B7280",
+    textAlign: "center",
   },
   touchable: {
     width: "100%",

@@ -275,6 +275,13 @@ export type BillSummarySheetProps = {
   onGstInfoPress: () => void;
   visibleDiscounts: BillingLine[];
   showItemTotalStrike: boolean;
+  /** GatiCash wallet applied on checkout (INR). */
+  gatiCashApplyAmount?: number;
+  /** Missed-offer GatiCash credit selected for after order (INR, informational only). */
+  missedOfferWalletPendingAmount?: number;
+  /** Unlocked missed-offer discount on this order (INR). */
+  missedOfferUnlockDiscount?: number;
+  missedOfferUnlockLabel?: string;
 } & CheckoutGratitudeSectionsProps;
 
 export function BillSummarySheet({
@@ -295,6 +302,10 @@ export function BillSummarySheet({
   onGstInfoPress,
   visibleDiscounts,
   showItemTotalStrike,
+  gatiCashApplyAmount = 0,
+  missedOfferWalletPendingAmount = 0,
+  missedOfferUnlockDiscount = 0,
+  missedOfferUnlockLabel = "Offer unlocked",
   tipValue,
   onTipSelect,
   tipCustomMode,
@@ -359,6 +370,31 @@ export function BillSummarySheet({
     0;
   const deliveryCurrentInr = serverBill?.components.delivery.taxable_value ?? 0;
   const smallOrderInr = serverBill?.components.small_order.taxable_value ?? 0;
+  const walletDeduction =
+    gatiCashApplyAmount > 0.005 ? Math.round(gatiCashApplyAmount * 100) / 100 : 0;
+  const pendingWalletCredit =
+    missedOfferWalletPendingAmount > 0.005
+      ? Math.round(missedOfferWalletPendingAmount * 100) / 100
+      : 0;
+  const missedOfferDiscount =
+    missedOfferUnlockDiscount > 0.005
+      ? Math.round(missedOfferUnlockDiscount * 100) / 100
+      : 0;
+  const toPayAfterWallet =
+    serverBill != null
+      ? Math.max(
+          0,
+          Math.round(
+            (serverBill.finalAmount -
+              walletDeduction -
+              missedOfferDiscount +
+              pendingWalletCredit) *
+              100
+          ) / 100
+        )
+      : 0;
+  const hasCheckoutAdjustments =
+    walletDeduction > 0.005 || missedOfferDiscount > 0.005 || pendingWalletCredit > 0.005;
 
   return (
     <>
@@ -480,9 +516,40 @@ export function BillSummarySheet({
                     />
                   ))}
 
+                  {walletDeduction > 0.005 ? (
+                    <BillLineRow
+                      label="Using GatiCash"
+                      value={`- ${fmt(walletDeduction)}`}
+                      valueStyle={styles.walletDiscountValue}
+                      labelAccent
+                      rowStyle={styles.discountRow}
+                    />
+                  ) : null}
+
+                  {missedOfferDiscount > 0.005 ? (
+                    <BillLineRow
+                      label={missedOfferUnlockLabel}
+                      value={`- ${fmt(missedOfferDiscount)}`}
+                      valueStyle={styles.discountValue}
+                      labelAccent
+                      rowStyle={styles.discountRow}
+                    />
+                  ) : null}
+
+                  {pendingWalletCredit > 0.005 ? (
+                    <BillLineRow
+                      label="Add to GatiCash wallet"
+                      value={`+ ${fmt(pendingWalletCredit)}`}
+                      valueStyle={styles.pendingWalletValue}
+                      rowStyle={styles.pendingWalletRow}
+                    />
+                  ) : null}
+
                   <View style={styles.toPayRow}>
                     <Text style={styles.toPayLabel}>To pay</Text>
-                    <Text style={styles.toPayValue}>{fmt(serverBill.finalAmount)}</Text>
+                    <Text style={styles.toPayValue}>
+                      {fmt(hasCheckoutAdjustments ? toPayAfterWallet : serverBill.finalAmount)}
+                    </Text>
                   </View>
 
                   {showSavingsBanner ? (
@@ -613,6 +680,9 @@ const styles = StyleSheet.create({
   discountRow: { paddingVertical: 6 },
   discountLabel: { color: BILL_DISCOUNT_COLOR, fontWeight: "600" },
   discountValue: { color: BILL_DISCOUNT_COLOR, fontWeight: "700" },
+  walletDiscountValue: { color: GM.splashMint, fontWeight: "700" },
+  pendingWalletRow: { paddingVertical: 6 },
+  pendingWalletValue: { color: "#0F766E", fontWeight: "700" },
   toPayRow: {
     flexDirection: "row",
     justifyContent: "space-between",

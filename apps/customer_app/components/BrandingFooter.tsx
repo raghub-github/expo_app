@@ -19,9 +19,11 @@ const WATERMARK_GRAY = "rgba(107, 114, 128, 0.55)";
 type BrandingFooterProps = {
   /** Home tab reference: teal sparkles tagline + bold black logo + teal rule */
   variant?: "default" | "home";
+  /** Less vertical padding for dense pages (e.g. checkout). */
+  compact?: boolean;
 };
 
-export function BrandingFooter({ variant = "default" }: BrandingFooterProps) {
+export function BrandingFooter({ variant = "default", compact = false }: BrandingFooterProps) {
   const opacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -35,7 +37,10 @@ export function BrandingFooter({ variant = "default" }: BrandingFooterProps) {
   const isHome = variant === "home";
 
   return (
-    <Animated.View style={[styles.wrap, isHome && styles.wrapHome, { opacity }]} pointerEvents="none">
+    <Animated.View
+      style={[styles.wrap, isHome && styles.wrapHome, compact && styles.wrapCompact, { opacity }]}
+      pointerEvents="none"
+    >
       {isHome ? null : <View style={styles.divider} />}
       {isHome ? (
         <Text style={styles.taglineHome}>
@@ -61,6 +66,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     alignItems: "center",
     justifyContent: "center",
+  },
+  wrapCompact: {
+    paddingTop: 12,
+    paddingBottom: 10,
   },
   divider: {
     width: "24%",

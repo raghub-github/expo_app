@@ -119,6 +119,8 @@ export function getConfig(): {
   googleMapsApiKey: string | null;
   supabaseUrl: string | null;
   supabaseAnonKey: string | null;
+  /** When true, OTP is sent via backend POST /v1/auth/otp/request (MSG91). */
+  phoneOtpUseBackendOnly: boolean;
 } {
   const port = apiDevPort();
   const fromEnv = asNonEmptyString(process.env.EXPO_PUBLIC_API_BASE_URL);
@@ -176,11 +178,20 @@ export function getConfig(): {
     asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.EXPO_PUBLIC_SUPABASE_ANON_KEY as string) ??
     null;
 
+  const phoneOtpUseBackendOnly = (() => {
+    const flag = (process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND ?? "").trim().toLowerCase();
+    if (flag === "true" || flag === "1" || flag === "yes") return true;
+    if (flag === "false" || flag === "0" || flag === "no") return false;
+    // Dev default: Supabase Send SMS hook needs a public URL; backend MSG91 works on LAN.
+    return __DEV__;
+  })();
+
   return {
     apiBaseUrl,
     mapboxAccessToken,
     googleMapsApiKey,
     supabaseUrl,
     supabaseAnonKey,
+    phoneOtpUseBackendOnly,
   };
 }

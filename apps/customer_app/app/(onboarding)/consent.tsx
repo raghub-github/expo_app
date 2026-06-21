@@ -110,7 +110,7 @@ export default function ConsentScreen() {
               <TouchableOpacity
                 style={styles.policyRow}
                 activeOpacity={0.7}
-                onPress={() => router.push(`/profile/legal/${doc.id}` as never)}
+                onPress={() => router.push(`/legal/${doc.id}` as never)}
               >
                 <Ionicons
                   name={
