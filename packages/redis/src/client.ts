@@ -85,7 +85,7 @@ function buildOptions(extra?: Partial<RedisOptions>): RedisOptions {
     lazyConnect: true,
     enableOfflineQueue: false,
     enableReadyCheck: true,
-    maxRetriesPerRequest: optional ? 1 : 3,
+    maxRetriesPerRequest: optional ? null : null,
     retryStrategy: (times) => {
       if (optional && times >= 5) {
         markUnavailable();
