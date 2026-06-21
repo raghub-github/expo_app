@@ -20,6 +20,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { BrandingFooter } from "@/components/BrandingFooter";
+import { LegalFooter } from "@/components/LegalLinks";
 import { ProfileSubpageHeader } from "@/components/profile/ProfileSubpageHeader";
 import { ProfileTheme } from "@/constants/profileTheme";
 import {
@@ -190,6 +191,10 @@ export default function WalletScreen() {
             )}
           </View>
 
+          <LegalFooter
+            prefix="See our"
+            docIds={["fair-pricing-policy", "refund-cancellation-policy"]}
+          />
           <BrandingFooter />
         </ScrollView>
       </View>

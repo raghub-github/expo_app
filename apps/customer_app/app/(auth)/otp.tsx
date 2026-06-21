@@ -22,6 +22,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { authService } from "@/services/auth.service";
 import { profileService } from "@/services/profile.service";
+import { LegalFooter } from "@/components/LegalLinks";
 import { writeCachedProfile } from "@/lib/profileCache";
 import { useAuthStore } from "@/store/authStore";
 import { getDeviceIdAsync } from "@/utils/deviceId";
@@ -262,6 +263,12 @@ export default function OtpScreen() {
             >
               <Text style={styles.changeNumberText}>Change mobile number</Text>
             </TouchableOpacity>
+
+            <LegalFooter
+              prefix="By verifying you agree to our"
+              docIds={["terms-of-service", "privacy-policy"]}
+              style={{ marginTop: 10 }}
+            />
           </View>
         </View>
       </ScrollView>

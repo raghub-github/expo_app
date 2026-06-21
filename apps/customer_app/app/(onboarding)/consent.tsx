@@ -25,6 +25,7 @@ import { Ionicons } from "@expo/vector-icons";
 import Constants from "expo-constants";
 import { ONBOARDING_CONSENT_DOCS, LEGAL_PACK_VERSION } from "@/lib/legal-registry";
 import { recordConsent } from "@/lib/legal-consent";
+import { profileService } from "@/services/profile.service";
 
 const TEXT = "#111827";
 const MUTED = "#6B7280";
@@ -46,7 +47,20 @@ export default function ConsentScreen() {
       await recordConsent({
         appVersion: Constants.expoConfig?.version ?? undefined,
       });
-      router.replace("/(onboarding)/permissions" as never);
+
+      // Where to go after acceptance depends on whether the user has finished
+      // onboarding already. New users → continue onboarding. Returning users
+      // (whose pack version was bumped) → straight back to the tabs.
+      try {
+        const profile = await profileService.getProfile();
+        if (profile?.profile_completed === true) {
+          router.replace("/(tabs)/" as never);
+          return;
+        }
+      } catch {
+        /* fall through — treat as new user */
+      }
+      router.replace("/(onboarding)" as never);
     } catch (e) {
       Alert.alert(
         "Could not save consent",

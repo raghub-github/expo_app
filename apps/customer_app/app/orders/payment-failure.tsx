@@ -10,6 +10,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { LegalFooter } from "@/components/LegalLinks";
 
 const PAD = 20;
 const PURPLE = "#7C3AED";
@@ -151,6 +152,11 @@ export default function PaymentFailureScreen() {
         </TouchableOpacity>
 
         {code ? <Text style={styles.errorCode}>Reference: {code}</Text> : null}
+
+        <LegalFooter
+          prefix="Money debited but order not placed?"
+          docIds={["refund-cancellation-policy", "contact-us"]}
+        />
       </ScrollView>
 
       <View style={styles.footerDecor} pointerEvents="none">
