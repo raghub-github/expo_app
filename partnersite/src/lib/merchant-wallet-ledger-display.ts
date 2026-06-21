@@ -16,9 +16,15 @@ function isNoBalanceImpactCancellation(metadata: Record<string, unknown> | null 
   );
 }
 
+/** Only AVAILABLE (and legacy LOCKED) ledger rows affect withdrawable balance. */
+function affectsWithdrawableBalance(balanceType: string | null | undefined): boolean {
+  const bt = String(balanceType ?? 'AVAILABLE').toUpperCase();
+  return bt === 'AVAILABLE' || bt === 'LOCKED';
+}
+
 /**
- * Running wallet balance after each ledger row (credits add, debits subtract).
- * Informational cancellation rows do not change the balance.
+ * Running withdrawable balance after each ledger row — AVAILABLE bucket only.
+ * HOLD / PENDING / RESERVE movements do not change merchant-facing withdrawable.
  */
 export function buildWithdrawableBalanceByLedgerId(
   rows: LedgerBucketSnapshotRow[]
@@ -36,7 +42,7 @@ export function buildWithdrawableBalanceByLedgerId(
   for (const entry of sorted) {
     const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
 
-    if (!isNoBalanceImpactCancellation(meta)) {
+    if (affectsWithdrawableBalance(entry.balance_type) && !isNoBalanceImpactCancellation(meta)) {
       const amt = Number(entry.amount ?? 0);
       const dir = String(entry.direction ?? '').toUpperCase();
       if (amt > 0) {

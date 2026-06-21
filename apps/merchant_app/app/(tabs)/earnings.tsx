@@ -13,11 +13,22 @@ import {
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import {
-  fetchWalletSummary, fetchLedger, fetchPayoutQuote, createPayoutRequest,
-  type WalletSummary, type LedgerEntry, type PayoutQuote,
+  fetchWalletSummary, fetchLedger, createPayoutRequest,
+  type WalletSummary, type LedgerEntry,
 } from "@/services/walletApi";
 import { listBankAccounts, type BankAccount } from "@/services/bankAccountApi";
 import { useActiveCommission } from "@/hooks/useActiveCommission";
+
+const WITHDRAWAL_COMPLETED_DESCRIPTION =
+  "Funds have been successfully transferred to the registered bank account.";
+
+function formatLedgerDescription(description: string | null | undefined): string {
+  if (!description?.trim()) return "";
+  if (/^Withdrawal completed #\d+$/i.test(description.trim())) {
+    return WITHDRAWAL_COMPLETED_DESCRIPTION;
+  }
+  return description;
+}
 
 const CATEGORIES = [
   "ORDER_EARNING", "ORDER_ADJUSTMENT", "WITHDRAWAL", "PENALTY",
@@ -49,6 +60,29 @@ const CAT_ICONS: Record<string, string> = {
   BONUS: "gift-outline",
   CASHBACK: "cash-outline",
 };
+
+const MIN_WITHDRAWAL = 100;
+const MAX_WITHDRAWAL_PER_REQUEST = 100_000;
+
+function getWithdrawableBalance(wallet: WalletSummary | null): number {
+  return wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0;
+}
+
+function getMaxWithdrawalLimit(withdrawable: number): number {
+  return Math.min(Math.max(0, withdrawable), MAX_WITHDRAWAL_PER_REQUEST);
+}
+
+function formatWithdrawalInputAmount(amount: number): string {
+  const rounded = Math.round(amount * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2);
+}
+
+function bankAccountLabel(b: BankAccount): string {
+  if ((b.payout_method ?? "bank") === "upi") {
+    return `${b.account_holder_name} · UPI ${b.upi_id ?? "—"}`;
+  }
+  return `${b.account_holder_name} · ${b.bank_name ?? "Bank"} ${b.account_number_masked ?? "****"}`;
+}
 
 function formatCurrency(n: number): string {
   return `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -91,8 +125,8 @@ export default function EarningsScreen() {
   const [withdrawBankId, setWithdrawBankId] = useState<number | null>(null);
   const [banks, setBanks] = useState<BankAccount[]>([]);
   const [banksLoading, setBanksLoading] = useState(false);
-  const [quote, setQuote] = useState<PayoutQuote | null>(null);
   const [withdrawing, setWithdrawing] = useState(false);
+  const [bankPickerOpen, setBankPickerOpen] = useState(false);
 
   const load = useCallback(async (isRefresh = false) => {
     if (!storeId || !token) return;
@@ -115,9 +149,35 @@ export default function EarningsScreen() {
 
   useEffect(() => { load(); }, [load]);
 
+  const withdrawableBalance = getWithdrawableBalance(wallet);
+  const maxWithdrawalLimit = getMaxWithdrawalLimit(withdrawableBalance);
+  const withdrawalInputEnabled = maxWithdrawalLimit >= MIN_WITHDRAWAL && !withdrawing;
+
+  const handleWithdrawAmountChange = (raw: string) => {
+    if (raw === "") {
+      setWithdrawAmount("");
+      return;
+    }
+    const num = parseFloat(raw);
+    if (isNaN(num)) return;
+    const cap = getMaxWithdrawalLimit(getWithdrawableBalance(wallet));
+    if (num > cap) {
+      setWithdrawAmount(formatWithdrawalInputAmount(cap));
+      return;
+    }
+    setWithdrawAmount(raw);
+  };
+
   const openWithdraw = async () => {
     if (!storeId || !token) return;
+    const limit = getMaxWithdrawalLimit(getWithdrawableBalance(wallet));
+    if (limit >= MIN_WITHDRAWAL) {
+      setWithdrawAmount(formatWithdrawalInputAmount(limit));
+    } else {
+      setWithdrawAmount("");
+    }
     setShowWithdraw(true);
+    setBankPickerOpen(false);
     setBanksLoading(true);
     try {
       const b = await listBankAccounts(storeId, token);
@@ -130,32 +190,21 @@ export default function EarningsScreen() {
     finally { setBanksLoading(false); }
   };
 
-  useEffect(() => {
-    if (!showWithdraw || !storeId || !token) { setQuote(null); return; }
-    const amt = parseFloat(withdrawAmount);
-    if (isNaN(amt) || amt < 100) { setQuote(null); return; }
-    const t = setTimeout(async () => {
-      try {
-        const q = await fetchPayoutQuote(storeId, amt, token);
-        setQuote(q);
-      } catch { setQuote(null); }
-    }, 500);
-    return () => clearTimeout(t);
-  }, [withdrawAmount, showWithdraw, storeId, token]);
-
   const handleWithdraw = async () => {
     if (!storeId || !token || !withdrawBankId) return;
     const amt = parseFloat(withdrawAmount);
-    if (isNaN(amt) || amt < 100) { Alert.alert("Invalid", "Min ₹100"); return; }
-    const withdrawable = wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0;
-    if (amt > withdrawable) { Alert.alert("Insufficient", "Not enough withdrawable balance"); return; }
+    if (isNaN(amt) || amt < MIN_WITHDRAWAL) { Alert.alert("Invalid", `Min ₹${MIN_WITHDRAWAL}`); return; }
+    const withdrawable = getWithdrawableBalance(wallet);
+    if (amt > getMaxWithdrawalLimit(withdrawable)) {
+      Alert.alert("Invalid", "Amount exceeds available balance or ₹1,00,000 limit");
+      return;
+    }
     setWithdrawing(true);
     try {
-      const result = await createPayoutRequest(storeId, amt, withdrawBankId, token);
-      Alert.alert("Success", `Withdrawal of ${formatCurrency(result.net_payout_amount)} submitted. Processing in 2-3 business days.`);
+      await createPayoutRequest(storeId, amt, withdrawBankId, token);
+      Alert.alert("Success", `Withdrawal of ${formatCurrency(amt)} submitted. Full amount within 24 to 48 hrs.`);
       setShowWithdraw(false);
       setWithdrawAmount("");
-      setQuote(null);
       await load();
     } catch (e) {
       Alert.alert("Failed", e instanceof Error ? e.message : "Try again");
@@ -292,7 +341,12 @@ export default function EarningsScreen() {
                     </View>
                     <View style={s.txContent}>
                       <Text style={s.txCategory}>{CAT_LABELS[entry.category] ?? entry.category.replace(/_/g, " ")}</Text>
-                      {entry.description && <Text style={s.txDesc} numberOfLines={2}>{entry.description}</Text>}
+                      {entry.description ? (
+                        <Text style={s.txDesc} numberOfLines={2}>{formatLedgerDescription(entry.description)}</Text>
+                      ) : null}
+                      {entry.category === "WITHDRAWAL" && entry.pg_transaction_id ? (
+                        <Text style={s.txPgId} numberOfLines={1}>PG TNX: {entry.pg_transaction_id}</Text>
+                      ) : null}
                     </View>
                     <View style={s.txAmountCol}>
                       <Text style={[s.txAmount, { color: isCancellationNoCreditEntry(entry) ? "#d97706" : entry.direction === "CREDIT" ? "#16a34a" : "#dc2626" }]}>
@@ -313,65 +367,111 @@ export default function EarningsScreen() {
         )}
       </ScrollView>
 
-      {/* Withdraw modal */}
+      {/* Withdraw sheet — compact */}
       <Modal visible={showWithdraw} transparent animationType="slide">
         <View style={s.modalOverlay}>
           <View style={s.modalCard}>
             <View style={s.modalHeader}>
-              <Text style={s.modalTitle}>Withdraw Funds</Text>
-              <Pressable onPress={() => { setShowWithdraw(false); setQuote(null); setWithdrawAmount(""); }}>
-                <Ionicons name="close" size={24} color={GatiMitraMerchant.textSecondary} />
+              <View>
+                <Text style={s.modalTitle}>Withdraw</Text>
+                <Text style={s.modalSub}>
+                  Available {formatCurrency(wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0)}
+                </Text>
+              </View>
+              <Pressable onPress={() => { setShowWithdraw(false); setWithdrawAmount(""); setBankPickerOpen(false); }}>
+                <Ionicons name="close" size={22} color={GatiMitraMerchant.textSecondary} />
               </Pressable>
             </View>
 
-            <Text style={s.modalLabel}>Available: {formatCurrency(wallet?.available_balance ?? 0)}</Text>
-
-            <Text style={s.inputLabel}>Amount (min ₹100)</Text>
+            <Text style={s.inputLabel}>Amount (min ₹{MIN_WITHDRAWAL})</Text>
             <TextInput
-              style={s.input}
+              style={[s.input, !withdrawalInputEnabled && s.inputDisabled]}
               value={withdrawAmount}
-              onChangeText={setWithdrawAmount}
-              placeholder="Enter amount"
+              onChangeText={handleWithdrawAmountChange}
+              placeholder={withdrawalInputEnabled ? "Enter amount" : "Insufficient balance"}
               keyboardType="numeric"
+              editable={withdrawalInputEnabled}
               placeholderTextColor={GatiMitraMerchant.textTertiary}
             />
-
-            {quote && (
-              <View style={s.quoteCard}>
-                <View style={s.quoteRow}><Text style={s.quoteLabel}>Requested</Text><Text style={s.quoteValue}>{formatCurrency(quote.requested_amount)}</Text></View>
-                <View style={s.quoteRow}><Text style={s.quoteLabel}>Commission ({quote.commission_percentage}%)</Text><Text style={[s.quoteValue, { color: "#dc2626" }]}>−{formatCurrency(quote.commission_amount)}</Text></View>
-                <View style={[s.quoteRow, s.quoteRowNet]}><Text style={s.quoteNetLabel}>Net payout</Text><Text style={s.quoteNetValue}>{formatCurrency(quote.net_payout_amount)}</Text></View>
-              </View>
+            {(() => {
+              const amt = parseFloat(withdrawAmount);
+              if (!withdrawalInputEnabled) {
+                return (
+                  <Text style={s.withdrawHintMuted}>
+                    Withdrawal unavailable — minimum ₹{MIN_WITHDRAWAL} required in your balance.
+                  </Text>
+                );
+              }
+              if (!isNaN(amt) && amt >= MIN_WITHDRAWAL) {
+                return <Text style={s.receiveHint}>You receive: {formatCurrency(amt)} (full amount)</Text>;
+              }
+              return (
+                <Text style={s.withdrawHintMuted}>
+                  Min ₹{MIN_WITHDRAWAL} · Max {formatCurrency(maxWithdrawalLimit)} (up to ₹1,00,000)
+                </Text>
+              );
+            })()}
+            {withdrawalInputEnabled && withdrawAmount.trim() !== "" && !isNaN(parseFloat(withdrawAmount)) && parseFloat(withdrawAmount) >= MIN_WITHDRAWAL && (
+              <Text style={s.adjustHint}>
+                Feel free to adjust the withdrawal amount as needed, as long as it does not exceed your available balance.
+              </Text>
             )}
 
-            <Text style={s.inputLabel}>Bank Account</Text>
+            <Text style={s.inputLabel}>Bank account</Text>
             {banksLoading ? (
               <ActivityIndicator size="small" color={GatiMitraMerchant.primary} />
             ) : banks.length === 0 ? (
               <Text style={s.noBankText}>No bank accounts. Add one from Profile.</Text>
+            ) : banks.length > 1 ? (
+              <View style={s.bankDropdownWrap}>
+                <Pressable
+                  onPress={() => setBankPickerOpen((v) => !v)}
+                  style={({ pressed }) => [s.bankDropdownTrigger, pressed && { opacity: 0.9 }]}
+                >
+                  <Text style={s.bankDropdownTriggerText} numberOfLines={2}>
+                    {withdrawBankId != null
+                      ? bankAccountLabel(banks.find((b) => b.id === withdrawBankId) ?? banks[0])
+                      : "Select bank account"}
+                  </Text>
+                  <Ionicons name={bankPickerOpen ? "chevron-up" : "chevron-down"} size={18} color={GatiMitraMerchant.textSecondary} />
+                </Pressable>
+                {bankPickerOpen && (
+                  <View style={s.bankDropdownList}>
+                    {banks.map((b) => (
+                      <Pressable
+                        key={b.id}
+                        onPress={() => {
+                          setWithdrawBankId(b.id);
+                          setBankPickerOpen(false);
+                        }}
+                        style={[s.bankDropdownItem, withdrawBankId === b.id && s.bankDropdownItemActive]}
+                      >
+                        <Text style={[s.bankDropdownItemText, withdrawBankId === b.id && s.bankDropdownItemTextActive]} numberOfLines={2}>
+                          {bankAccountLabel(b)}
+                        </Text>
+                        {withdrawBankId === b.id ? (
+                          <Ionicons name="checkmark-circle" size={18} color={GatiMitraMerchant.primary} />
+                        ) : null}
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
+              </View>
             ) : (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.bankScroll}>
-                {banks.map((b) => (
-                  <Pressable
-                    key={b.id}
-                    onPress={() => setWithdrawBankId(b.id)}
-                    style={[s.bankChip, withdrawBankId === b.id && s.bankChipActive]}
-                  >
-                    <Text style={[s.bankChipText, withdrawBankId === b.id && s.bankChipTextActive]}>
-                      {b.account_holder_name}{"\n"}
-                      <Text style={s.bankChipSub}>{b.account_number_masked ?? "****"} · {(b.payout_method ?? "bank").toUpperCase()}</Text>
-                    </Text>
-                  </Pressable>
-                ))}
-              </ScrollView>
+              <View style={s.bankSingleCard}>
+                <Text style={s.bankSingleName}>{banks[0].account_holder_name}</Text>
+                <Text style={s.bankSingleSub}>{banks[0].account_number_masked ?? "****"}</Text>
+              </View>
             )}
+
+            <Text style={s.modalFootnote}>Funds arrive within 24 to 48 hrs</Text>
 
             <Pressable
               onPress={handleWithdraw}
-              disabled={withdrawing || !withdrawBankId || !quote}
-              style={({ pressed }) => [s.confirmBtn, (withdrawing || !withdrawBankId || !quote) && s.confirmBtnDisabled, pressed && s.confirmBtnPressed]}
+              disabled={withdrawing || !withdrawBankId || !withdrawalInputEnabled || !withdrawAmount || parseFloat(withdrawAmount) < MIN_WITHDRAWAL || parseFloat(withdrawAmount) > maxWithdrawalLimit}
+              style={({ pressed }) => [s.confirmBtn, (withdrawing || !withdrawBankId || !withdrawalInputEnabled || !withdrawAmount || parseFloat(withdrawAmount) < MIN_WITHDRAWAL || parseFloat(withdrawAmount) > maxWithdrawalLimit) && s.confirmBtnDisabled, pressed && s.confirmBtnPressed]}
             >
-              {withdrawing ? <ActivityIndicator size="small" color="#fff" /> : <Text style={s.confirmBtnText}>Confirm Withdrawal</Text>}
+              {withdrawing ? <ActivityIndicator size="small" color="#fff" /> : <Text style={s.confirmBtnText}>Withdraw</Text>}
             </Pressable>
           </View>
         </View>
@@ -419,26 +519,65 @@ const s = StyleSheet.create({
   txAmount: { fontSize: 14, fontWeight: "700" },
   txBalance: { fontSize: 10, color: GatiMitraMerchant.textTertiary, marginTop: 2 },
   txTime: { fontSize: 10, color: GatiMitraMerchant.textTertiary, marginTop: 4, textAlign: "right" },
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
-  modalCard: { backgroundColor: "#fff", borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 36, maxHeight: "85%" },
-  modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
-  modalTitle: { fontSize: 18, fontWeight: "800", color: GatiMitraMerchant.textPrimary },
-  modalLabel: { fontSize: 13, color: GatiMitraMerchant.textSecondary, marginBottom: 12 },
-  inputLabel: { fontSize: 11, fontWeight: "600", color: GatiMitraMerchant.textSecondary, textTransform: "uppercase", marginTop: 12, marginBottom: 4 },
-  input: { borderWidth: 1, borderColor: GatiMitraMerchant.border, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, color: GatiMitraMerchant.textPrimary },
-  quoteCard: { backgroundColor: "#f8fafc", borderRadius: 12, padding: 12, marginTop: 10, borderWidth: 1, borderColor: "#e2e8f0" },
-  quoteRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 4 },
-  quoteLabel: { fontSize: 12, color: GatiMitraMerchant.textSecondary },
-  quoteValue: { fontSize: 12, fontWeight: "600", color: GatiMitraMerchant.textPrimary },
-  quoteRowNet: { borderTopWidth: 1, borderTopColor: "#e2e8f0", marginTop: 4, paddingTop: 8 },
-  quoteNetLabel: { fontSize: 13, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
-  quoteNetValue: { fontSize: 15, fontWeight: "800", color: "#16a34a" },
-  bankScroll: { marginTop: 4, maxHeight: 80 },
-  bankChip: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, borderWidth: 1.5, borderColor: GatiMitraMerchant.border, marginRight: 8, backgroundColor: "#fff" },
-  bankChipActive: { borderColor: GatiMitraMerchant.primary, backgroundColor: "#fff7ed" },
-  bankChipText: { fontSize: 12, fontWeight: "600", color: GatiMitraMerchant.textPrimary },
-  bankChipTextActive: { color: GatiMitraMerchant.primary },
-  bankChipSub: { fontSize: 10, fontWeight: "500", color: GatiMitraMerchant.textTertiary },
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "flex-end" },
+  modalCard: { backgroundColor: "#fff", borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 16, paddingBottom: 28 },
+  modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 },
+  modalTitle: { fontSize: 17, fontWeight: "800", color: GatiMitraMerchant.textPrimary },
+  modalSub: { fontSize: 12, color: GatiMitraMerchant.textSecondary, marginTop: 2 },
+  modalFootnote: { fontSize: 10, color: GatiMitraMerchant.textTertiary, marginTop: 10, marginBottom: 12 },
+  inputLabel: { fontSize: 11, fontWeight: "600", color: GatiMitraMerchant.textSecondary, textTransform: "uppercase", marginTop: 8, marginBottom: 4 },
+  input: { borderWidth: 1, borderColor: GatiMitraMerchant.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 16, color: GatiMitraMerchant.textPrimary },
+  inputDisabled: { backgroundColor: "#f3f4f6", color: GatiMitraMerchant.textTertiary },
+  receiveHint: { fontSize: 12, color: "#16a34a", fontWeight: "600", marginTop: 6 },
+  withdrawHintMuted: { fontSize: 11, color: GatiMitraMerchant.textTertiary, marginTop: 6 },
+  adjustHint: { fontSize: 11, color: GatiMitraMerchant.textSecondary, marginTop: 8, lineHeight: 16 },
+  txPgId: { fontSize: 10, color: "#0369a1", fontFamily: "monospace", marginTop: 2 },
+  bankDropdownWrap: { marginTop: 4, position: "relative", zIndex: 10 },
+  bankDropdownTrigger: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    backgroundColor: "#fff",
+  },
+  bankDropdownTriggerText: { flex: 1, fontSize: 13, fontWeight: "600", color: GatiMitraMerchant.textPrimary },
+  bankDropdownList: {
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    borderRadius: 10,
+    backgroundColor: "#fff",
+    overflow: "hidden",
+  },
+  bankDropdownItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: GatiMitraMerchant.border,
+  },
+  bankDropdownItemActive: { backgroundColor: "#fff7ed" },
+  bankDropdownItemText: { flex: 1, fontSize: 12, color: GatiMitraMerchant.textPrimary },
+  bankDropdownItemTextActive: { color: GatiMitraMerchant.primary, fontWeight: "700" },
+  bankSingleCard: {
+    marginTop: 4,
+    borderWidth: 1,
+    borderColor: "#86efac",
+    backgroundColor: "#ecfdf5",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  bankSingleName: { fontSize: 13, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
+  bankSingleSub: { fontSize: 11, color: GatiMitraMerchant.textSecondary, marginTop: 2 },
   noBankText: { fontSize: 12, color: GatiMitraMerchant.textTertiary, paddingVertical: 8 },
   confirmBtn: { marginTop: 16, paddingVertical: 14, borderRadius: 99, backgroundColor: GatiMitraMerchant.primary, alignItems: "center" },
   confirmBtnDisabled: { opacity: 0.5 },

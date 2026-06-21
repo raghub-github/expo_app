@@ -6,6 +6,7 @@ import {
   applyWithdrawableBalanceToLedgerEntries,
   buildWithdrawableBalanceByLedgerId,
 } from '@/lib/merchant-wallet-ledger-display';
+import { enrichLedgerWithPgTransactionIds } from '@/lib/enrich-ledger-pg-transaction-id';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -217,10 +218,11 @@ export async function GET(req: NextRequest) {
     );
 
     const enrichedList = applyWithdrawableBalanceToLedgerEntries(list, withdrawableById);
+    const withPgIds = await enrichLedgerWithPgTransactionIds(db, enrichedList);
 
     return NextResponse.json({
       success: true,
-      entries: enrichedList,
+      entries: withPgIds,
       total: count ?? list.length,
       limit,
       offset,

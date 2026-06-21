@@ -30,12 +30,32 @@ export async function GET(
 
     const { data: payout, error: payoutErr } = await db
       .from('merchant_payout_requests')
-      .select('id, wallet_id, amount, net_payout_amount, commission_percentage, commission_amount, status, bank_account_id, utr_reference, failure_reason, requested_at, approved_at, processed_at, completed_at')
+      .select('id, wallet_id, amount, net_payout_amount, commission_percentage, commission_amount, status, bank_account_id, pg_transaction_id, utr_reference, failure_reason, requested_at, approved_at, processed_at, completed_at')
       .eq('id', payoutId)
       .single();
 
     if (payoutErr || !payout) {
       return NextResponse.json({ error: 'Payout request not found' }, { status: 404 });
+    }
+
+    let pgTransactionId: string | null = (payout.pg_transaction_id as string | null)?.trim()
+      || (payout.utr_reference as string | null)?.trim()
+      || null;
+    try {
+      const { data: approval } = await db
+        .from('payment_payout_approvals')
+        .select('gateway_payout_id, utr_reference')
+        .eq('payout_request_id', payoutId)
+        .eq('payout_type', 'MERCHANT')
+        .maybeSingle();
+      if (approval) {
+        pgTransactionId =
+          (approval.gateway_payout_id as string | null)?.trim()
+          || (approval.utr_reference as string | null)?.trim()
+          || pgTransactionId;
+      }
+    } catch {
+      /* payment_payout_approvals may not exist */
     }
 
     if (storeId?.trim()) {
@@ -86,6 +106,7 @@ export async function GET(
         commission_amount: Number(payout.commission_amount),
         status: payout.status,
         utr_reference: payout.utr_reference,
+        pg_transaction_id: pgTransactionId,
         failure_reason: payout.failure_reason,
         requested_at: payout.requested_at,
         approved_at: payout.approved_at,

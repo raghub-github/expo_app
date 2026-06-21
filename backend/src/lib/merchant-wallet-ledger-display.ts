@@ -14,6 +14,12 @@ function isNoBalanceImpactCancellation(metadata: Record<string, unknown> | null 
   return metadata?.entry_type === "order_cancellation" && metadata?.balance_impact === "none";
 }
 
+/** Only AVAILABLE (and legacy LOCKED) ledger rows affect withdrawable balance. */
+function affectsWithdrawableBalance(balanceType: string | null | undefined): boolean {
+  const bt = String(balanceType ?? "AVAILABLE").toUpperCase();
+  return bt === "AVAILABLE" || bt === "LOCKED";
+}
+
 export function buildWithdrawableBalanceByLedgerId(
   rows: LedgerBucketSnapshotRow[]
 ): Map<number, number> {
@@ -30,7 +36,7 @@ export function buildWithdrawableBalanceByLedgerId(
   for (const entry of sorted) {
     const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
 
-    if (!isNoBalanceImpactCancellation(meta)) {
+    if (affectsWithdrawableBalance(entry.balance_type) && !isNoBalanceImpactCancellation(meta)) {
       const amt = Number(entry.amount ?? 0);
       const dir = String(entry.direction ?? "").toUpperCase();
       if (amt > 0) {

@@ -250,7 +250,7 @@ export async function GET(req: NextRequest) {
     }
 
     const withdrawable_balance = roundMoney(available_balance);
-    const total_balance = withdrawable_balance;
+    const total_balance = roundMoney(available_balance + hold_balance + pending_balance);
 
     if (total_earned <= 0) {
       const { data: earningRows } = await db
