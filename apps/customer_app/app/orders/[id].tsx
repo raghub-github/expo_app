@@ -38,6 +38,7 @@ import { getRouteCoordinates } from "@/services/directions.service";
 import { useOrderStore } from "@/store/orderStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
+import { LegalFooter } from "@/components/LegalLinks";
 import { DietIndicator } from "@/components/store/DietIndicator";
 import { parseOrderBillFromSnapshot } from "@/lib/orderBillBreakdown";
 import { getOrderDetailInitialData } from "@/lib/orderDetailCache";
@@ -1098,6 +1099,11 @@ export default function OrderDetailsScreen() {
               </>
             )}
           </View>
+
+          <LegalFooter
+            prefix="See"
+            docIds={["refund-cancellation-policy", "shipping-delivery-policy"]}
+          />
         </ScrollView>
 
         <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 12) }]}>

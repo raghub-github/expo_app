@@ -18,6 +18,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import Animated, { FadeInDown, FadeIn } from "react-native-reanimated";
 import { orderService } from "@/services/order.service";
+import { LegalFooter } from "@/components/LegalLinks";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 const PAD = 20;
@@ -239,6 +240,11 @@ export default function OrderSuccessScreen() {
             <Text style={styles.homeBtnText}>Back to Home</Text>
           </TouchableOpacity>
         </Animated.View>
+
+        <LegalFooter
+          prefix="See"
+          docIds={["shipping-delivery-policy", "refund-cancellation-policy"]}
+        />
       </ScrollView>
 
       <OrderSuccessFooterArt />

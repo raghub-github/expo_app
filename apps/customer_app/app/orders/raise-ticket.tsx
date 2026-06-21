@@ -32,6 +32,7 @@ import {
 import { orderService } from "@/services/order.service";
 import { profileService } from "@/services/profile.service";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
+import { LegalFooter } from "@/components/LegalLinks";
 import { isPersonRideOrder } from "@/lib/customer-order-status-display";
 import { getRideHistoryStatusLabel, getRideServiceLabel, formatRideFare } from "@/lib/ride-order-display";
 import { maskPhone } from "@/lib/order-delivery-details";
@@ -678,6 +679,11 @@ export default function OrderRaiseTicketScreen() {
           Our support team will review your order and assign the right agent. You can chat and share
           photos on the next screen.
         </Text>
+
+        <LegalFooter
+          prefix="See our"
+          docIds={["grievance-redressal-mechanism", "refund-cancellation-policy"]}
+        />
       </View>
     </ScrollView>
   );
