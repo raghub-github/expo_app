@@ -378,11 +378,13 @@ export const customerMobilityAccessibilityEnum = pgEnum("customer_mobility_acces
   "physical_disability_mobility",
   "none",
 ]);
+
+export const customerStatusEnum = pgEnum("customer_status", [
   "ACTIVE",
-  "INACTIVE",
   "SUSPENDED",
   "BLOCKED",
-  "DELETED",
+  "DEACTIVATED",
+  "PENDING_VERIFICATION",
 ]);
 
 export const riskLevelEnum = pgEnum("risk_level", [

@@ -348,7 +348,7 @@ async function enrichLedgerWithPgTransactionIds(
         ON ppa.payout_request_id = pr.id AND ppa.payout_type = 'MERCHANT'
       WHERE pr.id = ANY(${payoutIds})
     `;
-    for (const row of rows as { id: number; pg_transaction_id: string | null }[]) {
+    for (const row of rows as unknown as { id: number; pg_transaction_id: string | null }[]) {
       if (row.pg_transaction_id?.trim()) {
         pgByPayoutId.set(Number(row.id), row.pg_transaction_id.trim());
       }
@@ -359,7 +359,7 @@ async function enrichLedgerWithPgTransactionIds(
       FROM merchant_payout_requests
       WHERE id = ANY(${payoutIds})
     `;
-    for (const row of rows as { id: number; pg_transaction_id: string | null }[]) {
+    for (const row of rows as unknown as { id: number; pg_transaction_id: string | null }[]) {
       if (row.pg_transaction_id?.trim()) {
         pgByPayoutId.set(Number(row.id), row.pg_transaction_id.trim());
       }
