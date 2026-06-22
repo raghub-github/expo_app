@@ -83,6 +83,27 @@ async function geocodeOrFallback(longitude: number, latitude: number): Promise<R
 
 export type LocationPermissionStatus = "undetermined" | "granted" | "denied";
 
+export type DeviceLocationReadiness = {
+  permissionStatus: LocationPermissionStatus;
+  servicesEnabled: boolean;
+  isReady: boolean;
+};
+
+/** App permission + device GPS/location toggle (quick settings). */
+export async function getDeviceLocationReadiness(): Promise<DeviceLocationReadiness> {
+  const [{ status }, servicesEnabled] = await Promise.all([
+    Location.getForegroundPermissionsAsync(),
+    Location.hasServicesEnabledAsync(),
+  ]);
+  const permissionStatus: LocationPermissionStatus =
+    status === "granted" ? "granted" : status === "denied" ? "denied" : "undetermined";
+  return {
+    permissionStatus,
+    servicesEnabled,
+    isReady: permissionStatus === "granted" && servicesEnabled,
+  };
+}
+
 /** User-chosen pin vs device GPS – selected always wins for listing until explicit "use current location". */
 export type LocationSource = "selected" | "current";
 
@@ -97,10 +118,14 @@ type LocationState = {
   /** True after initial in-memory bootstrap attempt (success or empty). */
   locationHydrated: boolean;
   showPermissionModal: boolean;
+  /** User closed the sheet this session — re-prompt on next cold start only. */
+  locationSheetDismissedSession: boolean;
   hydrate: () => Promise<void>;
   clearPersistedSelection: () => Promise<void>;
   requestPermissionAndFetch: (options?: { forceDevice?: boolean }) => Promise<void>;
   setShowPermissionModal: (show: boolean) => void;
+  /** Show location sheet on launch until app permission + device location are both on. */
+  promptLocationPermissionIfNeeded: (options?: { force?: boolean }) => Promise<void>;
   setAddress: (address: ReverseGeocodeResult | null) => void;
   setAddressAndCoords: (
     address: ReverseGeocodeResult,
@@ -119,6 +144,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   locationSource: null,
   locationHydrated: false,
   showPermissionModal: false,
+  locationSheetDismissedSession: false,
 
   hydrate: async () => {
     if (get().locationHydrated) return;
@@ -151,7 +177,37 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
   },
 
-  setShowPermissionModal: (show) => set({ showPermissionModal: show }),
+  setShowPermissionModal: (show) =>
+    set({
+      showPermissionModal: show,
+      ...(show ? { locationSheetDismissedSession: false } : { locationSheetDismissedSession: true }),
+    }),
+
+  promptLocationPermissionIfNeeded: async (options) => {
+    try {
+      const readiness = await getDeviceLocationReadiness();
+      if (readiness.isReady) {
+        set({
+          permissionStatus: "granted",
+          showPermissionModal: false,
+          locationSheetDismissedSession: false,
+        });
+        await get().requestPermissionAndFetch({ forceDevice: true });
+        return;
+      }
+      if (!options?.force && get().locationSheetDismissedSession) {
+        set({ permissionStatus: readiness.permissionStatus });
+        return;
+      }
+      set({
+        permissionStatus: readiness.permissionStatus,
+        showPermissionModal: true,
+      });
+    } catch {
+      if (!options?.force && get().locationSheetDismissedSession) return;
+      set({ showPermissionModal: true });
+    }
+  },
 
   setAddress: (address) => set({ address }),
 
@@ -195,8 +251,8 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
     set({ loading: true, error: null });
     try {
-      const { status: existing } = await Location.getForegroundPermissionsAsync();
-      if (existing === "granted") {
+      const readiness = await getDeviceLocationReadiness();
+      if (readiness.isReady) {
         set({ permissionStatus: "granted", showPermissionModal: false });
         const { latitude, longitude } = await getDeviceCoords();
         set({ coords: { latitude, longitude } });
@@ -204,7 +260,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
         set({ address, loading: false, locationSource: "current" });
         return;
       }
-      if (existing === "denied") {
+      if (readiness.permissionStatus === "denied") {
         set({
           permissionStatus: "denied",
           showPermissionModal: true,
@@ -212,20 +268,20 @@ export const useLocationStore = create<LocationState>((set, get) => ({
         });
         return;
       }
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status === "granted") {
-        set({ permissionStatus: "granted", showPermissionModal: false });
-        const { latitude, longitude } = await getDeviceCoords();
-        set({ coords: { latitude, longitude } });
-        const address = await geocodeOrFallback(longitude, latitude);
-        set({ address, loading: false, locationSource: "current" });
-      } else {
+      if (readiness.permissionStatus === "undetermined") {
         set({
-          permissionStatus: "denied",
+          permissionStatus: "undetermined",
           showPermissionModal: true,
           loading: false,
         });
+        return;
       }
+      // App permission granted but device location toggle is off.
+      set({
+        permissionStatus: "granted",
+        showPermissionModal: true,
+        loading: false,
+      });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Location error";
       set({

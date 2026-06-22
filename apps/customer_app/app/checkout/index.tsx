@@ -30,12 +30,14 @@ import * as Contacts from "expo-contacts";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { BiPencilSquareIcon } from "@/components/icons/BiPencilSquareIcon";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCartStore, type CartItem } from "@/store/cartStore";
-import { useLocationStore } from "@/store/locationStore";
-import { LegalFooter } from "@/components/LegalLinks";
+import { useLocationStore, getDeviceLocationReadiness } from "@/store/locationStore";
+import { LegalFooter, LegalLink } from "@/components/LegalLinks";
+import { BrandingFooter } from "@/components/BrandingFooter";
 import { useOrderStore } from "@/store/orderStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useEnsureStoreLiveStatus } from "@/hooks/useEnsureStoreLiveStatus";
@@ -63,12 +65,22 @@ import { seedOrderDetailCache } from "@/lib/orderDetailCache";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { reverseGeocode } from "@/services/location.service";
 import { getRoute } from "@/services/distance.service";
-import { BrandingFooter } from "@/components/BrandingFooter";
+import { checkoutRouterBack } from "@/lib/safeRouterBack";
 import { isNetworkError, getNetworkErrorMessage } from "@/utils/networkError";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { CouponApplyCelebration } from "@/components/checkout/CouponApplyCelebration";
 import { CouponAvailableBottomSheet } from "@/components/checkout/CouponAvailableBottomSheet";
 import { BillSummarySheet } from "@/components/checkout/BillSummarySheet";
+import { CheckoutGatiCashWalletBar } from "@/components/checkout/CheckoutGatiCashWalletBar";
+import { CheckoutMissedOfferWalletCard } from "@/components/checkout/CheckoutMissedOfferWalletCard";
+import { MissedOfferUnlockSheet } from "@/components/checkout/MissedOfferUnlockSheet";
+import { MissedOfferWalletCelebration } from "@/components/checkout/MissedOfferWalletCelebration";
+import {
+  resolveMissedOfferWalletCompensation,
+  missedOfferKeyForCandidate,
+  listMissedOfferWalletCandidates,
+  type MissedOfferWalletCompensation,
+} from "@/lib/checkout-missed-offer-wallet";
 import {
   DonateWithBottomSheet,
   type DonationScope,
@@ -87,6 +99,8 @@ import {
   splitCheckoutDiscounts,
 } from "@/lib/checkout-discount-display";
 import { useCheckoutOfferStore } from "@/store/checkoutOfferStore";
+import { useAuthStore } from "@/store/authStore";
+import { walletService } from "@/services/wallet.service";
 import { DeliveryPartnerInstructionSheet } from "@/components/address/DeliveryPartnerInstructionSheet";
 import { cartLineBaseUnitPrice } from "@/lib/cart-line-pricing";
 import {
@@ -442,29 +456,31 @@ const DELIVERY_TOGGLE_ACTIVE = CX.mint;
 const DELIVERY_TOGGLE_BORDER = "rgba(45, 181, 160, 0.38)";
 
 /**
- * Footer row layout — must match `fixedBottom.paddingHorizontal` (12 + 12).
- * Toggle width is fixed; CTA width = screen − padding − gap − toggle (no overlap, no flex minWidth fight).
+ * Footer row: fixed-width toggle + flex CTA (`footerCtaFlex`) so the row never overflows.
+ * Toggle segments use `overflow: hidden` so active fill stays inside rounded corners.
  */
 const CHECKOUT_FOOTER_H_PAD = 24;
-const CHECKOUT_FOOTER_TOGGLE_WIDTH = 152;
-const CHECKOUT_FOOTER_GAP = 8;
+const CHECKOUT_FOOTER_TOGGLE_WIDTH = 132;
+const CHECKOUT_FOOTER_GAP = 20;
+/** Extra inset so the CTA does not hug the toggle on the left. */
+const CHECKOUT_FOOTER_CTA_LEFT_INSET = 6;
 /** Same outer radius as `deliveryTypeToggle` (not a full pill). */
 const CHECKOUT_FOOTER_CTA_RADIUS = 14;
+/** Scroll clearance for fixed footer (toggle + legal) without GatiCash row — keep in sync with `fixedBottom`. */
+const CHECKOUT_SCROLL_FOOTER_BASE = 108;
+/** Extra scroll inset when GatiCash wallet bar is visible above the place-order row. */
+const CHECKOUT_SCROLL_GATICASH_BAR_EXTRA = 76;
+/** Breathing room so `BrandingFooter` tagline + watermark sit fully above the fixed footer. */
+const CHECKOUT_SCROLL_BRANDING_CLEARANCE = 20;
 
 export default function CheckoutScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
-  const checkoutFooterCtaWidth = useMemo(
-    () =>
-      windowWidth -
-      CHECKOUT_FOOTER_H_PAD -
-      CHECKOUT_FOOTER_GAP -
-      CHECKOUT_FOOTER_TOGGLE_WIDTH,
-    [windowWidth],
-  );
   const queryClient = useQueryClient();
   const scrollRef = useRef<ScrollView>(null);
+  const missedOfferSheetPromptKeyRef = useRef<string | null>(null);
+  const pendingMissedOfferWalletRef = useRef<import("@/lib/checkout-missed-offer-wallet").MissedOfferWalletCompensation | null>(null);
 
   useLayoutEffect(() => {
     void hydrateSubscriptionPlansCache(queryClient);
@@ -475,6 +491,9 @@ export default function CheckoutScreen() {
   }, [queryClient]);
 
   const { items, merchantId, merchantName, updateQuantity, clearCart, syncPricesFromMap } = useCartStore();
+  const handleCheckoutBack = useCallback(() => {
+    checkoutRouterBack(router, merchantId);
+  }, [router, merchantId]);
   useEnsureStoreLiveStatus(merchantId ?? null);
   const setActiveOrder = useOrderStore((s) => s.setActiveOrder);
   const storeStatus = useStoreStatusStore((s) =>
@@ -556,6 +575,12 @@ export default function CheckoutScreen() {
   const [couponApplyError, setCouponApplyError] = useState<string | null>(null);
   const [couponCelebrationVisible, setCouponCelebrationVisible] = useState(false);
   const [couponCelebrationCode, setCouponCelebrationCode] = useState("");
+  const [useGatiCashWallet, setUseGatiCashWallet] = useState(false);
+  const [missedOfferWalletPending, setMissedOfferWalletPending] = useState(false);
+  const [selectedMissedOfferKey, setSelectedMissedOfferKey] = useState<string | null>(null);
+  const [missedOfferSheetVisible, setMissedOfferSheetVisible] = useState(false);
+  const [missedOfferCelebration, setMissedOfferCelebration] =
+    useState<MissedOfferWalletCompensation | null>(null);
   const [selectedPlatformOfferId, setSelectedPlatformOfferId] = useState<number | null>(null);
   const [selectedMerchantOfferId, setSelectedMerchantOfferId] = useState<number | null>(null);
   const [forceNoAutoOffer, setForceNoAutoOffer] = useState(false);
@@ -588,6 +613,22 @@ export default function CheckoutScreen() {
     queryFn: () => profileService.getProfile(),
     staleTime: 60_000,
   });
+
+  const authSession = useAuthStore((s) => s.session);
+  const authHydrated = useAuthStore((s) => s.hydrated);
+
+  const gatiCashBalanceQ = useQuery({
+    queryKey: ["wallet", "balance"],
+    queryFn: () => walletService.getBalance(),
+    enabled: authHydrated && !!authSession,
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  const gatiCashAvailable = useMemo(() => {
+    const raw = gatiCashBalanceQ.data?.available_balance ?? gatiCashBalanceQ.data?.balance ?? 0;
+    return roundBillAmount(Math.max(0, raw));
+  }, [gatiCashBalanceQ.data?.available_balance, gatiCashBalanceQ.data?.balance]);
 
   const sessionCoords = useLocationStore((s) => s.coords);
   const locationSource = useLocationStore((s) => s.locationSource);
@@ -824,8 +865,11 @@ export default function CheckoutScreen() {
     let cancelled = false;
     (async () => {
       try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== "granted") return;
+        const readiness = await getDeviceLocationReadiness();
+        if (!readiness.isReady) {
+          useLocationStore.getState().promptLocationPermissionIfNeeded({ force: true });
+          return;
+        }
         const { coords } = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Balanced,
         });
@@ -1402,11 +1446,37 @@ export default function CheckoutScreen() {
   /** Authoritative item + add-on subtotal for offer min-cart gates (matches POST /billing/calculate). */
   const cartSubtotalForOffers = useMemo(() => {
     if (serverBill) {
-      const serverItems = (serverBill.item_total ?? 0) + (serverBill.addon_total ?? 0);
+      const serverItems = (serverBill.itemTotal ?? 0) + (serverBill.addonTotal ?? 0);
       if (serverItems > 0.005) return serverItems;
     }
     return clientCartSubtotalForOffers;
   }, [serverBill, clientCartSubtotalForOffers]);
+
+  /** Store→drop km from backend routing (authoritative for pricing); client route is for UI hint only. */
+  const serverDistanceKm = serverBill?.distanceKm ?? null;
+  /** Distance shown to user in checkout, always backend-computed. */
+  const uiDistanceKm = serverDistanceKm ?? routeDistanceKm;
+  /** Serviceability comes from the server (respects store.delivery_radius_km + env fallback),
+   * falling back to the platform default if the server hasn't been updated yet.
+   */
+  const isDeliveryOutOfRange =
+    serverBill?.serviceable === false ||
+    serverBill?.unserviceableReason === "out_of_range" ||
+    (uiDistanceKm != null &&
+      serverBill?.serviceable == null &&
+      uiDistanceKm > (serverBill?.serviceRadiusKm ?? SERVICE_RADIUS_KM));
+  const visibleDiscounts = useMemo(
+    () => (serverBill?.discounts ?? []).filter((c) => !c.hidden),
+    [serverBill?.discounts]
+  );
+
+  const { subscriptionBenefits: subscriptionBenefitDiscounts, checkoutPromos: checkoutPromoDiscounts } =
+    useMemo(() => splitCheckoutDiscounts(visibleDiscounts), [visibleDiscounts]);
+
+  const subscriptionBenefitSavings = useMemo(
+    () => subscriptionBenefitDiscounts.reduce((sum, d) => sum + (d.amount ?? 0), 0),
+    [subscriptionBenefitDiscounts]
+  );
 
   const checkoutOffersQuery = useQuery({
     queryKey: [
@@ -1434,33 +1504,6 @@ export default function CheckoutScreen() {
     staleTime: 60 * 1000,
   });
 
-  /** Store→drop km from backend routing (authoritative for pricing); client route is for UI hint only. */
-  const serverDistanceKm = serverBill?.distanceKm ?? null;
-  /** Distance shown to user in checkout, always backend-computed. */
-  const uiDistanceKm = serverDistanceKm ?? routeDistanceKm;
-  /**
-   * Serviceability comes from the server (respects store.delivery_radius_km + env fallback),
-   * falling back to the platform default if the server hasn't been updated yet.
-   */
-  const isDeliveryOutOfRange =
-    serverBill?.serviceable === false ||
-    serverBill?.unserviceableReason === "out_of_range" ||
-    (uiDistanceKm != null &&
-      serverBill?.serviceable == null &&
-      uiDistanceKm > (serverBill?.serviceRadiusKm ?? SERVICE_RADIUS_KM));
-  const visibleDiscounts = useMemo(
-    () => (serverBill?.discounts ?? []).filter((c) => !c.hidden),
-    [serverBill?.discounts]
-  );
-
-  const { subscriptionBenefits: subscriptionBenefitDiscounts, checkoutPromos: checkoutPromoDiscounts } =
-    useMemo(() => splitCheckoutDiscounts(visibleDiscounts), [visibleDiscounts]);
-
-  const subscriptionBenefitSavings = useMemo(
-    () => subscriptionBenefitDiscounts.reduce((sum, d) => sum + (d.amount ?? 0), 0),
-    [subscriptionBenefitDiscounts]
-  );
-
   const primaryCheckoutDiscount = useMemo(() => {
     if (checkoutPromoDiscounts.length === 0) return null;
     return [...checkoutPromoDiscounts].sort((a, b) => b.amount - a.amount)[0];
@@ -1476,6 +1519,136 @@ export default function CheckoutScreen() {
 
   const checkoutSavingsTotal =
     serverBill && serverBill.discountTotal > 0.005 ? serverBill.discountTotal : 0;
+
+  const missedOffersFingerprint = useMemo(
+    () =>
+      listMissedOfferWalletCandidates(checkoutOffersQuery.data, cartSubtotalForOffers)
+        .map((c) => `${c.source}:${c.id}`)
+        .join("|"),
+    [checkoutOffersQuery.data, cartSubtotalForOffers]
+  );
+
+  const missedOfferWalletComp = useMemo(
+    () =>
+      resolveMissedOfferWalletCompensation(
+        checkoutOffersQuery.data,
+        merchantId,
+        cartSubtotalForOffers,
+        deliveryType,
+        selectedMissedOfferKey
+      ),
+    [checkoutOffersQuery.data, merchantId, cartSubtotalForOffers, deliveryType, selectedMissedOfferKey]
+  );
+
+  useEffect(() => {
+    pendingMissedOfferWalletRef.current = null;
+    setMissedOfferWalletPending(false);
+    setSelectedMissedOfferKey(null);
+    setMissedOfferSheetVisible(false);
+    missedOfferSheetPromptKeyRef.current = null;
+  }, [missedOffersFingerprint, merchantId]);
+
+  const displayMissedOfferWalletComp = useMemo(() => {
+    if (missedOfferWalletPending && pendingMissedOfferWalletRef.current) {
+      return pendingMissedOfferWalletRef.current;
+    }
+    return missedOfferWalletComp;
+  }, [missedOfferWalletPending, missedOfferWalletComp]);
+
+  const missedOfferWalletPendingAmount = useMemo(() => {
+    if (!missedOfferWalletPending || !displayMissedOfferWalletComp) return 0;
+    return displayMissedOfferWalletComp.amountInr;
+  }, [missedOfferWalletPending, displayMissedOfferWalletComp]);
+
+  const openMissedOfferUnlockSheet = useCallback(() => {
+    if (missedOfferWalletComp?.key) {
+      setSelectedMissedOfferKey(missedOfferWalletComp.key);
+    }
+    setMissedOfferSheetVisible(true);
+  }, [missedOfferWalletComp?.key]);
+
+  const handleMissedOfferAddMoreItems = useCallback(() => {
+    setMissedOfferSheetVisible(false);
+    if (merchantId) {
+      router.push(`/home/merchant/${merchantId}` as never);
+    } else {
+      checkoutRouterBack(router, merchantId);
+    }
+  }, [merchantId, router]);
+
+  const handleUnlockMissedOfferFromSheet = useCallback(
+    (source: "platform" | "merchant", offerId: number) => {
+      if (!merchantId) return;
+      const key = missedOfferKeyForCandidate({ source, id: offerId }, merchantId);
+
+      if (missedOfferWalletPending) {
+        if (pendingMissedOfferWalletRef.current?.key === key) {
+          setCouponSheetVisible(false);
+          setMissedOfferSheetVisible(false);
+          return;
+        }
+        if (!authSession) {
+          Alert.alert("Sign in required", "Please sign in to add GatiCash for this offer.");
+          return;
+        }
+        const nextComp = resolveMissedOfferWalletCompensation(
+          checkoutOffersQuery.data,
+          merchantId,
+          cartSubtotalForOffers,
+          deliveryType,
+          key
+        );
+        if (!nextComp) return;
+
+        pendingMissedOfferWalletRef.current = nextComp;
+        setSelectedMissedOfferKey(key);
+        setMissedOfferWalletPending(true);
+        setMissedOfferCelebration(nextComp);
+        setCouponSheetVisible(false);
+        setMissedOfferSheetVisible(false);
+        return;
+      }
+
+      setSelectedMissedOfferKey(key);
+      setCouponSheetVisible(false);
+      setMissedOfferSheetVisible(true);
+    },
+    [
+      merchantId,
+      missedOfferWalletPending,
+      authSession,
+      checkoutOffersQuery.data,
+      cartSubtotalForOffers,
+      deliveryType,
+    ]
+  );
+
+  const handleSelectMissedOfferWallet = useCallback(() => {
+    if (!missedOfferWalletComp || missedOfferWalletPending) return;
+    if (!authSession) {
+      Alert.alert("Sign in required", "Please sign in to add GatiCash for this offer.");
+      return;
+    }
+    pendingMissedOfferWalletRef.current = missedOfferWalletComp;
+    setMissedOfferWalletPending(true);
+    setSelectedMissedOfferKey(missedOfferWalletComp.key);
+    setMissedOfferCelebration(missedOfferWalletComp);
+    setMissedOfferSheetVisible(false);
+  }, [missedOfferWalletComp, missedOfferWalletPending, authSession]);
+
+  const handleRemoveMissedOfferWallet = useCallback(() => {
+    pendingMissedOfferWalletRef.current = null;
+    setMissedOfferWalletPending(false);
+    setSelectedMissedOfferKey(null);
+    setMissedOfferSheetVisible(false);
+    setMissedOfferCelebration(null);
+  }, []);
+
+  const fulfillPendingMissedOfferWallet = useCallback(async () => {
+    pendingMissedOfferWalletRef.current = null;
+    setMissedOfferWalletPending(false);
+    void queryClient.invalidateQueries({ queryKey: ["wallet", "balance"] });
+  }, [queryClient]);
 
   const featuredCoupon = useMemo(() => {
     const list = checkoutOffersQuery.data?.coupons?.filter((c) => c.code !== appliedCouponCode) ?? [];
@@ -1521,6 +1694,10 @@ export default function CheckoutScreen() {
   );
 
   const offersAppliedHeadline = useMemo(() => {
+    if (missedOfferWalletPending && displayMissedOfferWalletComp) {
+      return `${displayMissedOfferWalletComp.offerTitle} unlocked`;
+    }
+
     const subLabel = subscriptionBenefitDiscounts[0]?.label;
     const subSave = subscriptionBenefitSavings;
 
@@ -1555,13 +1732,25 @@ export default function CheckoutScreen() {
     appliedCouponCode,
     appliedCouponLabel,
     featuredCoupon,
+    missedOfferWalletPending,
+    displayMissedOfferWalletComp,
   ]);
+
+  const offersAppliedSubline = useMemo(() => {
+    if (missedOfferWalletPending && displayMissedOfferWalletComp) {
+      return `Saving ₹${Math.round(displayMissedOfferWalletComp.offerSavingsInr)} on this order · ₹${Math.round(displayMissedOfferWalletComp.amountInr)} to GatiCash after order`;
+    }
+    return null;
+  }, [missedOfferWalletPending, displayMissedOfferWalletComp]);
+
+  const hasMissedOfferUnlocked = Boolean(missedOfferWalletPending && displayMissedOfferWalletComp);
 
   const hasAppliedCheckoutPromo = Boolean(
     primaryCheckoutDiscount || appliedCouponCode || appliedPlatformOfferId || appliedMerchantOfferId
   );
 
-  const hasCheckoutOfferSavings = hasAppliedCheckoutPromo || subscriptionBenefitSavings > 0.005;
+  const hasCheckoutOfferSavings =
+    hasAppliedCheckoutPromo || subscriptionBenefitSavings > 0.005 || hasMissedOfferUnlocked;
 
   /** Align coupon/offer picker with server bill — one checkout promo at a time (subscription free delivery stacks). */
   useEffect(() => {
@@ -1749,6 +1938,7 @@ export default function CheckoutScreen() {
     blocked:
       couponSheetVisible ||
       couponCelebrationVisible ||
+      missedOfferCelebration != null ||
       billSummarySheetVisible ||
       gmitraPlusSheetVisible,
   });
@@ -1770,6 +1960,34 @@ export default function CheckoutScreen() {
     },
     [couponAvailablePrompt, applyCouponCode, applyMerchantOfferById, applyPlatformOfferById]
   );
+
+  useEffect(() => {
+    if (
+      !missedOffersFingerprint ||
+      missedOfferWalletPending ||
+      checkoutOffersQuery.isLoading ||
+      billingQuery.isLoading ||
+      couponSheetVisible ||
+      couponAvailablePrompt.visible ||
+      couponCelebrationVisible ||
+      missedOfferCelebration != null
+    ) {
+      return;
+    }
+    if (missedOfferSheetPromptKeyRef.current === missedOffersFingerprint) return;
+    missedOfferSheetPromptKeyRef.current = missedOffersFingerprint;
+    const timer = setTimeout(() => setMissedOfferSheetVisible(true), 700);
+    return () => clearTimeout(timer);
+  }, [
+    missedOffersFingerprint,
+    missedOfferWalletPending,
+    checkoutOffersQuery.isLoading,
+    billingQuery.isLoading,
+    couponSheetVisible,
+    couponAvailablePrompt.visible,
+    couponCelebrationVisible,
+    missedOfferCelebration,
+  ]);
 
   const removeAllCheckoutOffers = useCallback(() => {
     setAppliedCouponCode(null);
@@ -1959,7 +2177,58 @@ export default function CheckoutScreen() {
     }
     return { total: roundBillAmount(total), lines };
   }, [serverBill, subscriptionDisplayMiscTotal]);
-  const toPayAmount = serverBill?.finalAmount;
+
+  const missedOfferUnlockDiscount = useMemo(() => {
+    if (!missedOfferWalletPending || !displayMissedOfferWalletComp) return 0;
+    return displayMissedOfferWalletComp.offerSavingsInr;
+  }, [missedOfferWalletPending, displayMissedOfferWalletComp]);
+
+  const gatiCashMaxApply = useMemo(() => {
+    if (!serverBill || gatiCashAvailable <= 0.005) return 0;
+    const base = roundBillAmount(serverBill.finalAmount - missedOfferUnlockDiscount);
+    return Math.min(gatiCashAvailable, Math.max(0, base));
+  }, [serverBill, gatiCashAvailable, missedOfferUnlockDiscount]);
+
+  const gatiCashApplyAmount = useMemo(() => {
+    if (!useGatiCashWallet || gatiCashMaxApply <= 0.005) return 0;
+    return gatiCashMaxApply;
+  }, [useGatiCashWallet, gatiCashMaxApply]);
+
+  const showGatiCashWalletBar =
+    gatiCashAvailable > 0.005 ||
+    (gatiCashBalanceQ.isLoading && authHydrated && !!authSession);
+
+  const checkoutScrollBottomInset = useMemo(
+    () =>
+      insets.bottom +
+      CHECKOUT_SCROLL_FOOTER_BASE +
+      CHECKOUT_SCROLL_BRANDING_CLEARANCE +
+      (showGatiCashWalletBar ? CHECKOUT_SCROLL_GATICASH_BAR_EXTRA : 0),
+    [insets.bottom, showGatiCashWalletBar]
+  );
+
+  const toPayAmount = useMemo(() => {
+    if (serverBill == null) return undefined;
+    const walletAdd =
+      missedOfferWalletPending && missedOfferWalletPendingAmount > 0.005
+        ? missedOfferWalletPendingAmount
+        : 0;
+    return Math.max(
+      0,
+      roundBillAmount(
+        serverBill.finalAmount -
+          gatiCashApplyAmount -
+          missedOfferUnlockDiscount +
+          walletAdd
+      )
+    );
+  }, [
+    serverBill,
+    gatiCashApplyAmount,
+    missedOfferUnlockDiscount,
+    missedOfferWalletPending,
+    missedOfferWalletPendingAmount,
+  ]);
   /** GatiMitra-style strikethrough total when discounts apply (list ≈ payable + discounts). */
   const gmStrikethroughTotal = useMemo(() => {
     if (!serverBill || serverBill.discountTotal <= 0.005) return null;
@@ -2026,7 +2295,22 @@ export default function CheckoutScreen() {
         ...(scheduledDeliverySummary ? { scheduledDeliverySummary } : {}),
         ...(restaurantNote.trim() ? { restaurantNote: restaurantNote.trim() } : {}),
         ...(skipCutlery ? { skipCutlery: true } : {}),
+        ...(gatiCashApplyAmount > 0.005 ? { gatiCashAmount: gatiCashApplyAmount } : {}),
+        ...(missedOfferWalletPending && displayMissedOfferWalletComp
+          ? {
+              missedOfferCompensation: {
+                amountInr: displayMissedOfferWalletComp.amountInr,
+                offerKey: displayMissedOfferWalletComp.key,
+                offerId: displayMissedOfferWalletComp.offerId,
+                offerSource: displayMissedOfferWalletComp.offerSource,
+                offerKind: displayMissedOfferWalletComp.offerKind,
+                offerTitle: displayMissedOfferWalletComp.offerTitle,
+                discountInr: displayMissedOfferWalletComp.offerSavingsInr,
+              },
+            }
+          : {}),
       },
+      ...(gatiCashApplyAmount > 0.005 ? { gatiCashAmount: gatiCashApplyAmount } : {}),
       ...pickup,
     };
   }, [
@@ -2054,6 +2338,9 @@ export default function CheckoutScreen() {
     scheduledDeliverySummary,
     restaurantNote,
     skipCutlery,
+    gatiCashApplyAmount,
+    missedOfferWalletPending,
+    displayMissedOfferWalletComp,
     merchant,
     storeFullAddress,
     merchantName,
@@ -2114,7 +2401,8 @@ export default function CheckoutScreen() {
         }),
       });
     },
-    onSuccess: (order) => {
+    onSuccess: async (order) => {
+      await fulfillPendingMissedOfferWallet();
       setRazorpayModalVisible(false);
       setRazorpayOrderParams(null);
       const { label: etaLabel, etaMaxMinutes } = checkoutDeliveryEtaRef.current;
@@ -2168,7 +2456,8 @@ export default function CheckoutScreen() {
         { retries: 3, delayMs: 1500 }
       );
     },
-    onSuccess: (order) => {
+    onSuccess: async (order) => {
+      await fulfillPendingMissedOfferWallet();
       const recoveryPendingId = finalizeArgsRef.current?.pendingId ?? "";
       finalizeArgsRef.current = null;
       setRazorpayModalVisible(false);
@@ -2265,6 +2554,7 @@ export default function CheckoutScreen() {
   });
 
   const handlePlaceOrderPress = useCallback(async () => {
+    if (deliveryType === "self_pickup") return;
     if (!canPlaceOrder || placeOrder.isPending || finalizeOrder.isPending || razorpayCreating) return;
     if (hasValidPayment) {
       setRazorpayCreating(true);
@@ -2322,7 +2612,7 @@ export default function CheckoutScreen() {
     } else {
       placeOrder.mutate(undefined);
     }
-  }, [canPlaceOrder, baseOrderPayload, placeOrder, finalizeOrder.isPending, razorpayCreating, hasValidPayment, merchantId]);
+  }, [deliveryType, canPlaceOrder, baseOrderPayload, placeOrder, finalizeOrder.isPending, razorpayCreating, hasValidPayment, merchantId]);
 
   const handleRazorpaySuccess = useCallback(
     (result: RazorpayPaymentResult) => {
@@ -2751,7 +3041,7 @@ export default function CheckoutScreen() {
     return (
       <View style={[styles.center, { paddingBottom: insets.bottom }]}>
         <Text style={styles.emptyText}>Cart is empty</Text>
-        <TouchableOpacity onPress={() => router.back()} style={styles.ctaSecondary}>
+        <TouchableOpacity onPress={handleCheckoutBack} style={styles.ctaSecondary}>
           <Text style={styles.ctaSecondaryText}>Back to cart</Text>
         </TouchableOpacity>
       </View>
@@ -2763,7 +3053,7 @@ export default function CheckoutScreen() {
       {/* GatiMitra-style header: back · merchant name (top, small) + eta + address (with chevron) · share icon */}
       <View style={[styles.header, { paddingTop: HEADER_PADDING_TOP + 4 }]}>
         <View style={styles.headerRow}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.headerBack} hitSlop={12}>
+          <TouchableOpacity onPress={handleCheckoutBack} style={styles.headerBack} hitSlop={12}>
             <Ionicons name="chevron-back" size={22} color="#1A1A1A" />
           </TouchableOpacity>
           <View style={styles.headerCenter}>
@@ -2836,7 +3126,7 @@ export default function CheckoutScreen() {
           styles.scrollContent,
           {
             paddingTop: showDistanceBanner ? 16 : 12,
-            paddingBottom: insets.bottom + 128,
+            paddingBottom: checkoutScrollBottomInset,
           },
         ]}
         showsVerticalScrollIndicator={false}
@@ -2875,8 +3165,9 @@ export default function CheckoutScreen() {
                         onPress={() => handleEditCartItem(item)}
                         activeOpacity={0.7}
                         hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+                        accessibilityLabel="Edit item"
                       >
-                        <Text style={styles.orderItemEditText}>Edit</Text>
+                        <BiPencilSquareIcon size={13} color={CX.mint} />
                         <Ionicons name="caret-forward" size={12} color={CX.mint} />
                       </TouchableOpacity>
                     </View>
@@ -3119,7 +3410,7 @@ export default function CheckoutScreen() {
             ) : null}
 
             <View style={styles.offersAppliedRow}>
-              {hasCheckoutOfferSavings ? (
+              {hasAppliedCheckoutPromo || hasMissedOfferUnlocked ? (
                 <View style={styles.offersGreenTick}>
                   <Ionicons name="checkmark" size={14} color="#fff" />
                 </View>
@@ -3132,11 +3423,20 @@ export default function CheckoutScreen() {
                 <Text style={styles.offersAppliedHeadline} numberOfLines={2}>
                   {offersAppliedHeadline}
                 </Text>
+                {offersAppliedSubline ? (
+                  <Text style={styles.offersSubLineMuted} numberOfLines={2}>
+                    {offersAppliedSubline}
+                  </Text>
+                ) : null}
                 <TouchableOpacity onPress={() => setCouponSheetVisible(true)} activeOpacity={0.7} hitSlop={6}>
                   <Text style={styles.offersLearnMore}>View all coupons ›</Text>
                 </TouchableOpacity>
               </View>
-              {hasAppliedCheckoutPromo ? (
+              {hasMissedOfferUnlocked ? (
+                <TouchableOpacity onPress={handleRemoveMissedOfferWallet} hitSlop={8} activeOpacity={0.7}>
+                  <Text style={styles.offersRemoveRed}>Remove</Text>
+                </TouchableOpacity>
+              ) : hasAppliedCheckoutPromo ? (
                 <TouchableOpacity onPress={removeAllCheckoutOffers} hitSlop={8} activeOpacity={0.7}>
                   <Text style={styles.offersRemoveRed}>Remove</Text>
                 </TouchableOpacity>
@@ -3155,6 +3455,17 @@ export default function CheckoutScreen() {
             </View>
           </View>
         </Animated.View>
+
+        {displayMissedOfferWalletComp ? (
+          <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(50)} style={styles.section}>
+            <CheckoutMissedOfferWalletCard
+              offer={displayMissedOfferWalletComp}
+              pending={missedOfferWalletPending}
+              onPressAdd={openMissedOfferUnlockSheet}
+              onPressRemove={handleRemoveMissedOfferWallet}
+            />
+          </Animated.View>
+        ) : null}
 
         {/* Delivery + bill — GatiMitra-style single card: savings banner, dashed rules, ETA, address, bill, GMitra bubble */}
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(60)} style={styles.section}>
@@ -3298,6 +3609,20 @@ export default function CheckoutScreen() {
                   )}
                 </View>
                 <Text style={styles.gmBillSub}>Incl. taxes and charges</Text>
+                {missedOfferWalletPending &&
+                (missedOfferUnlockDiscount > 0.005 || missedOfferWalletPendingAmount > 0.005) ? (
+                  <Text style={styles.gmBillPendingWallet}>
+                    {missedOfferUnlockDiscount > 0.005
+                      ? `− ₹${missedOfferUnlockDiscount.toFixed(2)} ${displayMissedOfferWalletComp?.offerTitle ?? "offer"} applied`
+                      : ""}
+                    {missedOfferUnlockDiscount > 0.005 && missedOfferWalletPendingAmount > 0.005
+                      ? " · "
+                      : ""}
+                    {missedOfferWalletPendingAmount > 0.005
+                      ? `+ ₹${missedOfferWalletPendingAmount.toFixed(2)} GatiCash wallet add`
+                      : ""}
+                  </Text>
+                ) : null}
               </View>
             </TouchableOpacity>
 
@@ -3358,12 +3683,13 @@ export default function CheckoutScreen() {
         <View style={styles.cancellationBlock}>
           <Text style={styles.cancellationTitle}>CANCELLATION POLICY</Text>
           <Text style={styles.cancellationText}>
-            A 100% cancellation fee will be applied if you cancel the order after it is confirmed from your end.
+            A 100% cancellation fee will be applied if you cancel the order after it is confirmed from your end.{" "}
+            See our <LegalLink id="refund-cancellation-policy" />.
           </Text>
         </View>
 
         {/* GatiMitra branding — end of content */}
-        <BrandingFooter />
+        <BrandingFooter compact />
       </ScrollView>
 
       <CouponApplyCelebration
@@ -3371,6 +3697,25 @@ export default function CheckoutScreen() {
         couponCode={couponCelebrationCode}
         savedAmount={couponDiscountAmount}
         onDismiss={() => setCouponCelebrationVisible(false)}
+      />
+
+      <MissedOfferWalletCelebration
+        visible={missedOfferCelebration != null}
+        offerTitle={missedOfferCelebration?.offerTitle ?? ""}
+        offerSavingsInr={missedOfferCelebration?.offerSavingsInr ?? 0}
+        walletAddInr={missedOfferCelebration?.amountInr ?? 0}
+        onDismiss={() => setMissedOfferCelebration(null)}
+      />
+
+      <MissedOfferUnlockSheet
+        visible={missedOfferSheetVisible}
+        offer={missedOfferWalletComp}
+        bottomInset={insets.bottom}
+        pending={missedOfferWalletPending}
+        onClose={() => setMissedOfferSheetVisible(false)}
+        onAddToWallet={handleSelectMissedOfferWallet}
+        onRemoveFromWallet={handleRemoveMissedOfferWallet}
+        onAddMoreItems={handleMissedOfferAddMoreItems}
       />
 
       <CouponAvailableBottomSheet
@@ -3388,7 +3733,25 @@ export default function CheckoutScreen() {
         loading={checkoutOffersQuery.isLoading}
         error={checkoutOffersQuery.isError}
         data={checkoutOffersQuery.data}
+        merchantId={merchantId}
         cartSubtotal={cartSubtotalForOffers}
+        pendingMissedOfferKey={
+          missedOfferWalletPending && displayMissedOfferWalletComp
+            ? displayMissedOfferWalletComp.key
+            : selectedMissedOfferKey
+        }
+        unlockedMissedOffer={
+          missedOfferWalletPending && displayMissedOfferWalletComp
+            ? {
+                key: displayMissedOfferWalletComp.key,
+                title: displayMissedOfferWalletComp.offerTitle,
+                offerSavingsInr: displayMissedOfferWalletComp.offerSavingsInr,
+                walletAddInr: displayMissedOfferWalletComp.amountInr,
+              }
+            : null
+        }
+        onUnlockWithGatiCash={handleUnlockMissedOfferFromSheet}
+        onRemoveMissedOfferWallet={handleRemoveMissedOfferWallet}
         couponInput={couponCodeInput}
         onCouponInputChange={(t) => {
           setCouponCodeInput(t);
@@ -3441,13 +3804,22 @@ export default function CheckoutScreen() {
       )}
 
       {/* Footer: fixed-width delivery / takeaway toggle + Place Order CTA (width = screen − padding − gap − toggle; same corner radius as toggle shell). */}
-      <View style={[styles.fixedBottom, { paddingBottom: insets.bottom + 12 }]}>
-        <LegalFooter
-          prefix="By placing this order you agree to"
-          docIds={["terms-of-service", "refund-cancellation-policy", "shipping-delivery-policy"]}
-        />
+      <View style={[styles.fixedBottom, { paddingBottom: insets.bottom + 8 }]}>
+        {showGatiCashWalletBar && (
+          <View style={styles.gatiCashWalletBarWrap}>
+            <CheckoutGatiCashWalletBar
+              balance={gatiCashAvailable}
+              maxApplyAmount={gatiCashMaxApply}
+              applyAmount={gatiCashApplyAmount}
+              checked={useGatiCashWallet}
+              onToggle={() => setUseGatiCashWallet((v) => !v)}
+              loading={gatiCashBalanceQ.isLoading && authHydrated && !!authSession}
+            />
+          </View>
+        )}
         <View style={styles.footerRow}>
-          <View style={styles.deliveryTypeToggle}>
+          <View style={styles.footerToggleCol}>
+            <View style={styles.deliveryTypeToggle}>
             <TouchableOpacity
               style={[
                 styles.deliveryTypeSeg,
@@ -3458,7 +3830,7 @@ export default function CheckoutScreen() {
             >
               <MaterialCommunityIcons
                 name="motorbike"
-                size={20}
+                size={18}
                 color={deliveryType === "delivery" ? "#FFFFFF" : "#111111"}
               />
               <Text
@@ -3480,7 +3852,7 @@ export default function CheckoutScreen() {
             >
               <MaterialCommunityIcons
                 name="shopping-outline"
-                size={20}
+                size={18}
                 color={deliveryType === "self_pickup" ? "#FFFFFF" : "#111111"}
               />
               <Text
@@ -3492,40 +3864,52 @@ export default function CheckoutScreen() {
                 Takeaway
               </Text>
             </TouchableOpacity>
+            </View>
           </View>
+          <View style={styles.footerCtaCol}>
           {isStoreClosed ? (
-            <View style={[styles.footerCtaSlotDisabled, { width: checkoutFooterCtaWidth }]}>
+            <View style={styles.footerCtaSlotDisabled}>
               <Text style={styles.ctaDisabledText}>Store closed</Text>
             </View>
           ) : items.length === 0 ? (
-            <View style={[styles.footerCtaSlotDisabled, { width: checkoutFooterCtaWidth }]}>
+            <View style={styles.footerCtaSlotDisabled}>
               <Text style={styles.ctaDisabledText}>Add items</Text>
             </View>
+          ) : deliveryType === "self_pickup" ? (
+            <View style={styles.footerCtaSlotDisabled}>
+              <Text style={styles.ctaDisabledText}>Coming Soon</Text>
+            </View>
           ) : !canPlaceOrder ? (
-            <View style={[styles.footerCtaSlotDisabled, { width: checkoutFooterCtaWidth }]}>
-              <Text style={styles.ctaDisabledLabel}>
-                Place Order
-                {toPayAmount != null ? ` • ₹${toPayAmount.toFixed(2)}` : ""}
-              </Text>
-              <Text style={styles.ctaDisabledHint}>
-                {!selectedAddress
-                  ? "Check your address before proceeding"
-                  : billingQuery.isError
-                      ? "Could not load bill — retry"
-                      : billingQuery.isLoading
-                        ? "Loading bill…"
-                        : billingQuery.isPlaceholderData && billingQuery.isFetching
-                          ? "Updating bill…"
-                          : !serverBill
-                            ? "Waiting for bill"
-                            : "Select payment"}
-              </Text>
+            <View style={styles.footerCtaSlotDisabled}>
+              <View style={styles.ctaDisabledSplit}>
+                <View style={styles.ctaLeftPart}>
+                  <Text style={styles.ctaDisabledAmount} numberOfLines={1}>
+                    {toPayAmount != null ? `₹${toPayAmount.toFixed(2)}` : "—"}
+                  </Text>
+                  <Text style={styles.ctaTotalLabel} numberOfLines={1}>TOTAL</Text>
+                </View>
+                <View style={styles.ctaRightPartDisabled}>
+                  <Text style={styles.ctaDisabledLabel} numberOfLines={1}>Place Order</Text>
+                  <Text style={styles.ctaDisabledHint} numberOfLines={1}>
+                    {!selectedAddress
+                      ? "Check address"
+                      : billingQuery.isError
+                        ? "Bill error"
+                        : billingQuery.isLoading
+                          ? "Loading bill…"
+                          : billingQuery.isPlaceholderData && billingQuery.isFetching
+                            ? "Updating bill…"
+                            : !serverBill
+                              ? "Waiting for bill"
+                              : "Select payment"}
+                  </Text>
+                </View>
+              </View>
             </View>
           ) : (
             <Pressable
               style={({ pressed }) => [
                 styles.footerCtaSlot,
-                { width: checkoutFooterCtaWidth },
                 pressed && styles.ctaTouchPressed,
               ]}
               onPress={handlePlaceOrderPress}
@@ -3537,29 +3921,35 @@ export default function CheckoutScreen() {
                 end={{ x: 1, y: 0 }}
                 style={styles.ctaGradient}
               >
-                {placeOrder.isPending || finalizeOrder.isPending || razorpayCreating ? (
-                  <ActivityIndicator color="#fff" size="small" />
-                ) : (
-                  <>
-                    <View style={styles.ctaLeftPart}>
-                      <Text style={styles.ctaTotalAmount} numberOfLines={1}>
-                        {toPayAmount != null ? `₹${toPayAmount.toFixed(2)}` : "—"}
-                      </Text>
-                      <Text style={styles.ctaTotalLabel} numberOfLines={1}>TOTAL</Text>
+                <View style={styles.ctaLeftPart}>
+                  <Text style={styles.ctaTotalAmount} numberOfLines={1}>
+                    {toPayAmount != null ? `₹${toPayAmount.toFixed(2)}` : "—"}
+                  </Text>
+                  <Text style={styles.ctaTotalLabel} numberOfLines={1}>TOTAL</Text>
+                </View>
+                <View style={styles.ctaRightPart}>
+                  {placeOrder.isPending || finalizeOrder.isPending || razorpayCreating ? (
+                    <View style={styles.ctaRightPartRow}>
+                      <ActivityIndicator color="#fff" size="small" />
                     </View>
-                    <View style={styles.ctaRightPart}>
+                  ) : (
+                    <View style={styles.ctaRightPartRow}>
                       <Text style={styles.ctaLabel} numberOfLines={1}>Place Order</Text>
-                      <Ionicons name="chevron-forward" size={22} color="#fff" />
+                      <Ionicons name="chevron-forward" size={18} color="#fff" />
                     </View>
-                  </>
-                )}
+                  )}
+                </View>
               </LinearGradient>
             </Pressable>
           )}
+          </View>
         </View>
-        <View style={styles.codUnavailableWrap}>
-          <Text style={styles.codUnavailableFooter}>Cash on Delivery is currently unavailable in your area.</Text>
-        </View>
+        <LegalFooter
+          prefix="By placing this order you agree to"
+          docIds={["terms-of-service", "shipping-delivery-policy"]}
+          style={styles.checkoutLegalFooter}
+          compact
+        />
       </View>
 
       {customizationSheetItem && merchantId && (
@@ -4266,6 +4656,14 @@ export default function CheckoutScreen() {
         onGstInfoPress={() => setGstBreakdownModalVisible(true)}
         visibleDiscounts={visibleDiscounts}
         showItemTotalStrike={showItemTotalStrike}
+        gatiCashApplyAmount={gatiCashApplyAmount}
+        missedOfferWalletPendingAmount={missedOfferWalletPendingAmount}
+        missedOfferUnlockDiscount={missedOfferUnlockDiscount}
+        missedOfferUnlockLabel={
+          missedOfferWalletComp?.offerTitle
+            ? `${missedOfferWalletComp.offerTitle} unlocked`
+            : "Offer unlocked"
+        }
         {...checkoutGratitudeProps}
       />
 
@@ -5358,6 +5756,12 @@ const styles = StyleSheet.create({
   gmBillHeaderMid: { flex: 1, minWidth: 0 },
   gmBillTitle: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary, flex: 1, minWidth: 0 },
   gmBillSub: { fontSize: 11, color: GatiMitraColors.textSecondary, marginTop: 2 },
+  gmBillPendingWallet: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: GatiMitraColors.splashMint,
+    marginTop: 3,
+  },
   gmBillHeaderRight: { flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 },
   gmBillPriceCluster: {
     flexDirection: "row",
@@ -6882,46 +7286,71 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     paddingHorizontal: 12,
-    paddingTop: 10,
+    paddingTop: 8,
     backgroundColor: "#F5F6F8",
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#E5E7EB",
     zIndex: 50,
     ...GatiMitraColors.elevationShadow,
   },
-  footerRow: { flexDirection: "row", alignItems: "stretch", gap: 8 },
+  gatiCashWalletBarWrap: {
+    marginHorizontal: -12,
+  },
+  footerRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    width: "100%",
+  },
+  footerToggleCol: {
+    width: CHECKOUT_FOOTER_TOGGLE_WIDTH,
+    maxWidth: CHECKOUT_FOOTER_TOGGLE_WIDTH,
+    flexGrow: 0,
+    flexShrink: 0,
+    flexBasis: CHECKOUT_FOOTER_TOGGLE_WIDTH,
+  },
+  footerCtaCol: {
+    flex: 1,
+    flexBasis: 0,
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 0,
+    marginLeft: CHECKOUT_FOOTER_GAP,
+    paddingLeft: CHECKOUT_FOOTER_CTA_LEFT_INSET,
+  },
   // Delivery / Takeaway segmented control (reference: white shell, light pink border, magenta active half)
   deliveryTypeToggle: {
     flexDirection: "row",
     alignItems: "stretch",
-    flexShrink: 0,
-    width: CHECKOUT_FOOTER_TOGGLE_WIDTH,
+    width: "100%",
     backgroundColor: "#FFFFFF",
     borderRadius: CHECKOUT_FOOTER_CTA_RADIUS,
     borderWidth: 1,
     borderColor: DELIVERY_TOGGLE_BORDER,
-    padding: 4,
-    gap: 0,
+    padding: 3,
+    overflow: "hidden",
   },
   deliveryTypeSeg: {
     flex: 1,
+    flexBasis: 0,
+    minWidth: 0,
     flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-    borderRadius: 10,
-    gap: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 1,
+    borderRadius: 9,
+    gap: 2,
     backgroundColor: "transparent",
+    overflow: "hidden",
   },
   deliveryTypeSegActive: {
     backgroundColor: DELIVERY_TOGGLE_ACTIVE,
   },
   deliveryTypeSegText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: "800",
     color: "#111111",
-    letterSpacing: 0.2,
+    letterSpacing: 0.1,
   },
   deliveryTypeSegTextActive: { color: "#FFFFFF" },
   footerPaymentCard: {
@@ -6955,22 +7384,23 @@ const styles = StyleSheet.create({
   footerPayLabel: { fontSize: 11, fontWeight: "600", color: GatiMitraColors.textPrimary, flexShrink: 1 },
   footerPayChevron: { flexShrink: 0 },
   footerCtaSlot: {
-    flexShrink: 0,
+    width: "100%",
+    alignSelf: "stretch",
     borderRadius: CHECKOUT_FOOTER_CTA_RADIUS,
     overflow: "hidden",
-    minHeight: 54,
-    ...GatiMitraColors.cardShadowSoft,
+    minHeight: 50,
   },
   footerCtaSlotDisabled: {
-    flexShrink: 0,
+    width: "100%",
+    alignSelf: "stretch",
     borderRadius: CHECKOUT_FOOTER_CTA_RADIUS,
     backgroundColor: "#9ca3af",
     justifyContent: "center",
-    alignItems: "center",
-    minHeight: 54,
+    alignItems: "stretch",
+    minHeight: 50,
+    overflow: "hidden",
   },
-  codUnavailableWrap: { width: "100%", marginTop: 10, alignItems: "center" },
-  codUnavailableFooter: { fontSize: 12, color: GatiMitraColors.textSecondary, textAlign: "center", alignSelf: "stretch" },
+  checkoutLegalFooter: { marginTop: 6, lineHeight: 16, fontSize: 11 },
   cancellationBlock: {
     marginTop: 8,
     marginBottom: 4,
@@ -6995,28 +7425,57 @@ const styles = StyleSheet.create({
     backgroundColor: "#9ca3af",
     alignItems: "center",
   },
-  ctaDisabledText: { fontSize: 15, fontWeight: "700", color: "#fff" },
-  ctaDisabledLabel: { fontSize: 14, fontWeight: "700", color: "#fff" },
-  ctaDisabledHint: { fontSize: 11, color: "rgba(255,255,255,0.9)", marginTop: 1 },
+  ctaDisabledText: { fontSize: 15, fontWeight: "700", color: "#fff", textAlign: "center" },
+  ctaDisabledSplit: {
+    flex: 1,
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 9,
+    paddingHorizontal: 8,
+  },
+  ctaDisabledAmount: { fontSize: 14, fontWeight: "800", color: "#fff" },
+  ctaDisabledLabel: { fontSize: 12, fontWeight: "700", color: "#fff" },
+  ctaDisabledHint: { fontSize: 9, color: "rgba(255,255,255,0.9)", marginTop: 1, textAlign: "right" },
   ctaTouch: { borderRadius: CARD_RADIUS, overflow: "hidden", ...GatiMitraColors.cardShadowSoft },
   ctaTouchPressed: { opacity: 0.96 },
   ctaGradient: {
     flex: 1,
+    width: "100%",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 11,
-    paddingHorizontal: 14,
+    paddingVertical: 9,
+    paddingHorizontal: 8,
     borderRadius: CHECKOUT_FOOTER_CTA_RADIUS,
     overflow: "hidden",
-    minWidth: 0,
-    gap: 10,
+    minHeight: 50,
   },
-  ctaLeftPart: { alignItems: "flex-start", flexShrink: 0, minWidth: 68 },
-  ctaTotalAmount: { fontSize: 15, fontWeight: "800", color: "#fff" },
+  ctaLeftPart: { flex: 1, minWidth: 0, alignItems: "flex-start", justifyContent: "center" },
+  ctaTotalAmount: { fontSize: 14, fontWeight: "800", color: "#fff" },
   ctaTotalLabel: { fontSize: 9, color: "rgba(255,255,255,0.9)", marginTop: 1 },
-  ctaRightPart: { flexDirection: "row", alignItems: "center", gap: 5, flexShrink: 0, minWidth: 90 },
-  ctaLabel: { fontSize: 14, fontWeight: "700", color: "#fff" },
+  ctaRightPart: {
+    flexShrink: 0,
+    flexGrow: 0,
+    marginLeft: 6,
+    alignItems: "flex-end",
+    justifyContent: "center",
+  },
+  ctaRightPartDisabled: {
+    flexShrink: 0,
+    flexGrow: 0,
+    marginLeft: 6,
+    maxWidth: "48%",
+    alignItems: "flex-end",
+    justifyContent: "center",
+  },
+  ctaRightPartRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+  },
+  ctaLabel: { fontSize: 12, fontWeight: "700", color: "#fff" },
   ctaAmount: { fontSize: 15, fontWeight: "800", color: "#fff" },
   couponModalOverlay: {
     flex: 1,

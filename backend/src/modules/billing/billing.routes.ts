@@ -484,6 +484,7 @@ export async function billingRoutes(app: FastifyInstance) {
                   offerKind: z.string(),
                   summary: z.string(),
                   reason: z.string(),
+                  estimatedSavingsInr: z.number().nullable().optional(),
                 })
               )
               .optional(),

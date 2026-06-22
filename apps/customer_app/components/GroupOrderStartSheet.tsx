@@ -20,6 +20,7 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import { BiPencilSquareIcon } from "@/components/icons/BiPencilSquareIcon";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useLocationStore } from "@/store/locationStore";
 import { useAuthStore } from "@/store/authStore";
@@ -128,7 +129,7 @@ export function GroupOrderStartSheet({
                       placeholderTextColor="#9ca3af"
                       maxLength={40}
                     />
-                    <Ionicons name="pencil" size={16} color={GatiMitraColors.textSecondary} />
+                    <BiPencilSquareIcon size={16} color={GatiMitraColors.textSecondary} />
                   </View>
                   <Text style={styles.memberLimitSub}>Up to {MAX_GROUP_MEMBERS} members can join</Text>
                 </View>

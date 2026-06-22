@@ -15,7 +15,7 @@ import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-
 import { useAuthStore } from "@/store/authStore";
 import { useCartStore } from "@/store/cartStore";
 import { useLanguageStore } from "@/store/languageStore";
-import { useLocationStore } from "@/store/locationStore";
+import { useLocationStore, getDeviceLocationReadiness } from "@/store/locationStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useStoreStatusRealtime } from "@/hooks/useStoreStatusRealtime";
 import { useOrderRealtime } from "@/hooks/useOrderRealtime";
@@ -99,6 +99,7 @@ export default function RootLayout() {
   const hydrateCart = useCartStore((s) => s.hydrate);
   const hydrateLanguage = useLanguageStore((s) => s.hydrate);
   const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
+  const promptLocationPermissionIfNeeded = useLocationStore((s) => s.promptLocationPermissionIfNeeded);
   const hydrateLocation = useLocationStore((s) => s.hydrate);
 
   const ready = fontsLoaded && hydrated && cartHydrated;
@@ -116,14 +117,16 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (!hydrated || !cartHydrated) return;
-    // First restore last user-selected location (fast header paint), then fallback to GPS only when nothing exists.
     void (async () => {
       await hydrateLocation();
+      await promptLocationPermissionIfNeeded({ force: true });
       const { locationSource, coords, address } = useLocationStore.getState();
+      const readiness = await getDeviceLocationReadiness();
+      if (!readiness.isReady) return;
       if (locationSource === "selected" && coords && address) return;
       await requestPermissionAndFetch({ forceDevice: true });
     })();
-  }, [hydrated, cartHydrated, hydrateLocation, requestPermissionAndFetch]);
+  }, [hydrated, cartHydrated, hydrateLocation, promptLocationPermissionIfNeeded, requestPermissionAndFetch]);
 
   const onLayoutRootView = useCallback(() => {
     if (ready && splashExited) {
@@ -149,6 +152,7 @@ export default function RootLayout() {
               <OrderRealtimeSync />
               <SessionRevokedHandler />
               <LocationPermissionRealtimeSync />
+              <LocationPermissionResumeCheck />
               <LanguageSync />
               <RootStack onLayoutRootView={onLayoutRootView} />
               <GlobalFloatingCart />
@@ -242,6 +246,7 @@ function LocationPermissionRealtimeSync() {
     try {
       const { status } = await Location.getForegroundPermissionsAsync();
       const granted = status === "granted";
+
       if (lastSyncedRef.current === granted) return;
 
       const currentCoords = useLocationStore.getState().coords;
@@ -275,6 +280,37 @@ function LocationPermissionRealtimeSync() {
   return null;
 }
 
+/** Re-check device location when app returns from background or GPS is toggled in quick settings. */
+function LocationPermissionResumeCheck() {
+  const promptLocationPermissionIfNeeded = useLocationStore((s) => s.promptLocationPermissionIfNeeded);
+  const showPermissionModal = useLocationStore((s) => s.showPermissionModal);
+
+  useEffect(() => {
+    const sync = () => void promptLocationPermissionIfNeeded();
+
+    const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
+      if (nextState === "active") void sync();
+    });
+
+    const interval = setInterval(() => {
+      if (AppState.currentState !== "active") return;
+      if (useLocationStore.getState().showPermissionModal) void sync();
+    }, 2000);
+
+    return () => {
+      sub.remove();
+      clearInterval(interval);
+    };
+  }, [promptLocationPermissionIfNeeded]);
+
+  useEffect(() => {
+    if (!showPermissionModal) return;
+    void promptLocationPermissionIfNeeded();
+  }, [showPermissionModal, promptLocationPermissionIfNeeded]);
+
+  return null;
+}
+
 function LocationModalWrapper() {
   const segments = useSegments() as string[];
   const showPermissionModal = useLocationStore((s) => s.showPermissionModal);
@@ -295,7 +331,9 @@ function RootStack({ onLayoutRootView }: { onLayoutRootView: () => void }) {
   const insets = useSafeAreaInsets();
   const segments = useSegments();
   const inProfileStack = segments[0] === "profile";
-  const statusBarHeight = inProfileStack ? 0 : (insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT);
+  const inLegalStack = segments[0] === "legal";
+  const statusBarHeight =
+    inProfileStack || inLegalStack ? 0 : insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT;
   const statusBarBackground = useScreenChromeStore((s) => s.statusBarBackground);
   const statusBarStyle = useScreenChromeStore((s) => s.statusBarStyle);
 
@@ -330,6 +368,7 @@ function RootStack({ onLayoutRootView }: { onLayoutRootView: () => void }) {
           <Stack.Screen name="group" />
           <Stack.Screen name="orders" />
           <Stack.Screen name="profile" />
+          <Stack.Screen name="legal" />
           <Stack.Screen name="wallet" />
           <Stack.Screen name="notifications" />
           <Stack.Screen name="support" />

@@ -67,6 +67,13 @@ async function generateUniqueReferralCode(
 }
 
 const genderSchema = z.enum(["male", "female", "prefer_not_to_say"]);
+const hearingAccessibilitySchema = z.enum(["deaf", "hard_of_hearing", "none"]);
+const visionAccessibilitySchema = z.enum(["blind", "visual_impairment", "none"]);
+const mobilityAccessibilitySchema = z.enum([
+  "wheelchair_or_mobility_aid",
+  "physical_disability_mobility",
+  "none",
+]);
 
 const profileResponseSchema = z.object({
   profile_completed: z.boolean(),
@@ -96,6 +103,9 @@ const profileResponseSchema = z.object({
   gmitra_plus_active: z.boolean().optional(),
   profile_image_url: z.string().nullable().optional(),
   lifetime_savings_inr: z.number().optional(),
+  hearing_accessibility: hearingAccessibilitySchema.optional(),
+  vision_accessibility: visionAccessibilitySchema.optional(),
+  mobility_accessibility: mobilityAccessibilitySchema.optional(),
 });
 
 const patchBodySchema = z.object({
@@ -116,6 +126,9 @@ const patchBodySchema = z.object({
   country: z.string().optional(),
   latitude: z.number().optional(),
   longitude: z.number().optional(),
+  hearing_accessibility: hearingAccessibilitySchema.optional(),
+  vision_accessibility: visionAccessibilitySchema.optional(),
+  mobility_accessibility: mobilityAccessibilitySchema.optional(),
 });
 
 function toResponseFromUserProfile(row: typeof userProfiles.$inferSelect) {
@@ -170,6 +183,9 @@ function toResponseFromCustomer(row: typeof customers.$inferSelect) {
     updated_at: row.updatedAt?.toISOString(),
     gmitra_plus_active: row.gmitraPlusActive ?? false,
     profile_image_url: row.profileImageUrl ?? null,
+    hearing_accessibility: row.hearingAccessibility ?? "none",
+    vision_accessibility: row.visionAccessibility ?? "none",
+    mobility_accessibility: row.mobilityAccessibility ?? "none",
   };
 }
 
@@ -392,6 +408,18 @@ export async function meRoutes(app: FastifyInstance) {
               country: body.country !== undefined ? body.country : existing.country,
               latitude: body.latitude !== undefined ? String(body.latitude) : existing.latitude,
               longitude: body.longitude !== undefined ? String(body.longitude) : existing.longitude,
+              hearingAccessibility:
+                body.hearing_accessibility !== undefined
+                  ? body.hearing_accessibility
+                  : existing.hearingAccessibility,
+              visionAccessibility:
+                body.vision_accessibility !== undefined
+                  ? body.vision_accessibility
+                  : existing.visionAccessibility,
+              mobilityAccessibility:
+                body.mobility_accessibility !== undefined
+                  ? body.mobility_accessibility
+                  : existing.mobilityAccessibility,
               updatedAt: new Date(),
             })
             .where(eq(customers.customerId, customerId))

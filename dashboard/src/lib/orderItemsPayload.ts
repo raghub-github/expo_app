@@ -75,6 +75,101 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/** GatiCash / missed-offer checkout lines stored on billing_snapshot.checkoutAdjustments. */
+function checkoutAdjustmentLinesFromOrder(
+  snap: Record<string, unknown> | null,
+  checkoutMeta: Record<string, unknown> | null
+): OrderPricingLine[] {
+  const out: OrderPricingLine[] = [];
+  const adjRaw = snap?.checkoutAdjustments;
+  const adj =
+    adjRaw && typeof adjRaw === "object" ? (adjRaw as Record<string, unknown>) : null;
+
+  const pushFromFields = (fields: {
+    gatiCashApplied: number;
+    missedOfferDiscount: number;
+    missedOfferWalletAdd: number;
+    offerTitle?: string;
+  }) => {
+    const { gatiCashApplied, missedOfferDiscount, missedOfferWalletAdd, offerTitle } = fields;
+    if (gatiCashApplied > 0.005) {
+      out.push({
+        key: "gati_cash_applied",
+        label: "GatiCash wallet applied",
+        amount: round2(gatiCashApplied),
+        kind: "discount",
+      });
+    }
+    if (missedOfferDiscount > 0.005) {
+      out.push({
+        key: "missed_offer_discount",
+        label: offerTitle ? `${offerTitle} unlocked` : "Offer unlocked",
+        amount: round2(missedOfferDiscount),
+        kind: "discount",
+      });
+    }
+    if (missedOfferWalletAdd > 0.005) {
+      out.push({
+        key: "missed_offer_wallet_add",
+        label: "Add to GatiCash wallet (unlock offer)",
+        amount: round2(missedOfferWalletAdd),
+        kind: "charge",
+      });
+    }
+  };
+
+  if (adj) {
+    const customLines = Array.isArray(adj.lines) ? adj.lines : [];
+    if (customLines.length > 0) {
+      customLines.forEach((raw, i) => {
+        if (!raw || typeof raw !== "object") return;
+        const row = raw as Record<string, unknown>;
+        const signed = asNum(row.amount);
+        const amount = round2(Math.abs(signed));
+        if (amount <= 0.005) return;
+        const kindKey = String(row.kind ?? "");
+        const isDiscount =
+          signed < 0 ||
+          kindKey === "gati_cash_applied" ||
+          kindKey === "missed_offer_discount";
+        out.push({
+          key: `checkout_adj_${kindKey || i}`,
+          label: String(row.label ?? "Checkout adjustment").trim() || "Checkout adjustment",
+          amount,
+          kind: isDiscount ? "discount" : "charge",
+        });
+      });
+      return out;
+    }
+
+    const comp =
+      adj.missedOfferCompensation && typeof adj.missedOfferCompensation === "object"
+        ? (adj.missedOfferCompensation as Record<string, unknown>)
+        : null;
+    pushFromFields({
+      gatiCashApplied: asNum(adj.gatiCashApplied),
+      missedOfferDiscount: asNum(adj.missedOfferDiscount),
+      missedOfferWalletAdd: asNum(adj.missedOfferWalletAdd),
+      offerTitle: comp?.offerTitle != null ? String(comp.offerTitle) : undefined,
+    });
+    if (out.length > 0) return out;
+  }
+
+  if (!checkoutMeta) return out;
+
+  const compRaw = checkoutMeta.missedOfferCompensation;
+  const comp =
+    compRaw && typeof compRaw === "object" ? (compRaw as Record<string, unknown>) : null;
+  pushFromFields({
+    gatiCashApplied: asNum(checkoutMeta.gatiCashAmount),
+    missedOfferDiscount: asNum(comp?.discountInr),
+    missedOfferWalletAdd: asNum(comp?.amountInr),
+    offerTitle:
+      comp?.offerTitle != null ? String(comp.offerTitle).trim() : undefined,
+  });
+  return out;
+}
+
 function packagingTaxFromBilling(snap: Record<string, unknown> | null): number {
   if (!snap) return 0;
   const gst = snap.gst_components;
@@ -164,6 +259,14 @@ export function buildOrderPricingSummary(
     }
   }
 
+  const checkoutMeta =
+    core.checkout_metadata && typeof core.checkout_metadata === "object"
+      ? (core.checkout_metadata as Record<string, unknown>)
+      : null;
+  for (const adjLine of checkoutAdjustmentLinesFromOrder(snap, checkoutMeta)) {
+    lines.push(adjLine);
+  }
+
   const totalOrderAmount = round2(
     asNum(core.grand_total) ||
       asNum(snap.grand_total) ||
@@ -183,7 +286,7 @@ export function buildOrderPricingSummary(
   if (Math.abs(diff) >= 0.01) {
     lines.push({
       key: "adjustment",
-      label: diff > 0 ? "Additional charges" : "Adjustment",
+      label: diff > 0 ? "Other adjustment" : "Credit adjustment",
       amount: Math.abs(diff),
       kind: diff > 0 ? "charge" : "discount",
     });

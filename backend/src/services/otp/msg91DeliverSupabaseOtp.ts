@@ -1,12 +1,15 @@
 /**
- * Deliver OTP via MSG91 (Flow API / DLT or v2 fallback).
- * Same behavior as partnersite `POST /api/auth/send-sms`.
+ * Deliver OTP via MSG91.
+ *
+ * India OTP must use MSG91 Send OTP APIs (v5/otp or sendotp.php), NOT the Flow/transactional
+ * template API — Flow can return HTTP 200 without delivering or appearing in OTP logs.
  */
 
 import type { Env } from "../../config/env.js";
 
 const MSG91_FLOW_URL = "https://control.msg91.com/api/v5/flow/";
-const MSG91_LEGACY_SEND_OTP_URL = "https://control.msg91.com/api/sendotp.php";
+const MSG91_V5_OTP_URL = "https://control.msg91.com/api/v5/otp";
+const MSG91_LEGACY_SEND_OTP_URL = "https://api.msg91.com/api/sendotp.php";
 
 function normalizePhone(phone: string): string {
   const digits = phone.replace(/\D/g, "");
@@ -15,7 +18,72 @@ function normalizePhone(phone: string): string {
   return digits.length > 10 ? digits.slice(-10) : digits;
 }
 
+/** MSG91 dashboard IDs are hex-ish; skip obvious typos (e.g. "werty" in flow id). */
+function isPlausibleMsg91Id(id: string): boolean {
+  const s = id.trim();
+  if (s.length < 20) return false;
+  return /^[a-f0-9]+$/i.test(s);
+}
+
 type Msg91Attempt = { channel: string; ok: boolean; error?: string; detail?: string };
+
+function parseMsg91Json(raw: string): { type?: string; message?: string; request_id?: string } {
+  if (!raw.trim()) return {};
+  try {
+    return JSON.parse(raw) as { type?: string; message?: string; request_id?: string };
+  } catch {
+    return {};
+  }
+}
+
+function isMsg91Success(res: Response, data: { type?: string }): boolean {
+  return res.ok && data.type === "success";
+}
+
+function logAttemptDev(attempt: Msg91Attempt): void {
+  if (process.env.NODE_ENV === "production") return;
+  // eslint-disable-next-line no-console
+  console.log(`[MSG91] ${attempt.channel}: ${attempt.ok ? "OK" : "FAIL"}`, attempt.detail ?? attempt.error ?? "");
+}
+
+async function sendViaV5OtpApi(args: {
+  authKey: string;
+  mobileWithCountry: string;
+  otp: string;
+  otpTemplateId: string;
+  otpExpiryMin: number;
+}): Promise<Msg91Attempt> {
+  const url = new URL(MSG91_V5_OTP_URL);
+  url.searchParams.set("template_id", args.otpTemplateId);
+  url.searchParams.set("mobile", args.mobileWithCountry);
+  url.searchParams.set("authkey", args.authKey);
+
+  const res = await fetch(url.toString(), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      authkey: args.authKey,
+    },
+    body: JSON.stringify({
+      otp: args.otp,
+      otp_expiry: args.otpExpiryMin,
+      otp_length: 6,
+    }),
+  });
+  const raw = await res.text();
+  const data = parseMsg91Json(raw);
+  const channel = "v5_otp";
+
+  if (!isMsg91Success(res, data)) {
+    return {
+      channel,
+      ok: false,
+      error: data.message || res.statusText || "MSG91 v5 OTP error",
+      detail: raw.slice(0, 500),
+    };
+  }
+  return { channel, ok: true, detail: data.request_id ?? data.message ?? raw.slice(0, 200) };
+}
 
 async function sendViaFlowApi(args: {
   authKey: string;
@@ -23,26 +91,22 @@ async function sendViaFlowApi(args: {
   mobileWithCountry: string;
   otp: string;
   otpVarName: string;
-  templateId?: string;
-  flowId?: string;
+  flowId: string;
 }): Promise<Msg91Attempt> {
-  const { authKey, sender, mobileWithCountry, otp, otpVarName, templateId, flowId } = args;
+  const { authKey, sender, mobileWithCountry, otp, otpVarName, flowId } = args;
   const recipient: Record<string, string> = { mobiles: mobileWithCountry };
   recipient[otpVarName] = otp;
   recipient.OTP = otp;
   recipient.Code = otp;
   if (otpVarName !== "VAR1") recipient.VAR1 = otp;
 
-  const payload: Record<string, unknown> = {
+  const payload = {
     sender,
     short_url: "0",
+    flow_id: flowId,
     recipients: [recipient],
   };
-  const channel = templateId ? "flow_template" : "flow_id";
-  // Match partnersite: prefer template_id when both are configured (DLT-approved template).
-  if (templateId) payload.template_id = templateId;
-  else if (flowId) payload.flow_id = flowId;
-  else return { channel, ok: false, error: "No template_id or flow_id" };
+  const channel = "flow_id";
 
   const res = await fetch(MSG91_FLOW_URL, {
     method: "POST",
@@ -53,15 +117,9 @@ async function sendViaFlowApi(args: {
     body: JSON.stringify(payload),
   });
   const raw = await res.text();
-  let data: { type?: string; message?: string; request_id?: string } = {};
-  try {
-    data = raw ? (JSON.parse(raw) as typeof data) : {};
-  } catch {
-    if (!res.ok) {
-      return { channel, ok: false, error: raw || `HTTP ${res.status}`, detail: raw };
-    }
-  }
-  if (!res.ok || data.type === "error") {
+  const data = parseMsg91Json(raw);
+
+  if (!isMsg91Success(res, data)) {
     return {
       channel,
       ok: false,
@@ -98,23 +156,18 @@ async function sendViaV2Sms(args: {
     }),
   });
   const raw = await res.text();
-  let data: { type?: string; message?: string } = {};
-  try {
-    data = raw ? (JSON.parse(raw) as typeof data) : {};
-  } catch {
-    if (!res.ok) {
-      return { channel: "v2_sendsms", ok: false, error: raw || `HTTP ${res.status}`, detail: raw };
-    }
-  }
-  if (!res.ok || data.type === "error") {
+  const data = parseMsg91Json(raw);
+  const channel = "v2_sendsms";
+
+  if (!isMsg91Success(res, data)) {
     return {
-      channel: "v2_sendsms",
+      channel,
       ok: false,
       error: data.message || res.statusText || "MSG91 sendsms error",
       detail: raw.slice(0, 500),
     };
   }
-  return { channel: "v2_sendsms", ok: true, detail: data.message ?? raw.slice(0, 200) };
+  return { channel, ok: true, detail: data.message ?? raw.slice(0, 200) };
 }
 
 async function sendViaLegacyOtpApi(args: {
@@ -122,31 +175,24 @@ async function sendViaLegacyOtpApi(args: {
   sender: string;
   mobileWithCountry: string;
   otp: string;
-  otpExpirySec: number;
+  otpExpiryMin: number;
 }): Promise<Msg91Attempt> {
   const params = new URLSearchParams({
     authkey: args.authKey,
     mobile: args.mobileWithCountry,
     otp: args.otp,
-    otp_expiry: String(args.otpExpirySec),
+    otp_length: "6",
+    otp_expiry: String(Math.max(1, args.otpExpiryMin)),
     ...(args.sender ? { sender: args.sender } : {}),
   });
   const res = await fetch(`${MSG91_LEGACY_SEND_OTP_URL}?${params.toString()}`, { method: "GET" });
   const raw = await res.text();
-  let data: { type?: string; message?: string } = {};
-  try {
-    data = JSON.parse(raw) as typeof data;
-  } catch {
-    return {
-      channel: "legacy_sendotp",
-      ok: false,
-      error: raw?.trim() ? raw.slice(0, 200) : `Non-JSON response (HTTP ${res.status})`,
-      detail: raw.slice(0, 500),
-    };
-  }
+  const data = parseMsg91Json(raw);
+  const channel = "legacy_sendotp";
+
   if (!res.ok || data.type === "error") {
     return {
-      channel: "legacy_sendotp",
+      channel,
       ok: false,
       error: data.message ?? "MSG91 sendotp error",
       detail: raw.slice(0, 500),
@@ -154,20 +200,20 @@ async function sendViaLegacyOtpApi(args: {
   }
   if (data.type !== "success") {
     return {
-      channel: "legacy_sendotp",
+      channel,
       ok: false,
       error: data.message ?? `Unexpected MSG91 response type: ${data.type ?? "unknown"}`,
       detail: raw.slice(0, 500),
     };
   }
-  return { channel: "legacy_sendotp", ok: true, detail: data.message ?? raw.slice(0, 200) };
+  return { channel, ok: true, detail: data.message ?? raw.slice(0, 200) };
 }
 
 export async function deliverSupabaseOtpViaMsg91(
   env: Env,
   phoneRaw: string,
   otp: string,
-  options?: { preferLegacyOtpApi?: boolean }
+  _options?: { preferLegacyOtpApi?: boolean },
 ): Promise<{ ok: true; channel: string } | { ok: false; error: string; attempts?: Msg91Attempt[] }> {
   const authKey = env.MSG91_AUTH_KEY?.trim();
   if (!authKey) {
@@ -179,48 +225,50 @@ export async function deliverSupabaseOtpViaMsg91(
     return { ok: false, error: "Invalid phone for SMS" };
   }
 
-  const templateId = env.MSG91_TEMPLATE_ID?.trim();
-  const flowId = env.MSG91_FLOW_ID?.trim();
+  const otpTemplateId = env.MSG91_TEMPLATE_ID?.trim();
+  const flowIdRaw = env.MSG91_FLOW_ID?.trim();
+  const flowId = flowIdRaw && isPlausibleMsg91Id(flowIdRaw) ? flowIdRaw : undefined;
   const otpVarName = env.MSG91_OTP_VAR_NAME?.trim() || "OTP";
   const sender = env.MSG91_SENDER_ID?.trim() || "GMMSMS";
   const mobileWithCountry = mobile.length === 10 ? `91${mobile}` : mobile.startsWith("91") ? mobile : `91${mobile}`;
+  const otpExpiryMin = Math.max(1, Math.ceil((env.MSG91_OTP_EXPIRY_SEC ?? 300) / 60));
   const attempts: Msg91Attempt[] = [];
 
-  const tryLegacyFirst = async (): Promise<{ ok: true; channel: string } | null> => {
+  const tryChannel = async (
+    attempt: Msg91Attempt,
+  ): Promise<{ ok: true; channel: string } | null> => {
+    attempts.push(attempt);
+    logAttemptDev(attempt);
+    return attempt.ok ? { ok: true, channel: attempt.channel } : null;
+  };
+
+  try {
+    // 1) MSG91 Send OTP v5 — correct product for OTP (uses MSG91_TEMPLATE_ID from OTP dashboard).
+    if (otpTemplateId && isPlausibleMsg91Id(otpTemplateId)) {
+      const v5 = await sendViaV5OtpApi({
+        authKey,
+        mobileWithCountry,
+        otp,
+        otpTemplateId,
+        otpExpiryMin,
+      });
+      const ok = await tryChannel(v5);
+      if (ok) return ok;
+    }
+
+    // 2) Legacy sendotp.php — accepts our server-generated 6-digit OTP.
     const legacy = await sendViaLegacyOtpApi({
       authKey,
       sender,
       mobileWithCountry,
       otp,
-      otpExpirySec: env.MSG91_OTP_EXPIRY_SEC ?? 300,
+      otpExpiryMin,
     });
-    attempts.push(legacy);
-    return legacy.ok ? { ok: true, channel: legacy.channel } : null;
-  };
+    const legacyOk = await tryChannel(legacy);
+    if (legacyOk) return legacyOk;
 
-  try {
-    if (options?.preferLegacyOtpApi) {
-      const legacyOk = await tryLegacyFirst();
-      if (legacyOk) return legacyOk;
-    }
-
-    // Flow API (DLT) — same as partnersite supabase-send-sms hook.
-    if (templateId) {
-      const primary = await sendViaFlowApi({
-        authKey,
-        sender,
-        mobileWithCountry,
-        otp,
-        otpVarName,
-        templateId,
-      });
-      attempts.push(primary);
-      if (primary.ok) {
-        return { ok: true, channel: primary.channel };
-      }
-    }
-
-    if (flowId && flowId !== templateId) {
+    // 3) Flow API — transactional only; use flow_id (NOT OTP template_id).
+    if (flowId) {
       const flowAttempt = await sendViaFlowApi({
         authKey,
         sender,
@@ -229,27 +277,11 @@ export async function deliverSupabaseOtpViaMsg91(
         otpVarName,
         flowId,
       });
-      attempts.push(flowAttempt);
-      if (flowAttempt.ok) {
-        return { ok: true, channel: flowAttempt.channel };
-      }
+      const flowOk = await tryChannel(flowAttempt);
+      if (flowOk) return flowOk;
     }
 
-    if (flowId && !templateId) {
-      const flowAttempt = await sendViaFlowApi({
-        authKey,
-        sender,
-        mobileWithCountry,
-        otp,
-        otpVarName,
-        flowId,
-      });
-      attempts.push(flowAttempt);
-      if (flowAttempt.ok) {
-        return { ok: true, channel: flowAttempt.channel };
-      }
-    }
-
+    // 4) v2 transactional SMS fallback.
     const v2 = await sendViaV2Sms({
       authKey,
       sender,
@@ -257,13 +289,8 @@ export async function deliverSupabaseOtpViaMsg91(
       otp,
       templateContent: process.env.MSG91_OTP_TEMPLATE_CONTENT,
     });
-    attempts.push(v2);
-    if (v2.ok) {
-      return { ok: true, channel: v2.channel };
-    }
-
-    const legacyOk = await tryLegacyFirst();
-    if (legacyOk) return legacyOk;
+    const v2Ok = await tryChannel(v2);
+    if (v2Ok) return v2Ok;
 
     const lastError =
       attempts.map((a) => `${a.channel}: ${a.error ?? "unknown"}`).join("; ") || "All MSG91 channels failed";

@@ -4,12 +4,15 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
+import { checkoutRouterBack } from "@/lib/safeRouterBack";
+import { useCartStore } from "@/store/cartStore";
 
 const HEADER_HEIGHT = 48;
 const TITLE_DARK = "#1A1A1A";
 
 function CartHeader({ title = "Cart" }: { title?: string }) {
   const router = useRouter();
+  const merchantId = useCartStore((s) => s.merchantId);
   const insets = useSafeAreaInsets();
   const paddingTop = Platform.OS === "ios" ? insets.top : Math.max(insets.top, 8);
   return (
@@ -20,7 +23,11 @@ function CartHeader({ title = "Cart" }: { title?: string }) {
         pointerEvents="none"
       />
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={12}>
+        <TouchableOpacity
+          onPress={() => checkoutRouterBack(router, merchantId)}
+          style={styles.backBtn}
+          hitSlop={12}
+        >
           <Ionicons name="arrow-back" size={24} color={TITLE_DARK} />
         </TouchableOpacity>
         <Text style={styles.title}>{title}</Text>
@@ -53,11 +60,7 @@ export default function CheckoutLayout() {
   return (
     <>
       <AndroidBackHandler />
-      <Stack
-      screenOptions={{
-        headerStatusBarHeight: 0,
-      }}
-    >
+      <Stack>
       <Stack.Screen
         name="index"
         options={{

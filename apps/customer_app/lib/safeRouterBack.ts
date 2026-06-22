@@ -2,12 +2,18 @@ import type { Router } from "expo-router";
 
 export const ORDERS_TAB_FALLBACK = "/(tabs)/orders" as const;
 export const HOME_TAB_FALLBACK = "/(tabs)/" as const;
+export const PROFILE_TAB_FALLBACK = "/(tabs)/profile" as const;
+export const FOOD_HOME_FALLBACK = "/home" as const;
 export const RIDE_HOME_FALLBACK = "/home/service/ride" as const;
 
 export type SafeRouterBackFallback =
   | typeof ORDERS_TAB_FALLBACK
   | typeof HOME_TAB_FALLBACK
-  | typeof RIDE_HOME_FALLBACK;
+  | typeof PROFILE_TAB_FALLBACK
+  | typeof FOOD_HOME_FALLBACK
+  | typeof RIDE_HOME_FALLBACK
+  | "/(auth)/login"
+  | "/profile/legal";
 
 /** Screens opened via router.replace often have no stack entry — avoid GO_BACK errors. */
 export function safeRouterBack(
@@ -19,6 +25,28 @@ export function safeRouterBack(
     return;
   }
   router.replace(fallback);
+}
+
+/** Checkout is often opened via replace (payment retry) — fall back to merchant or home tab. */
+export function checkoutRouterBack(
+  router: Pick<Router, "back" | "canGoBack" | "replace">,
+  merchantId?: string | null
+): void {
+  if (typeof router.canGoBack === "function" && router.canGoBack()) {
+    router.back();
+    return;
+  }
+  const id = merchantId?.trim();
+  if (id) {
+    router.replace(`/home/merchant/${id}` as never);
+    return;
+  }
+  router.replace(HOME_TAB_FALLBACK);
+}
+
+/** Food listing at /home — return to main tabs (avoid GO_BACK when stack was reset). */
+export function foodHomeRouterBack(router: Pick<Router, "replace">): void {
+  router.replace(HOME_TAB_FALLBACK);
 }
 
 export function resolveAndroidBackFallback(segments: readonly string[]): SafeRouterBackFallback | null {
@@ -36,6 +64,22 @@ export function resolveAndroidBackFallback(segments: readonly string[]): SafeRou
     return null;
   }
   if (root === "checkout") {
+    return HOME_TAB_FALLBACK;
+  }
+  if (root === "home") {
+    const section = segments[1];
+    if (section === "merchant" || section === "category" || section === "shop") {
+      return FOOD_HOME_FALLBACK;
+    }
+    if (section === "service") {
+      return FOOD_HOME_FALLBACK;
+    }
+    return HOME_TAB_FALLBACK;
+  }
+  if (root === "wallet") {
+    return PROFILE_TAB_FALLBACK;
+  }
+  if (root === "search") {
     return HOME_TAB_FALLBACK;
   }
   return null;

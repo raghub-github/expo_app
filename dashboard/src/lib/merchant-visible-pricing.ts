@@ -225,6 +225,31 @@ export async function loadSnapshotsByOrderTexts(
   return out;
 }
 
+/** Load commission snapshots when numeric orders_core.id is already known (skips redundant lookup). */
+export async function loadCommissionSnapshotsForCoreId(
+  db: SupabaseClient,
+  coreOrderId: number,
+  storeId?: number | null
+): Promise<ItemCommissionSnapshot[]> {
+  if (!Number.isFinite(coreOrderId) || coreOrderId <= 0) return [];
+
+  let snapQ = db
+    .from('order_item_commission_snapshots')
+    .select('order_item_id, merchant_base_price, customer_visible_price')
+    .eq('order_id', coreOrderId);
+  if (storeId != null && storeId > 0) snapQ = snapQ.eq('store_id', storeId);
+  const { data: snapRows } = await snapQ;
+  if (!snapRows?.length) return [];
+
+  return (snapRows as Array<Record<string, unknown>>).map((raw) => ({
+    orderItemId: Number(raw.order_item_id),
+    itemName: '',
+    quantity: 1,
+    merchantBasePerUnit: num(raw.merchant_base_price),
+    customerVisiblePerUnit: num(raw.customer_visible_price),
+  }));
+}
+
 /** Per-line merchant base unit from snapshot by order_item_id. */
 export function merchantBaseUnitForItem(
   orderItemId: number,

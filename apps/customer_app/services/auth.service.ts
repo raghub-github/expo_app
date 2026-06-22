@@ -8,6 +8,7 @@
 
 import type { Session } from "@gatimitra/contracts";
 import api from "./api";
+import { getConfig } from "@/config/env";
 import { getSupabaseAuth, getSupabaseOtpEnvDebugInfo } from "@/lib/supabaseClient";
 import { getItem, setItem, removeItem } from "@/utils/storage";
 import { STORAGE_KEYS } from "@/constants";
@@ -25,9 +26,42 @@ export type VerifyOtpPayload = {
 let _lastBackendOtpRequestId: string | null = null;
 
 function shouldSendPhoneOtpViaBackend(): boolean {
-  const flag = (process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND ?? "").trim().toLowerCase();
-  if (flag === "true" || flag === "1" || flag === "yes") return true;
+  const { phoneOtpUseBackendOnly } = getConfig();
+  if (phoneOtpUseBackendOnly) return true;
   return getSupabaseAuth() == null;
+}
+
+function isSupabaseSmsDeliveryError(message: string): boolean {
+  return /hook|sms|provider|phone|otp|twilio|msg91|send|deliver|rate.?limit|too many/i.test(message);
+}
+
+async function sendOtpViaBackend(payload: SendOtpPayload): Promise<void> {
+  try {
+    const { data, status } = await api.post<{ requestId?: string; message?: string; error?: string }>(
+      `${AUTH_PREFIX}/otp/request`,
+      payload,
+      { timeout: 15000 },
+    );
+    const rid = typeof data?.requestId === "string" ? data.requestId : "";
+    if (!rid) {
+      throw new Error("Server did not return an OTP request id.");
+    }
+    _lastBackendOtpRequestId = rid;
+    if (__DEV__) {
+      // eslint-disable-next-line no-console
+      console.log("[CustomerAuth] sendOtp: backend OK", { requestId: rid, status });
+    }
+  } catch (e: unknown) {
+    const ax = e as {
+      message?: string;
+      response?: { data?: { message?: string; error?: string }; status?: number };
+    };
+    const serverMsg =
+      ax?.response?.data?.message ??
+      (typeof ax?.response?.data?.error === "string" ? ax.response.data.error : null);
+    if (serverMsg) throw new Error(serverMsg);
+    throw e instanceof Error ? e : new Error("Unable to send OTP. Please try again.");
+  }
 }
 
 export const authService = {
@@ -44,36 +78,44 @@ export const authService = {
     }
 
     if (viaBackend) {
-      const { data } = await api.post<{ requestId: string }>(
-        `${AUTH_PREFIX}/otp/request`,
-        payload,
-        { timeout: 15000 },
-      );
-      const rid = typeof data?.requestId === "string" ? data.requestId : "";
-      if (!rid) {
-        throw new Error("Server did not return an OTP request id.");
-      }
-      _lastBackendOtpRequestId = rid;
+      await sendOtpViaBackend(payload);
       return;
     }
 
     const supabase = getSupabaseAuth();
     if (!supabase) {
-      throw new Error(
-        "Supabase is not configured. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.",
-      );
+      await sendOtpViaBackend(payload);
+      return;
     }
 
     const { error } = await supabase.auth.signInWithOtp({
       phone: payload.phoneE164,
       options: { channel: "sms", shouldCreateUser: true },
     });
+
+    if (__DEV__ && error) {
+      // eslint-disable-next-line no-console
+      console.warn("[CustomerAuth] sendOtp: Supabase error", {
+        message: error.message,
+        code: (error as { code?: string }).code,
+        status: (error as { status?: number }).status,
+      });
+    }
+
     if (error) {
-      const hint =
-        /hook|sms|provider|phone/i.test(error.message || "")
-          ? " Check Supabase Phone Auth, Send SMS hook, and backend MSG91 config."
-          : "";
-      throw new Error((error.message || "Could not send OTP via Supabase.") + hint);
+      const errMsg = error.message || "Could not send OTP via Supabase.";
+      if (isSupabaseSmsDeliveryError(errMsg)) {
+        if (__DEV__) {
+          // eslint-disable-next-line no-console
+          console.warn("[CustomerAuth] sendOtp: falling back to backend MSG91");
+        }
+        await sendOtpViaBackend(payload);
+        return;
+      }
+      const hint = isSupabaseSmsDeliveryError(errMsg)
+        ? " Check Supabase Phone Auth, Send SMS hook, and backend MSG91 config."
+        : "";
+      throw new Error(errMsg + hint);
     }
   },
 

@@ -3,6 +3,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { CustomerWeatherContext } from "@/services/weather.service";
+import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
@@ -30,7 +31,6 @@ type Props = {
   weather: CustomerWeatherContext | null | undefined;
   notificationBadgeCount?: number;
   onLocationPress: () => void;
-  onSearchPress: () => void;
   onNotificationPress: () => void;
   onWeatherPress: () => void;
 };
@@ -111,7 +111,6 @@ export function HomeLocationHeader({
   locationSecondary,
   notificationBadgeCount,
   onLocationPress,
-  onSearchPress,
   onNotificationPress,
 }: Pick<
   Props,
@@ -119,7 +118,6 @@ export function HomeLocationHeader({
   | "locationSecondary"
   | "notificationBadgeCount"
   | "onLocationPress"
-  | "onSearchPress"
   | "onNotificationPress"
 >) {
   const showBadge = notificationBadgeCount != null && notificationBadgeCount > 0;
@@ -149,21 +147,14 @@ export function HomeLocationHeader({
         </TouchableOpacity>
 
         <View style={styles.headerIcons}>
-          <TouchableOpacity
-            style={styles.iconBtn}
-            activeOpacity={0.75}
-            onPress={onSearchPress}
-            accessibilityLabel="Search"
-          >
-            <Ionicons name="search-outline" size={20} color={TITLE_DARK} />
-          </TouchableOpacity>
+          <GatiCashHeaderPill />
           <TouchableOpacity
             style={styles.iconBtn}
             activeOpacity={0.75}
             onPress={onNotificationPress}
             accessibilityLabel="Notifications"
           >
-            <Ionicons name="notifications-outline" size={20} color={TITLE_DARK} />
+            <Ionicons name="notifications-outline" size={18} color={TITLE_DARK} />
             {showBadge ? (
               <View style={styles.badge}>
                 <Text style={styles.badgeText}>
@@ -190,7 +181,8 @@ export function HomeWeatherBanner({
   if (!showWeather || !headline || !promo) return null;
 
   return (
-    <View style={styles.weatherWrap}>
+    <View style={styles.weatherShell}>
+      <View style={styles.weatherWrap}>
       <TouchableOpacity
         style={styles.weatherBanner}
         activeOpacity={0.88}
@@ -212,6 +204,7 @@ export function HomeWeatherBanner({
           <Ionicons name="chevron-forward" size={14} color="#9CA3AF" />
         </View>
       </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -222,7 +215,6 @@ export function HomeScreenHeader({
   weather,
   notificationBadgeCount,
   onLocationPress,
-  onSearchPress,
   onNotificationPress,
   onWeatherPress,
 }: Props) {
@@ -233,7 +225,6 @@ export function HomeScreenHeader({
         locationSecondary={locationSecondary}
         notificationBadgeCount={notificationBadgeCount}
         onLocationPress={onLocationPress}
-        onSearchPress={onSearchPress}
         onNotificationPress={onNotificationPress}
       />
       <HomeWeatherBanner weather={weather} onWeatherPress={onWeatherPress} />
@@ -250,14 +241,17 @@ const styles = StyleSheet.create({
     width: "100%",
     backgroundColor: "#FFFFFF",
     paddingHorizontal: PAD,
-    paddingBottom: 2,
+    paddingBottom: 8,
     zIndex: 10,
+  },
+  weatherShell: {
+    width: "100%",
+    backgroundColor: "#FFFFFF",
   },
   weatherWrap: {
     width: "100%",
-    backgroundColor: "#FFFFFF",
     paddingHorizontal: PAD,
-    paddingTop: 10,
+    paddingTop: 2,
     paddingBottom: 10,
     alignItems: "flex-start",
   },
@@ -328,18 +322,22 @@ const styles = StyleSheet.create({
   headerIcons: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 6,
     flexShrink: 0,
   },
   iconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 11,
+    width: 36,
+    height: 36,
+    borderRadius: 10,
     backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: ICON_BORDER,
+    borderWidth: 0,
     alignItems: "center",
     justifyContent: "center",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 3,
+    elevation: 2,
   },
   badge: {
     position: "absolute",

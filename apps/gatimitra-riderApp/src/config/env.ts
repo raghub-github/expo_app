@@ -61,11 +61,13 @@ export function getRiderAppConfig(): RiderAppConfig {
   const phoneOtpBackendRaw =
     asNonEmptyString(process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND) ??
     asNonEmptyString(extra.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND);
-  const phoneOtpUseBackendOnly =
-    phoneOtpBackendRaw === "1" ||
-    phoneOtpBackendRaw?.toLowerCase() === "true" ||
-    phoneOtpBackendRaw?.toLowerCase() === "yes" ||
-    phoneOtpBackendRaw?.toLowerCase() === "on";
+  const phoneOtpUseBackendOnly = (() => {
+    const flag = phoneOtpBackendRaw?.toLowerCase();
+    if (flag === "1" || flag === "true" || flag === "yes" || flag === "on") return true;
+    if (flag === "false" || flag === "0" || flag === "no" || flag === "off") return false;
+    // Dev default: Supabase Send SMS hook needs a public URL; backend MSG91 works on LAN.
+    return __DEV__;
+  })();
   const fromExtra = asNonEmptyString(extra.API_BASE_URL);
 
   // Production safety net — see merchant_app/config/env.ts for rationale.

@@ -11,6 +11,13 @@ const TAB_ACTIVE = GatiMitraColors.splashMint;
 const TAB_INACTIVE = "#94A3B8";
 const ICON_SIZE = 23;
 
+/** Bar padding + tab minHeight + bar padding — keep in sync with `styles.bar` / `styles.tab`. */
+export const CUSTOMER_TAB_BAR_CONTENT_HEIGHT = 8 + 48 + 4;
+
+export function customerTabBarOffset(insetsBottom: number): number {
+  return CUSTOMER_TAB_BAR_CONTENT_HEIGHT + Math.max(insetsBottom, 0);
+}
+
 type IconFamily = "ionicons" | "material";
 
 type TabConfig = {

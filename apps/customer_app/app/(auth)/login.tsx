@@ -36,6 +36,22 @@ const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
 
 const REMEMBERED_PHONE_KEY = "gatimitra_remembered_phone";
 
+/** Indian mobile: 98765-43210 (5 digits, hyphen, 5 digits). */
+function formatIndianPhoneDisplay(digits: string): string {
+  if (digits.length <= 5) return digits;
+  return `${digits.slice(0, 5)}-${digits.slice(5)}`;
+}
+
+function formatPhoneDisplay(digits: string, countryCode: string): string {
+  if (countryCode === "IN") return formatIndianPhoneDisplay(digits);
+  return digits;
+}
+
+function phoneDisplayMaxLength(countryCode: string, maxDigits: number): number {
+  if (countryCode === "IN" && maxDigits === 10) return 11;
+  return maxDigits;
+}
+
 // Premium palette – white → mint, soft shadows
 const BG_SCREEN = "#F0F4F3";
 const CARD_GRADIENT_TOP = "#FFFFFF";
@@ -187,13 +203,29 @@ export default function LoginScreen() {
     });
   }, []);
 
+  const phoneDigits = phone.replace(/\D/g, "");
+  const requiredPhoneLen = selectedCountry.code === "IN" ? 10 : 7;
+  const maxPhoneLen = selectedCountry.code === "IN" ? 10 : 15;
+  const phoneDisplay = formatPhoneDisplay(phoneDigits, selectedCountry.code);
+  const phoneInputMaxLen = phoneDisplayMaxLength(selectedCountry.code, maxPhoneLen);
+  const isPhoneValid =
+    selectedCountry.code === "IN"
+      ? phoneDigits.length === 10
+      : phoneDigits.length >= requiredPhoneLen;
+  const canSendOtp = isPhoneValid && !loading;
+
+  const handlePhoneChange = (raw: string) => {
+    const digits = raw.replace(/\D/g, "").slice(0, maxPhoneLen);
+    setPhone(digits);
+    if (error) setError("");
+  };
+
   const handleSendOtp = async () => {
-    const digits = phone.replace(/\D/g, "");
-    const minLen = selectedCountry.code === "IN" ? 10 : 7;
-    if (digits.length < minLen) {
-      setError(`Enter a valid mobile number (min ${minLen} digits)`);
+    if (!isPhoneValid) {
+      setError(`Enter a valid ${requiredPhoneLen}-digit mobile number`);
       return;
     }
+    const digits = phoneDigits;
     setError("");
     setLoading(true);
     try {
@@ -206,12 +238,15 @@ export default function LoginScreen() {
       });
     } catch (e: unknown) {
       const ax = e as { response?: { data?: { message?: string }; status?: number }; message?: string; code?: string };
-      const msg = ax?.response?.data?.message ?? null;
+      const rawMessage = typeof ax?.message === "string" ? ax.message.trim() : "";
       const isNetworkError =
         !ax?.response &&
         (ax?.code === "ECONNABORTED" ||
-          ax?.message === "Network Error" ||
-          (typeof ax?.message === "string" && ax.message.toLowerCase().includes("network")));
+          rawMessage === "Network Error" ||
+          rawMessage.toLowerCase().includes("network"));
+      const msg =
+        ax?.response?.data?.message ??
+        (rawMessage && !isNetworkError ? rawMessage : null);
       setError(
         msg ||
           (isNetworkError
@@ -267,11 +302,24 @@ export default function LoginScreen() {
             <Text style={styles.subtitle}>Enter your mobile number to get OTP</Text>
 
             <View style={styles.fieldWrap}>
-              <Text style={styles.label}>Mobile number</Text>
+              <View style={styles.labelRow}>
+                <Text style={styles.label}>Mobile number</Text>
+                {phoneDigits.length > 0 ? (
+                  <Text
+                    style={[
+                      styles.digitCounter,
+                      isPhoneValid ? styles.digitCounterValid : undefined,
+                    ]}
+                  >
+                    {phoneDigits.length}/{requiredPhoneLen}
+                  </Text>
+                ) : null}
+              </View>
               <View
                 style={[
                   styles.inputRow,
                   inputFocused && styles.inputRowFocused,
+                  isPhoneValid && styles.inputRowValid,
                 ]}
               >
                 <TouchableOpacity
@@ -282,17 +330,23 @@ export default function LoginScreen() {
                 >
                   <Text style={styles.flagEmoji}>{selectedCountry.flag}</Text>
                   <Text style={styles.countryCode}>{selectedCountry.dialCode}</Text>
-                  <Ionicons name="chevron-down" size={18} color={TEXT_GRAY} />
+                  <Ionicons name="chevron-down" size={16} color={TEXT_GRAY} />
                 </TouchableOpacity>
                 <View style={styles.inputDivider} />
                 <TextInput
-                  style={[styles.input, styles.inputNoOutline]}
-                  placeholder="Enter mobile number"
+                  style={[
+                    styles.input,
+                    styles.inputNoOutline,
+                    phoneDigits.length > 0 && styles.inputFilled,
+                  ]}
+                  placeholder={
+                    selectedCountry.code === "IN" ? "98765-43210" : "Enter mobile number"
+                  }
                   placeholderTextColor={PLACEHOLDER_GRAY}
                   keyboardType="phone-pad"
-                  maxLength={15}
-                  value={phone}
-                  onChangeText={(t) => setPhone(t.replace(/\D/g, ""))}
+                  maxLength={phoneInputMaxLen}
+                  value={phoneDisplay}
+                  onChangeText={handlePhoneChange}
                   onFocus={() => setInputFocused(true)}
                   onBlur={() => setInputFocused(false)}
                   editable={!loading}
@@ -314,12 +368,12 @@ export default function LoginScreen() {
 
             <TouchableOpacity
               onPress={handleSendOtp}
-              disabled={loading}
-              activeOpacity={0.9}
-              style={styles.buttonWrap}
+              disabled={!canSendOtp}
+              activeOpacity={canSendOtp ? 0.9 : 1}
+              style={[styles.buttonWrap, !canSendOtp && styles.buttonWrapDisabled]}
             >
               <LinearGradient
-                colors={[GREEN_PRIMARY, GREEN_LIGHT]}
+                colors={canSendOtp ? [GREEN_PRIMARY, GREEN_LIGHT] : ["#B0BEC5", "#CFD8DC"]}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
                 style={styles.button}
@@ -327,27 +381,31 @@ export default function LoginScreen() {
                 {loading ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <Text style={styles.buttonText}>Send OTP</Text>
+                  <Text style={[styles.buttonText, !canSendOtp && styles.buttonTextDisabled]}>
+                    Send OTP
+                  </Text>
                 )}
               </LinearGradient>
             </TouchableOpacity>
 
             <Text style={styles.footerLine1}>By continuing, you agree to our</Text>
-            <Text style={styles.footerLine2}>
-              <Text
-                style={styles.footerLink}
-                onPress={() => router.push("/profile/legal/terms-of-service" as never)}
+            <View style={styles.footerLinksRow}>
+              <Pressable
+                onPress={() => router.push("/legal/terms-of-service" as never)}
+                hitSlop={8}
+                accessibilityRole="link"
               >
-                Terms of Service
-              </Text>
-              {" & "}
-              <Text
-                style={styles.footerLink}
-                onPress={() => router.push("/profile/legal/privacy-policy" as never)}
+                <Text style={styles.footerLink}>Terms of Service</Text>
+              </Pressable>
+              <Text style={styles.footerLine2}> & </Text>
+              <Pressable
+                onPress={() => router.push("/legal/privacy-policy" as never)}
+                hitSlop={8}
+                accessibilityRole="link"
               >
-                Privacy Policy
-              </Text>
-            </Text>
+                <Text style={styles.footerLink}>Privacy Policy</Text>
+              </Pressable>
+            </View>
           </View>
         </View>
 
@@ -638,66 +696,98 @@ const styles = StyleSheet.create({
     width: "100%",
     marginBottom: 22,
   },
+  labelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
   label: {
     fontSize: 15,
-    fontWeight: "500",
+    fontWeight: "600",
     color: TITLE_DARK,
-    marginBottom: 10,
+  },
+  digitCounter: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: TEXT_GRAY,
+    fontVariant: ["tabular-nums"],
+  },
+  digitCounterValid: {
+    color: GREEN_PRIMARY,
   },
   inputRow: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFF",
-    borderWidth: 1,
-    borderColor: "#E8ECF0",
-    borderRadius: 14,
-    paddingLeft: 4,
-    minHeight: 54,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+    borderRadius: 16,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    minHeight: 58,
     overflow: "hidden",
     shadowColor: SHADOW_COLOR,
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 6,
-    elevation: 1,
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
   },
   inputRowFocused: {
-    borderColor: "#80CBC4",
-    borderWidth: 2,
-    shadowColor: "rgba(128, 203, 196, 0.35)",
-    shadowRadius: 10,
-    elevation: 2,
+    borderColor: "#4ADE80",
+    backgroundColor: "#FFFFFF",
+    shadowColor: "rgba(74, 222, 128, 0.25)",
+    shadowRadius: 12,
+    elevation: 3,
+  },
+  inputRowValid: {
+    borderColor: "#86EFAC",
+    backgroundColor: "#FFFFFF",
   },
   countryTrigger: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 5,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E8ECF0",
   },
   flagEmoji: {
-    fontSize: 22,
+    fontSize: 20,
   },
   countryCode: {
-    fontSize: 16,
-    fontWeight: "600",
+    fontSize: 15,
+    fontWeight: "700",
     color: TITLE_DARK,
+    fontVariant: ["tabular-nums"],
   },
   inputDivider: {
     width: 1,
-    height: 28,
-    backgroundColor: "#E8ECF0",
-    marginVertical: 6,
+    height: 32,
+    backgroundColor: "#E2E8F0",
+    marginHorizontal: 8,
   },
   input: {
     flex: 1,
     paddingVertical: 14,
-    paddingLeft: 16,
-    paddingRight: 20,
+    paddingLeft: 4,
+    paddingRight: 16,
     fontSize: 16,
+    fontWeight: "400",
     color: TITLE_DARK,
     minWidth: 0,
     borderWidth: 0,
     backgroundColor: "transparent",
+  },
+  inputFilled: {
+    fontSize: 18,
+    fontWeight: "700",
+    letterSpacing: 1.2,
+    color: "#0F172A",
+    fontVariant: ["tabular-nums"],
   },
   inputNoOutline: {
     ...(Platform.OS === "web" && {
@@ -745,6 +835,10 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 4,
   },
+  buttonWrapDisabled: {
+    shadowOpacity: 0,
+    elevation: 0,
+  },
   button: {
     width: "100%",
     paddingVertical: 16,
@@ -759,14 +853,23 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     letterSpacing: 0.3,
   },
+  buttonTextDisabled: {
+    color: "#F1F5F9",
+  },
   footerLine1: {
     marginTop: 28,
     fontSize: 12,
     color: FOOTER_GRAY,
     textAlign: "center",
   },
-  footerLine2: {
+  footerLinksRow: {
     marginTop: 4,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  footerLine2: {
     fontSize: 12,
     color: FOOTER_GRAY,
     textAlign: "center",
@@ -774,6 +877,9 @@ const styles = StyleSheet.create({
   footerLink: {
     color: LINK_GREEN,
     fontWeight: "600",
+    fontSize: 12,
+    textDecorationLine: "underline",
+    textDecorationColor: LINK_GREEN,
   },
   modalOverlay: {
     flex: 1,

@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import ws from "ws";
 import { getEnv } from "../config/env.js";
 
 let _supabase: SupabaseClient | null = null;
@@ -12,6 +13,8 @@ export function getSupabase(): SupabaseClient {
   const env = getEnv();
   _supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false },
+    // Node.js < 22 has no native WebSocket; required for Supabase client init.
+    realtime: { transport: ws as unknown as typeof WebSocket },
   });
   return _supabase;
 }

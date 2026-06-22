@@ -20,6 +20,8 @@ import {
   Share,
   Alert,
   InteractionManager,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   type View as RNView,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -29,13 +31,10 @@ import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-quer
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import Animated, {
-  runOnJS,
-  useAnimatedScrollHandler,
   useSharedValue,
   useAnimatedStyle,
   interpolate,
   Extrapolation,
-  createAnimatedComponent,
 } from "react-native-reanimated";
 import { merchantService, type MenuItem, type MerchantSummary, setMenuItemBookmark } from "@/services/merchant.service";
 import { previewEtaRange, formatEtaRange } from "@/lib/etaPreview";
@@ -106,8 +105,6 @@ import { useCheckoutOfferStore } from "@/store/checkoutOfferStore";
 
 /** Stable SectionList row id when the same dish appears in more than one section (RN keyExtractor is only (item, index)). */
 type MenuListRow = MenuItem & { listRowKey: string };
-
-const AnimatedSectionList = createAnimatedComponent(SectionList<MenuListRow>) as typeof SectionList;
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const HEADER_IMAGE_HEIGHT = 196;
@@ -1140,19 +1137,22 @@ export default function MerchantDetailScreen() {
   const setMerchantScrollY = useMerchantScrollStore((s) => s.setScrollY);
   useEffect(() => () => setMerchantScrollY(0), [setMerchantScrollY]);
 
-  // NEVER update React/Zustand state during scroll frame – causes freeze/crash.
-  // Only update scrollY (worklet) in onScroll; update store only when scroll ends.
-  const scrollHandler = useAnimatedScrollHandler({
-    onScroll: (e) => {
-      scrollY.value = e.contentOffset.y;
+  // Update shared scrollY on the JS thread — avoids Reanimated SectionList onScroll object crash on RN 0.81.
+  const handleMenuScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      scrollY.value = e.nativeEvent.contentOffset.y;
     },
-    onEndDrag: (e) => {
-      runOnJS(setMerchantScrollY)(e.contentOffset.y);
+    [scrollY]
+  );
+
+  const commitMenuScrollY = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const y = e.nativeEvent.contentOffset.y;
+      scrollY.value = y;
+      setMerchantScrollY(y);
     },
-    onMomentumScrollEnd: (e) => {
-      runOnJS(setMerchantScrollY)(e.contentOffset.y);
-    },
-  });
+    [scrollY, setMerchantScrollY]
+  );
 
   /** In-list filters only near top of menu — never peek under sticky header while scrolling up. */
   const inListFilterVisibilityStyle = useAnimatedStyle(() => {
@@ -1725,7 +1725,7 @@ export default function MerchantDetailScreen() {
         </Animated.View>
       </Animated.View>
 
-      <AnimatedSectionList
+      <SectionList
         ref={sectionListRef}
         style={styles.sectionList}
         sections={safeSections}
@@ -1735,7 +1735,9 @@ export default function MerchantDetailScreen() {
         extraData={highlightedMenuItemKey}
         stickySectionHeadersEnabled={Platform.OS === "ios"}
         contentInsetAdjustmentBehavior="never"
-        onScroll={scrollHandler}
+        onScroll={handleMenuScroll}
+        onScrollEndDrag={commitMenuScrollY}
+        onMomentumScrollEnd={commitMenuScrollY}
         scrollEventThrottle={16}
         scrollEnabled
         keyboardShouldPersistTaps="always"

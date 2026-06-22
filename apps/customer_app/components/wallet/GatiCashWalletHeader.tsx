@@ -1,0 +1,53 @@
+import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+
+const TEXT = "#111827";
+
+/** Centered title header — Zomato Money / GatiCash wallet reference. */
+export function GatiCashWalletHeader({
+  onBack,
+  onSettings,
+}: {
+  onBack: () => void;
+  onSettings: () => void;
+}) {
+  return (
+    <View style={styles.header}>
+      <TouchableOpacity onPress={onBack} style={styles.side} hitSlop={12} activeOpacity={0.7}>
+        <Ionicons name="arrow-back" size={22} color={TEXT} />
+      </TouchableOpacity>
+      <Text style={styles.title} numberOfLines={1}>
+        GatiCash
+      </Text>
+      <TouchableOpacity onPress={onSettings} style={styles.side} hitSlop={12} activeOpacity={0.7}>
+        <Ionicons name="settings-outline" size={21} color={TEXT} />
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 10,
+    backgroundColor: "#FFFFFF",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E5E7EB",
+  },
+  side: {
+    width: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  title: {
+    flex: 1,
+    textAlign: "center",
+    fontSize: 18,
+    fontWeight: "700",
+    color: TEXT,
+    letterSpacing: -0.2,
+  },
+});

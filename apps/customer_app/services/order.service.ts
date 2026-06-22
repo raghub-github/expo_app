@@ -180,6 +180,19 @@ export type CheckoutMetadataPayload = {
   restaurantNote?: string;
   /** When true, customer opted out of disposable cutlery. */
   skipCutlery?: boolean;
+  /** GatiCash wallet amount applied to this checkout (INR). */
+  gatiCashAmount?: number;
+  /** Missed-offer GatiCash credit to apply after order is placed. */
+  missedOfferCompensation?: {
+    amountInr: number;
+    offerKey: string;
+    offerId?: number | null;
+    offerSource?: "platform" | "merchant" | null;
+    offerKind?: string;
+    offerTitle?: string;
+    /** Discount applied on this order when unlocked via GatiCash. */
+    discountInr?: number;
+  };
 } & Record<string, unknown>;
 
 export type CreateOrderPayload = {
@@ -206,6 +219,8 @@ export type CreateOrderPayload = {
   selectedPlatformOfferId?: number | null;
   selectedMerchantOfferId?: number | null;
   forceNoAutoOffer?: boolean;
+  /** GatiCash wallet amount to apply on this order (INR). */
+  gatiCashAmount?: number;
 };
 
 /** Payment-first: create pending order (lock cart). Returns pendingId + amount in paise for Razorpay. */

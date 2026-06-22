@@ -446,8 +446,8 @@ export async function authRoutes(app: FastifyInstance) {
 
       req.log?.info?.({ requestId, expiresInSec }, "[OTP] Generated");
 
-      // Send SMS via MSG91 — same channel order as supabase-send-sms / partnersite (Flow DLT first).
-      const delivered = await deliverSupabaseOtpViaMsg91(env, phoneE164, otp);
+      // Send SMS via MSG91 — dedicated OTP APIs first (v5/otp, sendotp.php), not Flow template.
+      const delivered = await deliverSupabaseOtpViaMsg91(env, phoneE164, otp, { preferLegacyOtpApi: true });
       const smsSent = delivered.ok;
       if (!smsSent) {
         otpStore.delete(requestId);
@@ -468,8 +468,6 @@ export async function authRoutes(app: FastifyInstance) {
       }
 
       req.log?.info?.({ phoneE164, phoneTail, requestId, channel: delivered.channel }, "[OTP] SMS Sent");
-
-      // Server-side log only — never return OTP to mobile clients.
       if (env.NODE_ENV !== "production") {
         // eslint-disable-next-line no-console
         console.log(

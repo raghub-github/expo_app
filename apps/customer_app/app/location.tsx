@@ -310,7 +310,7 @@ function buildShareMessage(saved: Address): string {
 
 export default function SelectLocationScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ fromOnboarding?: string; afterSaveReturn?: string }>();
+  const params = useLocalSearchParams<{ fromOnboarding?: string; afterSaveReturn?: string; focusSearch?: string }>();
   const insets = useSafeAreaInsets();
   const {
     address,
@@ -341,6 +341,7 @@ export default function SelectLocationScreen() {
   const [savedExpanded, setSavedExpanded] = useState(false);
   const [currentLocationPreview, setCurrentLocationPreview] = useState("Current location");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchInputRef = useRef<TextInput>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
   const lastSearchKeyRef = useRef<string>("");
   const queryClient = useQueryClient();
@@ -368,6 +369,12 @@ export default function SelectLocationScreen() {
   useEffect(() => {
     hydrateRecentLocations();
   }, [hydrateRecentLocations]);
+
+  useEffect(() => {
+    if (params.focusSearch !== "1") return;
+    const timer = setTimeout(() => searchInputRef.current?.focus(), 320);
+    return () => clearTimeout(timer);
+  }, [params.focusSearch]);
 
   const {
     data: savedAddressesData,
@@ -991,6 +998,7 @@ export default function SelectLocationScreen() {
           <View style={styles.searchBar}>
             <Ionicons name="search" size={20} color={BRAND} />
             <TextInput
+              ref={searchInputRef}
               style={styles.searchInput}
               placeholder="Search for area, street name..."
               placeholderTextColor={TEXT_GRAY}

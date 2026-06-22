@@ -99,14 +99,12 @@ function DiscountTagBadge({ tag }: { tag?: OrderPricingLine['discountTag'] }) {
 
 function PricingBreakdownPanel({
   title,
-  subtitle,
   lines,
   totalLabel,
   totalAmount,
   accent = 'emerald',
 }: {
   title: string;
-  subtitle?: string;
   lines: OrderPricingLine[];
   totalLabel: string;
   totalAmount: number;
@@ -118,8 +116,7 @@ function PricingBreakdownPanel({
 
   return (
     <div className={`rounded-md border ${borderClass} ${bgClass} p-3`}>
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-700">{title}</p>
-      {subtitle ? <p className="mt-0.5 text-[10px] text-slate-500">{subtitle}</p> : null}
+      <p className="text-[11px] font-semibold text-slate-700">{title}</p>
       <div className="mt-2 space-y-1">
         {lines.map((line, idx) => (
           <div
@@ -228,16 +225,14 @@ function BillBreakdownSwitcher({
   const active =
     billView === 'merchant' && hasMerchantBill
       ? {
-          title: 'Merchant bill',
-          subtitle: 'Amount payable to merchant (CTM)',
+          title: 'Merchant bill - Amount payable to merchant (CTM)',
           lines: merchantBill.lines,
           totalLabel: 'Merchant amount (CTM)',
           totalAmount: merchantBill.totalOrderAmount,
           accent: 'emerald' as const,
         }
       : {
-          title: 'Customer bill',
-          subtitle: 'Full amount paid by customer (CTC)',
+          title: 'Customer bill - Full amount paid by customer (CTC)',
           lines: customerBill.lines,
           totalLabel: 'Total amount (CTC)',
           totalAmount: customerBill.totalOrderAmount,
@@ -263,7 +258,6 @@ function BillBreakdownSwitcher({
       <PricingBreakdownPanel
         key={billView}
         title={active.title}
-        subtitle={active.subtitle}
         lines={active.lines?.length ? active.lines : []}
         totalLabel={active.totalLabel}
         totalAmount={active.totalAmount}
@@ -710,7 +704,9 @@ export default function ItemsRefundModal({
     }
 
     let cancelled = false;
-    setItemsFetchSettled(false);
+    if (!getCachedOrderItems(orderIdProp)) {
+      setItemsFetchSettled(false);
+    }
     void fetchOrderItemsCached(orderIdProp).then((parsed) => {
       if (cancelled) return;
       if (parsed?.items?.length) {
@@ -1694,6 +1690,15 @@ export default function ItemsRefundModal({
             ) : itemsFetchSettled && refundItems.length === 0 ? (
               <div className="mb-3 px-3 py-4 text-center text-sm text-slate-500 border border-dashed border-slate-200 rounded-md">
                 No items found for this order.
+              </div>
+            ) : null}
+
+            {!itemsFetchSettled && refundItems.length === 0 && !itemsError ? (
+              <div className="mb-3 border border-slate-200 rounded-md overflow-hidden">
+                <div className="px-3 py-8 flex flex-col items-center justify-center gap-2 bg-slate-50/80">
+                  <Loader2 className="w-5 h-5 text-emerald-600 animate-spin" aria-hidden />
+                  <p className="text-xs text-slate-500">Loading order items…</p>
+                </div>
               </div>
             ) : null}
 

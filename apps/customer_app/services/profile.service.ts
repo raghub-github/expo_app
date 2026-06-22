@@ -4,6 +4,11 @@
  */
 
 import api from "./api";
+import type {
+  HearingAccessibility,
+  MobilityAccessibility,
+  VisionAccessibility,
+} from "@/lib/accessibility-settings";
 
 const ME_PREFIX = "/v1/me";
 const PROFILE_PATH = `${ME_PREFIX}/profile`;
@@ -41,6 +46,9 @@ export type UserProfile = {
   profile_image_url?: string | null;
   /** Total discount saved across all completed orders (INR). */
   lifetime_savings_inr?: number;
+  hearing_accessibility?: HearingAccessibility;
+  vision_accessibility?: VisionAccessibility;
+  mobility_accessibility?: MobilityAccessibility;
 };
 
 export type UpdateProfilePayload = {
@@ -61,6 +69,9 @@ export type UpdateProfilePayload = {
   country?: string;
   latitude?: number;
   longitude?: number;
+  hearing_accessibility?: HearingAccessibility;
+  vision_accessibility?: VisionAccessibility;
+  mobility_accessibility?: MobilityAccessibility;
 };
 
 export const AGE_GROUPS = [

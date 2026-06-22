@@ -16,6 +16,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import type { CheckoutOffersResponse } from "@/services/billing.service";
+import { isOfferGatiCashUnlockable, missedOfferKeyForCandidate } from "@/lib/checkout-missed-offer-wallet";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 const CX = GatiMitraColors;
@@ -29,6 +30,7 @@ export type CheckoutOffersSheetProps = {
   data: CheckoutOffersResponse | undefined;
   /** Item + add-on subtotal (reserved for future min-order UI). */
   cartSubtotal?: number;
+  merchantId?: string | null;
   couponInput: string;
   onCouponInputChange: (v: string) => void;
   couponError: string | null;
@@ -50,6 +52,16 @@ export type CheckoutOffersSheetProps = {
   onRemovePlatformOffer: () => void;
   onRemoveMerchantOffer: () => void;
   onRemoveAllOffers: () => void;
+  /** Locked offer selected for GatiCash wallet unlock (same key as checkout missed-offer). */
+  pendingMissedOfferKey?: string | null;
+  unlockedMissedOffer?: {
+    key: string;
+    title: string;
+    offerSavingsInr: number;
+    walletAddInr: number;
+  } | null;
+  onUnlockWithGatiCash?: (source: "platform" | "merchant", offerId: number) => void;
+  onRemoveMissedOfferWallet?: () => void;
 };
 
 function OfferRow({
@@ -62,6 +74,8 @@ function OfferRow({
   savings,
   onApply,
   onRemove,
+  onUnlockWithGatiCash,
+  gatiCashPending,
 }: {
   title: string;
   subtitle: string;
@@ -72,6 +86,8 @@ function OfferRow({
   savings?: number | null;
   onApply?: () => void;
   onRemove?: () => void;
+  onUnlockWithGatiCash?: () => void;
+  gatiCashPending?: boolean;
 }) {
   return (
     <View style={[styles.offerRow, locked && styles.offerRowLocked, applied && styles.offerRowApplied]}>
@@ -114,6 +130,16 @@ function OfferRow({
         <TouchableOpacity onPress={onRemove} hitSlop={8} activeOpacity={0.7}>
           <Text style={styles.removeBtn}>Remove</Text>
         </TouchableOpacity>
+      ) : locked && onUnlockWithGatiCash ? (
+        <TouchableOpacity
+          style={[styles.gatiCashUnlockBtn, gatiCashPending && styles.gatiCashUnlockBtnPending]}
+          onPress={onUnlockWithGatiCash}
+          activeOpacity={0.85}
+        >
+          <Text style={[styles.gatiCashUnlockText, gatiCashPending && styles.gatiCashUnlockTextPending]}>
+            {gatiCashPending ? "ADDED" : "GATCASH"}
+          </Text>
+        </TouchableOpacity>
       ) : !locked && onApply ? (
         <TouchableOpacity style={styles.applyBtn} onPress={onApply} activeOpacity={0.85}>
           <Text style={styles.applyBtnText}>APPLY</Text>
@@ -130,6 +156,7 @@ export function CheckoutOffersSheet({
   loading,
   error,
   data,
+  merchantId,
   couponInput,
   onCouponInputChange,
   couponError,
@@ -145,6 +172,10 @@ export function CheckoutOffersSheet({
   onRemovePlatformOffer,
   onRemoveMerchantOffer,
   onRemoveAllOffers,
+  pendingMissedOfferKey = null,
+  unlockedMissedOffer = null,
+  onUnlockWithGatiCash,
+  onRemoveMissedOfferWallet,
 }: CheckoutOffersSheetProps) {
   const savingsForPlatform = (id: number) => {
     const d = appliedDiscounts.find((x) => x.platformOfferId === id);
@@ -345,15 +376,45 @@ export function CheckoutOffersSheet({
                   {(data?.platformOffersIneligible?.length ?? 0) > 0 ? (
                     <View style={styles.section}>
                       <Text style={styles.sectionLabel}>UNLOCK MORE SAVINGS</Text>
-                      {data!.platformOffersIneligible!.map((o) => (
-                        <OfferRow
-                          key={`pf-lock-${o.id}`}
-                          title={o.name ?? o.offerKind}
-                          subtitle={o.summary}
-                          locked
-                          lockReason={o.reason}
-                        />
-                      ))}
+                      <Text style={styles.sectionHint}>
+                        Locked offers — unlock with GatiCash or add more items to cart
+                      </Text>
+                      {data!.platformOffersIneligible!.map((o) => {
+                        const unlockable = isOfferGatiCashUnlockable(o.reason);
+                        const offerKey =
+                          merchantId != null
+                            ? missedOfferKeyForCandidate({ source: "platform", id: o.id }, merchantId)
+                            : null;
+                        const isWalletUnlocked =
+                          unlockedMissedOffer != null &&
+                          offerKey != null &&
+                          unlockedMissedOffer.key === offerKey;
+                        if (isWalletUnlocked) {
+                          return (
+                            <OfferRow
+                              key={`pf-lock-${o.id}`}
+                              title={`${o.name ?? o.offerKind} unlocked`}
+                              subtitle={`Saving ₹${Math.round(unlockedMissedOffer.offerSavingsInr)} on this order · ₹${Math.round(unlockedMissedOffer.walletAddInr)} to GatiCash after order`}
+                              applied
+                              onRemove={onRemoveMissedOfferWallet}
+                            />
+                          );
+                        }
+                        return (
+                          <OfferRow
+                            key={`pf-lock-${o.id}`}
+                            title={o.name ?? o.offerKind}
+                            subtitle={o.summary}
+                            locked
+                            lockReason={o.reason}
+                            onUnlockWithGatiCash={
+                              unlockable && onUnlockWithGatiCash
+                                ? () => onUnlockWithGatiCash("platform", o.id)
+                                : undefined
+                            }
+                          />
+                        );
+                      })}
                     </View>
                   ) : null}
 
@@ -391,16 +452,43 @@ export function CheckoutOffersSheet({
                   {(data?.merchantOffersIneligible?.length ?? 0) > 0 ? (
                     <View style={styles.section}>
                       <Text style={styles.sectionLabel}>STORE OFFERS — UNLOCK</Text>
-                      {data!.merchantOffersIneligible!.map((o) => (
-                        <OfferRow
-                          key={`mo-lock-${o.id}`}
-                          title={o.title}
-                          subtitle={o.summary}
-                          couponCode={o.requiresCouponCode}
-                          locked
-                          lockReason={o.lockReason || o.reason}
-                        />
-                      ))}
+                      {data!.merchantOffersIneligible!.map((o) => {
+                        const unlockable = isOfferGatiCashUnlockable(o.reason, o.lockReason);
+                        const offerKey =
+                          merchantId != null
+                            ? missedOfferKeyForCandidate({ source: "merchant", id: o.id }, merchantId)
+                            : null;
+                        const isWalletUnlocked =
+                          unlockedMissedOffer != null &&
+                          offerKey != null &&
+                          unlockedMissedOffer.key === offerKey;
+                        if (isWalletUnlocked) {
+                          return (
+                            <OfferRow
+                              key={`mo-lock-${o.id}`}
+                              title={`${o.title} unlocked`}
+                              subtitle={`Saving ₹${Math.round(unlockedMissedOffer.offerSavingsInr)} on this order · ₹${Math.round(unlockedMissedOffer.walletAddInr)} to GatiCash after order`}
+                              applied
+                              onRemove={onRemoveMissedOfferWallet}
+                            />
+                          );
+                        }
+                        return (
+                          <OfferRow
+                            key={`mo-lock-${o.id}`}
+                            title={o.title}
+                            subtitle={o.summary}
+                            couponCode={o.requiresCouponCode}
+                            locked
+                            lockReason={o.lockReason || o.reason}
+                            onUnlockWithGatiCash={
+                              unlockable && onUnlockWithGatiCash
+                                ? () => onUnlockWithGatiCash("merchant", o.id)
+                                : undefined
+                            }
+                          />
+                        );
+                      })}
                     </View>
                   ) : null}
 
@@ -637,6 +725,21 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   applyBtnText: { fontSize: 10, fontWeight: "800", color: "#E23744", letterSpacing: 0.4 },
+  gatiCashUnlockBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: CX.splashMint,
+    backgroundColor: "#F0FDFA",
+    marginTop: 1,
+  },
+  gatiCashUnlockBtnPending: {
+    backgroundColor: CX.splashMint,
+    borderColor: CX.splashMint,
+  },
+  gatiCashUnlockText: { fontSize: 9, fontWeight: "800", color: CX.splashMint, letterSpacing: 0.3 },
+  gatiCashUnlockTextPending: { color: "#FFFFFF" },
   removeBtn: { fontSize: 12, fontWeight: "700", color: "#E23744", marginTop: 2 },
   clearAllBtn: { alignSelf: "center", paddingVertical: 6 },
   clearAllText: { fontSize: 12, fontWeight: "600", color: "#94A3B8" },
