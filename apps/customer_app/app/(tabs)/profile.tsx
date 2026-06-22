@@ -16,6 +16,7 @@ import { shareReferralCode } from "@/lib/referralShare";
 import { buildEmailAvatarCandidates } from "@/lib/emailAvatar";
 import { useProfile } from "@/hooks/useProfile";
 import { useCurrentSubscription } from "@/hooks/useCustomerSubscription";
+import { GmitraPlusMembershipSheet } from "@/components/profile/GmitraPlusMembershipSheet";
 
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -68,6 +69,7 @@ export default function ProfileScreen() {
     return buildEmailAvatarCandidates(email, profileImageUrl);
   }, [showEmailAvatar, email, profileImageUrl]);
   const [avatarIndex, setAvatarIndex] = useState(0);
+  const [membershipSheetVisible, setMembershipSheetVisible] = useState(false);
   const avatarUri = avatarCandidates[avatarIndex] ?? null;
   const subscriptionActive = subscriptionStatus?.active ?? profile?.gmitra_plus_active ?? false;
   const subscriptionPlanName =
@@ -98,39 +100,14 @@ export default function ProfileScreen() {
     }
   }, []);
 
+  const freeDeliveryNote = useMemo(() => {
+    if (!subscriptionStatus?.plan?.freeDeliveryEnabled || freeDeliveryRadius == null) return null;
+    return `Free delivery within ${freeDeliveryRadius} km on eligible orders.`;
+  }, [subscriptionStatus?.plan?.freeDeliveryEnabled, freeDeliveryRadius]);
+
   const handleSubscriptionPress = useCallback(() => {
-    if (subscriptionActive) {
-      const benefitLines =
-        subscriptionBenefits.length > 0
-          ? subscriptionBenefits.map((b) => `• ${b}`).join("\n")
-          : "Your membership benefits are applied automatically on eligible orders.";
-      const radiusNote =
-        subscriptionStatus?.plan?.freeDeliveryEnabled && freeDeliveryRadius != null
-          ? `\n\nFree delivery within ${freeDeliveryRadius} km on eligible orders.`
-          : "";
-      Alert.alert(
-        `${subscriptionPlanName} Active`,
-        `${benefitLines}${radiusNote}`,
-        [{ text: "OK" }]
-      );
-      return;
-    }
-    Alert.alert(
-      `Join ${subscriptionPlanName}`,
-      `Add ${subscriptionPlanName} at checkout on your next order — save on delivery and unlock member-only offers.`,
-      [
-        { text: "Not now", style: "cancel" },
-        { text: "Browse restaurants", onPress: () => router.push("/(tabs)") },
-      ]
-    );
-  }, [
-    subscriptionActive,
-    subscriptionPlanName,
-    subscriptionBenefits,
-    subscriptionStatus?.plan?.freeDeliveryEnabled,
-    freeDeliveryRadius,
-    router,
-  ]);
+    setMembershipSheetVisible(true);
+  }, []);
 
   const handleReferNow = useCallback(() => {
     void shareReferralCode(referralCode, displayName);
@@ -315,6 +292,21 @@ export default function ProfileScreen() {
 
         <BrandingFooter />
       </ScrollView>
+
+      <GmitraPlusMembershipSheet
+        visible={membershipSheetVisible}
+        onClose={() => setMembershipSheetVisible(false)}
+        active={subscriptionActive}
+        planName={subscriptionPlanName}
+        benefits={subscriptionBenefits}
+        freeDeliveryNote={freeDeliveryNote}
+        description={
+          subscriptionActive
+            ? null
+            : `Add ${subscriptionPlanName} at checkout on your next order — save on delivery and unlock member-only offers.`
+        }
+        onBrowseRestaurants={() => router.push("/(tabs)")}
+      />
     </View>
   );
 }

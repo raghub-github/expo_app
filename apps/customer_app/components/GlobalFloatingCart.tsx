@@ -2,6 +2,7 @@
  * Food floating cart + multi-order tracking dock.
  * Visible on: /home, /home/merchant/*, /search, and on /orders when there are active orders.
  * Hidden on /orders/[id] (order detail — no floating cart or track pill; tracking is on-screen).
+ * Hidden on Profile and Orders tabs (order list / account — no floating track pill).
  * When cart + active order(s): paged horizontal dock — swipe to switch (one pill visible at a time).
  */
 
@@ -94,6 +95,14 @@ function useHideFloatingOrderTrackingPill(): boolean {
   if (p === "/checkout" || p.startsWith("/checkout/")) return true;
 
   if (p.startsWith("/orders/payment-")) return true;
+
+  // Profile & Orders tabs — no floating order dock (orders list already shows actives).
+  if (segments[0] === "(tabs)") {
+    const tab = String(segments[1] ?? "");
+    if (tab === "profile" || tab === "orders") return true;
+  }
+  if (p === "/profile" || p.startsWith("/profile/")) return true;
+  if (p === "/orders") return true;
 
   if (segments[0] === "home" && segments[1] === "merchant" && segments.length >= 3) {
     return true;

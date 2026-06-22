@@ -155,6 +155,7 @@ export default function OrderDetailsScreen() {
   const [ratingDismissed, setRatingDismissed] = useState(false);
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
   const [invoiceDownloading, setInvoiceDownloading] = useState(false);
+  const [receiptDownloading, setReceiptDownloading] = useState(false);
 
   const { data: order, isLoading } = useQuery({
     queryKey: ["order", orderId],
@@ -488,6 +489,25 @@ export default function OrderDetailsScreen() {
       Alert.alert("Invoice unavailable", msg);
     } finally {
       setInvoiceDownloading(false);
+    }
+  };
+
+  const handleBillSummaryReceipt = async () => {
+    if (!orderId || receiptDownloading) return;
+    setReceiptDownloading(true);
+    try {
+      const { downloadOrderReceipt } = await import("@/lib/downloadOrderReceipt");
+      await downloadOrderReceipt(orderId, order?.formattedOrderId ?? order?.orderId ?? orderId);
+    } catch (e) {
+      const msg =
+        (e as { response?: { data?: { message?: string; error?: string } } })?.response?.data
+          ?.message ??
+        (e as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+        (e instanceof Error ? e.message : null) ??
+        "Could not download receipt. Please try again.";
+      Alert.alert("Receipt unavailable", msg);
+    } finally {
+      setReceiptDownloading(false);
     }
   };
 
@@ -952,7 +972,7 @@ export default function OrderDetailsScreen() {
                 </View>
                 <Text style={styles.billTitle}>{billTitle}</Text>
               </View>
-              <TouchableOpacity onPress={handleInvoice} hitSlop={8}>
+              <TouchableOpacity onPress={handleBillSummaryReceipt} hitSlop={8} disabled={receiptDownloading}>
                 <Ionicons name="download-outline" size={20} color={MUTED} />
               </TouchableOpacity>
             </View>
@@ -1000,10 +1020,42 @@ export default function OrderDetailsScreen() {
                 <Text style={styles.billValue}>{formatMoney(bill.tipAmount)}</Text>
               </View>
             )}
+            {bill.surgeFee > 0.005 && (
+              <View style={styles.billRow}>
+                <Text style={styles.billLabel}>Surge fee</Text>
+                <Text style={styles.billValue}>{formatMoney(bill.surgeFee)}</Text>
+              </View>
+            )}
+            {bill.smallOrderFee > 0.005 && (
+              <View style={styles.billRow}>
+                <Text style={styles.billLabel}>Small order fee</Text>
+                <Text style={styles.billValue}>{formatMoney(bill.smallOrderFee)}</Text>
+              </View>
+            )}
+            {bill.convenienceFee > 0.005 && (
+              <View style={styles.billRow}>
+                <Text style={styles.billLabel}>Convenience fee</Text>
+                <Text style={styles.billValue}>{formatMoney(bill.convenienceFee)}</Text>
+              </View>
+            )}
+            {bill.miscFee > 0.005 && (
+              <View style={styles.billRow}>
+                <Text style={styles.billLabel}>Other charges</Text>
+                <Text style={styles.billValue}>{formatMoney(bill.miscFee)}</Text>
+              </View>
+            )}
+            {bill.subscriptionFee > 0.005 && (
+              <View style={styles.billRow}>
+                <Text style={styles.billLabel}>{bill.subscriptionLabel ?? "Membership"}</Text>
+                <Text style={styles.billValue}>{formatMoney(bill.subscriptionFee)}</Text>
+              </View>
+            )}
+
+            <View style={styles.billDivider} />
 
             <View style={[styles.billRow, styles.billGrandRow]}>
               <Text style={styles.billGrandLabel}>Grand total</Text>
-              <Text style={styles.billGrandValue}>{formatMoney(bill.grandTotal || bill.paid)}</Text>
+              <Text style={styles.billGrandValue}>{formatMoney(bill.grandTotal)}</Text>
             </View>
 
             {bill.couponDiscount > 0.005 && (
@@ -1015,7 +1067,28 @@ export default function OrderDetailsScreen() {
               </View>
             )}
 
-            <View style={styles.billRow}>
+            {bill.gatiCashApplied > 0.005 && (
+              <View style={styles.billRow}>
+                <Text style={styles.couponLabel}>Using GatiCash</Text>
+                <Text style={styles.couponValue}>- {formatMoney(bill.gatiCashApplied)}</Text>
+              </View>
+            )}
+
+            {bill.missedOfferDiscount > 0.005 && (
+              <View style={styles.billRow}>
+                <Text style={styles.couponLabel}>Offer discount</Text>
+                <Text style={styles.couponValue}>- {formatMoney(bill.missedOfferDiscount)}</Text>
+              </View>
+            )}
+
+            {bill.missedOfferWalletAdd > 0.005 && (
+              <View style={styles.billRow}>
+                <Text style={styles.billLabel}>Add to GatiCash wallet</Text>
+                <Text style={styles.billValue}>+ {formatMoney(bill.missedOfferWalletAdd)}</Text>
+              </View>
+            )}
+
+            <View style={[styles.billRow, styles.billPaidRow]}>
               <Text style={styles.paidLabel}>{isCancelled || isFailed ? "Amount" : "Paid"}</Text>
               <Text style={styles.paidValue}>{formatMoney(bill.paid)}</Text>
             </View>
@@ -1121,7 +1194,10 @@ export default function OrderDetailsScreen() {
 
         {renderOrderRatingSheet()}
 
-        <InvoiceDownloadingToast visible={invoiceDownloading} />
+        <InvoiceDownloadingToast
+          visible={invoiceDownloading || receiptDownloading}
+          message={receiptDownloading ? "Downloading receipt…" : "Downloading invoice…"}
+        />
       </View>
     </>
   );
@@ -1367,14 +1443,21 @@ const styles = StyleSheet.create({
     textDecorationLine: "line-through",
   },
   freeText: { fontSize: 13, fontWeight: "700", color: LINK_BLUE },
+  billDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: BORDER,
+    marginTop: 2,
+    marginBottom: 2,
+  },
   billGrandRow: {
-    marginTop: 4,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: BORDER,
+    paddingVertical: 6,
   },
   billGrandLabel: { fontSize: 14, fontWeight: "700", color: TEXT },
   billGrandValue: { fontSize: 14, fontWeight: "700", color: TEXT },
+  billPaidRow: {
+    paddingTop: 4,
+    paddingBottom: 2,
+  },
   couponLabel: { flex: 1, fontSize: 13, fontWeight: "600", color: LINK_BLUE },
   couponValue: { fontSize: 13, fontWeight: "700", color: LINK_BLUE },
   paidLabel: { fontSize: 15, fontWeight: "700", color: TEXT },

@@ -32,6 +32,10 @@ import { UserAppCategoriesPrefetch } from "@/components/UserAppCategoriesPrefetc
 import { ProfilePrefetch } from "@/components/ProfilePrefetch";
 import { SubscriptionPlansPrefetch } from "@/components/SubscriptionPlansPrefetch";
 import { profileService } from "@/services/profile.service";
+import {
+  getContactsPermissionGranted,
+  getSmsPermissionGranted,
+} from "@/lib/device-permissions";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { colors } from "@/theme";
 import { DEFAULT_STATUS_BAR_HEIGHT } from "@/constants/layout";
@@ -151,7 +155,7 @@ export default function RootLayout() {
               <StoreStatusRealtimeSync />
               <OrderRealtimeSync />
               <SessionRevokedHandler />
-              <LocationPermissionRealtimeSync />
+              <CustomerPermissionsRealtimeSync />
               <LocationPermissionResumeCheck />
               <LanguageSync />
               <RootStack onLayoutRootView={onLayoutRootView} />
@@ -236,46 +240,68 @@ function SessionRevokedHandler() {
   return null;
 }
 
-function LocationPermissionRealtimeSync() {
+function CustomerPermissionsRealtimeSync() {
   const session = useAuthStore((s) => s.session);
   const hydrated = useAuthStore((s) => s.hydrated);
-  const lastSyncedRef = useRef<boolean | null>(null);
+  const lastSyncedRef = useRef<{
+    location: boolean;
+    sms: boolean;
+    contacts: boolean;
+  } | null>(null);
 
-  const syncLocationPermission = useCallback(async () => {
+  const syncDevicePermissions = useCallback(async () => {
     if (!hydrated || !session) return;
     try {
-      const { status } = await Location.getForegroundPermissionsAsync();
-      const granted = status === "granted";
+      const [{ status: locStatus }, smsGranted, contactsGranted] = await Promise.all([
+        Location.getForegroundPermissionsAsync(),
+        getSmsPermissionGranted(),
+        getContactsPermissionGranted(),
+      ]);
+      const locationGranted = locStatus === "granted";
+      const snapshot = {
+        location: locationGranted,
+        sms: smsGranted,
+        contacts: contactsGranted,
+      };
 
-      if (lastSyncedRef.current === granted) return;
+      if (
+        lastSyncedRef.current &&
+        lastSyncedRef.current.location === snapshot.location &&
+        lastSyncedRef.current.sms === snapshot.sms &&
+        lastSyncedRef.current.contacts === snapshot.contacts
+      ) {
+        return;
+      }
 
       const currentCoords = useLocationStore.getState().coords;
       await profileService.updateProfile({
-        location_permission: granted,
-        ...(granted && currentCoords
+        location_permission: snapshot.location,
+        sms_permission: snapshot.sms,
+        contacts_permission: snapshot.contacts,
+        ...(snapshot.location && currentCoords
           ? { latitude: currentCoords.latitude, longitude: currentCoords.longitude }
           : {}),
       });
 
-      lastSyncedRef.current = granted;
+      lastSyncedRef.current = snapshot;
     } catch {
       // Keep silent; we'll retry on next app active tick.
     }
   }, [hydrated, session]);
 
   useEffect(() => {
-    void syncLocationPermission();
+    void syncDevicePermissions();
     const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
-      if (nextState === "active") void syncLocationPermission();
+      if (nextState === "active") void syncDevicePermissions();
     });
     const interval = setInterval(() => {
-      if (AppState.currentState === "active") void syncLocationPermission();
+      if (AppState.currentState === "active") void syncDevicePermissions();
     }, 15000);
     return () => {
       sub.remove();
       clearInterval(interval);
     };
-  }, [syncLocationPermission]);
+  }, [syncDevicePermissions]);
 
   return null;
 }

@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { CustomerWithStats } from "@/lib/db/operations/customers";
+import { buildCustomerDetailQueryString } from "@/lib/navigation/customer-dashboard-from-order";
 import {
   resolveTrustTier,
   TRUST_TIER_LABEL,
@@ -37,10 +39,11 @@ export function CustomerTable({
   currentPage = 1,
   totalPages = 1,
 }: CustomerTableProps) {
-  const searchSuffix =
-    searchQuery && searchQuery.trim().length > 0
-      ? `?search=${encodeURIComponent(searchQuery.trim())}`
-      : "";
+  const urlSearchParams = useSearchParams();
+  const searchSuffix = buildCustomerDetailQueryString({
+    search: searchQuery,
+    fromOrderSource: urlSearchParams,
+  });
   const formatCurrency = (amount: number | null | undefined) => {
     if (amount === null || amount === undefined) return "₹0.00";
     return `₹${Number(amount).toFixed(2)}`;
@@ -164,6 +167,9 @@ export function CustomerTable({
               </>
             )}
             <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
+              GatiCash
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
               Trust tier
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
@@ -245,6 +251,9 @@ export function CustomerTable({
                     </td>
                   </>
                 )}
+                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-[#0d5c4a] tabular-nums">
+                  {formatCurrency(customer.walletBalance)}
+                </td>
                 <td className="px-6 py-4 whitespace-nowrap">
                   {(() => {
                     const tier = resolveTrustTier(
