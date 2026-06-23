@@ -36,6 +36,7 @@ import {
   ticketDetailHasQueueContext,
   ticketsPathTicketId,
 } from "@/lib/tickets/ticket-path-utils";
+import { isCustomerDetailOpenedFromOrder } from "@/lib/navigation/customer-dashboard-from-order";
 import type { TicketOtherAgentViewer } from "@/lib/tickets/ticket-presence";
 
 const SIDEBAR_STATE_KEY = "dashboard-sidebar-open";
@@ -187,6 +188,10 @@ function DashboardLayoutClientInner({
     cleanPathname === "/dashboard/riders" || cleanPathname.startsWith("/dashboard/riders/");
   const isCustomersSection = cleanPathname.startsWith("/dashboard/customers");
   const isOrdersSection = cleanPathname.startsWith("/dashboard/orders");
+  const isCustomerDetailFromOrder = useMemo(
+    () => isCustomerDetailOpenedFromOrder(cleanPathname, searchParams),
+    [cleanPathname, searchParams]
+  );
 
   const hasRightSidebar = useMemo(() => {
     // Customer dashboard: use full width — no secondary (right) nav rail.
@@ -237,9 +242,10 @@ function DashboardLayoutClientInner({
         isStoreOrdersPath ? "1" : "0",
         isSettingsPage ? "1" : "0",
         isQueueTicketDetailForShell ? "1" : "0",
+        isCustomerDetailFromOrder ? "1" : "0",
         cleanPathname,
       ].join("\0"),
-    [hasRightSidebar, isStoreOrdersPath, isSettingsPage, isQueueTicketDetailForShell, cleanPathname]
+    [hasRightSidebar, isStoreOrdersPath, isSettingsPage, isQueueTicketDetailForShell, isCustomerDetailFromOrder, cleanPathname]
   );
 
   // Deterministic initial state (no localStorage) so server and client match and hydration succeeds
@@ -271,6 +277,11 @@ function DashboardLayoutClientInner({
       return;
     }
     if (isQueueTicketDetailForShell && hasRightSidebar) {
+      setIsLeftSidebarOpen(false);
+      setIsRightSidebarOpen(false);
+      return;
+    }
+    if (isCustomerDetailFromOrder) {
       setIsLeftSidebarOpen(false);
       setIsRightSidebarOpen(false);
       return;
@@ -334,6 +345,7 @@ function DashboardLayoutClientInner({
           handleLeftSidebarToggle={handleLeftSidebarToggle}
           isInSpecificDashboard={isInSpecificDashboard}
           isStoreOrdersPath={isStoreOrdersPath}
+          isCustomerDetailFromOrder={isCustomerDetailFromOrder}
         >
           {children}
         </DashboardLayoutContent>
@@ -352,6 +364,7 @@ function DashboardLayoutContent({
   handleLeftSidebarToggle,
   isInSpecificDashboard,
   isStoreOrdersPath,
+  isCustomerDetailFromOrder,
 }: {
   children: React.ReactNode;
   isLeftSidebarOpen: boolean;
@@ -362,6 +375,7 @@ function DashboardLayoutContent({
   handleLeftSidebarToggle: () => void;
   isInSpecificDashboard: boolean;
   isStoreOrdersPath: boolean;
+  isCustomerDetailFromOrder: boolean;
 }) {
   const pathname = usePathname();
   const searchParams = useDashboardSearchParams();
@@ -548,13 +562,15 @@ function DashboardLayoutContent({
 
   const showWorkspaceOverlay = isNavigating;
 
-  const mainLgMarginLeft = isTicketsQueueWorkspace
-    ? isRightSidebarOpen
-      ? "lg:ml-56"
-      : "lg:ml-14"
-    : isLeftSidebarOpen
-      ? "lg:ml-56"
-      : "lg:ml-16";
+  const mainLgMarginLeft = isCustomerDetailFromOrder
+    ? ""
+    : isTicketsQueueWorkspace
+      ? isRightSidebarOpen
+        ? "lg:ml-56"
+        : "lg:ml-14"
+      : isLeftSidebarOpen
+        ? "lg:ml-56"
+        : "lg:ml-16";
 
   /** Queue workspace: ticket view applies its own `lg:pr-64` for the fixed properties rail — do not add `mr-*` here or space is doubled. */
   const mainLgMarginRight =
@@ -573,7 +589,7 @@ function DashboardLayoutContent({
   return (
     <LeftSidebarMobileProvider>
       <div className="flex h-screen overflow-hidden" style={{ backgroundColor: "#E6F6F5" }}>
-        {!isTicketsQueueWorkspace && (
+        {!isTicketsQueueWorkspace && !isCustomerDetailFromOrder && (
           <HierarchicalSidebar
             isOpen={isLeftSidebarOpen}
             onToggle={handleLeftSidebarToggle}

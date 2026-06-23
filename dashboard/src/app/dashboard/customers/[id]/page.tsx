@@ -3,14 +3,18 @@
 import { useState, useEffect, useRef, Suspense } from "react";
 import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { AlertCircle, ChevronDown, ExternalLink } from "lucide-react";
+import { AlertCircle, ChevronDown, ExternalLink, Wallet } from "lucide-react";
 import {
   resolveTrustTier,
   TRUST_TIER_LABEL,
   trustTierUserTypeClass,
   type CustomerTrustTier,
 } from "@/lib/customers/trust-tier";
-import type { CustomerAddressRow } from "@/lib/db/operations/customers";
+import { buildCustomerDetailQueryString } from "@/lib/navigation/customer-dashboard-from-order";
+import type {
+  CustomerAddressRow,
+  CustomerWalletSummary,
+} from "@/lib/db/operations/customers";
 
 interface CustomerDetail {
   id: number;
@@ -45,6 +49,7 @@ interface CustomerDetail {
   trustTier?: string | null;
   walletBalance?: number | string | null;
   walletLockedAmount?: number | string | null;
+  wallet?: CustomerWalletSummary | null;
   isIdentityVerified?: boolean | null;
   isEmailVerified?: boolean | null;
   isMobileVerified?: boolean | null;
@@ -268,10 +273,10 @@ function CustomerDetailsContent() {
   const pathname = usePathname();
 
   const searchQs = searchParams.get("search");
-  const idLinkSuffix =
-    searchQs && searchQs.length > 0
-      ? `?search=${encodeURIComponent(searchQs)}`
-      : "";
+  const idLinkSuffix = buildCustomerDetailQueryString({
+    search: searchQs,
+    fromOrderSource: searchParams,
+  });
 
   useEffect(() => {
     setAddressIndex(0);
@@ -493,6 +498,18 @@ function CustomerDetailsContent() {
 
   const gmitraActive = customer.gmitraPlusActive === true;
 
+  const walletCurrent =
+    customer.wallet?.currentBalance ??
+    (customer.walletBalance == null ? null : Number(customer.walletBalance));
+  const walletLocked =
+    customer.wallet?.lockedAmount ??
+    (customer.walletLockedAmount == null ? null : Number(customer.walletLockedAmount));
+  const walletAvailable =
+    customer.wallet?.availableBalance ??
+    (walletCurrent != null && walletLocked != null
+      ? Math.max(walletCurrent - walletLocked, 0)
+      : walletCurrent);
+
   const addresses = customer.addresses ?? [];
   const safeAddrIdx =
     addresses.length === 0 ? 0 : Math.min(addressIndex, addresses.length - 1);
@@ -542,10 +559,39 @@ function CustomerDetailsContent() {
         {/* User Stats header + scrollable detail grid */}
         <div className="px-4 py-5 sm:px-6">
         <div className="flex flex-col gap-3">
-          <div className="flex flex-row items-baseline justify-between gap-4">
-            <p className="text-sm font-semibold uppercase tracking-[0.12em] text-[#0f2d42]/80">
-              User Stats
-            </p>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-2">
+              <p className="text-sm font-semibold uppercase tracking-[0.12em] text-[#0f2d42]/80 shrink-0">
+                User Stats
+              </p>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-emerald-200/80 bg-emerald-50/90 px-3 py-1.5 text-xs">
+                <Wallet className="h-3.5 w-3.5 shrink-0 text-emerald-600" aria-hidden />
+                <span className="text-gray-600">
+                  GatiCash{" "}
+                  <span className="font-semibold tabular-nums text-gray-900">
+                    {formatCurrency(walletCurrent)}
+                  </span>
+                </span>
+                <span className="text-gray-300" aria-hidden>
+                  |
+                </span>
+                <span className="text-gray-600">
+                  Available{" "}
+                  <span className="font-medium tabular-nums text-emerald-700">
+                    {formatCurrency(walletAvailable)}
+                  </span>
+                </span>
+                <span className="text-gray-300" aria-hidden>
+                  |
+                </span>
+                <span className="text-gray-600">
+                  Locked{" "}
+                  <span className="font-medium tabular-nums text-amber-600">
+                    {formatCurrency(walletLocked)}
+                  </span>
+                </span>
+              </div>
+            </div>
             <span className="shrink-0 text-xs font-medium text-[#0f2d42]/70 text-right">
               Current Addresses
             </span>
@@ -672,8 +718,9 @@ function CustomerDetailsContent() {
             <FieldItem label="Global active">
               <BoolVal v={customer.isGlobalActive} />
             </FieldItem>
-            <FieldItem label="Wallet balance">{formatCurrency(customer.walletBalance)}</FieldItem>
-            <FieldItem label="Wallet locked">{formatCurrency(customer.walletLockedAmount)}</FieldItem>
+            <FieldItem label="Wallet balance">{formatCurrency(walletCurrent)}</FieldItem>
+            <FieldItem label="Wallet locked">{formatCurrency(walletLocked)}</FieldItem>
+            <FieldItem label="Wallet available">{formatCurrency(walletAvailable)}</FieldItem>
           </DetailRow>
 
           <DetailRow>

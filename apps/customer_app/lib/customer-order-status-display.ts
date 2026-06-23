@@ -58,14 +58,6 @@ export function getHistoryOrderStatusLabel(
   return status.replace(/_/g, " ").toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
 }
 
-const GENERIC_CANCELLATION_REASONS = new Set([
-  "",
-  "order cancelled",
-  "order cancel",
-  "cancelled",
-  "canceled",
-]);
-
 /** Primary cancellation line for history cards and banners. */
 export function getCustomerOrderCancellationDisplayLabel(input: {
   status: string;
@@ -83,24 +75,21 @@ export function getCustomerOrderCancellationDisplayLabel(input: {
   ) {
     return "Payment failed";
   }
-  if (statusNorm !== "CANCELLED") {
-    return getHistoryOrderStatusLabel(input.status);
+  if (statusNorm === "CANCELLED") {
+    return "Cancelled";
   }
+  return getHistoryOrderStatusLabel(input.status);
+}
 
-  const reason = (input.cancellationReason ?? "").trim();
-  const label = (input.cancelledByLabel ?? "").trim();
-  const reasonIsGeneric = GENERIC_CANCELLATION_REASONS.has(reason.toLowerCase());
-
-  if (reason && !reasonIsGeneric) {
-    if (label === "Cancelled by me") return reason;
-    if (label && !reason.toLowerCase().includes(label.toLowerCase())) {
-      return `${label} · ${reason}`;
-    }
-    return reason;
-  }
-
-  if (label) return label;
-  return "Order cancelled";
+/** Refund completed — show "Refunded" under Cancelled on history cards. */
+export function isCustomerOrderRefundCompleted(input: {
+  paymentStatus?: string | null;
+  refundStatus?: string | null;
+}): boolean {
+  const ps = (input.paymentStatus ?? "").trim().toLowerCase();
+  if (ps === "refunded" || ps === "partially_refunded") return true;
+  const rs = (input.refundStatus ?? "").trim().toLowerCase();
+  return rs === "refunded" || rs === "completed" || rs === "processed";
 }
 
 /** Statuses where the order is with the rider en route to the customer. */

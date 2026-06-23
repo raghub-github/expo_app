@@ -14,8 +14,38 @@ import {
   shouldShowCustomerContactsDropdown,
 } from "@/lib/orders/customer-linked-contacts";
 
+function buildCustomerDashboardUrl(
+  customerDbId: number | null | undefined,
+  customerExternalId: string | number | null | undefined
+): string | null {
+  const externalId =
+    customerExternalId != null && String(customerExternalId).trim() !== ""
+      ? String(customerExternalId).trim()
+      : "";
+  if (!customerDbId && !externalId) return null;
+
+  const envBase =
+    typeof process !== "undefined" && process.env.NEXT_PUBLIC_CONTROL_APP_URL?.trim()
+      ? process.env.NEXT_PUBLIC_CONTROL_APP_URL.trim().replace(/\/$/, "")
+      : "";
+  const base =
+    envBase ||
+    (typeof window !== "undefined" ? window.location.origin : "https://control.gatimitra.com");
+
+  const searchQ = externalId ? encodeURIComponent(externalId) : "";
+  const fromOrderQs = "fromOrder=1";
+  if (customerDbId) {
+    const query = searchQ ? `search=${searchQ}&${fromOrderQs}` : fromOrderQs;
+    return `${base}/dashboard/customers/${customerDbId}?${query}`;
+  }
+  const query = searchQ ? `search=${searchQ}&${fromOrderQs}` : fromOrderQs;
+  return `${base}/dashboard/customers/all?${query}`;
+}
+
 interface Order {
   userId?: string | number | null;
+  /** Internal customers.id — used to load GatiCash wallet balance. */
+  customerDbId?: number | null;
   customerLatLon?: string | null;
   customerName?: string | null;
   customerMobile?: string | null;
@@ -132,6 +162,52 @@ export default function CustomerDetails({
 }: CustomerDetailsProps) {
   const [copiedField, setCopiedField] = useState<"mobile" | "email" | "address" | null>(null);
   const [contactsOpen, setContactsOpen] = useState(false);
+  const [walletBalance, setWalletBalance] = useState<number | null | undefined>(undefined);
+
+  useEffect(() => {
+    const id = order.customerDbId;
+    if (!id) {
+      setWalletBalance(null);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/customers/${id}`, { credentials: "include" });
+        if (!res.ok) {
+          if (!cancelled) setWalletBalance(null);
+          return;
+        }
+        const json = (await res.json()) as {
+          success?: boolean;
+          data?: {
+            walletBalance?: number | string | null;
+            wallet?: {
+              availableBalance?: number;
+              currentBalance?: number;
+            } | null;
+          };
+        };
+        if (!cancelled && json.success && json.data) {
+          const w = json.data.wallet;
+          const raw =
+            w?.availableBalance ??
+            w?.currentBalance ??
+            json.data.walletBalance;
+          setWalletBalance(raw == null ? null : Number(raw));
+        } else if (!cancelled) {
+          setWalletBalance(null);
+        }
+      } catch {
+        if (!cancelled) setWalletBalance(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [order.customerDbId]);
 
   const linkedPhones = useMemo(
     () =>
@@ -163,9 +239,10 @@ export default function CustomerDetails({
     }, 1500);
   };
   const userId = order.userId ?? "—";
-  const cxDasUrl = `https://customer-dash.gatimitra.com/user-dashboard?category=Food&searchBy=User%20ID&q=${encodeURIComponent(
-    String(userId)
-  )}`;
+  const cxDasUrl = useMemo(
+    () => buildCustomerDashboardUrl(order.customerDbId, order.userId),
+    [order.customerDbId, order.userId]
+  );
 
   const handleViewOnMap = () => {
     const latLon = order.customerLatLon;
@@ -185,6 +262,12 @@ export default function CustomerDetails({
       ?.toString()
       .replace(/\s*,\s*,/g, ", ")
       .replace(/(,\s*)+$/, "") || null;
+
+  const formatWalletBalance = (amount: number | null | undefined) => {
+    if (amount === undefined) return "…";
+    if (amount === null || Number.isNaN(amount)) return "—";
+    return `₹${Number(amount).toFixed(2)}`;
+  };
 
   return (
     <>
@@ -207,15 +290,17 @@ export default function CustomerDetails({
             )}
           </span>
           <div className="flex items-center gap-2 shrink-0">
-            <a
-              href={cxDasUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-0.5 text-gati-primary no-underline font-medium text-[10px] px-1 py-0.5 rounded-full bg-gati-primary-super-light border border-gati-primary-light cursor-pointer whitespace-nowrap"
-            >
-              <i className="bi bi-link-45deg text-[10px]" />
-              Cx-Das
-            </a>
+            {cxDasUrl ? (
+              <a
+                href={cxDasUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-0.5 text-gati-primary no-underline font-medium text-[10px] px-1 py-0.5 rounded-full bg-gati-primary-super-light border border-gati-primary-light cursor-pointer whitespace-nowrap"
+              >
+                <i className="bi bi-link-45deg text-[10px]" />
+                Cx-Das
+              </a>
+            ) : null}
           </div>
         </div>
 
@@ -395,20 +480,15 @@ export default function CustomerDetails({
             </div>
           </div>
 
-          {/* Wallet Link + Chat History */}
+          {/* Wallet balance + Chat History */}
           <div className="grid grid-cols-[120px_1fr] items-start min-h-[22px]">
             <div className="text-[12px] text-gati-text-secondary font-medium">
-              Wallet Link:
+              Wallet balance:
             </div>
             <div className="text-[12px] text-gati-text-primary font-normal flex items-center justify-between gap-4 min-w-0">
-              <a
-                href="#"
-                target="_blank"
-                className="inline-flex shrink-0 items-center gap-0.5 text-gati-primary no-underline font-medium text-[10px] px-1 py-0.5 rounded-full bg-gati-primary-super-light border border-gati-primary-light cursor-pointer whitespace-nowrap"
-              >
-                <i className="bi bi-link-45deg text-[10px]" />
-                link
-              </a>
+              <span className="shrink-0 font-semibold tabular-nums text-emerald-700">
+                {formatWalletBalance(walletBalance)}
+              </span>
               {onOpenPartnerChat ? (
                 <button
                   type="button"

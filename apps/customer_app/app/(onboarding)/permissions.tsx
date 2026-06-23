@@ -11,8 +11,6 @@ import {
   Linking,
   Alert,
   AppState,
-  Platform,
-  PermissionsAndroid,
   type AppStateStatus,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -21,31 +19,11 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Location from "expo-location";
 import * as Contacts from "expo-contacts";
 import { profileService } from "@/services/profile.service";
-
-async function requestSmsPermission(): Promise<"granted" | "denied"> {
-  if (Platform.OS !== "android") return "granted";
-  try {
-    const read = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.READ_SMS, {
-      title: "Read SMS",
-      message: "GatiMitra can read OTP messages to verify your login. Order updates may use SMS on some devices.",
-      buttonPositive: "Allow",
-      buttonNegative: "Deny",
-    });
-    if (read !== PermissionsAndroid.RESULTS.GRANTED) {
-      return "denied";
-    }
-    await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECEIVE_SMS, {
-      title: "SMS notifications",
-      message: "Optional: receive SMS-related events. You can still use the app if you deny this.",
-      buttonPositive: "Allow",
-      buttonNegative: "Skip",
-    });
-    /** READ_SMS is what matters for OTP autofill; RECEIVE_SMS is best-effort (OEM policies vary). */
-    return "granted";
-  } catch {
-    return "denied";
-  }
-}
+import {
+  getContactsPermissionGranted,
+  getSmsPermissionGranted,
+  requestSmsPermission,
+} from "@/lib/device-permissions";
 
 function openAppSettings() {
   Linking.openSettings();
@@ -223,8 +201,8 @@ export default function OnboardingPermissionsScreen() {
             goNext();
           }
         } else if (permissionId === "contacts") {
-          const { status: contactsStatus } = await Contacts.getPermissionsAsync();
-          if (contactsStatus === "granted") {
+          const contactsGranted = await getContactsPermissionGranted();
+          if (contactsGranted) {
             const next = { ...latestStatus, contacts: "granted" as const };
             setStatus(next);
             updatePermissionsRef(next);
@@ -232,8 +210,8 @@ export default function OnboardingPermissionsScreen() {
             goNext();
           }
         } else if (permissionId === "sms") {
-          const smsStatus = await requestSmsPermission();
-          if (smsStatus === "granted") {
+          const smsGranted = await getSmsPermissionGranted();
+          if (smsGranted) {
             const next = { ...latestStatus, sms: "granted" as const };
             setStatus(next);
             updatePermissionsRef(next);
