@@ -23,7 +23,7 @@ type AndroidBackHandlerProps = {
 
 export function AndroidBackHandler({ fallback, preferFallback = false }: AndroidBackHandlerProps = {}) {
   const router = useRouter();
-  const segments = useSegments();
+  const segments = useSegments() as string[];
 
   useEffect(() => {
     if (Platform.OS !== "android") return;

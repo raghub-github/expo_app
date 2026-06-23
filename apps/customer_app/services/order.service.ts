@@ -54,6 +54,9 @@ export type OrderSummary = {
   pickupOtp?: string | null;
   pickupLat?: number | null;
   pickupLng?: number | null;
+  /** Trip distance in km when available (rides). Mirrors OrderDetail.distanceKm. */
+  distanceKm?: number | null;
+  billingSnapshot?: Record<string, unknown> | null;
 };
 
 export type OrderDetail = OrderSummary & {

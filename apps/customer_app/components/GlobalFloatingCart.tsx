@@ -58,14 +58,14 @@ const SHEET_BRAND_RED = GatiMitraColors.closedRed;
 
 /** Show on main tab screens (Home, Food, Orders, Profile). */
 function useIsOnMainTabs(): boolean {
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   return segments[0] === "(tabs)";
 }
 
 /** Show on: /home, /home/merchant/*, /home/category/*, /search. */
 function useIsFoodServicePage(): boolean {
   const pathname = usePathname();
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   if (typeof pathname !== "string") return false;
   const p = pathname as string;
   if (segments[0] === "(auth)" || segments[0] === "(onboarding)") return false;
@@ -88,7 +88,7 @@ function useIsOnOrdersArea(): boolean {
 /** Hide floating track pill on screens where tracking is redundant or clutters checkout/payment flow. */
 function useHideFloatingOrderTrackingPill(): boolean {
   const pathname = usePathname();
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   if (typeof pathname !== "string") return false;
   const p = pathname as string;
 
@@ -113,13 +113,13 @@ function useHideFloatingOrderTrackingPill(): boolean {
 
 /** Hide floating cart on order detail / live tracking — map + status already on screen. */
 function useHideFloatingCart(): boolean {
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   return segments[0] === "orders" && segments.length === 2 && String(segments[1] ?? "").length > 0;
 }
 
 /** True when current route is restaurant detail and it's the same as cart merchant */
 function useIsInsideCartRestaurant(): boolean {
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   const cartMerchantId = useCartStore((s) => s.merchantId);
   const isMerchantPage = segments[0] === "home" && segments[1] === "merchant";
   const currentMerchantId = isMerchantPage ? (segments[2] as string) : null;
@@ -210,7 +210,7 @@ export function GlobalFloatingCart() {
   const pathname = usePathname();
   const queryClient = useQueryClient();
   const session = useAuthStore((s) => s.session);
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   const isFoodServicePage = useIsFoodServicePage();
   const isOnMainTabs = useIsOnMainTabs();
   const isOnOrdersArea = useIsOnOrdersArea();

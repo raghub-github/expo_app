@@ -350,9 +350,9 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
         visible={razorpayVisible}
         orderParams={razorpayParams}
         prefill={{
-          name: profile?.fullName ?? undefined,
+          name: profile?.full_name ?? undefined,
           email: profile?.email ?? undefined,
-          contact: profile?.primaryMobile ?? undefined,
+          contact: profile?.mobile_number ?? undefined,
         }}
         themeColor={MINT_DARK}
         onSuccess={(result) => void finalizeRidePayment(result)}

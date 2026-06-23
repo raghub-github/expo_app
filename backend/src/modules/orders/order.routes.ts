@@ -3352,10 +3352,10 @@ export async function orderRoutes(app: FastifyInstance) {
           itemSnapshot: ordersCoreItems.itemSnapshot,
         })
         .from(ordersCoreItems)
-        .where(eq(ordersCoreItems.orderId, coreRow.orderId));
+        .where(eq(ordersCoreItems.orderId, coreRow.orderId ?? ""));
 
       const builtItems = await buildCustomerOrderDetailItems({
-        orderIdText: coreRow.orderId,
+        orderIdText: coreRow.orderId ?? "",
         coreItems,
         itemsJsonFallback: coreRow.items,
       });

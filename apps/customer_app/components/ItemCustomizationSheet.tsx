@@ -69,7 +69,17 @@ export type ItemCustomizationSheetProps = {
     basePrice?: number;
     variantId?: string;
     variantName?: string;
-    addons?: Array<{ addonId: string; addonName: string; addonPrice: number; quantity: number }>;
+    variantSizeValue?: string | null;
+    variantSizeUnit?: string | null;
+    addons?: Array<{
+      addonId: string;
+      customizationId?: string;
+      addonName: string;
+      addonPrice: number;
+      quantity: number;
+      addonSizeValue?: string | null;
+      addonSizeUnit?: string | null;
+    }>;
     imageUrl?: string | null;
   }) => void;
 };

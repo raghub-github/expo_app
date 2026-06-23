@@ -2,7 +2,8 @@
  * Zomato-style delivery partner card on live order tracking.
  */
 
-import { View, Text, StyleSheet, TouchableOpacity, Image, type ReactNode, type StyleProp, type ViewStyle } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, Image, type StyleProp, type ViewStyle } from "react-native";
+import type { ReactNode } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { FOOD_TIP_PRESETS } from "@/components/orders/FoodOrderTipSheet";

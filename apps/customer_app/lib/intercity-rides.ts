@@ -23,7 +23,7 @@ export function tripKmFromCoords(
   const dlat = Number(dropLat);
   const dlng = Number(dropLng);
   if (![plat, plng, dlat, dlng].every(Number.isFinite)) return null;
-  const km = haversineKm({ latitude: plat, longitude: plng }, { latitude: dlat, longitude: dlng });
+  const km = haversineKm(plat, plng, dlat, dlng);
   return Number.isFinite(km) && km > 0 ? km : null;
 }
 

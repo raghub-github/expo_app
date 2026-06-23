@@ -24,6 +24,7 @@ import {
   getSmsPermissionGranted,
   requestSmsPermission,
 } from "@/lib/device-permissions";
+import { getNetworkErrorMessage } from "@/utils/networkError";
 
 function openAppSettings() {
   Linking.openSettings();

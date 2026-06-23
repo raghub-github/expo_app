@@ -184,7 +184,8 @@ export function FoodOrderDeliveredScreen({
       return () => resetStatusBarBackground();
     }, [setStatusBarBackground, resetStatusBarBackground])
   );
-  const { data: chatUnreadCount = 0 } = usePartnerChatUnread(order.orderId);
+  const { data: chatUnreadData } = usePartnerChatUnread(order.orderId);
+  const chatUnreadCount = chatUnreadData?.unreadCount ?? 0;
 
   const [tipSheetVisible, setTipSheetVisible] = useState(false);
   const [safetySheetVisible, setSafetySheetVisible] = useState(false);

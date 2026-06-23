@@ -46,6 +46,7 @@ async function fetchBackendRouteFallback(
     return {
       coordinates,
       distanceKm: result.distanceKm,
+      durationSeconds: Math.max(1, Math.round(result.durationSeconds ?? result.etaMinutes * 60)),
       etaMinutes: result.etaMinutes,
       source: "backend",
       vehicleId: FOOD_DELIVERY_ROUTE_VEHICLE,

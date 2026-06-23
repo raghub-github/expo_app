@@ -22,6 +22,7 @@ import {
   InteractionManager,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type SectionListData,
   type View as RNView,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -218,7 +219,8 @@ function findSectionIndexForScrollTarget(
 
 /** Animated SectionList refs may not expose scrollToOffset — use scroll responder fallback. */
 function scrollSectionListToOffset(
-  ref: React.RefObject<SectionList<MenuListRow> | null>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ref: React.RefObject<SectionList<MenuListRow, any> | null>,
   offset: number,
   animated = true
 ) {
@@ -278,7 +280,7 @@ export default function MerchantDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const merchantId = id ?? "";
-  const sectionListRef = useRef<SectionList>(null);
+  const sectionListRef = useRef<SectionList<MenuListRow, { title: string }>>(null);
   const headerRootRef = useRef<RNView>(null);
   const pastOrdersAnchorRef = useRef<RNView>(null);
   const startingAtAnchorRef = useRef<RNView>(null);
@@ -402,7 +404,7 @@ export default function MerchantDetailScreen() {
     useCallback(() => {
       if (!merchantId) return;
       const updatedAt =
-        queryClient.getQueryState({ queryKey: ["merchant", merchantId] })?.dataUpdatedAt ?? 0;
+        queryClient.getQueryState(["merchant", merchantId])?.dataUpdatedAt ?? 0;
       if (Date.now() - updatedAt > 2 * 60 * 1000) {
         void queryClient.invalidateQueries({ queryKey: ["merchant", merchantId] });
       }
@@ -1367,9 +1369,9 @@ export default function MerchantDetailScreen() {
   );
 
   const renderMenuSectionHeader = useCallback(
-    ({ section: { title } }: { section: { title: string } }) => (
+    ({ section }: { section: SectionListData<MenuListRow, { title: string }> }) => (
       <View style={styles.sectionHeader}>
-        <Text style={styles.sectionHeaderText}>{title}</Text>
+        <Text style={styles.sectionHeaderText}>{section.title}</Text>
       </View>
     ),
     []
@@ -1383,7 +1385,7 @@ export default function MerchantDetailScreen() {
     }: {
       item: MenuListRow;
       index: number;
-      section: { data: MenuListRow[] };
+      section: SectionListData<MenuListRow, { title: string }>;
     }) => {
       const sectionData = section.data;
       const isLast = index === sectionData.length - 1;
@@ -1744,9 +1746,12 @@ export default function MerchantDetailScreen() {
         showsVerticalScrollIndicator
         {...(Platform.OS === "android" ? { overScrollMode: "never" as const } : {})}
         onScrollToIndexFailed={(info) => {
+          // SectionList's onScrollToIndexFailed info doesn't expose sectionIndex —
+          // fall back to the first section. UX is "scroll near the top + retry".
+          const sectionIndex = (info as { sectionIndex?: number }).sectionIndex ?? 0;
           setTimeout(() => {
             sectionListRef.current?.scrollToLocation({
-              sectionIndex: info.sectionIndex,
+              sectionIndex,
               itemIndex: Math.min(info.index, 0),
               viewPosition: 0,
               animated: true,
@@ -1929,7 +1934,7 @@ const styles = StyleSheet.create({
   },
   retryBtn: {
     marginTop: 18,
-    backgroundColor: GatiMitraColors.primary,
+    backgroundColor: GatiMitraColors.primaryMint,
     paddingHorizontal: 22,
     paddingVertical: 12,
     borderRadius: 10,
@@ -1940,7 +1945,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   retryLinkText: {
-    color: GatiMitraColors.primary,
+    color: GatiMitraColors.primaryMint,
     fontSize: 14,
     fontWeight: "600",
   },
