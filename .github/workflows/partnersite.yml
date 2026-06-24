@@ -80,16 +80,28 @@ jobs:
           cache-from: type=gha,scope=partnersite
           cache-to: type=gha,mode=max,scope=partnersite
 
-      - name: Zero-downtime deploy on VPS
-        uses: appleboy/ssh-action@v1.2.0
+      - name: Zero-downtime deploy on VPS (with retry)
+        uses: nick-fields/retry@v3
         with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: |
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          retry_on: error
+          command: |
+            cat <<'EOF' > /tmp/_ssh_script.sh
             set -e
             cd /opt/gatimitra
             git fetch --depth 1 origin main
             git reset --hard origin/main
             chmod +x infra/scripts/deploy-service.sh
             infra/scripts/deploy-service.sh partnersite http://localhost:3000/api/health 90
+            EOF
+            mkdir -p ~/.ssh
+            chmod 700 ~/.ssh
+            echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+            chmod 600 ~/.ssh/id_ed25519
+            ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+            ssh -o ConnectTimeout=20 -o ServerAliveInterval=20 -o ServerAliveCountMax=3 \
+                -i ~/.ssh/id_ed25519 \
+                ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+                'bash -s' < /tmp/_ssh_script.sh
