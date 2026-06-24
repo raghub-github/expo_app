@@ -72,6 +72,11 @@ jobs:
             NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
             NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
             NEXT_PUBLIC_APP_URL=${{ secrets.NEXT_PUBLIC_APP_URL }}
+            NEXT_PUBLIC_MAPBOX_TOKEN=${{ secrets.NEXT_PUBLIC_MAPBOX_TOKEN }}
+            NEXT_PUBLIC_R2_PUBLIC_BASE_URL=${{ secrets.NEXT_PUBLIC_R2_PUBLIC_BASE_URL }}
+            NEXT_PUBLIC_DISABLE_CURRENT_LOCATION=${{ secrets.NEXT_PUBLIC_DISABLE_CURRENT_LOCATION }}
+            NEXT_PUBLIC_ENABLE_PHONE_OTP_LOGIN=${{ secrets.NEXT_PUBLIC_ENABLE_PHONE_OTP_LOGIN }}
+            NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER=${{ secrets.NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER }}
           cache-from: type=gha,scope=partnersite
           cache-to: type=gha,mode=max,scope=partnersite
 
