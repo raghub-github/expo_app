@@ -36,5 +36,5 @@ USER app
 
 WORKDIR /repo/services/payment-worker
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "require('@gatimitra/redis').getRedis().ping().then(()=>process.exit(0)).catch(()=>process.exit(1))" || exit 1
+  CMD node --input-type=module -e "import('@gatimitra/redis').then(m => m.getRedis().ping()).then(()=>process.exit(0)).catch(()=>process.exit(1))" || exit 1
 CMD ["npx", "tsx", "src/index.ts"]
